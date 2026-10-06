@@ -1682,9 +1682,10 @@ impl Int33C {
             let mut possible_names = vec![field_name.to_string()];
 
             // Add common abbreviations (e.g., "denominator" -> "denom", "numerator" -> "num")
-            if field_name.len() > 5 {
-                possible_names.push(field_name[..4].to_string()); // First 4 chars
-                possible_names.push(field_name[..5].to_string()); // First 5 chars
+            // Taken by character: a byte slice panics inside a multi-byte identifier.
+            if field_name.chars().count() > 5 {
+                possible_names.push(field_name.chars().take(4).collect()); // First 4 chars
+                possible_names.push(field_name.chars().take(5).collect()); // First 5 chars
             }
 
             // Search for any of these names being checked against zero with error handling

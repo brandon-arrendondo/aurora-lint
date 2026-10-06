@@ -110,16 +110,16 @@ pub fn find_string_literal_length(var_name: &str, node: &Node, source: &str) -> 
 
         // Find the opening quote
         if let Some(quote_start) = after_eq.find('"') {
-            // Find the closing quote (accounting for escaped quotes)
-            let mut i = quote_start + 1;
-            let chars: Vec<char> = after_eq.chars().collect();
-            while i < chars.len() {
-                if chars[i] == '"' && (i == 0 || chars[i - 1] != '\\') {
-                    // Found closing quote
-                    let literal = &after_eq[quote_start + 1..i];
-                    return Some(literal.len());
+            // Find the closing quote (accounting for escaped quotes). Offsets
+            // are byte offsets throughout, so a multi-byte character inside
+            // the literal cannot put the slice end off a character boundary.
+            let body = &after_eq[quote_start + 1..];
+            let mut prev = '"';
+            for (offset, ch) in body.char_indices() {
+                if ch == '"' && prev != '\\' {
+                    return Some(offset);
                 }
-                i += 1;
+                prev = ch;
             }
         }
     }
