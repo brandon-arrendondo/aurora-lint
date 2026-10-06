@@ -1016,16 +1016,85 @@ pub const ENV03_TAINT_SOURCE_FUNCTIONS: &[&str] = &[
     "RegQueryValueExW",
 ];
 
-fn body_contains_taint_source(body_text: &str) -> bool {
-    ENV03_TAINT_SOURCE_FUNCTIONS
-        .iter()
-        .any(|name| body_text.contains(&format!("{}(", name)))
+/// Whether `name` is a taint source: listed in
+/// [`ENV03_TAINT_SOURCE_FUNCTIONS`], or one of `aliases` (an object-like
+/// macro naming one, `#define GETENV getenv`).
+fn is_taint_source_name(name: &str, aliases: &[String]) -> bool {
+    ENV03_TAINT_SOURCE_FUNCTIONS.contains(&name) || aliases.iter().any(|a| a == name)
 }
 
-fn body_contains_alias(body_text: &str, aliases: &[String]) -> bool {
-    aliases
-        .iter()
-        .any(|alias| body_text.contains(&format!("{}(", alias)))
+/// How many function-like macros deep [`calls_taint_source`] follows a call.
+const TAINT_MACRO_DEPTH: usize = 8;
+
+/// Whether one of `calls` (the body's `call_expression` nodes) calls a taint
+/// source, reading each callee from the AST.
+///
+/// A callee is the call's `function` identifier, through any parentheses
+/// (`(fscanf)(...)`). It is a source when its name is one
+/// ([`is_taint_source_name`]), or when it names a function-like macro whose
+/// replacement list calls one, under any of the macro's definitions and
+/// through nested macros (`#define READ_INT(p) fscanf(stdin, "%d", p)`).
+///
+/// This replaced a text search for `name(` in the body, which missed the
+/// common `fscanf (stdin, ...)` spelling and matched inside longer names
+/// (`read(` in `pthread_read(`, `accept(` in `do_accept(`) (ADR-0006).
+/// A call starting at or after `end` belongs to a sibling function that the
+/// parse nested inside this body; it is skipped, as the text bound did.
+fn calls_taint_source(
+    calls: &[Node],
+    source: &str,
+    end: usize,
+    aliases: &[String],
+    function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+) -> bool {
+    calls.iter().filter(|c| c.start_byte() < end).any(|call| {
+        callee_identifier(call, source).is_some_and(|name| {
+            is_taint_source_name(name, aliases)
+                || macro_calls_taint_source(name, aliases, function_macros, TAINT_MACRO_DEPTH)
+        })
+    })
+}
+
+/// The name a call's `function` field spells, through parentheses, when it
+/// is a plain identifier; `None` for a call through a member or a pointer.
+fn callee_identifier<'s>(call: &Node, source: &'s str) -> Option<&'s str> {
+    let mut f = call.child_by_field_name("function")?;
+    while f.kind() == "parenthesized_expression" {
+        f = f.named_child(0)?;
+    }
+    (f.kind() == "identifier")
+        .then(|| f.utf8_text(source.as_bytes()).ok())
+        .flatten()
+}
+
+/// Whether the function-like macro `name` calls a taint source in its
+/// replacement list, under any of its definitions, following nested
+/// function-like macros up to `depth`.
+fn macro_calls_taint_source(
+    name: &str,
+    aliases: &[String],
+    function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    depth: usize,
+) -> bool {
+    use crate::analyze::macro_expand::{macro_body_calls, MacroArm};
+    let Some(m) = function_macros.get(name) else {
+        return false;
+    };
+    if depth == 0 {
+        return false;
+    }
+    std::iter::once(m)
+        .chain(m.alternatives.iter().flatten())
+        .any(|def| {
+            macro_body_calls(&MacroArm::from(def))
+                .callees
+                .iter()
+                .filter(|callee| callee.as_str() != name)
+                .any(|callee| {
+                    is_taint_source_name(callee, aliases)
+                        || macro_calls_taint_source(callee, aliases, function_macros, depth - 1)
+                })
+        })
 }
 
 /// True if the function body calls strcpy/strcat/wcscpy/wcscat with a second
@@ -1480,23 +1549,21 @@ fn analyze_function(
             }
         }
 
-        // Quick text scan for taint-source calls — used by ENV03-C to
-        // classify callers as tainted/clean. Also matches any macro
-        // identifier that aliases a known taint source (e.g.
-        // `#define GETENV getenv`) so Juliet macro-wrapped sources still
-        // poison the caller's summary.
-        //
-        // Comments and string literals stripped first (
-        // aurora_lint, found by an earlier fix's rule architecture sweep): this
-        // consumer is MUST-style, not suppression-only (ENV03-C gates "this
-        // caller is clean" on `!has_env03_taint_source`), so a comment
-        // merely mentioning a source (`// TODO: call getenv(x) here`) or a
-        // string literal containing one (`"usage: getenv(VAR)"`) was a real
-        // false-positive path, the same ADR-0005/ADR-0006 misfire shape as
-        // `cast_then_deref` and `has_genuine_arrow_read`.
-        let body_text_for_taint_scan = strip_string_literals(&strip_comments_multiline(body_text));
-        summary.has_env03_taint_source = body_contains_taint_source(&body_text_for_taint_scan)
-            || body_contains_alias(&body_text_for_taint_scan, taint_source_aliases);
+        // Whether the body calls a taint source -- used by ENV03-C and the
+        // INT/STR caller-aware rules to classify callers as tainted/clean.
+        // This consumer is MUST-style (ENV03-C gates "this caller is clean"
+        // on `!has_env03_taint_source`), so the calls are read from the AST:
+        // a comment or string literal mentioning a source is not a call, and
+        // `fscanf (stdin, ...)` is one. Macro aliases and function-like
+        // macros wrapping a source count (Juliet's `GETENV`).
+        let sweep = BodySweep::of(&body);
+        summary.has_env03_taint_source = calls_taint_source(
+            &sweep.calls,
+            source,
+            text_end,
+            taint_source_aliases,
+            function_macros,
+        );
 
         // Detect CWE-426-style relative-path command writes: strcpy/strcat
         // with a macro identifier whose value is a known non-absolute path.
@@ -1525,7 +1592,6 @@ fn analyze_function(
         settle_return_nullness(&mut summary, &body, source, text_end, is_pointer_return);
 
         // Analyze parameter usage
-        let sweep = BodySweep::of(&body);
         analyze_param_usage(
             &body,
             &sweep,
@@ -2080,43 +2146,6 @@ fn strip_comments_multiline(s: &str) -> String {
             }
         } else {
             out.push(chars[i]);
-            i += 1;
-        }
-    }
-    out
-}
-
-/// Blank out the contents of `"..."` and `'...'` literals (dropped
-/// entirely, not replaced char-for-char, since callers only need a
-/// substring scan over what remains, not aligned positions) so a plain text
-/// scan over a function's body does not treat a string constant that merely
-/// NAMES a function -- `"usage: getenv(VAR)"` -- as a real call to it.
-///
-/// Must run AFTER `strip_comments_multiline`: a stray quote inside a
-/// comment (`// see "getenv(" usage below`) would otherwise make this walk
-/// think it's inside a string literal for the rest of the body, silently
-/// dropping real code that follows.
-fn strip_string_literals(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '"' || c == '\'' {
-            out.push(' ');
-            i += 1;
-            while i < chars.len() && chars[i] != c {
-                if chars[i] == '\\' && i + 1 < chars.len() {
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            if i < chars.len() {
-                i += 1; // consume the closing quote
-            }
-        } else {
-            out.push(c);
             i += 1;
         }
     }
