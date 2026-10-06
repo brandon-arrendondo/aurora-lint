@@ -4,6 +4,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -66,10 +67,8 @@ fn collect_function_definitions<'a>(node: &Node<'a>) -> Vec<Node<'a>> {
             functions.push(n);
             continue;
         }
-        for i in (0..n.child_count()).rev() {
-            if let Some(child) = n.child(i) {
-                stack.push(child);
-            }
+        for child in n.child_nodes().collect::<Vec<_>>().into_iter().rev() {
+            stack.push(child);
         }
     }
     functions
@@ -85,10 +84,8 @@ fn collect_top_level_const_vars(node: &Node, source: &str, const_vars: &mut Hash
             continue;
         }
         collect_const_vars_from_node(&n, source, const_vars);
-        for i in (0..n.child_count()).rev() {
-            if let Some(child) = n.child(i) {
-                stack.push(child);
-            }
+        for child in n.child_nodes().collect::<Vec<_>>().into_iter().rev() {
+            stack.push(child);
         }
     }
 }
@@ -121,10 +118,8 @@ fn check_node_recursive_pruned(
             }
             _ => {}
         }
-        for i in (0..n.child_count()).rev() {
-            if let Some(child) = n.child(i) {
-                stack.push(child);
-            }
+        for child in n.child_nodes().collect::<Vec<_>>().into_iter().rev() {
+            stack.push(child);
         }
     }
 }
@@ -151,20 +146,16 @@ fn collect_const_vars_from_node(node: &Node, source: &str, const_vars: &mut Hash
             let decl_text = get_node_text(node, source);
             if decl_text.contains("const") {
                 // Extract variable names from this declaration
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "init_declarator" {
-                            if let Some(declarator) = child.child_by_field_name("declarator") {
-                                if let Some(name) = extract_var_name(&declarator, source) {
-                                    const_vars.insert(name);
-                                }
-                            }
-                        } else if child.kind() == "pointer_declarator"
-                            || child.kind() == "identifier"
-                        {
-                            if let Some(name) = extract_var_name(&child, source) {
+                for child in node.child_nodes() {
+                    if child.kind() == "init_declarator" {
+                        if let Some(declarator) = child.child_by_field_name("declarator") {
+                            if let Some(name) = extract_var_name(&declarator, source) {
                                 const_vars.insert(name);
                             }
+                        }
+                    } else if child.kind() == "pointer_declarator" || child.kind() == "identifier" {
+                        if let Some(name) = extract_var_name(&child, source) {
+                            const_vars.insert(name);
                         }
                     }
                 }
@@ -192,11 +183,9 @@ fn extract_var_name(node: &Node, source: &str) -> Option<String> {
             if let Some(declarator) = node.child_by_field_name("declarator") {
                 return extract_var_name(&declarator, source);
             }
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "identifier" {
-                        return Some(get_node_text(&child, source).to_string());
-                    }
+            for child in node.child_nodes() {
+                if child.kind() == "identifier" {
+                    return Some(get_node_text(&child, source).to_string());
                 }
             }
             None
@@ -409,14 +398,12 @@ fn is_pointer_declarator(node: &Node) -> bool {
 
 /// Check if node has a pointer child
 fn has_pointer_child(node: &Node) -> bool {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "pointer_declarator" || child.kind() == "*" {
-                return true;
-            }
-            if has_pointer_child(&child) {
-                return true;
-            }
+    for child in node.child_nodes() {
+        if child.kind() == "pointer_declarator" || child.kind() == "*" {
+            return true;
+        }
+        if has_pointer_child(&child) {
+            return true;
         }
     }
     false

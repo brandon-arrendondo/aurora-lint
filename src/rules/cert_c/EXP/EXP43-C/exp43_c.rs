@@ -16,6 +16,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{get_node_text, restrict_parameter_indices};
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -190,22 +191,20 @@ impl Exp43C {
         restrict_vars: &mut HashSet<String>,
         pointer_bases: &mut HashMap<String, String>,
     ) {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                match child.kind() {
-                    "declaration" => {
-                        let decl_text = get_node_text(&child, source);
-                        if decl_text.contains("restrict") {
-                            if let Some(var_name) = self.extract_var_name(&child, source) {
-                                restrict_vars.insert(var_name);
-                            }
+        for child in node.child_nodes() {
+            match child.kind() {
+                "declaration" => {
+                    let decl_text = get_node_text(&child, source);
+                    if decl_text.contains("restrict") {
+                        if let Some(var_name) = self.extract_var_name(&child, source) {
+                            restrict_vars.insert(var_name);
                         }
                     }
-                    "assignment_expression" => {
-                        Self::track_pointer_assignment(&child, source, pointer_bases);
-                    }
-                    _ => {}
                 }
+                "assignment_expression" => {
+                    Self::track_pointer_assignment(&child, source, pointer_bases);
+                }
+                _ => {}
             }
         }
     }
@@ -565,16 +564,14 @@ impl Exp43C {
         }
 
         // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_overlapping_restrict_calls(
-                    &child,
-                    source,
-                    pointer_bases,
-                    restrict_params,
-                    violations,
-                );
-            }
+        for child in node.child_nodes() {
+            self.find_overlapping_restrict_calls(
+                &child,
+                source,
+                pointer_bases,
+                restrict_params,
+                violations,
+            );
         }
     }
 
@@ -617,12 +614,10 @@ impl Exp43C {
     /// Collect argument expressions from argument_list
     fn collect_arg_expressions(&self, args: &Node, source: &str) -> Vec<String> {
         let mut result = Vec::new();
-        for i in 0..args.child_count() {
-            if let Some(child) = args.child(i) {
-                let kind = child.kind();
-                if kind != "(" && kind != ")" && kind != "," {
-                    result.push(get_node_text(&child, source).to_string());
-                }
+        for child in args.child_nodes() {
+            let kind = child.kind();
+            if kind != "(" && kind != ")" && kind != "," {
+                result.push(get_node_text(&child, source).to_string());
             }
         }
         result
@@ -736,14 +731,12 @@ impl Exp43C {
 
     /// Extract variable name from declaration
     fn extract_var_name(&self, decl: &Node, source: &str) -> Option<String> {
-        for i in 0..decl.child_count() {
-            if let Some(child) = decl.child(i) {
-                if child.kind() == "init_declarator" || child.kind() == "pointer_declarator" {
-                    return self.find_identifier(&child, source);
-                }
-                if child.kind() == "identifier" {
-                    return Some(get_node_text(&child, source).to_string());
-                }
+        for child in decl.child_nodes() {
+            if child.kind() == "init_declarator" || child.kind() == "pointer_declarator" {
+                return self.find_identifier(&child, source);
+            }
+            if child.kind() == "identifier" {
+                return Some(get_node_text(&child, source).to_string());
             }
         }
         None
@@ -755,11 +748,9 @@ impl Exp43C {
             return Some(get_node_text(node, source).to_string());
         }
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(name) = self.find_identifier(&child, source) {
-                    return Some(name);
-                }
+        for child in node.child_nodes() {
+            if let Some(name) = self.find_identifier(&child, source) {
+                return Some(name);
             }
         }
 

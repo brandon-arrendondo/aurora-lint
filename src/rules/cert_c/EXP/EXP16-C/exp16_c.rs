@@ -21,6 +21,7 @@ use std::collections::HashSet;
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -101,11 +102,9 @@ impl Exp16C {
             }
             _ => {
                 // Walk children looking for an identifier
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if let Some(name) = self.extract_declarator_name(&child, source) {
-                            return Some(name);
-                        }
+                for child in node.child_nodes() {
+                    if let Some(name) = self.extract_declarator_name(&child, source) {
+                        return Some(name);
                     }
                 }
                 None
@@ -159,16 +158,14 @@ impl Exp16C {
                     if let Some(parent) = n.parent() {
                         if parent.kind() == "if_statement" || parent.kind() == "while_statement" {
                             // Check the inner expression
-                            for i in 0..n.child_count() {
-                                if let Some(child) = n.child(i) {
-                                    if child.kind() == "identifier" {
-                                        self.check_identifier_as_condition(
-                                            &child,
-                                            source,
-                                            function_names,
-                                            violations,
-                                        );
-                                    }
+                            for child in n.child_nodes() {
+                                if child.kind() == "identifier" {
+                                    self.check_identifier_as_condition(
+                                        &child,
+                                        source,
+                                        function_names,
+                                        violations,
+                                    );
                                 }
                             }
                         }
@@ -191,18 +188,16 @@ impl Exp16C {
         let mut left = None;
         let mut right = None;
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                match child.kind() {
-                    "==" | "!=" | "<" | ">" | "<=" | ">=" => {
-                        operator = Some(child.kind());
-                    }
-                    _ => {
-                        if left.is_none() {
-                            left = Some(child);
-                        } else if right.is_none() {
-                            right = Some(child);
-                        }
+        for child in node.child_nodes() {
+            match child.kind() {
+                "==" | "!=" | "<" | ">" | "<=" | ">=" => {
+                    operator = Some(child.kind());
+                }
+                _ => {
+                    if left.is_none() {
+                        left = Some(child);
+                    } else if right.is_none() {
+                        right = Some(child);
                     }
                 }
             }
@@ -269,34 +264,29 @@ impl Exp16C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // expression_statement wraps one child expression + ";"
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "binary_expression" {
-                    // Check if operator is == or !=
-                    for j in 0..child.child_count() {
-                        if let Some(op) = child.child(j) {
-                            if op.kind() == "==" {
-                                let expr_text =
-                                    child.utf8_text(source.as_bytes()).unwrap_or("unknown");
-                                violations.push(RuleViolation {
-                                    rule_id: self.rule_id().to_string(),
-                                    severity: self.severity(),
-                                    line: child.start_position().row + 1,
-                                    column: child.start_position().column + 1,
-                                    file_path: String::new(),
-                                    message: format!(
-                                        "Comparison '{}' used as statement with result discarded; did you mean '=' (assignment)?",
-                                        expr_text
-                                    ),
-                                    suggestion: Some(
-                                        "Use '=' for assignment instead of '==' for comparison"
-                                            .to_string(),
-                                    ),
-                                    requires_manual_review: None,
-                                });
-                                return;
-                            }
-                        }
+        for child in node.child_nodes() {
+            if child.kind() == "binary_expression" {
+                // Check if operator is == or !=
+                for op in child.child_nodes() {
+                    if op.kind() == "==" {
+                        let expr_text = child.utf8_text(source.as_bytes()).unwrap_or("unknown");
+                        violations.push(RuleViolation {
+                            rule_id: self.rule_id().to_string(),
+                            severity: self.severity(),
+                            line: child.start_position().row + 1,
+                            column: child.start_position().column + 1,
+                            file_path: String::new(),
+                            message: format!(
+                                "Comparison '{}' used as statement with result discarded; did you mean '=' (assignment)?",
+                                expr_text
+                            ),
+                            suggestion: Some(
+                                "Use '=' for assignment instead of '==' for comparison"
+                                    .to_string(),
+                            ),
+                            requires_manual_review: None,
+                        });
+                        return;
                     }
                 }
             }
@@ -312,16 +302,9 @@ impl Exp16C {
     ) {
         // Check for parenthesized expression containing just an identifier
         if node.kind() == "parenthesized_expression" {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "identifier" {
-                        self.check_identifier_as_condition(
-                            &child,
-                            source,
-                            function_names,
-                            violations,
-                        );
-                    }
+            for child in node.child_nodes() {
+                if child.kind() == "identifier" {
+                    self.check_identifier_as_condition(&child, source, function_names, violations);
                 }
             }
         }

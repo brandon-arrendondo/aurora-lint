@@ -45,6 +45,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -156,21 +157,13 @@ impl Exp39C {
         struct_field_ptrs: &mut HashSet<String>,
         union_vars: &mut HashSet<String>,
     ) {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "declaration" {
-                    self.process_declaration(&child, source, var_types);
-                    self.check_union_declaration(&child, source, union_vars);
-                    for j in 0..child.child_count() {
-                        if let Some(grandchild) = child.child(j) {
-                            if grandchild.kind() == "init_declarator" {
-                                self.check_struct_field_ptr_init(
-                                    &grandchild,
-                                    source,
-                                    struct_field_ptrs,
-                                );
-                            }
-                        }
+        for child in node.child_nodes() {
+            if child.kind() == "declaration" {
+                self.process_declaration(&child, source, var_types);
+                self.check_union_declaration(&child, source, union_vars);
+                for grandchild in child.child_nodes() {
+                    if grandchild.kind() == "init_declarator" {
+                        self.check_struct_field_ptr_init(&grandchild, source, struct_field_ptrs);
                     }
                 }
             }
@@ -260,10 +253,7 @@ impl Exp39C {
             let Some(params) = declarator.child_by_field_name("parameters") else {
                 continue;
             };
-            for i in 0..params.child_count() {
-                let Some(param) = params.child(i) else {
-                    continue;
-                };
+            for param in params.child_nodes() {
                 if param.kind() != "parameter_declaration" {
                     continue;
                 }
@@ -271,19 +261,17 @@ impl Exp39C {
                 // Base type: same shape as a `declaration` node - the type
                 // specifier is a direct child, not a named field.
                 let mut base_type = String::new();
-                for j in 0..param.child_count() {
-                    if let Some(child) = param.child(j) {
-                        match child.kind() {
-                            "primitive_type" | "sized_type_specifier" | "type_identifier" => {
-                                base_type = get_node_text(&child, source).trim().to_string();
-                                break;
-                            }
-                            "struct_specifier" => {
-                                base_type = get_node_text(&child, source).trim().to_string();
-                                break;
-                            }
-                            _ => {}
+                for child in param.child_nodes() {
+                    match child.kind() {
+                        "primitive_type" | "sized_type_specifier" | "type_identifier" => {
+                            base_type = get_node_text(&child, source).trim().to_string();
+                            break;
                         }
+                        "struct_specifier" => {
+                            base_type = get_node_text(&child, source).trim().to_string();
+                            break;
+                        }
+                        _ => {}
                     }
                 }
                 if base_type.is_empty() {
@@ -325,20 +313,18 @@ impl Exp39C {
     ) {
         // Get the type specifier
         let mut base_type = String::new();
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                match child.kind() {
-                    "primitive_type" | "sized_type_specifier" | "type_identifier" => {
-                        base_type = get_node_text(&child, source).trim().to_string();
-                        break;
-                    }
-                    "struct_specifier" => {
-                        // Handle struct declarations like "struct gadget *gp;"
-                        base_type = get_node_text(&child, source).trim().to_string();
-                        break;
-                    }
-                    _ => {}
+        for child in node.child_nodes() {
+            match child.kind() {
+                "primitive_type" | "sized_type_specifier" | "type_identifier" => {
+                    base_type = get_node_text(&child, source).trim().to_string();
+                    break;
                 }
+                "struct_specifier" => {
+                    // Handle struct declarations like "struct gadget *gp;"
+                    base_type = get_node_text(&child, source).trim().to_string();
+                    break;
+                }
+                _ => {}
             }
         }
 
@@ -347,27 +333,14 @@ impl Exp39C {
         }
 
         // Get the declarator(s) - handle pointer_declarator for struct pointers
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                match child.kind() {
-                    "init_declarator" | "array_declarator" => {
-                        self.extract_var_from_declarator(&child, source, &base_type, var_types);
-                    }
-                    "pointer_declarator" => {
-                        // Handle "struct gadget *gp;"
-                        if let Some(var_name) = self.find_var_name(&child, source) {
-                            var_types.insert(
-                                var_name,
-                                VarTypeInfo {
-                                    base_type: base_type.clone(),
-                                    is_array: false,
-                                    array_dimensions: Vec::new(),
-                                },
-                            );
-                        }
-                    }
-                    "identifier" => {
-                        let var_name = get_node_text(&child, source).trim().to_string();
+        for child in node.child_nodes() {
+            match child.kind() {
+                "init_declarator" | "array_declarator" => {
+                    self.extract_var_from_declarator(&child, source, &base_type, var_types);
+                }
+                "pointer_declarator" => {
+                    // Handle "struct gadget *gp;"
+                    if let Some(var_name) = self.find_var_name(&child, source) {
                         var_types.insert(
                             var_name,
                             VarTypeInfo {
@@ -377,8 +350,19 @@ impl Exp39C {
                             },
                         );
                     }
-                    _ => {}
                 }
+                "identifier" => {
+                    let var_name = get_node_text(&child, source).trim().to_string();
+                    var_types.insert(
+                        var_name,
+                        VarTypeInfo {
+                            base_type: base_type.clone(),
+                            is_array: false,
+                            array_dimensions: Vec::new(),
+                        },
+                    );
+                }
+                _ => {}
             }
         }
     }
@@ -443,11 +427,9 @@ impl Exp39C {
         }
 
         // Check children for nested array declarators
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "array_declarator" {
-                    self.collect_array_dimensions_recursive(&child, source, dimensions);
-                }
+        for child in node.child_nodes() {
+            if child.kind() == "array_declarator" {
+                self.collect_array_dimensions_recursive(&child, source, dimensions);
             }
         }
     }
@@ -464,11 +446,9 @@ impl Exp39C {
         }
 
         // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(name) = self.find_var_name(&child, source) {
-                    return Some(name);
-                }
+        for child in node.child_nodes() {
+            if let Some(name) = self.find_var_name(&child, source) {
+                return Some(name);
             }
         }
 
@@ -595,33 +575,30 @@ impl Exp39C {
                 if func_name == "realloc" {
                     // Get first argument (the pointer being reallocated)
                     if let Some(args) = node.child_by_field_name("arguments") {
-                        for i in 0..args.child_count() {
-                            if let Some(arg) = args.child(i) {
-                                if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
-                                    let arg_name = get_node_text(&arg, source).trim().to_string();
-                                    if let Some(arg_type) = var_types.get(&arg_name) {
-                                        // Check if source and target struct types differ
-                                        if arg_type.base_type.contains("struct")
-                                            && target_type.contains("struct")
-                                        {
-                                            let target_struct =
-                                                self.extract_struct_name(target_type);
-                                            let source_struct =
-                                                self.extract_struct_name(&arg_type.base_type);
+                        for arg in args.child_nodes() {
+                            if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
+                                let arg_name = get_node_text(&arg, source).trim().to_string();
+                                if let Some(arg_type) = var_types.get(&arg_name) {
+                                    // Check if source and target struct types differ
+                                    if arg_type.base_type.contains("struct")
+                                        && target_type.contains("struct")
+                                    {
+                                        let target_struct = self.extract_struct_name(target_type);
+                                        let source_struct =
+                                            self.extract_struct_name(&arg_type.base_type);
 
-                                            if target_struct != source_struct {
-                                                self.report_struct_cast_violation(
-                                                    violation_node,
-                                                    source,
-                                                    &target_struct,
-                                                    &source_struct,
-                                                    violations,
-                                                );
-                                            }
+                                        if target_struct != source_struct {
+                                            self.report_struct_cast_violation(
+                                                violation_node,
+                                                source,
+                                                &target_struct,
+                                                &source_struct,
+                                                violations,
+                                            );
                                         }
                                     }
-                                    break; // Only check first argument
                                 }
+                                break; // Only check first argument
                             }
                         }
                     }
@@ -1000,32 +977,28 @@ impl Exp39C {
     /// Check if a declaration is a union type and track the variable name
     fn check_union_declaration(&self, node: &Node, source: &str, union_vars: &mut HashSet<String>) {
         let mut has_union = false;
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "union_specifier" {
-                    has_union = true;
-                    break;
-                }
+        for child in node.child_nodes() {
+            if child.kind() == "union_specifier" {
+                has_union = true;
+                break;
             }
         }
         if !has_union {
             return;
         }
         // Extract variable name from direct children (not from union body)
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                match child.kind() {
-                    "identifier" => {
-                        let name = get_node_text(&child, source).trim().to_string();
+        for child in node.child_nodes() {
+            match child.kind() {
+                "identifier" => {
+                    let name = get_node_text(&child, source).trim().to_string();
+                    union_vars.insert(name);
+                }
+                "init_declarator" | "pointer_declarator" => {
+                    if let Some(name) = self.find_var_name(&child, source) {
                         union_vars.insert(name);
                     }
-                    "init_declarator" | "pointer_declarator" => {
-                        if let Some(name) = self.find_var_name(&child, source) {
-                            union_vars.insert(name);
-                        }
-                    }
-                    _ => {}
                 }
+                _ => {}
             }
         }
     }
@@ -1148,15 +1121,13 @@ impl Exp39C {
                 false
             }
             "parenthesized_expression" => {
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() != "(" && child.kind() != ")" {
-                            return self.contains_struct_field_ptr_arithmetic(
-                                &child,
-                                source,
-                                struct_field_ptrs,
-                            );
-                        }
+                for child in node.child_nodes() {
+                    if child.kind() != "(" && child.kind() != ")" {
+                        return self.contains_struct_field_ptr_arithmetic(
+                            &child,
+                            source,
+                            struct_field_ptrs,
+                        );
                     }
                 }
                 false
