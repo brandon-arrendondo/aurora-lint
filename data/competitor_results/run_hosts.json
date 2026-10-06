@@ -16,27 +16,27 @@
     "here is `attributed`. Delete an entry once the run JSON carries its own."
   ],
   "hosts": {
-    "r720": {
-      "description": "Dell PowerEdge R720, ~2012-era Xeon. Roughly ten years older than dev-921 and materially slower per core.",
+    "host-a": {
+      "description": "~2012-era Xeon server. Roughly ten years older than host-b and materially slower per core.",
       "source": "stated by the maintainer, 2026-09-04"
     },
-    "dev-921": {
+    "host-b": {
       "description": "12th Gen Intel Core i5-12400, 6 cores / 12 threads, 31 GiB RAM, Ubuntu 24.04.",
       "source": "read from the machine, 2026-09-04"
     }
   },
   "runs": {
-    "framac_20260403_145326":   {"hostname": "r720",    "hostname_source": "attributed"},
-    "framac_20260403_222053":   {"hostname": "r720",    "hostname_source": "attributed"},
-    "infer_20260403_144450":    {"hostname": "r720",    "hostname_source": "attributed"},
-    "infer_20260403_164943":    {"hostname": "r720",    "hostname_source": "attributed"},
-    "cppcheck_20260404_101044": {"hostname": "r720",    "hostname_source": "attributed"},
-    "cppcheck_20260404_102702": {"hostname": "r720",    "hostname_source": "attributed"},
-    "clangtidy_20260404_101202":{"hostname": "r720",    "hostname_source": "attributed"},
-    "clangtidy_20260404_115112":{"hostname": "r720",    "hostname_source": "attributed"},
-    "framac_20260904_150312":   {"hostname": "dev-921", "hostname_source": "attributed"},
-    "infer_20260904_153139":    {"hostname": "dev-921", "hostname_source": "attributed"},
-    "cppcheck_20260904_153728": {"hostname": "dev-921", "hostname_source": "attributed"},
-    "clangtidy_20260904_160155":{"hostname": "dev-921", "hostname_source": "attributed"}
+    "framac_20260403_145326":   {"hostname": "host-a",  "hostname_source": "attributed"},
+    "framac_20260403_222053":   {"hostname": "host-a",  "hostname_source": "attributed"},
+    "infer_20260403_144450":    {"hostname": "host-a",  "hostname_source": "attributed"},
+    "infer_20260403_164943":    {"hostname": "host-a",  "hostname_source": "attributed"},
+    "cppcheck_20260404_101044": {"hostname": "host-a",  "hostname_source": "attributed"},
+    "cppcheck_20260404_102702": {"hostname": "host-a",  "hostname_source": "attributed"},
+    "clangtidy_20260404_101202":{"hostname": "host-a",  "hostname_source": "attributed"},
+    "clangtidy_20260404_115112":{"hostname": "host-a",  "hostname_source": "attributed"},
+    "framac_20260904_150312":   {"hostname": "host-b",  "hostname_source": "attributed"},
+    "infer_20260904_153139":    {"hostname": "host-b",  "hostname_source": "attributed"},
+    "cppcheck_20260904_153728": {"hostname": "host-b",  "hostname_source": "attributed"},
+    "clangtidy_20260904_160155":{"hostname": "host-b",  "hostname_source": "attributed"}
   }
 }

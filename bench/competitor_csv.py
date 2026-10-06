@@ -77,8 +77,8 @@ def _host_map() -> dict:
     established afterwards, and `hostname_source` says which is which.
 
     This matters because wall clock is the only hardware-dependent figure in
-    a run, and the two sets did not run on comparable machines: April on an
-    r720 (~2012 Xeon), September on dev-921 (i5-12400). Durations do not
+    a run, and the two sets did not run on comparable machines: April on
+    host-a (~2012 Xeon), September on host-b (i5-12400). Durations do not
     cross that boundary."""
     if not HOSTS_JSON.is_file():
         return {}
