@@ -393,8 +393,10 @@ reproducer will not guess:
    effects are not always local to the library a header belongs to. When
    the prescan meets an ``#include "dir/file.h"`` it cannot resolve but
    ``dir`` exists, DCL31-C takes the file to be generated at build time and
-   stops reporting undeclared calls for the whole project. A system header
-   can trip that switch: c-ares's ``ares.h`` includes ``sys/bsdskt.h`` in a
+   stops reporting undeclared calls for the whole project. Up to and
+   including ``v0.6.0``, a system header can trip that switch (from
+   ``39f11c47`` on, an include written in a system header or in a dead
+   ``#if`` branch no longer does): c-ares's ``ares.h`` includes ``sys/bsdskt.h`` in a
    NetWare-only branch, and on a host whose ``/usr/include/sys`` exists
    (the ``libc6-dev-i386`` / ``gcc-multilib`` packages create it), curl and
    mosquitto report no DCL31-C at all; on a host with neither, they report
@@ -464,6 +466,9 @@ reproducer will not guess:
    pure-ftpd, raylib, seL4, valkey, Ventoy); not one differing key names a
    multiply-defined function, macro, typedef or struct. Cause 2 is gone.
 
+   Both re-measurements, ``v0.5.2`` above and ``v0.6.0`` here, concern
+   cause 1: from ``4ac5710f`` on, cause 2 no longer applies.
+
    **Re-measured at** ``v0.6.0`` (``b13bc40c``), default profile, no
    Windows headers on either machine: the benchmark node's run against a
    run of the tagged commit on the reproducing machine (Ubuntu 24.04:
@@ -505,7 +510,7 @@ reproducer will not guess:
           appear
       * - ``libtomcrypt-dev`` 1.18.2
         - 11
-        - hostap ``src/crypto/crypto_wolfssl.c`` MEM31-C ×10 and MEM30-C ×1
+        - hostap's wolfSSL crypto backend: MEM31-C ×10 and MEM30-C ×1
           appear (``XMALLOC`` read as ``malloc``)
       * - ``libsqlite3-dev`` 3.40.1
         - 3
@@ -519,13 +524,14 @@ reproducer will not guess:
    c-ares and multilib packages were added as a second step, and
    libtomcrypt was confirmed both ways: added alone, it supplies all 11
    keys, and the other benchmark-node library headers without it supply
-   none. Of the 41 labeled
-   keys, 38 are FP and 3 TP. So seven of twelve projects reproduced key for
-   key on both machines as they stood, and the other five do once the scan
-   sees the same header packages. None of c-ares, multilib or libtomcrypt,
-   which account for 105 of the 108 keys, is among the packages
-   :doc:`benchmark-setup` installs, so following that page alone does not
-   rebuild the benchmark node's header set.
+   none. So seven of twelve projects reproduced key for key on both
+   machines as they stood, and the other five do once the scan sees the
+   same header packages. None of c-ares, multilib or libtomcrypt, which
+   account for 105 of the 108 keys, is among the packages :doc:`benchmark-setup` installs, so following that
+   page alone does not rebuild the benchmark node's header set. To
+   reproduce the benchmark node's figures, also install ``libc-ares-dev``,
+   ``libc6-dev-i386`` (or ``gcc-multilib``) and ``libtomcrypt-dev``; the
+   versions of ``libc6-dev`` and ``libsqlite3-dev`` matter as well.
 
 The same binary on the same checkout, run twice, gives byte-identical
 exports on every codebase checked (from ``fc9164fd`` on), with one
@@ -538,8 +544,9 @@ walk-order effect, fixed in the first commit after the ``v0.5.2``
 baseline and worth one key. Otherwise the variation is
 between checkouts, not between runs. So the inputs a SHA does not name are
 the header environment -- :doc:`benchmark-setup` lists the packages the
-benchmark node is provisioned with, which is not every header package it
-carries (see the ``v0.6.0`` re-measurement above) -- and, before ``4ac5710f``, for codebases with
+benchmark node is provisioned with, but the node carries header packages
+that list omits and lacks one it includes (see the ``v0.6.0``
+re-measurement above) -- and, before ``4ac5710f``, for codebases with
 multiply-defined names, the checkout's directory order. A published
 figure's precision and recall do not hinge on either; a claim about an
 exact finding count does, and a key-level diff against a maintainer run at

@@ -283,8 +283,8 @@ covers all of these):
     # mosquitto
     sudo apt-get install -y libcunit1-dev libsqlite3-dev
 
-    # curl TLS and SASL backends (without libgsasl-dev, lib/vauth/gsasl.c
-    # reports every gsasl_* call as DCL31-C "called without prior declaration")
+    # curl TLS and SASL backends (curl's DCL31-C results also depend on
+    # whether /usr/include/sys exists; see reproducing-published-numbers)
     sudo apt-get install -y libmbedtls-dev libgnutls28-dev libgsasl-dev
 
     # sqlite test infrastructure
