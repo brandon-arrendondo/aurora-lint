@@ -223,7 +223,11 @@ Juliet
   hardcoded-value good functions NIST describes as Juliet's most widespread
   issue. The Juliet runs declare ``closed_program``, but in this release that
   option applies only to EXP33-C (:doc:`options`). Juliet's false positives
-  rise accordingly. On real-world code the same change is the intended reading,
+  rise accordingly. After v0.6.0 the declaration also closes caller sets for
+  the proofs about the value a caller passes, which clears part of them. The
+  checks that accept a caller because its body reads no untrusted input
+  (ENV03-C, ENV33-C, STR02-C and INT30-C to INT32-C) still credit only
+  ``static`` functions, so their share remains. On real-world code the same change is the intended reading,
   because exported and library functions do have callers the scan cannot see.
 
 Real-world
