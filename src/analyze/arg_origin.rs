@@ -21,6 +21,7 @@
 use crate::analyze::context::SummaryLookup;
 use crate::analyze::function_summary::{collect_param_names, FunctionSummary};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use tree_sitter::Node;
@@ -217,10 +218,7 @@ pub fn collect_callsite_arg_origins_from_tree(
     source: &str,
     out: &mut HashMap<String, Vec<CallSiteOrigins>>,
 ) {
-    for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else {
-            continue;
-        };
+    for child in node.child_nodes() {
         match child.kind() {
             "function_definition" => collect_in_function(&child, source, out),
             kind if crate::analyze::prescan::wraps_definitions(kind) => {
