@@ -382,7 +382,11 @@ hostap, mosquitto, sqlite, valkey) against another tree from
 one, for measuring what a change of header environment alone moves. The
 tree must be provisioned (``python3 -m bench.header_tree fetch ID``), and the
 scans land under a run id of their own (``...-hdr-ID``), never under the
-default run's.
+default run's. ``--header-tree host`` scans them against this host's own
+``/usr/include`` instead (``...-hdr-host``). Comparing the declared tree
+with the benchmark-node tree measures the whole environment change: the
+package set and the include search path differ at once (see
+:doc:`benchmark-setup`).
 
 Typical real-world workflow:
 

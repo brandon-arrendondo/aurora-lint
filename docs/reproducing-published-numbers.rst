@@ -528,10 +528,19 @@ reproducer will not guess:
    machines as they stood, and the other five do once the scan sees the
    same header packages. c-ares, multilib and libtomcrypt, which account for
    105 of the 108 keys, were not then among the packages
-   :doc:`benchmark-setup` installs; that page now installs them. The
-   versions still matter -- ``libc6-dev`` and ``libsqlite3-dev`` above -- so
-   a host on another release of its distribution reproduces the presence of
-   each package, not every key.
+   :doc:`benchmark-setup` installs.
+
+   After ``v0.6.0`` the benchmark runner stopped reading the host's headers
+   for these five corpora: it scans them against a pinned Debian header
+   tree (*Debian System Headers* in :doc:`benchmark-setup`), the same on
+   every machine. Default runs of them from then on are therefore not key
+   for key comparable with ``v0.6.0``'s. To reproduce ``v0.6.0``'s figures
+   for these five, scan against the benchmark node's exact header set
+   instead: ``python -m bench realworld-run --header-tree
+   debian12-benchmark-node-3e6c8a2b`` (fetch it first with
+   ``python3 -m bench.header_tree fetch debian12-benchmark-node-3e6c8a2b``).
+   Scanned that way with the ``v0.6.0`` binary, all five match the
+   benchmark node's run key for key.
 
 The same binary on the same checkout, run twice, gives byte-identical
 exports on every codebase checked (from ``fc9164fd`` on), with one

@@ -78,11 +78,12 @@ def cmd_realworld_run(args):
     # The runner gives such a scan its own run identity.
     if args.header_tree:
         import os
-        from bench.header_tree import HOST_TREE_ENV, tree_spec
+        from bench.header_tree import HOST, HOST_TREE_ENV, tree_spec
         try:
-            alt = tree_spec(args.header_tree)
+            alt = ({"replaces": True} if args.header_tree == HOST
+                   else tree_spec(args.header_tree))
         except KeyError as e:
-            print(f"--header-tree: {e.args[0]}")
+            print(f"--header-tree: {e.args[0]} (or 'host' for this host's own headers)")
             raise SystemExit(2)
         if not alt.get("replaces"):
             print(f"--header-tree: '{args.header_tree}' does not replace host "
@@ -1233,8 +1234,9 @@ def main():
     p_rw_run.add_argument("--header-tree", default=None, metavar="ID",
                           help="sqc only: scan the corpora that read host headers "
                                "against this tree from data/benchmark_repos.json's "
-                               "header_trees instead of their declared one; the run "
-                               "gets its own id (-hdr-ID)")
+                               "header_trees instead of their declared one, or "
+                               "against this host's own /usr/include with 'host'; "
+                               "the run gets its own id (-hdr-ID)")
     p_rw_run.set_defaults(func=cmd_realworld_run)
 
     # competitor-export

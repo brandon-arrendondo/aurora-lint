@@ -273,11 +273,16 @@ per-project subset your codebase needs:
     # x86_64 hosts only: the package exists only on amd64
     sudo apt-get install -y libc6-dev-i386
 
-The benchmark node carries every one of these except ``libnl-genl-3-dev``;
-scanning against the node's headers plus that package reproduced its hostap
-findings key for key, so the extra package moves nothing. Which of the
-others are present, not only their versions, changes findings: see *What
-another machine reproduces* in :doc:`reproducing-published-numbers`.
+The benchmark runner's aurora-lint scans of curl, hostap, mosquitto, sqlite
+and valkey do not read these: they scan against a pinned Debian header tree
+(*Debian System Headers*, below). These packages serve cppcheck and
+clang-tidy, a runner scan with ``--header-tree host``, and any scan outside
+the runner. The benchmark node carries every one of them except
+``libnl-genl-3-dev``; scanning against the node's headers plus that package
+reproduced its hostap findings key for key, so the extra package moves
+nothing. Which of the others are present, not only their versions, changes
+findings: see *What another machine reproduces* in
+:doc:`reproducing-published-numbers`.
 
 Per-project breakdown, for reference (installing the one-liner above already
 covers all of these):
@@ -305,8 +310,9 @@ covers all of these):
       libgcrypt20-dev libpcap-dev libwolfssl-dev libtomcrypt-dev
 
     # the benchmark node's multilib layout: puts sys/, bits/ and asm/ directly
-    # under /usr/include, which -I /usr/include then reaches (curl, hostap,
-    # mosquitto, sqlite, valkey). amd64 only; an arm64 host has no equivalent
+    # under /usr/include, which a host-header scan (cppcheck, clang-tidy,
+    # --header-tree host) then reaches. amd64 only; an arm64 host has no
+    # equivalent
     sudo apt-get install -y libc6-dev-i386
 
 Windows SDK and CRT Headers (ventoy)
@@ -395,7 +401,21 @@ by default. ``python -m bench realworld-run --header-tree <id>`` scans the
 five corpora against it (fetch it first with
 ``python3 -m bench.header_tree fetch <id>``), under a run id of its own, to
 measure how much of a change between releases is the change of environment
-rather than of code.
+rather than of code. Read that comparison as the whole environment change,
+not one part of it: the two trees differ in their package sets *and* in how
+``<sys/...>`` and ``<bits/...>`` are found (the declared tree searches its
+multiarch directory first; the benchmark-node tree has none on the search
+path and reaches those headers through the multilib links under
+``/usr/include``, as the node itself did).
+
+``--header-tree host`` scans the five corpora against this host's own
+``/usr/include``, as the runner did before the tree existed, under a run id
+of its own (``-hdr-host``) and with ``host`` as the recorded tree. Use it
+where the tree cannot be fetched, or to see what a particular host's
+headers do; its findings are not comparable with a pinned-tree run.
+
+A run with ``--compile-commands`` also passes the compile database's own
+``-I`` paths, which are not rewritten into the tree.
 
 To re-pin, list the packages as ``PACKAGE=VERSION`` and run
 ``python3 -m bench.header_tree pin PKG=VER ...``, which prints the ``debs``

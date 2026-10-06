@@ -810,10 +810,13 @@ def _verified_header_tree(codebase: str):
         detail = ("is missing" if res["status"] == header_tree.MISSING
                   else f"has manifest hash {res['actual'][:12]}, expected "
                        f"{res['expected'][:12]}")
+        opt_out = ("\nTo scan against this host's own headers instead, pass "
+                   "--header-tree host (a run id of its own; not comparable "
+                   "with pinned-tree runs)." if spec.get("replaces") else "")
         raise FileNotFoundError(
             f"header tree {res['path']} {detail}.\n"
             f"{codebase} is scanned against pinned system headers; "
-            + header_tree.fix_hint(codebase))
+            + header_tree.fix_hint(codebase) + opt_out)
     return spec
 
 

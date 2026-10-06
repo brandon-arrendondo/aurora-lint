@@ -87,6 +87,12 @@ def trees_root(bench_root=None) -> Path:
 # --header-tree`). Only a tree that replaces the same -I prefix may stand in.
 HOST_TREE_ENV = "SQC_BENCH_HEADER_TREE"
 
+# The --header-tree value that opts out: scan against this host's own
+# /usr/include, as before pinned trees existed. Hosts differ, and a scan on
+# one must still be possible; it gets its own run id and says so in its
+# provenance, so it is never mistaken for a pinned-tree run.
+HOST = "host"
+
 
 def _repos() -> dict:
     return json.loads(REPOS_JSON.read_text())
@@ -113,6 +119,10 @@ def resolve(decl, data=None, override=None):
         return decl
     data = data or _repos()
     spec = tree_spec(decl, data)
+    if override == HOST:
+        return {"id": HOST, "host": True, "replaces": spec.get("replaces"),
+                "hashed_dirs": [], "manifest_sha256": None, "include_dirs": [],
+                "fetch": {"kind": "host"}}
     if override and override != decl:
         alt = tree_spec(override, data)
         if alt.get("replaces") != spec.get("replaces"):
@@ -168,6 +178,9 @@ def manifest_sha256(root, hashed_dirs) -> str:
 def check(spec: dict, bench_root=None) -> dict:
     """Inspect the tree `spec` declares. Returns a result dict whose 'status'
     is MISSING, MISMATCH or OK."""
+    if spec.get("host"):
+        return {"id": HOST, "path": spec.get("replaces"), "expected": None,
+                "actual": None, "status": OK}
     path = tree_path(spec, bench_root)
     res = {"id": spec["id"], "path": str(path),
            "expected": spec["manifest_sha256"], "actual": None, "status": None}
@@ -195,6 +208,8 @@ def substitute_includes(spec: dict, includes: list[str], bench_root=None) -> lis
     host. The tree's own 'include_dirs' (the multiarch directory, which a
     compiler searches before /usr/include) go in just before the first
     rewritten path. A list with nothing under the prefix comes back as is."""
+    if spec.get("host"):
+        return list(includes)
     prefix = spec["replaces"].rstrip("/")
     root = tree_path(spec, bench_root)
     out, extra_done = [], False
@@ -218,6 +233,8 @@ def substitute_includes(spec: dict, includes: list[str], bench_root=None) -> lis
 def provenance(spec: dict) -> dict:
     """What a scan records about the tree it ran against: the declaration
     minus the -I plumbing. The hash is the one the scan verified."""
+    if spec.get("host"):
+        return {"id": HOST, "host": True, "replaces": spec.get("replaces")}
     out = {"id": spec["id"], "fetch": spec["fetch"],
            "hashed_dirs": spec["hashed_dirs"],
            "manifest_sha256": spec["manifest_sha256"]}
@@ -263,15 +280,45 @@ def ar_members(data: bytes):
 
 def _within(rel: str) -> bool:
     norm = os.path.normpath(rel)
-    return not (norm.startswith("..") or os.path.isabs(norm))
+    return not (norm == ".." or norm.startswith("../") or os.path.isabs(norm))
+
+
+def _inside(dest_real: Path, path: Path) -> bool:
+    """Whether `path` lands inside `dest_real` once every symlink that
+    already exists along it is followed. A path that does not exist yet is
+    judged by its nearest existing ancestor, the part a later mkdir or
+    write would follow."""
+    probe = path
+    while not (probe.exists() or probe.is_symlink()):
+        if probe.parent == probe:
+            return False
+        probe = probe.parent
+    real = probe.resolve()
+    return real == dest_real or dest_real in real.parents
+
+
+def _prepare_parent(dest_real: Path, out: Path) -> None:
+    """Create `out`'s parent directories, refusing if any step of the way
+    resolves outside the tree (a link chain such as a -> ../.. then
+    b -> a/.. reads as inside but lands outside)."""
+    if not _inside(dest_real, out.parent):
+        raise ValueError(f"path leaves the tree through a symlink: {out}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if not _inside(dest_real, out.parent):
+        raise ValueError(f"path leaves the tree through a symlink: {out}")
 
 
 def extract_headers(deb_bytes: bytes, dest, prefix: str = "usr/include") -> int:
     """Unpack the members of a .deb's data tarball that lie under `prefix`
-    into `dest`. Returns the number of files and links written. Refuses a
-    member that would land outside `dest`, an absolute or escaping symlink,
-    and a file another package already wrote with different bytes (dpkg
-    would refuse that overlap too)."""
+    into `dest`. Returns the number of files and links written.
+
+    Every member name is normalized before it is tested against `prefix`,
+    so `usr/include/../../x` is judged as `x`. Refused: a member that would
+    land outside `dest` by name or by following a symlink already in the
+    tree, an absolute or escaping symlink target, and a file another
+    package already wrote with different bytes (dpkg would refuse that
+    overlap too). Devices, FIFOs and other special members are skipped, and
+    no mode bits are applied."""
     import io
     import tarfile
     payload = None
@@ -285,23 +332,28 @@ def extract_headers(deb_bytes: bytes, dest, prefix: str = "usr/include") -> int:
     if payload is None:
         raise ValueError("no data.tar member in .deb")
     dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    dest_real = dest.resolve()
     written = 0
     with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as tar:
         for m in tar.getmembers():
-            rel = m.name[2:] if m.name.startswith("./") else m.name
-            rel = rel.rstrip("/")
+            raw = m.name[2:] if m.name.startswith("./") else m.name
+            if os.path.isabs(raw) or not _within(raw):
+                raise ValueError(f"member escapes the tree: {m.name}")
+            rel = os.path.normpath(raw)
             if not (rel == prefix or rel.startswith(prefix + "/")):
                 continue
-            if not _within(rel):
-                raise ValueError(f"member escapes the tree: {m.name}")
             out = dest / rel
             if m.isdir():
-                out.mkdir(parents=True, exist_ok=True)
+                _prepare_parent(dest_real, out)
+                if out.is_symlink() and not _inside(dest_real, out):
+                    raise ValueError(f"path leaves the tree through a symlink: {out}")
+                out.mkdir(exist_ok=True)
             elif m.issym():
                 target = os.path.join(os.path.dirname(rel), m.linkname)
                 if os.path.isabs(m.linkname) or not _within(target):
                     raise ValueError(f"symlink leaves the tree: {m.name} -> {m.linkname}")
-                out.parent.mkdir(parents=True, exist_ok=True)
+                _prepare_parent(dest_real, out)
                 if out.is_symlink() or out.exists():
                     if out.is_symlink() and os.readlink(out) == m.linkname:
                         continue
@@ -309,11 +361,19 @@ def extract_headers(deb_bytes: bytes, dest, prefix: str = "usr/include") -> int:
                 os.symlink(m.linkname, out)
                 written += 1
             elif m.isfile() or m.islnk():
-                src = tar.extractfile(m) if m.isfile() else tar.extractfile(tar.getmember(m.linkname))
+                if m.islnk():
+                    src_name = m.linkname[2:] if m.linkname.startswith("./") else m.linkname
+                    if os.path.isabs(src_name) or not _within(src_name):
+                        raise ValueError(f"hardlink leaves the tree: {m.name} -> {m.linkname}")
+                    src = tar.extractfile(tar.getmember(m.linkname))
+                else:
+                    src = tar.extractfile(m)
                 body = src.read()
-                out.parent.mkdir(parents=True, exist_ok=True)
-                if out.exists() or out.is_symlink():
-                    if out.is_file() and not out.is_symlink() and out.read_bytes() == body:
+                _prepare_parent(dest_real, out)
+                if out.is_symlink():
+                    raise ValueError(f"two packages provide {rel} differently")
+                if out.exists():
+                    if out.is_file() and out.read_bytes() == body:
                         continue
                     raise ValueError(f"two packages provide {rel} differently")
                 out.write_bytes(body)
@@ -324,13 +384,16 @@ def extract_headers(deb_bytes: bytes, dest, prefix: str = "usr/include") -> int:
 def _download(url: str, dest: Path) -> None:
     import urllib.request
     tmp = dest.with_name(dest.name + ".part")
-    with urllib.request.urlopen(url, timeout=120) as resp, open(tmp, "wb") as fh:
-        while True:
-            chunk = resp.read(1 << 20)
-            if not chunk:
-                break
-            fh.write(chunk)
-    tmp.replace(dest)
+    try:
+        with urllib.request.urlopen(url, timeout=120) as resp, open(tmp, "wb") as fh:
+            while True:
+                chunk = resp.read(1 << 20)
+                if not chunk:
+                    break
+                fh.write(chunk)
+        tmp.replace(dest)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def fetch(spec: dict, bench_root=None, log=print) -> dict:

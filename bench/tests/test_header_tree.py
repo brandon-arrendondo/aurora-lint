@@ -175,6 +175,31 @@ def _ar_member(name: str, body: bytes) -> bytes:
     return hdr + body + (b"\n" if len(body) % 2 else b"")
 
 
+def _deb_members(members: list, compression: str = "xz") -> bytes:
+    """A .deb from an ordered list of (kind, name, payload) members, kind
+    one of 'file' (payload bytes), 'sym' (payload target), 'hard' (payload
+    the ./-prefixed name of an earlier member) or 'dir'. Names are written
+    exactly as given, so a test can craft ../ names."""
+    import io
+    import tarfile
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode=f"w:{compression}") as tar:
+        for kind, name, payload in members:
+            ti = tarfile.TarInfo(name)
+            if kind == "file":
+                ti.size = len(payload)
+                tar.addfile(ti, io.BytesIO(payload))
+                continue
+            ti.type = {"sym": tarfile.SYMTYPE, "hard": tarfile.LNKTYPE,
+                       "dir": tarfile.DIRTYPE}[kind]
+            if kind != "dir":
+                ti.linkname = payload
+            tar.addfile(ti)
+    return (b"!<arch>\n" + _ar_member("debian-binary", b"2.0\n")
+            + _ar_member("control.tar.xz", b"")
+            + _ar_member(f"data.tar.{compression}", buf.getvalue()))
+
+
 def _deb(files: dict, links: dict | None = None, compression: str = "xz") -> bytes:
     """A minimal .deb: an ar archive whose data.tar.<compression> holds
     `files` ({path: bytes}) and `links` ({path: target}) as ./-prefixed
@@ -199,8 +224,11 @@ def _deb(files: dict, links: dict | None = None, compression: str = "xz") -> byt
 
 class TestExtractHeaders(unittest.TestCase):
     def setUp(self):
+        # dest sits one level down, so a member that escapes it lands in a
+        # directory this test owns and can check, never in the shared /tmp.
         self._tmp = tempfile.TemporaryDirectory()
-        self.dest = Path(self._tmp.name)
+        self.dest = Path(self._tmp.name) / "tree"
+        self.dest.mkdir()
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -241,6 +269,40 @@ class TestExtractHeaders(unittest.TestCase):
         header_tree.extract_headers(_deb({"usr/include/g.h": b"g\n"}, compression="gz"),
                                     self.dest)
         self.assertTrue((self.dest / "usr/include/g.h").is_file())
+
+    def test_a_symlink_chain_that_resolves_outside_is_refused(self):
+        # a -> ../.. reads as inside (usr/include/../.. is the tree root);
+        # b -> a/.. reads as inside too, but through a it resolves to the
+        # tree's parent, so a file under b would land outside the tree.
+        with self.assertRaises(ValueError):
+            header_tree.extract_headers(_deb_members([
+                ("dir", "./usr/include", None),
+                ("sym", "./usr/include/a", "../.."),
+                ("sym", "./usr/include/b", "a/.."),
+                ("file", "./usr/include/b/x", b"x\n")]), self.dest)
+        self.assertEqual(sorted(p.name for p in self.dest.parent.iterdir()), ["tree"])
+
+    def test_member_names_are_normalized_before_the_prefix_test(self):
+        # usr/include/../../x is x: outside the prefix, so it is never written.
+        n = header_tree.extract_headers(_deb_members([
+            ("file", "./usr/include/../../x", b"x\n"),
+            ("file", "./usr/include/ok.h", b"ok\n")]), self.dest)
+        self.assertEqual(n, 1)
+        self.assertFalse((self.dest / "x").exists())
+        self.assertEqual(sorted(p.name for p in self.dest.parent.iterdir()), ["tree"])
+
+    def test_a_member_climbing_out_of_the_archive_is_refused(self):
+        with self.assertRaises(ValueError):
+            header_tree.extract_headers(_deb_members([
+                ("file", "./../usr/include/x.h", b"x\n")]), self.dest)
+
+    def test_a_hardlink_is_unpacked_as_a_copy(self):
+        header_tree.extract_headers(_deb_members([
+            ("file", "./usr/include/a.h", b"a\n"),
+            ("hard", "./usr/include/b.h", "./usr/include/a.h")]), self.dest)
+        b = self.dest / "usr/include/b.h"
+        self.assertFalse(b.is_symlink())
+        self.assertEqual(b.read_bytes(), b"a\n")
 
     def test_not_a_deb_is_refused(self):
         with self.assertRaises(ValueError):
@@ -295,6 +357,13 @@ class TestFetchDebs(unittest.TestCase):
             header_tree.fetch(self.spec, self.bench, log=lambda m: None)
         self.assertFalse((self.bench / "header-trees/deb-test").exists())
 
+    def test_a_failed_download_leaves_no_part_file(self):
+        missing = self.tmp / "gone_1.0_amd64.deb"
+        with self.assertRaises(OSError):
+            header_tree._download(missing.as_uri(), self.tmp / "out.deb")
+        self.assertFalse((self.tmp / "out.deb.part").exists())
+        self.assertFalse((self.tmp / "out.deb").exists())
+
     def test_only_debs_trees_are_fetched(self):
         with self.assertRaises(ValueError):
             header_tree.fetch(_spec("x", "0" * 64), self.bench, log=lambda m: None)
@@ -319,6 +388,15 @@ class TestSharedTrees(unittest.TestCase):
     def test_an_unknown_tree_is_refused(self):
         with self.assertRaises(KeyError):
             header_tree.resolve("nope", self.DATA)
+
+    def test_host_opts_out_to_the_hosts_own_headers(self):
+        spec = header_tree.resolve("host-a", self.DATA, header_tree.HOST)
+        self.assertEqual(spec["id"], header_tree.HOST)
+        self.assertEqual(header_tree.check(spec)["status"], header_tree.OK)
+        includes = ["-I", "/usr/include", "-I", "/usr/include/libnl3"]
+        self.assertEqual(header_tree.substitute_includes(spec, includes), includes)
+        self.assertEqual(header_tree.provenance(spec),
+                         {"id": "host", "host": True, "replaces": "/usr/include"})
 
     def test_an_inline_spec_is_never_overridden(self):
         inline = _spec("ventoy-tree", "0" * 64)
