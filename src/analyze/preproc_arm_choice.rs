@@ -224,16 +224,17 @@ enum Tok {
 fn tokenize(s: &str) -> Option<Vec<Tok>> {
     const OPS: &[&str] = &["&&", "||", "==", "!=", "<=", ">=", "!", "<", ">", "(", ")"];
     let mut out = Vec::new();
-    let b = s.as_bytes();
+    // Walk by character: `i` is always on a character boundary, so a
+    // non-ASCII character in a damaged condition cannot split a slice.
     let mut i = 0;
-    while i < b.len() {
-        let c = b[i] as char;
+    while i < s.len() {
+        let c = s[i..].chars().next()?;
         if c.is_whitespace() {
-            i += 1;
+            i += c.len_utf8();
         } else if c.is_ascii_digit() {
             let start = i;
-            while i < b.len() && (b[i] as char).is_ascii_alphanumeric() {
-                i += 1;
+            while let Some(d) = s[i..].chars().next().filter(char::is_ascii_alphanumeric) {
+                i += d.len_utf8();
             }
             let lit = s[start..i].trim_end_matches(['u', 'U', 'l', 'L']);
             let n = if let Some(hex) = lit.strip_prefix("0x").or_else(|| lit.strip_prefix("0X")) {
@@ -244,8 +245,12 @@ fn tokenize(s: &str) -> Option<Vec<Tok>> {
             out.push(Tok::Num(n));
         } else if c.is_alphabetic() || c == '_' {
             let start = i;
-            while i < b.len() && ((b[i] as char).is_alphanumeric() || b[i] == b'_') {
-                i += 1;
+            while let Some(d) = s[i..]
+                .chars()
+                .next()
+                .filter(|d| d.is_alphanumeric() || *d == '_')
+            {
+                i += d.len_utf8();
             }
             out.push(Tok::Name(s[start..i].to_string()));
         } else {

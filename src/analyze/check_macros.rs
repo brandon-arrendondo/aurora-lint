@@ -842,7 +842,9 @@ fn split_top_level_binary<'a>(s: &'a str, op: &str) -> Option<(&'a str, &'a str)
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => depth -= 1,
             b',' | b'?' | b';' if depth == 0 => return None,
-            _ if depth == 0 && at.is_none() && s[i..].starts_with(op) => at = Some(i),
+            _ if depth == 0 && at.is_none() && s.as_bytes()[i..].starts_with(op.as_bytes()) => {
+                at = Some(i)
+            }
             _ => {}
         }
     }
@@ -862,7 +864,7 @@ fn split_depth0_contains(s: &str, needle: &str) -> bool {
         match b {
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => depth -= 1,
-            _ if depth == 0 && s[i..].starts_with(needle) => return true,
+            _ if depth == 0 && s.as_bytes()[i..].starts_with(needle.as_bytes()) => return true,
             _ => {}
         }
     }
@@ -876,7 +878,7 @@ fn contains_top_level_keyword(s: &str, kw: &str) -> bool {
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => depth -= 1,
             _ if depth == 0
-                && s[i..].starts_with(kw)
+                && s.as_bytes()[i..].starts_with(kw.as_bytes())
                 && (i == 0 || !is_ident_byte_at(s, i - 1))
                 && !is_ident_byte_at(s, i + kw.len()) =>
             {

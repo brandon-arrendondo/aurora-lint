@@ -227,7 +227,7 @@ fn terminating_semicolon_to_blank(
         while j > 0 && bytes[j - 1].is_ascii_whitespace() {
             j -= 1;
         }
-        if j >= 2 && &source[j - 2..j] == "*/" {
+        if j >= 2 && &bytes[j - 2..j] == b"*/" {
             match source[..j - 2].rfind("/*") {
                 Some(open) => {
                     j = open;

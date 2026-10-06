@@ -1009,9 +1009,9 @@ pub fn next_code_offset(source: &str, from: usize) -> Option<usize> {
         let c = bytes[i];
         if c.is_ascii_whitespace() {
             i += 1;
-        } else if source[i..].starts_with("//") {
+        } else if bytes[i..].starts_with(b"//") {
             i = source[i..].find('\n').map_or(bytes.len(), |n| i + n);
-        } else if source[i..].starts_with("/*") {
+        } else if bytes[i..].starts_with(b"/*") {
             i = source[i + 2..]
                 .find("*/")
                 .map_or(bytes.len(), |n| i + 2 + n + 2);
@@ -1032,11 +1032,11 @@ fn end_of_directive(source: &str, start: usize) -> usize {
     let bytes = source.as_bytes();
     let mut i = start;
     while i < bytes.len() {
-        if source[i..].starts_with("/*") {
+        if bytes[i..].starts_with(b"/*") {
             i = source[i + 2..]
                 .find("*/")
                 .map_or(bytes.len(), |n| i + 2 + n + 2);
-        } else if source[i..].starts_with("//") {
+        } else if bytes[i..].starts_with(b"//") {
             return source[i..].find('\n').map_or(bytes.len(), |n| i + n);
         } else if bytes[i] == b'\n' {
             if source[start..i].trim_end().ends_with('\\') {
