@@ -5432,3 +5432,47 @@ fn an_excluded_binary_is_not_reported() {
     assert_eq!(code, 0, "{stderr}");
     assert!(!stderr.contains("input skipped"), "{stderr}");
 }
+
+/// A file's analysis time grows with its length, not its square, when most of
+/// it is comments. Every comment is a child of the translation unit, and
+/// tree-sitter answers `Node::child(i)` by walking from the first child, so a
+/// pass that indexes the root's children one by one is quadratic in them. An
+/// 8x longer file must cost about 8x, not about 64x: the ratio is checked
+/// rather than a time, so a slow or loaded machine does not fail it.
+#[test]
+fn comment_padding_costs_linear_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let padded = |kib: usize| {
+        let head = "int f(int x)\n{\n    return x + 1;\n}\n";
+        let line = "/* padding padding padding padding padding padding padding */\n";
+        let path = dir.path().join(format!("pad{kib}.c"));
+        std::fs::write(
+            &path,
+            head.to_string() + &line.repeat((kib * 1024 - head.len()) / line.len()),
+        )
+        .unwrap();
+        path
+    };
+    let (small, large) = (padded(32), padded(256));
+    let report = dir.path().join("report.json");
+    let time = |path: &PathBuf| {
+        let started = std::time::Instant::now();
+        let (code, _, stderr) = run_aurora_lint(&[
+            path.to_str().unwrap(),
+            "--jobs",
+            "1",
+            "--export",
+            report.to_str().unwrap(),
+        ]);
+        assert!(code == 0 || code == 1, "exit {code}: {stderr}");
+        started.elapsed().as_secs_f64()
+    };
+    // The faster of two runs, so one fast outlier cannot inflate the ratio.
+    let small_secs = time(&small).min(time(&small));
+    let large_secs = time(&large);
+    let ratio = large_secs / small_secs;
+    assert!(
+        ratio < 20.0,
+        "8x the comment padding took {ratio:.1}x the time ({small_secs:.2} s -> {large_secs:.2} s)"
+    );
+}

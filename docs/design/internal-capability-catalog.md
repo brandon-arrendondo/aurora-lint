@@ -387,6 +387,22 @@ builds the report rows for a header found only by ignoring case.
 > build a `ParentMap` once per file and use its O(1)-per-step ancestor walk.
 > A bounded walk (a fixed few levels) is fine.
 
+> **Indexing children is not free either: iterate with a cursor.**
+> `Node::child(i)` and `named_child(i)` walk from the first child, so
+> `for i in 0..n.child_count() { n.child(i) }` costs O(k²) in `n`'s child
+> count. Write `for c in n.child_nodes()` (or `named_child_nodes()`, from
+> `utility::cert_c::node_children::NodeChildren`), and for a DFS that pushes
+> children in reverse, collect them once and reverse. It indexes a node with
+> few children and takes a cursor only for a wide one: `walk()` allocates,
+> and on the small nodes most loops visit a cursor per loop costs more than
+> the indexing it replaces.
+> Every top-level comment and declaration is a child of the translation unit,
+> so an index loop over the root is quadratic in the file's length: 2 MiB of
+> comments took about 8 minutes under the default rules before the prescan,
+> `const_eval` and the hottest rules were converted. A big translation unit
+> or a long block hits the same cost. Index only for a fixed position
+> (`child(0)`, `child(1)`) or a search from the end (`rfind`).
+
 ### `src/utility/cert_c/data_model.rs`
 
 The integer widths a scan credits (`[environment] data_model`, ADR-0011). **Use it for every width, limit or `sizeof` of an integer type; never write a width down.** Under `DataModel::Iso`, the default, only ISO C's guarantees are known; `Ilp32`, `Lp64` and `Llp64` are declared targets.
