@@ -3,6 +3,8 @@
 #include "defining.h"
 #include "broken.h"
 #include "notwrapper.h"
+#include "conflicting.h"
+#include "unicode.h"
 
 /* extern form: pointer arithmetic on a macro-declared array. */
 char *advance(size_t scanned)
@@ -32,4 +34,16 @@ size_t unclosed(size_t junk, size_t n)
 size_t not_declared(size_t reg, size_t n)
 {
     return reg + n;
+}
+
+/* Arms disagree: not known to be an array, so the sum is reported. */
+size_t arms_disagree(size_t n)
+{
+    return both + n;
+}
+
+/* Declared after non-ASCII text: still an array. */
+char *after_unicode(size_t n)
+{
+    return label + n;
 }

@@ -5409,15 +5409,17 @@ fn wrapper_invocation(
     let Some(text) = source.get(node.start_byte()..) else {
         return Vec::new();
     };
-    let chars: Vec<char> = text.chars().take(INVOCATION_WINDOW).collect();
-    let name_len = chars
-        .iter()
-        .take_while(|c| c.is_ascii_alphanumeric() || **c == '_')
-        .count();
-    let name: String = chars.iter().take(name_len).collect();
+    // The leading identifier is read off the `&str` itself, so a node that
+    // does not begin with a wrapper's name never pays for the window.
+    let name: String = text
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
     let Some(defs) = wrappers.get(name.as_str()) else {
         return Vec::new();
     };
+    let name_len = name.len();
+    let chars: Vec<char> = text.chars().take(INVOCATION_WINDOW).collect();
     let Some(open) = chars
         .iter()
         .skip(name_len)

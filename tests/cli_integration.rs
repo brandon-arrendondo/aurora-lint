@@ -5599,20 +5599,28 @@ fn crossfile_wrapper_macro_declared_array_plus_integer_is_not_an_unsigned_sum() 
         .filter_map(|v| v["line"].as_u64())
         .collect();
     assert!(
-        !lines.contains(&10),
+        !lines.contains(&12),
         "cmd is an array declared through GLOBAL0: {lines:?}"
     );
-    assert!(lines.contains(&16), "total is an integer: {lines:?}");
+    assert!(lines.contains(&18), "total is an integer: {lines:?}");
     assert!(
-        !lines.contains(&22),
+        !lines.contains(&24),
         "wd is an array declared through DEFINE: {lines:?}"
     );
     assert!(
-        lines.contains(&28),
+        lines.contains(&30),
         "a malformed invocation declares nothing: {lines:?}"
     );
     assert!(
-        lines.contains(&34),
+        lines.contains(&36),
         "a macro that is no wrapper declares nothing: {lines:?}"
+    );
+    assert!(
+        lines.contains(&42),
+        "arms that disagree do not make `both` an array: {lines:?}"
+    );
+    assert!(
+        !lines.contains(&48),
+        "label follows non-ASCII text and is an array: {lines:?}"
     );
 }
