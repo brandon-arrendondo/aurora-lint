@@ -101,6 +101,17 @@ impl HeaderLookup {
         self.mode
     }
 
+    /// `name` in the form this rule compares: as written under exact
+    /// matching, case-folded (and with cl's `\\` read as `/`) when the
+    /// toolchain ignores case. Two names are the same file exactly when
+    /// their keys are equal.
+    pub fn key(&self, name: &str) -> String {
+        match self.mode {
+            IncludeNames::Exact => name.to_string(),
+            IncludeNames::CaseInsensitive => fold(&name.replace('\\', "/")),
+        }
+    }
+
     /// Whether two file names written in `#include`s or on disk name the same
     /// file under this rule.
     pub fn same_name(&self, a: &str, b: &str) -> bool {

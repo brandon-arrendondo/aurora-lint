@@ -7272,6 +7272,7 @@ pub fn resolve_includes(
     // *project* header. Computed once: the check is filesystem-
     // touching and the answer is the same for every include.
     let project_search_paths = project_local_search_paths(include_paths, project_roots);
+    let mut project_files = ProjectFiles::default();
     let mut origins = MacroOrigins::new(project_roots, context);
 
     let mut parser = CParser::new()?;
@@ -7481,6 +7482,9 @@ pub fn resolve_includes(
             let includer_outside = source_dir.as_deref().is_some_and(|dir| {
                 origins.is_outside(&dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()))
             });
+            // A header the project does have, just not on this run's search
+            // path, isn't generated either: wpa_supplicant/*.c includes
+            // "utils/common.h", which the real build finds through -I src.
             let project_header = !in_dead_arm
                 && !includer_outside
                 && is_missing_project_header(
@@ -7488,7 +7492,8 @@ pub fn resolve_includes(
                     source_dir.as_deref(),
                     &project_search_paths,
                     lookup,
-                );
+                )
+                && !project_files.has_file_ending_in(&include_path, project_roots, lookup);
             context
                 .macro_gaps
                 .push(crate::analyze::macro_gaps::unresolved_include(
@@ -7735,6 +7740,45 @@ pub(crate) fn find_header(
     include_search_paths
         .iter()
         .find_map(|search_dir| lookup.find_in(Path::new(search_dir), include_path))
+}
+
+/// Every file under the project roots, keyed by its root-relative path under
+/// a [`HeaderLookup`]'s rule, listed the first time it is asked for. Only an
+/// include that already looks like a missing project header asks, so most
+/// scans never walk the tree.
+#[derive(Default)]
+struct ProjectFiles {
+    keys: Option<Vec<String>>,
+}
+
+impl ProjectFiles {
+    /// Whether some file under `project_roots` has a relative path ending in
+    /// `include_path`, whole components only: `utils/common.h` matches
+    /// `src/utils/common.h` but not `src/myutils/common.h`.
+    fn has_file_ending_in(
+        &mut self,
+        include_path: &str,
+        project_roots: &[String],
+        lookup: &HeaderLookup,
+    ) -> bool {
+        let keys = self.keys.get_or_insert_with(|| {
+            let mut keys = Vec::new();
+            for root in project_roots {
+                for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+                    if !entry.file_type().is_file() {
+                        continue;
+                    }
+                    if let Ok(rel) = entry.path().strip_prefix(root) {
+                        keys.push(lookup.key(&rel.to_string_lossy().replace('\\', "/")));
+                    }
+                }
+            }
+            keys
+        });
+        let wanted = lookup.key(include_path);
+        let suffix = format!("/{wanted}");
+        keys.iter().any(|k| *k == wanted || k.ends_with(&suffix))
+    }
 }
 
 /// The subset of `include_paths` that lie inside the project being scanned.
@@ -9742,6 +9786,23 @@ void caller(char *other) {
                 ctx.unresolved_project_headers
             );
         }
+    }
+
+    #[test]
+    fn a_project_file_is_matched_by_whole_trailing_components_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src/utils")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("lib/myutils")).unwrap();
+        std::fs::write(tmp.path().join("src/utils/common.h"), "").unwrap();
+        std::fs::write(tmp.path().join("lib/myutils/other.h"), "").unwrap();
+        let roots = [tmp.path().to_string_lossy().to_string()];
+        let lookup = HeaderLookup::default();
+        let mut files = ProjectFiles::default();
+        assert!(files.has_file_ending_in("utils/common.h", &roots, &lookup));
+        assert!(files.has_file_ending_in("src/utils/common.h", &roots, &lookup));
+        assert!(!files.has_file_ending_in("tils/common.h", &roots, &lookup));
+        assert!(!files.has_file_ending_in("utils/other.h", &roots, &lookup));
+        assert!(!files.has_file_ending_in("object/structures_gen.h", &roots, &lookup));
     }
 
     #[test]

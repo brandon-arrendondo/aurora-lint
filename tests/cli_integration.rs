@@ -1941,6 +1941,17 @@ fn an_include_in_a_file_proven_dead_arm_does_not_switch_dcl31_off() {
 }
 
 #[test]
+fn a_project_header_off_the_search_path_does_not_switch_dcl31_off() {
+    // hostap, reduced: wpa/main.c includes "utils/common.h", which the real
+    // build finds through -I src. wpa/utils/ exists too, so the include looks
+    // like a missing project header, but the project has the file: the
+    // search path is incomplete, nothing was generated.
+    let (lines, stderr) = dcl31_offswitch_scan("header_elsewhere", "header_elsewhere/wpa");
+    assert_eq!(lines, vec![5], "never_declared() should be flagged");
+    assert!(!stderr.contains("DCL31-C"), "{stderr}");
+}
+
+#[test]
 fn a_missing_generated_project_header_switches_dcl31_off_and_says_so() {
     // seL4's layout: the project has include/object/ but structures_gen.h is
     // emitted at build time, so every declaration in it is invisible and the
