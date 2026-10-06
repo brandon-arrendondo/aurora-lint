@@ -85,8 +85,22 @@
           - libgcrypt20-dev
           - libpcap-dev
           - libwolfssl-dev
+          - libtomcrypt-dev
+          - libc-ares-dev
         state: present
         update_cache: true
+      tags: [headers]
+
+    # Multilib: puts sys/, bits/ and asm/ directly under /usr/include, as on
+    # the benchmark node. Which header packages are present changes findings
+    # (docs/reproducing-published-numbers.rst). The package exists only on
+    # amd64.
+    - name: Multilib libc headers (x86_64 only)
+      become: true
+      apt:
+        name: libc6-dev-i386
+        state: present
+      when: ansible_architecture == "x86_64"
       tags: [headers]
 
     - name: Check whether the Juliet test suite is already in place

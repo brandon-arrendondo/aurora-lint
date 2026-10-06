@@ -526,12 +526,12 @@ reproducer will not guess:
    keys, and the other benchmark-node library headers without it supply
    none. So seven of twelve projects reproduced key for key on both
    machines as they stood, and the other five do once the scan sees the
-   same header packages. None of c-ares, multilib or libtomcrypt, which
-   account for 105 of the 108 keys, is among the packages :doc:`benchmark-setup` installs, so following that
-   page alone does not rebuild the benchmark node's header set. To
-   reproduce the benchmark node's figures, also install ``libc-ares-dev``,
-   ``libc6-dev-i386`` (or ``gcc-multilib``) and ``libtomcrypt-dev``; the
-   versions of ``libc6-dev`` and ``libsqlite3-dev`` matter as well.
+   same header packages. c-ares, multilib and libtomcrypt, which account for
+   105 of the 108 keys, were not then among the packages
+   :doc:`benchmark-setup` installs; that page now installs them. The
+   versions still matter -- ``libc6-dev`` and ``libsqlite3-dev`` above -- so
+   a host on another release of its distribution reproduces the presence of
+   each package, not every key.
 
 The same binary on the same checkout, run twice, gives byte-identical
 exports on every codebase checked (from ``fc9164fd`` on), with one
@@ -543,10 +543,10 @@ roughly a third of runs of one binary on one checkout, even single-file at
 walk-order effect, fixed in the first commit after the ``v0.5.2``
 baseline and worth one key. Otherwise the variation is
 between checkouts, not between runs. So the inputs a SHA does not name are
-the header environment -- :doc:`benchmark-setup` lists the packages the
-benchmark node is provisioned with, but the node carries header packages
-that list omits and lacks one it includes (see the ``v0.6.0``
-re-measurement above) -- and, before ``4ac5710f``, for codebases with
+the header environment -- :doc:`benchmark-setup` lists the header
+packages the benchmark node carries (plus one that moves nothing), but not
+their versions (see the
+``v0.6.0`` re-measurement above) -- and, before ``4ac5710f``, for codebases with
 multiply-defined names, the checkout's directory order. A published
 figure's precision and recall do not hinge on either; a claim about an
 exact finding count does, and a key-level diff against a maintainer run at

@@ -267,9 +267,17 @@ per-project subset your codebase needs:
 .. code-block:: bash
 
     sudo apt-get install -y libssl-dev libcjson-dev zlib1g-dev libcunit1-dev \
-      libsqlite3-dev libmbedtls-dev libgnutls28-dev libgsasl-dev tcl-dev \
+      libsqlite3-dev libmbedtls-dev libgnutls28-dev libc-ares-dev tcl-dev \
       libnl-3-dev libnl-genl-3-dev libdbus-1-dev libgcrypt20-dev libpcap-dev \
-      libwolfssl-dev
+      libwolfssl-dev libtomcrypt-dev
+    # x86_64 hosts only: the package exists only on amd64
+    sudo apt-get install -y libc6-dev-i386
+
+The benchmark node carries every one of these except ``libnl-genl-3-dev``;
+scanning against the node's headers plus that package reproduced its hostap
+findings key for key, so the extra package moves nothing. Which of the
+others are present, not only their versions, changes findings: see *What
+another machine reproduces* in :doc:`reproducing-published-numbers`.
 
 Per-project breakdown, for reference (installing the one-liner above already
 covers all of these):
@@ -283,9 +291,10 @@ covers all of these):
     # mosquitto
     sudo apt-get install -y libcunit1-dev libsqlite3-dev
 
-    # curl TLS and SASL backends (curl's DCL31-C results also depend on
-    # whether /usr/include/sys exists; see reproducing-published-numbers)
-    sudo apt-get install -y libmbedtls-dev libgnutls28-dev libgsasl-dev
+    # curl TLS backends and the c-ares resolver (curl's DCL31-C results also
+    # depend on whether /usr/include/sys exists; see
+    # reproducing-published-numbers)
+    sudo apt-get install -y libmbedtls-dev libgnutls28-dev libc-ares-dev
 
     # sqlite test infrastructure
     sudo apt-get install -y tcl-dev
@@ -293,7 +302,12 @@ covers all of these):
     # hostap
     sudo apt-get install -y \
       libnl-3-dev libnl-genl-3-dev libdbus-1-dev \
-      libgcrypt20-dev libpcap-dev libwolfssl-dev
+      libgcrypt20-dev libpcap-dev libwolfssl-dev libtomcrypt-dev
+
+    # the benchmark node's multilib layout: puts sys/, bits/ and asm/ directly
+    # under /usr/include, which -I /usr/include then reaches (curl, hostap,
+    # mosquitto, sqlite, valkey). amd64 only; an arm64 host has no equivalent
+    sudo apt-get install -y libc6-dev-i386
 
 Per-Project Include Paths
 ~~~~~~~~~~~~~~~~~~~~~~~~~
