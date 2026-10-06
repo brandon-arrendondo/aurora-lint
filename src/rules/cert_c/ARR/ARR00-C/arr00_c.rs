@@ -2364,11 +2364,8 @@ fn find_array_size(array_name: &str, preceding_text: &str) -> Option<usize> {
                         ];
 
                         // Look at the last ~50 characters before the array name
-                        let check_range = if before_name.len() > 50 {
-                            &before_name[before_name.len() - 50..]
-                        } else {
-                            before_name
-                        };
+                        let check_range =
+                            crate::utility::cert_c::text_bounds::suffix_at_most(before_name, 50);
 
                         // If we find a type keyword nearby, it's likely a declaration
                         if type_keywords.iter().any(|&kw| check_range.contains(kw)) {

@@ -404,11 +404,7 @@ impl Fio02C {
             message: format!(
                 "File operation '{}' uses tainted path '{}' without canonicalization. Use realpath() or canonicalize_file_name() before file operations.",
                 func_name,
-                if arg_text.len() > 40 {
-                    format!("{}...", &arg_text[..40])
-                } else {
-                    arg_text.to_string()
-                }
+                crate::utility::cert_c::text_bounds::preview(&arg_text, 40)
             ),
             file_path: String::new(),
             line: start_point.row + 1,

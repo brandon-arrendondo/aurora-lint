@@ -91,17 +91,14 @@ impl Pre08C {
         Some(basename.to_string())
     }
 
-    /// Get the significant portion of a filename (first 8 chars, case-insensitive)
+    /// Get the significant portion of a filename (first 8 bytes, case-insensitive)
     fn get_significant_name(&self, filename: &str) -> String {
         // Remove extension for comparison
         let without_ext = filename.split('.').next().unwrap_or(filename);
 
-        // Take first 8 characters and convert to lowercase for case-insensitive comparison
-        let significant = if without_ext.len() > 8 {
-            &without_ext[..8]
-        } else {
-            without_ext
-        };
+        // Take the first 8 bytes (cut back to a character boundary) and convert to
+        // lowercase for case-insensitive comparison
+        let significant = crate::utility::cert_c::text_bounds::prefix_at_most(without_ext, 8);
 
         significant.to_lowercase()
     }

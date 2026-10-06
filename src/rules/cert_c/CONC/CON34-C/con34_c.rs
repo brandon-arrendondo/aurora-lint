@@ -573,16 +573,8 @@ impl Con34C {
         // Check the source text before this compound statement for #pragma omp parallel
         if start_byte > 0 {
             // Look back up to 200 bytes for the pragma; snap to char boundary
-            let start_search = if start_byte > 200 {
-                let mut idx = start_byte - 200;
-                while !source.is_char_boundary(idx) {
-                    idx += 1;
-                }
-                idx
-            } else {
-                0
-            };
-            let preceding_text = &source[start_search..start_byte];
+            let preceding_text =
+                crate::utility::cert_c::text_bounds::suffix_at_most(&source[..start_byte], 200);
 
             // Check if this section contains an OpenMP parallel pragma without private clause
             if preceding_text.contains("#pragma omp parallel")

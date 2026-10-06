@@ -1530,6 +1530,29 @@ macro-synthesized ones).
    the rule still works correctly on a single-file run with no `-d`
    prescan, just with reduced (single-file) recall.
 
+## Text slicing on character boundaries
+
+### `src/utility/cert_c/text_bounds.rs`
+**Problem solved:** the scanner also reads code that does not compile, so a
+multibyte character (a UTF-8 identifier, a comment, a stray `€` where a
+token belongs, or text swallowed by a missing quote or `*/`) can sit at any
+byte position, including the one a fixed `[..40]` cut or a `pos + 1` step
+lands on. Slicing a `str` inside a character panics, and one panic ends the
+whole scan with no output. **Use these before writing a `[..N]` preview, a
+`[len - N..]` look-back, or a byte cursor that steps through source text; a
+search for a closing delimiter starts after the opening one
+(`s[open + 1..].find(')')`), never from a second search of the whole string.**
+
+| Function | Signature | Description |
+|---|---|---|
+| `prefix_at_most` / `suffix_at_most` | `(s: &str, max_bytes: usize) -> &str` | The longest prefix (suffix) of at most `max_bytes` bytes that ends (starts) on a character boundary. For a fixed-size window over source text. |
+| `preview` | `(s: &str, max_bytes: usize) -> String` | `s` cut on a boundary with `...` appended when something was cut, for a message. |
+| `next_boundary` | `(s: &str, index: usize) -> usize` | The first character boundary at or after `index`: advance a byte cursor without landing inside a character. |
+| `slice` | `(s: &str, start: usize, end: usize) -> Option<&str>` | `s[start..end]`, or `None` for a reversed, out-of-range or character-splitting range. |
+
+For byte-level scanning that never needs a `&str` slice, compare bytes
+(`s.as_bytes()[i..].starts_with(b"/*")`), which cannot panic on a boundary.
+
 ## Two files flagged as legacy, not exemplars
 
 `src/utility/cert_c/size_analysis.rs` and

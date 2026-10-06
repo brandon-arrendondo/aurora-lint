@@ -64,4 +64,7 @@ pub mod signal_handlers;
 pub mod size_analysis;
 /// Lookup of known C standard library / POSIX / Windows socket function names.
 pub mod std_functions;
+/// Slicing and truncating source text on character boundaries, so a
+/// multibyte character at the cut cannot panic the scan.
+pub mod text_bounds;
 pub mod variable_analysis;

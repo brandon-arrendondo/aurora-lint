@@ -170,11 +170,7 @@ impl Exp46C {
                 "Do not use bitwise operator '{}' with Boolean-like {} operand '{}'. Did you mean '{}'?",
                 operator,
                 operand_side,
-                if operand_text.len() > 40 {
-                    format!("{}...", &operand_text[..40])
-                } else {
-                    operand_text
-                },
+                crate::utility::cert_c::text_bounds::preview(&operand_text, 40),
                 suggested_operator
             ),
             file_path: String::new(),
@@ -184,11 +180,7 @@ impl Exp46C {
                 "Replace bitwise operator '{}' with logical operator '{}' when working with Boolean values. Expression: {}",
                 operator,
                 suggested_operator,
-                if expr_text.len() > 60 {
-                    format!("{}...", &expr_text[..60])
-                } else {
-                    expr_text
-                }
+                crate::utility::cert_c::text_bounds::preview(&expr_text, 60)
             )),
             ..Default::default()
         });

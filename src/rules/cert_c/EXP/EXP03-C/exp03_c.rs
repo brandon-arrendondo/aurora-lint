@@ -240,11 +240,7 @@ impl Exp03C {
             severity: Severity::High,
             message: format!(
                 "Do not manually calculate struct size by adding member sizes: '{}'. Use sizeof(struct_type) instead to account for padding.",
-                if node_text.len() > 60 {
-                    format!("{}...", &node_text[..60])
-                } else {
-                    node_text
-                }
+                crate::utility::cert_c::text_bounds::preview(&node_text, 60)
             ),
             file_path: String::new(),
             line: start_point.row + 1,

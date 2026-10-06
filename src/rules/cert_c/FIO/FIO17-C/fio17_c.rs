@@ -118,7 +118,8 @@ impl Fio17C {
 
         // Simple check: if we see buffer[...] = '\0' or similar within next 200 chars
         if remaining_source.len() > 200 {
-            let check_window = &remaining_source[..200];
+            let check_window =
+                crate::utility::cert_c::text_bounds::prefix_at_most(remaining_source, 200);
             if check_window.contains(&format!("{}[", buffer_name)) {
                 if check_window.contains("'\\0'") || check_window.contains("= 0;") {
                     return true;

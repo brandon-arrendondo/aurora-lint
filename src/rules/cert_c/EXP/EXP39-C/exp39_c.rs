@@ -637,11 +637,7 @@ impl Exp39C {
                 "Accessing memory allocated as 'struct {}' through pointer to incompatible 'struct {}': {}",
                 source_struct,
                 target_struct,
-                if stmt_text.len() > 50 {
-                    format!("{}...", &stmt_text[..50])
-                } else {
-                    stmt_text
-                }
+                crate::utility::cert_c::text_bounds::preview(&stmt_text, 50)
             ),
             file_path: String::new(),
             line: start_point.row + 1,
@@ -926,11 +922,7 @@ impl Exp39C {
                 "Do not access a '{}' object through a pointer of incompatible type '{}*': {}",
                 source_type,
                 target_type,
-                if cast_text.len() > 50 {
-                    format!("{}...", &cast_text[..50])
-                } else {
-                    cast_text
-                }
+                crate::utility::cert_c::text_bounds::preview(&cast_text, 50)
             ),
             file_path: String::new(),
             line: start_point.row + 1,
@@ -956,11 +948,7 @@ impl Exp39C {
             severity: Severity::Medium,
             message: format!(
                 "Array pointer dimension mismatch detected: {}",
-                if decl_text.len() > 60 {
-                    format!("{}...", &decl_text[..60])
-                } else {
-                    decl_text
-                }
+                crate::utility::cert_c::text_bounds::preview(&decl_text, 60)
             ),
             file_path: String::new(),
             line: start_point.row + 1,
@@ -1084,7 +1072,7 @@ impl Exp39C {
                     severity: Severity::Medium,
                     message: format!(
                         "Pointer arithmetic on struct field address with type cast assumes specific memory layout: {}",
-                        if text.len() > 60 { format!("{}...", &text[..60]) } else { text }
+                        crate::utility::cert_c::text_bounds::preview(&text, 60)
                     ),
                     file_path: String::new(),
                     line: start.row + 1,
