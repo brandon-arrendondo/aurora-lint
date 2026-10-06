@@ -1023,8 +1023,11 @@ fn is_taint_source_name(name: &str, aliases: &[String]) -> bool {
     ENV03_TAINT_SOURCE_FUNCTIONS.contains(&name) || aliases.iter().any(|a| a == name)
 }
 
-/// How many function-like macros deep [`calls_taint_source`] follows a call.
-const TAINT_MACRO_DEPTH: usize = 8;
+/// How many function-like macros deep a callee is followed: by
+/// [`calls_taint_source`], [`calls_allocator`] and [`check_never_returns`].
+const MACRO_CALL_DEPTH: usize = 8;
+
+type MacroArms = HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>;
 
 /// Whether one of `calls` (the body's `call_expression` nodes) calls a taint
 /// source, reading each callee from the AST.
@@ -1046,12 +1049,34 @@ fn calls_taint_source(
     source: &str,
     end: usize,
     aliases: &[String],
-    macro_arms: &HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>,
+    macro_arms: &MacroArms,
+) -> bool {
+    calls_matching(calls, source, end, macro_arms, &|name| {
+        is_taint_source_name(name, aliases)
+    })
+}
+
+/// Whether one of `calls` calls an allocator ([`is_allocator_name`]),
+/// directly or through a function-like macro, read from the AST as
+/// [`calls_taint_source`] reads a source. A comment or string mentioning
+/// `malloc(` is not a call, and `malloc (n)` is one.
+fn calls_allocator(calls: &[Node], source: &str, end: usize, macro_arms: &MacroArms) -> bool {
+    calls_matching(calls, source, end, macro_arms, &is_allocator_name)
+}
+
+/// Whether one of `calls` before `end` calls a function `is_target`
+/// accepts: its callee identifier ([`callee_identifier`]) does, or names a
+/// function-like macro that calls one ([`macro_calls_matching`]).
+fn calls_matching(
+    calls: &[Node],
+    source: &str,
+    end: usize,
+    macro_arms: &MacroArms,
+    is_target: &dyn Fn(&str) -> bool,
 ) -> bool {
     calls.iter().filter(|c| c.start_byte() < end).any(|call| {
         callee_identifier(call, source).is_some_and(|name| {
-            is_taint_source_name(name, aliases)
-                || macro_calls_taint_source(name, aliases, macro_arms, TAINT_MACRO_DEPTH)
+            is_target(name) || macro_calls_matching(name, macro_arms, MACRO_CALL_DEPTH, is_target)
         })
     })
 }
@@ -1068,16 +1093,16 @@ fn callee_identifier<'s>(call: &Node, source: &'s str) -> Option<&'s str> {
         .flatten()
 }
 
-/// Whether the function-like macro `name` calls a taint source in its
-/// replacement list, under any of its arms, following nested function-like
-/// macros up to `depth`. Arms rather than the expander's table: a macro that
-/// stringifies (`#_str`) cannot be expanded but still calls what it calls
-/// (hostap's `NAN_PARSE_BAND` wraps `sscanf`).
-fn macro_calls_taint_source(
+/// Whether the function-like macro `name` calls a function `is_target`
+/// accepts in its replacement list, under any of its arms, following nested
+/// function-like macros up to `depth`. Arms rather than the expander's
+/// table: a macro that stringifies (`#_str`) cannot be expanded but still
+/// calls what it calls (hostap's `NAN_PARSE_BAND` wraps `sscanf`).
+fn macro_calls_matching(
     name: &str,
-    aliases: &[String],
-    macro_arms: &HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>,
+    macro_arms: &MacroArms,
     depth: usize,
+    is_target: &dyn Fn(&str) -> bool,
 ) -> bool {
     let Some(arms) = macro_arms.get(name) else {
         return false;
@@ -1091,8 +1116,7 @@ fn macro_calls_taint_source(
             .iter()
             .filter(|callee| callee.as_str() != name)
             .any(|callee| {
-                is_taint_source_name(callee, aliases)
-                    || macro_calls_taint_source(callee, aliases, macro_arms, depth - 1)
+                is_target(callee) || macro_calls_matching(callee, macro_arms, depth - 1, is_target)
             })
     })
 }
@@ -1495,10 +1519,10 @@ fn analyze_function(
         // that boundary so this function's summary isn't polluted with the
         // swallowed sibling's content (which gets its own, correctly-scoped
         // summary via `collect_function_summaries`'s unconditional recursion).
-        // The AST-walking helpers below (check_never_returns is text-only;
-        // the rest take `body` directly) each stop at the same boundary via
-        // `is_real_nested_function_definition`, independent of this text
-        // bound, so this stays correct even if boundary detection here ever
+        // The AST-walking helpers below either take this bound too
+        // (skipping nodes that start at or after it) or stop at the same
+        // boundary via `is_real_nested_function_definition`, independent of
+        // it, so this stays correct even if boundary detection here ever
         // disagrees with theirs.
         let text_end = if body.has_error() {
             find_nested_function_boundary(&body, source).unwrap_or_else(|| body.end_byte())
@@ -1506,9 +1530,9 @@ fn analyze_function(
             body.end_byte()
         };
         let body_text = &source[body.start_byte()..text_end];
+        let sweep = BodySweep::of(&body);
 
-        // Check for never-returns patterns
-        summary.never_returns = check_never_returns(body_text);
+        summary.never_returns = check_never_returns(&body, source, text_end, macro_arms);
 
         // Check for returns-allocation pattern. Gated on the function's own
         // declared return type actually being a pointer: a non-pointer
@@ -1520,10 +1544,10 @@ fn analyze_function(
         // (an earlier fix: MEM31-C flagging non-pointer status locals like `enum
         // wpa_validate_result`/`u16`/`int` as leaked/double-freed because
         // the assigning callee's body happened to contain a malloc call).
-        // Comments are stripped first: a borrowed-accessor
-        // function whose body has no allocator call at all but a doc
-        // comment merely *mentioning* one -- e.g. sqlite3_column_blob()'s
-        // "might need to call malloc() to expand..." -- must not count.
+        // Only calls count: a borrowed-accessor function whose body has no
+        // allocator call at all but a doc comment merely *mentioning* one --
+        // e.g. sqlite3_column_blob()'s "might need to call malloc() to
+        // expand..." -- must not.
         //
         // The flag is now derived from what the `return` expressions flow
         // from, not from whether an allocator is spelled anywhere in the
@@ -1531,9 +1555,9 @@ fn analyze_function(
         // os_realloc()s a scratch buffer it frees on every path and returns
         // `pos`, a cursor into the caller's buffer; the substring scan
         // called it an allocator, and every caller's `p = ...(...)` cursor
-        // was then reported as leaked by MEM31-C. The text scan survives
-        // only as the fallback for a body whose parse recovered no `return`
-        // at all.
+        // was then reported as leaked by MEM31-C. A body whose parse
+        // recovered no `return` at all falls back to whether it calls an
+        // allocator anywhere, read from the AST like the taint sources below.
         summary.returns_pointer = is_pointer_return;
         if is_pointer_return {
             match body_returned_callees(&body, source, text_end) {
@@ -1542,11 +1566,8 @@ fn analyze_function(
                     summary.returned_callees = callees;
                 }
                 None => {
-                    let body_text_no_comments = strip_comments_multiline(body_text);
-                    summary.returns_allocation = body_text_no_comments.contains("malloc(")
-                        || body_text_no_comments.contains("calloc(")
-                        || body_text_no_comments.contains("realloc(")
-                        || body_text_no_comments.contains("aligned_alloc(");
+                    summary.returns_allocation =
+                        calls_allocator(&sweep.calls, source, text_end, macro_arms);
                 }
             }
         }
@@ -1558,7 +1579,6 @@ fn analyze_function(
         // a comment or string literal mentioning a source is not a call, and
         // `fscanf (stdin, ...)` is one. Macro aliases and function-like
         // macros wrapping a source count (Juliet's `GETENV`).
-        let sweep = BodySweep::of(&body);
         summary.has_env03_taint_source = calls_taint_source(
             &sweep.calls,
             source,
@@ -2119,72 +2139,143 @@ fn body_returned_callees(body: &Node, source: &str, text_end: usize) -> Option<H
     Some(returned)
 }
 
-/// Strip `/* ... */` and `// ...` comments from a (possibly multi-line)
-/// function body before a plain substring scan. Without this, a comment
-/// merely *mentioning* an allocator call -- e.g. sqlite's own
-/// `sqlite3_column_blob`, whose body has no `malloc()` call at all but a
-/// doc comment reading "might need to call malloc() to expand the result of
-/// a zeroblob()" -- makes `returns_allocation`'s substring check below
-/// misfire on a borrowed-accessor function that never allocates anything
-/// . Unlike `macro_expand::strip_comments` (single-line macro
-/// replacement lists, where hitting `//` means "rest of the line is gone"),
-/// this must span a whole multi-line function body: a `//` only blanks out
-/// to the next newline, not to the end of the text.
-fn strip_comments_multiline(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
-            i += 2;
-            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
-                i += 1;
-            }
-            i = (i + 2).min(chars.len());
-            out.push(' ');
-        } else if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
-            while i < chars.len() && chars[i] != '\n' {
-                i += 1;
-            }
-        } else {
-            out.push(chars[i]);
-            i += 1;
-        }
-    }
-    out
-}
-
-/// Check if a function body always calls abort/exit/longjmp (never returns normally).
-fn check_never_returns(body_text: &str) -> bool {
-    // Quick text check — if none of these are present, the function can return
-    if !body_text.contains("abort(")
-        && !body_text.contains("exit(")
-        && !body_text.contains("_Exit(")
-        && !body_text.contains("longjmp(")
-        && !body_text.contains("quick_exit(")
-    {
+/// Whether `body` never returns to its caller, read from the AST the way
+/// [`crate::analyze::noreturn`] infers a terminating definition: no `return`
+/// and no `goto` anywhere, and one of its top-level statements calls a
+/// function that never returns. With neither jump, a top-level statement is
+/// reached on every path that does not already leave, so `if (x) abort();`
+/// alone is not enough while `fprintf(...); exit (1);` is.
+///
+/// The call's callee is read through parentheses ([`callee_identifier`]) and
+/// is a standard library noreturn function
+/// ([`crate::analyze::noreturn::is_stdlib_noreturn_function`]) or a
+/// function-like macro that unconditionally calls one
+/// ([`macro_never_returns`]). This replaced a text search for `exit(` and
+/// `abort()`, which missed `exit (1)` and matched inside longer names
+/// (`do_exit(1)`, `my_abort()`), took any mention as the call, and counted a
+/// `return` only when a space followed it (ADR-0006). Nodes starting at or
+/// after `end` belong to a sibling function the parse nested inside this
+/// body and are skipped.
+fn check_never_returns(body: &Node, source: &str, end: usize, macro_arms: &MacroArms) -> bool {
+    use lang_parsing_substrate::query;
+    let jumps = query::find_first_descendant(*body, |n| {
+        n.start_byte() < end && matches!(n.kind(), "return_statement" | "goto_statement")
+    });
+    if jumps.is_some() {
         return false;
     }
+    let mut cursor = body.walk();
+    let terminates = body
+        .named_children(&mut cursor)
+        .filter(|stmt| stmt.start_byte() < end && stmt.kind() == "expression_statement")
+        .filter_map(|stmt| stmt.named_child(0))
+        .filter(|e| e.kind() == "call_expression")
+        .any(|call| {
+            callee_identifier(&call, source)
+                .is_some_and(|name| never_returns_callee(name, macro_arms, MACRO_CALL_DEPTH))
+        });
+    terminates
+}
 
-    // More precise: check if every code path ends with a no-return call.
-    // For simplicity, check if the function's body ends with a no-return call
-    // (last statement is abort/exit/etc. — no return statement after it).
-    let has_return = body_text.contains("return ");
-    let ends_with_noreturn = body_text.contains("abort()")
-        || body_text.contains("exit(EXIT_FAILURE)")
-        || body_text.contains("exit(1)")
-        || body_text.contains("exit(EXIT_SUCCESS)")
-        || body_text.contains("exit(0)");
+/// Whether a call to `name` never returns: a standard library noreturn
+/// function, or a function-like macro that unconditionally calls one.
+fn never_returns_callee(name: &str, macro_arms: &MacroArms, depth: usize) -> bool {
+    crate::analyze::noreturn::is_stdlib_noreturn_function(name)
+        || macro_never_returns(name, macro_arms, depth)
+}
 
-    // If the function has no return statements and ends with a no-return call
-    if !has_return && ends_with_noreturn {
-        return true;
+/// Whether every arm of the function-like macro `name` unconditionally calls
+/// a function that never returns, following nested macros up to `depth`.
+///
+/// An arm qualifies when its replacement list -- unwrapped from parentheses,
+/// a `{ }` block or `do { } while (0)` -- has, as one of its `;`- or
+/// `,`-separated parts, a whole call to such a function, and holds no
+/// `return`, `goto`, `break` or `continue` that could leave the expansion
+/// first. A guarded call (`if (!(c)) abort()`, `(c) ? (void)0 : abort()`,
+/// `(c) || abort()`) is not a whole part, so an assert-style macro does not
+/// qualify: control passes it whenever the check holds. One arm that does
+/// not qualify disqualifies the macro, since some build expands to it.
+fn macro_never_returns(name: &str, macro_arms: &MacroArms, depth: usize) -> bool {
+    use crate::utility::cert_c::pp_tokens::{lex_replacement_list, matching_close, PpKind};
+    if depth == 0 {
+        return false;
     }
-
-    // Simple heuristic: if every path through the function ends with
-    // abort/exit, it never returns. This is too expensive to check fully
-    // without a CFG, so we use a conservative approach.
-    false
+    let Some(arms) = macro_arms.get(name).filter(|arms| !arms.is_empty()) else {
+        return false;
+    };
+    arms.iter().all(|arm| {
+        let tokens = lex_replacement_list(&arm.body, true);
+        let ident = |k: usize, word: &str| {
+            tokens
+                .get(k)
+                .is_some_and(|t| t.kind == PpKind::Identifier && t.text == word)
+        };
+        let punct = |k: usize, p: &str| tokens.get(k).is_some_and(|t| t.is(p));
+        if tokens.iter().any(|t| {
+            t.kind == PpKind::Identifier
+                && matches!(t.text.as_ref(), "return" | "goto" | "break" | "continue")
+        }) {
+            return false;
+        }
+        // Unwrap `( ... )`, `{ ... }`, `do { ... } while (0)` and trailing `;`.
+        let (mut lo, mut hi) = (0, tokens.len());
+        loop {
+            while hi > lo && punct(hi - 1, ";") {
+                hi -= 1;
+            }
+            if hi >= lo + 2
+                && (punct(lo, "(") || punct(lo, "{"))
+                && matching_close(&tokens, lo) == Some(hi - 1)
+            {
+                lo += 1;
+                hi -= 1;
+                continue;
+            }
+            if ident(lo, "do") && punct(lo + 1, "{") {
+                if let Some(close) = matching_close(&tokens, lo + 1) {
+                    let tail = hi == close + 5
+                        && ident(close + 1, "while")
+                        && punct(close + 2, "(")
+                        && tokens.get(close + 3).is_some_and(|t| t.text == "0")
+                        && punct(close + 4, ")");
+                    if tail {
+                        lo += 2;
+                        hi = close;
+                        continue;
+                    }
+                }
+            }
+            break;
+        }
+        if lo >= hi {
+            return false;
+        }
+        // A part `[(void)] callee ( ... )` whose call spans all of it.
+        let whole_call = |mut s: usize, e: usize| -> Option<&str> {
+            if punct(s, "(") && ident(s + 1, "void") && punct(s + 2, ")") {
+                s += 3;
+            }
+            let callee = tokens
+                .get(s)
+                .filter(|t| t.kind == PpKind::Identifier && !t.stringized && !t.pasted)?;
+            (punct(s + 1, "(") && matching_close(&tokens, s + 1) == Some(e.checked_sub(1)?))
+                .then_some(callee.text.as_ref())
+        };
+        let level = tokens[lo].depth;
+        let mut part = lo;
+        (lo..=hi).any(|k| {
+            let boundary =
+                k == hi || (tokens[k].depth == level && (punct(k, ";") || punct(k, ",")));
+            if !boundary {
+                return false;
+            }
+            let found = whole_call(part, k).is_some_and(|callee| {
+                callee != name && never_returns_callee(callee, macro_arms, depth - 1)
+            });
+            part = k + 1;
+            found
+        })
+    })
 }
 
 /// Check if a function body contains any `return NULL` / `return 0` statements.
@@ -8795,6 +8886,141 @@ mod tests {
         let summaries = parse_and_summarize(code);
         let summary = summaries.get("die").unwrap();
         assert!(summary.never_returns);
+    }
+
+    /// `never_returns` reads the terminating call from the AST: a space before
+    /// the parenthesis is the same call, a longer name containing `exit` or
+    /// `abort` is a different function, and a call only some paths reach is
+    /// not enough.
+    #[test]
+    fn test_never_returns_reads_the_call_not_its_spelling() {
+        let code = r#"
+        #include <stdio.h>
+        #include <stdlib.h>
+        void do_exit(int code);
+        void my_abort(void);
+
+        void spaced(const char *msg) {
+            fputs(msg, stderr);
+            exit (1);
+        }
+        void parenthesized(void) {
+            (abort)();
+        }
+        void any_status(int code) {
+            fputs("fatal\n", stderr);
+            exit(code);
+        }
+        void lookalike_exit(void) {
+            do_exit(1);
+        }
+        void lookalike_abort(void) {
+            my_abort();
+        }
+        void only_some_paths(int bad) {
+            if (bad) abort();
+        }
+        void returns_first(int bad) {
+            if (!bad) {
+                return;
+            }
+            exit(1);
+        }
+        void mentions_it(void) {
+            /* the caller decides whether to exit(1) */
+            fputs("exit(1) skipped\n", stderr);
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        let never = |f: &str| summaries.get(f).unwrap().never_returns;
+        assert!(never("spaced"), "`exit (1)` is a call to exit");
+        assert!(never("parenthesized"), "`(abort)()` is a call to abort");
+        assert!(
+            never("any_status"),
+            "exit never returns, whatever its status"
+        );
+        assert!(!never("lookalike_exit"), "do_exit is not exit");
+        assert!(!never("lookalike_abort"), "my_abort is not abort");
+        assert!(!never("only_some_paths"), "abort is reached only when bad");
+        assert!(
+            !never("returns_first"),
+            "`return;` comes back to the caller"
+        );
+        assert!(!never("mentions_it"), "a comment or string is not a call");
+    }
+
+    /// A function-like macro ends the function only when every one of its
+    /// definitions calls a noreturn function unconditionally; an assert-style
+    /// macro returns whenever its check holds.
+    #[test]
+    fn test_never_returns_through_function_like_macros() {
+        let code = r#"
+        #include <stdio.h>
+        #include <stdlib.h>
+        #define DIE(msg) do { fputs(#msg, stderr); abort(); } while (0)
+        #define FATAL(...) do { fprintf(stderr, __VA_ARGS__); exit(EXIT_FAILURE); } while (0)
+        #define BAIL(code) (fflush(stderr), FATAL("code %d\n", code))
+        #define CHECK(c) do { if (!(c)) abort(); } while (0)
+        #define VERIFY(c) ((c) ? (void)0 : abort())
+        #ifdef QUIET
+        #define STOP() ((void)0)
+        #else
+        #define STOP() abort()
+        #endif
+
+        void stringifying(void) { DIE(out_of_memory); }
+        void variadic(int n) { FATAL("bad %d\n", n); }
+        void nested(int n) { BAIL(n); }
+        void assert_style(int p) { CHECK(p); }
+        void ternary_assert(int p) { VERIFY(p); }
+        void one_arm_returns(void) { STOP(); }
+        "#;
+        let summaries = parse_and_summarize(code);
+        let never = |f: &str| summaries.get(f).unwrap().never_returns;
+        assert!(
+            never("stringifying"),
+            "DIE stringifies its argument and aborts"
+        );
+        assert!(never("variadic"), "FATAL is variadic and exits");
+        assert!(never("nested"), "BAIL ends in FATAL, which exits");
+        assert!(
+            !never("assert_style"),
+            "CHECK aborts only when its check fails"
+        );
+        assert!(
+            !never("ternary_assert"),
+            "VERIFY aborts only when its check fails"
+        );
+        assert!(!never("one_arm_returns"), "the QUIET arm of STOP returns");
+    }
+
+    /// With no `return` in the parse, `returns_allocation` falls back to
+    /// whether the body calls an allocator, read from the AST: `malloc (n)`
+    /// and a macro wrapping malloc are calls, a string naming it is not.
+    #[test]
+    fn test_returns_allocation_fallback_reads_calls() {
+        let code = r#"
+        #include <stdio.h>
+        #include <stdlib.h>
+        #define RETURN_PTR(p) return (p)
+        #define ALLOC(n) malloc(n)
+        static char g_buf[16];
+
+        void *spaced(size_t n) { RETURN_PTR(malloc (n)); }
+        void *wrapped(size_t n) { RETURN_PTR(ALLOC(n)); }
+        char *mentions(void) {
+            fputs("malloc(16) failed, using the static buffer\n", stderr);
+            RETURN_PTR(g_buf);
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        let allocates = |f: &str| summaries.get(f).unwrap().returns_allocation;
+        assert!(allocates("spaced"), "`malloc (n)` is a call to malloc");
+        assert!(allocates("wrapped"), "ALLOC calls malloc");
+        assert!(
+            !allocates("mentions"),
+            "a string naming malloc is not a call"
+        );
     }
 
     #[test]

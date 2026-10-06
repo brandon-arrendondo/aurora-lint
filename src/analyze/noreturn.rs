@@ -137,7 +137,15 @@ const STDLIB_NORETURN_FUNCTIONS: &[&str] = &[
 /// [`collect_noreturn_function_names`] set; either way the strict preset's
 /// freestanding environment credits none of them.
 pub fn is_stdlib_noreturn_name(name: &str, settings: &AnalysisSettings) -> bool {
-    settings.flag("stdlib_noreturn") && STDLIB_NORETURN_FUNCTIONS.contains(&name.trim())
+    settings.flag("stdlib_noreturn") && is_stdlib_noreturn_function(name)
+}
+
+/// True when `name` is one of the standard library's noreturn functions,
+/// whatever the declared environment: for a fact computed once for every
+/// setting, such as `FunctionSummary::never_returns`. A rule ending paths
+/// takes [`is_stdlib_noreturn_name`] instead.
+pub fn is_stdlib_noreturn_function(name: &str) -> bool {
+    STDLIB_NORETURN_FUNCTIONS.contains(&name.trim())
 }
 
 /// Noreturn functions that do **not** end the process: control resumes
@@ -461,8 +469,7 @@ fn terminating_call_name(stmt: &Node, source: &str) -> Option<String> {
 /// no per-file [`collect_noreturn_function_names`] set to hand; a project's
 /// own noreturn wrappers are not recognised this way.
 pub fn is_stdlib_noreturn_call_statement(node: &Node, source: &str) -> bool {
-    terminating_call_name(node, source)
-        .is_some_and(|name| STDLIB_NORETURN_FUNCTIONS.contains(&name.as_str()))
+    terminating_call_name(node, source).is_some_and(|name| is_stdlib_noreturn_function(&name))
 }
 
 /// True if `node` is an `expression_statement` wrapping a direct call to a
