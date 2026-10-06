@@ -334,7 +334,10 @@ This is a mechanical estimate. A 12-row hand check agreed on 11.
   unchecked dereference in a leaf helper can make every exported wrapper
   above it an API00-C TP. That is several findings for one missing check,
   and each wrapper's report names only the parameter, not the callee.
-  Bessey and Tricorder both predict developers treat such reports as false.
+  Bessey et al. observed that "if people don't understand an error, they
+  label it false", which suggests such reports would be treated as false;
+  under Tricorder's definition, a report the user does not act on is an
+  effective false positive.
 - **It removes a judgment call that has churned.** The forwarder's verdict
   depends on the callee's body, possibly several frames down (the pointer sample's note:
   "every row in this batch required reading the callee"). Under (a) the
