@@ -676,20 +676,29 @@ pub fn merged_macro_alias_alternatives(
     alternatives
 }
 
-/// Every argument count each name is called with in this file, for a name
-/// called as a plain identifier (`XFREE(p, heap, type)`).
+/// Every argument count each name is called with in this file's live code,
+/// for a name called as a plain identifier (`XFREE(p, heap, type)`).
 ///
 /// An object-like alias puts its target in the call's place, so
 /// `#define XFREE free` makes that call `free(p, heap, type)`, which no C
-/// build compiles. Where a file calls a name with a count its alias's target
-/// cannot take, the alias is not the definition in force in that file,
+/// build compiles. Where none of a file's calls of a name could compile with
+/// an alias's target, that alias is not the definition in force in the file,
 /// whichever file it was harvested from: hostap's libtomcrypt glue resolves
 /// `tomcrypt_custom.h`'s `#define XFREE free`, and its libtommath copy
 /// defines `XFREE` as the one-argument `os_free`, while its wolfSSL glue
 /// calls wolfSSL's three-argument `XFREE`.
+///
+/// A call in an arm the file proves is never compiled (`#if 0`) is left out,
+/// and so is one whose argument list the parser could not read (an `ERROR`
+/// node in it): neither says anything about the definition in force.
 pub fn call_arities(root: &Node, source: &str) -> HashMap<String, HashSet<usize>> {
     let mut arities: HashMap<String, HashSet<usize>> = HashMap::new();
-    for call in lang_parsing_substrate::query::find_descendants_of_kind(*root, "call_expression") {
+    let calls = lang_parsing_substrate::query::find_descendants_of_kind(*root, "call_expression");
+    if calls.is_empty() {
+        return arities;
+    }
+    let dead = crate::analyze::init_state::file_proven_dead_lines(source);
+    for call in calls {
         let Some(function) = call.child_by_field_name("function") else {
             continue;
         };
@@ -699,29 +708,58 @@ pub fn call_arities(root: &Node, source: &str) -> HashMap<String, HashSet<usize>
         let Some(arguments) = call.child_by_field_name("arguments") else {
             continue;
         };
-        let count = (0..arguments.child_count())
+        let line = call.start_position().row + 1;
+        if dead.iter().any(|&(s, e)| line >= s && line <= e) {
+            continue;
+        }
+        let args: Vec<Node> = (0..arguments.child_count())
             .filter_map(|i| arguments.child(i))
             .filter(|a| !matches!(a.kind(), "(" | ")" | "," | "comment"))
-            .count();
+            .collect();
+        if args.iter().any(|a| a.kind() == "ERROR" || a.has_error()) {
+            continue;
+        }
         arities
             .entry(ast_utils::get_node_text(&function, source).to_string())
             .or_default()
-            .insert(count);
+            .insert(args.len());
     }
     arities
 }
 
-/// The argument counts each function or function-like macro this file
-/// defines or prototypes takes, one entry per distinct count (preprocessor
-/// arms may differ). A variadic one is left out: it takes any count from
-/// its fixed parameters up, so no count rules it out. `f(void)` takes none;
-/// an old-style `f()` declares nothing about its parameters and is left out.
-pub fn fixed_arities(root: &Node, source: &str) -> HashMap<String, Vec<usize>> {
-    let mut arities: HashMap<String, Vec<usize>> = HashMap::new();
-    let mut record = |name: &str, n: usize| {
+/// How many arguments a function or function-like macro takes.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub enum Arity {
+    /// Exactly this many.
+    Exactly(usize),
+    /// This many fixed parameters, then `...`: any count from there up.
+    AtLeast(usize),
+}
+
+impl Arity {
+    /// Whether a call with `count` arguments fits.
+    pub fn fits(self, count: usize) -> bool {
+        match self {
+            Arity::Exactly(n) => count == n,
+            Arity::AtLeast(n) => count >= n,
+        }
+    }
+}
+
+/// The [`Arity`] of each function or function-like macro this file defines
+/// or prototypes, one entry per distinct arity (preprocessor arms and other
+/// files may differ). `f(void)` takes none; an old-style `f()` declares
+/// nothing about its parameters and is left out. Only a declarator that
+/// names a function counts: not a function pointer's `(*fp)(int)`, a
+/// function-typed parameter, or a typedef'd function type.
+pub fn fixed_arities(root: &Node, source: &str) -> HashMap<String, Vec<Arity>> {
+    let mut arities: HashMap<String, Vec<Arity>> = HashMap::new();
+    let mut record = |name: &str, arity: Arity| {
         let slot = arities.entry(name.to_string()).or_default();
-        if !slot.contains(&n) {
-            slot.push(n);
+        if !slot.contains(&arity) {
+            slot.push(arity);
         }
     };
     for def in
@@ -742,21 +780,39 @@ pub fn fixed_arities(root: &Node, source: &str) -> HashMap<String, Vec<usize>> {
                 _ => {}
             }
         }
-        if !variadic {
-            record(ast_utils::get_node_text(&name, source), count);
-        }
+        record(
+            ast_utils::get_node_text(&name, source),
+            if variadic {
+                Arity::AtLeast(count)
+            } else {
+                Arity::Exactly(count)
+            },
+        );
     }
     for declarator in
         lang_parsing_substrate::query::find_descendants_of_kind(*root, "function_declarator")
     {
-        // Only the declarator naming a function: `int f(int)`, `*f(void)`,
-        // not a function pointer's `(*fp)(int)`.
         let Some(name) = declarator
             .child_by_field_name("declarator")
             .filter(|d| d.kind() == "identifier")
         else {
             continue;
         };
+        let mut up = declarator.parent();
+        let mut names_a_function = true;
+        while let Some(node) = up {
+            if matches!(node.kind(), "parameter_declaration" | "type_definition") {
+                names_a_function = false;
+                break;
+            }
+            if matches!(node.kind(), "declaration" | "function_definition") {
+                break;
+            }
+            up = node.parent();
+        }
+        if !names_a_function {
+            continue;
+        }
         let Some(params) = declarator.child_by_field_name("parameters") else {
             continue;
         };
@@ -777,12 +833,17 @@ pub fn fixed_arities(root: &Node, source: &str) -> HashMap<String, Vec<usize>> {
                 _ => {}
             }
         }
-        if variadic || count == 0 {
+        if count == 0 && !variadic {
             continue;
         }
+        let fixed = if count == 1 && only_void { 0 } else { count };
         record(
             ast_utils::get_node_text(&name, source),
-            if count == 1 && only_void { 0 } else { count },
+            if variadic {
+                Arity::AtLeast(fixed)
+            } else {
+                Arity::Exactly(fixed)
+            },
         );
     }
     arities
@@ -790,38 +851,48 @@ pub fn fixed_arities(root: &Node, source: &str) -> HashMap<String, Vec<usize>> {
 
 /// Fold one file's [`fixed_arities`] into a project-wide table.
 pub fn merge_fixed_arities(
-    into: &mut HashMap<String, Vec<usize>>,
-    from: HashMap<String, Vec<usize>>,
+    into: &mut HashMap<String, Vec<Arity>>,
+    from: HashMap<String, Vec<Arity>>,
 ) {
-    for (name, counts) in from {
+    for (name, arities) in from {
         let slot = into.entry(name).or_default();
-        for n in counts {
-            if !slot.contains(&n) {
-                slot.push(n);
+        for arity in arities {
+            if !slot.contains(&arity) {
+                slot.push(arity);
             }
         }
     }
 }
 
-/// Whether a file that calls an alias with the counts `calls` cannot be
-/// using it as `target`. The first link of `target`'s alias chain
-/// (`aliases`) whose counts are known decides: a standard function's, else
-/// `known`, a [`fixed_arities`] table; a call with a count it cannot take
-/// rules the target out. Not the chain's end: a rule classifies a callee by
-/// any link of its chain, and hostap's `os.h` aliases `free` itself to a
-/// poison name whose arity nothing records.
+/// Whether a file whose live calls of an alias have the counts `calls`
+/// cannot be using it as `target`: none of those counts fits any arity
+/// `target` is known to have. A target that fits one call is kept, so a
+/// file whose `#ifdef` arms call the alias both ways keeps every target
+/// either arm can use (ADR-0010 D4).
+///
+/// The first link of `target`'s alias chain (`aliases`) whose arity is
+/// known decides: a standard function's, else `known`, a [`fixed_arities`]
+/// table. Not the chain's end: a rule classifies a callee by any link of
+/// its chain, and hostap's `os.h` aliases `free` itself to a poison name
+/// whose arity nothing records.
 pub fn arity_rules_out(
     target: &str,
     calls: &HashSet<usize>,
     aliases: &HashMap<String, String>,
-    known: &HashMap<String, Vec<usize>>,
+    known: &HashMap<String, Vec<Arity>>,
 ) -> bool {
+    if calls.is_empty() {
+        return false;
+    }
     let mut seen: HashSet<&str> = HashSet::new();
     let mut link = target;
     while seen.insert(link) {
-        let standard = crate::utility::cert_c::call_roles::standard_arity(link).map(|n| vec![n]);
-        if let Some(counts) = standard.as_ref().or_else(|| known.get(link)) {
-            return calls.iter().any(|m| !counts.contains(m));
+        let standard = crate::utility::cert_c::call_roles::standard_arity(link)
+            .map(|n| vec![Arity::Exactly(n)]);
+        if let Some(arities) = standard.as_ref().or_else(|| known.get(link)) {
+            return !calls
+                .iter()
+                .any(|&m| arities.iter().any(|arity| arity.fits(m)));
         }
         match aliases.get(link) {
             Some(next) => link = next,
@@ -838,7 +909,7 @@ pub fn arity_rules_out(
 pub fn rule_out_alternatives_by_arity(
     alternatives: &mut HashMap<String, Vec<String>>,
     calls: &HashMap<String, HashSet<usize>>,
-    known: &HashMap<String, Vec<usize>>,
+    known: &HashMap<String, Vec<Arity>>,
 ) -> bool {
     let settled = settled_aliases(alternatives);
     let mut changed = false;
@@ -859,7 +930,7 @@ pub fn rule_out_alternatives_by_arity(
 pub fn rule_out_aliases_by_arity(
     aliases: &mut HashMap<String, String>,
     calls: &HashMap<String, HashSet<usize>>,
-    known: &HashMap<String, Vec<usize>>,
+    known: &HashMap<String, Vec<Arity>>,
 ) -> bool {
     let ruled_out: Vec<String> = aliases
         .keys()
@@ -4861,5 +4932,107 @@ void foo() {
         let macros = MacroConstantMap::new();
         assert_eq!(try_evaluate_text("", &macros), None);
         assert_eq!(try_evaluate_text("  42  ", &macros), Some(42));
+    }
+
+    fn parsed(code: &str) -> (tree_sitter::Tree, String) {
+        crate::parser::CParser::new()
+            .unwrap()
+            .parse_source(code)
+            .unwrap()
+    }
+
+    /// A variadic function or macro takes any count from its fixed
+    /// parameters up; a function-typed parameter and a typedef'd function
+    /// type name no function; `f(void)` takes none and `f()` says nothing.
+    #[test]
+    fn fixed_arities_records_variadic_as_at_least_and_skips_non_functions() {
+        let (tree, source) = parsed(
+            "void log_free(void *p, ...);\n\
+             void pool_free(void *p);\n\
+             void reset(void);\n\
+             void legacy();\n\
+             void walk(int visit(int node));\n\
+             typedef int handler_t(int signo);\n\
+             #define TRACE(fmt, ...) printf(fmt, __VA_ARGS__)\n\
+             #define TWO(a, b) ((a) + (b))\n",
+        );
+        let a = fixed_arities(&tree.root_node(), &source);
+        assert_eq!(a.get("log_free"), Some(&vec![Arity::AtLeast(1)]));
+        assert_eq!(a.get("pool_free"), Some(&vec![Arity::Exactly(1)]));
+        assert_eq!(a.get("reset"), Some(&vec![Arity::Exactly(0)]));
+        assert_eq!(a.get("legacy"), None);
+        assert_eq!(a.get("walk"), Some(&vec![Arity::Exactly(1)]));
+        assert_eq!(a.get("visit"), None);
+        assert_eq!(a.get("handler_t"), None);
+        assert_eq!(a.get("TRACE"), Some(&vec![Arity::AtLeast(1)]));
+        assert_eq!(a.get("TWO"), Some(&vec![Arity::Exactly(2)]));
+    }
+
+    /// A call in a never-compiled arm, or one whose argument list did not
+    /// parse, says nothing about the definition in force.
+    #[test]
+    fn call_arities_skips_dead_arms_and_unparsed_arguments() {
+        let (tree, source) = parsed(
+            "void f(void *p) {\n\
+             #if 0\n    XFREE(p, 0, 1);\n#endif\n\
+                 XFREE(p);\n\
+                 XMALLOC(4 +, 1);\n\
+             }\n",
+        );
+        let calls = call_arities(&tree.root_node(), &source);
+        assert_eq!(calls.get("XFREE"), Some(&HashSet::from([1])));
+        assert_eq!(calls.get("XMALLOC"), None);
+    }
+
+    /// A target is ruled out only when none of the file's calls fits it, so
+    /// arms that call an alias both ways keep it; a variadic target fits
+    /// every count from its fixed parameters up.
+    #[test]
+    fn a_target_is_ruled_out_only_when_no_call_fits_it() {
+        let none = HashMap::new();
+        let known = HashMap::from([
+            ("log_free".to_string(), vec![Arity::AtLeast(1)]),
+            ("os_free".to_string(), vec![Arity::Exactly(1)]),
+        ]);
+        assert!(arity_rules_out("free", &HashSet::from([3]), &none, &known));
+        assert!(!arity_rules_out(
+            "free",
+            &HashSet::from([1, 3]),
+            &none,
+            &known
+        ));
+        assert!(arity_rules_out(
+            "os_free",
+            &HashSet::from([3]),
+            &none,
+            &known
+        ));
+        assert!(!arity_rules_out(
+            "log_free",
+            &HashSet::from([2]),
+            &none,
+            &known
+        ));
+        assert!(arity_rules_out(
+            "log_free",
+            &HashSet::from([0]),
+            &none,
+            &known
+        ));
+        assert!(!arity_rules_out(
+            "unknown",
+            &HashSet::from([3]),
+            &none,
+            &known
+        ));
+        assert!(!arity_rules_out("free", &HashSet::new(), &none, &known));
+        // The first link with a known arity decides, not the chain's end.
+        let aliases = HashMap::from([("free".to_string(), "POISON".to_string())]);
+        assert!(arity_rules_out(
+            "free",
+            &HashSet::from([3]),
+            &aliases,
+            &known
+        ));
     }
 }

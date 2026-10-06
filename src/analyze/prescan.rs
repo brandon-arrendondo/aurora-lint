@@ -43,7 +43,7 @@ struct FilePrescanResult {
     /// (`const_eval::collect_macro_alias_alternatives`).
     macro_alias_alternatives: HashMap<String, Vec<String>>,
     /// `const_eval::fixed_arities` of this file.
-    fixed_arities: HashMap<String, Vec<usize>>,
+    fixed_arities: HashMap<String, Vec<const_eval::Arity>>,
     /// `const_eval::call_arities` of this file.
     call_arities: HashMap<String, Vec<usize>>,
     function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
@@ -754,7 +754,7 @@ fn prescan_file_list(
     let mut static_defining_files: HashMap<String, HashSet<PathBuf>> = HashMap::new();
     let mut macro_constants: HashMap<String, i64> = HashMap::new();
     let mut macro_alias_alternatives: HashMap<String, Vec<String>> = HashMap::new();
-    let mut function_arities: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut function_arities: HashMap<String, Vec<const_eval::Arity>> = HashMap::new();
     let mut alias_call_arities: HashMap<String, HashMap<String, Vec<usize>>> = HashMap::new();
     // Whether the kept aliases of a name came from a header.
     let mut macro_alias_from_header: HashMap<String, bool> = HashMap::new();

@@ -175,9 +175,9 @@ pub struct ProjectContext {
     pub macro_alias_alternatives: Arc<HashMap<String, Vec<String>>>,
     /// The argument counts each function or function-like macro the
     /// scanned files and resolved headers define or prototype takes
-    /// (`const_eval::fixed_arities`), one entry per distinct count.
+    /// (`const_eval::fixed_arities`), one entry per distinct arity.
     #[serde(default)]
-    pub function_arities: Arc<HashMap<String, Vec<usize>>>,
+    pub function_arities: Arc<HashMap<String, Vec<crate::analyze::const_eval::Arity>>>,
     /// `file -> name -> the argument counts the file calls it with`, real
     /// paths, for the names some alias defines (`const_eval::call_arities`).
     /// An alias whose target cannot take a count a file calls it with is not
@@ -691,6 +691,10 @@ impl ProjectContext {
     /// ([`crate::analyze::const_eval::call_arities`]): such a definition is
     /// not the one in force in that file, whichever file it came from.
     pub fn as_seen_from(&self, path: &Path) -> Option<Self> {
+        // Nothing to scope: no file pays for resolving its path.
+        if self.scoped_names_by_file.is_empty() && self.alias_call_arities.is_empty() {
+            return None;
+        }
         let key = crate::analyze::compile_commands::real_path(path);
         let statics = self.scoped_names_by_file.get(&key);
         let aliases = self.aliases_seen_from(&key);
