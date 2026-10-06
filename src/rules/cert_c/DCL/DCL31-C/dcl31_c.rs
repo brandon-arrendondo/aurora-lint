@@ -335,6 +335,15 @@ impl Dcl31C {
                     return;
                 }
 
+                // A callee bound by a parameter, a local or a file-scope
+                // declaration has a prior declaration, whatever its type
+                // spelling: curl's `curl_write_callback wcb` parameter is a
+                // function pointer whose typedef this scan may never resolve
+                // (ADR-0006: resolve the identifier, don't match its type).
+                if ast_utils::resolve_identifier_binding(&function, func_name, source).is_some() {
+                    return;
+                }
+
                 // Skip calls inside preprocessor conditionals (#ifdef, #if, #elif).
                 // The corresponding declaration may be in a conditionally-included
                 // header that tree-sitter cannot see.
