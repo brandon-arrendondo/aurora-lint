@@ -5239,8 +5239,9 @@ fn int08_c_a_32_bit_unsigned_top_is_the_true_upper_bound() {
 //
 // `AURORA_LINT_TEST_FAIL` is a debug-build hook (src/analyze/mod.rs): it
 // makes a named rule's check panic or spin, so these tests exercise
-// containment without a buggy rule to hand. The test binary is a debug
-// build.
+// containment without a buggy rule to hand. The hook is compiled only under
+// `debug_assertions` and stays out of release builds, so every test that
+// uses it is ignored under `cargo test --release`.
 
 /// Run aurora-lint with `AURORA_LINT_TEST_FAIL=spec`.
 fn run_failing(spec: &str, args: &[&str]) -> (i32, String, String) {
@@ -5267,6 +5268,10 @@ fn copies_of_violation(n: usize) -> tempfile::TempDir {
 }
 
 #[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "AURORA_LINT_TEST_FAIL hook is debug-only"
+)]
 fn a_crashing_rule_exits_three_ahead_of_fail_on_violation() {
     let (code, _, stderr) = run_failing(
         "MSC04-C:panic",
@@ -5290,6 +5295,10 @@ fn a_crashing_rule_exits_three_ahead_of_fail_on_violation() {
 }
 
 #[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "AURORA_LINT_TEST_FAIL hook is debug-only"
+)]
 fn a_crash_costs_only_that_rule_and_file() {
     // MSC04-C crashes; DCL31-C on the same file still reports.
     let dir = tempfile::tempdir().unwrap();
@@ -5311,6 +5320,10 @@ fn a_crash_costs_only_that_rule_and_file() {
 }
 
 #[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "AURORA_LINT_TEST_FAIL hook is debug-only"
+)]
 fn a_runaway_rule_stops_at_its_step_limit() {
     let (code, _, stderr) = run_failing(
         "MSC04-C:spin",
@@ -5335,6 +5348,10 @@ fn a_runaway_rule_stops_at_its_step_limit() {
 }
 
 #[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "AURORA_LINT_TEST_FAIL hook is debug-only"
+)]
 fn a_rule_failing_on_three_files_is_abandoned_and_withheld() {
     let dir = copies_of_violation(4);
     for jobs in ["1", "4"] {
@@ -5358,6 +5375,10 @@ fn a_rule_failing_on_three_files_is_abandoned_and_withheld() {
 }
 
 #[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "AURORA_LINT_TEST_FAIL hook is debug-only"
+)]
 fn two_failures_do_not_abandon_a_rule() {
     let dir = copies_of_violation(2);
     let (code, _, stderr) = run_failing(
@@ -5373,6 +5394,10 @@ fn two_failures_do_not_abandon_a_rule() {
 }
 
 #[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "AURORA_LINT_TEST_FAIL hook is debug-only"
+)]
 fn sarif_records_an_incomplete_scan() {
     let dir = tempfile::tempdir().unwrap();
     let sarif = dir.path().join("out.sarif");
@@ -5418,6 +5443,10 @@ fn sarif_records_a_complete_scan() {
 }
 
 #[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "AURORA_LINT_TEST_FAIL hook is debug-only"
+)]
 fn an_incomplete_prescan_is_reported_and_not_cached() {
     let dir = copies_of_violation(2);
     let cache = dir.path().join("ctx.prescan");
