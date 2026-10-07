@@ -188,8 +188,12 @@ automatically **with high accuracy and precision** — so a "Detectable: No"
 rating is a statement about precision, not about whether any sound check
 exists at all. A majority of the guidelines aurora-lint ships carry
 "Detectable: No" at the time of this amendment, the core memory and integer
-rules among them. Reading that rating as "not shipped" would remove most of
-the tool, including its highest-value rules. That reading is withdrawn.
+rules among them. When surveyed on 2026-10-06, 131 of the 258 guidelines
+aurora-lint then shipped were rated No (61 of 122 rules, 70 of 136
+recommendations), MEM30-C, MEM31-C, MEM34-C to MEM36-C and INT30-C to INT35-C
+among them (source: CERT's per-guideline Risk Assessment pages). Reading that
+rating as "not shipped" would remove most of the tool, including its
+highest-value rules. That reading is withdrawn.
 
 This generalizes Decision 8's recommendation-level ruling — the A5 principle
 in `docs/design/rule-disposition.md`, that a "Detectable: No" recommendation
