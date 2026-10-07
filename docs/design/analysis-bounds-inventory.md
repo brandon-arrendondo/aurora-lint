@@ -32,14 +32,17 @@ Kinds:
   value-range and init-state iteration caps raised a hundredfold, the
   busiest took 5.5 million steps. So the 50 million default leaves about
   two orders of magnitude of headroom on real code.
-- **Non-convergence.** The init-state cap is reached on three files across
-  two of the twelve corpora (listed in its row), and still is at a hundred
-  times the cap, so it is a warning until fixed. The value-range cap was
-  reached on four files for a missing widening point; after that fix none of
-  the corpora reaches it, and the cap itself now falls back soundly.
-- **Reported caps.** The reaching-definitions and null-state iteration
-  caps are reached neither on the Juliet suite nor on the twelve corpora,
-  so ADR-0017 has them report: reaching one means a runaway.
+- **Non-convergence.** The init-state cap was reached on three files across
+  two of the twelve corpora (listed in its row), and still was at a hundred
+  times the cap: its transfer is not monotone. Accumulating the entry
+  states at loop heads fixed that, and none of the corpora reaches it now.
+  The value-range cap was reached on four files for a missing widening
+  point; after that fix none of the corpora reaches it, and the cap itself
+  now falls back soundly.
+- **Reported caps.** The reaching-definitions, null-state and init-state
+  iteration caps are not reached on the twelve corpora (and the first two
+  not on the Juliet suite), so ADR-0017 has them report: reaching one means
+  a runaway.
 - **Size ceiling.** The largest file the corpora scan is about 4 MiB
   (raylib's `miniaudio.h`). The largest real C inputs a scanner meets are
   amalgamations and SDK headers of 9-10 MiB (sqlite3.c, the Windows SDK's
@@ -79,7 +82,7 @@ Kinds:
 | `cfg::CfgBuilder::process_statement` and its siblings | none: native recursion per nesting level, with a checkpoint per statement | – | stack, see above | – |
 | `dataflow::compute_reaching_definitions` | blocks × (defs+1) + blocks | c | **reported** (`cap_reached`) | was silent: unvisited blocks read as "no reaching definition", so MSC13-C reported false positives |
 | `null_state::run_null_state_worklist` | 500 × blocks | c | **reported** | was silent: missing state reads as not null, so EXP34-C missed findings |
-| `init_state::analyze_init_states_with_statics` | 500 × blocks | c | **warning** (`not_converged`): known not to converge | hit by EXP33-C on sqlite `ext/fts5/fts5_index.c` and `src/json.c`, and valkey `src/valkey-cli.c`; still hit at 100× the cap. Its `worklist.contains` is O(n) per push |
+| `init_state::analyze_init_states_with_statics` | 500 × blocks | c | **reported** | was a warning (`not_converged`): EXP33-C hit it on sqlite `ext/fts5/fts5_index.c` and `src/json.c`, and valkey `src/valkey-cli.c`, until loop-head entry states accumulated. Its `worklist.contains` is O(n) per push |
 
 ## Value ranges
 
@@ -172,5 +175,6 @@ graph walks keep visited sets. The real exposures are:
 - the worklists whose termination rested on their caps. The null-state cap
   is never reached on the corpora and is now reported when hit. The
   value-range cap was reached for a missing widening point, now fixed. The
-  init-state cap is reached on real code, which shows its transfer is not
-  monotone there; it is counted and warned about until fixed.
+  init-state cap was reached on real code because its transfer is not
+  monotone; its loop heads now accumulate, so it converges and is reported
+  when hit.

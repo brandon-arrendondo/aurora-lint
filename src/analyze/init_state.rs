@@ -2022,9 +2022,10 @@ pub fn analyze_init_states_with_statics(
         if iterations > max_iterations {
             #[cfg(test)]
             tests::CAPPED.with(|c| c.set(true));
-            // Known not to converge on some real code (ADR-0017): counted and
-            // reported as a warning, results kept as before.
-            crate::analyze::containment::not_converged("the initialization-state worklist");
+            // The loop heads accumulate, so the worklist converges and only a
+            // runaway reaches the cap. The states so far may be unsound, so
+            // it is reported like a crash (ADR-0017), not kept as a warning.
+            crate::analyze::containment::cap_reached("the initialization-state worklist");
             break;
         }
 
