@@ -646,7 +646,7 @@ names the current set and its figures:</p>
 </tbody>
 </table>
 <p><em>Data from aurora-lint v0.4.120, cppcheck 2.10, clang-tidy 21.1.6 (run #118).</em></p>
-<p><strong>Why aurora-lint reports more violations</strong>: aurora-lint tracks 308 CERT C rules, 304 enabled by default (both
+<p><strong>Why aurora-lint reports more violations</strong>: aurora-lint tracks 306 CERT C rules, 302 enabled by default (both
 advisory and mandatory) while cppcheck and clang-tidy implement ~20 checks each.
 The difference reflects rule coverage breadth, not false positive rate.</p>
 <p><strong>Measured precision/recall</strong>: 6.2% precision / 91.7% recall against the
@@ -691,7 +691,7 @@ as representative.</p>
 <h3>Apples-to-Apples Concerns<a class="headerlink" href="#apples-to-apples-concerns" title="Link to this heading"></a></h3>
 <ol class="arabic simple">
 <li><p><strong>Rule coverage</strong>: cppcheck/clang-tidy implement ~20 checks each vs. aurora-lint’s
-304 enabled rules. Raw violation counts are not directly comparable.</p></li>
+302 enabled rules. Raw violation counts are not directly comparable.</p></li>
 <li><p><strong>Translation unit scope</strong>: Use consistent scope (cross-file <code class="docutils literal notranslate"><span class="pre">-d</span></code> flag or
 single-file) when comparing.</p></li>
 <li><p><strong>Preprocessor handling</strong>: cppcheck evaluates all <code class="docutils literal notranslate"><span class="pre">#ifdef</span></code> configs;
@@ -950,7 +950,7 @@ flags something in over a third of flawed files, but lands on the specific
 planted flaw line in roughly an eighth of cases. When judging headroom, the
 flaw-hit rate is the honest signal to watch for movement, not the TP rate.</p>
 <p>Juliet also exercises only part of the rule suite — 127 rules have any
-Juliet true positive, out of 308 implemented. See “Rule-suite coverage”
+Juliet true positive, out of 306 implemented. See “Rule-suite coverage”
 below for what that leaves unmeasured, and
 [<code class="docutils literal notranslate"><span class="pre">docs/juliet-history.rst</span></code>](docs/juliet-history.rst) for the full
 round-by-round version history behind the table above.</p>
@@ -972,7 +972,7 @@ the rest of the suite is substantial (measured 2026-09-02, run #226):</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Implemented</p></td>
-<td><p>308 (304 enabled by default)</p></td>
+<td><p>306 (302 enabled by default)</p></td>
 </tr>
 <tr class="row-odd"><td><p>Have true-positive evidence somewhere</p></td>
 <td><p><strong>186</strong> — 127 from Juliet, 144 from real-world TP/FN labels</p></td>
