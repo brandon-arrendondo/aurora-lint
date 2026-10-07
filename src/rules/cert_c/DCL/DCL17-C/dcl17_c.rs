@@ -51,10 +51,9 @@ impl CertRule for Dcl17C {
 /// Collects names of all volatile-qualified variables declared in the file
 fn collect_volatile_variables<'a>(root: &Node, source: &'a str) -> HashSet<&'a str> {
     let mut volatile_vars = HashSet::new();
-    let mut cursor = root.walk();
 
-    // Walk through all declarations in translation unit
-    for child in root.children(&mut cursor) {
+    // Walk through all declarations at file scope
+    for child in ast_utils::top_level_items_outside_arms(*root) {
         if child.kind() == "declaration" {
             if has_volatile_qualifier(&child, source) {
                 // Extract variable name(s) from this declaration
@@ -306,8 +305,7 @@ fn is_ancestor_of(ancestor: &Node, descendant: &Node) -> bool {
 /// 2. K&R-style function definitions where parameter types are listed after the
 ///    declarator: `void func(x) int x; { ... }`
 fn find_kr_style_functions(root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-    let mut cursor = root.walk();
-    for child in root.children(&mut cursor) {
+    for child in ast_utils::top_level_items_outside_arms(*root) {
         match child.kind() {
             "declaration" => {
                 // Check for empty parameter list in function declarations

@@ -69,23 +69,17 @@ impl Dcl42C {
     }
 
     /// Collect the names of variables declared at file (global) scope, looking
-    /// through preprocessor conditional blocks and skipping function prototypes.
+    /// through preprocessor conditional blocks and parser `ERROR` nodes and
+    /// skipping function prototypes.
     fn collect_global_names(&self, root: &Node, source: &str, out: &mut HashSet<String>) {
-        for child in root.child_nodes() {
-            match child.kind() {
-                "declaration" => {
-                    if query::find_first_descendant(child, |n| n.kind() == "function_declarator")
-                        .is_some()
-                    {
-                        continue;
-                    }
-                    self.collect_declarator_names(&child, source, out);
-                }
-                k if k.starts_with("preproc_") => {
-                    self.collect_global_names(&child, source, out);
-                }
-                _ => {}
+        for child in ast_utils::top_level_items(*root) {
+            if child.kind() != "declaration"
+                || query::find_first_descendant(child, |n| n.kind() == "function_declarator")
+                    .is_some()
+            {
+                continue;
             }
+            self.collect_declarator_names(&child, source, out);
         }
     }
 

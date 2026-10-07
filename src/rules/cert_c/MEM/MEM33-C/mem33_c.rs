@@ -1771,7 +1771,7 @@ impl FlexibleArrayAnalyzer {
         while let Some(parent) = root.parent() {
             root = parent;
         }
-        for child in root.child_nodes() {
+        for child in crate::utility::cert_c::ast_utils::top_level_items_outside_arms(root) {
             if child.kind() != "declaration" || child.start_byte() >= ident.start_byte() {
                 continue;
             }

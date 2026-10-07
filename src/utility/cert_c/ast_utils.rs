@@ -181,6 +181,91 @@ pub fn file_scope_descendants_of_kinds<'a>(root: Node<'a>, kinds: &[&str]) -> Ve
     out
 }
 
+/// The file-scope items of `root`, in source order: its children, looking
+/// through every preprocessor conditional (`#if`/`#ifdef`/`#elif`/`#else`
+/// arm) and every parser `ERROR` node on the way, and stopping everywhere
+/// else. A `function_definition`, `declaration`, `preproc_def` or
+/// `preproc_call` is yielded as an item, never entered.
+///
+/// The `ERROR` half is the reason this exists. tree-sitter has no
+/// preprocessor, and one construct it cannot place (a macro that expands to
+/// a `case` label, a `##` paste in a `#define`) can make its recovery wrap
+/// the rest of the file in ONE `ERROR` node. The definitions inside it still
+/// parse normally, as that node's children (ADR-0008), but a walk that steps
+/// into `preproc_*` and not into `ERROR` misses every one of them: mbedtls
+/// `ssl_tls12_client.c` hid its ~40 functions that way, and hostap `sme.c`
+/// hid the `static const` that bounded a divisor, so INT33-C reported a
+/// division by zero.
+///
+/// Unlike [`file_scope_descendants_of_kinds`], which enters every node
+/// outside a function, this does not reach into a declaration's initializer
+/// or a struct body, and it yields the function definitions themselves.
+pub fn top_level_items<'a>(root: Node<'a>) -> TopLevelItems<'a> {
+    TopLevelItems::new(root, true)
+}
+
+/// [`top_level_items`] without entering `#if` arms: the root's children,
+/// looking through parser `ERROR` nodes only.
+///
+/// For a walk that reads the file's direct children and has never chosen
+/// among `#if` arms. Entering them is a separate decision with its own
+/// cost: a name declared in two arms of an `#ifdef` (sel4's
+/// `profiler_entries`, sized differently in each) has no one declaration in
+/// the built program, since which arm compiles is a configuration this
+/// analysis does not know (ADR-0010), and a lookup that took the first
+/// would turn a guess into a bound a rule reports from. An `ERROR` is not a
+/// configuration choice, so its items are always the file's.
+pub fn top_level_items_outside_arms<'a>(root: Node<'a>) -> TopLevelItems<'a> {
+    TopLevelItems::new(root, false)
+}
+
+/// The iterator [`top_level_items`] and [`top_level_items_outside_arms`]
+/// return.
+pub struct TopLevelItems<'a> {
+    /// Nodes still to visit, the next one last.
+    stack: Vec<Node<'a>>,
+    /// Whether to look through `#if`/`#ifdef`/`#elif`/`#else` arms.
+    arms: bool,
+}
+
+impl<'a> TopLevelItems<'a> {
+    fn new(root: Node<'a>, arms: bool) -> Self {
+        let mut stack: Vec<Node<'a>> = root.child_nodes().collect();
+        stack.reverse();
+        TopLevelItems { stack, arms }
+    }
+
+    /// Whether this walk looks through a node of this kind.
+    fn is_transparent(&self, kind: &str) -> bool {
+        kind == "ERROR"
+            || (self.arms
+                && matches!(
+                    kind,
+                    "preproc_if"
+                        | "preproc_ifdef"
+                        | "preproc_elif"
+                        | "preproc_elifdef"
+                        | "preproc_else"
+                ))
+    }
+}
+
+impl<'a> Iterator for TopLevelItems<'a> {
+    type Item = Node<'a>;
+
+    fn next(&mut self) -> Option<Node<'a>> {
+        while let Some(node) = self.stack.pop() {
+            if !self.is_transparent(node.kind()) {
+                return Some(node);
+            }
+            let start = self.stack.len();
+            self.stack.extend(node.child_nodes());
+            self.stack[start..].reverse();
+        }
+        None
+    }
+}
+
 /// Walk up from `ident_node` through enclosing scopes — `compound_statement`
 /// blocks and `for_statement` init clauses — to find the nearest
 /// `declaration` that binds `name`, preferring the latest (highest byte
@@ -638,8 +723,9 @@ pub fn declaration_type_spelling(decl: &Node, declarator: &Node, source: &str) -
 /// Fallback for file-scope (global) declarations, which
 /// `find_enclosing_declaration_for_identifier` intentionally does not
 /// resolve to (it only walks enclosing `compound_statement` blocks).
-/// Restricted to direct children of the translation unit so it can't cross
-/// into an unrelated function body.
+/// Restricted to the file's [`top_level_items_outside_arms`] so it can't
+/// cross into an unrelated function body, nor pick one of two `#if` arms'
+/// declarations.
 ///
 /// This generalizes a scan that MSC05-C, MSC15-C, and CON34-C each
 /// hand-rolled independently (an earlier fix item #3) as a type- or
@@ -653,7 +739,7 @@ pub fn find_global_declaration_for_identifier<'a>(
     while let Some(p) = top.parent() {
         top = p;
     }
-    top.child_nodes()
+    top_level_items_outside_arms(top)
         .find(|decl| decl.kind() == "declaration" && declaration_binds_name(decl, name, source))
 }
 
@@ -730,7 +816,7 @@ fn binding_on_path<'a>(
     }
     // The climbing version's translation unit is the topmost ancestor.
     let top = std::iter::once(*root).chain(path.iter().copied()).next()?;
-    top.child_nodes()
+    top_level_items_outside_arms(top)
         .find(|decl| decl.kind() == "declaration" && declaration_binds_name(decl, name, source))
         .map(IdentifierBinding::Global)
 }
@@ -2530,6 +2616,90 @@ mod tests {
         parser.set_language(&language).unwrap();
         let tree = parser.parse(code, None).unwrap();
         (tree, code.to_string())
+    }
+
+    /// A run of case-label macro statements long enough that tree-sitter's
+    /// recovery wraps the rest of the file in one `ERROR`, then `absorbed`
+    /// for recovery to read as part of a bogus definition, then `items`.
+    fn framed_by_error(items: &str) -> String {
+        let mut src = String::from(
+            "#define C2S(x) case x: return #x;\n\
+             static const char *cmd_name(int cmd)\n{\n\tswitch (cmd) {\n",
+        );
+        for i in 0..24 {
+            src.push_str(&format!("\tC2S(CMD_{})\n", i));
+        }
+        src.push_str("\t}\n\treturn \"unknown\";\n}\n");
+        src.push_str("static int absorbed(void)\n{\n\treturn 0;\n}\n");
+        src.push_str(items);
+        src
+    }
+
+    #[test]
+    fn top_level_items_look_through_preprocessor_arms_and_error_nodes() {
+        let (tree, source) = parse_c_code(&framed_by_error(
+            "#ifdef A\nint in_arm;\n#else\nint in_else;\n#endif\n\
+             #pragma warning(disable: 4996)\n\
+             int f(void)\n{\n\tint local;\n\treturn 0;\n}\n",
+        ));
+        let root = tree.root_node();
+        assert!(root.child_nodes().any(|c| c.kind() == "ERROR"));
+        let items: Vec<(&str, &str)> = top_level_items(root)
+            .filter(|n| {
+                matches!(
+                    n.kind(),
+                    "declaration" | "function_definition" | "preproc_call"
+                )
+            })
+            .map(|n| (n.kind(), get_node_text(&n, &source)))
+            .collect();
+        let has =
+            |kind: &str, text: &str| items.iter().any(|(k, t)| *k == kind && t.contains(text));
+        assert!(has("declaration", "in_arm"), "{items:?}");
+        assert!(has("declaration", "in_else"), "{items:?}");
+        assert!(has("preproc_call", "warning(disable"), "{items:?}");
+        assert!(has("function_definition", "int f(void)"), "{items:?}");
+        assert!(
+            !has("declaration", "int local"),
+            "a function body is an item, never entered"
+        );
+        let order: Vec<usize> = top_level_items(root).map(|n| n.start_byte()).collect();
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "source order");
+
+        let outside: Vec<&str> = top_level_items_outside_arms(root)
+            .filter(|n| n.kind() == "declaration")
+            .map(|n| get_node_text(&n, &source))
+            .collect();
+        assert!(
+            !outside
+                .iter()
+                .any(|t| t.contains("in_arm") || t.contains("in_else")),
+            "{outside:?}"
+        );
+        assert!(
+            top_level_items_outside_arms(root).any(|n| n.kind() == "function_definition"
+                && get_node_text(&n, &source).starts_with("int f(void)")),
+            "the ERROR's items are still the file's"
+        );
+    }
+
+    #[test]
+    fn a_global_declared_inside_a_framing_error_is_found() {
+        let (tree, source) = parse_c_code(&framed_by_error(
+            "static int counter;\nvoid bump(void)\n{\n\tcounter++;\n}\n",
+        ));
+        let root = tree.root_node();
+        let use_site = query::find_descendants_of_kind(root, "identifier")
+            .into_iter()
+            .rfind(|i| get_node_text(i, &source) == "counter")
+            .expect("the use in bump");
+        let decl = find_global_declaration_for_identifier(&use_site, "counter", &source)
+            .expect("the file-scope declaration sits inside the ERROR");
+        assert!(get_node_text(&decl, &source).starts_with("static int counter"));
+        assert!(matches!(
+            resolve_identifier_binding_in(&root, &use_site, "counter", &source),
+            Some(IdentifierBinding::Global(_))
+        ));
     }
 
     /// A function nested in a block (GNU C, or a parse a macro confused)

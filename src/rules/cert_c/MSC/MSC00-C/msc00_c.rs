@@ -44,8 +44,7 @@ impl Msc00C {
     fn traverse(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         let mut push_depth: i32 = 0;
 
-        let mut cursor = root.walk();
-        for child in root.children(&mut cursor) {
+        for child in ast_utils::top_level_items_outside_arms(*root) {
             if child.kind() != "preproc_call" {
                 continue;
             }

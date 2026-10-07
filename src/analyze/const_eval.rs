@@ -1224,11 +1224,12 @@ pub fn collect_macro_constants(root: &Node, source: &str, model: IntFacts) -> Ma
     let mut macros = builtin_constants(model).clone();
     // Two-pass: first collect all raw definitions, then resolve references
     let mut raw_defs: Vec<(String, String)> = Vec::new();
-    collect_preproc_defs(root, source, &mut raw_defs);
+    let dead = DeadRegions::of(source);
+    collect_preproc_defs_rec(root, source, &dead, &mut raw_defs);
     // Also collect file-scope `static const int NAME = VALUE;` declarations
-    collect_static_const_defs(root, source, &mut raw_defs);
+    collect_static_const_defs(root, source, &dead, &mut raw_defs);
     // Also collect file-scope `static int NAME = VALUE;` (no const) when never reassigned
-    collect_non_const_static_defs(root, source, &mut raw_defs);
+    collect_non_const_static_defs(root, source, &dead, &mut raw_defs);
     // Collect `enum { NAME = VALUE, ... }` enumerators as compile-time constants
     collect_enum_constants(root, source, &mut raw_defs);
     for (name, _) in &raw_defs {
@@ -1343,9 +1344,10 @@ pub fn cfg_prunable_constants(root: &Node, source: &str, model: IntFacts) -> Mac
 pub fn config_dependent_constant_names(root: &Node, source: &str) -> HashSet<String> {
     let mut out = HashSet::new();
     let mut raw: Vec<(String, String)> = Vec::new();
-    collect_preproc_defs(root, source, &mut raw);
-    collect_static_const_defs(root, source, &mut raw);
-    collect_non_const_static_defs(root, source, &mut raw);
+    let dead = DeadRegions::of(source);
+    collect_preproc_defs_rec(root, source, &dead, &mut raw);
+    collect_static_const_defs(root, source, &dead, &mut raw);
+    collect_non_const_static_defs(root, source, &dead, &mut raw);
     let mut texts: HashMap<&str, HashSet<&str>> = HashMap::new();
     for (name, value) in &raw {
         texts.entry(name.as_str()).or_default().insert(value.trim());
@@ -1479,10 +1481,17 @@ fn collect_preproc_defs_rec(
 }
 
 /// Collect file-scope `static const int NAME = VALUE;` and `const int NAME = VALUE;`
-/// declarations. These behave as compile-time constants in C.
-fn collect_static_const_defs(root: &Node, source: &str, defs: &mut Vec<(String, String)>) {
-    for child in root.child_nodes() {
-        if child.kind() != "declaration" {
+/// declarations. These behave as compile-time constants in C. Declarations
+/// inside a parser `ERROR` count (ADR-0008); ones in an `#if` arm do not, and
+/// one on a line the file proves dead is skipped.
+fn collect_static_const_defs(
+    root: &Node,
+    source: &str,
+    dead: &DeadRegions,
+    defs: &mut Vec<(String, String)>,
+) {
+    for child in ast_utils::top_level_items_outside_arms(*root) {
+        if child.kind() != "declaration" || dead.contains_node(&child) {
             continue;
         }
         let decl_text = child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
@@ -1525,11 +1534,16 @@ fn collect_static_const_defs(root: &Node, source: &str, defs: &mut Vec<(String, 
 /// Collect file-scope `static int NAME = VALUE;` declarations (no `const`) that
 /// are never reassigned in the file. These behave as effective compile-time
 /// constants in Juliet and similar controlled test patterns.
-fn collect_non_const_static_defs(root: &Node, source: &str, defs: &mut Vec<(String, String)>) {
+fn collect_non_const_static_defs(
+    root: &Node,
+    source: &str,
+    dead: &DeadRegions,
+    defs: &mut Vec<(String, String)>,
+) {
     let mut candidates: Vec<(String, String, usize)> = Vec::new();
 
-    for child in root.child_nodes() {
-        if child.kind() != "declaration" {
+    for child in ast_utils::top_level_items_outside_arms(*root) {
+        if child.kind() != "declaration" || dead.contains_node(&child) {
             continue;
         }
         let decl_text = child.utf8_text(source.as_bytes()).unwrap_or("");

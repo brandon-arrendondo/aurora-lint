@@ -5603,38 +5603,10 @@ fn collect_global_var_null_states(
     }
 
     // Step 2: Walk function bodies for assignments to these globals.
-    for child in root.child_nodes() {
-        match child.kind() {
-            "function_definition" => {
-                if let Some(body) = child.child_by_field_name("body") {
-                    scan_global_var_assignments(&body, source, &global_vars, states);
-                }
-            }
-            k if k.starts_with("preproc_") => {
-                // Recurse into preprocessor blocks for nested function definitions
-                scan_preproc_for_functions(&child, source, &global_vars, states);
-            }
-            _ => {}
-        }
-    }
-
-    fn scan_preproc_for_functions(
-        node: &Node,
-        source: &str,
-        global_vars: &HashSet<String>,
-        states: &mut HashMap<String, NullState>,
-    ) {
-        for child in node.child_nodes() {
-            match child.kind() {
-                "function_definition" => {
-                    if let Some(body) = child.child_by_field_name("body") {
-                        scan_global_var_assignments(&body, source, global_vars, states);
-                    }
-                }
-                k if k.starts_with("preproc_") => {
-                    scan_preproc_for_functions(&child, source, global_vars, states);
-                }
-                _ => {}
+    for item in ast_utils::top_level_items(*root) {
+        if item.kind() == "function_definition" {
+            if let Some(body) = item.child_by_field_name("body") {
+                scan_global_var_assignments(&body, source, &global_vars, states);
             }
         }
     }
@@ -5891,22 +5863,16 @@ fn collect_prescan_pointer_globals(
     global_vars: &mut HashSet<String>,
     states: &mut HashMap<String, NullState>,
 ) {
-    for child in node.child_nodes() {
-        match child.kind() {
-            "declaration" => {
-                let (has_extern, has_static, has_pointer) =
-                    declaration_storage_flags(&child, source);
-                if has_extern || has_static || !has_pointer {
-                    continue;
-                }
-                for decl in child.child_nodes() {
-                    record_pointer_global_declarator(&decl, source, global_vars, states);
-                }
-            }
-            k if k.starts_with("preproc_") => {
-                collect_prescan_pointer_globals(&child, source, global_vars, states);
-            }
-            _ => {}
+    for item in ast_utils::top_level_items(*node) {
+        if item.kind() != "declaration" {
+            continue;
+        }
+        let (has_extern, has_static, has_pointer) = declaration_storage_flags(&item, source);
+        if has_extern || has_static || !has_pointer {
+            continue;
+        }
+        for decl in item.child_nodes() {
+            record_pointer_global_declarator(&decl, source, global_vars, states);
         }
     }
 }
@@ -6049,7 +6015,7 @@ fn collect_global_constants(
     closure_dependent: &mut HashSet<String>,
     disqualified: &mut HashSet<String>,
 ) {
-    for child in root.child_nodes() {
+    for child in ast_utils::top_level_items(*root) {
         match child.kind() {
             // An arm the file proves dead is no configuration (ADR-0010 D2).
             "declaration" if crate::analyze::init_state::starts_in_dead_lines(&child, dead) => {}
@@ -6124,17 +6090,6 @@ fn collect_global_constants(
                     }
                 }
             }
-            "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
-            | "preproc_elifdef" => {
-                collect_global_constants(
-                    &child,
-                    source,
-                    dead,
-                    constants,
-                    closure_dependent,
-                    disqualified,
-                );
-            }
             _ => {}
         }
     }
@@ -6150,7 +6105,7 @@ fn collect_constant_return_functions(
     constants: &mut Vec<(String, i64)>,
     disqualified: &mut HashSet<String>,
 ) {
-    for child in root.child_nodes() {
+    for child in ast_utils::top_level_items(*root) {
         match child.kind() {
             "function_definition"
                 if crate::analyze::init_state::starts_in_dead_lines(&child, dead) => {}
@@ -6168,10 +6123,6 @@ fn collect_constant_return_functions(
                         disqualified.insert(name.to_string());
                     }
                 }
-            }
-            "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
-            | "preproc_elifdef" => {
-                collect_constant_return_functions(&child, source, dead, constants, disqualified);
             }
             _ => {}
         }
@@ -11046,6 +10997,86 @@ void caller(char *other) {
              that node to see the call at all"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `items` placed after a run of case-label macro statements long enough
+    /// that tree-sitter's recovery wraps the rest of the file in ONE `ERROR`.
+    /// Recovery reads the case run and the definition right after it as one
+    /// bogus `function_definition`, so `absorbed` is there to be eaten and
+    /// `items` reach the wrapper intact, as its own children.
+    fn framed_by_error(items: &str) -> String {
+        let mut src = String::from(
+            "#define C2S(x) case x: return #x;\n\n\
+             static const char *cmd_name(int cmd)\n{\n\tswitch (cmd) {\n",
+        );
+        for i in 0..24 {
+            src.push_str(&format!("\tC2S(CMD_{})\n", i));
+        }
+        src.push_str("\t}\n\treturn \"unknown\";\n}\n\n");
+        src.push_str("static int absorbed(void)\n{\n\treturn 0;\n}\n\n");
+        src.push_str(items);
+        src
+    }
+
+    /// Parse [`framed_by_error`] and check the shape the tests rely on.
+    fn parse_framed(code: &str) -> (tree_sitter::Tree, String) {
+        let (tree, source) = parse_c(code);
+        let error = tree
+            .root_node()
+            .child_nodes()
+            .find(|c| c.kind() == "ERROR")
+            .expect("the case-label run wraps the rest of the file in an ERROR");
+        assert!(
+            error.child_nodes().any(|c| c.kind() == "declaration"),
+            "the items after the absorbed definition are the ERROR's children"
+        );
+        (tree, source)
+    }
+
+    #[test]
+    fn global_constants_inside_a_framing_error_are_collected() {
+        let (tree, source) = parse_framed(&framed_by_error(
+            "const int limit = 7;\n\nint always_one(void)\n{\n\treturn 1;\n}\n",
+        ));
+        let root = tree.root_node();
+        let (mut constants, mut closure, mut disqualified) =
+            (Vec::new(), HashSet::new(), HashSet::new());
+        collect_global_constants(
+            &root,
+            &source,
+            &[],
+            &mut constants,
+            &mut closure,
+            &mut disqualified,
+        );
+        assert!(constants.contains(&("limit".to_string(), 7)));
+        let mut returning = Vec::new();
+        collect_constant_return_functions(&root, &source, &[], &mut returning, &mut disqualified);
+        assert!(returning.contains(&("always_one".to_string(), 1)));
+    }
+
+    #[test]
+    fn global_null_states_reach_into_a_framing_error() {
+        let src = format!(
+            "char *g_name = \"x\";\n\n{}",
+            framed_by_error(
+                "char *g_inner = NULL;\n\n\
+                 void reset(void)\n{\n\tg_name = NULL;\n}\n"
+            )
+        );
+        let (tree, source) = parse_framed(&src);
+        let mut states = HashMap::new();
+        collect_global_var_null_states(&tree.root_node(), &source, &mut states);
+        assert_eq!(
+            states.get("g_name").copied(),
+            Some(NullState::PossiblyNull),
+            "`reset` sits inside the ERROR and stores NULL into the global"
+        );
+        assert_eq!(
+            states.get("g_inner").copied(),
+            Some(NullState::DefinitelyNull),
+            "a pointer global declared inside the ERROR is a global too"
+        );
     }
 
     /// pure-ftpd's `sqlsubst`, reduced: `static` in two files, and in each
