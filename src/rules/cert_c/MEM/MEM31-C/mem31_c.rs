@@ -55,6 +55,102 @@ fn peel_casts_and_parens(mut n: Node) -> Node {
     }
 }
 
+/// The declarator `ident` (an identifier occurrence) resolves to, as a node
+/// id: the identity of the object it names (ADR-0006).
+fn declarator_id(ident: &Node, source: &str) -> Option<usize> {
+    if ident.kind() != "identifier" {
+        return None;
+    }
+    let name = ast_utils::get_node_text(ident, source);
+    ast_utils::resolve_identifier_declarator(ident, name, source).map(|(_, d)| d.id())
+}
+
+/// For `A[K]` with both a plain identifier (through casts and parentheses),
+/// the ids of the declarators `A` and `K` resolve to.
+fn element_store_identity(subscript: &Node, source: &str) -> Option<(usize, usize)> {
+    if subscript.kind() != "subscript_expression" {
+        return None;
+    }
+    let array = peel_casts_and_parens(subscript.child_by_field_name("argument")?);
+    let index = peel_casts_and_parens(subscript.child_by_field_name("index")?);
+    Some((
+        declarator_id(&array, source)?,
+        declarator_id(&index, source)?,
+    ))
+}
+
+/// `for (i = 0; i < K; i++)` (or `int i = 0`, `K > i`, `++i`, `i += 1`):
+/// the counter's occurrence in the condition and the bound `K`, both plain
+/// identifiers. `None` for any other loop head.
+fn counting_loop_from_zero<'t>(loop_node: &Node<'t>, source: &str) -> Option<(Node<'t>, Node<'t>)> {
+    let is_zero =
+        |n: Node| n.kind() == "number_literal" && ast_utils::get_node_text(&n, source) == "0";
+    let init = loop_node.child_by_field_name("initializer")?;
+    let counter_name = match init.kind() {
+        "assignment_expression" => {
+            let left = init.child_by_field_name("left")?;
+            let right = init.child_by_field_name("right")?;
+            (left.kind() == "identifier"
+                && ast_utils::get_node_text(&init.child_by_field_name("operator")?, source) == "="
+                && is_zero(right))
+            .then(|| ast_utils::get_node_text(&left, source))?
+        }
+        "declaration" => {
+            let mut inits = init
+                .named_child_nodes()
+                .filter(|c| c.kind() == "init_declarator");
+            let only = inits.next()?;
+            if inits.next().is_some() {
+                return None;
+            }
+            let name = only.child_by_field_name("declarator")?;
+            (name.kind() == "identifier" && is_zero(only.child_by_field_name("value")?))
+                .then(|| ast_utils::get_node_text(&name, source))?
+        }
+        _ => return None,
+    };
+    let cond = loop_node.child_by_field_name("condition")?;
+    if cond.kind() != "binary_expression" {
+        return None;
+    }
+    let op = ast_utils::get_node_text(&cond.child_by_field_name("operator")?, source);
+    let left = cond.child_by_field_name("left")?;
+    let right = cond.child_by_field_name("right")?;
+    let (counter, bound) = match op {
+        "<" => (left, right),
+        ">" => (right, left),
+        _ => return None,
+    };
+    if counter.kind() != "identifier"
+        || bound.kind() != "identifier"
+        || ast_utils::get_node_text(&counter, source) != counter_name
+    {
+        return None;
+    }
+    let update = loop_node.child_by_field_name("update")?;
+    let steps_by_one = match update.kind() {
+        "update_expression" => {
+            update
+                .child_by_field_name("argument")
+                .is_some_and(|a| ast_utils::get_node_text(&a, source) == counter_name)
+                && ast_utils::get_node_text(&update, source).contains("++")
+        }
+        "assignment_expression" => {
+            update
+                .child_by_field_name("left")
+                .is_some_and(|l| ast_utils::get_node_text(&l, source) == counter_name)
+                && update
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| ast_utils::get_node_text(&o, source) == "+=")
+                && update
+                    .child_by_field_name("right")
+                    .is_some_and(|r| ast_utils::get_node_text(&r, source) == "1")
+        }
+        _ => false,
+    };
+    steps_by_one.then_some((counter, bound))
+}
+
 /// The name of the object a call argument hands over for release, as the
 /// walk keys it, and whether it is handed over by address: a variable
 /// (`p`), a field or element by value (`d.handles`, `x->handles`,
@@ -400,6 +496,10 @@ struct MemoryLeakAnalyzer<'a> {
     signal_registered: bool,
     // Track loop allocation/free patterns: array_base -> (alloc_condition, free_condition)
     loop_array_patterns: HashMap<String, LoopArrayEvidence>,
+    // An allocation stored into `A[K]` (both plain identifiers), by its
+    // tracked key: the ids of the declarators `A` and `K` resolve to. What
+    // `credit_covering_element_frees` matches a freeing loop against.
+    element_stores: HashMap<String, (usize, usize)>,
     // Function summaries from prescan for inter-procedural analysis
     function_summaries: &'a ScopedTable<FunctionSummary>,
     // Names of this function's own parameters (an earlier fix: a struct reached
@@ -861,6 +961,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             realloc_relations: HashMap::new(),
             signal_registered: false,
             loop_array_patterns: HashMap::new(),
+            element_stores: HashMap::new(),
             function_summaries,
             function_params: HashSet::new(),
             deref_allocated_params: HashSet::new(),
@@ -1231,6 +1332,107 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             })
         })
         .is_some()
+    }
+
+    /// `for (i = 0; i < K; i++) dealloc(A[i]);` releases every element an
+    /// earlier `A[K] = alloc(...); K++;` filled: indices 0 through K - 1.
+    /// Each element store this walk recorded (`element_stores`) whose `A`
+    /// and `K` resolve to the same declarators as the loop's array and bound
+    /// is credited as freed at the loop.
+    ///
+    /// Both sides are matched by declaration, never by spelling
+    /// (ADR-0006): a free of another array, or a loop bounded by another
+    /// counter, credits nothing. Narrow on purpose. The loop counts from 0
+    /// by one up to `i < K`, its body can neither leave early (`break`,
+    /// `goto`, `return`) nor write `i` or `K`, and the free is a call that
+    /// releases the argument (`free`, a declared deallocator, a freeing
+    /// macro, or a callee whose summary frees it) handed exactly `A[i]`.
+    /// Anything else, a loop from 1 or to `K - 1` among them, leaves the
+    /// stores unreleased. hostap's `sme.c` fills `hlp[num_hlp]` with
+    /// `wpabuf_alloc` and frees with `for (i = 0; i < num_hlp; i++)
+    /// wpabuf_free(hlp[i]);`.
+    ///
+    /// Run after the loop's exits are merged, which keeps only what holds
+    /// on every path out (the body may run zero times). Zero iterations
+    /// means `K` is 0, so no store was made and there is nothing to free.
+    fn credit_covering_element_frees(&mut self, loop_node: &Node, source: &str) {
+        if self.element_stores.is_empty() {
+            return;
+        }
+        let Some((counter, bound)) = counting_loop_from_zero(loop_node, source) else {
+            return;
+        };
+        let Some(body) = loop_node.child_by_field_name("body") else {
+            return;
+        };
+        let counter_name = ast_utils::get_node_text(&counter, source);
+        let bound_name = ast_utils::get_node_text(&bound, source);
+        let leaves_or_writes = query::find_first_descendant(body, |n| match n.kind() {
+            "break_statement" | "goto_statement" | "return_statement" => true,
+            "assignment_expression" | "update_expression" => {
+                let target = n
+                    .child_by_field_name("left")
+                    .or_else(|| n.child_by_field_name("argument"));
+                target.is_some_and(|t| {
+                    let t = ast_utils::get_node_text(&t, source);
+                    t == counter_name || t == bound_name
+                })
+            }
+            _ => false,
+        });
+        if leaves_or_writes.is_some() {
+            return;
+        }
+        let (Some(counter_id), Some(bound_id)) = (
+            declarator_id(&counter, source),
+            declarator_id(&bound, source),
+        ) else {
+            return;
+        };
+        let mut freed: Vec<(usize, (usize, usize))> = Vec::new();
+        for call in query::find_descendants_of_kind(body, "call_expression") {
+            let Some(function) = call.child_by_field_name("function") else {
+                continue;
+            };
+            let callee = self.callee_name(&function, source);
+            let site = site_of(&call, source);
+            let declared = call_roles::frees_argument(&callee);
+            let by_macro = self.macro_freed_param_indices(&callee, site);
+            let summary = self.summary_at(&callee, site);
+            let pos = call.start_position();
+            for (idx, arg) in Self::call_args(call).enumerate() {
+                let releases = declared == Some(idx)
+                    || by_macro.contains(&idx)
+                    || summary
+                        .as_ref()
+                        .is_some_and(|s| s.frees_params.contains(&idx));
+                if !releases {
+                    continue;
+                }
+                let Some((array_id, index_id)) =
+                    element_store_identity(&peel_casts_and_parens(arg), source)
+                else {
+                    continue;
+                };
+                if index_id == counter_id {
+                    freed.push((array_id, (pos.row + 1, pos.column + 1)));
+                }
+            }
+        }
+        for (array_id, at) in freed {
+            let keys: Vec<String> = self
+                .element_stores
+                .iter()
+                .filter(|(key, &(a, k))| {
+                    a == array_id && k == bound_id && self.allocated_memory.contains_key(*key)
+                })
+                .map(|(key, _)| key.clone())
+                .collect();
+            for key in keys {
+                self.maybe_freed.remove(&key);
+                self.freed_memory.insert(key, at);
+            }
+        }
     }
 
     /// A call's arguments, in order, without the punctuation.
@@ -2792,6 +2994,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         source: &str,
     ) {
         self.merge_loop_exits(loop_node, pre, source);
+        if loop_node.kind() == "for_statement" {
+            self.credit_covering_element_frees(loop_node, source);
+        }
         if let Some((alloc_info, free_info, loop_condition)) = array_pattern {
             if let Some((array_base, site)) = alloc_info {
                 if let Some(cond) = &loop_condition {
@@ -3325,8 +3530,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         .unwrap_or_else(|| var_name.clone());
                     let pos = right.start_position();
                     let alloc_type = self.get_allocation_type(&right, source);
-                    self.track_allocation_guarded(
-                        var_name,
+                    let identity = element_store_identity(&left, source);
+                    let tracked = self.track_allocation_guarded(
+                        var_name.clone(),
                         guard_name,
                         AllocInfo {
                             line: pos.row + 1,
@@ -3334,6 +3540,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             alloc_type,
                         },
                     );
+                    match identity {
+                        Some(ids) if tracked => {
+                            self.element_stores.insert(var_name, ids);
+                        }
+                        _ => {
+                            self.element_stores.remove(&var_name);
+                        }
+                    }
                 } else {
                     // If right side is an allocated variable, mark it as escaped
                     // e.g., list->head = new_node (new_node escapes)
