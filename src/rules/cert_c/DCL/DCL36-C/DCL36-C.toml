@@ -7,14 +7,43 @@ title = "Do not declare an identifier with conflicting linkage classifications"
 description = """
 Linkage can make an identifier declared in different scopes or declared multiple
 times within the same scope refer to the same object or function. Identifiers
-are classified asexternally linked,internally linked, ornot linked. These three
-kinds of linkage have the following characteristics [Kirch-Prinz 2002]:
+are classified as externally linked, internally linked, or not linked. These
+three kinds of linkage have the following characteristics [Kirch-Prinz 2002]:
+- External linkage: An identifier with external linkage represents the same
+object or function throughout the entire program, that is, in all compilation
+units and libraries belonging to the program. The identifier is available to the
+linker. When a second declaration of the same identifier with external linkage
+occurs, the linker associates the identifier with the same object or function.
+- Internal linkage: An identifier with internal linkage represents the same
+object or function within a given translation unit. The linker has no
+information about identifiers with internal linkage. Consequently, these
+identifiers are internal to the translation unit.
+- No linkage: If an identifier has no linkage, then any further declaration
+using the identifier declares something new, such as a new variable or a new
+type.
 According to the C Standard, 6.2.2 paragraph 3 [ISO/IEC 9899:2024], linkage is
-determined as follows: Use of an identifier (within one translation unit)
-classified as both internally and externally linked isundefined behavior. (See
-alsoundefined behavior 8.) A translation unit includes the source file together
-with its headers and all source files included via the preprocessing
-directive#include.
+determined as follows:
+If the declaration of a file scope identifier for: an object contains any of the
+storage-class specifiers static or contexpr; - or, a function contains the
+storage-class specifier static, then the identifier has internal linkage. For an
+identifier declared with the storage-class specifier extern in a scope in which
+a prior declaration of that identifier is visible, if the prior declaration
+specifies internal or external linkage, the linkage of the identifier at the
+later declaration is the same as the linkage specified at the prior declaration.
+If no prior declaration is visible, or if the prior declaration specifies no
+linkage, then the identifier has external linkage. If the declaration of an
+identifier for a function has no storage-class specifier, its linkage is
+determined exactly as if it were declared with the storage-class specifier
+extern. If the declaration of an identifier for an object has file scope and
+does not contain the storage-class specifier static or contexpr, its linkage is
+external. The following identifiers have no linkage: an identifier declared to
+be anything other than an object or a function; an identifier declared to be a
+function parameter; a block scope identifier for an object declared without the
+storage-class specifier extern.
+Use of an identifier (within one translation unit) classified as both internally
+and externally linked is undefined behavior. (See also undefined behavior 8.) A
+translation unit includes the source file together with its headers and all
+source files included via the preprocessing directive #include.
 """
 severity = "Medium"
 likelihood = "Probable"

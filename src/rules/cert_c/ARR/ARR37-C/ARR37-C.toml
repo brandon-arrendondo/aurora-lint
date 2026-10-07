@@ -6,10 +6,15 @@ number = 37
 title = "Do not add or subtract an integer to a pointer to a non-array object"
 description = """
 Pointer arithmetic must be performed only on pointers that reference elements of
-array objects. The C Standard, 6.5.7 [ISO/IEC 9899:2024], states the following
-about pointer arithmetic: This noncompliant code example attempts to access
-structure members using pointer arithmetic. This practice is dangerous because
-structure members are not guaranteed to be contiguous.
+array objects.
+The C Standard, 6.5.7 [ISO/IEC 9899:2024], states the following about pointer
+arithmetic:
+When an expression that has integer type is added to or subtracted from a
+pointer, the result has the type of the pointer operand. If the pointer operand
+points to an element of an array object, and the array is large enough, the
+result points to an element offset from the original element such that the
+difference of the subscripts of the resulting and original array elements equals
+the integer expression.
 """
 severity = "Medium"
 likelihood = "Probable"

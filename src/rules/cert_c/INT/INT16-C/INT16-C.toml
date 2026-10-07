@@ -6,12 +6,13 @@ number = 16
 title = "Do not make assumptions about representation of signed integers"
 description = """
 Although many common implementations use a two's complement representation of
-signed integers, the C Standard declares such use asimplementation-definedand
-allows all of the following representations: This is a specific example
-ofMSC14-C. Do not introduce unnecessary platform dependencies. One way to check
-whether a number is even or odd is to examine the least significant bit, but the
-results will be inconsistent. Specifically, this example gives unexpected
-behavior on all one's complement implementations:
+signed integers, the C Standard declares such use as implementation-defined and
+allows all of the following representations:
+- Sign and magnitude
+- Two's complement
+- One's complement
+This is a specific example of MSC14-C. Do not introduce unnecessary platform
+dependencies.
 """
 severity = "Medium"
 likelihood = "Unlikely"

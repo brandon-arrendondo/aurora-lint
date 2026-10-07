@@ -6,16 +6,22 @@ number = 39
 title = "Avoid information leakage when passing a structure across a trust boundary"
 description = """
 The C Standard, 6.7.3.2, discusses the layout of structure fields. It specifies
-that non-bit-field members are aligned in animplementation-definedmanner and
+that non-bit-field members are aligned in an implementation-defined manner and
 that there may be padding within or at the end of a structure. Furthermore,
 initializing the members of the structure does not guarantee initialization of
 the padding bytes. The C Standard, 6.2.6.1, paragraph 6 [ISO/IEC 9899:2024],
-states Additionally, the storage units in which a bit-field resides may also
-have padding bits. For an object with automatic storage duration, these padding
-bits do not take on specific values and can contribute to leaking sensitive
-information. When passing a pointer to a structure across a trust boundary to a
-different trusted domain, the programmer must ensure that the padding bytes and
-bit-field storage unit padding bits of such a structure do not contain sensitive
+states
+When a value is stored in an object of structure or union type, including in a
+member object, the bytes of the object representation that correspond to any
+padding bytes take unspecified values (e.g. structure and union assignment may
+or may not copy any padding bits).
+Additionally, the storage units in which a bit-field resides may also have
+padding bits. For an object with automatic storage duration, these padding bits
+do not take on specific values and can contribute to leaking sensitive
+information.
+When passing a pointer to a structure across a trust boundary to a different
+trusted domain, the programmer must ensure that the padding bytes and bit-field
+storage unit padding bits of such a structure do not contain sensitive
 information.
 """
 severity = "Low"

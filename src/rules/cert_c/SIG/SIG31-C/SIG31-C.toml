@@ -8,19 +8,20 @@ description = """
 Accessing or modifying shared objects in signal handlers can result in race
 conditions that can leave data in an inconsistent state. The two exceptions (C
 Standard, 5.1.2.3, paragraph 5) to this rule are the ability to read from and
-write to lock-free atomic objects and variables of typevolatile sig_atomic_t.
-Accessing any other type of object from a signal handler isundefined behavior.
-(Seeundefined behavior 131.) The need for thevolatilekeyword is described
-inDCL22-C. Use volatile for data that cannot be cached. The typesig_atomic_tis
-the integer type of an object that can be accessed as an atomic entity even in
-the presence of asynchronous interrupts. The type
-ofsig_atomic_tisimplementation-defined, though it provides some guarantees.
-Integer values ranging fromSIG_ATOMIC_MINthroughSIG_ATOMIC_MAX, inclusive, may
-be safely stored to a variable of the type. In addition, whensig_atomic_tis a
-signed integer type,SIG_ATOMIC_MINmust be no greater than−127andSIG_ATOMIC_MAXno
-less than127. Otherwise,SIG_ATOMIC_MINmust be0andSIG_ATOMIC_MAXmust be no less
-than255. The macrosSIG_ATOMIC_MINandSIG_ATOMIC_MAXare defined in the
-header<stdint.h>.
+write to lock-free atomic objects and variables of type volatile sig_atomic_t.
+Accessing any other type of object from a signal handler is undefined behavior.
+(See undefined behavior 131.)
+The need for the volatile keyword is described in DCL22-C. Use volatile for data
+that cannot be cached.
+The type sig_atomic_t is the integer type of an object that can be accessed as
+an atomic entity even in the presence of asynchronous interrupts. The type of
+sig_atomic_t is implementation-defined, though it provides some guarantees.
+Integer values ranging from SIG_ATOMIC_MIN through SIG_ATOMIC_MAX, inclusive,
+may be safely stored to a variable of the type. In addition, when sig_atomic_t
+is a signed integer type, SIG_ATOMIC_MIN must be no greater than −127 and
+SIG_ATOMIC_MAX no less than 127. Otherwise, SIG_ATOMIC_MIN must be 0 and
+SIG_ATOMIC_MAX must be no less than 255. The macros SIG_ATOMIC_MIN and
+SIG_ATOMIC_MAX are defined in the header <stdint.h>.
 """
 severity = "High"
 likelihood = "Likely"

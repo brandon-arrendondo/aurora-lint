@@ -10,12 +10,10 @@ unprivileged user to access that file. Although access permissions are heavily
 dependent on the file system, many file-creation functions provide mechanisms to
 set (or at least influence) access permissions. When these functions are used to
 create files, appropriate access permissions should be specified to prevent
-unintended access. When setting access permissions, it is important to make sure
-that an attacker cannot alter them. (SeeFIO15-C. Ensure that file operations are
-performed in a secure directory.) Thefopen()function does not allow the
-programmer to explicitly specify file access permissions. In this noncompliant
-code example, if the call tofopen()creates a new file, the access permissions
-areimplementation-defined:
+unintended access.
+When setting access permissions, it is important to make sure that an attacker
+cannot alter them. (See FIO15-C. Ensure that file operations are performed in a
+secure directory.)
 """
 severity = "Medium"
 likelihood = "Probable"

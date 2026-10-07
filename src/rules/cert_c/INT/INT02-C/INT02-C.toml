@@ -9,19 +9,13 @@ Conversions can occur explicitly as the result of a cast or implicitly as
 required by an operation. Although conversions are generally required for the
 correct execution of a program, they can also lead to lost or misinterpreted
 data. Conversion of an operand value to a compatible type causes no change to
-the value or the representation. The C integer conversion rules define how C
-compilers handle conversions. These rules includeinteger promotions,integer
-conversion rank, and theusual arithmetic conversions. The intent of the rules is
-to ensure that the conversions result in the same numerical values and that
-these values minimize surprises in the rest of the computation. Prestandard C
-usually preferred to preserve signedness of the type. Integer types smaller
-thanintare promoted when an operation is performed on them. If all values of the
-original type can be represented as anint, the value of the smaller type is
-converted to anint; otherwise, it is converted to anunsigned int. Integer
-promotions are applied as part of the usual arithmetic conversions to certain
-argument expressions; operands of the unary+,-, and~operators; and operands of
-the shift operators. The following code fragment shows the application of
-integer promotions:
+the value or the representation.
+The C integer conversion rules define how C compilers handle conversions. These
+rules include integer promotions, integer conversion rank, and the usual
+arithmetic conversions. The intent of the rules is to ensure that the
+conversions result in the same numerical values and that these values minimize
+surprises in the rest of the computation. Prestandard C usually preferred to
+preserve signedness of the type.
 """
 severity = "Medium"
 likelihood = "Probable"

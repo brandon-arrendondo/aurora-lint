@@ -5,18 +5,20 @@ category = "EXP"
 number = 10
 title = "Do not depend on the order of evaluation of subexpressions or the order in which side effects take place"
 description = """
-The order of evaluation of subexpressions and the order in whichside effectstake
-place are frequently defined asunspecified behaviorby the C Standard.
-Counterintuitively,unspecified behaviorin behavior for which the standard
+The order of evaluation of subexpressions and the order in which side effects
+take place are frequently defined as unspecified behavior by the C Standard.
+Counterintuitively, unspecified behavior in behavior for which the standard
 provides two or more possibilities and imposes no further requirements on which
 is chosen in any instance. Consequently, unspecified behavior can be a
-portability issue because differentimplementationscan make different choices. If
-dynamic scheduling is used, however, there may not be a fixed-code execution
+portability issue because different implementations can make different choices.
+If dynamic scheduling is used, however, there may not be a fixed-code execution
 sequence over the life of a process. Operations that can be executed in
-different sequences may in fact be executed in a different order. According to
-the C Standard, subclause 6.5 [ISO/IEC 9899:2011], Following are specific
-examples of situations in which the order of evaluation of subexpressions or the
-order in whichside effectstake place is unspecified:
+different sequences may in fact be executed in a different order.
+According to the C Standard, subclause 6.5 [ISO/IEC 9899:2011],
+Except as specified later, side effects and value computations of subexpressions
+are unsequenced.
+Following are specific examples of situations in which the order of evaluation
+of subexpressions or the order in which side effects take place is unspecified:
 """
 severity = "Medium"
 likelihood = "Probable"

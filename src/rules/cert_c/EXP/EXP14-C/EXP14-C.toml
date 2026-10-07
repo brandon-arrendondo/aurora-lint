@@ -5,16 +5,16 @@ category = "EXP"
 number = 14
 title = "Beware of integer promotion when performing bitwise operations on integer types smaller than int"
 description = """
-DeprecatedThis guideline has been deprecated byINT02-C. Understand integer
-conversion rules Integer types smaller thanintare promoted when an operation is
-performed on them. If all values of the original type can be represented as
-anint, the value of the smaller type is converted to anint; otherwise, it is
-converted to anunsigned int(seeINT02-C. Understand integer conversion rules). If
-the conversion is to a wider type, the original value is zero-extended for
-unsigned values or sign-extended for signed types. Consequently, bitwise
-operations on integer types smaller thanintmay have unexpected results. This
-noncompliant code example demonstrates how performing bitwise operations on
-integer types smaller thanintmay have unexpected results.
+Deprecated
+This guideline has been deprecated by
+- INT02-C. Understand integer conversion rules
+Integer types smaller than int are promoted when an operation is performed on
+them. If all values of the original type can be represented as an int, the value
+of the smaller type is converted to an int; otherwise, it is converted to an
+unsigned int (see INT02-C. Understand integer conversion rules). If the
+conversion is to a wider type, the original value is zero-extended for unsigned
+values or sign-extended for signed types. Consequently, bitwise operations on
+integer types smaller than int may have unexpected results.
 """
 severity = "low"
 likelihood = "likely"

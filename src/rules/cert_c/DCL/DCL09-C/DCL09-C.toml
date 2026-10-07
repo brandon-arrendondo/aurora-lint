@@ -5,18 +5,20 @@ category = "DCL"
 number = 9
 title = "Declare functions that return errno with a return type of errno_t"
 description = """
-When developing new code, declare functions that returnerrnowith a return type
-oferrno_t. Many existing functions that returnerrnoare declared as returning a
-value of typeint. It is semantically unclear by inspecting the function
+When developing new code, declare functions that return errno with a return type
+of errno_t. Many existing functions that return errno are declared as returning
+a value of type int. It is semantically unclear by inspecting the function
 declaration or prototype if these functions return an error status or a value
-or, worse, some combination of the two. (SeeERR02-C. Avoid in-band error
-indicators.) C11 Annex K introduced the new typeerrno_tthat is defined to be
-typeintinerrno.hand elsewhere. Many of the functions defined in C11 Annex K
-return values of this type. Theerrno_ttype should be used as the type of an
-object that may contain only values that might be found inerrno. For example, a
-function that returns the value oferrnoshould be declared as having the return
-typeerrno_t. This recommendation depends on C11 Annex K being implemented. The
-following code can be added to remove this dependency:
+or, worse, some combination of the two. (See ERR02-C. Avoid in-band error
+indicators.)
+C11 Annex K introduced the new type errno_t that is defined to be type int in
+errno.h and elsewhere. Many of the functions defined in C11 Annex K return
+values of this type. The errno_t type should be used as the type of an object
+that may contain only values that might be found in errno. For example, a
+function that returns the value of errno should be declared as having the return
+type errno_t.
+This recommendation depends on C11 Annex K being implemented. The following code
+can be added to remove this dependency:
 """
 severity = "Low"
 likelihood = "Unlikely"

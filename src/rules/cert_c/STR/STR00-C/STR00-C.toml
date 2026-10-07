@@ -11,16 +11,18 @@ sequence of characters terminated by and including the first null character and
 are supported in C as the format used for string literals. The C programming
 language supports single-byte character strings, multibyte character strings,
 and wide-character strings. Single-byte and multibyte character strings are both
-described as null-terminated byte strings, which are also callednarrowcharacter
-strings. A pointer to a null-terminated byte string points to its initial
-character. The length of the string is the number of bytes preceding the null
-character, and the value of the string is the sequence of the values of the
-contained characters, in order. A wide string is a contiguous sequence of wide
-characters (of typewchar_t) terminated by and including the first null wide
-character. A pointer to a wide string points to its initial (lowest addressed)
-wide character. The length of a wide string is the number of wide characters
-preceding the null wide character, and the value of a wide string is the
-sequence of code values of the contained wide characters, in order.
+described as null-terminated byte strings, which are also called narrow
+character strings.
+A pointer to a null-terminated byte string points to its initial character. The
+length of the string is the number of bytes preceding the null character, and
+the value of the string is the sequence of the values of the contained
+characters, in order.
+A wide string is a contiguous sequence of wide characters (of type wchar_t)
+terminated by and including the first null wide character. A pointer to a wide
+string points to its initial (lowest addressed) wide character. The length of a
+wide string is the number of wide characters preceding the null wide character,
+and the value of a wide string is the sequence of code values of the contained
+wide characters, in order.
 """
 severity = "Medium"
 likelihood = "Probable"

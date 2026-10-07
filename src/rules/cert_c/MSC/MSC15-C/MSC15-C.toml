@@ -5,10 +5,17 @@ category = "MSC"
 number = 15
 title = 'Do not depend on undefined behavior'
 description = '''
-The C Standard, subclause 3.5.3 [ ISO/IEC 9899:2024 ], defines undefined
-behavior as
+The C Standard, subclause 3.5.3 [ISO/IEC 9899:2024], defines undefined behavior
+as
+behavior, upon use of a nonportable or erroneous program construct or of
+erroneous data, for which this document imposes no requirements
 Subclause 4 explains how the standard identifies undefined behavior (see also
 undefined behavior 1 of Annex J).
+If a "shall" or "shall not" requirement that appears outside of a constraint or
+runtime-constraint is violated, the behavior is undefined. Undefined behavior is
+otherwise indicated in this document by the words "undefined behavior" or by the
+omission of any explicit definition of behavior. There is no difference in
+emphasis among these three; they all describe "behavior that is undefined".
 Annex J, subclause J.2, "Undefined behavior," enumerates the circumstances under
 which the behavior of a program is undefined. This list is duplicated on the CC.
 Undefined Behavior page.

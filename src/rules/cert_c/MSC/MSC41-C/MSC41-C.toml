@@ -8,16 +8,13 @@ description = """
 Hard coding sensitive information, such as passwords or encryption keys can
 expose the information to attackers. Anyone who has access to the executable or
 dynamic library files can examine them for strings or other critical data,
-revealing the sensitive information. Leaking data protected byInternational
-Traffic in Arms Regulations(ITAR) or theHealth Insurance Portability and
+revealing the sensitive information. Leaking data protected by International
+Traffic in Arms Regulations (ITAR) or the Health Insurance Portability and
 Accountability Act (HIPAA) can also have legal consequences. Consequently,
-programs must not hard code sensitive information. Hard coding sensitive
-information also increases the need to manage and accommodate changes to the
-code. For example, changing a hard-coded password in a deployed program may
-require distribution of a patch[Chess 2007]. This noncompliant code example must
-authenticate to a remote service with a code, using theauthenticate()function
-declared below. It passes the authentication code to this function as a string
-literal.
+programs must not hard code sensitive information.
+Hard coding sensitive information also increases the need to manage and
+accommodate changes to the code. For example, changing a hard-coded password in
+a deployed program may require distribution of a patch [Chess 2007].
 """
 severity = "High"
 likelihood = "Probable"

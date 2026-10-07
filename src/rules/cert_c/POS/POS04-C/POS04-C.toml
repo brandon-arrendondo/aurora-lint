@@ -6,13 +6,19 @@ number = 4
 title = "Avoid using PTHREAD_MUTEX_NORMAL type mutex locks"
 description = """
 Pthread mutual exclusion (mutex) locks are used to avoid simultaneous usage of
-common resources. Several types of mutex locks are defined by
-pthreads:NORMAL,ERRORCHECK,RECURSIVE, andDEFAULT. POSIX
-describesPTHREAD_MUTEX_NORMALlocks as having the following undefined behavior
-[Open Group 2004]: TheDEFAULTmutex pthread is also generally mapped
-toPTHREAD_MUTEX_NORMALbut is known to vary from platform to platform [SOL 2010].
-Consequently,NORMALlocks should not be used, andERRORCHECKorRECURSIVElocks
-should be defined explicitly when mutex locks are used.
+common resources. Several types of mutex locks are defined by pthreads: NORMAL,
+ERRORCHECK, RECURSIVE, and DEFAULT.
+POSIX describes PTHREAD_MUTEX_NORMAL locks as having the following undefined
+behavior [Open Group 2004]:
+This type of mutex does not provide deadlock detection. A thread attempting to
+relock this mutex without first unlocking it shall deadlock. An error is not
+returned to the caller. Attempting to unlock a mutex locked by a different
+thread results in undefined behavior. Attempting to unlock an unlocked mutex
+results in undefined behavior.
+The DEFAULT mutex pthread is also generally mapped to PTHREAD_MUTEX_NORMAL but
+is known to vary from platform to platform [SOL 2010]. Consequently, NORMAL
+locks should not be used, and ERRORCHECK or RECURSIVE locks should be defined
+explicitly when mutex locks are used.
 """
 severity = "Low"
 likelihood = "Unlikely"

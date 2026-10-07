@@ -5,24 +5,30 @@ category = "INT"
 number = 32
 title = "Ensure that operations on signed integers do not result in overflow"
 description = """
-Signed integer overflow isundefined behavior 36.
-Consequently,implementationshave considerable latitude in how they deal with
-signed integer overflow. (SeeMSC15-C. Do not depend on undefined behavior.) An
-implementation that defines signed integer types as being modulo, for example,
-need not detect integer overflow. Implementations may also trap on signed
-arithmetic overflows, or simply assume that overflows will never happen and
-generate object code accordingly. It is also possible for the same conforming
-implementation to emit code that exhibits different behavior in different
-contexts. For example, an implementation may determine that a signed integer
-loop control variable declared in a local scope cannot overflow and may emit
-efficient code on the basis of that determination, while the same implementation
-may determine that a global variable used in a similar context will wrap. For
-these reasons, it is important to ensure that operations on signed integers do
-not result in overflow. Of particular importance are operations on signed
-integer values that originate from atainted sourceand are used as Integer
-operations will overflow if the resulting value cannot be represented by the
-underlying representation of the integer. The following table indicates which
-operations can result in overflow.
+Signed integer overflow is undefined behavior 35. Consequently, implementations
+have considerable latitude in how they deal with signed integer overflow. (See
+MSC15-C. Do not depend on undefined behavior.) An implementation that defines
+signed integer types as being modulo, for example, need not detect integer
+overflow. Implementations may also trap on signed arithmetic overflows, or
+simply assume that overflows will never happen and generate object code
+accordingly. It is also possible for the same conforming implementation to emit
+code that exhibits different behavior in different contexts. For example, an
+implementation may determine that a signed integer loop control variable
+declared in a local scope cannot overflow and may emit efficient code on the
+basis of that determination, while the same implementation may determine that a
+global variable used in a similar context will wrap.
+For these reasons, it is important to ensure that operations on signed integers
+do not result in overflow. Of particular importance are operations on signed
+integer values that originate from a tainted source and are used as
+- Integer operands of any pointer arithmetic, including array indexing
+- The assignment expression for the declaration of a variable length array
+- The postfix expression preceding square brackets [] or the expression in
+square brackets [] of a subscripted designation of an element of an array object
+- Function arguments of type size_t or rsize_t (for example, an argument to a
+memory allocation function)
+Integer operations will overflow if the resulting value cannot be represented by
+the underlying representation of the integer. The following table indicates
+which operations can result in overflow.
 """
 severity = "High"
 likelihood = "Likely"

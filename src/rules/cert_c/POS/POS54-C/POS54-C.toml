@@ -9,20 +9,23 @@ All standard library functions, including I/O functions and memory allocation
 functions, return either a valid value or a value of the correct return type
 that indicates an error (for example, −1 or a null pointer). Assuming that all
 calls to such functions will succeed and failing to check the return value for
-an indication of an error is a dangerous practice that may lead
-tounexpectedorundefined behaviorwhen an error occurs. It is essential that
-programs detect and appropriately handle all errors in accordance with an error-
-handling policy, as discussed inERR00-C. Adopt and implement a consistent and
-comprehensive error-handling policy. In addition to the C standard library
-functions mentioned inERR33-C. Detect and handle standard library errors, the
-following functions defined in POSIX require error checking (list is not all-
-inclusive). The successful completion or failure of each of the standard library
-functions listed in the following table shall be determined either by comparing
-the function’s return value with the value listed in the column labeled “Error
+an indication of an error is a dangerous practice that may lead to unexpected or
+undefined behavior when an error occurs. It is essential that programs detect
+and appropriately handle all errors in accordance with an error-handling policy,
+as discussed in ERR00-C. Adopt and implement a consistent and comprehensive
+error-handling policy. In addition to the C standard library functions mentioned
+in ERR33-C. Detect and handle standard library errors, the following functions
+defined in POSIX require error checking (list is not all-inclusive).
+The successful completion or failure of each of the standard library functions
+listed in the following table shall be determined either by comparing the
+function’s return value with the value listed in the column labeled “Error
 Return” or by calling one of the library functions mentioned in the footnotes to
-the same column. FunctionSuccessful ReturnError Returnerrnofmemopen()Pointer to
-aFILEobjectNULLENOMEMopen_memstream()Pointer to
-aFILEobjectNULLENOMEMposix_memalign()0NonzeroUnchanged
+the same column.
+Setting errno is a POSIX [ISO/IEC 9945:2008] extension to the C Standard. On
+error, posix_memalign() returns a value that corresponds to one of the constants
+defined in the <errno.h> header. The function does not set errno. The
+posix_memalign() function is optional and is not required to be provided by
+POSIX-conforming implementations.
 """
 severity = "High"
 likelihood = "Likely"

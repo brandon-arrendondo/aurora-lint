@@ -11,10 +11,25 @@ is, the size of the array is not specified explicitly within the structure. This
 "struct hack" was widely used in practice and supported by a variety of
 compilers. Consequently, a variety of different syntaxes have been used for
 declaring flexible array members. For conforming C implementations, use the
-syntax guaranteed to be valid by the C Standard. Flexible array members are
-defined in the C Standard, 6.7.3.2, paragraph 20 [ISO/IEC 9899:2024], as
-follows: Structures with a flexible array member can be used to produce code
-with defined behavior. However, some restrictions apply:
+syntax guaranteed to be valid by the C Standard.
+Flexible array members are defined in the C Standard, 6.7.3.2, paragraph 20
+[ISO/IEC 9899:2024], as follows:
+As a special case, the last element of a structure with more than one named
+member may have an incomplete array type; this is called a flexible array
+member. In most situations, the flexible array member is ignored. In particular,
+the size of the structure is as if the flexible array member were omitted except
+that it may have more trailing padding than the omission would imply. However,
+when a. (or ->) operator has a left operand that is (a pointer to) a structure
+with a flexible array member and the right operand names that member, it behaves
+as if that member were replaced with the longest array (with the same element
+type) that would not make the structure larger than the object being accessed;
+the offset of the array shall remain that of the flexible array member, even if
+this would differ from that of the replacement array. If this array would have
+no elements, it behaves as if it had one element but the behavior is undefined
+if any attempt is made to access that element or to generate a pointer one past
+it.
+Structures with a flexible array member can be used to produce code with defined
+behavior. However, some restrictions apply:
 """
 severity = "Low"
 likelihood = "Unlikely"

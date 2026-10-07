@@ -5,13 +5,13 @@ category = "FIO"
 number = 46
 title = "Do not access a closed file"
 description = """
-Using the value of a pointer to aFILEobject after the associated file is closed
-isundefined behavior. (Seeundefined behavior 153.) Programs that close the
-standard streams (especiallystdoutbut alsostderrandstdin) must be careful not to
-use these streams in subsequent function calls, particularly those that
-implicitly operate on them (such asprintf(),perror(), andgetc()). This rule can
-be generalized to other file representations. In this noncompliant code example,
-thestdoutstream is used after it is closed:
+Using the value of a pointer to a FILE object after the associated file is
+closed is undefined behavior. (See undefined behavior 153.) Programs that close
+the standard streams (especially stdout but also stderr and stdin) must be
+careful not to use these streams in subsequent function calls, particularly
+those that implicitly operate on them (such as printf(), perror(), and
+getchar()).
+This rule can be generalized to other file representations.
 """
 severity = "Medium"
 likelihood = "Unlikely"

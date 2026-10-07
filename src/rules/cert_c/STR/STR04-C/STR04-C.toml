@@ -5,17 +5,18 @@ category = "STR"
 number = 4
 title = "Use plain char for characters in the basic character set"
 description = """
-There are threecharacter types:char,signed char, andunsigned char. Compilers
-have the latitude to definecharto have the same range, representation, and
-behavior as eithersigned charorunsigned char. Irrespective of the choice
-made,charis a separate type from the other two and is not compatible with
-either. For characters in the basic character set, it does not matter which data
-type is used, except for type compatibility. Consequently, it is best to use
-plaincharfor character data for compatibility with standard string-handling
-functions. In most cases, the only portable operators on plainchartypes are
-assignment and equality operators (=,==,!=). An exception is the translation to
-and from digits. For example, if thecharcis a digit,c - '0'is a value between 0
-and 9.
+There are three character types: char, signed char, and unsigned char. Compilers
+have the latitude to define char to have the same range, representation, and
+behavior as either signed char or unsigned char. Irrespective of the choice
+made, char is a separate type from the other two and is not compatible with
+either.
+For characters in the basic character set, it does not matter which data type is
+used, except for type compatibility. Consequently, it is best to use plain char
+for character data for compatibility with standard string-handling functions.
+In most cases, the only portable operators on plain char types are assignment
+and equality operators (=, ==,!=). An exception is the translation to and from
+digits. For example, if the char c is a digit, c - '0' is a value between 0 and
+9.
 """
 severity = "Low"
 likelihood = "Unlikely"

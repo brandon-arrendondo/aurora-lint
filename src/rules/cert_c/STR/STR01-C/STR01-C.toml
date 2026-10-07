@@ -11,14 +11,15 @@ allocate memory as required. Each approach has advantages and disadvantages.
 However, it generally makes sense to select a single approach to managing
 strings and apply it consistently across a project. Otherwise, the decision is
 left to individual programmers who are likely to make different, inconsistent
-choices. Statically allocated strings assume a fixed-size character array,
-meaning that it is impossible to add data after the buffer is filled. Because
-the static approach discards excess data, actual program data can be lost.
-Consequently, the resulting string must be fully validated. Dynamically
-allocated buffers dynamically resize as additional memory is required. Dynamic
-approaches scale better and do not discard excess data. The major disadvantage
-is that, if inputs are not limited, they can exhaust memory on a machine and
-consequently be used indenial-of-serviceattacks.
+choices.
+Statically allocated strings assume a fixed-size character array, meaning that
+it is impossible to add data after the buffer is filled. Because the static
+approach discards excess data, actual program data can be lost. Consequently,
+the resulting string must be fully validated.
+Dynamically allocated buffers dynamically resize as additional memory is
+required. Dynamic approaches scale better and do not discard excess data. The
+major disadvantage is that, if inputs are not limited, they can exhaust memory
+on a machine and consequently be used in denial-of-service attacks.
 """
 severity = "Low"
 likelihood = "Unlikely"

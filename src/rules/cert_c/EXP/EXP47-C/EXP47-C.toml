@@ -5,20 +5,30 @@ category = "EXP"
 number = 47
 title = "Do not call va_arg with an argument of the incorrect type"
 description = """
-The variable arguments passed to a variadic function are accessed by calling
-theva_arg()macro. This macro accepts theva_listrepresenting the variable
+The variable arguments passed to a variadic function are accessed by calling the
+va_arg() macro. This macro accepts the va_list representing the variable
 arguments of the function invocation and the type denoting the expected argument
 type for the argument being retrieved. The macro is typically invoked within a
 loop, being called once for each expected argument. However, there are no type
-safety guarantees that the type passed tova_argmatches the type passed by the
+safety guarantees that the type passed to va_arg matches the type passed by the
 caller, and there are generally no compile-time checks that prevent the macro
-from being invoked with no argument available to the function call. The C
-Standard, 7.16.1.1, states [ISO/IEC 9899:2024], in part: Ensure that an
-invocation of theva_arg()macro does not attempt to access an argument that was
-not passed to the variadic function. Further, the type passed to
-theva_arg()macro must match the type passed to the variadic function after
-default argument promotions have been applied. Either circumstance results
-inundefined behavior 141.
+from being invoked with no argument available to the function call.
+The C Standard, 7.16.1.1, states [ISO/IEC 9899:2024], in part:
+If type is not compatible with the type of the actual next argument (as promoted
+according to the default argument promotions), the behavior is undefined, except
+for the following cases: — both types are pointers to qualified or unqualified
+versions of compatible types; — one type is compatible with a signed integer
+type, the other type is compatible with the corresponding unsigned integer type,
+and the value is representable in both types; — one type is pointer to qualified
+or unqualified void and the other is a pointer to a qualified or unqualified
+character type; — or, the type of the next argument is nullptr _ t and type is a
+pointer type that has the same representation and alignment requirements as a
+pointer to a character type.
+Ensure that an invocation of the va_arg() macro does not attempt to access an
+argument that was not passed to the variadic function. Further, the type passed
+to the va_arg() macro must match the type passed to the variadic function after
+default argument promotions have been applied. Either circumstance results in
+undefined behavior 141.
 """
 severity = "Medium"
 likelihood = "Likely"

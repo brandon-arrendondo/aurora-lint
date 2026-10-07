@@ -287,24 +287,62 @@ def _is_element(node: Any) -> bool:
     return isinstance(node, list) and len(node) >= 2 and isinstance(node[0], str)
 
 
+def _normalize_text(text: str) -> str:
+    """Collapse whitespace (including the non-breaking spaces the site's
+    content is full of) and drop the stray space the site leaves before
+    punctuation after a link ("program , which") and inside a citation's
+brackets ("[ ISO/IEC 9899:2011 ]")."""
+    text = " ".join(text.replace("\xa0", " ").split())
+    text = re.sub(r" +([,.;:!?)\]])", r"\1", text)
+    return re.sub(r"([(\[]) +", r"\1", text)
+
+
+def _block_text(node: List[Any]) -> str:
+    """Text of one top-level block: a paragraph, a blockquote (whose own
+    paragraphs are joined with a space, not run together), or a list (one
+    "- item" line per entry)."""
+    if node[0] == "blockquote":
+        children = [c for c in node[2:] if _is_element(c) or isinstance(c, str)]
+        return " ".join(_normalize_text(node_text(c)) for c in children if node_text(c).strip())
+    if node[0] in ("ul", "ol"):
+        items = [_normalize_text(node_text(li)) for li in node[2:] if _is_element(li) and li[0] == "li"]
+        return "\n\n".join(f"- {item}" for item in items if item)
+    return _normalize_text(node_text(node))
+
+
+def _top_blocks(nodes: List[Any]):
+    """Top-level blocks of a page body, looking through the `div` wrapper a
+    few pages put around their whole content (CON08-C)."""
+    for node in nodes:
+        if _is_element(node) and node[0] == "div":
+            yield from _top_blocks(node[2:])
+        else:
+            yield node
+
+
 def _extract_description(body_value: List[Any]) -> str:
-    """Extract the description from the top-level paragraphs before the
-    first heading after the title (mirrors the old scraper's "first few
-    paragraphs" heuristic)."""
+    """Extract the description from the top-level blocks before the first
+    heading after the title (mirrors the old scraper's "first few
+    paragraphs" heuristic). Three paragraphs are taken; a blockquote or list
+    between them is kept too, since it is often the sentence the paragraph
+    before it introduces ("The IEEE standards page states that")."""
     desc_parts = []
-    for node in body_value:
+    paragraphs = 0
+    for node in _top_blocks(body_value):
         if not _is_element(node):
             continue
         if node[0] in HEADING_TAGS:
             if desc_parts:
                 break
             continue
-        if node[0] == "p":
-            text = node_text(node).strip()
+        if node[0] in ("p", "blockquote", "ul", "ol"):
+            text = _block_text(node)
             if text:
                 desc_parts.append(text)
-                if len(desc_parts) >= 3:
-                    break
+                if node[0] == "p":
+                    paragraphs += 1
+                    if paragraphs >= 3:
+                        break
     return "\n\n".join(desc_parts)
 
 

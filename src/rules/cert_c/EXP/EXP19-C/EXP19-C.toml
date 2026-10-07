@@ -5,10 +5,11 @@ category = "EXP"
 number = 19
 title = "Use braces for the body of an if, for, or while statement"
 description = """
-Opening and closing braces forif,for, andwhilestatements should always be used
-even if the statement's body contains only a single statement. If anif,while,
-orforstatement is used in a macro, the macro definition should not conclude with
-a semicolon. (SeePRE11-C. Do not conclude macro definitions with a semicolon.)
+Opening and closing braces for if, for, and while statements should always be
+used even if the statement's body contains only a single statement.
+If an if, while, or for statement is used in a macro, the macro definition
+should not conclude with a semicolon. (See PRE11-C. Do not conclude macro
+definitions with a semicolon.)
 Braces improve the uniformity and readability of code. More important, when
 inserting an additional statement into a body containing only a single
 statement, it is easy to forget to add braces because the indentation gives

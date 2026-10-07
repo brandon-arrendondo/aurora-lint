@@ -5,21 +5,22 @@ category = "MSC"
 number = 39
 title = "Do not call va_arg() on a va_list that has an indeterminate value"
 description = """
-Variadic functions access their variable arguments by usingva_start()to
-initialize an object of typeva_list, iteratively invoking theva_arg()macro, and
-finally callingva_end(). Theva_listmay be passed as an argument to another
-function, but callingva_arg()within that function causes theva_listto have
-anindeterminate valuein the calling function. As a result, attempting to read
-variable arguments without reinitializing theva_listcan haveunexpected behavior.
-According to the C Standard, 7.16, paragraph 3 [ISO/IEC 9899:2024], This
-noncompliant code example attempts to check that none of its variable arguments
-are zero by passing ava_listto helper functioncontains_zero(). After the call
-tocontains_zero(), the value ofapisindeterminate. #include <stdarg.h> #include
-<stdio.h> int contains_zero(size_t count, va_list ap) { for (size_t i = 1; i <
-count; ++i) { if (va_arg(ap, double) == 0.0) { return 1; } } return 0; } int
-print_reciprocals(size_t count, ...) { va_list ap; va_start(ap, count); if
-(contains_zero(count, ap)) { va_end(ap); return 1; } for (size_t i = 0; i <
-count; ++i) { printf("%f ", 1.0 / va_arg(ap, double)); } va_end(ap); return 0; }
+Variadic functions access their variable arguments by using va_start() to
+initialize an object of type va_list, iteratively invoking the va_arg() macro,
+and finally calling va_end(). The va_list may be passed as an argument to
+another function, but calling va_arg() within that function causes the va_list
+to have an indeterminate value in the calling function. As a result, attempting
+to read variable arguments without reinitializing the va_list can have
+unexpected behavior. According to the C Standard, 7.16, paragraph 3 [ISO/IEC
+9899:2024],
+If access to the varying arguments is desired, the called function shall declare
+an object (generally referred to as ap in this subclause) having type va_list.
+The object ap may be passed as an argument to another function; if that function
+invokes the va_arg macro with parameter ap, the representation of ap in the
+calling function is indeterminate and shall be passed to the va_end macro prior
+to any further reference to ap. 295) A pointer to a va _ list can be created and
+passed to another function, in which case the original function can make further
+use of the original list after the other function returns.
 """
 severity = "Low"
 likelihood = "Unlikely"

@@ -5,19 +5,28 @@ category = "EXP"
 number = 35
 title = "Do not modify objects with temporary lifetime"
 description = """
-The C11 Standard [ISO/IEC 9899:2011] introduced a new term:temporary lifetime.
+The C11 Standard [ISO/IEC 9899:2011] introduced a new term: temporary lifetime.
 This term still remains in the C23 Standard. Modifying an object with temporary
-lifetime isundefined behavior. According to subclause 6.2.4, paragraph 8
-[ISO/IEC 9899:2024] This definition differs from the C99 Standard (which defines
-modifying the result of a function call or accessing it after the next sequence
-point as undefined behavior) because a temporary object's lifetime ends when the
+lifetime is undefined behavior. According to subclause 6.2.4, paragraph 8
+[ISO/IEC 9899:2024]
+A non-lvalue expression with structure or union type, where the structure or
+union contains a member with array type (including, recursively, members of all
+contained structures and unions) refers to an object with automatic storage
+duration and temporary lifetime. Its lifetime begins when the expression is
+evaluated and its initial value is the value of the expression. Its lifetime
+ends when the evaluation of the containing full expression ends. Any attempt to
+modify an object with temporary lifetime results in undefined behavior.
+This definition differs from the C99 Standard (which defines modifying the
+result of a function call or accessing it after the next sequence point as
+undefined behavior) because a temporary object's lifetime ends when the
 evaluation containing the full expression or full declarator ends, so the result
 of a function call can be accessed. This extension to the lifetime of a
 temporary also removes a quiet change to C90 and improves compatibility with
-C++. C functions may not return arrays; however, functions can return a pointer
-to an array or astructorunionthat contains arrays.Consequently, in any version
-of C, if a function call returns by value astructorunioncontaining an array, do
-not modify those arrays within the expression containing the function call.In
+C++.
+C functions may not return arrays; however, functions can return a pointer to an
+array or a struct or union that contains arrays. Consequently, in any version of
+C, if a function call returns by value a struct or union containing an array, do
+not modify those arrays within the expression containing the function call. In
 C99 and older, do not access an array returned by a function after the next
 sequence point or after the evaluation of the containing full expression or full
 declarator ends.

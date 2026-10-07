@@ -9,14 +9,8 @@ Variadic functions accept a variable number of arguments but are problematic.
 Variadic functions define an implicit contract between the function writer and
 the function user that allows the function to determine the number of arguments
 passed in any particular invocation. Failure to enforce this contract may result
-inundefined behavior. Seeundefined behavior 141of Appendix J of the C Standard.
-In the following code example, the variadic functionaverage()calculates the
-average value of the positive integer arguments passed to the function [Seacord
-2013]. The function processes arguments until it encounters an argument with the
-value ofva_eol(-1). enum { va_eol = -1 }; unsigned int average(int first, ...) {
-unsigned int count = 0; unsigned int sum = 0; int i = first; va_list args;
-va_start(args, first); while (i != va_eol) { sum += i; count++; i = va_arg(args,
-int); } va_end(args); return(count ? (sum / count) : 0); }
+in undefined behavior. See undefined behavior 141 of Appendix J of the C
+Standard.
 """
 severity = "High"
 likelihood = "Probable"

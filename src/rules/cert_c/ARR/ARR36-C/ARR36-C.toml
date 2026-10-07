@@ -8,14 +8,16 @@ description = """
 When two pointers are subtracted, both must point to elements of the same array
 object or just one past the last element of the array object (C Standard, 6.5.7
 [ISO/IEC 9899:2024]); the result is the difference of the subscripts of the two
-array elements. Otherwise, the operation isundefined behavior. (Seeundefined
-behavior 45.) Similarly, comparing pointers using the relational
-operators<,<=,>=, and>gives the positions of the pointers relative to each
-other. Subtracting or comparing pointers that do not refer to the same array is
-undefined behavior. (Seeundefined behavior 45andundefined behavior 50.)
-Comparing pointers using the equality operators==and!=has well-defined semantics
-regardless of whether or not either of the pointers is null, points into the
-same object, or points one past the last element of an array object or function.
+array elements. Otherwise, the operation is undefined behavior. (See undefined
+behavior 45.)
+Similarly, comparing pointers using the relational operators <, <=, >=, and >
+gives the positions of the pointers relative to each other. Subtracting or
+comparing pointers that do not refer to the same array is undefined behavior.
+(See undefined behavior 45 and undefined behavior 50.)
+Comparing pointers using the equality operators == and!= has well-defined
+semantics regardless of whether or not either of the pointers is null, points
+into the same object, or points one past the last element of an array object or
+function.
 """
 severity = "Medium"
 likelihood = "Probable"

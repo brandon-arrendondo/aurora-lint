@@ -6,14 +6,17 @@ number = 2
 title = "Sanitize data passed to complex subsystems"
 description = """
 String data passed to complex subsystems may contain special characters that can
-trigger commands or actions, resulting in a softwarevulnerability. As a result,
-it is necessary tosanitizeall string data passed to complex subsystems so that
+trigger commands or actions, resulting in a software vulnerability. As a result,
+it is necessary to sanitize all string data passed to complex subsystems so that
 the resulting string is innocuous in the context in which it will be
-interpreted. These are some examples of complex subsystems: Data sanitization
-requires an understanding of the data being passed and the capabilities of the
-subsystem. John Viega and Matt Messier provide an example of an application that
-inputs an email address to a buffer and then uses this string as an argument in
-a call tosystem()[Viega 2003]:
+interpreted.
+These are some examples of complex subsystems:
+- Command processor via a call to system() or similar function (also addressed
+in ENV03-C. Sanitize the environment when invoking external programs)
+- External programs
+- Relational databases
+- Third-party commercial off-the-shelf components (for example, an enterprise
+resource planning subsystem)
 """
 severity = "High"
 likelihood = "Likely"

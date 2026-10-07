@@ -5,26 +5,24 @@ category = "INT"
 number = 34
 title = "Do not shift an expression by a negative number of bits or by greater than or equal to the number of bits that exist in the operand"
 description = """
-Bitwise shifts include left-shift operations of the formshift-
-expression<<additive-expressionand right-shift operations of the formshift-
-expression>>additive-expression. The standard integer promotions are first
-performed on the operands, each of which has an integer type. The type of the
-result is that of the promoted left operand. If the value of the right operand
-is negative or is greater than or equal to the width of the promoted left
-operand, the behavior isundefined. (Seeundefined behavior 48.) Do not shift an
-expression by a negative number of bits or by a number greater than or equal to
-theprecisionof the promoted left operand. The precision of an integer type is
-the number of bits it uses to represent values, excluding any sign and padding
-bits. For unsigned integer types, the width and the precision are the same;
-whereas for signed integer types, the width is one greater than the precision.
-This rule uses precision instead of width because, in almost every case, an
-attempt to shift by a number of bits greater than or equal to the precision of
-the operand indicates a bug (logic error). A logic error is different from
-overflow, in which there is simply a representational deficiency. In general,
-shifts should be performed only on unsigned operands. (SeeINT13-C. Use bitwise
-operators only on unsigned operands.) The result ofE1 << E2isE1left-shiftedE2bit
-positions; vacated bits are filled with zeros. The following diagram illustrates
-the left-shift operation.
+Bitwise shifts include left-shift operations of the form shift-expression <<
+additive-expression and right-shift operations of the form shift-expression >>
+additive-expression. The standard integer promotions are first performed on the
+operands, each of which has an integer type. The type of the result is that of
+the promoted left operand. If the value of the right operand is negative or is
+greater than or equal to the width of the promoted left operand, the behavior is
+undefined. (See undefined behavior 48.)
+Do not shift an expression by a negative number of bits or by a number greater
+than or equal to the precision of the promoted left operand. The precision of an
+integer type is the number of bits it uses to represent values, excluding any
+sign and padding bits. For unsigned integer types, the width and the precision
+are the same; whereas for signed integer types, the width is one greater than
+the precision. This rule uses precision instead of width because, in almost
+every case, an attempt to shift by a number of bits greater than or equal to the
+precision of the operand indicates a bug (logic error). A logic error is
+different from overflow, in which there is simply a representational deficiency.
+In general, shifts should be performed only on unsigned operands. (See INT13-C.
+Use bitwise operators only on unsigned operands.)
 """
 severity = "Low"
 likelihood = "Unlikely"

@@ -5,23 +5,25 @@ category = "FIO"
 number = 34
 title = "Distinguish between characters read from a file and EOF or WEOF"
 description = """
-TheEOFmacro represents a negative value that is used to indicate that the file
-is exhausted and no data remains when reading data from a file.EOFis an example
-of anin-band error indicator. In-band error indicators are problematic to work
-with, and the creation of new in-band-error indicators is discouraged byERR02-C.
-Avoid in-band error indicators. The byte I/O functionsfgetc(),getc(),
-andgetchar()all read a character from a stream and return it as
-anint.(SeeSTR00-C. Represent characters using an appropriate type.) If the
-stream is at the end of the file, the end-of-file indicator for the stream is
-set and the function returnsEOF. If a read error occurs, the error indicator for
-the stream is set and the function returnsEOF. If these functions succeed, they
-cast the character returned into anunsigned char. BecauseEOFis negative, it
-should not match any unsigned character value. However, this is only true
-forimplementationswhere theinttype is wider thanchar. On an implementation
-whereintandcharhave the same width, a character-reading function can read and
-return a valid character that has the same bit-pattern asEOF. This could occur,
-for example, if an attacker inserted a value that looked likeEOFinto the file or
-data stream to alter the behavior of the program.
+The EOF macro represents a negative value that is used to indicate that the file
+is exhausted and no data remains when reading data from a file. EOF is an
+example of an in-band error indicator. In-band error indicators are problematic
+to work with, and the creation of new in-band-error indicators is discouraged by
+ERR02-C. Avoid in-band error indicators.
+The byte I/O functions fgetc(), getc(), and getchar() all read a character from
+a stream and return it as an int. (See STR00-C. Represent characters using an
+appropriate type.) If the stream is at the end of the file, the end-of-file
+indicator for the stream is set and the function returns EOF. If a read error
+occurs, the error indicator for the stream is set and the function returns EOF.
+If these functions succeed, they cast the character returned into an unsigned
+char.
+Because EOF is negative, it should not match any unsigned character value.
+However, this is only true for implementations where the int type is wider than
+char. On an implementation where int and char have the same width, a character-
+reading function can read and return a valid character that has the same bit-
+pattern as EOF. This could occur, for example, if an attacker inserted a value
+that looked like EOF into the file or data stream to alter the behavior of the
+program.
 """
 severity = "High"
 likelihood = "Probable"

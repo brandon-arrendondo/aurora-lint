@@ -5,14 +5,13 @@ category = "FIO"
 number = 8
 title = "Take care when calling remove() on an open file"
 description = """
-Invokingremove()on an open file isimplementation-defined. Removing an open file
-is sometimes recommended to hide the names of temporary files that may be prone
-to attack. (SeeFIO21-C. Do not create temporary files in shared directories.) In
-cases requiring the removal of an open file, a more strongly defined function,
-such as the POSIXunlink()function, should be considered. To be strictly
-conforming and portable,remove()shouldnotbe called on an open file. This
-noncompliant code example shows a case where a file is removed while it is still
-open:
+Invoking remove() on an open file is implementation-defined. Removing an open
+file is sometimes recommended to hide the names of temporary files that may be
+prone to attack. (See FIO21-C. Do not create temporary files in shared
+directories.)
+In cases requiring the removal of an open file, a more strongly defined
+function, such as the POSIX unlink() function, should be considered. To be
+strictly conforming and portable, remove() should not be called on an open file.
 """
 severity = "Medium"
 likelihood = "Probable"

@@ -8,11 +8,9 @@ description = """
 Mixing bitwise and relational operators in the same full expression can be a
 sign of a logic error in the expression where a logical operator is usually the
 intended operator. Do not use the bitwise AND (&), bitwise OR (|), or bitwise
-XOR (^) operators with an operand of type_Bool, or the result of arelational-
-expressionorequality-expression. If the bitwise operator is intended, it should
-be indicated with use of a parenthesized expression. In this noncompliant code
-example, a bitwise&operator is used with the results of twoequality-expressions:
-if (getuid() == 0 & getgid() == 0) { /* ... */ }
+XOR (^) operators with an operand of type _Bool, or the result of a relational-
+expression or equality-expression. If the bitwise operator is intended, it
+should be indicated with use of a parenthesized expression.
 """
 severity = "Low"
 likelihood = "Likely"

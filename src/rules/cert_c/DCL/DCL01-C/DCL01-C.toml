@@ -6,16 +6,14 @@ number = 1
 title = "Do not reuse variable names in subscopes"
 description = """
 Do not use the same variable name in two scopes where one scope is contained in
-another. For example, Reusing variable names leads to programmer confusion about
-which variable is being modified. Additionally, if variable names are reused,
-generally one or both of the variable names are too generic. This noncompliant
-code example declares themsgidentifier at file scope and reuses the same
-identifier to declare a character array local to thereport_error()function. The
-programmer may unintentionally copy the function argument to the locally
-declaredmsgarray within thereport_error()function. Depending on the programmer's
-intention, it either fails to initialize the global variablemsgor allows the
-localmsgbuffer to overflow by using the global valuemsgsizeas a bounds for the
-local buffer.
+another. For example,
+- No other variable should share the name of a global variable if the other
+variable is in a subscope of the global variable.
+- A block should not declare a variable with the same name as a variable
+declared in any block that contains it.
+Reusing variable names leads to programmer confusion about which variable is
+being modified. Additionally, if variable names are reused, generally one or
+both of the variable names are too generic.
 """
 severity = "Low"
 likelihood = "Unlikely"

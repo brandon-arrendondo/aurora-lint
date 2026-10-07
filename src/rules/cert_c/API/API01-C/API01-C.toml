@@ -7,13 +7,11 @@ title = "Avoid laying out strings in memory directly before sensitive data"
 description = """
 Strings (both character and wide-character) are often subject to buffer
 overflows, which will overwrite the memory immediately past the string. Many
-rules warn against buffer overflows, includingSTR31-C. Guarantee that storage
+rules warn against buffer overflows, including STR31-C. Guarantee that storage
 for strings has sufficient space for character data and the null terminator.
 Sometimes the danger of buffer overflows can be minimized by ensuring that
 arranging memory such that data that might be corrupted by a buffer overflow is
-not sensitive. This noncompliant code example stores a set of strings using a
-linked list: const size_t String_Size = 20; struct node_s { char
-name[String_Size]; struct node_s* next; }
+not sensitive.
 """
 severity = "High"
 likelihood = "Likely"

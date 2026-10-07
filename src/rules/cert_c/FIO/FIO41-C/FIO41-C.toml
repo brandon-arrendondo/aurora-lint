@@ -5,16 +5,13 @@ category = "FIO"
 number = 41
 title = "Do not call getc(), putc(), getwc(), or putwc() with a stream argument that has side effects"
 description = """
-Do not invokegetc()orputc()or their wide-character
-analoguesgetwc()andputwc()with a stream argument that has side effects. The
-stream argument passed to these macros may be evaluated more than once if these
-functions are implemented as unsafe macros. (SeePRE31-C. Avoid side effects in
-arguments to unsafe macrosfor more information.) This rule does not apply to the
-character argument inputc()or the wide-character argument inputwc(), which is
-guaranteed to be evaluated exactly once. This noncompliant code example calls
-thegetc()function with an expression as the stream argument. Ifgetc()is
-implemented as a macro, the file may be opened multiple times. (SeeFIO24-C. Do
-not open a file that is already open.)
+Do not invoke getc() or putc() or their wide-character analogues getwc() and
+putwc() with a stream argument that has side effects. The stream argument passed
+to these macros may be evaluated more than once if these functions are
+implemented as unsafe macros. (See PRE31-C. Avoid side effects in arguments to
+unsafe macros for more information.)
+This rule does not apply to the character argument in putc() or the wide-
+character argument in putwc(), which is guaranteed to be evaluated exactly once.
 """
 severity = "Low"
 likelihood = "Unlikely"

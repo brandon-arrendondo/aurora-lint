@@ -6,12 +6,11 @@ number = 4
 title = "Do not reuse a standard header file name"
 description = """
 If a file with the same name as a standard header is placed in the search path
-for included source files, the behavior isundefined. The following table from
-the C Standard, subclause 7.1.2 [ISO/IEC 9899:2011], lists these standard
-headers: <assert.h><float.h><math.h><stdatomic.h><stdlib.h><time.h><complex.h><i
-nttypes.h><setjmp.h><stdbool.h><stdnoreturn.h><uchar.h><ctype.h><iso646.h><signa
-l.h><stddef.h><string.h><wchar.h><errno.h><limits.h><stdalign.h><stdint.h><tgmat
-h.h><wctype.h><fenv.h><locale.h><stdarg.h><stdio.h><threads.h>
+for included source files, the behavior is undefined.
+The following table from the C Standard, subclause 7.1.2 [ISO/IEC 9899:2011],
+lists these standard headers:
+Do not reuse standard header file names, system-specific header file names, or
+other header file names.
 """
 severity = "Low"
 likelihood = "Unlikely"

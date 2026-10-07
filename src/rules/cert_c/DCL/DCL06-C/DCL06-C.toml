@@ -5,13 +5,14 @@ category = "DCL"
 number = 6
 title = "Use meaningful symbolic constants to represent literal values"
 description = '''
-The C language provides several different kinds of constants:integerconstants,
-such as10and0x1C;floatingconstants, such as1.0and6.022e+23;
-andcharacterconstants, such as'a'and'\x10'. C also provides string literals,
-such as"hello, world"and"\n". These constants can all be referred to asliterals.
+The C language provides several different kinds of constants: integer constants,
+such as 10 and 0x1C; floating constants, such as 1.0 and 6.022e+23; and
+character constants, such as 'a' and '\x10'. C also provides string literals,
+such as "hello, world" and "\n". These constants can all be referred to as
+literals.
 When used in program logic, literals can reduce the readability of source code.
 As a result, literals, in general, and integer constants, in particular, are
-frequently calledmagic numbersbecause their purpose is often obscured. Magic
+frequently called magic numbers because their purpose is often obscured. Magic
 numbers can be constant values that represent either an arbitrary value (such as
 a determined appropriate buffer size) or a malleable concept (such as the age at
 which a person is considered an adult, which can change between geopolitical
@@ -19,9 +20,10 @@ boundaries). Rather than embed literals in program logic, use appropriately
 named symbolic constants to clarify the intent of the code. In addition, if a
 specific value needs to be changed, reassigning a symbolic constant once is more
 efficient and less error prone than replacing every instance of the value [Saks
-2002]. The C programming language has several mechanisms for creating named,
-symbolic constants:const-qualified objects, enumeration constants, andobject-
-like macrodefinitions. Each of these mechanisms has associated advantages and
+2002].
+The C programming language has several mechanisms for creating named, symbolic
+constants: const -qualified objects, enumeration constants, and object-like
+macro definitions. Each of these mechanisms has associated advantages and
 disadvantages.
 '''
 severity = "Low"

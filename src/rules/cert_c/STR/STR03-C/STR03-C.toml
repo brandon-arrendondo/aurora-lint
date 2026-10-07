@@ -6,13 +6,17 @@ number = 3
 title = "Do not inadvertently truncate a string"
 description = """
 Alternative functions that limit the number of bytes copied are often
-recommended to mitigate buffer overflowvulnerabilities. Examples include These
-functions truncate strings that exceed the specified limits. Additionally, some
-functions, such asstrncpy(), do not guarantee that the resulting character
-sequence is null-terminated. (SeeSTR32-C. Do not pass a non-null-terminated
-character sequence to a library function that expects a string.) Unintentional
-truncation results in a loss of data and in some cases leads to software
-vulnerabilities.
+recommended to mitigate buffer overflow vulnerabilities. Examples include
+- strncpy() instead of strcpy()
+- strncat() instead of strcat()
+- fgets() instead of gets()
+- snprintf() instead of sprintf()
+These functions truncate strings that exceed the specified limits. Additionally,
+some functions, such as strncpy(), do not guarantee that the resulting character
+sequence is null-terminated. (See STR32-C. Do not pass a non-null-terminated
+character sequence to a library function that expects a string.)
+Unintentional truncation results in a loss of data and in some cases leads to
+software vulnerabilities.
 """
 severity = "Medium"
 likelihood = "Probable"

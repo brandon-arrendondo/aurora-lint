@@ -5,14 +5,14 @@ category = "PRE"
 number = 13
 title = "Use the Standard predefined macros to test for versions and features."
 description = """
-The C Standard defines a set of predefined macros (see subclause 6.10.8) to help
-the user determine if theimplementationbeing used is aconformingimplementation,
-and if so, to which version of the C Standard it conforms. These macros can also
-help the user to determine which of the standard features are implemented. The
-following tables list these macros and indicate in which version of the C
-Standard they were introduced. The following macros are required: Macro NameC90C
-99C11__STDC__✓✓✓__STDC_HOSTED__✓✓__STDC_VERSION__1✓✓__DATE__✓✓✓__FILE__✓✓✓__LINE
-__✓✓✓__TIME__✓✓✓
+The C S tandard defines a set of predefined macros (see subclause 6.10.8) to
+help the user determine if the implementation being used is a conforming
+implementation, and if so, to which version of the C Standard it conforms. These
+macros can also help the user to determine which of the standard features are
+implemented.
+The following tables list these macros and indicate in which version of the C
+Standard they were introduced. The following macros are required:
+The following are optional environment macros:
 """
 severity = "Low"
 likelihood = "Probable"

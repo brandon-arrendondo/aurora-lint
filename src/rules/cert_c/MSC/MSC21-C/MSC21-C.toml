@@ -5,11 +5,11 @@ category = "MSC"
 number = 21
 title = 'Use robust loop termination conditions'
 description = '''
-C defines < , > , <= , and >= to be relational operators , and it defines == and
-!= to be equality operators .
+C defines <, >, <=, and >= to be relational operators, and it defines == and!=
+to be equality operators.
 If a for or while statement uses a loop counter, than it is safer to use a
-relational operator (such as < ) to terminate the loop than to use an equality
-operator (such as != ).
+relational operator (such as <) to terminate the loop than to use an equality
+operator (such as!=).
 '''
 severity = "Low"
 likelihood = "Unlikely"

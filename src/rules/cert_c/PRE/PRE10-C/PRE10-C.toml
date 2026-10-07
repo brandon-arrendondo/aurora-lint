@@ -6,18 +6,18 @@ number = 10
 title = "Wrap multistatement macros in a do-while loop"
 description = """
 Macros are often used to execute a sequence of multiple statements as a group.
-Inline functions are, in general, more suitable for this task (seePRE00-C.
+Inline functions are, in general, more suitable for this task (see PRE00-C.
 Prefer inline or static functions to function-like macros). Occasionally,
 however, they are not feasible (when macros are expected to operate on variables
-of different types, for example). When multiple statements are used in a macro,
-they should be bound together in ado-whileloop syntactically, so the macro can
-appear safely insideifclauses or other places that expect a single statement or
-a statement block. Note that this is only effective if none of the multiple
-statements arebreakorcontinue, as they would be captured by thedo-whileloop.
-(Alternatively, when anif,for, orwhilestatement uses braces even for a single
-body statement, then multiple statements in a macro will expand correctly even
-without ado-whileloop (seeEXP19-C. Use braces for the body of an if, for, or
-while statement).
+of different types, for example).
+When multiple statements are used in a macro, they should be bound together in a
+do-while loop syntactically, so the macro can appear safely inside if clauses or
+other places that expect a single statement or a statement block. Note that this
+is only effective if none of the multiple statements are break or continue, as
+they would be captured by the do-while loop. (Alternatively, when an if, for, or
+while statement uses braces even for a single body statement, then multiple
+statements in a macro will expand correctly even without a do-while loop (see
+EXP19-C. Use braces for the body of an if, for, or while statement).
 """
 severity = "Medium"
 likelihood = "Probable"

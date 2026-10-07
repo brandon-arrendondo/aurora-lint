@@ -9,14 +9,9 @@ Using integer arithmetic to calculate a value for assignment to a floating-point
 variable may lead to loss of information. This problem can be avoided by
 converting one of the integers in the expression to a floating type.
 When converting integers to floating-point values, and vice versa, it is
-important to carry out proper range checks to avoid undefined behavior
-(seeFLP34-C. Ensure that floating-point conversions are within range of the new
+important to carry out proper range checks to avoid undefined behavior (see
+FLP34-C. Ensure that floating-point conversions are within range of the new
 type).
-In this noncompliant code example, the division and multiplication operations
-take place on integers and are then converted to floating point. Consequently,
-floating-point variablesd,e, andfare not initialized correctly because the
-operations take place before the values are converted to floating-point values.
-The results are truncated to the nearest integer or may overflow.
 """
 severity = "Low"
 likelihood = "Probable"

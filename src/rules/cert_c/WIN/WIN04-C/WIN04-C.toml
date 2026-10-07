@@ -11,10 +11,7 @@ pointers to functions can be encrypted at runtime on the basis of some
 characteristics of the execution process so that only a running process will be
 able to decode them. This is only required for stored function pointers stored
 to writable memory, including the stack. The Microsoft SDL [Microsoft 2012]
-recommends encoding long-lived pointers in your code. This noncompliant code
-example assigns the address of theprintf()function to thelog_fnfunction pointer,
-which can be allocated in the stack or data segment: int (*log_fn)(const char *,
-...) = printf; /* ... */ log_fn("foo");
+recommends encoding long-lived pointers in your code.
 """
 severity = "High"
 likelihood = "Unlikely"

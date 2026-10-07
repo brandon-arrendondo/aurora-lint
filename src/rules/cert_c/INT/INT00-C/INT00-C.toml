@@ -5,24 +5,13 @@ category = "INT"
 number = 0
 title = "Understand the data model used by your implementation(s)"
 description = """
-Adata modeldefines the sizes assigned to standard data types. It is important to
-understand the data models used by yourimplementation. However, if your code
+A data model defines the sizes assigned to standard data types. It is important
+to understand the data models used by your implementation. However, if your code
 depends on any assumptions not guaranteed by the standard, you should provide
-static assertions to ensure that your assumptions are valid. (SeeDCL03-C. Use a
+static assertions to ensure that your assumptions are valid. (See DCL03-C. Use a
 static assertion to test the value of a constant expression.) Assumptions
 concerning integer sizes may become invalid, for example, when porting from a
-32-bit architecture to a 64-bit architecture. Data
-TypeiAPX86IA-32IA-64SPARC-64ARM-32Alpha64-bit Linux, FreeBSD,NetBSD, and
-OpenBSDchar8888888short16161616161616int16323232323232long32323264326464long
-longN/A646464646464Pointer16/32326464326464 Code frequently embeds assumptions
-about data models. For example, some code bases require pointer andlongto have
-the same size, whereas other large code bases requireintandlongto be the same
-size [van de Voort 2007]. These types of assumptions, while common, make the
-code difficult to port and make the ports error prone. One solution is to avoid
-anyimplementation-defined behavior. However, this practice can result in
-inefficient code. Another solution is to include either static or runtime
-assertions near any platform-specific assumptions, so they can be easily
-detected and corrected during porting.
+32-bit architecture to a 64-bit architecture.
 """
 severity = "High"
 likelihood = "Unlikely"

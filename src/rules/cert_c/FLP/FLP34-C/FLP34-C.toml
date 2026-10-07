@@ -10,6 +10,11 @@ smaller range and precision or to an integer type, or if an integer type is to
 be converted to a floating-point type, the value must be representable in the
 destination type.
 The C Standard, 6.3.1.4, paragraph 2 [ISO/IEC 9899:2024], says,
+When a finite value of decimal floating type is converted to an integer type
+other than bool, the fractional part is discarded (i.e. the value is truncated
+toward zero). If the value of the integral part cannot be represented by the
+integer type, the "invalid" floating-point exception shall be raised and the
+result of the conversion is unspecified.
 Paragraph 2 of the same subclause says,
 """
 severity = "Low"

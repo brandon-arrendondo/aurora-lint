@@ -5,14 +5,18 @@ category = "EXP"
 number = 37
 title = "Call functions with the correct number and type of arguments"
 description = """
-Do not call a function with the wrong number or type of arguments. The C
-Standard identifies two distinct situations in whichundefined behavior(UB) may
-arise as a result of invoking a function using a declaration that is
+Do not call a function with the wrong number or type of arguments.
+The C Standard identifies two distinct situations in which undefined behavior
+(UB) may arise as a result of invoking a function using a declaration that is
 incompatible with its definition or by supplying incorrect types or numbers of
-arguments: UBDescription25A pointer is used to call a function whose type is not
-compatible with the referenced type (6.3.2.3).37A function is defined with a
-type that is not compatible with the type (of the expression) pointed to by the
-expression that denotes the called function (6.5.2.2).
+arguments:
+Functions that are appropriately declared (as in DCL40-C. Do not create
+incompatible declarations of the same function or object) will typically
+generate a compiler diagnostic message if they are supplied with the wrong
+number or types of arguments. However, there are cases in which supplying the
+incorrect arguments to a function will, at best, generate compiler warnings.
+Although such warnings should be resolved, they do not prevent program
+compilation. (See MSC00-C. Compile cleanly at high warning levels.)
 """
 severity = "Medium"
 likelihood = "Probable"

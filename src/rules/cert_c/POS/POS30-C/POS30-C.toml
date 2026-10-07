@@ -5,11 +5,9 @@ category = "POS"
 number = 30
 title = "Use the readlink() function properly"
 description = '''
-Thereadlink()function reads where a link points to. It makesnoeffort to null-
-terminate its second argument,buffer. Instead, it just returns the number of
-characters it has written. Iflenis equal tosizeof(buf), the null terminator is
-written 1 byte past the end ofbuf: char buf[1024]; ssize_t len =
-readlink("/usr/bin/perl", buf, sizeof(buf)); buf[len] = '\0';
+The readlink() function reads where a link points to. It makes no effort to
+null-terminate its second argument, buffer. Instead, it just returns the number
+of characters it has written.
 '''
 severity = "High"
 likelihood = "Probable"

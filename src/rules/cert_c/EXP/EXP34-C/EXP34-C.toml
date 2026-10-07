@@ -5,16 +5,11 @@ category = "EXP"
 number = 34
 title = "Do not dereference null pointers"
 description = """
-Dereferencing a null pointer isundefined behavior. On many platforms,
-dereferencing a null pointer results inabnormal program termination, but this is
-not required by the standard. See "Clever Attack Exploits Fully-Patched Linux
-Kernel" [Goodin 2009] for an example of a code executionexploitthat resulted
-from a null pointer dereference. This noncompliant code example is derived from
-a real-world example taken from a vulnerable version of thelibpnglibrary as
-deployed on a popular ARM-based cell phone [Jack 2007]. Thelibpnglibrary allows
-applications to read, create, and manipulate PNG (Portable Network Graphics)
-raster image files. Thelibpnglibrary implements its own wrapper tomalloc()that
-returns a null pointer on error or on being passed a 0-byte-length argument.
+Dereferencing a null pointer is undefined behavior.
+On many platforms, dereferencing a null pointer results in abnormal program
+termination, but this is not required by the standard. See " Clever Attack
+Exploits Fully-Patched Linux Kernel " [Goodin 2009] for an example of a code
+execution exploit that resulted from a null pointer dereference.
 """
 severity = "High"
 likelihood = "Likely"

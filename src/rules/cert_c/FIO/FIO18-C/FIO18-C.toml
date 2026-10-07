@@ -5,15 +5,21 @@ category = "FIO"
 number = 18
 title = "Never expect fwrite() to terminate the writing process at a null character"
 description = """
-The C Standard, subclause 7.21.8.2 [ISO/IEC 9899:2011], defines
-thefwrite()function as follows: The definition does not state that
-thefwrite()function will stop copying characters into the file if a null
-character is encountered. Therefore, when writing a null-terminated byte string
-to a file using thefwrite()function, always use the length of the string plus 1
-(to account for the null character) as thenmembparameter. In this noncompliant
-code example, the size of the buffer is stored insize1, butsize2number of
-characters are written to the file. Ifsize2is greater thansize1,write()will not
-stop copying characters at the null character.
+The C Standard, subclause 7.21.8.2 [ISO/IEC 9899:2011], defines the fwrite()
+function as follows:
+Synopsis size_t fwrite(const void *restrict ptr, size_t size, size_t nmemb, FILE
+*restrict stream); Description The fwrite() function writes, from the array
+pointed to by ptr, up to nmemb elements whose size is specified by size, to the
+stream pointed to by stream. For each object, size calls are made to the fputc()
+function, taking the values (in order) from an array of unsigned char exactly
+overlaying the object. The file position indicator for the stream (if defined)
+is advanced by the number of bytes successfully written. If an error occurs, the
+resulting value of the file position indicator for the stream is indeterminate.
+The definition does not state that the fwrite() function will stop copying
+characters into the file if a null character is encountered. Therefore, when
+writing a null-terminated byte string to a file using the fwrite() function,
+always use the length of the string plus 1 (to account for the null character)
+as the nmemb parameter.
 """
 severity = "Medium"
 likelihood = "Probable"

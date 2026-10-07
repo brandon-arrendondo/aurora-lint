@@ -6,10 +6,17 @@ number = 39
 title = "Do not join or detach a thread that was previously joined or detached"
 description = """
 The C Standard, 7.28.5.6 paragraph 2 [ISO/IEC 9899:2024], states that a thread
-shall not be joined once it was previously joined or detached. Similarly,
-subclause 7.28.5.3 paragraph 2 [ISO/IEC 9899:2024], states that a thread shall
-not be detached once it was previously joined or detached. Violating either of
-these subclauses results inundefined behavior 211.
+shall not be joined once it was previously joined or detached.
+The termination of the other thread synchronizes with the completion of the
+thrd_join function. The thread identified by thr shall not have been previously
+detached or joined with another thread.
+Similarly, subclause 7.28.5.3 paragraph 2 [ISO/IEC 9899:2024], states that a
+thread shall not be detached once it was previously joined or detached.
+The thrd_detach function tells the operating system to dispose of any resources
+allocated to the thread identified by thr when that thread terminates. The
+thread identified by thr shall not have been previously detached or joined with
+another thread.
+Violating either of these subclauses results in undefined behavior 211.
 """
 severity = "Low"
 likelihood = "Likely"

@@ -5,15 +5,20 @@ category = "ENV"
 number = 34
 title = "Do not store pointers returned by certain functions"
 description = """
-The C Standard, 7.24.4.6, paragraph 4 [ISO/IEC 9899:2024], states This paragraph
-gives an implementation the latitude, for example, to return a pointer to a
-statically allocated buffer. Consequently, do not store this pointer because the
-string data it points to may be overwritten by a subsequent call to
-thegetenv()function or invalidated by modifications to the environment. This
-string should be referenced immediately and discarded. If later use is
-anticipated, the string should be copied so the copy can be safely referenced as
-needed. Thegetenv()function is not thread-safe. Make sure to address any
-possible race conditions resulting from the use of this function.
+The C Standard, 7.24.4.6, paragraph 4 [ISO/IEC 9899:2024], states
+The getenv function returns a pointer to a string associated with the matched
+list member. The string pointed to shall not be modified by the program but may
+be overwritten by a subsequent call to the getenv function. If the specified
+name cannot be found, a null pointer is returned.
+This paragraph gives an implementation the latitude, for example, to return a
+pointer to a statically allocated buffer. Consequently, do not store this
+pointer because the string data it points to may be overwritten by a subsequent
+call to the getenv() function or invalidated by modifications to the
+environment. This string should be referenced immediately and discarded. If
+later use is anticipated, the string should be copied so the copy can be safely
+referenced as needed.
+The getenv() function is not thread-safe. Make sure to address any possible race
+conditions resulting from the use of this function.
 """
 severity = "Low"
 likelihood = "Probable"

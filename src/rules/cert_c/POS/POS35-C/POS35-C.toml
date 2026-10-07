@@ -6,11 +6,13 @@ number = 35
 title = "Avoid race conditions while checking for the existence of a symbolic link"
 description = """
 Many common operating systems, such as Windows and UNIX, support symbolic (soft)
-links. Symbolic links can be created in UNIX using theln -scommand or in Windows
-by using directory junctions in NTFS or the Linkd.exe (Win 2K resource kit) or
-"junction" freeware. If not properly performed, checking for the existence of
-symbolic links can lead to race conditions. This rule is a specific instance of
-ruleFIO45-C. Avoid TOCTOU race conditions while accessing files.
+links. Symbolic links can be created in UNIX using the ln -s command or in
+Windows by using directory junctions in NTFS or the Linkd.exe (Win 2K resource
+kit) or "junction" freeware.
+If not properly performed, checking for the existence of symbolic links can lead
+to race conditions.
+This rule is a specific instance of rule FIO45-C. Avoid TOCTOU race conditions
+while accessing files.
 """
 severity = "High"
 likelihood = "Likely"

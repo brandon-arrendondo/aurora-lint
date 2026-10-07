@@ -7,43 +7,10 @@ title = "Do not use signals to terminate threads"
 description = """
 Do not send an uncaught signal to kill a thread because the signal kills the
 entire process, not just the individual thread. This rule is a specific instance
-ofSIG02-C. Avoid using signals to implement normal functionality.In POSIX
-systems, using thesignal()function in a multithreaded program falls under
-exceptionCON37C-C-EX0of ruleCON37-C. Do not call signal() in a multithreaded
-program.Noncompliant Code ExampleThis code uses thepthread_kill()function to
-send aSIGTERMsignal to the created thread. The thread receives the signal, and
-the entire process is terminated.void func(void *foo) { /* Execution of thread
-*/ } int main(void) { int result; pthread_t thread; if ((result =
-pthread_create(&thread, NULL, func, 0)) != 0) { /* Handle Error */ } if ((result
-= pthread_kill(thread, SIGTERM)) != 0) { /* Handle Error */ } /* This point is
-not reached because the process terminates in pthread_kill() */ return 0;
-}Compliant SolutionThis compliant code uses instead thepthread_cancel()function
-to terminate the thread. The thread continues to run until it reaches a
-cancellation point. SeeThe Open Group Base Specifications Issue 6, IEEE Std
-1003.1, 2004 Edition[Open Group 2004] for lists of functions that are required
-and allowed to be cancellation points. If the cancellation type is set to
-asynchronous, the thread is terminated immediately. However, POSIX requires only
-thepthread_cancel(),pthread_setcancelstate(),
-andpthread_setcanceltype()functions to be async-cancel safe. An application that
-calls other POSIX functions with asynchronous cancellation enabled is
-nonconforming. Consequently, we recommend disallowing asynchronous cancellation,
-as explained byPOS47-C. Do not use threads that can be canceled
-asynchronously.void func(void *foo) { /* Execution of thread */ } int main(void)
-{ int result; pthread_t thread; if ((result = pthread_create(&thread, NULL,
-func, 0)) != 0) { /* Handle Error */ } if ((result = pthread_cancel(thread)) !=
-0) { /* Handle Error */ } /* Continue executing */ return 0; }Risk
-AssessmentSending the signal to a process causes it to beabnormally terminated.R
-uleSeverityLikelihoodDetectableRepairablePriorityLevelPOS44-
-CLowProbableNoNoP2L3Automated DetectionToolVersionCheckerDescriptionCodeSonar9.1
-p0CONCURRENCY.BADFUNC.PTHREAD_KILLUse of pthread_killHelix
-QAC2025.2C5034Klocwork2025.2MISRA.INCL.SIGNAL.2012Parasoft
-C/C++test2024.2CERT_C-POS44-aThe 'pthread_kill', 'pthread_sigqueue' and 'tgkill'
-functions should not be used to send signals to threadsPC-lint Plus1.4586Fully
-supportedPolyspace Bug FinderR2025bCERT C: Rule POS44-CChecks for use of signal
-to kill thread (rule fully covered)Related VulnerabilitiesSearch for
-vulnerabilities resulting from the violation of this rule on theCERT
-website.Bibliography[OpenBSD]signal()Man Page[MKS]pthread_cancel()Man Page[Open
-Group 2004]Threads Overview
+of SIG02-C. Avoid using signals to implement normal functionality.
+In POSIX systems, using the signal() function in a multithreaded program falls
+under exception CON37C-C-EX0 of rule CON37-C. Do not call signal() in a
+multithreaded program.
 """
 severity = "Low"
 likelihood = "Probable"

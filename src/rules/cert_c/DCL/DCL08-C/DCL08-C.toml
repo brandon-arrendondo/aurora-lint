@@ -10,10 +10,7 @@ the definitions. Do not give two independent definitions, because a maintainer
 may fail to preserve that relationship when modifying the code. As a corollary,
 do not encode an impermanent or false relationship between constants, because
 future modifications may result in an incorrect definition for the dependent
-constant. In this noncompliant code example, the definition forOUT_STR_LENmust
-always be two greater than the definition ofIN_STR_LEN. The following
-definitions fail to embody this relationship: enum { IN_STR_LEN=18,
-OUT_STR_LEN=20 };
+constant.
 """
 severity = "Low"
 likelihood = "Unlikely"

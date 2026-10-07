@@ -8,9 +8,24 @@ description = """
 Integer conversions, both implicit and explicit (using a cast), must be
 guaranteed not to result in lost or misinterpreted data. This rule is
 particularly true for integer values that originate from untrusted sources and
-are used in any of the following ways: This rule also applies to arguments
-passed to the following library functions that are converted tounsigned char:
-and to arguments to the following library functions that are converted tochar:
+are used in any of the following ways:
+- Integer operands of any pointer arithmetic, including array indexing
+- The assignment expression for the declaration of a variable length array
+- The postfix expression preceding square brackets [] or the expression in
+square brackets [] of a subscripted designation of an element of an array object
+- Function arguments of type size_t or rsize_t (for example, an argument to a
+memory allocation function)
+This rule also applies to arguments passed to the following library functions
+that are converted to unsigned char:
+- memset()
+- memset_explicit()
+- fprintf() and related functions (For the length modifier c, if no l length
+modifier is present, the int argument is converted to an unsigned char, and the
+resulting character is written.)
+- fputc()
+- ungetc()
+- memchr()
+and to arguments to the following library functions that are converted to char:
 """
 severity = "High"
 likelihood = "Probable"

@@ -11,14 +11,14 @@ the array. That parameter is required to ensure that the function does not
 access memory outside the bounds of the array and adversely influence program
 execution. It should be present for each array parameter (in other words, the
 existence of each array parameter implies the existence of a complementary
-parameter that represents the maximum number of elements in the array). Note
-thatarrayis used in this recommendation to mean array, string, or any other
-pointer to a contiguous block of memory in which one or more elements of a
+parameter that represents the maximum number of elements in the array).
+Note that array is used in this recommendation to mean array, string, or any
+other pointer to a contiguous block of memory in which one or more elements of a
 particular type are (potentially) stored. These terms are all effectively
-synonymous and represent the same potential for error. Also note that this
-recommendation suggests the parameter accompanying array parameters indicates
-the maximum number of elements that can be stored in the array, not the maximum
-size, in bytes, of the array, because
+synonymous and represent the same potential for error.
+Also note that this recommendation suggests the parameter accompanying array
+parameters indicates the maximum number of elements that can be stored in the
+array, not the maximum size, in bytes, of the array, because
 """
 severity = "High"
 likelihood = "Likely"

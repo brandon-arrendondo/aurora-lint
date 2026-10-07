@@ -7,15 +7,17 @@ title = "Do not ignore values returned by functions"
 description = """
 Many functions return useful values whether or not the function has side
 effects. In most cases, this value is used to signify whether the function
-successfully completed its task or if some error occurred (seeERR02-C. Avoid in-
-band error indicators). Other times, the value is the result of some computation
-and is an integral part of the function's API. Subclause 6.8.3 of the C Standard
-[ISO/IEC 9899:2011] states: All expression statements, such as function calls
-with an ignored value, are implicitly cast tovoid. Because a return value often
-contains important information about possible errors, it should always be
-checked; otherwise, the cast should be made explicit to signify programmer
-intent. If a function returns no meaningful value, it should be declared with
-return typevoid.
+successfully completed its task or if some error occurred (see ERR02-C. Avoid
+in-band error indicators). Other times, the value is the result of some
+computation and is an integral part of the function's API.
+Subclause 6.8.3 of the C Standard [ISO/IEC 9899:2011] states:
+The expression in an expression statement is evaluated as a void expression for
+its side effects.
+All expression statements, such as function calls with an ignored value, are
+implicitly cast to void. Because a return value often contains important
+information about possible errors, it should always be checked; otherwise, the
+cast should be made explicit to signify programmer intent. If a function returns
+no meaningful value, it should be declared with return type void.
 """
 severity = "Medium"
 likelihood = "Unlikely"

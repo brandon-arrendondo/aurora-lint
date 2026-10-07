@@ -5,21 +5,10 @@ category = "MEM"
 number = 1
 title = "Store a new value in pointers immediately after free()"
 description = """
-Dangling pointers can lead to exploitable double-free and access-freed-
-memoryvulnerabilities. A simple yet effective way to eliminate dangling pointers
-and avoid many memory-related vulnerabilities is to set pointers toNULLafter
-they are freed or to set them to another valid object. In this noncompliant code
-example, the type of a message is used to determine how to process the message
-itself. It is assumed thatmessage_typeis an integer andmessageis a pointer to an
-array of characters that were allocated dynamically.
-Ifmessage_typeequalsvalue_1, the message is processed accordingly. A similar
-operation occurs whenmessage_typeequalsvalue_2. However, ifmessage_type ==
-value_1evaluates to true andmessage_type == value_2also evaluates to true,
-thenmessageis freed twice, resulting in a double-free vulnerability. char
-*message; int message_type; /* Initialize message and message_type */ if
-(message_type == value_1) { /* Process message type 1 */ free(message); } /*
-...*/ if (message_type == value_2) { /* Process message type 2 */ free(message);
-}
+Dangling pointers can lead to exploitable double-free and access-freed-memory
+vulnerabilities. A simple yet effective way to eliminate dangling pointers and
+avoid many memory-related vulnerabilities is to set pointers to NULL after they
+are freed or to set them to another valid object.
 """
 severity = "High"
 likelihood = "Unlikely"

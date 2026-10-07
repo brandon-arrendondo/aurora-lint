@@ -9,6 +9,7 @@ The recommended way to use OpenMP is to specify most of the performance
 parameters in environment variables so that administrators can tweak them for
 their environment:
 For example,
+- Set the default number of threads to use.
 – OMP_NUM_THREADS int_literal
 '''
 severity = "Unknown"

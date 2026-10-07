@@ -10,19 +10,12 @@ replace one identifier with another, for example, when an existing API changes.
 Although some risk is always involved, this practice becomes particularly
 dangerous if a function name is replaced with the function name of a deprecated
 or obsolescent function. Deprecated functions are defined by the C Standard and
-Technical Corrigenda. Obsolescent functions are defined byMSC24-C. Do not use
-deprecated or obsolescent functions. Although compliance with ruleMSC24-C. Do
-not use deprecated or obsolescent functionsguarantees compliance with this
-recommendation, the emphasis of this recommendation is the extremely risky and
-deceptive practice of replacing functions with less secure alternatives. The
-Internet Systems Consortium's (ISC) Dynamic Host Configuration Protocol (DHCP)
-contained a vulnerability that introduced several potential buffer overflow
-conditions [VU#654390]. ISC DHCP makes use of thevsnprintf()function for writing
-various log file strings;vsnprintf()is defined in the Portable Operating System
-Interface (POSIX®), Base Specifications, Issue 7 [IEEE Std 1003.1:2013] as well
-as in the C Standard. For systems that do not supportvsnprintf(), a C include
-file was created that defines thevsnprintf()function tovsprintf(), as shown in
-this noncompliant code example:
+Technical Corrigenda. Obsolescent functions are defined by MSC24-C. Do not use
+deprecated or obsolescent functions.
+Although compliance with rule MSC24-C. Do not use deprecated or obsolescent
+functions guarantees compliance with this recommendation, the emphasis of this
+recommendation is the extremely risky and deceptive practice of replacing
+functions with less secure alternatives.
 """
 severity = "High"
 likelihood = "Likely"

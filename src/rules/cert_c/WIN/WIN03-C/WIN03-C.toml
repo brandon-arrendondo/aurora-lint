@@ -6,24 +6,22 @@ number = 3
 title = "Understand HANDLE inheritance"
 description = """
 Securable resources such as access tokens, events, files, threads, and others
-are represented viaHANDLEobjects on Windows [MSDN]. Handle inheritance is a two-
-step process. When obtaining aHANDLE, an option is given to specify whether the
-object is inheritable or not. This option is usually in the form of
-aBOOLparameter (as in the case ofOpenMutex()), or aSECURITY_DESCRIPTORparameter
-(as in the case ofCreateFile()). When creating a process via
-theCreateProcess()family of APIs, a parameter is given specifying whether the
+are represented via HANDLE objects on Windows [MSDN]. Handle inheritance is a
+two-step process. When obtaining a HANDLE, an option is given to specify whether
+the object is inheritable or not. This option is usually in the form of a BOOL
+parameter (as in the case of OpenMutex()), or a SECURITY_DESCRIPTOR parameter
+(as in the case of CreateFile()). When creating a process via the
+CreateProcess() family of APIs, a parameter is given specifying whether the
 spawned process will inherit handles previously flagged as being inheritable.
 Any handles that were opened as being inheritable will be opened in the child
 process using the same handle value and access privileges as in the parent
 process. The parent process can then alert the child process of the handle
 values via an inter-process communication mechanism, and the child process can
-use those values as though it had opened the handle [MSDN]. When opening handles
-to securable resources or spawning child processes, prohibit handle inheritance
-by default to prevent accidental information leakage. If obtaining an inherited
-handle from a parent process, prevent leakage to subsequent child processes by
-duplicating the handle without inheritance. This noncompliant code example
-attempts to open an existing mutex handle that can be inherited by a child
-process:
+use those values as though it had opened the handle [MSDN].
+When opening handles to securable resources or spawning child processes,
+prohibit handle inheritance by default to prevent accidental information
+leakage. If obtaining an inherited handle from a parent process, prevent leakage
+to subsequent child processes by duplicating the handle without inheritance.
 """
 severity = "High"
 likelihood = "Unlikely"

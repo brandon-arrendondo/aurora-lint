@@ -8,11 +8,13 @@ description = """
 Do not hard code the size of a type into an application. Because of alignment,
 padding, and differences in basic types (e.g., 32-bit versus 64-bit pointers),
 the size of most types can vary between compilers and even versions of the same
-compiler. Using thesizeofoperator to determine sizes improves the clarity of
+compiler. Using the sizeof operator to determine sizes improves the clarity of
 what is meant and ensures that changes between compilers or versions will not
-affect the code. Type alignment requirements can also affect the size of
-structures. For example, the size of the following structure isimplementation-
-defined: struct s { int i; double d; };
+affect the code.
+Type alignment requirements can also affect the size of structures. For example,
+the size of the following structure is implementation-defined:
+Assuming 32-bit integers and 64-bit doubles, for example, the size can range
+from 12 to 16 bytes, depending on alignment rules.
 """
 severity = "High"
 likelihood = "Unlikely"

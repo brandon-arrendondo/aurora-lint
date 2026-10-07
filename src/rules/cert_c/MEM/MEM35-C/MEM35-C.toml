@@ -5,21 +5,21 @@ category = "MEM"
 number = 35
 title = "Allocate sufficient memory for an object"
 description = """
-The types of integer expressions used as size arguments
-tomalloc(),calloc(),realloc(), oraligned_alloc()must have sufficient range to
-represent the size of the objects to be stored. If size arguments are incorrect
-or can be manipulated by an attacker, then a buffer overflow may occur.
-Incorrect size arguments, inadequate range checking, integer overflow, or
-truncation can result in the allocation of an inadequately sized buffer.
+The types of integer expressions used as size arguments to malloc(), calloc(),
+realloc(), or aligned_alloc() must have sufficient range to represent the size
+of the objects to be stored. If size arguments are incorrect or can be
+manipulated by an attacker, then a buffer overflow may occur. Incorrect size
+arguments, inadequate range checking, integer overflow, or truncation can result
+in the allocation of an inadequately sized buffer.
 Typically, the amount of memory to allocate will be the size of the type of
 object to allocate. When allocating space for an array, the size of the object
 will be multiplied by the bounds of the array. When allocating space for a
 structure containing a flexible array member, the size of the array member must
-be added to the size of the structure. (SeeMEM33-C. Allocate and copy structures
-containing a flexible array member dynamically.) Use the correct type of the
-object when computing the size of memory to allocate. STR31-C. Guarantee that
-storage for strings has sufficient space for character data and the null
-terminatoris a specific instance of this rule.
+be added to the size of the structure. (See MEM33-C. Allocate and copy
+structures containing a flexible array member dynamically.) Use the correct type
+of the object when computing the size of memory to allocate.
+STR31-C. Guarantee that storage for strings has sufficient space for character
+data and the null terminator is a specific instance of this rule.
 """
 severity = "High"
 likelihood = "Probable"

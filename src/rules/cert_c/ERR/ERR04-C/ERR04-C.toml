@@ -9,7 +9,7 @@ Some errors, such as out-of-range values, might be the result of erroneous user
 input. Interactive programs typically handle such errors by rejecting the input
 and prompting the user for an acceptable value. Servers reject invalid user
 input by indicating an error to the client while at the same time continuing to
-service other clients' valid requests. Allrobustprograms must be prepared to
+service other clients' valid requests. All robust programs must be prepared to
 gracefully handle resource exhaustion, such as low memory or disk space
 conditions, at a minimum by preventing the loss of user data kept in volatile
 storage. Interactive programs may give the user the option to save data on an
@@ -18,8 +18,25 @@ or otherwise degrading the quality of service. However, when certain kinds of
 errors are detected, such as irrecoverable logic errors, rather than risk data
 corruption by continuing to execute in an indeterminate state, the appropriate
 strategy may be for the system to quickly shut down, allowing the operator to
-start it afresh in a determinate state. ISO/IEC TR 24772:2013, Section 6.39,
-"Termination Strategy [REU]," [ISO/IEC TR 24772:2013], says: And
+start it afresh in a determinate state.
+ISO/IEC TR 24772:2013, Section 6.39, "Termination Strategy [REU]," [ISO/IEC TR
+24772:2013], says:
+When a fault is detected, there are many ways in which a system can react. The
+quickest and most noticeable way is to fail hard, also known as fail fast or
+fail stop. The reaction to a detected fault is to immediately halt the system.
+Alternatively, the reaction to a detected fault could be to fail soft. The
+system would keep working with the faults present, but the performance of the
+system would be degraded. Systems used in a high availability environment such
+as telephone switching centers, e-commerce, or other "always available"
+applications would likely use a fail soft approach. What is actually done in a
+fail soft approach can vary depending on whether the system is used for safety-
+critical or security critical purposes. For fail-safe systems, such as flight
+controllers, traffic signals, or medical monitoring systems, there would be no
+effort to meet normal operational requirements, but rather to limit the damage
+or danger caused by the fault. A system that fails securely, such as cryptologic
+systems, would maintain maximum security when a fault is detected, possibly
+through a denial of service.
+And
 """
 severity = "Medium"
 likelihood = "Probable"

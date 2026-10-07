@@ -13,24 +13,20 @@ thread tries to access it. Regular shared variables should be protected by
 thread synchronization mechanisms. However, local variables should not be shared
 in the same fashion because the referenced stack frame's thread would have to
 stop executing, or some other way must be found to ensure that the referenced
-stack frame is still valid. SeeCON32-C. Prevent data races when accessing bit-
-fields from multiple threadsfor information on how to securely share
-nonautomatic and non-thread-local variables. SeeDCL30-C. Declare objects with
-appropriate storage durationsfor information on how to declare objects with
+stack frame is still valid. See CON32-C. Prevent data races when accessing bit-
+fields from multiple threads for information on how to securely share
+nonautomatic and non-thread-local variables. See DCL30-C. Declare objects with
+appropriate storage durations for information on how to declare objects with
 appropriate storage durations when data is not being shared between threads.
-Note that this is a specific instance ofCON34-C. Declare objects shared between
-threads with appropriate storage durationsfor POSIX threads. It is important to
-note that local data can be used securely with threads when using other non-
-POSIX thread interfaces, so the programmer should not always copy data into
-nonlocal memory when sharing data with threads. For example, thesharedkeyword
-inOpenMPcan be used in combination with OpenMP's threading interface to share
-local memory without having to worry about whether local automatic variables
-remain valid. Furthermore, copying the shared data into dynamic memory may
-completely negate the performance benefits of multithreading.
-ThecreateThread()function allocates an integer on the stack and passes a void
-pointer, spawning off a new thread,childThread(). The order of thread execution
-is interleaved, sovalcan reference an object outside of its lifetime, causing
-the child thread to access an invalid memory location.
+Note that this is a specific instance of CON34-C. Declare objects shared between
+threads with appropriate storage durations for POSIX threads.
+It is important to note that local data can be used securely with threads when
+using other non-POSIX thread interfaces, so the programmer should not always
+copy data into nonlocal memory when sharing data with threads. For example, the
+shared keyword in OpenMP can be used in combination with OpenMP's threading
+interface to share local memory without having to worry about whether local
+automatic variables remain valid. Furthermore, copying the shared data into
+dynamic memory may completely negate the performance benefits of multithreading.
 """
 severity = "Medium"
 likelihood = "Probable"

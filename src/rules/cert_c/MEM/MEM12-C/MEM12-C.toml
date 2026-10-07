@@ -8,14 +8,9 @@ description = """
 Many functions require the allocation of multiple resources. Failing and
 returning somewhere in the middle of this function without freeing all of the
 allocated resources could produce a memory leak. It is a common error to forget
-to free one (or all) of the resources in this manner, so agotochain is the
+to free one (or all) of the resources in this manner, so a goto chain is the
 simplest and cleanest way to organize exits while preserving the order of freed
-resources. In this noncompliant example, exit code is written for every instance
-in which the function can terminate prematurely. Notice how failing to
-closefin2produces a resource leak, leaving an open file descriptor. Please note
-that these examples assumeerrno_tandNOERRto be defined, as recommended
-inDCL09-C. Declare functions that return errno with a return type of errno_t. An
-equivalent compatible example would defineerrno_tas anintandNOERRas zero.
+resources.
 """
 severity = "Low"
 likelihood = "Probable"

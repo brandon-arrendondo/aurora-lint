@@ -11,7 +11,8 @@ during floating-point operations are admittedly difficult to determine and
 diagnose, but the benefits of doing so often outweigh the costs. This
 recommendation suggests ways to capture errors during floating-point operations.
 The following code exhibits undefined behavior:
-int j = 0; int iResult = 1 / j;
+On most implementations, integer division by zero is a terminal error, commonly
+printing a diagnostic message and aborting the program:
 """
 severity = "Low"
 likelihood = "Probable"

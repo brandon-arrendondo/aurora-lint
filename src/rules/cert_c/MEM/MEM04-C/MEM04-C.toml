@@ -5,16 +5,21 @@ category = "MEM"
 number = 4
 title = "Beware of zero-length allocations"
 description = """
-When the requested size is 0, the behavior of the memory allocation
-functionsmalloc(),calloc(), andrealloc()isimplementation-defined. Subclause
-7.22.3 of the C Standard [ISO/IEC 9899:2011] states: In addition, the amount of
-storage allocated by a successful call to the allocation function when 0 bytes
-was requested isunspecified. Seeunspecified behavior 41in subclause J.1 of the C
-Standard. In cases where the memory allocation functions return a non-null
-pointer, reading from or writing to the allocated memory area results
-inundefined behavior. Typically, the pointer refers to a zero-length block of
-memory consisting entirely of control structures. Overwriting these control
-structures damages the data structures used by the memory manager.
+When the requested size is 0, the behavior of the memory allocation functions
+malloc(), calloc(), and realloc() is implementation-defined. Subclause 7.22.3 of
+the C Standard [ISO/IEC 9899:2011] states:
+If the size of the space requested is zero, the behavior is implementation-
+defined: either a null pointer is returned, or the behavior is as if the size
+were some nonzero value, except that the returned pointer shall not be used to
+access an object.
+In addition, the amount of storage allocated by a successful call to the
+allocation function when 0 bytes was requested is unspecified. See unspecified
+behavior 41 in subclause J.1 of the C Standard.
+In cases where the memory allocation functions return a non-null pointer,
+reading from or writing to the allocated memory area results in undefined
+behavior. Typically, the pointer refers to a zero-length block of memory
+consisting entirely of control structures. Overwriting these control structures
+damages the data structures used by the memory manager.
 """
 severity = "Low"
 likelihood = "Likely"

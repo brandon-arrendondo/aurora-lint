@@ -5,17 +5,15 @@ category = "EXP"
 number = 5
 title = "Do not cast away a const qualification"
 description = """
-Do not cast away aconstqualification on an object of pointer type. Casting away
-theconstqualification allows a program to modify the object referred to by the
-pointer, which may result inundefined behavior. Seeundefined behavior 61in
-Appendix J of the C Standard. As an illustration, the C Standard [ISO/IEC
-9899:2011] provides a footnote (subclause 6.7.3, paragraph 4):
-Theremove_spaces()function in this noncompliant code example accepts a pointer
-to a stringstrand a string lengthslenand removes the space character from the
-string by shifting the remaining characters toward the front of the string. The
-functionremove_spaces()is passed aconstcharpointer as an argument.
-Theconstqualification is cast away, and then the contents of the string are
-modified.
+Do not cast away a const qualification on an object of pointer type. Casting
+away the const qualification allows a program to modify the object referred to
+by the pointer, which may result in undefined behavior. See undefined behavior
+61 in Appendix J of the C Standard.
+As an illustration, the C Standard [ISO/IEC 9899:2011] provides a footnote
+(subclause 6.7.3, paragraph 4):
+The implementation may place a const object that is not volatile in a read-only
+region of storage. Moreover, the implementation need not allocate storage for
+such an object if its address is never used.
 """
 severity = "Medium"
 likelihood = "Probable"

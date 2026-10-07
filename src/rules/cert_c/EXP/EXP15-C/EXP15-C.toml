@@ -5,10 +5,9 @@ category = "EXP"
 number = 15
 title = "Do not place a semicolon on the same line as an if, for, or while statement"
 description = """
-Do not use a semicolon on the same line as anif,for, orwhilestatement because it
-typically indicates programmer error and can result in unexpected behavior. In
-this noncompliant code example, a semicolon is used on the same line as
-anifstatement: if (a == b); { /* ... */ }
+Do not use a semicolon on the same line as an if, for, or while statement
+because it typically indicates programmer error and can result in unexpected
+behavior.
 """
 severity = "High"
 likelihood = "Likely"

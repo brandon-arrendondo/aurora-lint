@@ -6,20 +6,21 @@ number = 12
 title = "Do not make assumptions about the type of a plain int bit-field when used in an expression"
 description = """
 Bit-fields can be used to allow flags or other integer values with small ranges
-to be packed together to save storage space. It isimplementation-definedwhether
-the specifierintdesignates the same type assigned intor the same type asunsigned
-intfor bit-fields. According to the C Standard [ISO/IEC 9899:2011], C integer
-promotions also require that "if anintcan represent all values of the original
-type (as restricted by the width, for a bit-field), the value is converted to
-anint; otherwise, it is converted to anunsigned int." This issue is similar to
-the signedness of plainchar, discussed inINT07-C. Use only explicitly signed or
-unsigned char type for numeric values. A plainintbit-field that is treated as
-unsigned will promote tointas long as its field width is less than that
-ofintbecauseintcan hold all values of the original type. This behavior is the
-same as that of a plainchartreated as unsigned. However, a plainintbit-field
-treated as unsigned will promote tounsigned intif its field width is the same as
-that ofint. This difference makes a plainintbit-field even trickier than a
-plainchar.
+to be packed together to save storage space.
+It is implementation-defined whether the specifier int designates the same type
+as signed int or the same type as unsigned int for bit-fields. According to the
+C Standard [ISO/IEC 9899:2011], C integer promotions also require that "if an
+int can represent all values of the original type (as restricted by the width,
+for a bit-field), the value is converted to an int; otherwise, it is converted
+to an unsigned int."
+This issue is similar to the signedness of plain char, discussed in INT07-C. Use
+only explicitly signed or unsigned char type for numeric values. A plain int
+bit-field that is treated as unsigned will promote to int as long as its field
+width is less than that of int because int can hold all values of the original
+type. This behavior is the same as that of a plain char treated as unsigned.
+However, a plain int bit-field treated as unsigned will promote to unsigned int
+if its field width is the same as that of int. This difference makes a plain int
+bit-field even trickier than a plain char.
 """
 severity = "Low"
 likelihood = "Unlikely"

@@ -7,19 +7,21 @@ title = "Check for the existence of links when dealing with files"
 description = """
 Many common operating systems such as Windows and UNIX support file links,
 including hard links, symbolic (soft) links, and virtual drives. Hard links can
-be created in UNIX with thelncommand or in Windows operating systems by calling
-theCreateHardLink()function. Symbolic links can be created in UNIX using theln
--scommand or in Windows by using directory junctions in NTFS or the Linkd.exe
-(Win 2K resource kit) or "junction" freeware. Virtual drives can also be created
-in Windows using thesubstcommand. File links can create security issues for
-programs that fail to consider the possibility that the file being opened may
-actually be a link to a different file. This is especially dangerous when the
-vulnerable program is running with elevated privileges. Frequently, there is no
-need to check for the existence of symbolic links because this problem can be
-solved using other techniques. When opening an existing file, for example, the
-simplest solution is often to drop privileges to the privileges of the user.
-This solution permits the use of links while preventing access to files for
-which the user of the application is not privileged.
+be created in UNIX with the ln command or in Windows operating systems by
+calling the CreateHardLink() function. Symbolic links can be created in UNIX
+using the ln -s command or in Windows by using directory junctions in NTFS or
+the Linkd.exe (Win 2K resource kit) or "junction" freeware. Virtual drives can
+also be created in Windows using the subst command.
+File links can create security issues for programs that fail to consider the
+possibility that the file being opened may actually be a link to a different
+file. This is especially dangerous when the vulnerable program is running with
+elevated privileges.
+Frequently, there is no need to check for the existence of symbolic links
+because this problem can be solved using other techniques. When opening an
+existing file, for example, the simplest solution is often to drop privileges to
+the privileges of the user. This solution permits the use of links while
+preventing access to files for which the user of the application is not
+privileged.
 """
 severity = "Medium"
 likelihood = "Likely"

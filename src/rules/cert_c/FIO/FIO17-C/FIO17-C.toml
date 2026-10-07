@@ -5,14 +5,16 @@ category = "FIO"
 number = 17
 title = "Do not rely on an ending null character when using fread()"
 description = """
-Thefread()function, as defined in the C Standard, subclause 7.21.8.1 [ISO/IEC
+The fread() function, as defined in the C Standard, subclause 7.21.8.1 [ISO/IEC
 9899:2011], does not explicitly null-terminate the read character sequence.
+Synopsissize_t fread(void * restrict ptr, size_t size, size_t nmemb, FILE *
+restrict stream) Description The fread function reads, into the array pointed to
+by ptr, up to nmemb elements whose size is specified by size, from the stream
+pointed to by stream.
 Although the content of a file has a properly null-terminated character
-sequence, ifnmembis less than the total length of the characters,
-thefread()function will not read afternmembcharacters.fread()will not append a
-null character to the end of the string being read to. Suppose we have a null-
-terminated character sequence in a file, and we need to extract a null-
-terminated byte string:
+sequence, if nmemb is less than the total length of the characters, the fread()
+function will not read after nmemb characters. fread() will not append a null
+character to the end of the string being read to.
 """
 severity = "Low"
 likelihood = "Likely"

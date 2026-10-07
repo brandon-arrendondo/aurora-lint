@@ -5,15 +5,26 @@ category = "ERR"
 number = 30
 title = "Take care when reading errno"
 description = """
-The value oferrnois initialized to zero at program startup, but it is never
-subsequently set to zero by any C standard library function. The value
-oferrnomay be set to nonzero by a C standard library function call whether or
-not there is an error, provided the use oferrnois not documented in the
-description of the function. It is meaningful for a program to inspect the
-contents oferrnoonly after an error might have occurred. More precisely,errnois
-meaningful only after a library function that setserrnoon error has returned an
-error code. According to Question 20.4 of C-FAQ [Summit 2005], Note thatatoi()is
-not required to set the value oferrno.
+The value of errno is initialized to zero at program startup, but it is never
+subsequently set to zero by any C standard library function. The value of errno
+may be set to nonzero by a C standard library function call whether or not there
+is an error, provided the use of errno is not documented in the description of
+the function. It is meaningful for a program to inspect the contents of errno
+only after an error might have occurred. More precisely, errno is meaningful
+only after a library function that sets errno on error has returned an error
+code.
+According to Question 20.4 of C-FAQ [Summit 2005],
+In general, you should detect errors by checking return values, and use errno
+only to distinguish among the various causes of an error, such as "File not
+found" or "Permission denied." (Typically, you use perror or strerror to print
+these discriminating error messages.) It's only necessary to detect errors with
+errno when a function does not have a unique, unambiguous, out-of-band error
+return (that is, because all of its possible return values are valid; one
+example is atoi [sic]). In these cases (and in these cases only; check the
+documentation to be sure whether a function allows this), you can detect errors
+by setting errno to 0, calling the function, and then testing errno. (Setting
+errno to 0 first is important, as no library function ever does that for you.)
+Note that atoi() is not required to set the value of errno.
 """
 severity = "Medium"
 likelihood = "Probable"

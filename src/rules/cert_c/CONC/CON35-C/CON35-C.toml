@@ -8,13 +8,14 @@ description = """
 Mutexes are used to prevent multiple threads from causing a data race by
 accessing shared resources at the same time. Sometimes, when locking mutexes,
 multiple threads hold each other's lock, and the program consequently deadlocks.
-Four conditions are required for deadlock to occur: Deadlock needs all four
-conditions, so preventing deadlock requires preventing any one of the four
-conditions. One simple solution is to lock the mutexes in a predefined order,
-which prevents circular wait. The behavior of this noncompliant code example
-depends on the runtime environment and the platform's scheduler. The program is
-susceptible to deadlock if threadthr1attempts to lockba2's mutex at the same
-time threadthr2attempts to lockba1's mutex in thedeposit()function.
+Four conditions are required for deadlock to occur:
+- Mutual exclusion
+- Hold and wait
+- No preemption
+- Circular wait
+Deadlock needs all four conditions, so preventing deadlock requires preventing
+any one of the four conditions. One simple solution is to lock the mutexes in a
+predefined order, which prevents circular wait.
 """
 severity = "Low"
 likelihood = "Probable"

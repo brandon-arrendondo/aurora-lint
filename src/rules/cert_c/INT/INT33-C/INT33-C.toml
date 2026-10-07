@@ -6,9 +6,9 @@ number = 33
 title = "Ensure that division and remainder operations do not result in divide-by-zero errors"
 description = """
 The C Standard identifies the following condition under which division and
-remainder operations result inundefined behavior (UB): UBDescription41The value
-of the second operand of the/or%operator is zero (6.5.5). Ensure that division
-and remainder operations do not result in divide-by-zero errors.
+remainder operations result in undefined behavior (UB):
+Ensure that division and remainder operations do not result in divide-by-zero
+errors.
 """
 severity = "Low"
 likelihood = "Likely"

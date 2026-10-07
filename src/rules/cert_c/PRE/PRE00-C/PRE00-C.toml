@@ -10,20 +10,21 @@ they have different semantics. The inline function-specifier was introduced to
 the C programming language in the C99 standard. Inline functions should be
 preferred over macros when they can be used interchangeably. Making a function
 an inline function suggests that calls to the function be as fast as possible by
-using, for example, an alternative to the usual function call mechanism, such
-asinline substitution. (See alsoPRE31-C. Avoid side effects in arguments to
-unsafe macros,PRE01-C. Use parentheses within macros around parameter names,
-andPRE02-C. Macro replacement lists should be parenthesized.) Inline
-substitution is not textual substitution, nor does it create a new function. For
-example, the expansion of a macro used within the body of the function uses the
-definition it had at the point the function body appeared, not where the
-function is called; and identifiers refer to the declarations in scope where the
-body occurs. Arguably, a decision to inline a function is a low-level
-optimization detail that the compiler should make without programmer input. The
-use of inline functions should be evaluated on the basis of (a) how well they
-are supported by targeted compilers, (b) what (if any) impact they have on the
-performance characteristics of your system, and (c) portability concerns. Static
-functions are often as good as inline functions and are supported in C.
+using, for example, an alternative to the usual function call mechanism, such as
+inline substitution. (See also PRE31-C. Avoid side effects in arguments to
+unsafe macros, PRE01-C. Use parentheses within macros around parameter names,
+and PRE02-C. Macro replacement lists should be parenthesized.)
+Inline substitution is not textual substitution, nor does it create a new
+function. For example, the expansion of a macro used within the body of the
+function uses the definition it had at the point the function body appeared, not
+where the function is called; and identifiers refer to the declarations in scope
+where the body occurs.
+Arguably, a decision to inline a function is a low-level optimization detail
+that the compiler should make without programmer input. The use of inline
+functions should be evaluated on the basis of (a) how well they are supported by
+targeted compilers, (b) what (if any) impact they have on the performance
+characteristics of your system, and (c) portability concerns. Static functions
+are often as good as inline functions and are supported in C.
 """
 severity = "Medium"
 likelihood = "Unlikely"

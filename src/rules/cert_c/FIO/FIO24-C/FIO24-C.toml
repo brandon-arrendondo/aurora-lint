@@ -5,16 +5,19 @@ category = "FIO"
 number = 24
 title = "Do not open a file that is already open"
 description = """
-Opening a file that is already open hasimplementation-defined behavior,
-according to the C Standard, 7.21.3, paragraph 8 [ISO/IEC 9899:2011]: Some
-implementations do not allow multiple copies of the same file to be open at the
-same time. Consequently, portable code cannot depend on what will happen if this
-rule is violated. Even on implementations that do not outright fail to open an
-already-opened file, aTOCTOU(time-of-check, time-of-use) race condition exists
-in which the second open could operate on a different file from the first due to
-the file being moved or deleted (seeFIO45-C. Avoid TOCTOU race conditions while
-accessing filesfor more details on TOCTOU race conditions). This noncompliant
-code example logs the program's state at runtime:
+Opening a file that is already open has implementation-defined behavior,
+according to the C Standard, 7.21.3, paragraph 8 [ISO/IEC 9899:2011]:
+Functions that open additional (nontemporary) ﬁles require a file name, which is
+a string. The rules for composing valid ﬁle names are implementation-deﬁned.
+Whether the same file can be simultaneously open multiple times is also
+implementation-deﬁned.
+Some implementations do not allow multiple copies of the same file to be open at
+the same time. Consequently, portable code cannot depend on what will happen if
+this rule is violated. Even on implementations that do not outright fail to open
+an already-opened file, a TOCTOU (time-of-check, time-of-use) race condition
+exists in which the second open could operate on a different file from the first
+due to the file being moved or deleted (see FIO45-C. Avoid TOCTOU race
+conditions while accessing files for more details on TOCTOU race conditions).
 """
 severity = "Medium"
 likelihood = "Probable"

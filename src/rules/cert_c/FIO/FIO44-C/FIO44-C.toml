@@ -6,10 +6,14 @@ number = 44
 title = "Only use values for fsetpos() that are returned from fgetpos()"
 description = """
 The C Standard, 7.23.9.3 paragraph 2 [ISO/IEC 9899:2024], defines the following
-behavior forfsetpos(): Invoking thefsetpos()function with any other values
-forposisundefined behavior 181. This noncompliant code example attempts to read
-three values from a file and then set the file position pointer back to the
-beginning of the file:
+behavior for fsetpos():
+The fsetpos function sets the mbstate_t object (if any) and file position
+indicator for the stream pointed to by stream according to the value of the
+object pointed to by pos, which shall be a value obtained from an earlier
+successful call to the fgetpos function on a stream associated with the same
+file.
+Invoking the fsetpos() function with any other values for pos is undefined
+behavior 181.
 """
 severity = "Medium"
 likelihood = "Unlikely"

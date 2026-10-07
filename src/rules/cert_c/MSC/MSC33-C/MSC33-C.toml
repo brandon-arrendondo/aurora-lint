@@ -6,17 +6,17 @@ number = 33
 title = "Do not pass invalid data to the asctime() function"
 description = """
 The C Standard, 7.29.3.1 [ISO/IEC 9899:2024], provides the following sample
-implementation of theasctime()function: char *asctime(const struct tm *timeptr)
-{ static const char wday_name[7][3] = { "Sun", "Mon", "Tue", "Wed", "Thu",
-"Fri", "Sat" }; static const char mon_name[12][3] = { "Jan", "Feb", "Mar",
-"Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" }; static char
-result[26]; sprintf( result, "%.3s %.3s%3d %.2d:%.2d:%.2d %d\n",
-wday_name[timeptr->tm_wday], mon_name[timeptr->tm_mon], timeptr->tm_mday,
-timeptr->tm_hour, timeptr->tm_min, timeptr->tm_sec, 1900 + timeptr->tm_year );
-return result; } This function is supposed to output a character string of 26
-characters at most, including the terminating null character. If we count the
-length indicated by the format directives, we arrive at 25. Taking into account
-the terminating null character, the array size of the string appears sufficient.
+implementation of the asctime() function:
+This function is supposed to output a character string of 26 characters at most,
+including the terminating null character. If we count the length indicated by
+the format directives, we arrive at 25. Taking into account the terminating null
+character, the array size of the string appears sufficient.
+However, this implementation assumes that the values of the struct tm data are
+within normal ranges and does nothing to enforce the range limit. If any of the
+values print more characters than expected, the sprintf() function may overflow
+the result array. For example, if tm_year has the value 12345, then 27
+characters (including the terminating null character) are printed, resulting in
+a buffer overflow.
 """
 severity = "High"
 likelihood = "Likely"

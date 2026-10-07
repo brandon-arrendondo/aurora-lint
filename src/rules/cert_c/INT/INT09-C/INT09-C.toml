@@ -6,24 +6,12 @@ number = 9
 title = "Ensure enumeration constants map to unique values"
 description = """
 A C enumeration defines a type with a finite set of values represented by
-identifiers known asenumeration constants, or enumerators. An enumerator is a
-constant integer expression whose value is representable as anint. Although the
+identifiers known as enumeration constants, or enumerators. An enumerator is a
+constant integer expression whose value is representable as an int. Although the
 language allows multiple enumerators of the same type to have the same value, it
 is a common expectation that all enumerators of the same type have distinct
 values. However, defining two or more enumerators of the same type to have the
-same value can lead to some nonobvious errors. In this noncompliant code
-example, two enumerators of typeColorare assigned explicit values. It may not be
-obvious to the programmer thatyellowandindigohave been declared to be identical
-values (6), as aregreenandviolet(7). Probably the least dangerous error that can
-result from such a definition is attempting to use the enumerators as labels of
-aswitchstatement. Because all labels in aswitchstatement are required to be
-unique, the following code violates this semantic constraint and is required to
-be diagnosed by aconformingcompiler: enum Color { red=4, orange, yellow, green,
-blue, indigo=6, violet }; const char* color_name(enum Color col) { switch (col)
-{ case red: return "red"; case orange: return "orange"; case yellow: return
-"yellow"; case green: return "green"; case blue: return "blue"; case indigo:
-return "indigo"; /* Error: duplicate label (yellow) */ case violet: return
-"violet"; /* Error: duplicate label (green) */ } }
+same value can lead to some nonobvious errors.
 """
 severity = "Low"
 likelihood = "Probable"

@@ -8,18 +8,7 @@ description = """
 When forking a child process, file descriptors are copied to the child process,
 which can result in concurrent operations on the file. Concurrent operations on
 the same file can cause data to be read or written in a nondeterministic order,
-creating race conditions and unpredictable behavior. In this example, the
-programmer wishes to open a file, read a character, fork, and then have both
-parent and child process read the second character of the file independently.
-However, because both processes share a file descriptor, one process might get
-the second character, and one might get the third. Furthermore, there is no
-guarantee the reads are atomic—the processes might get unpredictable results.
-Regardless of what the programmer is trying to accomplish with this code, this
-code is incorrect because it contains a race condition. char c; pid_t pid; int
-fd = open(filename, O_RDWR); if (fd == -1) { /* Handle error */ } read(fd, &c,
-1); printf("root process:%c\n",c); pid = fork(); if (pid == -1) { /* Handle
-error */ } if (pid == 0) { /*child*/ read(fd, &c, 1); printf("child:%c\n",c); }
-else { /*parent*/ read(fd, &c, 1); printf("parent:%c\n",c); }
+creating race conditions and unpredictable behavior.
 """
 severity = "Medium"
 likelihood = "Unlikely"

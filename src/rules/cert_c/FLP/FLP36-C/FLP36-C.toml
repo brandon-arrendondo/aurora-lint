@@ -9,11 +9,18 @@ Narrower arithmetic types can be cast to wider types without any effect on the
 magnitude of numeric values. However, whereas integer types represent exact
 values, floating-point types have limited precision. The C Standard, 6.3.1.4
 paragraph 3 [ISO/IEC 9899:2024], states
+When a value of integer type is converted to a standard floating type, if the
+value being converted can be represented exactly in the new type, it is
+unchanged. If the value being converted is in the range of values that can be
+represented but cannot be represented exactly, the result is either the nearest
+higher or nearest lower representable value, chosen in an implementation-defined
+manner. If the value being converted is outside the range of values that can be
+represented, the behavior is undefined. Results of some implicit conversions may
+be represented in greater range and precision than that required by the new type
+(see 6.3.1.8 and 6.8.7.5).
 Conversion from integral types to floating-point types without sufficient
 precision can lead to loss of precision (loss of least significant bits). No
 runtime exception occurs despite the loss.
-In this noncompliant example, a large value of typelong intis converted to a
-value of typefloatwithout ensuring it is representable in the type:
 """
 severity = "Low"
 likelihood = "Unlikely"

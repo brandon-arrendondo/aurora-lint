@@ -5,20 +5,20 @@ category = "CON"
 number = 4
 title = "Join or detach threads even if their exit status is unimportant"
 description = """
-Thethrd_detach()function is used to tell the underlying system that resources
+The thrd_detach() function is used to tell the underlying system that resources
 allocated to a particular thread can be reclaimed once it terminates. This
 function should be used when a thread's exit status is not required by other
-threads (and no other thread needs to usethrd_join()to wait for it to complete).
+threads (and no other thread needs to use thrd_join() to wait for it to
+complete).
 Whenever a thread terminates without detaching, the thread's stack is
 deallocated, but some other resources, including the thread ID and exit status,
-are left until it is destroyed by eitherthrd_join()orthrd_detach(). These
+are left until it is destroyed by either thrd_join() or thrd_detach(). These
 resources can be vital for systems with limited resources and can lead to
 various "resource unavailable" errors, depending on which critical resource gets
 used up first. For example, if the system has a limit (either per-process or
 system wide) on the number of thread IDs it can keep track of, failure to
-release the thread ID of a terminated thread may lead tothrd_create() being
-unable tocreate another thread. This noncompliant code example shows a pool of
-threads that are not exited correctly:
+release the thread ID of a terminated thread may lead to thrd_create() being
+unable to create another thread.
 """
 severity = "Low"
 likelihood = "Unlikely"

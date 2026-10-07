@@ -6,23 +6,23 @@ number = 32
 title = "All exit handlers must return normally"
 description = """
 The C Standard provides three functions that cause an application to terminate
-normally:_Exit(),exit(), andquick_exit(). These are collectively calledexit
-functions. When theexit()function is called, or control transfers out of
-themain()entry point function, functions registered withatexit()are called (but
-notat_quick_exit()). When thequick_exit()function is called, functions
-registered withat_quick_exit()(but notatexit()) are called. These functions are
-collectively calledexit handlers. When the_Exit()function is called, no exit
-handlers or signal handlers are called. Exit handlers must terminate by
-returning. It is important and potentially safety-critical for all exit handlers
-to be allowed to perform their cleanup actions. This is particularly true
-because the application programmer does not always know about handlers that may
-have been installed by support libraries. Two specific issues include nested
-calls to an exit function and terminating a call to anexithandler by
-invokinglongjmp. A nested call to an exit function isundefined behavior.
-(Seeundefined behavior 187.) This behavior can occur only when an exit function
-is invoked from an exit handler or when an exit function is called from within a
-signal handler. (SeeSIG30-C. Call only asynchronous-safe functions within signal
-handlers.)
+normally: _Exit(), exit(), and quick_exit(). These are collectively called exit
+functions. When the exit() function is called, or control transfers out of the
+main() entry point function, functions registered with atexit() are called (but
+not at_quick_exit()). When the quick_exit() function is called, functions
+registered with at_quick_exit() (but not atexit()) are called. These functions
+are collectively called exit handlers. When the _Exit() function is called, no
+exit handlers or signal handlers are called.
+Exit handlers must terminate by returning. It is important and potentially
+safety-critical for all exit handlers to be allowed to perform their cleanup
+actions. This is particularly true because the application programmer does not
+always know about handlers that may have been installed by support libraries.
+Two specific issues include nested calls to an exit function and terminating a
+call to an exit handler by invoking longjmp.
+A nested call to an exit function is undefined behavior. (See undefined behavior
+187.) This behavior can occur only when an exit function is invoked from an exit
+handler or when an exit function is called from within a signal handler. (See
+SIG30-C. Call only asynchronous-safe functions within signal handlers.)
 """
 severity = "Medium"
 likelihood = "Likely"

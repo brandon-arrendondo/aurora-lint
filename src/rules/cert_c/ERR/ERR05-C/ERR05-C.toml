@@ -5,9 +5,17 @@ category = "ERR"
 number = 5
 title = "Application-independent code should provide error detection without dictating error handling"
 description = """
-Application-independent code includes code that is When application-specific
-code detects an error, it can immediately respond with a specific action, as in
-if (something_really_bad_happens) { take_me_some_place_safe(); }
+Application-independent code includes code that is
+- Shipped with the compiler or operating system
+- From a third-party library
+- Developed in-house
+When application-specific code detects an error, it can immediately respond with
+a specific action, as in
+This response occurs because the application must both detect errors and provide
+a mechanism for handling errors. Application-independent code, by contrast, is
+not associated with any application, so it cannot handle errors. However, it
+must still detect errors and report them to an application so that the
+application may handle them.
 """
 severity = "Medium"
 likelihood = "Probable"

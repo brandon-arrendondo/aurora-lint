@@ -8,9 +8,10 @@ description = """
 A signal is a mechanism for transferring control that is typically used to
 notify a process that an event has occurred. That process can then respond to
 the event accordingly. The C Standard provides functions for sending and
-handling signals within a C program. Processes handle signals by registering a
-signal handler using thesignal()function, which is specified as void
-(*signal(int sig, void (*func)(int)))(int);
+handling signals within a C program.
+Processes handle signals by registering a signal handler using the signal()
+function, which is specified as
+This signal handler is conceptually equivalent to
 """
 severity = "High"
 likelihood = "Likely"

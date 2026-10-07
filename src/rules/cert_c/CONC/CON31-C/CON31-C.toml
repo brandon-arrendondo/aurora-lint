@@ -6,10 +6,13 @@ number = 31
 title = "Do not destroy a mutex while it is locked"
 description = """
 Mutexes are used to protect shared data structures being concurrently accessed.
-If a mutex is destroyed while a thread is blocked waiting for that
-mutex,critical sectionsand shared data are no longer protected. The C Standard,
-7.28.4.1, paragraph 2 [ISO/IEC 9899:2024], states This statement implies that
-destroying a mutex while a thread is waiting on it isundefined behavior.
+If a mutex is destroyed while a thread is blocked waiting for that mutex,
+critical sections and shared data are no longer protected.
+The C Standard, 7.28.4.1, paragraph 2 [ISO/IEC 9899:2024], states
+The mtx_destroy function releases any resources used by the mutex pointed to by
+mtx. No threads can be blocked waiting for the mutex pointed to by mtx.
+This statement implies that destroying a mutex while a thread is waiting on it
+is undefined behavior.
 """
 severity = "Medium"
 likelihood = "Probable"

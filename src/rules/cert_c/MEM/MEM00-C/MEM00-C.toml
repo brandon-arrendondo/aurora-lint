@@ -6,18 +6,19 @@ number = 0
 title = "Allocate and free memory in the same module, at the same level of abstraction"
 description = """
 Dynamic memory management is a common source of programming flaws that can lead
-to securityvulnerabilities. Poor memory management can lead to security issues,
+to security vulnerabilities. Poor memory management can lead to security issues,
 such as heap-buffer overflows, dangling pointers, and double-free issues
 [Seacord 2013]. From the programmer's perspective, memory management involves
 allocating memory, reading and writing to memory, and deallocating memory.
 Allocating and freeing memory in different modules and levels of abstraction may
 make it difficult to determine when and if a block of memory has been freed,
-leading to programming defects, such as memory leaks, double-
-freevulnerabilities, accessing freed memory, or writing to freed or unallocated
-memory. To avoid these situations, memory should be allocated and freed at the
-same level of abstraction and, ideally, in the same code module. This includes
-the use of the following memory allocation and deallocation functions described
-in subclause 7.23.3 of the C Standard [ISO/IEC 9899:2011]:
+leading to programming defects, such as memory leaks, double-free
+vulnerabilities, accessing freed memory, or writing to freed or unallocated
+memory.
+To avoid these situations, memory should be allocated and freed at the same
+level of abstraction and, ideally, in the same code module. This includes the
+use of the following memory allocation and deallocation functions described in
+subclause 7.23.3 of the C Standard [ISO/IEC 9899:2011]:
 """
 severity = "High"
 likelihood = "Probable"

@@ -6,12 +6,12 @@ number = 0
 title = "Use parentheses for precedence of operation"
 description = """
 C programmers commonly make errors regarding the precedence rules of C operators
-because of the unintuitive low-precedence levels of&,|,^,<<, and>>. Mistakes
-regarding precedence rules can be avoided by the suitable use of parentheses.
-Using parentheses defensively reduces errors and, if not taken to excess, makes
-the code more readable. Subclause 6.5 of the C Standard defines the precedence
-of operation by the order of the subclauses. The intent of the expression in
-this noncompliant code example is to test the least significant bit ofx:
+because of the unintuitive low-precedence levels of &, |, ^, <<, and >>.
+Mistakes regarding precedence rules can be avoided by the suitable use of
+parentheses. Using parentheses defensively reduces errors and, if not taken to
+excess, makes the code more readable.
+Subclause 6.5 of the C Standard defines the precedence of operation by the order
+of the subclauses.
 """
 severity = "Low"
 likelihood = "Probable"

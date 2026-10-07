@@ -9,8 +9,12 @@ Do not convert a pointer value to a pointer type that is more strictly aligned
 than the referenced type. Different alignments are possible for different types
 of objects. If the type-checking system is overridden by an explicit cast or the
 pointer is converted to a void pointer (void *) and then to a different type,
-the alignment of an object may be changed. The C Standard, 6.3.2.3, paragraph 7
-[ISO/IEC 9899:2024], states Seeundefined behavior 24.
+the alignment of an object may be changed.
+The C Standard, 6.3.2.3, paragraph 7 [ISO/IEC 9899:2024], states
+A pointer to an object type may be converted to a pointer to a different object
+type. If the resulting pointer is not correctly aligned for the referenced type,
+the behavior is undefined.
+See undefined behavior 24.
 """
 severity = "Low"
 likelihood = "Probable"

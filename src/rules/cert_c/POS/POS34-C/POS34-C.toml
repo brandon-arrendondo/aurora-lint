@@ -5,19 +5,18 @@ category = "POS"
 number = 34
 title = "Do not call putenv() with a pointer to an automatic variable as the argument"
 description = """
-The POSIX functionputenv()is used to set environment variable values.
-Theputenv()function does not create a copy of the string supplied to it as an
+The POSIX function putenv() is used to set environment variable values. The
+putenv() function does not create a copy of the string supplied to it as an
 argument; rather, it inserts a pointer to the string into the environment array.
 If a pointer to a buffer of automatic storage duration is supplied as an
-argument toputenv(), the memory allocated for that buffer may be overwritten
+argument to putenv(), the memory allocated for that buffer may be overwritten
 when the containing function returns and stack memory is recycled. This behavior
-is noted in the Open Group Base Specifications, Issue 6 [Open Group 2004]: The
-actual problem occurs when passing apointerto an automatic variable toputenv().
-An automatic pointer to a static buffer would work as intended. In this
-noncompliant code example, a pointer to a buffer of automatic storage duration
-is used as an argument toputenv()[Dowd 2006]. TheTESTenvironment variable may
-take on an unintended value if it is accessed afterfunc()has returned and the
-stack frame containingenvhas been recycled.
+is noted in the Open Group Base Specifications, Issue 6 [Open Group 2004]:
+A potential error is to call putenv() with an automatic variable as the
+argument, then return from the calling function while string is still part of
+the environment.
+The actual problem occurs when passing a pointer to an automatic variable to
+putenv(). An automatic pointer to a static buffer would work as intended.
 """
 severity = "High"
 likelihood = "Unlikely"

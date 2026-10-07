@@ -5,26 +5,27 @@ category = "FIO"
 number = 22
 title = "Close files before spawning processes"
 description = """
-StandardFILEobjects and their underlying representation (file descriptors on
+Standard FILE objects and their underlying representation (file descriptors on
 POSIX platforms or handles elsewhere) are a finite resource that must be
-carefully managed. The number of files that animplementationguarantees may be
-open simultaneously is bounded by theFOPEN_MAXmacro defined in<stdio.h>. The
+carefully managed. The number of files that an implementation guarantees may be
+open simultaneously is bounded by the FOPEN_MAX macro defined in <stdio.h>. The
 value of the macro is guaranteed to be at least 8. Consequently, portable
-programs must either avoid keeping more thanFOPEN_MAXfiles at the same time or
-be prepared for functions such asfopen()to fail due to resource exhaustion.
+programs must either avoid keeping more than FOPEN_MAX files at the same time or
+be prepared for functions such as fopen() to fail due to resource exhaustion.
 Failing to close files when they are no longer needed may allow attackers to
 exhaust, and possibly manipulate, system resources. This phenomenon is sometimes
-calledfile descriptor leakage, although file pointers may also be used as an
+called file descriptor leakage, although file pointers may also be used as an
 attack vector. In addition, keeping files open longer than necessary increases
 the risk that data written into in-memory file buffers will not be flushed in
-the event ofabnormal program termination. To prevent file descriptor leaks and
+the event of abnormal program termination. To prevent file descriptor leaks and
 to guarantee that any buffered data will be flushed into permanent storage,
-files must be closed when they are no longer needed. The behavior of a program
-isundefinedwhen it uses the value of a pointer to aFILEobject after the
-associated file is closed (seeundefined behavior 153.) Programs that close the
-standard streams (especiallystdoutbut alsostderrandstdin) must be careful not to
-use the stream objects in subsequent function calls, particularly those that
-implicitly operate on such objects (such asprintf(),perror(), andgetc()).
+files must be closed when they are no longer needed.
+The behavior of a program is undefined when it uses the value of a pointer to a
+FILE object after the associated file is closed (see undefined behavior 153.)
+Programs that close the standard streams (especially stdout but also stderr and
+stdin) must be careful not to use the stream objects in subsequent function
+calls, particularly those that implicitly operate on such objects (such as
+printf(), perror(), and getchar()).
 """
 severity = "Medium"
 likelihood = "Unlikely"

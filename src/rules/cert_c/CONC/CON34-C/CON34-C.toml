@@ -6,19 +6,18 @@ number = 34
 title = "Declare objects shared between threads with appropriate storage durations"
 description = """
 Accessing the automatic or thread-local variables of one thread from another
-thread isimplementation-defined behaviorand can cause invalid memory accesses
+thread is implementation-defined behavior and can cause invalid memory accesses
 because the execution of threads can be interwoven within the constraints of the
 synchronization model. As a result, the referenced stack frame or thread-local
 variable may no longer be valid when another thread tries to access it. Shared
-static variables can be protected by thread synchronization mechanisms. However,
-automatic (local) variables cannot be shared in the same manner because the
-referenced stack frame's thread would need to stop executing, or some other
+static variables can be protected by thread synchronization mechanisms.
+However, automatic (local) variables cannot be shared in the same manner because
+the referenced stack frame's thread would need to stop executing, or some other
 mechanism must be employed to ensure that the referenced stack frame is still
 valid. Do not access automatic or thread-local objects from a thread other than
-the one with which the object is associated. SeeDCL30-C. Declare objects with
-appropriate storage durationsfor information on how to declare objects with
+the one with which the object is associated. See DCL30-C. Declare objects with
+appropriate storage durations for information on how to declare objects with
 appropriate storage durations when data is not being shared between threads.
-Noncompliant Code Example (Automatic Storage Duration)
 """
 severity = "Medium"
 likelihood = "Probable"

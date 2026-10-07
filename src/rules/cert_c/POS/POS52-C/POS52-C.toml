@@ -7,13 +7,10 @@ title = "Do not perform operations that can block while holding a POSIX lock"
 description = """
 If a lock is being held and an operation that can block is performed, any other
 thread that needs to acquire that lock may also block. This condition can
-degrade the performance of a system or cause a deadlock to occur. Blocking calls
-include, but are not limited to: network, file, and console I/O. This rule is a
-specific instance ofCON05-C. Do not perform operations that can block while
-holding a lockusing POSIX threads. This noncompliant code example demonstrates
-an occurrence of a blocking call that waits to receive data on a socket while a
-mutex is locked. Therecv()call blocks until data arrives on the socket. While it
-is blocked, other threads that are waiting for the lock are also blocked.
+degrade the performance of a system or cause a deadlock to occur.
+Blocking calls include, but are not limited to: network, file, and console I/O.
+This rule is a specific instance of CON05-C. Do not perform operations that can
+block while holding a lock using POSIX threads.
 """
 severity = "Low"
 likelihood = "Probable"

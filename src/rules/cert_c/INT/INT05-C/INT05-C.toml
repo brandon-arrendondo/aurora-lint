@@ -7,16 +7,13 @@ title = "Do not use input functions to convert character data if they cannot han
 description = """
 Do not use functions that input characters and convert them to integers if the
 functions cannot handle all possible inputs. For example, formatted input
-functions such asscanf(),fscanf(),vscanf(), andvfscanf()can be used to read
-string data fromstdinor (in the cases offscanf()andvfscanf()) other input
+functions such as scanf(), fscanf(), vscanf(), and vfscanf() can be used to read
+string data from stdin or (in the cases of fscanf() and vfscanf()) other input
 streams. These functions work fine for valid integer values but lack robust
-error handling for invalid values. Alternatively, input character data as a
-null-terminated byte string and convert to an integer value usingstrtol()or a
-related function. (SeeERR34-C. Detect errors when converting a string to a
-number.) This noncompliant code example uses thescanf()function to read a string
-fromstdinand convert it to along. Thescanf()andfscanf()functions haveundefined
-behaviorif the value of the result of this operation cannot be represented as an
-integer.
+error handling for invalid values.
+Alternatively, input character data as a null-terminated byte string and convert
+to an integer value using strtol() or a related function. (See ERR34-C. Detect
+errors when converting a string to a number.)
 """
 severity = "Medium"
 likelihood = "Probable"

@@ -5,20 +5,22 @@ category = "CON"
 number = 38
 title = "Preserve thread safety and liveness when using condition variables"
 description = """
-Both thread safety andlivenessare concerns when using condition variables.
-Thethread-safetyproperty requires that all objects maintain consistent states in
-a multithreaded environment [Lea 2000]. Thelivenessproperty requires that every
+Both thread safety and liveness are concerns when using condition variables. The
+thread-safety property requires that all objects maintain consistent states in a
+multithreaded environment [Lea 2000]. The liveness property requires that every
 operation or function invocation execute to completion without interruption; for
-example, there is no deadlock. Condition variables must be used inside
-awhileloop. (SeeCON36-C. Wrap functions that can spuriously wake up in a loopfor
-more information.) To guarantee liveness, programs must test thewhileloop
-condition before invoking thecnd_wait()function. This early test checks whether
-another thread has already satisfied thecondition predicateand has sent a
-notification. Invoking thecnd_wait()function after the notification has been
-sent results in indefinite blocking. To guarantee thread safety, programs must
-test thewhileloop condition after returning from thecnd_wait()function. When a
-given thread invokes thecnd_wait()function, it will attempt to block until its
-condition variable is signaled by a call tocnd_broadcast()or tocnd_signal().
+example, there is no deadlock.
+Condition variables must be used inside a while loop. (See CON36-C. Wrap
+functions that can spuriously wake up in a loop for more information.) To
+guarantee liveness, programs must test the while loop condition before invoking
+the cnd_wait() function. This early test checks whether another thread has
+already satisfied the condition predicate and has sent a notification. Invoking
+the cnd_wait() function after the notification has been sent results in
+indefinite blocking.
+To guarantee thread safety, programs must test the while loop condition after
+returning from the cnd_wait() function. When a given thread invokes the
+cnd_wait() function, it will attempt to block until its condition variable is
+signaled by a call to cnd_broadcast() or to cnd_signal().
 """
 severity = "Low"
 likelihood = "Unlikely"

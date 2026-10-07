@@ -7,29 +7,6 @@ title = "Do not form or use out-of-bounds pointers or array subscripts"
 description = """
 The C Standard identifies the following distinct situations in which undefined
 behavior (UB) can arise as a result of invalid pointer operations:
-UBDescriptionExample Code43Addition or subtraction of a pointer into, or just
-beyond, an array object and an integer type produces a result that does not
-point into, or just beyond, the same array object.Forming Out-of-Bounds
-Pointer,Null Pointer Arithmetic44Addition or subtraction of a pointer into, or
-just beyond, an array object and an integer type produces a result that points
-just beyond the array object and is used as the operand of a unary*operator that
-is evaluated.Dereferencing Past the End Pointer,Using Past the End Index46An
-array subscript is out of range, even if an object is apparently accessible with
-the given subscript, for example, in the lvalue expressiona[1][7]given the
-declarationint a[4][5]).Apparently Accessible Out-of-Range Index59An attempt is
-made to access, or generate a pointer to just past, a flexible array member of a
-structure when the referenced object provides no elements for that array.Pointer
-Past Flexible Array Member In this noncompliant code example, the
-functionf()attempts to validate theindexbefore using it as an offset to the
-statically allocatedtableof integers. However, the function fails to reject
-negativeindexvalues. Whenindexis less than zero, the behavior of the addition
-expression in the return statement of the function isundefined behavior 43. On
-some implementations, the addition alone can trigger a hardware trap. On other
-implementations, the addition may produce a result that when dereferenced
-triggers a hardware trap. Other implementations still may produce a
-dereferenceable pointer that points to an object distinct fromtable. Using such
-a pointer to access the object may lead to information exposure or cause the
-wrong object to be modified.
 """
 severity = "High"
 likelihood = "Likely"

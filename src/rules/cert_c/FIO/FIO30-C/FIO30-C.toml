@@ -5,7 +5,7 @@ category = "FIO"
 number = 30
 title = "Exclude user input from format strings"
 description = """
-Never call a formatted I/O function with a format string containing atainted
+Never call a formatted I/O function with a format string containing a tainted
 value. An attacker who can fully or partially control the contents of a format
 string can crash a vulnerable process, view the contents of the stack, view
 memory content, or write to an arbitrary memory location. Consequently, the
@@ -13,20 +13,7 @@ attacker can execute arbitrary code with the permissions of the vulnerable
 process [Seacord 2013b]. Formatted output functions are particularly dangerous
 because many programmers are unaware of their capabilities. For example,
 formatted output functions can be used to write an integer value to a specified
-address using the%nconversion specifier. Theincorrect_password()function in this
-noncompliant code example is called during identification and authentication to
-display an error message if the specified user is not found or the password is
-incorrect. The function accepts the name of the user as a string referenced
-byuser. This is an exemplar ofuntrusted datathat originates from an
-unauthenticated user. The function constructs an error message that is then
-output tostderrusing the C Standardfprintf()function. #include <stdio.h>
-#include <stdlib.h> #include <string.h> void incorrect_password(const char
-*user) { int ret; /* User names are restricted to 256 or fewer characters */
-static const char msg_format[] = "%s cannot be authenticated.\n"; size_t len =
-strlen(user) + sizeof(msg_format); char *msg = (char *)malloc(len); if (msg ==
-NULL) { /* Handle error */ } ret = snprintf(msg, len, msg_format, user); if (ret
-< 0) { /* Handle error */ } else if (ret >= len) { /* Handle truncated output */
-} fprintf(stderr, msg); free(msg); }
+address using the %n conversion specifier.
 """
 severity = "High"
 likelihood = "Likely"

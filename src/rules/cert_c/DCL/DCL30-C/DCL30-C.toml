@@ -5,12 +5,18 @@ category = "DCL"
 number = 30
 title = "Declare objects with appropriate storage durations"
 description = """
-Every object has a storage duration that determines its
-lifetime:static,thread,automatic, orallocated. According to the C Standard,
-6.2.4, paragraph 2 [ISO/IEC 9899:2024], Do not attempt to access an object
-outside of its lifetime. Attempting to do so isundefined behaviorand can lead to
-an exploitablevulnerability. (See alsoundefined behavior 9in the C Standard,
-Annex J.)
+Every object has a storage duration that determines its lifetime: static,
+thread, automatic, or allocated.
+According to the C Standard, 6.2.4, paragraph 2 [ISO/IEC 9899:2024],
+The lifetime of an object is the portion of program execution during which
+storage is guaranteed to be reserved for it. An object exists, has a constant
+address, and retains its last-stored value throughout its lifetime. If an object
+is referred to outside of its lifetime, the behavior is undefined. If a pointer
+value is used in an evaluation after the object the pointer points to (or just
+past) reaches the end of its lifetime, the behavior is undefined.
+Do not attempt to access an object outside of its lifetime. Attempting to do so
+is undefined behavior and can lead to an exploitable vulnerability. (See also
+undefined behavior 9 in the C Standard, Annex J.)
 """
 severity = "High"
 likelihood = "Probable"

@@ -5,12 +5,11 @@ category = "FIO"
 number = 10
 title = "Take care when using the rename() function"
 description = """
-Therename()function has the following prototype: int rename(const char
-*src_file, const char *dest_file); If the file referenced bydest_fileexists
-prior to callingrename(), the behavior isimplementation-defined. On POSIX
-systems, the destination file is removed. On Windows systems, therename()fails.
-Consequently, issues arise when trying to write portable code or when trying to
-implement alternative behavior.
+The rename() function has the following prototype:
+If the file referenced by dest_file exists prior to calling rename(), the
+behavior is implementation-defined. On POSIX systems, the destination file is
+removed. On Windows systems, the rename() fails. Consequently, issues arise when
+trying to write portable code or when trying to implement alternative behavior.
 """
 severity = "Medium"
 likelihood = "Probable"

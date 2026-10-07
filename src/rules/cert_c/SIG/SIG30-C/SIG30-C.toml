@@ -5,15 +5,29 @@ category = "SIG"
 number = 30
 title = "Call only asynchronous-safe functions within signal handlers"
 description = """
-Call onlyasynchronous-safe functionswithin signal handlers. Forstrictly
-conformingprograms, only the C standard library
-functionsabort(),_Exit(),quick_exit(), andsignal()can be safely called from
-within a signal handler. The C Standard, 7.14.1.1, paragraph 5 [ISO/IEC
-9899:2024], states that if the signal occurs other than as the result of calling
-theabort()orraise()function, the behavior isundefinedif Implementations may
-define a list of additional asynchronous-safe functions. These functions can
-also be called within a signal handler. This restriction applies to library
-functions as well as application-defined functions.
+Call only asynchronous-safe functions within signal handlers. For strictly
+conforming programs, only the C standard library functions abort(), _Exit(),
+quick_exit(), and signal() can be safely called from within a signal handler.
+The C Standard, 7.14.1.1, paragraph 5 [ISO/IEC 9899:2024], states that if the
+signal occurs other than as the result of calling the abort() or raise()
+function, the behavior is undefined if
+If the signal occurs other than as the result of calling the abort or raise
+function, the behavior is undefined if the signal handler refers to any object
+with static or thread storage duration that is not a lock-free atomic object and
+that is not declared with the constexpr storage-class specifier other than by
+assigning a value to an object declared as volatile sig _ atomic _ t, or the
+signal handler calls any function in the standard library other than — the abort
+function, — the _ Exit function, — the quick _ exit function, — the functions in
+<stdatomic.h> (except where explicitly stated otherwise) when the atomic
+arguments are lock-free, — the atomic _ is _ lock _ free function with any
+atomic argument, or — the signal function with the first argument equal to the
+signal number corresponding to the signal that caused the invocation of the
+handler. Furthermore, if such a call to the signal function results in a SIG _
+ERR return, the object designated by errno has an indeterminate representation.
+294)
+Implementations may define a list of additional asynchronous-safe functions.
+These functions can also be called within a signal handler. This restriction
+applies to library functions as well as application-defined functions.
 """
 severity = "High"
 likelihood = "Likely"

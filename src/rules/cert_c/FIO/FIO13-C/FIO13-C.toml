@@ -5,14 +5,23 @@ category = "FIO"
 number = 13
 title = "Never push back anything other than one read character"
 description = """
-Subclause 7.21.7.10 of the C Standard [ISO/IEC 9899:2011] definesungetc()as
-follows: Consequently, multiple calls toungetc()on the same stream must be
-separated by a call to a read function or a file-positioning function (which
-will discard any data pushed byungetc()). Likewise, forungetwc(), C guarantees
-only one wide character of pushback (subclause 7.29.3.10). Consequently,
-multiple calls toungetwc()on the same stream must be separated by a call to a
-read function or a file-positioning function (which will discard any data pushed
-byungetwc()).
+Subclause 7.21.7.10 of the C Standard [ISO/IEC 9899:2011] defines ungetc() as
+follows:
+The ungetc function pushes the character specified by c (converted to an
+unsigned char) back onto the input stream pointed to by stream. Pushed-back
+characters will be returned by subsequent reads on that stream in the reverse
+order of their pushing. A successful intervening call (with the stream pointed
+to by stream) to a file positioning function (fseek, fsetpos, or rewind)
+discards any pushed-back characters for the stream. The external storage
+corresponding to the stream is unchanged. One character of pushback is
+guaranteed.
+Consequently, multiple calls to ungetc() on the same stream must be separated by
+a call to a read function or a file-positioning function (which will discard any
+data pushed by ungetc()).
+Likewise, for ungetwc(), C guarantees only one wide character of pushback
+(subclause 7.29.3.10). Consequently, multiple calls to ungetwc() on the same
+stream must be separated by a call to a read function or a file-positioning
+function (which will discard any data pushed by ungetwc()).
 """
 severity = "Medium"
 likelihood = "Probable"

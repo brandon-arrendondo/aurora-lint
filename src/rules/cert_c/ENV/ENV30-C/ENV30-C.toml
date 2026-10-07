@@ -6,13 +6,18 @@ number = 30
 title = "Do not modify the object referenced by the return value of certain functions"
 description = """
 Some functions return a pointer to an object that cannot be modified without
-causingundefined behavior. These functions
-includegetenv(),setlocale(),localeconv(),asctime(), andstrerror(). In such
-cases, the function call results must be treated as beingconst-qualified. The C
-Standard, 7.24.4.6, paragraph 4 [ISO/IEC 9899:2024], definesgetenv()as follows:
-If the string returned bygetenv()must be altered, a local copy should be
-created. Altering the string returned bygetenv()isundefined behavior.
-(Seeundefined behavior 189.)
+causing undefined behavior. These functions include getenv(), setlocale(),
+localeconv(), asctime(), and strerror(). In such cases, the function call
+results must be treated as being const -qualified.
+The C Standard, 7.24.4.6, paragraph 4 [ISO/IEC 9899:2024], defines getenv() as
+follows:
+The getenv function returns a pointer to a string associated with the matched
+list member. The string pointed to shall not be modified by the program, but may
+be overwritten by a subsequent call to the getenv function. If the specified
+name cannot be found, a null pointer is returned.
+If the string returned by getenv() must be altered, a local copy should be
+created. Altering the string returned by getenv() is undefined behavior. (See
+undefined behavior 189.)
 """
 severity = "Low"
 likelihood = "Probable"

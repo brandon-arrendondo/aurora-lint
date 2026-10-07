@@ -8,15 +8,15 @@ description = """
 Mutexes are often used to prevent multiple threads from accessing critical
 resources at the same time. Sometimes, when locking mutexes, multiple threads
 hold each other's lock, and the program consequently deadlocks. There are four
-requirements for deadlock: Deadlock requires all four conditions, so to prevent
-deadlock, prevent any one of the four conditions. This guideline recommends
-locking the mutexes in a predefined order to prevent circular wait. This rule is
-a specific instance ofCON35-C. Avoid deadlock by locking in predefined
-orderusing POSIX threads. This noncompliant code example has behavior that
-depends on the runtime environment and the platform's scheduler. However, with
-proper timing, themain()function will deadlock when runningthr1andthr2,
-wherethr1tries to lockba2's mutex, whilethr2tries to lock onba1's mutex in
-thedeposit()function, and the program will not progress.
+requirements for deadlock:
+- Mutual exclusion
+- Hold and wait
+- No preemption
+- Circular wait
+Deadlock requires all four conditions, so to prevent deadlock, prevent any one
+of the four conditions. This guideline recommends locking the mutexes in a
+predefined order to prevent circular wait. This rule is a specific instance of
+CON35-C. Avoid deadlock by locking in predefined order using POSIX threads.
 """
 severity = "Low"
 likelihood = "Probable"

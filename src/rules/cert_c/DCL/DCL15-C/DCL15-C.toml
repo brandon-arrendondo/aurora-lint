@@ -6,9 +6,13 @@ number = 15
 title = "Declare file-scope objects or functions that do not need external linkage as static"
 description = """
 If a file-scope object or a function does not need to be visible outside of the
-file, it should be hidden by being declared asstatic. This practice creates more
-modular code and limits pollution of the global name space. Subclause 6.2.2 of
-the C Standard [ISO/IEC 9899:2011] states: and
+file, it should be hidden by being declared as static. This practice creates
+more modular code and limits pollution of the global name space.
+Subclause 6.2.2 of the C Standard [ISO/IEC 9899:2011] states:
+If the declaration of a file scope identifier for an object or a function
+contains the storage-class specifier static, the identifier has internal
+linkage.
+and
 """
 severity = "Low"
 likelihood = "Unlikely"

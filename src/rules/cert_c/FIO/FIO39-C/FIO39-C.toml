@@ -6,11 +6,26 @@ number = 39
 title = "Do not alternately input and output from a stream without an intervening flush or positioning call"
 description = """
 The C Standard, 7.23.5.3, paragraph 7 [ISO/IEC 9899:2024], places the following
-restrictions on update streams: The following scenarios can result inundefined
-behavior. (Seeundefined behavior 156.) Consequently, a call tofseek(),fflush(),
-orfsetpos()is necessary between input and output to the same stream. SeeERR07-C.
-Prefer functions that support error checking over equivalent functions that
-don'tfor more information on whyfseek()is preferred overrewind().
+restrictions on update streams:
+When a file is opened with update mode..., both input and output may be
+performed on the associated stream. However, output shall not be directly
+followed by input without an intervening call to the fflush function or to a
+file positioning function (fseek, fsetpos, or rewind), and input shall not be
+directly followed by output without an intervening call to a file positioning
+function, unless the input operation encounters end-of-file. Opening (or
+creating) a text file with update mode may instead open (or create) a binary
+stream in some implementations.
+The following scenarios can result in undefined behavior. (See undefined
+behavior 156.)
+- Receiving input from a stream directly following an output to that stream
+without an intervening call to fflush(), fseek(), fsetpos(), or rewind() if the
+file is not at end-of-file
+- Outputting to a stream after receiving input from that stream without a call
+to fseek(), fsetpos(), or rewind() if the file is not at end-of-file
+Consequently, a call to fseek(), fflush(), or fsetpos() is necessary between
+input and output to the same stream. See ERR07-C. Prefer functions that support
+error checking over equivalent functions that don't for more information on why
+fseek() is preferred over rewind().
 """
 severity = "Low"
 likelihood = "Likely"

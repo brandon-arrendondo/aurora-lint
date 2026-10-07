@@ -5,14 +5,20 @@ category = "INT"
 number = 30
 title = "Ensure that unsigned integer operations do not wrap"
 description = """
-The C Standard, 6.2.5, paragraph 11 [ISO/IEC 9899:2024], states This behavior is
-more informally calledunsigned integer wrapping. Unsigned integer operations can
-wrap if the resulting value cannot be represented by the underlying
-representation of the integer. The following table indicates which operators can
-result in wrapping:
-OperatorWrapOperatorWrapOperatorWrapOperatorWrap+Yes-=Yes<<Yes<No-
-Yes*=Yes>>No>No*Yes/=No&No>=No/No%=No|No<=No%No<<=Yes^No==No++Yes>>=No~No!=No--
-Yes&=No!No&&No=No|=Noun +No||No+=Yes^=Noun -Yes?:No
+The C Standard, 6.2.5, paragraph 11 [ISO/IEC 9899:2024], states
+A computation involving unsigned operands can never produce an overflow, because
+arithmetic for the unsigned type is performed modulo 2^ N.
+This behavior is more informally called unsigned integer wrapping. Unsigned
+integer operations can wrap if the resulting value cannot be represented by the
+underlying representation of the integer. The following table indicates which
+operators can result in wrapping:
+The following sections examine specific operations that are susceptible to
+unsigned integer wrap. When operating on integer types with less precision than
+int, integer promotions are applied. The usual arithmetic conversions may also
+be applied to (implicitly) convert operands to equivalent types before
+arithmetic operations are performed. Programmers should understand integer
+conversion rules before trying to implement secure arithmetic operations. (See
+INT02-C. Understand integer conversion rules.)
 """
 severity = "High"
 likelihood = "Likely"

@@ -5,13 +5,14 @@ category = "SIG"
 number = 1
 title = "Understand implementation-specific details regarding signal handler persistence"
 description = """
-Thesignal()function hasimplementation-definedbehavior and behaves differently on
-Windows, for example, than it does on many UNIX systems. The following code
-example shows this behavior: #include <stdio.h> #include <signal.h> volatile
-sig_atomic_t e_flag = 0; void handler(int signum) { e_flag = 1; } int main(void)
-{ if (signal(SIGINT, handler) == SIG_ERR) { /* Handle error */ } while (!e_flag)
-{} puts("Escaped from first while ()"); e_flag = 0; while (!e_flag) {}
-puts("Escaped from second while ()"); return 0; }
+The signal() function has implementation-defined behavior and behaves
+differently on Windows, for example, than it does on many UNIX systems.
+The following code example shows this behavior:
+Many UNIX (and UNIX-like) systems automatically reinstall signal handlers upon
+handler execution, meaning that the signal handler defined by the user is left
+in place until it is explicitly removed. For example, when this code is compiled
+with GCC 3.4.4 and executed under Red Hat Linux, SIGINT is captured both times
+by handler:
 """
 severity = "Low"
 likelihood = "Unlikely"

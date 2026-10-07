@@ -6,17 +6,18 @@ number = 32
 title = "Do not perform operations on devices that are only appropriate for files"
 description = '''
 File names on many operating systems, including Windows and UNIX, may be used to
-accessspecial files, which are actually devices. Reserved Microsoft Windows
-device names includeAUX,CON,PRN,COM1, andLPT1or paths using the\\.\device
-namespace. Device files on UNIX systems are used to apply access rights and to
-direct operations on the files to the appropriate device drivers. Performing
-operations on device files that are intended for ordinary character or binary
-files can result in crashes anddenial-of-service attacks. For example, when
-Windows attempts to interpret the device name as a file resource, it performs an
-invalid resource access that usually results in a crash [Howard 2002]. Device
-files in UNIX can be a security risk when an attacker can access them in an
-unauthorized way. For example, if attackers can read or write to
-the/dev/kmemdevice, they may be able to alter the priority, UID, or other
+access special files, which are actually devices. Reserved Microsoft Windows
+device names include AUX, CON, PRN, COM1, and LPT1 or paths using the \\.\
+device namespace. Device files on UNIX systems are used to apply access rights
+and to direct operations on the files to the appropriate device drivers.
+Performing operations on device files that are intended for ordinary character
+or binary files can result in crashes and denial-of-service attacks. For
+example, when Windows attempts to interpret the device name as a file resource,
+it performs an invalid resource access that usually results in a crash [Howard
+2002].
+Device files in UNIX can be a security risk when an attacker can access them in
+an unauthorized way. For example, if attackers can read or write to the
+/dev/kmem device, they may be able to alter the priority, UID, or other
 attributes of their process or simply crash the system. Similarly, access to
 disk devices, tape devices, network devices, and terminals being used by other
 processes can lead to problems [Garfinkel 1996].

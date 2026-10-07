@@ -9,10 +9,7 @@ Input and output are mapped into logical data streams whose properties are more
 uniform than their various inputs and outputs. Two forms of mapping are
 supported, one for text streams and one for binary streams. They differ in the
 actual representation of data as well as in the functionality of some C
-functions. Characters may have to be altered to conform to differing conventions
-for representing text in thehost environment. As a consequence, data read to or
-written from a text stream will not necessarily compare equal to the stream's
-byte content. The following code opens the filemyfileas a text stream:
+functions.
 """
 severity = "Low"
 likelihood = "Probable"

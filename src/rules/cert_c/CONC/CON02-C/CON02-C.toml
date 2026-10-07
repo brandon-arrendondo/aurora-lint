@@ -6,24 +6,30 @@ number = 2
 title = "Do not use volatile as a synchronization primitive"
 description = """
 The C Standard, subclause 5.1.2.3, paragraph 2 [ISO/IEC 9899:2011], says:
-Thevolatilekeyword informs the compiler that the qualified variable may change
+Accessing a volatile object, modifying an object, modifying a file, or calling a
+function that does any of those operations are all side effects, which are
+changes in the state of the execution environment. Evaluation of an expression
+in general includes both value computations and initiation of side effects.
+Value computation for an lvalue expression includes determining the identity of
+the designated object.
+The volatile keyword informs the compiler that the qualified variable may change
 in ways that cannot be determined; consequently, compiler optimizations must be
-restricted for memory areas marked asvolatile. For example, the compiler is
+restricted for memory areas marked as volatile. For example, the compiler is
 forbidden to load the value into a register and subsequently reuse the loaded
 value rather than accessing memory directly. This concept relates to
 multithreading because incorrect caching of a shared variable may interfere with
 the propagation of modified values between threads, causing some threads to view
-stale data. Thevolatilekeyword is sometimes misunderstood to provide atomicity
-for variables that are shared between threads in a multithreaded program.
-Because the compiler is forbidden to either cache variables declared
-asvolatilein registers or to reorder the sequence of reads and writes to any
-given volatile variable, many programmers mistakenly believe that volatile
-variables can correctly serve as synchronization primitives. Although the
-compiler is forbidden to reorder the sequence of reads and writes to a
-particular volatile variable, it may legally reorder these reads and writes with
-respect to reads and writes toothermemory locations. This reordering alone is
-sufficient to make volatile variables unsuitable for use as synchronization
-primitives.
+stale data.
+The volatile keyword is sometimes misunderstood to provide atomicity for
+variables that are shared between threads in a multithreaded program. Because
+the compiler is forbidden to either cache variables declared as volatile in
+registers or to reorder the sequence of reads and writes to any given volatile
+variable, many programmers mistakenly believe that volatile variables can
+correctly serve as synchronization primitives. Although the compiler is
+forbidden to reorder the sequence of reads and writes to a particular volatile
+variable, it may legally reorder these reads and writes with respect to reads
+and writes to other memory locations. This reordering alone is sufficient to
+make volatile variables unsuitable for use as synchronization primitives.
 """
 severity = "Medium"
 likelihood = "Probable"

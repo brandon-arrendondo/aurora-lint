@@ -6,15 +6,9 @@ number = 5
 title = "Avoid large stack allocations"
 description = """
 Avoid excessive stack allocations, particularly in situations where the growth
-of the stack can be controlled or influenced by an attacker. SeeINT04-C. Enforce
-limits on integer values originating from tainted sourcesfor more information on
-preventing attacker-controlled integers from exhausting memory. The C Standard
-includes support for variable length arrays (VLAs). If the array length is
-derived from anuntrusted datasource, an attacker can cause the process to
-perform an excessive allocation on the stack. This noncompliant code example
-temporarily stores data read from a source file into a buffer. The buffer is
-allocated on the stack as a VLA of sizebufsize. Ifbufsizecan be controlled by a
-malicious user, this code can beexploitedto cause adenial-of-service attack:
+of the stack can be controlled or influenced by an attacker. See INT04-C.
+Enforce limits on integer values originating from tainted sources for more
+information on preventing attacker-controlled integers from exhausting memory.
 """
 severity = "Medium"
 likelihood = "Likely"

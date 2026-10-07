@@ -8,17 +8,11 @@ description = """
 Reading a shared primitive variable in one thread may not yield the value of the
 most recent write to the variable from another thread. Consequently, the thread
 may observe a stale value of the shared variable. To ensure the visibility of
-the most recent update, the write to the variable musthappen beforethe read (C
+the most recent update, the write to the variable must happen before the read (C
 Standard, subclause 5.1.2.4, paragraph 18 [ISO/IEC 9899:2011]). Atomic
 operations—other than relaxed atomic operations—trivially satisfy the happens
 before relationship. Where atomic operations are inappropriate, protecting both
 reads and writes with a mutex also satisfies the happens before relationship.
-This noncompliant code example uses ashutdown()method to set the non-
-volatiledoneflag that is checked in therun()method. final class ControlledStop
-implements Runnable { private boolean done = false; @Override public void run()
-{ while (!done) { try { // ... Thread.currentThread().sleep(1000); // Do
-something } catch(InterruptedException ie) { Thread.currentThread().interrupt();
-// Reset interrupted status } } } public void shutdown() { done = true; } }
 """
 severity = "Medium"
 likelihood = "Probable"

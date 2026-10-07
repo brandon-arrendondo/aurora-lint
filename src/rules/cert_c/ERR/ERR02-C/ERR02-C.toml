@@ -5,16 +5,18 @@ category = "ERR"
 number = 2
 title = "Avoid in-band error indicators"
 description = """
-Avoidin-band error indicatorswhile designing interfaces. This practice is
+Avoid in-band error indicators while designing interfaces. This practice is
 commonly used by C library functions but is not recommended. One example from
-the C Standard of a troublesome in-band error indicator isEOF(seeFIO34-C.
+the C Standard of a troublesome in-band error indicator is EOF (see FIO34-C.
 Distinguish between characters read from a file and EOF or WEOF). Another
-problematic use of in-band error indicators from the C Standard involving
-thesize_tandtime_ttypes is described by This noncompliant code example is from
-the Linux Kernel Mailing List archive site, although similar examples are
-common: int i; ssize_t count = 0; for (i = 0; i < 9; ++i) { count += sprintf(
-buf + count, "%02x ", ((u8 *)&slreg_num)[i] ); } count += sprintf(buf + count,
-"\n");
+problematic use of in-band error indicators from the C Standard involving the
+size_t and time_t types is described by
+- INT31-C. Ensure that integer conversions do not result in lost or
+misinterpreted data
+- FLP07-C. Cast the return value of a function that returns a floating-point
+type
+- INT18-C. Evaluate integer expressions in a larger size before comparing or
+assigning to that size
 """
 severity = "Low"
 likelihood = "Unlikely"

@@ -5,18 +5,13 @@ category = "FIO"
 number = 20
 title = "Avoid unintentional truncation when using fgets() or fgetws()"
 description = """
-Thefgets()andfgetws()functions are typically used to read a newline-terminated
-line of input from a stream. Both functions read at most one less than the
-number of narrow or wide characters specified by an argumentnfrom a stream to a
-string. Truncation errors can occur ifn - 1is less than the number of characters
-appearing in the input string prior to the new-line narrow or wide character
-(which is retained) or after end-of-file. This can result in the accidental
-truncation of user input. This noncompliant code example copies the input string
-into a buffer, and assumes it captured all of the user's input. #include
-<stdbool.h> #include <stdio.h> bool get_data(char *buffer, int size) { if
-(fgets(buffer, size, stdin)) { return true; } return false; } void func(void) {
-char buf[8]; if (get_data(buf, sizeof(buf))) { printf("The user input %s\n",
-buf); } else { printf("Error getting data from the user\n"); } }
+The fgets() and fgetws() functions are typically used to read a newline-
+terminated line of input from a stream. Both functions read at most one less
+than the number of narrow or wide characters specified by an argument n from a
+stream to a string. Truncation errors can occur if n - 1 is less than the number
+of characters appearing in the input string prior to the new-line narrow or wide
+character (which is retained) or after end-of-file. This can result in the
+accidental truncation of user input.
 """
 severity = "Medium"
 likelihood = "Likely"

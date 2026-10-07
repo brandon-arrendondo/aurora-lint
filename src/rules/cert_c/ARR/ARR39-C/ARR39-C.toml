@@ -6,21 +6,19 @@ number = 39
 title = "Do not add or subtract a scaled integer to a pointer"
 description = """
 Pointer arithmetic is appropriate only when the pointer argument refers to an
-array (seeARR37-C. Do not add or subtract an integer to a pointer to a non-array
-object), including an array of bytes. When performing pointer arithmetic, the
-size of the value to add to or subtract from a pointer is automatically scaled
-to the size of the type of the referenced array object. Adding or subtracting a
-scaled integer value to or from a pointer is invalid because it may yield a
-pointer that does not point to an element within or one past the end of the
-array. (SeeARR30-C. Do not form or use out-of-bounds pointers or array
-subscripts.) Adding a pointer to an array of a type other than character to the
-result of thesizeofoperator oroffsetofmacro, which returns a size and an offset,
+array (see ARR37-C. Do not add or subtract an integer to a pointer to a non-
+array object), including an array of bytes. When performing pointer arithmetic,
+the size of the value to add to or subtract from a pointer is automatically
+scaled to the size of the type of the referenced array object. Adding or
+subtracting a scaled integer value to or from a pointer is invalid because it
+may yield a pointer that does not point to an element within or one past the end
+of the array. (See ARR30-C. Do not form or use out-of-bounds pointers or array
+subscripts.)
+Adding a pointer to an array of a type other than character to the result of the
+sizeof operator or offsetof macro, which returns a size and an offset,
 respectively, violates this rule. However, adding an array pointer to the number
-of array elements, for example, by using
-thearr[sizeof(arr)/sizeof(arr[0])])idiom, is allowed provided thatarrrefers to
-an array and not a pointer. In this noncompliant code example,sizeof(buf)is
-added to the arraybuf. This example is noncompliant becausesizeof(buf)is scaled
-byintand then scaled again when added tobuf.
+of array elements, for example, by using the arr[sizeof(arr)/sizeof(arr[0])])
+idiom, is allowed provided that arr refers to an array and not a pointer.
 """
 severity = "High"
 likelihood = "Probable"

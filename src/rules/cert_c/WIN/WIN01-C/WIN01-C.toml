@@ -6,17 +6,28 @@ number = 1
 title = "Do not forcibly terminate execution"
 description = """
 When a thread terminates under normal conditions, thread-specific resources such
-as the initial stack space and thread-specificHANDLEobjects are released
+as the initial stack space and thread-specific HANDLE objects are released
 automatically by the system and notifications are sent to other parts of the
-application, such asDLL_THREAD_DETACHmessages being sent to DLLs. However, if a
-thread is forcibly terminated by callingTerminateThread(), the cleanup and
-notifications do not have the chance to run. MSDN states On some platforms (such
-as Microsoft Windows XP and Microsoft Windows Server 2003), the thread's initial
-stack is not freed, causing a resource leak. Processes behave similar to
-threads, and so share the same concerns. Do not use
-theTerminateThread()orTerminateProcess()APIs. Instead, you should prefer to exit
-threads and processes by returning from the entrypoint, by callingExitThread(),
-or by callingExitProcess().
+application, such as DLL_THREAD_DETACH messages being sent to DLLs. However, if
+a thread is forcibly terminated by calling TerminateThread(), the cleanup and
+notifications do not have the chance to run. MSDN states
+TerminateThread is a dangerous function that should only be used in the most
+extreme cases. You should call TerminateThread only if you know exactly what the
+target thread is doing, and you control all of the code that the target thread
+could possibly be running at the time of the termination. For example,
+TerminateThread can result in the following problems: If the target thread owns
+a critical section, the critical section will not be released.If the target
+thread is allocating memory from the heap, the heap lock will not be released.If
+the target thread is executing certain kernel32 calls when it is terminated, the
+kernel32 state for the thread's process could be inconsistent.If the target
+thread is manipulating the global state of a shared DLL, the state of the DLL
+could be destroyed, affecting other users of the DLL.
+On some platforms (such as Microsoft Windows XP and Microsoft Windows Server
+2003), the thread's initial stack is not freed, causing a resource leak.
+Processes behave similar to threads, and so share the same concerns. Do not use
+the TerminateThread() or TerminateProcess() APIs. Instead, you should prefer to
+exit threads and processes by returning from the entrypoint, by calling
+ExitThread(), or by calling ExitProcess().
 """
 severity = "High"
 likelihood = "Likely"

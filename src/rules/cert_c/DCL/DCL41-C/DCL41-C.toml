@@ -5,14 +5,17 @@ category = "DCL"
 number = 41
 title = "Do not declare variables inside a switch statement before the first case label"
 description = """
-According to the C Standard, 6.8.5.3, paragraph 4 [ISO/IEC 9899:2024], If a
-programmer declares variables, initializes them before the first case statement,
-and then tries to use them inside any of the case statements, those variables
-will have scope inside theswitchblock but will not be initialized and will
-consequently contain indeterminate values. Reading such values also
-violatesEXP33-C. Do not read uninitialized memory. This noncompliant code
-example declares variables and contains executable statements before the first
-case label within theswitchstatement:
+According to the C Standard, 6.8.5.3, paragraph 4 [ISO/IEC 9899:2024],
+A switch statement causes control to jump to, into, or past the statement that
+is the switch body, depending on the value of a controlling expression, and on
+the presence of a default label and the values of any case labels on or in the
+switch body. A case or default label is accessible only within the closest
+enclosing switch statement.
+If a programmer declares variables, initializes them before the first case
+statement, and then tries to use them inside any of the case statements, those
+variables will have scope inside the switch block but will not be initialized
+and will consequently contain indeterminate values. Reading such values also
+violates EXP33-C. Do not read uninitialized memory.
 """
 severity = "Medium"
 likelihood = "Unlikely"

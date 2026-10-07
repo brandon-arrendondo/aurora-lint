@@ -5,18 +5,27 @@ category = "ERR"
 number = 6
 title = "Understand the termination behavior of assert() and abort()"
 description = """
-The C Standard, subclause 7.2.1.1 [ISO/IEC 9899:2011], definesassert()to have
-the following behavior: Becauseassert()callsabort(), cleanup functions
-registered withatexit()are not called. If the intention of the programmer is to
-properly clean up in the case of a failed assertion, then runtime assertions
-should be replaced with static assertions where possible. (SeeDCL03-C. Use a
-static assertion to test the value of a constant expression.) When the assertion
-is based on runtime data, theassertshould be replaced with a runtime check that
-implements the adopted error strategy (seeERR00-C. Adopt and implement a
-consistent and comprehensive error-handling policy). SeeERR04-C. Choose an
-appropriate termination strategyfor more information on program termination
-strategies andMSC11-C. Incorporate diagnostic tests using assertionsfor more
-information on using theassert()macro.
+The C Standard, subclause 7.2.1.1 [ISO/IEC 9899:2011], defines assert() to have
+the following behavior:
+The assert macro puts diagnostic tests into programs; it expands to a void
+expression. When it is executed, if expression (which shall have a scalar type)
+is false (that is, compares equal to 0), the assert macro writes information
+about the particular call that failed (including the text of the argument, the
+name of the source file, the source line number, and the name of the enclosing
+function—the latter are respectively the values of the pre-processing macros __
+FILE_ _ and __ LINE_ _ and of the identifier __ func_ _) on the standard error
+stream in an implementation-defined format. It then calls the abort function.
+Because assert() calls abort(), cleanup functions registered with atexit() are
+not called. If the intention of the programmer is to properly clean up in the
+case of a failed assertion, then runtime assertions should be replaced with
+static assertions where possible. (See DCL03-C. Use a static assertion to test
+the value of a constant expression.) When the assertion is based on runtime
+data, the assert should be replaced with a runtime check that implements the
+adopted error strategy (see ERR00-C. Adopt and implement a consistent and
+comprehensive error-handling policy).
+See ERR04-C. Choose an appropriate termination strategy for more information on
+program termination strategies and MSC11-C. Incorporate diagnostic tests using
+assertions for more information on using the assert() macro.
 """
 severity = "Medium"
 likelihood = "Unlikely"

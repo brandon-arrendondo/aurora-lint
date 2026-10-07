@@ -12,22 +12,15 @@ vulnerability that can otherwise lead to unconstrained system compromise and
 consequently functions as a defense-in-depth strategy. A jail may consist of
 world-viewable programs that require fewer resources to execute than those that
 exist on that system. Jails are useful only when there is no way to elevate
-privileges in the event of program failure. Additionally, care must be taken to
-ensure that all the required resources (libraries, files, and so on) are
-replicated within the jail directory and that no reference is made to other
-parts of the file system from within this directory. It is also advisable to
-administer restrictive read/write permissions on the jail directories and
-resources on the basis of the program's privilege requirements. Although
-creating jails is an effective security measure when used correctly, it is not a
-surrogate for compliance with the other rules and recommendations in this
-standard. A security flaw exists in this noncompliant code example resulting
-from the absence of proper canonicalization measures on the file path. This
-allows an attacker to traverse the file system and possibly write to a file of
-the attacker's choice with the privileges of the vulnerable program. For
-example, it may be possible to overwrite the password file (such as
-the/etc/passwd, common to many POSIX-based systems) or a device file, such as
-the mouse, which in turn can aid further exploitation or cause a denial of
-service to occur.
+privileges in the event of program failure.
+Additionally, care must be taken to ensure that all the required resources
+(libraries, files, and so on) are replicated within the jail directory and that
+no reference is made to other parts of the file system from within this
+directory. It is also advisable to administer restrictive read/write permissions
+on the jail directories and resources on the basis of the program's privilege
+requirements. Although creating jails is an effective security measure when used
+correctly, it is not a surrogate for compliance with the other rules and
+recommendations in this standard.
 """
 severity = "Medium"
 likelihood = "Probable"

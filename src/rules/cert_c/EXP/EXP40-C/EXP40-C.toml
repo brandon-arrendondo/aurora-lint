@@ -5,9 +5,13 @@ category = "EXP"
 number = 40
 title = "Do not modify constant objects"
 description = """
-The C Standard, 6.7.4, paragraph 7 [ISO/IEC 9899:2024], states See alsoundefined
-behavior 61. There are existing compilerimplementationsthat allowconst-qualified
-objects to be modified without generating a warning message.
+The C Standard, 6.7.4, paragraph 7 [IS O/IEC 9899:2024], states
+If an attempt is made to modify an object defined with a const -qualified type
+through use of an lvalue with non- const -qualified type, the behavior is
+undefined.
+See also undefined behavior 61.
+There are existing compiler implementations that allow const -qualified objects
+to be modified without generating a warning message.
 """
 severity = "Low"
 likelihood = "Unlikely"

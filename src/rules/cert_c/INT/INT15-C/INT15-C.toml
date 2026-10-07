@@ -6,14 +6,19 @@ number = 15
 title = "Use intmax_t or uintmax_t for formatted IO on programmer-defined integer types"
 description = """
 Few programmers consider the issues around formatted I/O and type definitions. A
-programmer-defined integer type might be any type supported by
-theimplementation, even a type larger thanunsigned long long. For example, given
-an implementation that supports 128-bit unsigned integers and provides
-auint_fast128_ttype, a programmer may define the following type: typedef
-uint_fast128_t mytypedef_t; Furthermore, the definition of programmer-defined
-types may change, which creates a problem when these types are used with
-formatted output functions, such asprintf(), and formatted input functions, such
-asscanf(). (SeeFIO47-C. Use valid format strings.)
+programmer-defined integer type might be any type supported by the
+implementation, even a type larger than unsigned long long. For example, given
+an implementation that supports 128-bit unsigned integers and provides a
+uint_fast128_t type, a programmer may define the following type:
+Furthermore, the definition of programmer-defined types may change, which
+creates a problem when these types are used with formatted output functions,
+such as printf(), and formatted input functions, such as scanf(). (See FIO47-C.
+Use valid format strings.)
+The C intmax_t and uintmax_t types can represent any value representable by any
+other integer types of the same signedness. (See INT00-C. Understand the data
+model used by your implementation(s).) This capability allows conversion between
+programmer-defined integer types (of the same signedness) and intmax_t and
+uintmax_t:
 """
 severity = "High"
 likelihood = "Unlikely"

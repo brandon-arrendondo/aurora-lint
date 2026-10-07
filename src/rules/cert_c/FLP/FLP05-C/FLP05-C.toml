@@ -9,23 +9,23 @@ Most implementations of C use the IEEE 754 standard for floating-point
 representation. In this representation, floats are encoded using 1 sign bit, 8
 exponent bits, and 23 mantissa bits. Doubles are encoded and used exactly the
 same way, except they use 1 sign bit, 11 exponent bits, and 52 mantissa bits.
-These bits encode the values ofs, the sign;M, the significand; andE, the
-exponent. Floating-point numbers are then calculated as (−1)s*M* 2E.
+These bits encode the values of s, the sign; M, the significand; and E, the
+exponent. Floating-point numbers are then calculated as (−1) s * M * 2 E.
 Ordinarily, all of the mantissa bits are used to express significant figures, in
 addition to a leading 1, which is implied and therefore left out. Consequently,
 floats ordinarily have 24 significant bits of precision, and doubles ordinarily
-have 53 significant bits of precision. Such numbers are callednormalized
+have 53 significant bits of precision. Such numbers are called normalized
 numbers. All floating-point numbers are limited in the sense that they have
-fixed precision. SeeFLP00-C. Understand the limitations of floating-point
+fixed precision. See FLP00-C. Understand the limitations of floating-point
 numbers.
 Mantissa bits are used to express extremely small numbers that are too small to
 encode normally because of the lack of available exponent bits. Using mantissa
 bits extends the possible range of exponents. Because these bits no longer
 function as significant bits of precision, the total precision of extremely
-small numbers is less than usual. Such numbers are calleddenormalized,and they
+small numbers is less than usual. Such numbers are called denormalized, and they
 are more limited than normalized numbers. However, even using normalized numbers
-where precision is required can pose a risk. SeeFLP02-C. Avoid using floating-
-point numbers when precise computation is neededfor more information.
+where precision is required can pose a risk. See FLP02-C. Avoid using floating-
+point numbers when precise computation is needed for more information.
 """
 severity = "Low"
 likelihood = "Probable"

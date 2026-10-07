@@ -9,11 +9,11 @@ Use visually distinct identifiers with meaningful names to eliminate errors
 resulting from misreading the spelling of an identifier during the development
 and review of code. An identifier can denote an object; a function; a tag or a
 member of a structure, union, or enumeration; a typedef name; a label name; a
-macro name; or a macro parameter. Depending on the fonts used, certain
-characters appear visually similar or even identical: CharacterSimilar Character
-s0(zero)O(capitalo),Q(capitalq),D(capitald)1(one)I(capitali),l(lowercaseL)2(two)
-Z(capitalz)5(five)S(capitals)8(eight)B(capitalb)n(lowercaseN)h(lowercaseH)m(lowe
-rcaseM)rn(lowercaseR, lowercaseN)
+macro name; or a macro parameter.
+Depending on the fonts used, certain characters appear visually similar or even
+identical:
+Do not define multiple identifiers that vary only with respect to one or more
+visually similar characters.
 """
 severity = "Low"
 likelihood = "Unlikely"

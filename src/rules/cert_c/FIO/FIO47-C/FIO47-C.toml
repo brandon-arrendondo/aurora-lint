@@ -5,11 +5,28 @@ category = "FIO"
 number = 47
 title = "Use valid format strings"
 description = """
-The formatted output functions (fprintf()and related functions) convert, format,
-and print their arguments under control of aformatstring. The C Standard,
-7.23.6.1, paragraph 3 [ISO/IEC 9899:2024], specifies Eachconversion
-specificationis introduced by the%character followed (in order) by Common
-mistakes in creating format strings include
+The formatted output functions (fprintf() and related functions) convert,
+format, and print their arguments under control of a format string. The C
+Standard, 7.23.6.1, paragraph 3 [ISO/IEC 9899:2024], specifies
+The format shall be a multibyte character sequence, beginning and ending in its
+initial shift state. The format is composed of zero or more directives: ordinary
+multibyte characters (not %), which are copied unchanged to the output stream;
+and conversion specifications, each of which results in fetching zero or more
+subsequent arguments, converting them, if applicable, according to the
+corresponding conversion specifier, and then writing the result to the output
+stream.
+Each conversion specification is introduced by the % character followed (in
+order) by
+- Zero or more flags (in any order), which modify the meaning of the conversion
+specification
+- An optional minimum field width
+- An optional precision that gives the minimum number of digits, the maximum
+number of digits, or the maximum number of bytes, etc. depending on the
+conversion specifier
+- An optional length modifier that specifies the size of the argument
+- A conversion specifier character that indicates the type of conversion to be
+applied
+Common mistakes in creating format strings include
 """
 severity = "High"
 likelihood = "Unlikely"

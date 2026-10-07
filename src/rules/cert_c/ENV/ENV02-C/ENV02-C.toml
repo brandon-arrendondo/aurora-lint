@@ -5,13 +5,16 @@ category = "ENV"
 number = 2
 title = "Beware of multiple environment variables with the same effective name"
 description = """
-Thegetenv()function searches an environment list for a string that matches a
+The getenv() function searches an environment list for a string that matches a
 specified name and returns a pointer to a string associated with the matched
-list member. Subclause 7.22.4.6 of the C Standard [ISO/IEC 9899:2011] states:
-Depending on theimplementation, multiple environment variables with the same
+list member.
+Subclause 7.22.4.6 of the C Standard [ISO/IEC 9899:2011] states:
+The set of environment names and the method for altering the environment list
+are implementation-defined.
+Depending on the implementation, multiple environment variables with the same
 name may be allowed and can cause unexpected results if a program cannot
 consistently choose the same value. The GNU glibc library addresses this issue
-ingetenv()andsetenv()by always using the first variable it encounters and
+in getenv() and setenv() by always using the first variable it encounters and
 ignoring the rest. However, it is unwise to rely on this behavior.
 """
 severity = "Low"

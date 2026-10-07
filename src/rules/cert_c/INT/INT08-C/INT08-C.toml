@@ -9,18 +9,19 @@ Integer operations must result in an integer value within the range of the
 integer type (that is, the resulting value is the same as the result produced by
 unlimited-range integers). Frequently, the range is more restrictive depending
 on the use of the integer value, for example, as an index. Integer values can be
-verified by code review or bystatic analysis. Integer overflow isundefined
-behavior, so a compiled program can do anything, including go off to play the
-Game of Life. Furthermore, a compiler may perform optimizations that assume an
-overflow will never occur, which can easily yield unexpected results. Compilers
-can optimize awayifstatements that check whether an overflow occurred.
-SeeMSC15-C. Do not depend on undefined behaviorfor an example. Verifiably in-
-range operations are often preferable to treating out-of-range values as an
-error condition because the handling of these errors has been repeatedly shown
-to causedenial-of-serviceproblems in actual applications. The quintessential
-example is the failure of the Ariane 5 launcher, which occurred because of an
-improperly handled conversion error that resulted in the processor being shut
-down [Lions 1996].
+verified by code review or by static analysis.
+Integer overflow is undefined behavior, so a compiled program can do anything,
+including go off to play the Game of Life. Furthermore, a compiler may perform
+optimizations that assume an overflow will never occur, which can easily yield
+unexpected results. Compilers can optimize away if statements that check whether
+an overflow occurred. See MSC15-C. Do not depend on undefined behavior for an
+example.
+Verifiably in-range operations are often preferable to treating out-of-range
+values as an error condition because the handling of these errors has been
+repeatedly shown to cause denial-of-service problems in actual applications. The
+quintessential example is the failure of the Ariane 5 launcher, which occurred
+because of an improperly handled conversion error that resulted in the processor
+being shut down [ESA 1996].
 """
 severity = "Medium"
 likelihood = "Probable"

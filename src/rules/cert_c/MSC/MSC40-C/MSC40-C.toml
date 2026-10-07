@@ -8,10 +8,17 @@ description = """
 According to the C Standard, 3.8 [ISO/IEC 9899:2011], a constraint is a
 "restriction, either syntactic or semantic, by which the exposition of language
 elements is to be interpreted." Despite the similarity of the terms, a runtime
-constraint is not a kind of constraint. Violating anyshallstatement within a
-constraint clause in the C Standard requires animplementationto issue a
-diagnostic message, the C Standard, 5.1.1.3 [ISO/IEC 9899:2011] states The C
-Standard further explains in a footnote
+constraint is not a kind of constraint.
+Violating any shall statement within a constraint clause in the C Standard
+requires an implementation to issue a diagnostic message, the C Standard,
+5.1.1.3 [ISO/IEC 9899:2011] states
+A conforming implementation shall produce at least one diagnostic message
+(identified in an implementation-defined manner) if a preprocessing translation
+unit or translation unit contains a violation of any syntax rule or constraint,
+even if the behavior is also explicitly specified as undefined or
+implementation-defined. Diagnostic messages need not be produced in other
+circumstances.
+The C Standard further explains in a footnote
 """
 severity = "Low"
 likelihood = "Unlikely"

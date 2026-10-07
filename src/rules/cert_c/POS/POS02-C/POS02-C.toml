@@ -7,20 +7,10 @@ title = "Follow the principle of least privilege"
 description = """
 The principle of least privilege states that every program and every user of the
 system should operate using the least set of privileges necessary to complete
-the job [Saltzer 1974,Saltzer 1975]. The Build Security In website [DHS 2006]
+the job [Saltzer 1974, Saltzer 1975]. The Build Security In website [DHS 2006]
 provides additional definitions of this principle. Executing with minimal
 privileges mitigates against exploitation in case a vulnerability is discovered
-in the code. Privileged operations are often required in a program, though the
-program might not need to retain the special privileges. For instance, a network
-program may require superuser privileges to capture raw network packets but may
-not require the same set of privileges for carrying out other tasks such as
-packet analysis. Dropping or elevating privileges alternately according to
-program requirements is a good design strategy. Moreover, assigning only the
-required privileges limits the window of exposure for any privilege escalation
-exploit to succeed. Consider a custom service that must bind to a well-known
-port (below 1024). To prevent malicious entities from hijacking client
-connections, the kernel imposes a condition so that only the superuser can use
-thebind()system call to bind to these ports.
+in the code.
 """
 severity = "High"
 likelihood = "Likely"

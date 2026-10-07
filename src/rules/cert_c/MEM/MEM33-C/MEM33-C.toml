@@ -5,9 +5,21 @@ category = "MEM"
 number = 33
 title = "Allocate and copy structures containing a flexible array member dynamically"
 description = """
-The C Standard, 6.7.3.2, paragraph 20 [ISO/IEC 9899:2024], says The following is
-an example of a structure that contains a flexible array member: struct
-flex_array_struct { int num; int data[]; };
+The C Standard, 6.7.3.2, paragraph 20 [ISO/IEC 9899:2024], says
+As a special case, the last element of a structure with more than one named
+member may have an incomplete array type; this is called a flexible array
+member. In most situations, the ﬂexible array member is ignored. In particular,
+the size of the structure is as if the flexible array member were omitted except
+that it may have more trailing padding than the omission would imply.
+The following is an example of a structure that contains a flexible array
+member:
+This definition means that when computing the size of such a structure, only the
+first member, num, is considered. Unless the appropriate size of the flexible
+array member has been explicitly added when allocating storage for an object of
+the struct, the result of accessing the member data of a variable of nonpointer
+type struct flex_array_struct is undefined. DCL38-C. Use the correct syntax when
+declaring a flexible array member describes the correct way to declare a struct
+with a flexible array member.
 """
 severity = "Low"
 likelihood = "Unlikely"

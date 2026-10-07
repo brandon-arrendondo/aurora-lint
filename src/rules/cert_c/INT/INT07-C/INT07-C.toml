@@ -5,19 +5,15 @@ category = "INT"
 number = 7
 title = "Use only explicitly signed or unsigned char type for numeric values"
 description = """
-The three typeschar,signed char, andunsigned charare collectively called
-thecharacter types. Compilers have the latitude to definecharto have the same
-range, representation, and behavior aseithersigned charorunsigned char.
-Irrespective of the choice made,charis a separate type from the other two and
-isnotcompatible with either. Use onlysigned charandunsigned chartypes for the
-storage and use of numeric values because it is the only portable way to
-guarantee the signedness of the character types (seeSTR00-C. Represent
-characters using an appropriate typefor more information on representing
-characters). In this noncompliant code example, thechar-type variablecmay be
-signed or unsigned. Assuming 8-bit, two's complement character types, this code
-may print out eitheri/c = 5(unsigned) ori/c = -17(signed). It is much more
-difficult to reason about the correctness of a program without knowing if these
-integers are signed or unsigned.
+The three types char, signed char, and unsigned char are collectively called the
+character types. Compilers have the latitude to define char to have the same
+range, representation, and behavior as either signed char or unsigned char.
+Irrespective of the choice made, char is a separate type from the other two and
+is not compatible with either.
+Use only signed char and unsigned char types for the storage and use of numeric
+values because it is the only portable way to guarantee the signedness of the
+character types (see STR00-C. Represent characters using an appropriate type for
+more information on representing characters).
 """
 severity = "Medium"
 likelihood = "Probable"

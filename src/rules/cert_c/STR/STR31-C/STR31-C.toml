@@ -9,16 +9,13 @@ Copying data to a buffer that is not large enough to hold that data results in a
 buffer overflow. Buffer overflows occur frequently when manipulating strings
 [Seacord 2013b]. To prevent such errors, either limit copies through truncation
 or, preferably, ensure that the destination is of sufficient size to hold the
-character data to be copied and the null-termination character. (SeeSTR03-C. Do
-not inadvertently truncate a string.) When strings live on the heap, this rule
-is a specific instance ofMEM35-C. Allocate sufficient memory for an object.
-Because strings are represented as arrays of characters, this rule is related to
-bothARR30-C. Do not form or use out-of-bounds pointers or array
-subscriptsandARR38-C. Guarantee that library functions do not form invalid
-pointers. This noncompliant code example demonstrates anoff-by-oneerror [Dowd
-2006]. The loop copies data fromsrctodest. However, because the loop does not
-account for the null-termination character, it may be incorrectly written 1 byte
-past the end ofdest.
+character data to be copied and the null-termination character. (See STR03-C. Do
+not inadvertently truncate a string.)
+When strings live on the heap, this rule is a specific instance of MEM35-C.
+Allocate sufficient memory for an object. Because strings are represented as
+arrays of characters, this rule is related to both ARR30-C. Do not form or use
+out-of-bounds pointers or array subscripts and ARR38-C. Guarantee that library
+functions do not form invalid pointers.
 """
 severity = "High"
 likelihood = "Likely"

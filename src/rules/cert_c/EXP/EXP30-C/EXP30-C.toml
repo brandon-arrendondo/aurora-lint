@@ -5,14 +5,21 @@ category = "EXP"
 number = 30
 title = "Do not depend on the order of evaluation for side effects"
 description = """
-Evaluation of an expression may produceside effects. At specific points during
-execution, known assequence points, all side effects of previous evaluations are
-complete, and no side effects of subsequent evaluations have yet taken place. Do
-not depend on the order of evaluation for side effects unless there is an
-intervening sequence point. The C Standard, 6.5, paragraph 2 [ISO/IEC
-9899:2024], states This requirement must be met for each allowable ordering of
-the subexpressions of a full expression; otherwise, the behavior isundefined.
-(Seeundefined behavior 34.)
+Evaluation of an expression may produce side effects. At specific points during
+execution, known as sequence points, all side effects of previous evaluations
+are complete, and no side effects of subsequent evaluations have yet taken
+place. Do not depend on the order of evaluation for side effects unless there is
+an intervening sequence point.
+The C Standard, 6.5, paragraph 2 [ISO/IEC 9899:2024], states
+If a side effect on a scalar object is unsequenced relative to either a
+different side effect on the same scalar object or a value computation using the
+value of the same scalar object, the behavior is undefined. If there are
+multiple allowable orderings of the subexpressions of an expression, the
+behavior is undefined if such an unsequenced side effect occurs in any of the
+orderings.
+This requirement must be met for each allowable ordering of the subexpressions
+of a full expression; otherwise, the behavior is undefined. (See undefined
+behavior 34.)
 """
 severity = "Medium"
 likelihood = "Probable"

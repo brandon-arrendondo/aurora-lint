@@ -6,21 +6,27 @@ number = 22
 title = "Use volatile for data that cannot be cached"
 description = """
 An object that has volatile-qualified type may be modified in ways unknown to
-theimplementationor have other unknown side effects. Asynchronous signal
+the implementation or have other unknown side effects. Asynchronous signal
 handling, for example, may cause objects to be modified in a manner unknown to
 the compiler. Without this type qualifier, unintended optimizations may occur.
 These optimizations may cause race conditions because a programmer may write
 code that prevents a race condition, yet the compiler is not aware of the
 programmer's data model and may modify the code during compilation to permit
-race conditions. Thevolatilekeyword eliminates this confusion by imposing
-restrictions on access and caching. According to the C99 Rationale [C99
-Rationale 2003], Type qualifying objects as volatile does not guarantee
-synchronization between multiple threads, protect against simultaneous memory
-accesses, or, unless used to declare objects of typesig_atomic_t, guarantee
-atomicity of accesses to the object. For restrictions specific to signal
-handlers, seeSIG31-C. Do not access shared objects in signal handlers. However,
-type qualifying objects as volatile does ensure that a conforming compiler will
-not elide or reorder access to the object.
+race conditions.
+The volatile keyword eliminates this confusion by imposing restrictions on
+access and caching. According to the C99 Rationale [C99 Rationale 2003],
+No caching through this lvalue: each operation in the abstract semantics must be
+performed (that is, no caching assumptions may be made, because the location is
+not guaranteed to contain any previous value). In the absence of this qualifier,
+the contents of the designated location may be assumed to be unchanged except
+for possible aliasing.
+Type qualifying objects as volatile does not guarantee synchronization between
+multiple threads, protect against simultaneous memory accesses, or, unless used
+to declare objects of type sig_atomic_t, guarantee atomicity of accesses to the
+object. For restrictions specific to signal handlers, see SIG31-C. Do not access
+shared objects in signal handlers. However, type qualifying objects as volatile
+does ensure that a conforming compiler will not elide or reorder access to the
+object.
 """
 severity = "Low"
 likelihood = "Probable"

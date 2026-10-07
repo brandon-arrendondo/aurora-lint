@@ -5,16 +5,22 @@ category = "STR"
 number = 10
 title = "Do not concatenate different type of string literals"
 description = """
-According toMISRA 2008, concatenation of wide and narrow string literals leads
-toundefined behavior. This was once considered implicitly undefined behavior
+According to MISRA 2008, concatenation of wide and narrow string literals leads
+to undefined behavior. This was once considered implicitly undefined behavior
 until C90 [ISO/IEC 9899:1990]. However, C99 defined this behavior [ISO/IEC
 9899:1999], and C11 further explains in subclause 6.4.5, paragraph 5 [ISO/IEC
-9899:2011]: Nonetheless, it is recommended that string literals that are
-concatenated should all be the same type so as not to rely onimplementation-
-defined behaviororundefined behaviorif compiled on a platform that supports only
-C90. This noncompliant code example concatenates wide and narrow string
-literals. Although the behavior is undefined in C90, the programmer probably
-intended to create a wide string literal.
+9899:2011]:
+In translation phase 6, the multibyte character sequences specified by any
+sequence of adjacent character and identically-prefixed string literal tokens
+are concatenated into a single multibyte character sequence. If any of the
+tokens has an encoding prefix, the resulting multibyte character sequence is
+treated as having the same prefix; otherwise, it is treated as a character
+string literal. Whether differently-prefixed wide string literal tokens can be
+concatenated and, if so, the treatment of the resulting multibyte character
+sequence are implementation-defined.
+Nonetheless, it is recommended that string literals that are concatenated should
+all be the same type so as not to rely on implementation-defined behavior or
+undefined behavior if compiled on a platform that supports only C90.
 """
 severity = "Low"
 likelihood = "Probable"

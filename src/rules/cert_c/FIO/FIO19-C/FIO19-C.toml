@@ -6,11 +6,14 @@ number = 19
 title = "Do not use fseek() and ftell() to compute the size of a regular file"
 description = """
 Understanding the difference between text mode and binary mode is important when
-using functions that operate on file streams. (SeeFIO14-C. Understand the
-difference between text mode and binary mode with file streamsfor more
-information.) Subclause 7.21.9.2 of the C Standard [ISO/IEC 9899:2011] specifies
-the following behavior forfseek()when opening a binary file in binary mode: In
-addition, footnote 268 of subclause 7.21.3 says:
+using functions that operate on file streams. (See FIO14-C. Understand the
+difference between text mode and binary mode with file streams for more
+information.)
+Subclause 7.21.9.2 of the C Standard [ISO/IEC 9899:2011] specifies the following
+behavior for fseek() when opening a binary file in binary mode:
+A binary stream need not meaningfully support fseek calls with a whence value of
+SEEK_END.
+In addition, footnote 268 of subclause 7.21.3 says:
 """
 severity = "Low"
 likelihood = "Unlikely"

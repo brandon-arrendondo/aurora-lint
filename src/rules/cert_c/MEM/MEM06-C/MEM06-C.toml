@@ -8,12 +8,14 @@ description = """
 Developers should take steps to prevent sensitive information such as passwords,
 cryptographic keys, and other secrets from being inadvertently leaked.
 Preventive measures include attempting to keep such data from being written to
-disk. Two common mechanisms by which data is inadvertently written to disk
-areswappingandcore dumps. Many general-purpose operating systems implement a
-virtual-memory-management technique calledpaging(also calledswapping) to
-transfer pages between main memory and an auxiliary store, such as a disk drive.
-This feature is typically implemented as a task running in the kernel of the
-operating system, and its operation is invisible to the running program.
+disk.
+Two common mechanisms by which data is inadvertently written to disk are
+swapping and core dumps.
+Many general-purpose operating systems implement a virtual-memory-management
+technique called paging (also called swapping) to transfer pages between main
+memory and an auxiliary store, such as a disk drive. This feature is typically
+implemented as a task running in the kernel of the operating system, and its
+operation is invisible to the running program.
 """
 severity = "Medium"
 likelihood = "Unlikely"

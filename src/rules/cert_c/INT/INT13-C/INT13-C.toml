@@ -5,17 +5,22 @@ category = "INT"
 number = 13
 title = "Use bitwise operators only on unsigned operands"
 description = """
-Bitwise operators include the complement operator~, bitwise shift
-operators>>and<<, bitwise AND operator&, bitwise exclusive OR operator^, bitwise
-inclusive OR operator|and compound assignment operators >>=, <<=, &=, ^= and |=.
-Bitwise operators should be used only with unsigned integer operands, as the
-results of bitwise operations on signed integers areimplementation-defined. The
-C11 standard, section 6.5, paragraph 4[ISO/IEC 9899:2011], states: Furthermore,
-the bitwise shift operators << and>>are undefined under many circumstances, and
-are implementation-defined for signed integers for more circumstances; see
-ruleINT34-C. Do not shift an expression by a negative number of bits or by
-greater than or equal to the number of bits that exist in the operandfor more
-information.
+Bitwise operators include the complement operator ~, bitwise shift operators >>
+and <<, bitwise AND operator &, bitwise exclusive OR operator ^, bitwise
+inclusive OR operator | and compound assignment operators >>=, <<=, &=, ^= and
+|=. Bitwise operators should be used only with unsigned integer operands, as the
+results of bitwise operations on signed integers are implementation-defined.
+The C11 standard, section 6.5, paragraph 4 [ISO/IEC 9899:2011], states:
+Some operators (the unary operator ~, and the binary operators <<, >>, &, ^, and
+|, collectively described as bitwise operators) shall have operands that have
+integral type. These operators return values that depend on the internal
+representations of integers, and thus have implementation-defined and undefined
+aspects for signed types.
+Furthermore, the bitwise shift operators << and >> are undefined under many
+circumstances, and are implementation-defined for signed integers for more
+circumstances; see rule INT34-C. Do not shift an expression by a negative number
+of bits or by greater than or equal to the number of bits that exist in the
+operand for more information.
 """
 severity = "High"
 likelihood = "Unlikely"

@@ -5,18 +5,17 @@ category = "STR"
 number = 5
 title = "Use pointers to const when referring to string literals"
 description = """
-The type of a narrow string literal is an array ofchar, and the type of a wide
-string literal is an array ofwchar_t. However, string literals (of both types)
-are notionally constant and should consequently be protected
-byconstqualification. This recommendation is a specialization ofDCL00-C. Const-
-qualify immutable objectsand also supportsSTR30-C. Do not attempt to modify
-string literals. Addingconstqualification may propagate through a program;
-asconstqualifiers are added, still more become necessary. This phenomenon is
-sometimes calledconst-poisoning. Const-poisoning can frequently lead to
-violations ofEXP05-C. Do not cast away a const qualification.
-Althoughconstqualification is a good idea, the costs may outweigh the value in
-the remediation of existing code. In this noncompliant code example,
-theconstkeyword has been omitted:
+The type of a narrow string literal is an array of char, and the type of a wide
+string literal is an array of wchar_t. However, string literals (of both types)
+are notionally constant and should consequently be protected by const
+qualification. This recommendation is a specialization of DCL00-C. Const-qualify
+immutable objects and also supports STR30-C. Do not attempt to modify string
+literals.
+Adding const qualification may propagate through a program; as const qualifiers
+are added, still more become necessary. This phenomenon is sometimes called
+const-poisoning. Const-poisoning can frequently lead to violations of EXP05-C.
+Do not cast away a const qualification. Although const qualification is a good
+idea, the costs may outweigh the value in the remediation of existing code.
 """
 severity = "Low"
 likelihood = "Unlikely"

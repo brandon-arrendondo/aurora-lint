@@ -5,27 +5,22 @@ category = "CON"
 number = 36
 title = "Wrap functions that can spuriously wake up in a loop"
 description = """
-Thecnd_wait()andcnd_timedwait()functionstemporarily cede possession of a mutex
-so that other threads that may be requesting the mutex can proceed. These
+The cnd_wait() and cnd_timedwait() functions temporarily cede possession of a
+mutex so that other threads that may be requesting the mutex can proceed. These
 functions must always be called from code that is protected by locking a mutex.
 The waiting thread resumes execution only after it has been notified, generally
-as the result of the invocation of thecnd_signal()orcnd_broadcast()function
-invoked by another thread. Thecnd_wait()function must be invoked from a loop
-that checks whether acondition predicateholds. A condition predicate is an
+as the result of the invocation of the cnd_signal() or cnd_broadcast() function
+invoked by another thread. The cnd_wait() function must be invoked from a loop
+that checks whether a condition predicate holds. A condition predicate is an
 expression constructed from the variables of a function that must be true for a
-thread to be allowed to continue execution. The thread pauses execution,
-viacnd_wait(),cnd_timedwait(), or some other mechanism, and is resumed later,
+thread to be allowed to continue execution. The thread pauses execution, via
+cnd_wait(), cnd_timedwait(), or some other mechanism, and is resumed later,
 presumably when the condition predicate is true and the thread is notified.
-#include <threads.h> #include <stdbool.h> extern bool until_finish(void); extern
-mtx_t lock; extern cnd_t condition; void func(void) { if (thrd_success !=
-mtx_lock(&lock)) { /* Handle error */ } while (until_finish()) { /* Predicate
-does not hold */ if (thrd_success != cnd_wait(&condition, &lock)) { /* Handle
-error */ } } /* Resume when condition holds */ if (thrd_success !=
-mtx_unlock(&lock)) { /* Handle error */ } } The notification mechanism notifies
-the waiting thread and allows it to check its condition predicate. The
-invocation ofcnd_broadcast()in another thread cannot precisely determine which
-waiting thread will be resumed. Condition predicate statements allow notified
-threads to determine whether they should resume upon receiving the notification.
+The notification mechanism notifies the waiting thread and allows it to check
+its condition predicate. The invocation of cnd_broadcast() in another thread
+cannot precisely determine which waiting thread will be resumed. Condition
+predicate statements allow notified threads to determine whether they should
+resume upon receiving the notification.
 """
 severity = "Low"
 likelihood = "Unlikely"

@@ -10,13 +10,14 @@ memory allocation functions, return either a valid value or a value of the
 correct return type that indicates an error (for example, −1 or a null pointer).
 Assuming that all calls to such functions will succeed and failing to check the
 return value for an indication of an error is a dangerous practice that may lead
-tounexpectedorundefined behaviorwhen an error occurs. It is essential that
+to unexpected or undefined behavior when an error occurs. It is essential that
 programs detect and appropriately handle all errors in accordance with an error-
-handling policy. The successful completion or failure of each of the standard
-library functions listed in the following table shall be determined either by
-comparing the function’s return value with the value listed in the column
-labeled “Error Return” or by calling one of the library functions mentioned in
-the footnotes. Standard Library Functions
+handling policy.
+The successful completion or failure of each of the standard library functions
+listed in the following table shall be determined either by comparing the
+function’s return value with the value listed in the column labeled “Error
+Return” or by calling one of the library functions mentioned in the footnotes.
+Standard Library Functions
 """
 severity = "High"
 likelihood = "Likely"

@@ -7,19 +7,7 @@ title = "Evaluate integer expressions in a larger size before comparing or assig
 description = """
 If an integer expression involving an operation is compared to or assigned to a
 larger integer size, that integer expression should be evaluated in that larger
-size by explicitly casting one of the operands. This code example is
-noncompliant on systems wheresize_tis an unsigned 32-bit value andlong longis a
-64-bit value. In this example, the programmer tests for wrapping by
-comparingSIZE_MAXtolength + BLOCK_HEADER_SIZE. Becauselengthis declared
-assize_t, the addition is performed as a 32-bit operation and can result in
-wrapping. The comparison withSIZE_MAXwill always test false. If any wrapping
-occurs,malloc()will allocate insufficient space formBlock, which can lead to a
-subsequent buffer overflow. #include <stdlib.h> #include <stdint.h> /* For
-SIZE_MAX */ enum { BLOCK_HEADER_SIZE = 16 }; void *AllocateBlock(size_t length)
-{ struct memBlock *mBlock; if (length + BLOCK_HEADER_SIZE > (unsigned long
-long)SIZE_MAX) return NULL; mBlock = (struct memBlock *)malloc( length +
-BLOCK_HEADER_SIZE ); if (!mBlock) { return NULL; } /* Fill in block header and
-return data portion */ return mBlock; }
+size by explicitly casting one of the operands.
 """
 severity = "High"
 likelihood = "Likely"

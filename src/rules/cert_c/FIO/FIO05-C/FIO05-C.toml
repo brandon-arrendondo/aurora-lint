@@ -8,12 +8,13 @@ description = """
 Files can often be identified by attributes other than the file name, such as by
 comparing file ownership or creation time. Information about a file that has
 been created and closed can be stored and then used to validate the identity of
-the file when it is reopened. Comparing multiple attributes of the file
-increases the likelihood that the reopened file is the same file that had been
-previously operated on. File identification is less of an issue if applications
-maintain their files in secure directories, where they can be accessed only by
-the owner of the file and (possibly) by a system administrator. (SeeFIO15-C.
-Ensure that file operations are performed in a secure directory.)
+the file when it is reopened.
+Comparing multiple attributes of the file increases the likelihood that the
+reopened file is the same file that had been previously operated on.
+File identification is less of an issue if applications maintain their files in
+secure directories, where they can be accessed only by the owner of the file and
+(possibly) by a system administrator. (See FIO15-C. Ensure that file operations
+are performed in a secure directory.)
 """
 severity = "Medium"
 likelihood = "Probable"

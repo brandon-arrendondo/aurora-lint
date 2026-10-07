@@ -9,17 +9,18 @@ A pseudorandom number generator (PRNG) is a deterministic algorithm capable of
 generating sequences of numbers that approximate the properties of random
 numbers. Each sequence is completely determined by the initial state of the PRNG
 and the algorithm for changing the state. Most PRNGs make it possible to set the
-initial state, also called theseed state. Setting the initial state is
-calledseedingthe PRNG. Calling a PRNG in the same initial state, either without
-seeding it explicitly or by seeding it with the same value, results in
-generating the same sequence of random numbers in different runs of the program.
-Consider a PRNG function that is seeded with some initial seed value and is
-consecutively called to produce a sequence of random numbers,S. If the PRNG is
-subsequently seeded with the same initial seed value, then it will generate the
-same sequenceS. As a result, after the first run of an improperly seeded PRNG,
-an attacker can predict the sequence of random numbers that will be generated in
-the future runs. Improperly seeding or failing to seed the PRNG can lead
-tovulnerabilities, especially in security protocols.
+initial state, also called the seed state. Setting the initial state is called
+seeding the PRNG.
+Calling a PRNG in the same initial state, either without seeding it explicitly
+or by seeding it with the same value, results in generating the same sequence of
+random numbers in different runs of the program. Consider a PRNG function that
+is seeded with some initial seed value and is consecutively called to produce a
+sequence of random numbers, S. If the PRNG is subsequently seeded with the same
+initial seed value, then it will generate the same sequence S.
+As a result, after the first run of an improperly seeded PRNG, an attacker can
+predict the sequence of random numbers that will be generated in the future
+runs. Improperly seeding or failing to seed the PRNG can lead to
+vulnerabilities, especially in security protocols.
 """
 severity = "Medium"
 likelihood = "Likely"

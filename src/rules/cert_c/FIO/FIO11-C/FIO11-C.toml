@@ -5,23 +5,16 @@ category = "FIO"
 number = 11
 title = "Take care when specifying the mode parameter of fopen()"
 description = """
-The C Standard identifies specific strings to use for themodeon calls
-tofopen()andfopen_s(). C11 provides a new mode flag,x, that provides the
+The C Standard identifies specific strings to use for the mode on calls to
+fopen() and fopen_s(). C11 provides a new mode flag, x, that provides the
 mechanism needed to determine if the file that is to be opened exists. To be
-strictlyconformingand portable, one of the strings from the following table
+strictly conforming and portable, one of the strings from the following table
 (adapted from the C Standard, subclause 7.21.5.2 [ISO/IEC 9899:2011]) must be
-used: Strings to Use for the Mode on Calls tofopen()andfopen_s()
-modeStringResultrOpen text file for readingwTruncate to zero length or create
-text file for writingwxCreate text file for writingaAppend; open or create text
-file for writing at end-of-filerbOpen binary file for readingwbTruncate to zero
-length or create binary file for writingwbxCreate binary file for
-writingabAppend; open or create binary file for writing at end-of-filer+Open
-text file for update (reading and writing)w+Truncate to zero length or create
-text file for updatew+xCreate text file for updatea+Append; open or create text
-file for update, writing at end-of-filer+borrb+Open binary file for update
-(reading and writing)w+borwb+Truncate to zero length or create binary file for
-updatew+bxorwb+xCreate binary file for updatea+borab+Append; open or create
-binary file for update, writing at end-of-file
+used:
+Strings to Use for the Mode on Calls to fopen() and fopen_s()
+If the mode string begins with one of these sequences, the implementation might
+choose to ignore the remaining characters, or it might use them to select
+different kinds of files.
 """
 severity = "Medium"
 likelihood = "Probable"

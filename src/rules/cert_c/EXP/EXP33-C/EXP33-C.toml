@@ -7,9 +7,12 @@ title = "Do not read uninitialized memory"
 description = """
 Local, automatic variables assume unexpected values if they are read before they
 are initialized. The C Standard, 6.7.11, paragraph 11, specifies [ISO/IEC
-9899:2024] Seeundefined behavior 11. When local, automatic variables are stored
-on the program stack, for example, their values default to whichever values are
-currently stored in stack memory.
+9899:2024]
+If an object that has automatic storage duration is not initialized explicitly,
+its representation is indeterminate.
+See undefined behavior 11.
+When local, automatic variables are stored on the program stack, for example,
+their values default to whichever values are currently stored in stack memory.
 """
 severity = "High"
 likelihood = "Probable"

@@ -6,14 +6,12 @@ number = 45
 title = "Do not perform assignments in selection statements"
 description = """
 Do not use the assignment operator in the contexts listed in the following table
-because doing so typically indicates programmer error and can result
-inunexpected behavior. OperatorContextifControlling expressionwhileControlling
-expressiondo ... whileControlling expressionforSecond operand?:First
-operand?:Second or third operands, where the ternary expression is used in any
-of these contexts&&Either operand||either operand,Second operand, when the comma
-expression is used in any of these contexts Performing assignment statements in
-other contexts do not violate this rule. However, they may violate other rules,
-such asEXP30-C. Do not depend on the order of evaluation for side effects.
+because doing so typically indicates programmer error and can result in
+unexpected behavior.
+Performing assignment statements in other contexts do not violate this rule.
+However, they may violate other rules, such as EXP30-C. Do not depend on the
+order of evaluation for side effects.
+Noncompliant Code Example
 """
 severity = "Low"
 likelihood = "Likely"

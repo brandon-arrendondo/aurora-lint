@@ -5,12 +5,13 @@ category = "EXP"
 number = 2
 title = "Be aware of the short-circuit behavior of the logical AND and OR operators"
 description = """
-The logical AND and logical OR operators (&&and||, respectively) exhibit "short-
-circuit" operation. That is, the second operand is not evaluated if the result
-can be deduced solely by evaluating the first operand. Programmers should
-exercise caution if the second operand containsside effectsbecause it may not be
-apparent whether the side effects actually occur. In the following code, the
-value ofiis incremented only wheni >= 0:
+The logical AND and logical OR operators (&& and ||, respectively) exhibit
+"short-circuit" operation. That is, the second operand is not evaluated if the
+result can be deduced solely by evaluating the first operand.
+Programmers should exercise caution if the second operand contains side effects
+because it may not be apparent whether the side effects actually occur.
+In the following code, the value of i is incremented only when i >= 0:``` java
+enum { max = 15 }; int i = /* Initialize to user-supplied value */;
 """
 severity = "Low"
 likelihood = "Unlikely"

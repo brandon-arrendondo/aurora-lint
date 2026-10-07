@@ -5,20 +5,20 @@ category = "API"
 number = 0
 title = "Functions should validate their parameters"
 description = """
-Redundant testing by caller and by callee as a style ofdefensive programmingis
+Redundant testing by caller and by callee as a style of defensive programming is
 largely discredited in the C and C++ communities, the main problem being
-performance. The usual discipline in C and C++ is to requirevalidationon only
-one side of each interface. Requiring the caller to validate arguments can
-result in faster code because the caller may understand certain invariants that
-prevent invalid values from being passed. Requiring the callee to validate
-arguments allows the validation code to be encapsulated in one location,
-reducing the size of the code and making it more likely that these checks are
-performed in a consistent and correct fashion. For safety and security reasons,
-this standard recommends that the called function validate its parameters.
-Validity checks allow the function to survive at least some forms of improper
-usage, enabling an application using the function to likewise survive. Validity
-checks can also simplify the task of determining the condition that caused the
-invalid parameter.
+performance. The usual discipline in C and C++ is to require validation on only
+one side of each interface.
+Requiring the caller to validate arguments can result in faster code because the
+caller may understand certain invariants that prevent invalid values from being
+passed. Requiring the callee to validate arguments allows the validation code to
+be encapsulated in one location, reducing the size of the code and making it
+more likely that these checks are performed in a consistent and correct fashion.
+For safety and security reasons, this standard recommends that the called
+function validate its parameters. Validity checks allow the function to survive
+at least some forms of improper usage, enabling an application using the
+function to likewise survive. Validity checks can also simplify the task of
+determining the condition that caused the invalid parameter.
 """
 severity = "Medium"
 likelihood = "Unlikely"

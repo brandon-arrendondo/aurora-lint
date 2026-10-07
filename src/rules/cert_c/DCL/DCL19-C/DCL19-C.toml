@@ -6,12 +6,10 @@ number = 19
 title = "Minimize the scope of variables and functions"
 description = """
 Variables and functions should be declared in the minimum scope from which all
-references to the identifier are still possible. When a larger scope than
-necessary is used, code becomes less readable, harder to maintain, and more
-likely to reference unintended variables (seeDCL01-C. Do not reuse variable
-names in subscopes). In this noncompliant code example, the
-functioncounter()increments the global variablecountand then returns immediately
-if this variable exceeds a maximum value:
+references to the identifier are still possible.
+When a larger scope than necessary is used, code becomes less readable, harder
+to maintain, and more likely to reference unintended variables (see DCL01-C. Do
+not reuse variable names in subscopes).
 """
 severity = "Low"
 likelihood = "Unlikely"

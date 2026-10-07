@@ -7,16 +7,17 @@ title = "Do not conclude macro definitions with a semicolon"
 description = """
 Macros are frequently used to make source code more readable. Macro definitions,
 regardless of whether they expand to a single or multiple statements, should not
-conclude with a semicolon. (SeePRE10-C. Wrap multistatement macros in a do-while
-loop.) If required, the semicolon should be included following the macro
+conclude with a semicolon. (See PRE10-C. Wrap multistatement macros in a do-
+while loop.) If required, the semicolon should be included following the macro
 expansion. Inadvertently inserting a semicolon at the end of the macro
-definition can unexpectedly change the control flow of the program. Another way
-to avoid this problem is to prefer inline or static functions over function-like
-macros. (See alsoPRE00-C. Prefer inline or static functions to function-like
-macros.) In general, the programmer should ensure that there is no semicolon at
-the end of a macro definition. The responsibility for having a semicolon where
-needed during the use of such a macro should be delegated to the person invoking
-the macro.
+definition can unexpectedly change the control flow of the program.
+Another way to avoid this problem is to prefer inline or static functions over
+function-like macros. (See also PRE00-C. Prefer inline or static functions to
+function-like macros.)
+In general, the programmer should ensure that there is no semicolon at the end
+of a macro definition. The responsibility for having a semicolon where needed
+during the use of such a macro should be delegated to the person invoking the
+macro.
 """
 severity = "Medium"
 likelihood = "Probable"

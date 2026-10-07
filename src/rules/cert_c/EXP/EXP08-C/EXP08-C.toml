@@ -10,18 +10,7 @@ automatically scaled to the size of the type of the pointed-to object. For
 instance, when adding a value to the byte address of a 4-byte integer, the value
 is scaled by a factor of 4 and then added to the pointer. Failing to understand
 how pointer arithmetic works can lead to miscalculations that result in serious
-errors, such as buffer overflows. In this noncompliant code example, integer
-values returned byparseint(getdata())are stored into an array
-ofINTBUFSIZEelements of typeintcalledbuf[Dowd 2006]. If data is available for
-insertion intobuf(which is indicated byhavedata()) andbuf_ptrhas not been
-incremented pastbuf + sizeof(buf), an integer value is stored at the address
-referenced bybuf_ptr. However, thesizeofoperator returns the total number of
-bytes inbuf, which is typically a multiple of the number of elements inbuf. This
-value is scaled to the size of an integer and added tobuf. As a result, the
-check to make sure integers are not written past the end ofbufis incorrect, and
-a buffer overflow is possible. int buf[INTBUFSIZE]; int *buf_ptr = buf; while
-(havedata() && buf_ptr < (buf + sizeof(buf))) { *buf_ptr++ =
-parseint(getdata()); }
+errors, such as buffer overflows.
 """
 severity = "High"
 likelihood = "Probable"

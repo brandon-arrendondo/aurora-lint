@@ -8,15 +8,16 @@ description = """
 Upon return, functions should guarantee that any object returned by the
 function, or any modified value referenced by a pointer argument, is a valid
 object of function return type or argument type. Otherwise, type errors can
-occur in the program. A good example is the null-terminated byte string type in
-C. If a string lacks the terminating null character, the program may be tricked
-into accessing storage after the string as legitimate data. A program may, as a
-result, process a string it should not process, which might be asecurity flawin
-itself. It may also cause the program to abort, which might be adenial-of-
-service attack. The emphasis of this recommendation is to avoid producing
-unterminated strings; it does not address processing of already existing
-unterminated strings. However, by preventing the creation of unterminated
-strings, the need to process them is greatly lessened.
+occur in the program.
+A good example is the null-terminated byte string type in C. If a string lacks
+the terminating null character, the program may be tricked into accessing
+storage after the string as legitimate data. A program may, as a result, process
+a string it should not process, which might be a security flaw in itself. It may
+also cause the program to abort, which might be a denial-of-service attack.
+The emphasis of this recommendation is to avoid producing unterminated strings;
+it does not address processing of already existing unterminated strings.
+However, by preventing the creation of unterminated strings, the need to process
+them is greatly lessened.
 """
 severity = "Medium"
 likelihood = "Unlikely"

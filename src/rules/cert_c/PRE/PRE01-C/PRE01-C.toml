@@ -5,11 +5,9 @@ category = "PRE"
 number = 1
 title = "Use parentheses within macros around parameter names"
 description = """
-Parenthesize all parameter names in macro definitions. See alsoPRE00-C. Prefer
-inline or static functions to function-like macrosandPRE02-C. Macro replacement
-lists should be parenthesized. ThisCUBE()macro definition is noncompliant
-because it fails to parenthesize the parameter names: #define CUBE(I) (I * I *
-I)
+Parenthesize all parameter names in macro definitions. See also PRE00-C. Prefer
+inline or static functions to function-like macros and PRE02-C. Macro
+replacement lists should be parenthesized.
 """
 severity = "Medium"
 likelihood = "Probable"

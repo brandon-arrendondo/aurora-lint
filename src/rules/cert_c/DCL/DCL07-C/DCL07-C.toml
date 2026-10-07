@@ -10,12 +10,11 @@ including a return type and parameter list. If type information is not properly
 specified in a function declarator, the compiler cannot properly check function
 type information. When using standard library calls, the easiest (and preferred)
 way to obtain function declarators with appropriate type information is to
-include the appropriate header file. Attempting to compile a program with a
-function declarator that does not include the appropriate type information
-typically generates a warning but does not prevent program compilation. These
-warnings should be resolved. (SeeMSC00-C. Compile cleanly at high warning
-levels.) This noncompliant code example uses theidentifier-listform for
-parameter declarations:
+include the appropriate header file.
+Attempting to compile a program with a function declarator that does not include
+the appropriate type information typically generates a warning but does not
+prevent program compilation. These warnings should be resolved. (See MSC00-C.
+Compile cleanly at high warning levels.)
 """
 severity = "Low"
 likelihood = "Unlikely"

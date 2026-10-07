@@ -8,7 +8,10 @@ description = '''
 A switch statement can be mixed with a block of code by starting the block in
 one case label, then having another case label within the block. The block can
 be pictured as spanning more than one case statement.
-Subclause 6.8.4.2, paragraph 2, of the C Standard [ ISO/IEC 9899:2011 ] says,
+Subclause 6.8.4.2, paragraph 2, of the C Standard [ISO/IEC 9899:2011] says,
+If a switch statement has an associated case or default label within the scope
+of an identifier with a variably modified type, the entire switch statement
+shall be within the scope of that identifier. 154
 Footnote 154 says:
 '''
 severity = "Medium"

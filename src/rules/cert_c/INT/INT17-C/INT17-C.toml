@@ -8,13 +8,7 @@ description = """
 Integer constants are often used as masks or specific bit values. Frequently,
 these constants are expressed in hexadecimal form to indicate to the programmer
 how the data might be represented in the machine. However, hexadecimal integer
-constants are frequently used in a nonportable manner. In this pedagogical
-noncompliant code example, theflipbits()function complements the value stored
-inxby performing a bitwise exclusive OR against a mask with all bits set to 1.
-Forimplementationswhereunsigned longis represented by a 32-bit value, each bit
-ofxis correctly complemented. /* (Incorrect) Set all bits in mask to 1 */ const
-unsigned long mask = 0xFFFFFFFF; unsigned long flipbits(unsigned long x) {
-return x ^ mask; }
+constants are frequently used in a nonportable manner.
 """
 severity = "High"
 likelihood = "Probable"

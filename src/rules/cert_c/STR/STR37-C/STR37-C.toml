@@ -5,10 +5,15 @@ category = "STR"
 number = 37
 title = "Arguments to character-handling functions must be representable as an unsigned char"
 description = """
-According to the C Standard, 7.4.1 paragraph 1 [ISO/IEC 9899:2024], See
-alsoundefined behavior 112. This rule is applicable only to code that runs on
-platforms where thechardata type is defined to have the same range,
-representation, and behavior assigned char.
+According to the C Standard, 7.4.1 paragraph 1 [ISO/IEC 9899:2024],
+The header <ctype.h> declares several functions useful for classifying and
+mapping characters. In all cases the argument is an int, the value of which
+shall be representable as an unsigned char or shall equal the value of the macro
+EOF. If the argument has any other value, the behavior is undefined.
+See also undefined behavior 112.
+This rule is applicable only to code that runs on platforms where the char data
+type is defined to have the same range, representation, and behavior as signed
+char.
 """
 severity = "Low"
 likelihood = "Unlikely"

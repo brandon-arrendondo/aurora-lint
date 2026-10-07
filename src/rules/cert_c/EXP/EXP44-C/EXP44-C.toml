@@ -8,15 +8,16 @@ description = """
 Some operators do not evaluate their operands beyond the type information the
 operands provide. When using one of these operators, do not pass an operand that
 would otherwise yield a side effect since the side effect will not be generated.
-Thesizeofoperator yields the size (in bytes) of its operand, which may be an
+The sizeof operator yields the size (in bytes) of its operand, which may be an
 expression or the parenthesized name of a type. In most cases, the operand is
 not evaluated. A possible exception is when the type of the operand is a
 variable length array type (VLA); then the expression is evaluated. When part of
 the operand of the sizeof operator is a VLA type and when changing the value of
-the VLA's size expression would not affect the result of the operator, it
-isunspecifiedwhether or not the size expression is evaluated. (Seeunspecified
-behavior 22.) The operand passed to_Alignofis never evaluated, despite not being
-an expression. For instance, if the operand is a VLA type and the VLA's size
+the VLA's size expression would not affect the result of the operator, it is
+unspecified whether or not the size expression is evaluated. (See unspecified
+behavior 22.)
+The operand passed to _Alignof is never evaluated, despite not being an
+expression. For instance, if the operand is a VLA type and the VLA's size
 expression contains a side effect, that side effect is never evaluated.
 """
 severity = "Low"

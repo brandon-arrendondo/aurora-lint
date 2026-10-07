@@ -7,9 +7,7 @@ title = "Do not begin integer constants with 0 when specifying a decimal value"
 description = """
 The C Standard defines octal constants as a 0 followed by octal digits (0 1 2 3
 4 5 6 7). Programming errors can occur when decimal values are mistakenly
-specified as octal constants. In this noncompliant code example, a decimal
-constant is mistakenly prefaced with zeros so that all the constants are a fixed
-length: i_array[0] = 2719; i_array[1] = 4435; i_array[2] = 0042;
+specified as octal constants.
 """
 severity = "Low"
 likelihood = "Unlikely"

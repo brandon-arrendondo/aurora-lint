@@ -5,11 +5,12 @@ category = "INT"
 number = 10
 title = "Do not assume a positive remainder when using the % operator"
 description = """
-In C89 (and historical K&Rimplementations), the meaning of the remainder
-operator for negative operands wasimplementation-defined. This behavior was
-changed in C99, and the change remains in C11. Because not all C compilers are
-strictly C-conforming, programmers cannot rely on the behavior of the%operator
-if they need to run on a wide range of platforms with many different compilers.
+In C89 (and historical K&R implementations), the meaning of the remainder
+operator for negative operands was implementation-defined. This behavior was
+changed in C99, and the change remains in C11.
+Because not all C compilers are strictly C-conforming, programmers cannot rely
+on the behavior of the % operator if they need to run on a wide range of
+platforms with many different compilers.
 The C Standard, subclause 6.5.5 [ISO/IEC 9899:2011], states:
 """
 severity = "High"

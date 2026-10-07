@@ -11,11 +11,13 @@ of elements or bytes to be manipulated. For the purposes of this rule, the
 element count of a pointer is the size of the object to which it points,
 expressed by the number of elements that are valid to access. Supplying
 arguments to such a function might cause the function to form a pointer that
-does not point into or just past the end of the object, resulting inundefined
-behavior. Annex J of the C Standard [ISO/IEC 9899:2024] states that it is
-undefined behavior if the "pointer passed to a library function array parameter
-does not have a value such that all address computations and object accesses are
-valid." (Seeundefined behavior108.) In the following code,
+does not point into or just past the end of the object, resulting in undefined
+behavior.
+Annex J of the C Standard [ISO/IEC 9899:2024] states that it is undefined
+behavior if the "pointer passed to a library function array parameter does not
+have a value such that all address computations and object accesses are valid."
+(See undefined behavior 108.)
+In the following code,
 """
 severity = "High"
 likelihood = "Likely"

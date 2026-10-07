@@ -6,9 +6,18 @@ number = 20
 title = "Explicitly specify void when a function accepts no arguments"
 description = """
 According to the C Standard, subclause 6.7.6.3, paragraph 14 [ISO/IEC
-9899:2011], Subclause 6.11.6 states that Consequently, functions that accept no
-arguments should explicitly declare avoidparameter in their parameter list. This
-holds true in both the declaration and definition sections (which should match).
+9899:2011],
+An identifier list declares only the identifiers of the parameters of the
+function. An empty list in a function declarator that is part of a definition of
+that function specifies that the function has no parameters. The empty list in a
+function declarator that is not part of a definition of that function specifies
+that no information about the number or types of the parameters is supplied.
+Subclause 6.11.6 states that
+The use of function declarators with empty parentheses (not prototype-format
+parameter type declarators) is an obsolescent feature.
+Consequently, functions that accept no arguments should explicitly declare a
+void parameter in their parameter list. This holds true in both the declaration
+and definition sections (which should match).
 """
 severity = "Medium"
 likelihood = "Probable"

@@ -6,14 +6,14 @@ number = 3
 title = "Use a static assertion to test the value of a constant expression"
 description = """
 Assertions are a valuable diagnostic tool for finding and eliminating software
-defects that may result invulnerabilities(seeMSC11-C. Incorporate diagnostic
-tests using assertions). The runtimeassert()macro has some limitations, however,
-in that it incurs a runtime overhead and because it callsabort(). Consequently,
-the runtimeassert()macro is useful only for identifying incorrect assumptions
-and not for runtime error checking. As a result, runtime assertions are
-generally unsuitable for server programs or embedded systems. Static assertion
-is a new facility in the C Standard. It takes the form static_assert(constant-
-expression, string-literal);
+defects that may result in vulnerabilities (see MSC11-C. Incorporate diagnostic
+tests using assertions). The runtime assert() macro has some limitations,
+however, in that it incurs a runtime overhead and because it calls abort().
+Consequently, the runtime assert() macro is useful only for identifying
+incorrect assumptions and not for runtime error checking. As a result, runtime
+assertions are generally unsuitable for server programs or embedded systems.
+Static assertion is a new facility in the C Standard. It takes the form
+Subclause 6.7.10 of the C Standard [ISO/IEC 9899:2011] states:
 """
 severity = "Low"
 likelihood = "Unlikely"

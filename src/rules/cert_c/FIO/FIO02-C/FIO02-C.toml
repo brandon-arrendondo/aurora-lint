@@ -5,16 +5,17 @@ category = "FIO"
 number = 2
 title = "Canonicalize path names originating from tainted sources"
 description = """
-Path names, directory names, and file names may contain characters that
-makevalidationdifficult and inaccurate. Furthermore, any path name component can
-be a symbolic link, which further obscures the actual location or identity of a
+Path names, directory names, and file names may contain characters that make
+validation difficult and inaccurate. Furthermore, any path name component can be
+a symbolic link, which further obscures the actual location or identity of a
 file. To simplify file name validation, it is recommended that names be
-translated into theircanonicalform. Canonicalizing file names makes it much
+translated into their canonical form. Canonicalizing file names makes it much
 easier to verify a path, directory, or file name by making it easier to compare
-names. Because the canonical form can vary between operating systems and file
-systems, it is best to use operating-system-specific mechanisms for
-canonicalization. As an illustration, here is a function that ensures that a
-path name refers to a file in the user's home directory on POSIX systems:
+names.
+Because the canonical form can vary between operating systems and file systems,
+it is best to use operating-system-specific mechanisms for canonicalization.
+As an illustration, here is a function that ensures that a path name refers to a
+file in the user's home directory on POSIX systems:
 """
 severity = "Medium"
 likelihood = "Probable"

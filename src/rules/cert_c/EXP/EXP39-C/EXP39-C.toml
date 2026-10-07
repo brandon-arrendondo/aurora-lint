@@ -5,14 +5,24 @@ category = "EXP"
 number = 39
 title = "Do not access a variable through a pointer of an incompatible type"
 description = """
-Modifying a variable through a pointer of an incompatible type (other
-thanunsigned char) can lead to unpredictable results.Subclause 6.2.7 of the C
+Modifying a variable through a pointer of an incompatible type (other than
+unsigned char) can lead to unpredictable results. Subclause 6.2.7 of the C
 Standard states that two types may be distinct yet compatible and addresses
-preciselywhen two distinct types are compatible. This problem is often caused by
-a violation of aliasing rules. The C Standard, 6.5, paragraph 7 [ISO/IEC
-9899:2024], specifies those circumstances in which an object may or may not be
-aliased. Accessing an object by means of any otherlvalueexpression (other
-thanunsigned char) isundefined behavior 36.
+precisely when two distinct types are compatible.
+This problem is often caused by a violation of aliasing rules. The C Standard,
+6.5, paragraph 7 [ISO/IEC 9899:2024], specifies those circumstances in which an
+object may or may not be aliased.
+An object shall have its stored value accessed only by an lvalue expression that
+has one of the following types: a type compatible with the effective type of the
+object,a qualified version of a type compatible with the effective type of the
+object,the signed or unsigned type compatible with the underlying type of the
+effective type of the object,the signed or unsigned type compatible with a
+qualified version of the underlying type of the effective type of the object,an
+aggregate or union type that includes one of the aforementioned types among its
+members (including, recursively, a member of a subaggregate or contained union),
+ora character type.
+Accessing an object by means of any other lvalue expression (other than unsigned
+char) is undefined behavior 36.
 """
 severity = "Medium"
 likelihood = "Unlikely"

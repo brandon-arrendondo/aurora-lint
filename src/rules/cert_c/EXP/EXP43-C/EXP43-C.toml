@@ -5,27 +5,32 @@ category = "EXP"
 number = 43
 title = "Avoid undefined behavior when using restrict-qualified pointers"
 description = """
-An object that is accessed through arestrict-qualified pointer has a special
+An object that is accessed through a restrict -qualified pointer has a special
 association with that pointer. This association requires that all accesses to
 that object use, directly or indirectly, the value of that particular pointer.
-The intended use of therestrictqualifier is to promote optimization, and
+The intended use of the restrict qualifier is to promote optimization, and
 deleting all instances of the qualifier from a program does not change its
 meaning (that is, observable behavior). In the absence of this qualifier, other
 pointers can alias this object. Caching the value in an object designated
-through arestrict-qualified pointer is safe at the beginning of the block in
+through a restrict -qualified pointer is safe at the beginning of the block in
 which the pointer is declared because no preexisting aliases may also be used to
 reference that object. The cached value must be restored to the object by the
 end of the block, where preexisting aliases again become available. New aliases
-may be formed within the block, but these must all depend on the value of
-therestrict-qualified pointer so that they can be identified and adjusted to
-refer to the cached value. For arestrict-qualified pointer at file scope, the
-block is the body of each function in the file [Walls 2006]. Developers should
-be aware that C++ does not support therestrictqualifier, but some C++ compiler
-implementations support an equivalent qualifier as an extension. The C Standard
-[ISO/IEC 9899:2024] identifies the followingundefined behavior 66: This is an
-oversimplification, however, and it is important to review the formal definition
-ofrestrictin subclause 6.7.3.1 of the C Standard to properly understand
-undefined behaviors associated with the use ofrestrict-qualified pointers.
+may be formed within the block, but these must all depend on the value of the
+restrict -qualified pointer so that they can be identified and adjusted to refer
+to the cached value. For a restrict -qualified pointer at file scope, the block
+is the body of each function in the file [Walls 2006]. Developers should be
+aware that C++ does not support the restrict qualifier, but some C++ compiler
+implementations support an equivalent qualifier as an extension.
+The C Standard [ISO/IEC 9899:2024] identifies the following undefined behavior
+66:
+A restrict-qualified pointer is assigned a value based on another restricted
+pointer whose associated block neither began execution before the block
+associated with this pointer, nor ended before the assignment (6.7.4.2).
+This is an oversimplification, however, and it is important to review the formal
+definition of restrict in subclause 6.7.3.1 of the C Standard to properly
+understand undefined behaviors associated with the use of restrict -qualified
+pointers.
 """
 severity = "Medium"
 likelihood = "Probable"

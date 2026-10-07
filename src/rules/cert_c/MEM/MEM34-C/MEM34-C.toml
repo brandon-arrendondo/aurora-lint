@@ -6,11 +6,15 @@ number = 34
 title = "Only free memory allocated dynamically"
 description = """
 The C Standard, Annex J (184) [ISO/IEC 9899:2024], states that the behavior of a
-program isundefinedwhen See alsoundefined behavior 184. Freeing memory that is
-not allocated dynamically can result in heap corruption and other serious
-errors. Do not callfree()on a pointer other than one returned by a standard
-memory allocation function, such asmalloc(),calloc(),realloc(),
-oraligned_alloc().
+program is undefined when
+The pointer argument to the free or realloc function does not match a pointer
+earlier returned by a memory management function, or the space has been
+deallocated by a call to free or realloc.
+See also undefined behavior 184.
+Freeing memory that is not allocated dynamically can result in heap corruption
+and other serious errors. Do not call free() on a pointer other than one
+returned by a standard memory allocation function, such as malloc(), calloc(),
+realloc(), or aligned_alloc().
 """
 severity = "High"
 likelihood = "Likely"

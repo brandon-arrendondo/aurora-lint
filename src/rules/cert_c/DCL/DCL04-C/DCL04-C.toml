@@ -10,10 +10,7 @@ explanatory comment about the role of the variable. Declaring multiple variables
 in a single declaration can cause confusion regarding the types of the variables
 and their initial values. If more than one variable is declared in a
 declaration, care must be taken that the type and initialized value of the
-variable are handled correctly. In this noncompliant code example, a programmer
-or code reviewer might mistakenly believe that the two variablessrcandcare
-declared aschar *. In fact,srchas a type ofchar *, whereaschas a type ofchar.
-char *src = 0, c = 0;
+variable are handled correctly.
 """
 severity = "Low"
 likelihood = "Unlikely"

@@ -7,8 +7,14 @@ title = 'Compile cleanly at high warning levels'
 description = '''
 Compile code using the highest warning level available for your compiler and
 eliminate warnings by modifying the code.
-According to the C Standard, subclause 5.1.1.3 [ ISO/IEC 9899:2011 ],
-Assuming a conforming implementation , eliminating diagnostic messages will
+According to the C Standard, subclause 5.1.1.3 [ISO/IEC 9899:2011],
+A conforming implementation shall produce at least one diagnostic message
+(identified in an implementation-defined manner) if a preprocessing translation
+unit or translation unit contains a violation of any syntax rule or constraint,
+even if the behavior is also explicitly specified as undefined or
+implementation-defined. Diagnostic messages need not be produced in other
+circumstances.
+Assuming a conforming implementation, eliminating diagnostic messages will
 eliminate any syntactic or constraint violations.
 '''
 severity = "Medium"

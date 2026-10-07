@@ -5,8 +5,11 @@ category = "DCL"
 number = 23
 title = "Guarantee that mutually visible identifiers are unique"
 description = """
-According to subclause 6.2.7 of the C Standard [ISO/IEC 9899:2011], (See
-alsoundefined behavior 14of Annex J.) Further, according to subclause 6.4.2.1,
+According to subclause 6.2.7 of the C Standard [ISO/IEC 9899:2011],
+All declarations that refer to the same object or function shall have compatible
+type; otherwise, the behavior is undefined.
+(See also undefined behavior 14 of Annex J.)
+Further, according to subclause 6.4.2.1,
 """
 severity = "Medium"
 likelihood = "Unlikely"

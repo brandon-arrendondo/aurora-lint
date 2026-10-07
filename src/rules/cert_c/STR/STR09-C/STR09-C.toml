@@ -5,14 +5,15 @@ category = "STR"
 number = 9
 title = "Don't assume numeric values for expressions with type plain character"
 description = """
-For portable applications, use only the assignment=operator, the equality
-operators==and!=, and the unary&operator on plain-character-typed or plain-wide-
-character-typed expressions. This practice is recommended because the C Standard
-requires only the digit characters (0–9) to have consecutive numerical values.
-Consequently, operations that rely on expected values for plain-character- or
-plain-wide-character-typed expressions can lead to unexpected behavior. However,
-because of the requirement for digit characters, other operators can be used for
-them according to the following restrictions:
+For portable applications, use only the assignment = operator, the equality
+operators == and!=, and the unary & operator on plain-character-typed or plain-
+wide-character-typed expressions.
+This practice is recommended because the C Standard requires only the digit
+characters (0–9) to have consecutive numerical values. Consequently, operations
+that rely on expected values for plain-character- or plain-wide-character-typed
+expressions can lead to unexpected behavior.
+However, because of the requirement for digit characters, other operators can be
+used for them according to the following restrictions:
 """
 severity = "Low"
 likelihood = "Unlikely"

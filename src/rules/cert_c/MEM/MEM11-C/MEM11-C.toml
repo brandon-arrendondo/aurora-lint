@@ -12,16 +12,23 @@ physical memory configured with 2GB of swap space may be able to allocate, at
 most, 3GB of heap space total to all running processes (minus the size of the
 operating system itself and the text and data segments of all running
 processes). Once all virtual memory has been allocated, requests for more memory
-will fail. As discussed inERR33-C. Detect and handle standard library errors,
+will fail. As discussed in ERR33-C. Detect and handle standard library errors,
 programs that fail to check for and properly handle memory allocation failures
-will haveundefined behaviorand are likely to crash when heap space is exhausted.
-Heap exhaustion can result from Ifmalloc()is unable to return the requested
-memory, it returnsNULLinstead. However, simply checking for and handling memory
-allocation failures may not be sufficient. Programs such as long-servers that
-manipulate large data sets need to be designed in a way that permits them to
-deliver their services when system resources, including the heap, are in short
-supply. Making use of additional storage devices, such as disk space or
-databases, is essential in such systems.
+will have undefined behavior and are likely to crash when heap space is
+exhausted. Heap exhaustion can result from
+- A memory leak
+- An infinite loop
+- The program requiring more memory than is present by default in the heap
+- Incorrect implementation of common data structures (for example, hash tables
+or vectors)
+- Overall system memory being exhausted, possibly because of other processes
+- The maximum size of a process's data segment being exceeded
+If malloc() is unable to return the requested memory, it returns NULL instead.
+However, simply checking for and handling memory allocation failures may not be
+sufficient. Programs such as long-servers that manipulate large data sets need
+to be designed in a way that permits them to deliver their services when system
+resources, including the heap, are in short supply. Making use of additional
+storage devices, such as disk space or databases, is essential in such systems.
 """
 severity = "Low"
 likelihood = "Probable"

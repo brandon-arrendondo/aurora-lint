@@ -10,16 +10,8 @@ consistent and usable interfaces. Ralph Waldo Emerson said, "A foolish
 consistency is the hobgoblin of little minds," but inconsistencies in functional
 interfaces or behavior can lead to erroneous use, so we understand this to be a
 "wise consistency." One aspect of providing a consistent interface is to provide
-a consistent and usable error-checking mechanism. For more information,
-seeAPI04-C. Provide a consistent and usable error-checking mechanism. It is not
-necessary to go beyond the standard C library to find examples of inconsistent
-interfaces: the standard library is a fusion of multiple libraries with various
-styles and levels of rigor. For example, thefputs()defined in the C Standard,
-subclause 7.21.7.4, is closely related to thefprintf()defined in subclause
-7.21.6.1. However,fputs()'s file handle is at the end, andfprintf()'s is at the
-beginning, as shown by their function declarations: int fputs(const char *
-restrict s, FILE * restrict stream); int fprintf(FILE * restrict stream, const
-char * restrict format, ...);
+a consistent and usable error-checking mechanism. For more information, see
+API04-C. Provide a consistent and usable error-checking mechanism.
 """
 severity = "Medium"
 likelihood = "Unlikely"

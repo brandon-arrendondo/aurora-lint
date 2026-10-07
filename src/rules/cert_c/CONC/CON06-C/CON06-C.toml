@@ -9,16 +9,9 @@ Programs must not use instance locks to protect static shared data because
 instance locks are ineffective when two or more instances of the class are
 created. Consequently, failure to use a static lock object leaves the shared
 state unprotected against concurrent access. Lock objects for classes that can
-interact with untrusted code must also be private and final, as shown in
-ruleLCK00-J. Use private final lock objects to synchronize classes that may
-interact with untrusted code. This noncompliant code example attempts to guard
-access to the staticcounterfield using a non-static lock object. When
-twoRunnabletasks are started, they create two instances of the lock object and
-lock on each instance separately. publicfinalclassCountBoxesimplementsRunnable
-{privatestaticvolatileintcounter;// ...privatefinalObject lock
-=newObject();@Overridepublicvoidrun() {synchronized(lock) {counter++;//
-...}}publicstaticvoidmain(String[] args) {for(inti =0; i <2; i++)
-{newThread(newCountBoxes()).start();}}}
+interact with untrusted code must also be private and final, as shown in rule
+LCK00-J. Use private final lock objects to synchronize classes that may interact
+with untrusted code.
 """
 severity = "Medium"
 likelihood = "Probable"

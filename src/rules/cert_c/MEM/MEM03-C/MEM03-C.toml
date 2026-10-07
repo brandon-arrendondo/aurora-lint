@@ -7,14 +7,15 @@ title = "Clear sensitive information stored in reusable resources"
 description = """
 Sensitive data stored in reusable resources may be inadvertently leaked to a
 less privileged user or attacker if not properly cleared. Examples of reusable
-resources include The manner in which sensitive information can be properly
-cleared varies depending on the resource type and platform. Dynamic memory
-managers are not required to clear freed memory and generally do not because of
-the additional runtime overhead. Furthermore, dynamic memory managers are free
-to reallocate this same memory. As a result, it is possible to accidentally leak
-sensitive information if it is not cleared before calling a function that frees
-dynamic memory. Programmers also cannot rely on memory being cleared during
-allocation.
+resources include
+- Dynamically allocated memory
+- Statically allocated memory
+- Automatically allocated (stack) memory
+- Memory caches
+- Disk
+- Disk caches
+The manner in which sensitive information can be properly cleared varies
+depending on the resource type and platform.
 """
 severity = "Medium"
 likelihood = "Unlikely"

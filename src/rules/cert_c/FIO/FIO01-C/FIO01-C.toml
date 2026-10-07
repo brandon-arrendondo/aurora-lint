@@ -10,13 +10,13 @@ unintended file object because file names are only loosely bound to underlying
 file objects. File names provide no information regarding the nature of the file
 object itself. Furthermore, the binding of a file name to a file object is
 reasserted every time the file name is used in an operation. File descriptors
-andFILEpointers are bound to underlying file objects by the operating system.
-(SeeFIO03-C. Do not make assumptions about fopen() and file creation.) Accessing
-files via file descriptors orFILEpointers rather than file names provides a
-greater degree of certainty as to which object is actually acted upon. It is
-recommended that files be accessed through file descriptors orFILEpointers where
-possible. The following C functions rely solely on file names for file
-identification:
+and FILE pointers are bound to underlying file objects by the operating system.
+(See FIO03-C. Do not make assumptions about fopen() and file creation.)
+Accessing files via file descriptors or FILE pointers rather than file names
+provides a greater degree of certainty as to which object is actually acted
+upon. It is recommended that files be accessed through file descriptors or FILE
+pointers where possible.
+The following C functions rely solely on file names for file identification:
 """
 severity = "Medium"
 likelihood = "Likely"

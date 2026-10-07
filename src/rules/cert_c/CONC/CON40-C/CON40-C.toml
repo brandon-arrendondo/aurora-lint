@@ -11,17 +11,18 @@ for locks by guaranteeing thread safety when certain operations are performed on
 them. The thread-safe operations on atomic variables are specified in the C
 Standard, subclauses 7.17.7 and 7.17.8 [ISO/IEC 9899:2024]. While atomic
 operations can be combined, combined operations do not provide the thread safety
-provided by individual atomic operations. Every time an atomic variable appears
-on the left side of an assignment operator, including a compound assignment
-operator such as*=, an atomic write is performed on the variable. The use of the
-increment (++)or decrement(--)operators on an atomic variable constitutes an
-atomic read-and-write operation and is consequently thread-safe. Any reference
-of an atomic variable anywhere else in an expression indicates a distinct atomic
-read on the variable. If the same atomic variable appears twice in an
-expression, then two atomic reads, or an atomic read and an atomic write, are
-required. Such a pair of atomic operations is not thread-safe, as another thread
-can modify the atomic variable between the two operations. Consequently, an
-atomic variable must not be referenced twice in the same expression.
+provided by individual atomic operations.
+Every time an atomic variable appears on the left side of an assignment
+operator, including a compound assignment operator such as *=, an atomic write
+is performed on the variable. The use of the increment (++) or decrement (--)
+operators on an atomic variable constitutes an atomic read-and-write operation
+and is consequently thread-safe. Any reference of an atomic variable anywhere
+else in an expression indicates a distinct atomic read on the variable.
+If the same atomic variable appears twice in an expression, then two atomic
+reads, or an atomic read and an atomic write, are required. Such a pair of
+atomic operations is not thread-safe, as another thread can modify the atomic
+variable between the two operations. Consequently, an atomic variable must not
+be referenced twice in the same expression.
 """
 severity = "Medium"
 likelihood = "Probable"

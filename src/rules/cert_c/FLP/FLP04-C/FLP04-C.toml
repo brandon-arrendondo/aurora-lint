@@ -7,23 +7,23 @@ title = "Check floating-point inputs for exceptional values"
 description = """
 Floating-point numbers can take on two classes of exceptional values; infinity
 and NaN (not-a-number). These values are returned as the result of exceptional
-or otherwise unresolvable floating-point operations. (See alsoFLP32-C. Prevent
+or otherwise unresolvable floating-point operations. (See also FLP32-C. Prevent
 or detect domain and range errors in math functions.) Additionally, they can be
-directly input by a user byscanfor similar functions. Failure to detect and
-handle such values can result inundefined behavior.
+directly input by a user by scanf or similar functions. Failure to detect and
+handle such values can result in undefined behavior.
 NaN values are particularly problematic because the expression NaN == NaN (for
 every possible value of NaN) returns false. Any comparisons made with NaN as one
 of the arguments returns false, and all arithmetic functions on NaNs simply
 propagate them through the code. Hence, a NaN entered in one location in the
 code and not properly handled could potentially cause problems in other, more
 distant sections.
-Formatted-input functions such asscanfwill accept the valuesINF,INFINITY,
-orNAN(case insensitive) as valid inputs for the%fformat specification, allowing
+Formatted-input functions such as scanf will accept the values INF, INFINITY, or
+NAN (case insensitive) as valid inputs for the %f format specification, allowing
 malicious users to feed them directly to a program. Programs should therefore
 check to ensure that all input floating-point values (especially those
 controlled by the user) have neither of these values if doing so would be
-inappropriate. The<math.h>library provides two macros for this
-purpose:isinfandisnan.
+inappropriate. The <math.h> library provides two macros for this purpose: isinf
+and isnan.
 """
 severity = "Low"
 likelihood = "Probable"

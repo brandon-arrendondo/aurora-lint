@@ -8,14 +8,15 @@ description = """
 Evaluating a pointer—including dereferencing the pointer, using it as an operand
 of an arithmetic operation, type casting it, and using it as the right-hand side
 of an assignment—into memory that has been deallocated by a memory management
-function isundefined behavior 183. Pointers to memory that has been deallocated
-are calleddangling pointers. Accessing a dangling pointer can result in
-exploitablevulnerabilities. According to the C Standard, using the value of a
-pointer that refers to space deallocated by a call to
-thefree()orrealloc()function is undefined behavior. (Seeundefined behavior 183.)
-Reading a pointer to deallocated memory isundefined behavior 183because the
-pointer value isindeterminateand might be atrap representation. Fetching a trap
-representation might perform a hardware trap (but is not required to).
+function is undefined behavior 183. Pointers to memory that has been deallocated
+are called dangling pointers. Accessing a dangling pointer can result in
+exploitable vulnerabilities.
+According to the C Standard, using the value of a pointer that refers to space
+deallocated by a call to the free() or realloc() function is undefined behavior.
+(See undefined behavior 183.)
+Reading a pointer to deallocated memory is undefined behavior 183 because the
+pointer value is indeterminate and might be a trap representation. Fetching a
+trap representation might perform a hardware trap (but is not required to).
 """
 severity = "High"
 likelihood = "Likely"

@@ -5,21 +5,11 @@ category = "WIN"
 number = 0
 title = "Be specific when dynamically loading libraries"
 description = """
-TheLoadLibrary()orLoadLibraryEx()function calls [MSDN] allow you to dynamically
-load a library at runtime and use a specific algorithm to locate the library
-within the file system [MSDN]. It is possible for an attacker to place a file on
-the DLL search path such that your application inadvertently loads and executes
-arbitrary source code. #include <Windows.h> void func(void) { HMODULE hMod =
-LoadLibrary(TEXT("MyLibrary.dll")); if (hMod != NULL) { typedef void (__cdecl
-func_type)(void); func_type *fn = (func_type *)GetProcAddress(hMod,
-"MyFunction"); if (fn != NULL) fn(); } } If an attacker were to place a
-malicious DLL named MyLibrary.dll higher on the search path than where the
-library resides, she could trigger arbitrary code to execute either via
-theDllMain()entrypoint (which is called automatically by the system loader) or
-by providing an implementation forMyFunction(), either of which would run within
-the security context of your application. If your application runs with elevated
-privileges (such as a service application), an escalation of privileges could
-result.
+The LoadLibrary() or LoadLibraryEx() function calls [MSDN] allow you to
+dynamically load a library at runtime and use a specific algorithm to locate the
+library within the file system [MSDN]. It is possible for an attacker to place a
+file on the DLL search path such that your application inadvertently loads and
+executes arbitrary source code.
 """
 severity = "High"
 likelihood = "Unlikely"

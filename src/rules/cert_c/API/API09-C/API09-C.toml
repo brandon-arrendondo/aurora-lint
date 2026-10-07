@@ -9,15 +9,7 @@ Make sure compatible values have the same type. For example, when the return
 value of one function is used as an argument to another function, make sure they
 are the same type. Ensuring compatible values have the same type allows the
 return value to be passed as an argument to the related function without
-conversion, reducing the potential for conversion errors. A source of potential
-errors may be traced to POSIX's tendency to overload return codes, using −1 to
-indicate an error condition but 0 for success and positive values as a result
-indicator (seeERR02-C. Avoid in-band error indicators). A good example is
-theread()system call. This leads to a natural mixing of unsigned and signed
-quantities, potentially leading to conversion errors. OpenSSH performs most I/O
-calls through a "retry on interrupt" function,atomicio(). The following is a
-slightly simplified version ofatomicio.c, v 1.12 2003/07/31. The functionf()is
-eitherread()orvwrite():
+conversion, reducing the potential for conversion errors.
 """
 severity = "Low"
 likelihood = "Unlikely"

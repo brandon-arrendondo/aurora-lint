@@ -5,7 +5,12 @@ category = "MSC"
 number = 6
 title = 'Beware of compiler optimizations'
 description = '''
-Subclause 5.1.2.3 of the C Standard [ ISO/IEC 9899:2011 ] states:
+Subclause 5.1.2.3 of the C Standard [ISO/IEC 9899:2011] states:
+In the abstract machine, all expressions are evaluated as specified by the
+semantics. An actual implementation need not evaluate part of an expression if
+it can deduce that its value is not used and that no needed side effects are
+produced (including any caused by calling a function or accessing a volatile
+object).
 This clause gives compilers the leeway to remove code deemed unused or unneeded
 when building a program. Although this functionality is usually beneficial,
 sometimes the compiler removes code that it thinks is not needed but has been

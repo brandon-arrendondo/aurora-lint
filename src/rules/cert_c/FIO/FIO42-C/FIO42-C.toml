@@ -5,14 +5,12 @@ category = "FIO"
 number = 42
 title = "Close files when they are no longer needed"
 description = """
-A call to thefopen()orfreopen()function must be matched with a call
-tofclose()before the lifetime of the last pointer that stores the return value
-of the call has ended or before normal program termination, whichever occurs
-first. In general, this rule should also be applied to other functions with open
-and close resources, such as the POSIXopen()andclose()functions, or the
-Microsoft WindowsCreateFile()andCloseHandle()functions. This code example is
-noncompliant because the file opened by the call tofopen()is not closed before
-functionfunc()returns:
+A call to the fopen() or freopen() function must be matched with a call to
+fclose() before the lifetime of the last pointer that stores the return value of
+the call has ended or before normal program termination, whichever occurs first.
+In general, this rule should also be applied to other functions with open and
+close resources, such as the POSIX open() and close() functions, or the
+Microsoft Windows CreateFile() and CloseHandle() functions.
 """
 severity = "Medium"
 likelihood = "Unlikely"

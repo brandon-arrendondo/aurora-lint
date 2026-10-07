@@ -9,13 +9,8 @@ If a constant value is given for an identifier, do not diminish the
 maintainability of the code in which it is used by assuming its value in
 expressions. Simply giving the constant a name is not enough to ensure
 modifiability; you must be careful to always use the name, and remember that the
-value can change. This recommendation is related toDCL06-C. Use meaningful
-symbolic constants to represent literal values. The headerstdio.hdefines
-theBUFSIZmacro, which expands to an integer constant expression that is the size
-of the buffer used by thesetbuf()function. This noncompliant code example
-defeats the purpose of definingBUFSIZas a constant by assuming its value in the
-following expression: #include <stdio.h> /* ... */ nblocks = 1 + ((nbytes - 1)
->> 9); /* BUFSIZ = 512 = 2^9 */
+value can change. This recommendation is related to DCL06-C. Use meaningful
+symbolic constants to represent literal values.
 """
 severity = "Low"
 likelihood = "Unlikely"

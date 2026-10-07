@@ -8,10 +8,14 @@ description = """
 Lock-free programming is a technique that allows concurrent updates of shared
 data structures without using explicit locks. This method ensures that no
 threads block for arbitrarily long times, and it thereby boosts performance.
-Lock-free programming has the following advantages: Lock-free programming
-requires the use of special atomic processor instructions, such as CAS (compare
-and swap), LL/SC (load linked/store conditional), or the C
-Standardatomic_compare_exchangegeneric functions.
+Lock-free programming has the following advantages:
+- Can be used in places where locks must be avoided, such as interrupt handlers
+- Efficiency benefits compared to lock-based algorithms for some workloads,
+including potential scalability benefits on multiprocessor machines
+- Avoidance of priority inversion in real-time systems
+Lock-free programming requires the use of special atomic processor instructions,
+such as CAS (compare and swap), LL/SC (load linked/store conditional), or the C
+Standard atomic_compare_exchange generic functions.
 """
 severity = "Medium"
 likelihood = "Unlikely"

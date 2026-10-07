@@ -7,15 +7,18 @@ title = "Avoid performing bitwise and arithmetic operations on the same data"
 description = """
 Avoid performing bitwise and arithmetic operations on the same data. In
 particular, bitwise operations are frequently performed on arithmetic values as
-a form of premature optimization. Bitwise operators include the unary
-operator~and the binary operators<<,>>,&,^, and|. Although such operations are
-valid and will compile, they can reduce code readability. Declaring a variable
-as containing a numeric value or a bitmap makes the programmer's intentions
-clearer and the code more maintainable. Bitmapped types may be defined to
-further separate bit collections from numeric types. Doing so may make it easier
-to verify that bitwise operations are performed only on variables that represent
-bitmaps. typedef uint32_t bitmap32_t; bitmap32_t x = 0x000007f3; x = (x << 2) |
-3; /* Shifts in two 1-bits from the right */
+a form of premature optimization. Bitwise operators include the unary operator ~
+and the binary operators <<, >>, &, ^, and |. Although such operations are valid
+and will compile, they can reduce code readability. Declaring a variable as
+containing a numeric value or a bitmap makes the programmer's intentions clearer
+and the code more maintainable.
+Bitmapped types may be defined to further separate bit collections from numeric
+types. Doing so may make it easier to verify that bitwise operations are
+performed only on variables that represent bitmaps.
+The typedef name uintN_t designates an unsigned integer type with width N.
+Consequently, uint32_t denotes an unsigned integer type with a width of exactly
+32 bits. Bitmaps should be declared as unsigned. See INT13-C. Use bitwise
+operators only on unsigned operands.
 """
 severity = "Medium"
 likelihood = "Unlikely"

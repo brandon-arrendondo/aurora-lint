@@ -6,10 +6,15 @@ number = 31
 title = "Do not rely on an environment pointer following an operation that may invalidate it"
 description = """
 Some implementations provide a nonportable environment pointer that is valid
-whenmain()is called but may be invalidated by operations that modify the
-environment. The C Standard, J.5.2 [ISO/IEC 9899:2024], states Consequently,
-under ahosted environmentsupporting this common extension, it is possible to
-access the environment through a modified form ofmain():
+when main() is called but may be invalidated by operations that modify the
+environment.
+The C Standard, J.5.2 [ISO/IEC 9899:2024], states
+In a hosted environment, the main function receives a third argument, char *
+envp [], that points to a null-terminated array of pointers to char, each of
+which points to a string that provides information about the environment for
+this execution of the program (5.1.2.3.2).
+Consequently, under a hosted environment supporting this common extension, it is
+possible to access the environment through a modified form of main():
 """
 severity = "Low"
 likelihood = "Probable"

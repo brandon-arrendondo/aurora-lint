@@ -6,10 +6,11 @@ number = 36
 title = "Converting a pointer to integer or integer to pointer"
 description = """
 Although programmers often use integers and pointers interchangeably in C,
-pointer-to-integer and integer-to-pointer conversions areimplementation-defined.
+pointer-to-integer and integer-to-pointer conversions are implementation-
+defined.
 Conversions between integers and pointers can have undesired consequences
-depending on theimplementation. According to the C Standard, subclause 6.3.2.3
-[ISO/IEC 9899:2024],
+depending on the implementation.
+According to the C Standard, subclause 6.3.2.3 [ISO/IEC 9899:2024],
 """
 severity = "Low"
 likelihood = "Probable"

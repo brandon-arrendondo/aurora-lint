@@ -6,11 +6,17 @@ number = 21
 title = "Understand the storage of compound literals"
 description = """
 Subclause 6.5.2.5 of the C Standard [ISO/IEC 9899:2011] defines a compound
-literal as The storage for this object is either static (if the compound literal
-occurs at file scope) or automatic (if the compound literal occurs at block
-scope), and the storage duration is associated with its immediate enclosing
-block. For example, in the function void func(void) { int *ip =
-(int[4]){1,2,3,4}; /* ... */ }
+literal as
+A postfix expression that consists of a parenthesized type name followed by a
+brace-enclosed list of initializers.... The value of the compound literal is
+that of an unnamed object initiated by the initializer list.
+The storage for this object is either static (if the compound literal occurs at
+file scope) or automatic (if the compound literal occurs at block scope), and
+the storage duration is associated with its immediate enclosing block. For
+example, in the function
+following initialization, the int pointer ip contains the address of an unnamed
+object of type int[4], allocated on the stack. Once func returns, any attempts
+to access this object will produce undefined behavior.
 """
 severity = "Low"
 likelihood = "Unlikely"

@@ -5,20 +5,26 @@ category = "POS"
 number = 37
 title = "Ensure that privilege relinquishment is successful"
 description = """
-The POSIXsetuid()function has complex semantics and platform-specific behavior
-[Open Group 2004]. The meaning of "appropriate privileges" varies from platform
-to platform. For example, on Solaris, appropriate privileges forsetuid()means
-that thePRIV_PROC_SETIDprivilege is in the effective privilege set of the
-process. On BSD, it means that the effective user ID (EUID) is zero (that is,
-the process is running as root) or thatuid=geteuid(). On Linux, it means that
-the process hasCAP_SETUIDcapability and thatsetuid(geteuid())will fail if the
-EUID is not equal to 0, the real user ID (RUID), or the saved set-user ID
-(SSUID). Because of this complex behavior, desired privilege drops sometimes may
-fail. For example, the range of Linux Kernel versions (2.2.0–2.2.15) is
-vulnerable to an insufficient privilege attack whereinsetuid(getuid()did not
-drop privileges as expected when the capability bits were set to zero. As a
-precautionary measure, subtle behavior and error conditions for the targeted
-implementation must be carefully noted.
+The POSIX setuid() function has complex semantics and platform-specific behavior
+[Open Group 2004].
+If the process has appropriate privileges, setuid() shall set the real user ID,
+effective user ID, and the saved set-user-ID of the calling process to uid. If
+the process does not have appropriate privileges, but uid is equal to the real
+user ID or the saved set-user-ID, setuid() shall set the effective user ID to
+uid; the real user ID and saved set-user-ID shall remain unchanged.
+The meaning of "appropriate privileges" varies from platform to platform. For
+example, on Solaris, appropriate privileges for setuid() means that the
+PRIV_PROC_SETID privilege is in the effective privilege set of the process. On
+BSD, it means that the effective user ID (EUID) is zero (that is, the process is
+running as root) or that uid=geteuid(). On Linux, it means that the process has
+CAP_SETUID capability and that setuid(geteuid()) will fail if the EUID is not
+equal to 0, the real user ID (RUID), or the saved set-user ID (SSUID).
+Because of this complex behavior, desired privilege drops sometimes may fail.
+For example, the range of Linux Kernel versions (2.2.0–2.2.15) is vulnerable to
+an insufficient privilege attack wherein setuid(getuid() did not drop privileges
+as expected when the capability bits were set to zero. As a precautionary
+measure, subtle behavior and error conditions for the targeted implementation
+must be carefully noted.
 """
 severity = "High"
 likelihood = "Probable"

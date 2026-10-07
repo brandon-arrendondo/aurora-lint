@@ -5,14 +5,22 @@ category = "PRE"
 number = 32
 title = "Do not use preprocessor directives in invocations of function-like macros"
 description = """
-The arguments to a macro must not include preprocessor directives, such
-as#define,#ifdef, and#include. Doing so results inundefined behavior, according
-to the C Standard, 6.10.5, paragraph 11 [ISO/IEC 9899:2024]: See alsoundefined
-behavior 92. This rule also applies to the use of preprocessor directives in
-arguments to any function where it is unknown whether or not the function is
-implemented using a macro. This includes all standard library functions, such
-asmemcpy(),printf(), andassert(), because any standard library function may be
-implemented as a macro. (C24, 7.1.4, paragraph 1).
+The arguments to a macro must not include preprocessor directives, such as
+#define, #ifdef, and #include. Doing so results in undefined behavior, according
+to the C Standard, 6.10.5, paragraph 11 [ISO/IEC 9899:2024]:
+The sequence of preprocessing tokens bounded by the outside-most matching
+parentheses forms the list of arguments for the function-like macro. The
+individual arguments within the list are separated by comma preprocessing
+tokens, but comma preprocessing tokens between matching inner parentheses do not
+separate arguments. If there are sequences of preprocessing tokens within the
+list of arguments that would otherwise act as preprocessing directives, the
+behavior is undefined.
+See also undefined behavior 92.
+This rule also applies to the use of preprocessor directives in arguments to any
+function where it is unknown whether or not the function is implemented using a
+macro. This includes all standard library functions, such as memcpy(), printf(),
+and assert(), because any standard library function may be implemented as a
+macro. (C24, 7.1.4, paragraph 1).
 """
 severity = "Low"
 likelihood = "Unlikely"

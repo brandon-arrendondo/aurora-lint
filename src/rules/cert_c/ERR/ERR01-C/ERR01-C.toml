@@ -5,20 +5,10 @@ category = "ERR"
 number = 1
 title = "Use ferror() rather than errno to check for FILE stream errors"
 description = """
-Useferror()rather thanerrnoto check whether an error has occurred on a file
-stream (for example, after a long chain ofstdiocalls). Theferror()function tests
-the error indicator for a specified stream and returns nonzero if and only if
-the error indicator is set for the stream. Manyimplementationsof thestdiopackage
-adjust their behavior slightly ifstdoutis a terminal. To make the determination,
-these implementations perform some operation that fails (withENOTTY) ifstdoutis
-not a terminal. Although the output operation goes on to complete
-successfully,errnostill containsENOTTY. This behavior can be mildly confusing,
-but it is not strictly incorrect because it is meaningful for a program to
-inspect the contents oferrnoonly after an error has been reported. More
-precisely,errnois meaningful only after a library function that setserrnoon
-error has returned an error code. errno = 0; printf("This\n"); printf("is\n");
-printf("a\n"); printf("test.\n"); if (errno != 0) { fprintf(stderr, "printf
-failed: %s\n", strerror(errno)); }
+Use ferror() rather than errno to check whether an error has occurred on a file
+stream (for example, after a long chain of stdio calls). The ferror() function
+tests the error indicator for a specified stream and returns nonzero if and only
+if the error indicator is set for the stream.
 """
 severity = "Low"
 likelihood = "Probable"

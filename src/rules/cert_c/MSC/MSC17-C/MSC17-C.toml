@@ -7,9 +7,9 @@ title = 'Finish every set of statements associated with a case label with a brea
 description = '''
 A switch statement consists of several case labels, plus a default label. The
 default label is optional but recommended. (See MSC01-C. Strive for logical
-completeness .) A series of statements following a case label conventionally
-ends with a break statement; if omitted, control flow falls through to the next
-case in the switch statement block. Because the break statement is not required,
+completeness.) A series of statements following a case label conventionally ends
+with a break statement; if omitted, control flow falls through to the next case
+in the switch statement block. Because the break statement is not required,
 omitting it does not produce compiler diagnostics. If the omission was
 unintentional, it can result in an unexpected control flow.
 '''

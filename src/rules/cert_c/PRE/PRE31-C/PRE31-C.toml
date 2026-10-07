@@ -5,17 +5,18 @@ category = "PRE"
 number = 31
 title = "Avoid side effects in arguments to unsafe macros"
 description = """
-Anunsafe function-like macrois one whose expansion results in evaluating one of
-its parameters more than once or not at all. Never invoke an unsafe macro with
-arguments containing an assignment, increment, decrement, volatile access,
+An unsafe function-like macro is one whose expansion results in evaluating one
+of its parameters more than once or not at all. Never invoke an unsafe macro
+with arguments containing an assignment, increment, decrement, volatile access,
 input/output, or other expressions with side effects (including function calls,
-which may cause side effects). The documentation for unsafe macros should warn
-against invoking them with arguments with side effects, but the responsibility
-is on the programmer using the macro. Because of the risks associated with their
-use, it is recommended that the creation of unsafe function-like macros be
-avoided. (SeePRE00-C. Prefer inline or static functions to function-like
-macros.) This rule is similar toEXP44-C. Do not rely on side effects in operands
-to sizeof, _Alignof, or _Generic.
+which may cause side effects).
+The documentation for unsafe macros should warn against invoking them with
+arguments with side effects, but the responsibility is on the programmer using
+the macro. Because of the risks associated with their use, it is recommended
+that the creation of unsafe function-like macros be avoided. (See PRE00-C.
+Prefer inline or static functions to function-like macros.)
+This rule is similar to EXP44-C. Do not rely on side effects in operands to
+sizeof, _Alignof, or _Generic.
 """
 severity = "Low"
 likelihood = "Unlikely"

@@ -9,15 +9,19 @@ Variable length arrays (VLAs), a conditionally supported language feature, are
 essentially the same as traditional C arrays except that they are declared with
 a size that is not a constant integer expression and can be declared only at
 block scope or function prototype scope and no linkage. When supported, a
-variable length array can be declared { /* Block scope */ char vla[size]; }
-where the integer expressionsizeand the declaration ofvlaare both evaluated at
-runtime. If the size argument supplied to a variable length array is not a
-positive integer value, the behavior is undefined. (Seeundefined behavior 72.)
+variable length array can be declared
+where the integer expression size and the declaration of vla are both evaluated
+at runtime. If the size argument supplied to a variable length array is not a
+positive integer value, the behavior is undefined. (See undefined behavior 72.)
 Additionally, if the magnitude of the argument is excessive, the program may
 behave in an unexpected way. An attacker may be able to leverage this behavior
-to overwrite critical program data [Griffiths 2006].The programmer must ensure
+to overwrite critical program data [Griffiths 2006]. The programmer must ensure
 that size arguments to variable length arrays, especially those derived from
 untrusted data, are in a valid range.
+Because variable length arrays are a conditionally supported feature of C11,
+their use in portable code should be guarded by testing the value of the macro
+__STDC_NO_VLA__. Implementations that do not support variable length arrays
+indicate it by setting __STDC_NO_VLA__ to the integer constant 1.
 """
 severity = "High"
 likelihood = "Probable"

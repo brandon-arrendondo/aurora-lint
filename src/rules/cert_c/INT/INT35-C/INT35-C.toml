@@ -5,62 +5,17 @@ category = "INT"
 number = 35
 title = "Use correct integer precisions"
 description = '''
-Integer types in C have both asizeand aprecision. The size indicates the number
-of bytes used by an object and can be retrieved for any object or type using
-thesizeofoperator. The precision of an integer type is the number of bits it
-uses to represent values, excluding any sign and padding bits.Padding bits
-contribute to the integer's size, but not to its precision. Consequently,
-inferring the precision of an integer type from its size may result in too large
-a value, which can then lead to incorrect assumptions about the numeric range of
-these types. Programmers should use correct integer precisions in their code,
-and in particular, should not use thesizeofoperator to compute the precision of
-an integer type on architectures that use padding bits or in strictly conforming
-(that is, portable) programs.Noncompliant Code ExampleThis noncompliant code
-example illustrates a function that produces 2 raised to the power of the
-function argument. To prevent undefined behavior (Seeundefined behavior 48.) in
-compliance withINT34-C. Do not shift an expression by a negative number of bits
-or by greater than or equal to the number of bits that exist in the operand, the
-function ensures that the argument is less than the number of bits used to store
-a value of typeunsigned int.#include <limits.h> unsigned int pow2(unsigned int
-exp) { if (exp >= sizeof(unsigned int) * CHAR_BIT) { /* Handle error */ } return
-1 << exp; }However, if this code runs on a platform whereunsigned inthas one or
-more padding bits, it can still result in values forexpthat are too large. For
-example, on a platform that storesunsigned intin 64 bits, but uses only 48 bits
-to represent the value, a left shift of 56 bits would result in undefined
-behavior (Seeundefined behavior 48.).Compliant Solution (popcount())This
-compliant solution uses apopcount()function, which counts the number of bits set
-on any unsigned integer, allowing this code to determine the precision of any
-integer type, signed or unsigned.#include <stddef.h> #include <stdint.h> /*
-Returns the number of set bits */ size_t popcount(uintmax_t num) { size_t
-precision = 0; while (num != 0) { if (num % 2 == 1) { precision++; } num >>= 1;
-} return precision; } #define PRECISION(umax_value)
-popcount(umax_value)Implementations can replace thePRECISION()macro with a type-
-generic macro that returns an integer constant expression that is the precision
-of the specified type for that implementation. This return value can then be
-used anywhere an integer constant expression can be used, such as in a static
-assertion. (SeeDCL03-C. Use a static assertion to test the value of a constant
-expression.) The following type generic macro, for example, might be used for a
-specific implementation targeting the IA-32 architecture:#define
-PRECISION(value) _Generic(value, \ unsigned char : 8, \ unsigned short: 16, \
-unsigned int : 32, \ unsigned long : 32, \ unsigned long long : 64, \ signed
-char : 7, \ signed short : 15, \ signed int : 31, \ signed long : 31, \ signed
-long long : 63)The revised version of thepow2()function uses thePRECISION()macro
-to determine the precision of the unsigned type:#include <stddef.h> #include
-<stdint.h> #include <limits.h> extern size_t popcount(uintmax_t); #define
-PRECISION(umax_value) popcount(umax_value) unsigned int pow2(unsigned int exp) {
-if (exp >= PRECISION(UINT_MAX)) { /* Handle error */ } return 1 << exp;
-}Implementation DetailsSome platforms, such as the Cray Linux Environment (CLE;
-supported on Cray XT CNL compute nodes), providea _popcntinstruction that can
-substitute for thepopcount()function.#define PRECISION(umax_value)
-_popcnt(umax_value)Compliant Solution (C23)The C23 standard provides
-various*_WIDTHmacros that define the number of width bits for each integer type.
-This is effectively the size of the type (multiplied by 8) less the number of
-padding bits. The following compliant solution uses theUINT_WIDTHtype to obtain
-the width of an un#include <limits.h> unsigned int pow2(unsigned int exp) { if
-(exp >= UINT_WIDTH) { /* Handle error */ } return 1 << exp; }Risk
-AssessmentMistaking an integer's size for its precision can permit invalid
-precision arguments to operations such as bitwise shifts, resulting in undefined
-behavior.
+Integer types in C have both a size and a precision. The size indicates the
+number of bytes used by an object and can be retrieved for any object or type
+using the sizeof operator. The precision of an integer type is the number of
+bits it uses to represent values, excluding any sign and padding bits.
+Padding bits contribute to the integer's size, but not to its precision.
+Consequently, inferring the precision of an integer type from its size may
+result in too large a value, which can then lead to incorrect assumptions about
+the numeric range of these types. Programmers should use correct integer
+precisions in their code, and in particular, should not use the sizeof operator
+to compute the precision of an integer type on architectures that use padding
+bits or in strictly conforming (that is, portable) programs.
 '''
 severity = "Low"
 likelihood = "Unlikely"

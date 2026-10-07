@@ -5,20 +5,13 @@ category = "INT"
 number = 1
 title = "Use size_t or rsize_t for all integer values representing the size of an object"
 description = """
-Thesize_ttype is the unsigned integer type of the result of thesizeofoperator.
-Variables of typesize_tare guaranteed to be of sufficient precision to represent
-the size of an object. The limit ofsize_tis specified by theSIZE_MAXmacro. The
-typesize_tgenerally covers the entire address space. The C Standard, Annex K
-(normative), "Bounds-checking interfaces," introduces a new type,rsize_t,
-defined to besize_tbut explicitly used to hold the size of a single object
-[Meyers 2004]. In code that documents this purpose by using the typersize_t, the
-size of an object can be checked to verify that it is no larger thanRSIZE_MAX,
-the maximum size of a normal single object, which provides additional input
-validation for library functions. SeeVOID STR07-C. Use the bounds-checking
-interfaces for string manipulationfor additional discussion of C11 Annex K. Any
-variable that is used to represent the size of an object, including integer
-values used as sizes, indices, loop counters, and lengths, should be
-declaredrsize_t, if available. Otherwise, it should be declaredsize_t.
+The size_t type is the unsigned integer type of the result of the sizeof
+operator. Variables of type size_t are guaranteed to be of sufficient precision
+to represent the size of an object. The limit of size_t is specified by the
+SIZE_MAX macro.
+The type size_t generally covers the entire address space. Any variable that is
+used to represent the size of an object, including integer values used as sizes,
+indices, loop counters, and lengths, should be declared size_t.
 """
 severity = "Medium"
 likelihood = "Probable"

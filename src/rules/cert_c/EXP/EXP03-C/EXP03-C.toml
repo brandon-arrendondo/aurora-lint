@@ -8,11 +8,12 @@ description = """
 The size of a structure is not always equal to the sum of the sizes of its
 members. Subclause 6.7.2.1 of the C Standard states, "There may be unnamed
 padding within a structure object, but not at its beginning" [ISO/IEC
-9899:2011]. This unnamed padding is often calledstructure padding. Structure
-members are arranged in memory as they are declared in the program text. Padding
-may be added to the structure to ensure the structure is properly aligned in
-memory. Structure padding allows for faster member access on many architectures.
-Rearranging the fields in astructcan change the size of thestruct. It is
+9899:2011].
+This unnamed padding is often called structure padding. Structure members are
+arranged in memory as they are declared in the program text. Padding may be
+added to the structure to ensure the structure is properly aligned in memory.
+Structure padding allows for faster member access on many architectures.
+Rearranging the fields in a struct can change the size of the struct. It is
 possible to minimize padding anomalies if the fields are arranged in such a way
 that fields of the same size are grouped together.
 """

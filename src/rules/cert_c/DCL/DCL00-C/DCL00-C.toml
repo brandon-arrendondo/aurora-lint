@@ -5,25 +5,25 @@ category = "DCL"
 number = 0
 title = "Const-qualify immutable objects"
 description = """
-Immutable objects should beconst-qualified. Enforcing object immutability
-usingconstqualification helps ensure the correctness and security of
+Immutable objects should be const -qualified. Enforcing object immutability
+using const qualification helps ensure the correctness and security of
 applications. ISO/IEC TR 24772, for example, recommends labeling parameters as
 constant to avoid the unintentional modification of function arguments [ISO/IEC
-TR 24772].STR05-C. Use pointers to const when referring to string
-literalsdescribes a specialized case of this recommendation.
-Addingconstqualification may propagate through a program; as you addconst,
-qualifiers become still more necessary. This phenomenon is sometimes
-calledconstpoisoning, which can frequently lead to violations ofEXP05-C. Do not
-cast away a const qualification. Althoughconstqualification is a good idea, the
-costs may outweigh the value in the remediation of existing code. A macro or an
-enumeration constant may also be used instead of aconst-qualified
-object.DCL06-C. Use meaningful symbolic constants to represent literal
-valuesdescribes the relative merits of usingconst-qualified objects, enumeration
-constants, and object-like macros. However, adding aconstqualifier to an
-existing variable is a better first step than replacing the variable with an
-enumeration constant or macro because the compiler will issue warnings on any
-code that changes yourconst-qualified variable. Once you have verified that
-aconst-qualified variable is not changed by any code, you may consider changing
+TR 24772]. STR05-C. Use pointers to const when referring to string literals
+describes a specialized case of this recommendation.
+Adding const qualification may propagate through a program; as you add const,
+qualifiers become still more necessary. This phenomenon is sometimes called
+const poisoning, which can frequently lead to violations of EXP05-C. Do not cast
+away a const qualification. Although const qualification is a good idea, the
+costs may outweigh the value in the remediation of existing code.
+A macro or an enumeration constant may also be used instead of a const
+-qualified object. DCL06-C. Use meaningful symbolic constants to represent
+literal values describes the relative merits of using const -qualified objects,
+enumeration constants, and object-like macros. However, adding a const qualifier
+to an existing variable is a better first step than replacing the variable with
+an enumeration constant or macro because the compiler will issue warnings on any
+code that changes your const -qualified variable. Once you have verified that a
+const -qualified variable is not changed by any code, you may consider changing
 it to an enumeration constant or macro, as best fits your design.
 """
 severity = "Low"

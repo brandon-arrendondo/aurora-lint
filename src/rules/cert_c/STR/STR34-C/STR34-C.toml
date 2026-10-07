@@ -5,16 +5,16 @@ category = "STR"
 number = 34
 title = "Cast characters to unsigned char before converting to larger integer sizes"
 description = """
-Signed character data must be converted tounsigned charbefore being assigned or
-converted to a larger signed type. This rule applies to bothsigned charand
-(plain)charcharacters on implementations wherecharis defined to have the same
-range, representation, and behaviors assigned char. However, this rule is
-applicable only in cases where the character data may contain values that can be
-misinterpreted as negative numbers. For example, if thechartype is represented
-by a two's complement 8-bit value, any character value greater than +127 is
-interpreted as a negative value. This rule is a generalization ofSTR37-C.
-Arguments to character-handling functions must be representable as an unsigned
-char.
+Signed character data must be converted to unsigned char before being assigned
+or converted to a larger signed type. This rule applies to both signed char and
+(plain) char characters on implementations where char is defined to have the
+same range, representation, and behaviors as signed char.
+However, this rule is applicable only in cases where the character data may
+contain values that can be misinterpreted as negative numbers. For example, if
+the char type is represented by a two's complement 8-bit value, any character
+value greater than +127 is interpreted as a negative value.
+This rule is a generalization of STR37-C. Arguments to character-handling
+functions must be representable as an unsigned char.
 """
 severity = "Medium"
 likelihood = "Probable"

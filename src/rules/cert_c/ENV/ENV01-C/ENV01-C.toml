@@ -8,11 +8,9 @@ description = """
 Do not make any assumptions about the size of environment variables because an
 adversary might have full control over the environment. If the environment
 variable needs to be stored, the length of the associated string should be
-calculated and the storage dynamically allocated (seeSTR31-C. Guarantee that
+calculated and the storage dynamically allocated (see STR31-C. Guarantee that
 storage for strings has sufficient space for character data and the null
-terminator). This noncompliant code example copies the string returned
-bygetenv()into a fixed-size buffer: void f() { char path[PATH_MAX]; /* Requires
-PATH_MAX to be defined */ strcpy(path, getenv("PATH")); /* Use path */ }
+terminator).
 """
 severity = "High"
 likelihood = "Likely"

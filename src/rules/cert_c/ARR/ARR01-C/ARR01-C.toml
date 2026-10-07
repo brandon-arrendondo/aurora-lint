@@ -5,20 +5,12 @@ category = "ARR"
 number = 1
 title = "Do not apply the sizeof operator to a pointer when taking the size of an array"
 description = """
-Thesizeofoperator yields the size (in bytes) of its operand, which can be an
-expression or the parenthesized name of a type. However, using thesizeofoperator
-to determine the size of arrays is error prone. Thesizeofoperator is often used
-in determining how much memory to allocate viamalloc(). However using an
-incorrect size is a violation ofMEM35-C. Allocate sufficient memory for an
-object. In this noncompliant code example, the functionclear()zeros the elements
-in an array. The function has one parameter declared asint array[]and is passed
-a static array consisting of 12intas the argument. The functionclear()uses the
-idiomsizeof(array) / sizeof(array[0])to determine the number of elements in the
-array. However,arrayhas a pointer type because it is a parameter. As a
-result,sizeof(array)is equal to thesizeof(int *). For example, on an
-architecture (such as IA-32) where thesizeof(int) == 4and thesizeof(int *) == 4,
-the expressionsizeof(array) / sizeof(array[0])evaluates to 1, regardless of the
-length of the array passed, leaving the rest of the array unaffected.
+The sizeof operator yields the size (in bytes) of its operand, which can be an
+expression or the parenthesized name of a type. However, using the sizeof
+operator to determine the size of arrays is error prone.
+The sizeof operator is often used in determining how much memory to allocate via
+malloc(). However using an incorrect size is a violation of MEM35-C. Allocate
+sufficient memory for an object.
 """
 severity = "High"
 likelihood = "Probable"

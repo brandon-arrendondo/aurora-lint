@@ -8,13 +8,7 @@ description = """
 Windows provides several APIs for allocating memory. While some of these
 functions have converged over time, it is still important to always properly
 pair allocations and deallocations. The following table shows the proper
-pairings. AllocatorDeallocatormalloc()free()realloc()free()LocalAlloc()LocalFree
-()LocalReAlloc()LocalFree()GlobalAlloc()GlobalFree()GlobalReAlloc()GlobalFree()V
-irtualAlloc()VirtualFree()VirtualAllocEx()VirtualFreeEx()VirtualAllocExNuma()Vir
-tualFreeEx()AllocateUserPhysicalPages()FreeUserPhysicalPages()AllocateUserPhysic
-alPagesNuma()FreeUserPhysicalPages()HeapAlloc()HeapFree()HeapReAlloc()HeapFree()
-In this example, theFormatMessage()function allocates a buffer and stores it in
-thebufparameter. From the documentation ofFORMAT_MESSAGE_ALLOCATE_BUFFER[MSDN]:
+pairings.
 """
 severity = "Low"
 likelihood = "Probable"

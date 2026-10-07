@@ -5,18 +5,19 @@ category = "POS"
 number = 53
 title = "Do not use more than one mutex for concurrent waiting operations on a condition variable"
 description = """
-pthread_cond_wait()andpthread_cond_timedwait()take a condition variable and
+pthread_cond_wait() and pthread_cond_timedwait() take a condition variable and
 locked mutex as arguments. These functions unlock the mutex until the condition
 variable is signaled and then relock the mutex before returning. While a thread
 is waiting on a particular condition variable and mutex, other threads may only
 wait on the same condition variable if they also pass the same mutex as an
-argument. This requirement is noted in theOpen Group Base Specifications, Issue
-6: It also specifies thatpthread_cond_wait()may€ fail if: In this noncompliant
-code example,mutex1protectscount1andmutex2protectscount2. Arace conditionexists
-between thewaiter1andwaiter2threads because they use the same condition variable
-with different mutexes. If both threads attempt to callpthread_cond_wait()at the
-same time, one thread will succeed and the other thread will invokeundefined
-behavior.
+argument. This requirement is noted in the Open Group Base Specifications, Issue
+6:
+As long as at least one thread is blocked on the condition variable. During this
+time, the effect of an attempt by any thread to wait on that condition variable
+using a different mutex is undefined.
+It also specifies that pthread_cond_wait() may €? fail if:
+[EINVAL] The value specified by cond or mutex is invalid. [EPERM] The mutex was
+not owned by the current thread at the time of the call.
 """
 severity = "Medium"
 likelihood = "Probable"

@@ -9,11 +9,9 @@ The C23 Standard requires type specifiers and forbids implicit function
 declarations. The C90 Standard allows implicit typing of variables and
 functions. Consequently, some existing legacy code uses implicit typing. Some C
 compilers still support legacy code by allowing implicit typing, but it should
-not be used for new code. Such animplementationmay choose to assume an implicit
-declaration and continue translation to support existing programs that used this
-feature. C no longer allows the absence of type specifiers in a declaration.The
-C Standard, 6.7.3 paragraph 2 [ISO/IEC 9899:2024], states This noncompliant code
-example omits the type specifier:
+not be used for new code. Such an implementation may choose to assume an
+implicit declaration and continue translation to support existing programs that
+used this feature.
 """
 severity = "Low"
 likelihood = "Unlikely"

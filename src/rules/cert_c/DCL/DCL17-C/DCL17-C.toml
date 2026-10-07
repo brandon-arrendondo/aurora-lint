@@ -5,18 +5,17 @@ category = "DCL"
 number = 17
 title = "Beware of miscompiled volatile-qualified variables"
 description = """
-As described in depth in ruleDCL22-C. Use volatile for data that cannot be
-cached, avolatile-qualified variable "shall be evaluated strictly according to
-the rules of the abstract machine" [ISO/IEC 9899:2011]. In other words,
-thevolatilequalifier is used to instruct the compiler to not make caching
-optimizations about a variable. However, as demonstrated in "Volatiles Are
-Miscompiled, and What to Do about It" [Eide and Regehr], all tested compilers
-generated some percentage of incorrect compiled code with regard
-tovolatileaccesses. Therefore, it is necessary to know how your compiler behaves
-when the standardvolatilebehavior is required. The authors also provide a
-workaround that eliminates some or all of these errors. As demonstrated in Eide
-and Regehr's work, the following code example compiles incorrectly using GCC
-4.3.0 for IA32 and the-Osoptimization flag:
+As described in depth in rule DCL22-C. Use volatile for data that cannot be
+cached, a volatile -qualified variable "shall be evaluated strictly according to
+the rules of the abstract machine" [ISO/IEC 9899:2011]. In other words, the
+volatile qualifier is used to instruct the compiler to not make caching
+optimizations about a variable.
+However, as demonstrated in "Volatiles Are Miscompiled, and What to Do about It"
+[Eide and Regehr], all tested compilers generated some percentage of incorrect
+compiled code with regard to volatile accesses. Therefore, it is necessary to
+know how your compiler behaves when the standard volatile behavior is required.
+The authors also provide a workaround that eliminates some or all of these
+errors.
 """
 severity = "Medium"
 likelihood = "Probable"

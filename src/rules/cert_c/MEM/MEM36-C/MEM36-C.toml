@@ -5,21 +5,13 @@ category = "MEM"
 number = 36
 title = "Do not modify the alignment of objects by calling realloc()"
 description = """
-Do not invokerealloc()to modify the size of allocated objects that have stricter
-alignment requirements than those guaranteed bymalloc(). Storage allocated by a
-call to the standardaligned_alloc()function, for example, can have stricter than
-normal alignment requirements. The C standard requires only that a pointer
-returned byrealloc()be suitably aligned so that it may be assigned to a pointer
-to any type of object with a fundamental alignment requirement. This
-noncompliant code example returns a pointer to allocated memory that has been
-aligned to a 4096-byte boundary. If theresizeargument to therealloc()function is
-larger than the object referenced byptr, thenrealloc()will allocate new memory
-that is suitably aligned so that it may be assigned to a pointer to any type of
-object with a fundamental alignment requirement but may not preserve the
-stricter alignment of the original object. #include <stdlib.h> void func(void) {
-size_t resize = 1024; size_t alignment = 1 << 12; int *ptr; int *ptr1; if (NULL
-== (ptr = (int *)aligned_alloc(alignment, sizeof(int)))) { /* Handle error */ }
-if (NULL == (ptr1 = (int *)realloc(ptr, resize))) { /* Handle error */ } }
+Do not invoke realloc() to modify the size of allocated objects that have
+stricter alignment requirements than those guaranteed by malloc(). Storage
+allocated by a call to the standard aligned_alloc() function, for example, can
+have stricter than normal alignment requirements. The C standard requires only
+that a pointer returned by realloc() be suitably aligned so that it may be
+assigned to a pointer to any type of object with a fundamental alignment
+requirement.
 """
 severity = "Low"
 likelihood = "Probable"

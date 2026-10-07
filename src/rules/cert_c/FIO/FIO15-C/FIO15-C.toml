@@ -5,29 +5,31 @@ category = "FIO"
 number = 15
 title = "Ensure that file operations are performed in a secure directory"
 description = """
-File operations should be performed in asecure directory. In most cases, a
+File operations should be performed in a secure directory. In most cases, a
 secure directory is a directory in which no one other than the user, or possibly
 the administrator, has the ability to create, rename, delete, or otherwise
 manipulate files. (Other users may read or search the directory but generally
 may not modify the directory's contents in any way.) Also, other users must not
 be able to delete or rename files in the parent of the secure directory and all
 higher directories, although creating new files or deleting or renaming files
-they own is permissible. Performing file operations in a secure directory
-eliminates the possibility that an attacker might tamper with the files or file
-system toexploita file systemvulnerabilityin a program. These vulnerabilities
-often exist because there is a loose binding between the file name and the
-actual file. (SeeFIO01-C. Be careful using functions that use file names for
-identification.) In some cases, file operations can be performed securely
-anywhere. In other cases, the only way to ensure secure file operations is to
-perform the operation within a secure directory. Ensuring that file systems are
-configured in a safe manner is typically a system administration function.
-However, programs can often check that a file system is securely configured
-before performing file operations that may lead to security vulnerabilities if
-the system is misconfigured. There is a slight possibility that file systems
-will be reconfigured in an insecure manner while a process is running and after
-the check has been made. As a result, it is always advisable to implement your
-code in a secure manner (that is, consistent with the other rules and
-recommendations in this section) even when running in a secure directory.
+they own is permissible.
+Performing file operations in a secure directory eliminates the possibility that
+an attacker might tamper with the files or file system to exploit a file system
+vulnerability in a program. These vulnerabilities often exist because there is a
+loose binding between the file name and the actual file. (See FIO01-C. Be
+careful using functions that use file names for identification.) In some cases,
+file operations can be performed securely anywhere. In other cases, the only way
+to ensure secure file operations is to perform the operation within a secure
+directory.
+Ensuring that file systems are configured in a safe manner is typically a system
+administration function. However, programs can often check that a file system is
+securely configured before performing file operations that may lead to security
+vulnerabilities if the system is misconfigured. There is a slight possibility
+that file systems will be reconfigured in an insecure manner while a process is
+running and after the check has been made. As a result, it is always advisable
+to implement your code in a secure manner (that is, consistent with the other
+rules and recommendations in this section) even when running in a secure
+directory.
 """
 severity = "Medium"
 likelihood = "Probable"

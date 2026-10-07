@@ -7,14 +7,8 @@ title = "Do not compare function pointers to constant values"
 description = """
 Comparing a function pointer to a value that is not a null function pointer of
 the same type will be diagnosed because it typically indicates programmer error
-and can result inunexpected behavior. Implicit comparisons will be diagnosed, as
-well. In this noncompliant code example, the addresses of the POSIX
-functionsgetuidandgeteuidare compared for equality to 0. Because no function
-address shall be null, the first subexpression will always evaluate to false
-(0), and the second subexpression always to true (nonzero). Consequently, the
-entire expression will always evaluate to true, leading to a potential security
-vulnerability. /* First the options that are allowed only for root */ if (getuid
-== 0 || geteuid != 0) { /* ... */ }
+and can result in unexpected behavior. Implicit comparisons will be diagnosed,
+as well.
 """
 severity = "Low"
 likelihood = "Likely"

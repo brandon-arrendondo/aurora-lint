@@ -9,14 +9,20 @@ The C Standard allows an array variable to be declared both with a bound index
 and with an initialization literal. The initialization literal also implies an
 array size in the number of elements specified. For strings, the size specified
 by a string literal is the number of characters in the literal plus one for the
-terminating null character. It is common for an array variable to be initialized
-by a string literal and declared with an explicit bound that matches the number
-of characters in the string literal. Subclause 6.7.9, paragraph 14, of the C
-Standard [ISO/IEC 9899:2011], says: However, if the string is intended to be
-used as a null-terminated byte string, then the array will have one too few
-characters to hold the string because it does not account for the terminating
-null character. Such a sequence of characters has limited utility and has the
-potential to causevulnerabilitiesif a null-terminated byte string is assumed.
+terminating null character.
+It is common for an array variable to be initialized by a string literal and
+declared with an explicit bound that matches the number of characters in the
+string literal. Subclause 6.7.9, paragraph 14, of the C Standard [ISO/IEC
+9899:2011], says:
+An array of character type may be initialized by a character string literal or
+UTF −8 string literal, optionally enclosed in braces. Successive bytes of the
+string literal (including the terminating null character if there is room or if
+the array is of unknown size) initialize the elements of the array.
+However, if the string is intended to be used as a null-terminated byte string,
+then the array will have one too few characters to hold the string because it
+does not account for the terminating null character. Such a sequence of
+characters has limited utility and has the potential to cause vulnerabilities if
+a null-terminated byte string is assumed.
 """
 severity = "Low"
 likelihood = "Probable"

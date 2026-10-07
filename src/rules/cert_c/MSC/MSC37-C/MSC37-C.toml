@@ -5,16 +5,9 @@ category = "MSC"
 number = 37
 title = "Ensure that control never reaches the end of a non-void function"
 description = """
-If control reaches the closing curly brace (}) of a non-voidfunction without
-evaluating areturnstatement, using the return value of the function call
-isundefined behavior.(Seeundefined behavior 86.) In this noncompliant code
-example, control reaches the end of thecheckpass()function when the two strings
-passed tostrcmp()are not equal, resulting in undefined behavior. Many compilers
-will generate code for thecheckpass()function, returning various values along
-the execution path where noreturnstatement is defined. #include <string.h>
-#include <stdio.h> int checkpass(const char *password) { if (strcmp(password,
-"pass") == 0) { return 1; } } void func(const char *userinput) { if
-(checkpass(userinput)) { printf("Success\n"); } }
+If control reaches the closing curly brace (}) of a non- void function without
+evaluating a return statement, using the return value of the function call is
+undefined behavior. (See undefined behavior 86.)
 """
 severity = "High"
 likelihood = "Unlikely"

@@ -7,9 +7,12 @@ title = "Explicitly specify array bounds, even if implicitly defined by an initi
 description = """
 The C Standard allows an array variable to be declared both with a bound and
 with an initialization literal. The initialization literal also implies an array
-bound in the number of elements specified. The size implied by an initialization
-literal is usually specified by the number of elements, int array[] = {1, 2, 3};
-/* 3-element array */
+bound in the number of elements specified.
+The size implied by an initialization literal is usually specified by the number
+of elements,
+but it is also possible to use designators to initialize array elements in a
+noncontiguous fashion. Subclause 6.7.9, Example 12, of the C Standard [ISO/IEC
+9899:2011] states:
 """
 severity = "Medium"
 likelihood = "Unlikely"

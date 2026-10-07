@@ -6,8 +6,19 @@ number = 8
 title = "Guarantee that header file names are unique"
 description = """
 Make sure that included header file names are unique. According to the C
-Standard, subclause 6.10.2, paragraph 5 [ISO/IEC 9899:2011], This means that To
-guarantee that header file names are unique, all included files should differ
+Standard, subclause 6.10.2, paragraph 5 [ISO/IEC 9899:2011],
+The implementation shall provide unique mappings for sequences consisting of one
+or more nondigits or digits (6.4.2.1) followed by a period (.) and a single
+nondigit. The first character shall not be a digit. The implementation may
+ignore distinctions of alphabetical case and restrict the mapping to eight
+significant characters before the period.
+This means that
+- Only the first eight characters in the file name are guaranteed to be
+significant.
+- The file has only one nondigit character after the period in the file name.
+- The case of the characters in the file name is not guaranteed to be
+significant.
+To guarantee that header file names are unique, all included files should differ
 (in a case-insensitive manner) in their first eight characters or in their (one-
 character) file extension.
 """

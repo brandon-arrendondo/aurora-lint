@@ -8,18 +8,15 @@ description = """
 If a lock is being held and an operation that can block is performed, any other
 thread that needs to acquire that lock may also block. This condition can
 degrade system performance or cause a deadlock to occur. Blocking calls include,
-but are not limited to, network, file, and console I/O. Using a blocking
-operation while holding a lock may be unavoidable for a portable solution. For
-instance, file access could be protected via a lock to prevent multiple threads
-from mutating the contents of the file. Or, a thread may be required to block
-while holding one or more locks and waiting to acquire another lock. In these
-cases, attempt to hold the lock for the least time required. Additionally, if
-acquiring multiple locks, the order of locking must avoid deadlock, as specified
-inCON35-C. Avoid deadlock by locking in a predefined order. This noncompliant
-example callsfopen()while a mutex is locked. The calls tofopen()andfclose()are
-blocking and may block for an extended period of time if the file resides on a
-network drive. While the call is blocked, other threads that are waiting for the
-lock are also blocked.
+but are not limited to, network, file, and console I/O.
+Using a blocking operation while holding a lock may be unavoidable for a
+portable solution. For instance, file access could be protected via a lock to
+prevent multiple threads from mutating the contents of the file. Or, a thread
+may be required to block while holding one or more locks and waiting to acquire
+another lock. In these cases, attempt to hold the lock for the least time
+required. Additionally, if acquiring multiple locks, the order of locking must
+avoid deadlock, as specified in CON35-C. Avoid deadlock by locking in a
+predefined order.
 """
 severity = "Low"
 likelihood = "Probable"

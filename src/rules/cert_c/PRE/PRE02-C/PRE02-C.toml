@@ -6,11 +6,9 @@ number = 2
 title = "Macro replacement lists should be parenthesized"
 description = """
 Macro replacement lists should be parenthesized to protect any lower-precedence
-operators from the surrounding expression. See alsoPRE00-C. Prefer inline or
-static functions to function-like macrosandPRE01-C. Use parentheses within
-macros around parameter names. ThisCUBE()macro definition is noncompliant
-because it fails to parenthesize the replacement list: #define CUBE(X) (X) * (X)
-* (X) int i = 3; int a = 81 / CUBE(i);
+operators from the surrounding expression. See also PRE00-C. Prefer inline or
+static functions to function-like macros and PRE01-C. Use parentheses within
+macros around parameter names.
 """
 severity = "Medium"
 likelihood = "Probable"

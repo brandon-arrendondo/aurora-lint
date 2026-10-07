@@ -7,9 +7,11 @@ title = "Perform explicit tests to determine success, true and false, and equali
 description = """
 Perform explicit tests to determine success, true/false, and equality to improve
 the readability and maintainability of code and for compatibility with common
-conventions. In particular, do not default the test for nonzero. For instance,
-suppose afoo()function returns 0 to indicate failure or a nonzero value to
-indicate success. Testing for inequality with 0, if (foo() != 0) ...
+conventions.
+In particular, do not default the test for nonzero. For instance, suppose a
+foo() function returns 0 to indicate failure or a nonzero value to indicate
+success. Testing for inequality with 0,
+is preferable to
 """
 severity = "Medium"
 likelihood = "Probable"

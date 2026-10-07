@@ -6,15 +6,9 @@ number = 7
 title = "Prefer functions that support error checking over equivalent functions that don't"
 description = """
 When you have a choice of two functions to accomplish the same task, prefer the
-one with better error checking and reporting. The following table shows a list
-of C standard library functions that provide limited or no error checking and
-reporting along with preferable alternatives:
-FunctionPreferableAlternativeCommentsatofstrtodNo error indication,undefined
-behavioron erroratoistrtolNo error indication, undefined behavior on
-erroratolstrtolNo error indication, undefined behavior on erroratollstrtollNo
-error indication, undefined behavior on errorrewindfseekNo error indication,
-silent failure on errorsetbufsetvbufNo error indication, silent failure on
-errorctimeasctime/localtimeUndefined behavior iflocaltimefails
+one with better error checking and reporting.
+The following table shows a list of C standard library functions that provide
+limited or no error checking and reporting along with preferable alternatives:
 """
 severity = "Medium"
 likelihood = "Probable"

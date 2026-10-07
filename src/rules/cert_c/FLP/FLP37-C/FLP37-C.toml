@@ -6,24 +6,23 @@ number = 37
 title = "Do not use object representations to compare floating-point values"
 description = """
 The object representation for floating-point values is implementation defined.
-However, an implementation that defines the__STDC_IEC_559__macro shall conform
-to theIEC 60559 floating-point standard and uses what is frequently referred to
-asIEEE 754 floating-point arithmetic[ISO/IEC 9899:2024]. The floating-point
+However, an implementation that defines the __STDC_IEC_559__ macro shall conform
+to the IEC 60559 floating-point standard and uses what is frequently referred to
+as IEEE 754 floating-point arithmetic [ISO/IEC 9899:2024]. The floating-point
 object representation used by IEC 60559 is one of the most common floating-point
 object representations in use today.
 All floating-point object representations use specific bit patterns to encode
 the value of the floating-point number being represented. However, equivalence
 of floating-point values is not encoded solely by the bit pattern used to
 represent the value. For instance, if the floating-point format supports
-negative zero values (as IEC 60559 does), the values-0.0and0.0are equivalent and
-will compare as equal, but the bit patterns used in the object representation
-are not identical. Similarly, if two floating-point values are both (the same)
-NaN, they will not compare as equal, despite the bit patterns being identical,
-because they are not equivalent.
+negative zero values (as IEC 60559 does), the values -0.0 and 0.0 are equivalent
+and will compare as equal, but the bit patterns used in the object
+representation are not identical. Similarly, if two floating-point values are
+both (the same) NaN, they will not compare as equal, despite the bit patterns
+being identical, because they are not equivalent.
 Do not compare floating-point object representations directly, such as by
-callingmemcmp()or its moral equivalents. Instead, the equality operators
-(==and!=) should be used to determine if two floating-point values are
-equivalent.
+calling memcmp() or its moral equivalents. Instead, the equality operators (==
+and!=) should be used to determine if two floating-point values are equivalent.
 """
 severity = "Low"
 likelihood = "Unlikely"

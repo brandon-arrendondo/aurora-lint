@@ -6,14 +6,14 @@ number = 0
 title = "Understand the limitations of floating-point numbers"
 description = """
 The C programming language provides the ability to use floating-point numbers
-for calculations. The C Standard specifies requirements on
-aconformingimplementationfor floating-point numbers but makes few guarantees
-about the specific underlying floating-point representation because of the
-existence of competing floating-point systems.
+for calculations. The C Standard specifies requirements on a conforming
+implementation for floating-point numbers but makes few guarantees about the
+specific underlying floating-point representation because of the existence of
+competing floating-point systems.
 By definition, a floating-point number is of finite precision and, regardless of
-the underlying implementation, is prone to errors associated with rounding.
-(SeeFLP01-C. Take care in rearranging floating-point expressionsandFLP02-C.
-Avoid using floating-point numbers when precise computation is needed.)
+the underlying implementation, is prone to errors associated with rounding. (See
+FLP01-C. Take care in rearranging floating-point expressions and FLP02-C. Avoid
+using floating-point numbers when precise computation is needed.)
 The most common floating-point system is specified by the IEEE 754 standard. An
 older floating-point system is the IBM floating-point representation (sometimes
 called IBM/370). Each of these systems has different precisions and ranges of

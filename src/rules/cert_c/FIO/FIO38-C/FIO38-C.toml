@@ -6,8 +6,9 @@ number = 38
 title = "Do not copy a FILE object"
 description = """
 According to the C Standard, 7.23.3, paragraph 6 [ISO/IEC 9899:2024],
-Consequently, do not copy aFILEobject. This noncompliant code example can fail
-because a by-value copy ofstdoutis being used in the call tofputs():
+The address of the FILE object used to control a stream may be significant; a
+copy of a FILE object is not required to serve in place of the original.
+Consequently, do not copy a FILE object.
 """
 severity = "Low"
 likelihood = "Probable"

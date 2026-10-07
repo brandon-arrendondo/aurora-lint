@@ -6,16 +6,17 @@ number = 21
 title = "Do not create temporary files in shared directories"
 description = """
 Programmers frequently create temporary files in directories that are writable
-by everyone (examples are/tmpand/var/tmpon UNIX and%TEMP%on Windows) and may be
-purged regularly (for example, every night or during reboot). Temporary files
-are commonly used for auxiliary storage for data that does not need to, or
-otherwise cannot, reside in memory and also as a means of communicating with
-other processes by transferring data through the file system. For example, one
-process will create a temporary file in a shared directory with a well-known
-name or a temporary name that is communicated to collaborating processes. The
-file then can be used to share information among these collaborating processes.
+by everyone (examples are /tmp and /var/tmp on UNIX and %TEMP% on Windows) and
+may be purged regularly (for example, every night or during reboot).
+Temporary files are commonly used for auxiliary storage for data that does not
+need to, or otherwise cannot, reside in memory and also as a means of
+communicating with other processes by transferring data through the file system.
+For example, one process will create a temporary file in a shared directory with
+a well-known name or a temporary name that is communicated to collaborating
+processes. The file then can be used to share information among these
+collaborating processes.
 This practice is dangerous because a well-known file in a shared directory can
-be easily hijacked or manipulated by an attacker.Mitigationstrategies include
+be easily hijacked or manipulated by an attacker. Mitigation strategies include
 the following:
 """
 severity = "Medium"

@@ -9,12 +9,13 @@ Many programs and libraries, including the shared library loader on both UNIX
 and Windows systems, depend on environment variable settings. Because
 environment variables are inherited from the parent process when a program is
 executed, an attacker can easily sabotage variables, causing a program to behave
-in an unexpected and insecure manner [Viega 2003]. All programs, particularly
-those running with higher privileges than the caller (such as those
-withsetuid/setgidflags), should treat their environment as untrusted user input.
-Because the environment is inherited by processes spawned by calls to
-thefork(),system(), orexec()functions, it is important to verify that the
-environment does not contain any values that can lead to unexpected behavior.
+in an unexpected and insecure manner [Viega 2003].
+All programs, particularly those running with higher privileges than the caller
+(such as those with setuid/setgid flags), should treat their environment as
+untrusted user input. Because the environment is inherited by processes spawned
+by calls to the fork(), system(), or exec() functions, it is important to verify
+that the environment does not contain any values that can lead to unexpected
+behavior.
 The best practice for such programs is to
 """
 severity = "High"

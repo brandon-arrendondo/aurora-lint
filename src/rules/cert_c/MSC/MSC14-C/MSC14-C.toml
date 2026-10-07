@@ -15,7 +15,7 @@ section of Annex J of the C Standard enumerates distinct instances of behaviors
 of each kind.
 An example of undefined behavior is passing a null char* pointer as an argument
 to the printf function corresponding to the %s format specification. Although
-some implementations (such as the GNU C Library ) provide well-defined semantics
+some implementations (such as the GNU C Library) provide well-defined semantics
 for this case, others do not, causing programs that rely on this behavior to
 fail abnormally.
 '''

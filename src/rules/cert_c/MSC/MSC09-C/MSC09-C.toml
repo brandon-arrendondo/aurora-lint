@@ -5,12 +5,20 @@ category = "MSC"
 number = 9
 title = 'Character encoding: Use subset of ASCII for safety'
 description = '''
-According to subclause 5.2.1 of the C Standard [ ISO/IEC 9899:2011 ],
+According to subclause 5.2.1 of the C Standard [ISO/IEC 9899:2011],
+Two sets of characters and their associated collating sequences shall be
+defined: the set in which source files are written (the source character set),
+and the set interpreted in the execution environment (the execution character
+set). Each set is further divided into a basic character set, whose contents are
+given by this subclause, and a set of zero or more locale-specific members
+(which are not members of the basic character set) called extended characters.
+The combined set is also called the extended character set. The values of the
+members of the execution character set are implementation-defined.
 There are several national variants of ASCII. As a result, the original ASCII is
 often called US-ASCII. ISO/IEC 646-1991 defines a character set, similar to US-
 ASCII, but with code positions corresponding to US-ASCII characters @[]{| } as
-national use positions [ ISO/IEC 646-1991 ]. It also gives some liberties with
-particular characters (e.g., #$^`~ ). In ISO/IEC 646-1991, several national
+national use positions [ISO/IEC 646-1991]. It also gives some liberties with
+particular characters (e.g., #$^`~). In ISO/IEC 646-1991, several national
 variants of ASCII are defined, assigning different letters and symbols to the
 national use positions. Consequently, the characters that appear in those
 positions, including those in US-ASCII, are less portable in international data

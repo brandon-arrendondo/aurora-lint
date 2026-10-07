@@ -8,6 +8,11 @@ description = """
 Cast the return value of a function that returns a floating point type to ensure
 predictable program execution.
 Subclause 6.8.6.4, paragraph 3, of the C Standard [ISO/IEC 9899:2011] states:
+If a return statement with an expression is executed, the value of the
+expression is returned to the caller as the value of the function call
+expression. If the expression has a type different from the return type of the
+function in which it appears, the value is converted as if by assignment to an
+object having the return type of the function.
 This paragraph is annotated (footnote 160) as follows:
 """
 severity = "Low"

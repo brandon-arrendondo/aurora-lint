@@ -6,12 +6,17 @@ number = 32
 title = "Do not rely on indeterminate values of errno"
 description = """
 According to the C Standard Annex J.2 (133) [ISO/IEC 9899:2024], the behavior of
-a program isundefinedwhen Seeundefined behavior 133. A signal handler is allowed
-to callsignal();if that fails,signal()returnsSIG_ERRand setserrnoto a positive
-value. However, if the event that caused a signal was external (not the result
-of the program callingabort()orraise()), the only functions the signal handler
-may call are_Exit()orabort(), or it may callsignal()on the signal currently
-being handled; ifsignal()fails, the value oferrnoisindeterminate.
+a program is undefined when
+the value of errno is referred to after a signal occurred other than as the
+result of calling the abort or raise function and the corresponding signal
+handler obtained a SIG_ERR return from a call to the signal function.
+See undefined behavior 133.
+A signal handler is allowed to call signal(); if that fails, signal() returns
+SIG_ERR and sets errno to a positive value. However, if the event that caused a
+signal was external (not the result of the program calling abort() or raise()),
+the only functions the signal handler may call are _Exit() or abort(), or it may
+call signal() on the signal currently being handled; if signal() fails, the
+value of errno is indeterminate.
 """
 severity = "Low"
 likelihood = "Unlikely"

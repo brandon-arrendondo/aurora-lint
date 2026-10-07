@@ -5,24 +5,12 @@ category = "INT"
 number = 4
 title = "Enforce limits on integer values originating from tainted sources"
 description = """
-All integer values originating fromtainted sourcesshould be evaluated to
+All integer values originating from tainted sources should be evaluated to
 determine if they have identifiable upper and lower bounds. If so, these limits
 should be enforced by the interface. Restricting the input of excessively large
 or small integers helps prevent overflow, truncation, and other type range
 errors. Furthermore, it is easier to find and correct input problems than it is
-to trace internal errors back to faulty inputs. In this noncompliant code
-example,lengthis the value of a user-defined (and thus potentially untrusted)
-environment variable whose value is used to determine the size of a dynamically
-allocated array,table. In compliance withINT30-C. Ensure that unsigned integer
-operations do not wrap, the code preventsunsigned integer wrappingbut does not
-impose any upper bound on the size of the array, making it possible for the user
-to cause the program to use an excessive amount of memory. char**
-create_table(void) { const char* const lenstr = getenv("TABLE_SIZE"); const
-size_t length = lenstr ? strtoul(lenstr, NULL, 10) : 0; if (length > SIZE_MAX /
-sizeof(char *)) return NULL; /* Indicate error to caller */ const size_t
-table_size = length * sizeof(char *); char** const table = (char
-**)malloc(table_size); if (table == NULL) return NULL; /* Indicate error to
-caller */ /* Initialize table... */ return table; }
+to trace internal errors back to faulty inputs.
 """
 severity = "High"
 likelihood = "Probable"

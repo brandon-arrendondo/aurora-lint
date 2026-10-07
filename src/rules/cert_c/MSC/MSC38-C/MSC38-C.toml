@@ -5,17 +5,26 @@ category = "MSC"
 number = 38
 title = "Do not treat a predefined identifier as an object if it might only be implemented as a macro"
 description = """
-The C Standard, 7.1.4 paragraph 1, [ISO/IEC 9899:2024] states However, the C
-Standard enumerates specific exceptions in which the behavior of accessing an
-object or function expanded to be a standard library macro definition
-isundefined. The macros
-areassert,errno,math_errhandling,setjmp,va_arg,va_copy,va_end, andva_start.
-These cases are described byundefined behaviors138,139,140,141, and143.
-Programmers must not suppress these macros to access the underlying object or
-function. In this noncompliant code example, the standardassert()macro is
-suppressed in an attempt to pass it as a function pointer to
-theexecute_handler()function. Attempting to suppress theassert()macro
-isundefined behavior.
+The C Standard, 7.1.4 paragraph 1, [ISO/IEC 9899:2024] states
+Any function declared in a header may be additionally implemented as a function-
+like macro defined in the header, so if a library function is declared
+explicitly when its header is included, one of the techniques shown later in the
+next subclause can be used to ensure the declaration is not affected by such a
+macro. Any macro definition of a function can be suppressed locally by enclosing
+the name of the function in parentheses, because the name is then not followed
+by the left parenthesis that indicates expansion of a macro function name. For
+the same syntactic reason, it is permitted to take the address of a library
+function even if it is also defined as a macro. 220) The use of #undef to remove
+any macro definition will also ensure that an actual function is referred to.
+220) This means that an implementation is required to provide an actual function
+for each library function, even if it also provides a macro for that function.
+However, the C Standard enumerates specific exceptions in which the behavior of
+accessing an object or function expanded to be a standard library macro
+definition is undefined. The macros are assert, errno, math_errhandling, setjmp,
+va_arg, va_copy, va_end, and va_start, as well as all of the generic functions
+defined in stdatomic.h and stdbit.h. These cases are described by undefined
+behaviors 138, 139, 140, 141, 143, and 145. Programmers must not suppress these
+macros to access the underlying object or function.
 """
 severity = "Low"
 likelihood = "Unlikely"

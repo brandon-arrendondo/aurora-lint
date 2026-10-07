@@ -10,11 +10,12 @@ field in adjacent memory. This is because compilers are required to store
 multiple adjacent bit-fields in one storage unit whenever they fit.
 Consequently, data races may exist not just on a bit-field accessed by multiple
 threads but also on other bit-fields sharing the same byte or word. A similar
-problem is discussed inCON43-C. Do not allow data races in multithreaded code,
+problem is discussed in CON43-C. Do not allow data races in multithreaded code,
 but the issue described by this rule can be harder to diagnose because it may
 not be obvious that the same memory location is being modified by multiple
-threads. One approach for preventing data races in concurrent programming is to
-use a mutex. When properly observed by all threads, a mutex can provide safe and
+threads.
+One approach for preventing data races in concurrent programming is to use a
+mutex. When properly observed by all threads, a mutex can provide safe and
 secure access to a shared object. However, mutexes provide no guarantees with
 regard to other objects that might be accessed when the mutex is not controlled
 by the accessing thread. Unfortunately, there is no portable way to determine

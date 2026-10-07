@@ -6,20 +6,13 @@ number = 11
 title = "Do not make assumptions regarding the layout of structures with bit-fields"
 description = """
 The internal representations of bit-field structures have several properties
-(such as internal padding) that areimplementation-defined. Additionally, bit-
-field structures have several implementation-defined constraints: Consequently,
-it is impossible to write portable safe code that makes assumptions regarding
-the layout of bit-field structure members. Bit-fields can be used to allow flags
-or other integer values with small ranges to be packed together to save storage
-space. Bit-fields can improve the storage efficiency of structures. Compilers
-typically allocate consecutive bit-field structure members into the sameint-
-sized storage, as long as they fit completely into that storage unit. However,
-the order of allocation within a storage unit is implementation-defined.
-Someimplementationsareright-to-left: the first member occupies the low-order
-position of the storage unit. Others areleft-to-right: the first member occupies
-the high-order position of the storage unit. Calculations that depend on the
-order of bits within a storage unit may produce different results on different
-implementations.
+(such as internal padding) that are implementation-defined. Additionally, bit-
+field structures have several implementation-defined constraints:
+- The alignment of bit-fields in the storage unit (for example, the bit-fields
+may be allocated from the high end or the low end of the storage unit)
+- Whether or not bit-fields can overlap a storage unit boundary
+Consequently, it is impossible to write portable safe code that makes
+assumptions regarding the layout of bit-field structure members.
 """
 severity = "Medium"
 likelihood = "Probable"

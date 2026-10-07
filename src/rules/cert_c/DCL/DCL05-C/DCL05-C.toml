@@ -6,15 +6,9 @@ number = 5
 title = "Use typedefs of non-pointer types only"
 description = """
 Using type definitions (typedef) can often improve code readability. However,
-type definitions to pointer types can make it more difficult to writeconst-
-correct code because theconstqualifier will be applied to the pointer type, not
-to the underlying declared type. The following type definition improves
-readability at the expense of introducing aconst-correctness issue. In this
-example, theconstqualifier applies to thetypedefinstead of to the underlying
-object type. Consequently,funcdoes not take a pointer to aconst struct objbut
-instead takes aconstpointer to astruct obj. struct obj { int i; float f; };
-typedef struct obj *ObjectPtr; void func(const ObjectPtr o) { /* Can actually
-modify o's contents, against expectations */ }
+type definitions to pointer types can make it more difficult to write const
+-correct code because the const qualifier will be applied to the pointer type,
+not to the underlying declared type.
 """
 severity = "Low"
 likelihood = "Unlikely"

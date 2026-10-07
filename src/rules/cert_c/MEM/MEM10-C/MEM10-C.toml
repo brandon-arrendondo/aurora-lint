@@ -5,17 +5,19 @@ category = "MEM"
 number = 10
 title = "Define and use a pointer validation function"
 description = """
-Many functions accept pointers as arguments. If the function dereferences
-aninvalid pointer(as inEXP34-C. Do not dereference null pointers) or reads or
-writes to a pointer that does not refer to an object, the results areundefined.
-Typically, the program willterminate abnormallywhen an invalid pointer is
+Many functions accept pointers as arguments. If the function dereferences an
+invalid pointer (as in EXP34-C. Do not dereference null pointers) or reads or
+writes to a pointer that does not refer to an object, the results are undefined.
+Typically, the program will terminate abnormally when an invalid pointer is
 dereferenced, but it is possible for an invalid pointer to be dereferenced and
 its memory changed without abnormal termination [Jack 2007]. Such programs can
-be difficult to debug because of the difficulty in determining if a pointer
-isvalid. One way to eliminate invalid pointers is to define a function that
-accepts a pointer argument and indicates whether or not the pointer isvalidfor
-some definition of valid. For example, the following function declares any
-pointer to be valid exceptNULL: int valid(void *ptr) { return (ptr != NULL); }
+be difficult to debug because of the difficulty in determining if a pointer is
+valid.
+One way to eliminate invalid pointers is to define a function that accepts a
+pointer argument and indicates whether or not the pointer is valid for some
+definition of valid. For example, the following function declares any pointer to
+be valid except NULL:
+Some platforms have platform-specific pointer validation tools.
 """
 severity = "High"
 likelihood = "Unlikely"

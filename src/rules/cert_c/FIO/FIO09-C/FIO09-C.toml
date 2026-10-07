@@ -5,16 +5,13 @@ category = "FIO"
 number = 9
 title = "Be careful with binary data when transferring data across systems"
 description = """
-Portability is a concern when using thefread()andfwrite()functions across
+Portability is a concern when using the fread() and fwrite() functions across
 multiple, heterogeneous systems. In particular, it is never guaranteed that
 reading or writing of scalar data types such as integers, let alone aggregate
 types such as arrays or structures, will preserve the representation or value of
 the data. Implementations may differ in structure padding, floating-point model,
 number of bits per byte, endianness, and other attributes that cause binary data
-formats to be incompatible. This noncompliant code example reads data from a
-file stream into a data structure: struct myData { char c; long l; }; /* ... */
-FILE *file; struct myData data; /* Initialize file */ if (fread(&data,
-sizeof(struct myData), 1, file) < sizeof(struct myData)) { /* Handle error */ }
+formats to be incompatible.
 """
 severity = "Medium"
 likelihood = "Probable"

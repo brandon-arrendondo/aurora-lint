@@ -9,12 +9,13 @@ Different system architectures use different byte ordering, either little endian
 (least significant byte first) or big endian (most significant byte first).
 IA-32 is an example of an architecture that implements little endian byte
 ordering. In contrast, PowerPC and most Network Protocols (including TCP and IP)
-use big endian. When transferring data between systems of different endianness,
-the programmer must take care to reverse the byte ordering before interpreting
-the data. The functionshtonl(),htons(),ntohl(), andntohs()can be used to
-transfer between network byte ordering (big endian) and the host's byte
-ordering. On big endian systems, these functions do nothing. They may also be
-implemented as macros rather than functions.
+use big endian.
+When transferring data between systems of different endianness, the programmer
+must take care to reverse the byte ordering before interpreting the data.
+The functions htonl(), htons(), ntohl(), and ntohs() can be used to transfer
+between network byte ordering (big endian) and the host's byte ordering. On big
+endian systems, these functions do nothing. They may also be implemented as
+macros rather than functions.
 """
 severity = "Medium"
 likelihood = "Likely"

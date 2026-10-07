@@ -9,18 +9,8 @@ Mutexes are used to protect shared data structures being accessed concurrently.
 The thread that locks the mutex owns it, and the owning thread should be the
 only thread to unlock the mutex. If the mutex is destroyed while still in use,
 critical sections and shared data are no longer protected. This rule is a
-specific instance ofCON31-C. Do not unlock or destroy another thread's
-mutexusing POSIX threads. In this noncompliant code example, a race condition
-exists between a cleanup and a worker thread. The cleanup thread destroys the
-lock, which it believes is no longer in use. If there is a heavy load on the
-system, the worker thread that held the lock can take longer than expected. If
-the lock is destroyed before the worker thread has completed modifying the
-shared data, the program may exhibit unexpected behavior. pthread_mutex_t
-theLock; int data; int cleanupAndFinish(void) { int result; if ((result =
-pthread_mutex_destroy(&theLock)) != 0) { /* Handle error */ } data++; return
-data; } void worker(int value) { if ((result = pthread_mutex_lock(&theLock)) !=
-0) { /* Handle error */ } data += value; if ((result =
-pthread_mutex_unlock(&theLock)) != 0) { /* Handle error */ } }
+specific instance of CON31-C. Do not unlock or destroy another thread's mutex
+using POSIX threads.
 """
 severity = "Medium"
 likelihood = "Probable"

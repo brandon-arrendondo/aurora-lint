@@ -5,21 +5,17 @@ category = "FIO"
 number = 23
 title = "Do not exit with unflushed data in stdout or stderr"
 description = """
-DeprecatedThis guideline does not apply to code that need conform only to C23.
-Code that must conform to older versions of the C standard should still comply
-with this guideline. The C standard makes no guarantees as to when output
-tostdout(standard output) orstderr(standard error) is actually flushed. On many
-platforms, output tostdoutis buffered unlessstdoutoutputs to a terminal,
-andstderroutput is typically not buffered. However, programs are free to modify
-the buffering rules for eitherstdoutorstderr. Programs are also free to
-explicitly closestdoutorstderr; if they do not do so, these streams will be
-closed upon program termination. Closing any output stream requires flushing any
-data that has not yet been written to the stream. The flushing operation
-(manually handled by thefflush()function) can fail for several reasons. The
-output stream may be directed to a file in a filesystem with no remaining free
-space, or to a network socket that fails. Checking for the success of
-afflush()operation is mandatory for a secure program, and hence checking the
-result of afclose()operation is also required.
+Deprecated
+This guideline does not apply to code that need conform only to C23. Code that
+must conform to older versions of the C standard should still comply with this
+guideline.
+The C standard makes no guarantees as to when output to stdout (standard output)
+or stderr (standard error) is actually flushed. On many platforms, output to
+stdout is buffered unless stdout outputs to a terminal, and stderr output is
+typically not buffered. However, programs are free to modify the buffering rules
+for either stdout or stderr. Programs are also free to explicitly close stdout
+or stderr; if they do not do so, these streams will be closed upon program
+termination.
 """
 severity = "Medium"
 likelihood = "Unlikely"

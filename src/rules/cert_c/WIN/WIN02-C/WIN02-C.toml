@@ -7,22 +7,10 @@ title = "Restrict privileges when spawning child processes"
 description = """
 The principle of least privilege states that every program and every user of the
 system should operate using the least set of privileges necessary to complete
-the job [Saltzer 1974,Saltzer 1975]. The Build Security In website [DHS 2006]
+the job [Saltzer 1974, Saltzer 1975]. The Build Security In website [DHS 2006]
 provides additional definitions of this principle. Executing with minimal
 privileges mitigates against exploitation in case a vulnerability is discovered
-in the code. An application may spawn another process as part of its normal
-course of action. On Windows, the newly-spawned process automatically receives
-the same privileges as the parent process [MSDN]. By allowing the child process
-to run in the same security context as the parent process, the attack surface
-for the application is extended to the child process. Furthermore, this example
-allows the child process to inherit handles from the parent process by
-passingTRUEto thebInheritsHandlesparameter. #include <Windows.h> void
-launch_notepad(void) { PROCESS_INFORMATION pi; STARTUPINFO si; ZeroMemory(&si,
-sizeof(si)); si.cb = sizeof( si ); if
-(CreateProcess(TEXT("C:\\Windows\\Notepad.exe"), NULL, NULL, NULL, TRUE, 0,
-NULL, NULL, &si, &pi )) { /* Process has been created; work with the process and
-wait for it to terminate. */ WaitForSingleObject(pi.hProcess, INFINITE);
-CloseHandle(pi.hThread); CloseHandle(pi.hProcess); } }
+in the code.
 """
 severity = "High"
 likelihood = "Likely"
