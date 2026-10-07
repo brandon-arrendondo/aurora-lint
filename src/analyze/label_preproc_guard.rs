@@ -71,12 +71,22 @@
 //! run, the whole file becomes one `ERROR` and the function is not a
 //! `function_definition` anywhere. The same blanking fixes it: the label
 //! then labels the statement after the old `#endif`, which is where control
-//! goes from it in every build.
+//! goes from it in every build. The cost is larger than for a leading label,
+//! though: the whole arm before the label, which can run to a hundred lines,
+//! becomes unconditional, so a `free` in it followed by a use after the old
+//! `#endif` reads as a definite use after free rather than a possible one.
+//! A label that ends an inner group whose `#endif` is directly followed by
+//! the outer group's `#endif` is only partly repaired (the inner pair is
+//! blanked and the label then meets the outer `#endif`); that is an
+//! accepted miss.
 //!
 //! Deliberately conservative: skips any block containing its own nested
 //! `#else`/`#elif` at the top depth -- unclear how to preserve two-branch
 //! semantics while still fitting the single-statement slot (same call
-//! `preproc_dangling_else` makes for the analogous case).
+//! `preproc_dangling_else` makes for the analogous case). A directive's
+//! backslash continuations and a comment it opens are blanked with it.
+
+use crate::analyze::preproc_dangling_else::blank_directive;
 
 fn is_directive_start(trimmed: &str) -> bool {
     trimmed.starts_with("#if") // covers #if, #ifdef, #ifndef (all start "#if")
@@ -252,28 +262,33 @@ pub fn blank_label_guarded_preproc(source: &str) -> String {
             .find(|&k| !lines[k].trim().is_empty());
         let ends_in_label = last_content.is_some_and(|k| is_bare_label_line(lines[k]));
 
-        if (follows_label || ends_in_label) && !has_branch {
-            // Only emit the close marker when the open marker actually fit
-            // on its own line -- an orphaned "/*E*/" with no matching open
-            // marker is harmless (a backward scan starting inside this
-            // region would never reach it, since it sits after every
-            // guarded line), but there is no reason to write one.
-            let open_text = directive_keyword_and_name(trimmed)
-                .and_then(|(keyword, name)| open_marker(keyword, name))
-                .filter(|m| m.len() <= lines[i].len());
-            write_marker_or_blank(
-                &mut out,
-                line_starts[i],
-                lines[i].len(),
-                open_text.as_deref(),
-            );
-            write_marker_or_blank(
-                &mut out,
-                line_starts[end_idx],
-                lines[end_idx].len(),
-                open_text.as_ref().map(|_| CLOSE_MARKER),
-            );
+        if !(follows_label || ends_in_label) || has_branch {
+            continue;
         }
+        // Blank each directive with its backslash continuations and any
+        // comment it opens, then write the markers over the first line.
+        // Only emit the close marker when the open marker actually fit on
+        // its own line -- an orphaned "/*E*/" with no matching open marker
+        // is harmless (a backward scan starting inside this region would
+        // never reach it, since it sits after every guarded line), but
+        // there is no reason to write one.
+        let open_text = directive_keyword_and_name(trimmed)
+            .and_then(|(keyword, name)| open_marker(keyword, name))
+            .filter(|m| m.len() <= lines[i].len());
+        blank_directive(&mut out, &lines, &line_starts, i);
+        blank_directive(&mut out, &lines, &line_starts, end_idx);
+        write_marker_or_blank(
+            &mut out,
+            line_starts[i],
+            lines[i].len(),
+            open_text.as_deref(),
+        );
+        write_marker_or_blank(
+            &mut out,
+            line_starts[end_idx],
+            lines[end_idx].len(),
+            open_text.as_ref().map(|_| CLOSE_MARKER),
+        );
     }
 
     String::from_utf8(out).unwrap_or_else(|_| source.to_string())
@@ -655,5 +670,26 @@ out:
 }
 ";
         assert_eq!(blank_label_guarded_preproc(src), src);
+    }
+
+    #[test]
+    fn a_continued_directive_is_blanked_whole() {
+        let src = "\
+void f(void) {
+    goto out;
+#if defined(A) || \\
+    defined(B)
+    os_free(rfds);
+out:
+#endif /* A ||
+          B */
+    return;
+}
+";
+        let fixed = blank_label_guarded_preproc(src);
+        assert_eq!(fixed.len(), src.len());
+        assert!(!fixed.contains("defined(B)"));
+        assert!(!fixed.contains("*/"));
+        assert!(parses_clean(src));
     }
 }

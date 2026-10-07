@@ -269,7 +269,7 @@ fn blank_line(out: &mut [u8], line_start: usize, line_len: usize) {
 /// spans (`#if defined(A) || \` + `    defined(B)`): the continuation is
 /// part of the directive, and left in place it is a stray C expression that
 /// breaks the parse the blanking was meant to repair.
-fn blank_directive(out: &mut [u8], lines: &[&str], line_starts: &[usize], idx: usize) {
+pub(crate) fn blank_directive(out: &mut [u8], lines: &[&str], line_starts: &[usize], idx: usize) {
     let mut k = idx;
     loop {
         blank_line(out, line_starts[k], lines[k].len());
