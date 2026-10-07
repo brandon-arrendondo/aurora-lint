@@ -787,7 +787,7 @@ Status of the 16 proposals at the end of this doc, against `72b8f734`:
 
 - **Theirs:**
   - ESP must "reason about branch correlations, which is usually necessary to
-    control the number of false error reports" [ESP].
+    control the number of false error reports" [ESP, p. 1].
   - Bodik et al.: "from 9 to 40 % of conditionals" show compile-time
     detectable correlation [Bodik, quoting their own PLDI 1997
     measurement].
@@ -1154,7 +1154,11 @@ Literature and practice
 - [Padioleau] Padioleau, Y., "Parsing C/C++ Code without Pre-processing", Compiler Construction (CC 2009), LNCS 5501, pp. 109-125, 2009. https://doi.org/10.1007/978-3-642-00722-4_9 (not checked: full text unreachable)
 - [TypeChef] Kästner et al., OOPSLA 2011. https://www.cs.cmu.edu/~ckaestne/pdf/oopsla11_typechef.pdf
 - [Engler] Engler et al., SOSP 2001. https://web.stanford.edu/~engler/deviant-sosp-01.pdf
-- [ESP] Das, Lerner, Seigle, PLDI 2002. https://www.cs.cornell.edu/courses/cs711/2005fa/papers/dls-pldi02.pdf
+- [ESP] Das, Lerner, Seigle, "ESP: Path-Sensitive Program Verification in
+  Polynomial Time", PLDI 2002. https://www.cs.cornell.edu/courses/cs711/2005fa/papers/dls-pldi02.pdf
+  — P12's quote is verbatim on p. 1 of this copy. A different published copy of
+  the paper phrases the same sentence around "path feasibility" rather than
+  "branch correlations"; the quote above is matched to this cited copy.
 - [Bodik] Bodik, R., Gupta, R. and Soffa, M. L., "Refining Data Flow Information Using Infeasible Paths", ESEC/FSE '97, LNCS 1301, pp. 361-377, https://doi.org/10.1007/3-540-63531-9_25. https://www.cs.virginia.edu/~soffa/Soffa_Pubs_all/Conferences/Refining.Bodick.1997.pdf
 - [P0-policy] https://projectzero.google/vulnerability-disclosure-policy.html
 - [P0-transparency] https://projectzero.google/reporting-transparency.html
