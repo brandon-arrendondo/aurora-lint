@@ -1,4 +1,4 @@
-# 0015. Policy and environment are separate settings; `default`, `strict` and `pedantic` are presets over them
+# 0015. Policy and environment are separate settings; `default` and `strict` are presets over them, and `pedantic` is proposed
 
 ## Status
 
@@ -217,112 +217,141 @@ safety-critical user unprotected.
 
 ## Amendment (2026-10-07, Brandon): a third preset, and how each preset reads a rule's text
 
+**Status:** direction. The `--pedantic` preset is not yet implemented;
+`--default` and `--strict` are the shipped presets. "Relaxed" below names
+only `default`'s position on the axis, not a flag.
+
 ### Decision
 
 1. **One axis, centered on the rule's text.** For each rule, the presets
    are readings of its text, in order:
-   - **cut, too loose:** the only checkable form needs the programmer's
-     intent, so no preset can enforce it;
-   - **`default`:** a documented disagreement with the text in the relaxed
-     direction. It may narrow a rule to the conditions where its findings
-     are useful in everyday code. Every narrowing is a named option
-     (Decision 7).
-   - **`strict`:** the rule as written, for any ruleset. It accepts the
-     false positives that follow from enforcing the text, and declares the
-     imprecision where the text cannot be checked exactly.
-   - **`pedantic`:** a documented disagreement in the stricter direction:
-     a sound over-approximation of the text, or a stricter rule backed by
-     an established standard (for example, a construct ban that a MISRA
-     rule states). A pedantic form must still be enforceable.
-   - **cut, too strict:** a form that reports every instance of a
-     construct with no checkable violation behind it.
-   A rule past either end is not enforced in any preset.
-2. **The presets are not nested.** Any preset may take a rule out of play.
-   A strict-only rule is legitimate: out under `default` because it is too
-   noisy for everyday use, out under `pedantic` because it cannot meet the
-   sound standard. Pedantic may decline a rule rather than run a weaker
+   - **cut, too loose:** a relaxation the maintainer rejects, or a rule the
+     tool cannot reason about from the code (for example, one whose only
+     checkable form needs the programmer's intent);
+   - **`--default`:** a documented disagreement with the text in the
+     relaxed direction. It may narrow a rule to the conditions where its
+     findings are useful in everyday code. Every narrowing is a named
+     option (Decision 7).
+   - **`--strict`:** the rule as written, for any ruleset. It accepts the
+     false positives that follow from enforcing the text.
+   - **`--pedantic`:** a documented disagreement in the stricter direction:
+     a sound or closed-form reading beyond the text. For example, where a
+     standard permits `goto` under conditions, a reading that bans every
+     `goto` is pedantic; so is holding a rule to the items its list names
+     where that yields more findings (Decision 3).
+   - **cut, too strict:** a stricter reading the maintainer rejects (a ban
+     on `if` would be one), or one the tool cannot reason about from the
+     code.
+   The same test applies to a standard's own text. A rule past either end
+   is not enforced in any preset.
+2. **Imprecise detection is never a cut.** A rule with a checkable form
+   ships with its imprecision declared, as ADR-0013's 2026-10-06 amendment
+   (items 2 and 3) decides; a cut is about the reading, not about how well a
+   detector implements it.
+3. **The presets are not nested.** Any preset may take a rule out of play.
+   A strict-only rule is legitimate: out under `--default` because it is
+   too noisy for everyday use, out under `--pedantic` because it cannot meet
+   the sound standard. Pedantic may decline a rule rather than run a weaker
    form of it.
-3. **A list in a rule's text is authoritative as written,** even when the
-   text calls it open ("such as", "for example"). `strict` may extend it
+4. **A list in a rule's text is authoritative as written,** even when the
+   text calls it open ("such as", "for example"). `--strict` may extend it
    only with other authoritative material that bounds it better (for
    example, POSIX's list of async-signal-safe functions read with a CERT
-   rule that names some of them). `pedantic` may hold to the listed items
-   alone.
-4. **The oracle stays at `strict`.** A CERT C oracle labels each rule as
-   written, by definition (ADR-0014). `default` and `pedantic` are scored
-   as differences from it: where either disagrees with the oracle, that is
-   a documented move of the enforcement boundary, justified by the option
-   or reading that makes it, and not an ordinary false positive or false
-   negative. Each rule record states whether its verdict differs by preset,
-   and the preset test matrix covers only those rules.
-5. **The axis is not specific to CERT C.** The CWE ruleset, and any later
+   rule that names some of them). Which way a preset moves depends on what
+   the list does: for a list of what is allowed, holding to the listed items
+   alone is stricter; for a list of what is forbidden, it yields fewer
+   findings, so it belongs to the relaxed side.
+5. **The oracle stays at `--strict`.** A CERT C oracle labels each rule as
+   written, by definition (ADR-0014). `--default` and `--pedantic` are
+   scored as differences from it: where either disagrees with the oracle,
+   that is a documented move of the enforcement boundary, justified by the
+   option or reading that makes it, and not an ordinary false positive or
+   false negative. Each rule record states whether its verdict differs by
+   preset, and the preset test matrix covers only those rules.
+6. **The axis is not specific to CERT C.** The CWE ruleset, and any later
    ruleset, is read the same way around its own text.
+7. **Where a finding is reported** does not change with the preset: at the
+   line where the violation occurs, with related lines as secondary
+   locations (ADR-0012).
 
 ### Rationale
 
 - **Presets as approximations of a specification.** Let V(R) be the set of
   program points that violate rule R's text, and A the set a preset
-  reports. `strict` aims at A = V(R). `pedantic` aims at V(R) ⊆ A, the
+  reports. `--strict` aims at A = V(R). `--pedantic` aims at V(R) ⊆ A, the
   relation a sound abstract interpretation keeps (Cousot and Cousot,
   "Abstract Interpretation: A Unified Lattice Model for Static Analysis of
   Programs by Construction or Approximation of Fixpoints", POPL 1977), or
-  at a stricter specification V′ ⊇ V(R). `default` aims at A ⊆ V(R), the
-  under-approximation that "can prove the presence of bugs but not their
-  absence" (O'Hearn, "Incorrectness Logic", Proceedings of the ACM on
-  Programming Languages, 2020), or at a narrower
-  specification. Each preset is a partial function on rules: it gives a
-  checking predicate, or declines the rule. A partial function that may
-  decline independently in each preset is why the presets are not nested.
-- **Why the cuts exist.** Every non-trivial property of a program's
-  behavior is undecidable (Rice, "Classes of Recursively Enumerable Sets
-  and Their Decision Problems", Transactions of the AMS, 1953), so each
-  preset enforces a checkable approximation of the text, never the text
-  itself. A rule is cut where no checkable approximation exists, because
-  only intent separates the compliant code from the noncompliant, or where
-  the only checkable form reports a construct rather than a violation.
+  at a stricter specification V′ ⊇ V(R). `--default` aims at A ⊆ V(R): in
+  O'Hearn's words, under-approximate reasoning "can prove the presence of
+  bugs but not their absence" (O'Hearn, "Incorrectness Logic", Proceedings
+  of the ACM on Programming Languages, 2020, echoing Dijkstra), or it aims
+  at a narrower specification.
+- **What can be checked exactly.** For a rule about a program's behavior,
+  exact checking is impossible in general: every non-trivial semantic
+  property of programs is undecidable (Rice, "Classes of Recursively
+  Enumerable Sets and Their Decision Problems", Transactions of the
+  American Mathematical Society, 1953). For such rules every preset
+  enforces a checkable approximation, and `--strict`'s A = V(R) is a target
+  met with declared imprecision. A rule about syntax (a ban on `goto`, a
+  macro ending in a semicolon) can be checked exactly, so A = V(R) is
+  attainable there.
 - **Declining is two different things.** A preset declining a rule is a
   decision about the rule, made once. Withholding a verdict on one program
   point, because a fact the rule needs was not declared, is a decision
   about that program; it is the reject option of selective classification,
   where a classifier's risk (its loss on the cases it accepts) is reported
   against its coverage (the share it accepts) (El-Yaniv and Wiener, "On the
-  Foundations of Noise-free Selective Classification", JMLR 2010; Geifman
-  and El-Yaniv, "Selective Classification for Deep Neural Networks",
-  NIPS 2017). The two are scored separately.
-- **The list principle and the canons of construction.** Reading a rule's
-  list as closed matches the canon "the expression of one thing implies
-  the exclusion of others" (expressio unius); reading POSIX together with a
-  CERT rule that cites it matches the canon that texts on the same subject
-  are read as one (in pari materia). Both canons are described in
-  Brannon, "Statutory Interpretation: Theories, Tools, and Trends",
-  Congressional Research Service report R45153, 2023. Decision 3 goes further than the
-  canons in one respect, and does so deliberately: the canon *ejusdem
-  generis* would extend an open list ("such as") to items like the listed
-  ones. Judging likeness needs the kind of intent a checker cannot read,
-  so `strict` closes the list and leaves extension to authoritative
-  material.
+  Foundations of Noise-free Selective Classification", Journal of Machine
+  Learning Research, 2010; Geifman and El-Yaniv, "Selective Classification
+  for Deep Neural Networks", NIPS 2017). The two are scored separately.
+- **The list principle and the canons of construction.** Decision 4 is a
+  deliberate departure from the canons, not an application of them.
+  Reading texts on the same subject as one (in pari materia) matches
+  reading POSIX together with a CERT rule that cites it. But the canon that
+  "the expression of one thing implies the exclusion of others" (expressio
+  unius) is strongest when the listed items form an associated group or
+  series, which an illustrative "such as" list is not; and *ejusdem
+  generis*, which classically governs a general term that follows specific
+  ones ("... and other X"), would extend such a list to items like the
+  listed ones. Both canons are described in Brannon, "Statutory
+  Interpretation: Theories, Tools, and Trends", Congressional Research
+  Service report R45153, 2023. Judging likeness is a judgment a checker
+  cannot make mechanically or reproducibly, so `--strict` treats the list
+  as authoritative and leaves extension to authoritative material.
 
 ### Points this amendment does not settle
 
 These earlier statements read differently under the amendment. They are
 recorded here and left unchanged until decided:
 
+- Decision 2 says "Policy has two settings"; Decision 4 names two presets.
 - Decision 4's 2026-10-03 amendment says `strict` applies the rules as
   written "with full pedantry". This amendment separates the text
-  (`strict`) from readings beyond it (`pedantic`).
+  (`--strict`) from readings beyond it (`--pedantic`).
 - Decision 4 bundles `environment = freestanding` into the strict preset,
   and Decision 5 has the oracle record the "strict, freestanding truth".
-  Whether distrusting the library is the text (`strict`) or a reading
-  beyond it (`pedantic`) is open; ADR-0011's Consequences already speak of
+  Whether distrusting the library is the text (`--strict`) or a reading
+  beyond it (`--pedantic`) is open; ADR-0011's Consequences already speak of
   "a strict or pedantic mode that trusts no library behavior". The
-  environment value of the `pedantic` preset is also open.
+  environment value of `--pedantic` is also open.
 - Decision 2 and ADR-0010 Decision 5 make a strippable assert no guard
   under `strict`, citing C11 7.2p1 and CERT MSC11-C. Whether that is a
   rule's text or a reading beyond it is to be settled rule by rule.
+- Decision 3's build-fact clause gives each rule "its strict reading" with
+  no facts declared, and runs every fixture "under both presets"; a third
+  preset needs its fixtures and a name for that reading.
+- Decisions 5 and 7 require an oracle tag and a named option for each
+  relaxation. Whether `--pedantic`'s boundary moves need the same is open.
+- Decision 8 publishes `default` as the headline with `strict` alongside
+  and runs Juliet under both; whether `--pedantic` figures are published,
+  and whether Juliet runs under all three, is open. Its run labels name
+  only `-default-` and `-strict-`.
 - The Consequences say the default policy is "a deliberate, documented
   subset" of the strict one, with "the same violations, fewer
-  assumptions". Under Decision 2 of this amendment the presets are not
+  assumptions". Under Decision 3 of this amendment the presets are not
   nested.
-- Decision 8's run labels name only `-default-` and `-strict-`; a
-  `pedantic` run needs its own label.
-
+- ADR-0013 Decision 4 removes a rule from the tool entirely, while this
+  amendment lets a preset decline a rule; and the 2026-10-07 amendment to
+  ADR-0013 says of a tier-1 fact "The default is the strict reading",
+  where neither word names a preset.
