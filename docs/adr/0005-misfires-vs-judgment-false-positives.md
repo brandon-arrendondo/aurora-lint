@@ -89,6 +89,45 @@ hit rate (the marked flaw line, ±1). Every reported Juliet figure says which
 unit it uses. This is separate from what Juliet
 misses by design compared with real codebases (Brandon, 2026-09-25).
 
+**Amendment note (proposed 2026-10-07, pending Brandon's approval on the
+wording): the section-level coarsening is aurora-lint's harness, not Juliet's
+prescription.** The opening sentence above — "Juliet scores a finding by
+section: anything reported inside a flawed ('bad') function counts as a hit,
+whatever it says" — attributes to Juliet a coarsening that is actually this
+project's own scoring harness. The Juliet Test Suite v1.2 User Guide is
+narrower:
+
+- §8.1 ("True Positives and False Negatives"): "one desired result is for the
+  tool to report one flaw of the target type" in a function or class named
+  "bad"; "A correct report of this type is considered a 'True Positive.'" A
+  tool that reports no flaw of the target type in the bad function or class
+  scores a False Negative. Juliet's own criterion is thus two-part — the
+  report must match the target flaw type *and* sit in the bad section — not
+  "whatever it says."
+- §8.3 ("Unrelated Flaw Reports"): reports of non-target types "generally
+  cannot be characterized as correct or incorrect in an automated or trivial
+  manner," and so "these flaw reports are typically ignored when studying a
+  static analysis tool." Unrelated-type reports are set aside, not scored as
+  hits.
+
+What the subsection describes is real, but it is aurora-lint's harness keying
+a Juliet "TP" on bad-section membership alone — the reported finding's type is
+not matched to the test case's target, because a CERT rule id does not map
+cleanly onto a CWE target type, so that match is not automated here. The
+point the subsection makes still holds: a section hit is an approximation of
+the oracle, not a confirmed violation. Only the attribution is wrong — the
+approximation is ours, and Juliet's guide, if anything, asks for the stricter
+type-matched report.
+
+Proposed rewording of the opening sentence, for Brandon's approval: "Our
+Juliet harness scores a finding by section: it counts any finding inside a
+flawed ('bad') function as a hit, without checking that the finding's type
+matches the test case's target flaw. Juliet's own user guide is stricter
+(§8.1 asks for a report of the target flaw type in the bad function; §8.3
+sets unrelated-type reports aside); the section-level coarsening is the
+harness's automation, chosen because a CERT rule id does not map cleanly onto
+a CWE target type."
+
 ## Consequences
 
 - When reviewing a same-session correction like the one that prompted this

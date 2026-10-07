@@ -201,9 +201,11 @@ contract model. (ADR-0015)
 - **F5. `ERROR` ancestry is not a suppression signal.** Diagnose the misread,
   usually preprocessor text read as a C expression. (ADR-0008)
 - **F6. A 0% real-world TP rate is not a reason to drop a rule.** (ADR-0002)
-- **F7. Juliet section scoring is not line truth.** A Juliet hit means "fired
-  in the flawed function", not "named the flaw". A misfire fix that removes
-  such hits is still a fix. (ADR-0005)
+- **F7. Juliet section scoring is not line truth.** Our harness counts a
+  Juliet hit as "fired in the flawed function", not "named the flaw" — coarser
+  than Juliet's own guide, which asks for a report of the target flaw type in
+  the bad function (§8.1) and sets unrelated-type reports aside (§8.3). A
+  misfire fix that removes such hits is still a fix. (ADR-0005)
 
 ## G. Which rules ship (ADR-0013)
 
