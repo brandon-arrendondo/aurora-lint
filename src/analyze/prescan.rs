@@ -7571,15 +7571,6 @@ pub fn resolve_includes_scoped(
     }
 
     origins.finish(context);
-    {
-        let report = Arc::make_mut(&mut context.include_report);
-        report.search_paths = include_paths.to_vec();
-        report.forced_includes = forced_includes.to_vec();
-        report.unresolved.sort();
-        report.unresolved.dedup();
-        report.outside_headers.sort();
-        report.outside_headers.dedup();
-    }
 
     walk_beyond_search_path(
         context,
@@ -7592,6 +7583,16 @@ pub fn resolve_includes_scoped(
         lookup,
         scoped_out,
     );
+
+    {
+        let report = Arc::make_mut(&mut context.include_report);
+        report.search_paths = include_paths.to_vec();
+        report.forced_includes = forced_includes.to_vec();
+        report.unresolved.sort();
+        report.unresolved.dedup();
+        report.outside_headers.sort();
+        report.outside_headers.dedup();
+    }
 
     // Resolve trailing-macro packed-struct candidates against the
     // macro names seen across ALL resolved headers (the macro's #define and
@@ -8023,7 +8024,9 @@ impl UnresolvedIncludes {
 /// sees a new declaration, macro or closure. The one thing it adds outside
 /// that field: a missing generated header it finds joins
 /// `unresolved_project_headers`, so `--report-macro-gaps` also labels that
-/// spelling "project" (a report label, not a finding). Each file is read once
+/// spelling "project" (a report label, not a finding), and each unresolved
+/// include it meets gets its `include_report` row, as in the main pass. Each
+/// file is read once
 /// (explicit queue plus visited set); a missing header is classified only
 /// after the walk, against every search root the matches imply, so the
 /// answer doesn't depend on visit order.
@@ -8073,9 +8076,13 @@ fn walk_beyond_search_path(
             queue.push(file);
         }
     }
-    // (spelling, includer's directory): unresolved, no project file of that
-    // name; classified once the walk has found every implied root.
-    let mut unplaced: Vec<(String, Option<PathBuf>)> = Vec::new();
+    // (spelling, includer's directory, its row in `rows`): unresolved, no
+    // project file of that name; classified once the walk has found every
+    // implied root.
+    let mut unplaced: Vec<(String, Option<PathBuf>, usize)> = Vec::new();
+    // Each unresolved include's report row, whether it names a missing
+    // project header filled in once `unplaced` is classified.
+    let mut rows: Vec<super::context::UnresolvedInclude> = Vec::new();
     while let Some(file) = queue.pop() {
         let from = crate::analyze::compile_commands::real_path(&file);
         let Ok((tree, source)) = parser.parse_file(&file.to_string_lossy()) else {
@@ -8100,10 +8107,21 @@ fn walk_beyond_search_path(
                 &from,
                 format!("{}{include}", super::context::UNRESOLVED_INCLUDE),
             );
+            // The walk follows project files only, so the includer is the
+            // project's.
+            rows.push(super::context::UnresolvedInclude {
+                spelling: include.clone(),
+                form: directive.form,
+                includer: from.clone(),
+                line: directive.line,
+                in_dead_arm: false,
+                includer_outside_project: false,
+                project_header: false,
+            });
             let elsewhere =
                 project_files.files_ending_in(&include, project_roots, lookup, scoped_out);
             if elsewhere.is_empty() {
-                unplaced.push((include.clone(), dir.clone()));
+                unplaced.push((include.clone(), dir.clone(), rows.len() - 1));
             }
             for other in elsewhere {
                 imply(&include, &other, &mut implied_roots);
@@ -8115,11 +8133,15 @@ fn walk_beyond_search_path(
             }
         }
     }
-    for (include, dir) in unplaced {
+    for (include, dir, row) in unplaced {
         if is_missing_project_header(&include, dir.as_deref(), &implied_roots, lookup) {
+            rows[row].project_header = true;
             context.unresolved_project_headers.insert(include);
         }
     }
+    Arc::make_mut(&mut context.include_report)
+        .unresolved
+        .extend(rows);
     if !edges.is_empty() {
         context.include_edges_beyond_search_path = Arc::new(edges);
     }
@@ -10323,6 +10345,60 @@ void caller(char *other) {
         assert!(mixed
             .render_verbose()
             .contains("<stdarg.h> from /p/a.c:1: named by a project file (compiler built-in"));
+    }
+
+    /// A header the walk beyond the search path finds missing gets its
+    /// report row too, with the walked header as includer (the seL4 shape:
+    /// `<arch/machine.h>` lives under include/arch/x86, which `-I` misses,
+    /// and includes a generated `<arch/object/structures_gen.h>`).
+    #[test]
+    fn the_include_report_has_rows_for_what_the_walk_beyond_the_search_path_finds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let arch = tmp.path().join("include/arch/x86/arch");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(arch.join("object")).unwrap();
+        std::fs::write(
+            arch.join("machine.h"),
+            "#include <arch/object/structures_gen.h>\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("a.c"), "#include <arch/machine.h>\n").unwrap();
+        let a_c = src.join("a.c").to_string_lossy().to_string();
+        let mut ctx = ProjectContext::new();
+        resolve_includes(
+            std::slice::from_ref(&a_c),
+            &[],
+            &[tmp.path().join("include").to_string_lossy().to_string()],
+            &[tmp.path().to_string_lossy().to_string()],
+            &mut ctx,
+            None,
+            false,
+            Default::default(),
+            &HeaderLookup::default(),
+        )
+        .unwrap();
+        let machine = crate::analyze::compile_commands::real_path(&arch.join("machine.h"));
+        let rows: Vec<(&str, &str, usize, bool)> = ctx
+            .include_report
+            .unresolved
+            .iter()
+            .map(|u| {
+                (
+                    u.spelling.as_str(),
+                    u.includer.as_str(),
+                    u.line,
+                    u.project_header,
+                )
+            })
+            .collect();
+        assert!(
+            rows.contains(&("arch/object/structures_gen.h", machine.as_str(), 1, true)),
+            "{rows:?}"
+        );
+        assert!(ctx
+            .unresolved_project_headers
+            .contains("arch/object/structures_gen.h"));
     }
 
     /// Nothing missing, or only a never-compiled arm's include, is no line.
