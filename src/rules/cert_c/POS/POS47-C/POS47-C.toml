@@ -8,12 +8,14 @@ description = """
 In threading, pthreads can optionally be set to cancel immediately or defer
 until a specific cancellation point. Canceling asynchronously (immediately) is
 dangerous, however, because most threads are in fact not safe to cancel
-immediately. TheIEEE standards pagestates that Canceling asynchronously would
-follow the same route as passing a signal into the thread to kill it, posing
-problems similar to those inCON37-C. Do not call signal() in a multithreaded
-program, which is strongly related toSIG02-C. Avoid using signals to implement
-normal functionality. POS44-C and SIG02-C expand on the dangers of canceling a
-thread suddenly, which can create adata race condition.
+immediately. The IEEE standards page states that only functions that are
+cancel-safe may be called from a thread that is asynchronously cancelable.
+Canceling asynchronously would follow the same route as passing a signal into
+the thread to kill it, posing problems similar to those in CON37-C. Do not call
+signal() in a multithreaded program, which is strongly related to SIG02-C.
+Avoid using signals to implement normal functionality. POS44-C and SIG02-C
+expand on the dangers of canceling a thread suddenly, which can create a data
+race condition.
 """
 severity = "Medium"
 likelihood = "Probable"
