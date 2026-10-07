@@ -691,6 +691,18 @@ pub fn merged_macro_alias_alternatives(
 /// A call in an arm the file proves is never compiled (`#if 0`) is left out,
 /// and so is one whose argument list the parser could not read (an `ERROR`
 /// node in it): neither says anything about the definition in force.
+///
+/// Leaving calls out only makes [`arity_rules_out`] more aggressive: fewer
+/// counts give a target fewer chances to fit one. For a never-compiled call
+/// that is exact. For a damaged one it has a cost: a damaged `XFREE(CAST p)`
+/// beside live three-argument calls leaves only the three, so `free` is
+/// ruled out for the whole file, the damaged call included, even in a build
+/// where that call really is `free(p)`, and a rule no longer reads it as a
+/// release (a double free there is missed; a leak rule may report the
+/// memory it frees). That is acceptable under ADR-0008: the call is skipped
+/// because its argument count cannot be read, not because of where it sits,
+/// and a count the parser could not read should not decide the alias for
+/// every readable call in the file.
 pub fn call_arities(root: &Node, source: &str) -> HashMap<String, HashSet<usize>> {
     let mut arities: HashMap<String, HashSet<usize>> = HashMap::new();
     let calls = lang_parsing_substrate::query::find_descendants_of_kind(*root, "call_expression");
@@ -868,7 +880,8 @@ pub fn merge_fixed_arities(
 /// cannot be using it as `target`: none of those counts fits any arity
 /// `target` is known to have. A target that fits one call is kept, so a
 /// file whose `#ifdef` arms call the alias both ways keeps every target
-/// either arm can use (ADR-0010 D4).
+/// either arm can use (ADR-0010 D4). `calls` leaves out never-compiled and
+/// damaged calls ([`call_arities`]), which can only rule out more.
 ///
 /// The first link of `target`'s alias chain (`aliases`) whose arity is
 /// known decides: a standard function's, else `known`, a [`fixed_arities`]
