@@ -228,7 +228,7 @@ prescan behind ``-d``, applied to that fixture alone), then
 the scan's own code.
 
 This was not always so. The context used to be opt-in behind a
-``// sqc-test: prescan`` marker that 86 of 3,584 fixtures carried, and every
+``// sqc-test: prescan`` marker that 86 fixtures carried, and every
 other fixture was checked with no project context, no CFGs and no value
 ranges at all — an analysis strictly weaker than any invocation of the
 shipped tool, so a green result under it said nothing about what a real scan
@@ -774,10 +774,13 @@ three declarator shapes we fail to read. So the figure is uninformative about
 the rule for two different reasons at once, and only the second is ours to
 fix.
 
-The material to close this gap already exists in the repo: **1,975
-must-detect** fixtures (``src/rules/cert_c/*/*/tests/fail/*.c``) and **1,594
-must-not-detect** fixtures (``src/rules/cert_c/*/*/tests/pass/*.c``), labeled
-by construction — 309 distinct rules carry at least one. 121 of the 125
+The material to close this gap already exists in the repo: the **must-detect**
+fixtures (``src/rules/cert_c/*/*/tests/fail/*.c``) and **must-not-detect**
+fixtures (``src/rules/cert_c/*/*/tests/pass/*.c``), labeled by construction and
+covering nearly every rule with detection logic.
+``scripts/fixture_provenance.py`` reports the current corpus split by tier and
+how many rules carry a fixture, so the counts are not transcribed here (they
+move with every added fixture). 121 of the 125
 unvalidated rules already have a must-detect fixture — only ``FLP01-C``,
 ``MSC18-C``, ``MSC25-C`` and ``ENV04-C`` have none, and a fail fixture
 cannot pass for any of the four, for one of two reasons. ``MSC18-C``,

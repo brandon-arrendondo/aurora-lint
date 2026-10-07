@@ -333,7 +333,7 @@ prescan behind <code class="docutils literal notranslate"><span class="pre">-d</
 <code class="docutils literal notranslate"><span class="pre">analyze_one_file</span></code> makes. Neither is a test-only reimplementation; both are
 the scan’s own code.</p>
 <p>This was not always so. The context used to be opt-in behind a
-<code class="docutils literal notranslate"><span class="pre">//</span> <span class="pre">sqc-test:</span> <span class="pre">prescan</span></code> marker that 86 of 3,584 fixtures carried, and every
+<code class="docutils literal notranslate"><span class="pre">//</span> <span class="pre">sqc-test:</span> <span class="pre">prescan</span></code> marker that 86 fixtures carried, and every
 other fixture was checked with no project context, no CFGs and no value
 ranges at all — an analysis strictly weaker than any invocation of the
 shipped tool, so a green result under it said nothing about what a real scan
@@ -1023,10 +1023,13 @@ declarations, glibc prototypes guarded by <code class="docutils literal notransl
 three declarator shapes we fail to read. So the figure is uninformative about
 the rule for two different reasons at once, and only the second is ours to
 fix.</p>
-<p>The material to close this gap already exists in the repo: <strong>1,975
-must-detect</strong> fixtures (<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/fail/*.c</span></code>) and <strong>1,594
-must-not-detect</strong> fixtures (<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/pass/*.c</span></code>), labeled
-by construction — 309 distinct rules carry at least one. 121 of the 125
+<p>The material to close this gap already exists in the repo: the <strong>must-detect</strong>
+fixtures (<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/fail/*.c</span></code>) and <strong>must-not-detect</strong>
+fixtures (<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/pass/*.c</span></code>), labeled by construction and
+covering nearly every rule with detection logic.
+<code class="docutils literal notranslate"><span class="pre">scripts/fixture_provenance.py</span></code> reports the current corpus split by tier and
+how many rules carry a fixture, so the counts are not transcribed here (they
+move with every added fixture). 121 of the 125
 unvalidated rules already have a must-detect fixture — only <code class="docutils literal notranslate"><span class="pre">FLP01-C</span></code>,
 <code class="docutils literal notranslate"><span class="pre">MSC18-C</span></code>, <code class="docutils literal notranslate"><span class="pre">MSC25-C</span></code> and <code class="docutils literal notranslate"><span class="pre">ENV04-C</span></code> have none, and a fail fixture
 cannot pass for any of the four, for one of two reasons. <code class="docutils literal notranslate"><span class="pre">MSC18-C</span></code>,
