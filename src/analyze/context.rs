@@ -77,6 +77,31 @@ pub struct IncludeReport {
     pub outside_headers: Vec<String>,
 }
 
+/// Whether an `#include` spelling names a header that lives in the
+/// compiler's built-in directory or the multiarch directory rather than in
+/// `/usr/include` itself: a fixed list of well-known spellings, the
+/// `bits/`, `gnu/` and `asm/` trees and the freestanding headers (`stddef.h`,
+/// `stdarg.h`, ...). The scan searches those directories only with
+/// `--system-includes`, so without it they are missing on nearly every host;
+/// counting them apart keeps the project's own missing headers visible.
+pub fn in_compiler_directory(spelling: &str) -> bool {
+    const TREES: &[&str] = &["bits/", "gnu/", "asm/"];
+    const FREESTANDING: &[&str] = &[
+        "float.h",
+        "iso646.h",
+        "limits.h",
+        "stdalign.h",
+        "stdarg.h",
+        "stdatomic.h",
+        "stdbool.h",
+        "stddef.h",
+        "stdint.h",
+        "stdnoreturn.h",
+        "varargs.h",
+    ];
+    TREES.iter().any(|tree| spelling.starts_with(tree)) || FREESTANDING.contains(&spelling)
+}
+
 impl IncludeReport {
     /// The unresolved includes in code some configuration compiles.
     pub fn live(&self) -> impl Iterator<Item = &UnresolvedInclude> {
@@ -85,43 +110,67 @@ impl IncludeReport {
 
     /// The one-line stderr summary, or `None` when every live `#include`
     /// resolved. Distinct spellings are counted, so a header missing from
-    /// fifty files reads as one missing header.
+    /// fifty files reads as one missing header. Headers that live in the
+    /// compiler's built-in or multiarch directories
+    /// ([`in_compiler_directory`]), which the scan searches only with
+    /// `--system-includes`, are counted apart and never headlined: without
+    /// that flag nearly every scan misses them, so they would drown out the
+    /// project's own missing headers.
     pub fn summary_line(&self) -> Option<String> {
         let live: Vec<&UnresolvedInclude> = self.live().collect();
         if live.is_empty() {
             return None;
         }
-        let distinct = |rows: &mut dyn Iterator<Item = &&UnresolvedInclude>| {
-            rows.map(|u| u.spelling.as_str())
-                .collect::<std::collections::BTreeSet<_>>()
-                .len()
-        };
-        let all = distinct(&mut live.iter());
-        let in_project = distinct(&mut live.iter().filter(|u| !u.includer_outside_project));
-        let in_system = distinct(&mut live.iter().filter(|u| u.includer_outside_project));
-        let mut examples: Vec<&str> = live
-            .iter()
-            .filter(|u| !u.includer_outside_project)
-            .map(|u| u.spelling.as_str())
-            .collect::<std::collections::BTreeSet<_>>()
+        fn distinct<'a>(
+            rows: &mut dyn Iterator<Item = &&'a UnresolvedInclude>,
+        ) -> std::collections::BTreeSet<&'a str> {
+            rows.map(|u| u.spelling.as_str()).collect()
+        }
+        let (compiler, rest): (Vec<&UnresolvedInclude>, Vec<&UnresolvedInclude>) = live
             .into_iter()
-            .take(3)
-            .collect();
-        if examples.is_empty() {
-            examples = live
-                .iter()
-                .map(|u| u.spelling.as_str())
-                .collect::<std::collections::BTreeSet<_>>()
+            .partition(|u| in_compiler_directory(&u.spelling));
+        let compiler = distinct(&mut compiler.iter());
+        let compiler_examples = || {
+            let more = if compiler.len() > 3 { ", ..." } else { "" };
+            let names: Vec<&str> = compiler.iter().copied().take(3).collect();
+            format!("{}{more}", names.join(", "))
+        };
+        if rest.is_empty() {
+            return Some(format!(
+                "Headers: {} #include'd header(s) not found, all from the compiler's built-in \
+                 and multiarch directories, which the scan searches only with \
+                 --system-includes: {}. -v lists each, --report-headers FILE writes them all.",
+                compiler.len(),
+                compiler_examples()
+            ));
+        }
+        let all = distinct(&mut rest.iter()).len();
+        let in_project = distinct(&mut rest.iter().filter(|u| !u.includer_outside_project)).len();
+        let in_system = distinct(&mut rest.iter().filter(|u| u.includer_outside_project)).len();
+        let mut examples: Vec<&str> =
+            distinct(&mut rest.iter().filter(|u| !u.includer_outside_project))
                 .into_iter()
                 .take(3)
                 .collect();
+        if examples.is_empty() {
+            examples = distinct(&mut rest.iter()).into_iter().take(3).collect();
         }
         let more = if all > examples.len() { ", ..." } else { "" };
+        let apart = if compiler.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " Not counted: {} from the compiler's built-in and multiarch directories, \
+                 which the scan searches only with --system-includes ({}).",
+                compiler.len(),
+                compiler_examples()
+            )
+        };
         Some(format!(
             "Headers: {all} #include'd header(s) not found ({in_project} named by project files, \
              {in_system} only by system headers): {}{more}. Declarations and macros they would \
              supply were not seen, so findings that depend on them can differ from a host that \
-             has them; -v lists each, --report-headers FILE writes them all.",
+             has them; -v lists each, --report-headers FILE writes them all.{apart}",
             examples.join(", ")
         ))
     }
@@ -184,6 +233,11 @@ impl IncludeReport {
                 (false, true) => "project header, presumably generated at build time",
                 (false, false) => "named by a project file",
             };
+            let compiler = if in_compiler_directory(&u.spelling) {
+                " (compiler built-in or multiarch directory: --system-includes searches it)"
+            } else {
+                ""
+            };
             let computed = if u.form == IncludeForm::Computed {
                 " (computed: the macro's value is unknown)"
             } else {
@@ -191,7 +245,7 @@ impl IncludeReport {
             };
             let _ = writeln!(
                 out,
-                "unresolved #include {open}{}{close} from {from}: {what}{computed}",
+                "unresolved #include {open}{}{close} from {from}: {what}{computed}{compiler}",
                 u.spelling
             );
         }
@@ -222,7 +276,8 @@ pub struct HeaderDependence {
     /// A finding's (`file_path`, line) -> the macros spelled on that line
     /// that only headers outside the project define, each as
     /// `NAME (header path)`, sorted: where a finding that relies on one got
-    /// it (tomcrypt_custom.h's `XFREE` standing in for wolfSSL's).
+    /// it (tomcrypt_custom.h's `XFREE` standing in for wolfSSL's). By line,
+    /// so a macro spelled elsewhere is missed ([`Self::build`]).
     pub harvested: BTreeMap<(String, usize), Arc<[String]>>,
 }
 
@@ -248,13 +303,17 @@ impl HeaderDependence {
     }
 
     /// Build it for `files` (the `file_path`s of the findings of `rules`):
-    /// for each, the live unresolved `#include`s of every file in its
-    /// include closure ([`IncludeClosure::of`]), or of the file alone when
-    /// the graph has no edge out of it.
+    /// for each, the live unresolved `#include`s that a project file in its
+    /// include closure ([`IncludeClosure::of`]) names, or that the file
+    /// itself names when the graph has no edge out of it.
     ///
     /// And for each finding's line, the macros spelled on it that
     /// `outside_macros` (`ProjectContext::outside_macro_origins`) says only
-    /// headers outside the project define. The file is read once.
+    /// headers outside the project define. The file is read once. This goes
+    /// by the finding's line, not by what the rule used: a macro the finding
+    /// relies on but that is spelled on another line (at a declaration, or
+    /// inside another macro's body) is not named, and a macro on the line
+    /// that the rule never looked at is.
     pub fn build<'a>(
         rules: std::collections::BTreeSet<String>,
         findings: impl IntoIterator<Item = (&'a str, usize)>,
@@ -267,7 +326,11 @@ impl HeaderDependence {
         let harvested = Self::harvested(&findings, outside_macros);
         let mut by_file = BTreeMap::new();
         let mut live: HashMap<&str, Vec<&str>> = HashMap::new();
-        for u in report.live() {
+        // Only includes a project file names: a header missing only from a
+        // system header's own includes (`bits/*` from libc's headers) is
+        // missing on nearly every host and says nothing about this finding,
+        // so it stays in `-v` and `--report-headers`.
+        for u in report.live().filter(|u| !u.includer_outside_project) {
             live.entry(u.includer.as_str())
                 .or_default()
                 .push(&u.spelling);

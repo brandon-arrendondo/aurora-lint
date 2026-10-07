@@ -311,8 +311,10 @@ fn missing_headers_are_reported_on_stderr_in_sarif_and_on_request() {
 }
 
 /// A finding of a rule that reads header-supplied facts, in a file whose
-/// includes reach a header the scan could not find, says it may depend on
-/// it; one whose headers all resolved carries no marker.
+/// includes reach a header a project file names and the scan could not find,
+/// says it may depend on it; one whose project includes all resolved carries
+/// no marker, even though a system header it includes names a `bits/` header
+/// the scan could not find either. That miss is counted apart on stderr.
 #[test]
 fn a_finding_that_may_depend_on_a_missing_header_says_so() {
     let dir = tempfile::tempdir().unwrap();
@@ -320,7 +322,11 @@ fn a_finding_that_may_depend_on_a_missing_header_says_so() {
     let sys = dir.path().join("sys");
     std::fs::create_dir_all(&proj).unwrap();
     std::fs::create_dir_all(&sys).unwrap();
-    std::fs::write(sys.join("lib.h"), "int lib_init(void);\n").unwrap();
+    std::fs::write(
+        sys.join("lib.h"),
+        "#include <bits/libc-header-start.h>\nint lib_init(void);\n",
+    )
+    .unwrap();
     std::fs::write(
         proj.join("a.c"),
         "#include <lib.h>\n#include <missing_dep.h>\n\
@@ -348,6 +354,20 @@ fn a_finding_that_may_depend_on_a_missing_header_says_so() {
             out.to_str().unwrap(),
         ]);
         assert_eq!(code, 0, "stderr: {stderr}");
+        assert!(
+            stderr.contains(
+                "Headers: 1 #include'd header(s) not found (1 named by project files, 0 only by \
+                 system headers): missing_dep.h."
+            ),
+            "stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains(
+                "Not counted: 1 from the compiler's built-in and multiarch directories, which \
+                 the scan searches only with --system-includes (bits/libc-header-start.h)."
+            ),
+            "stderr: {stderr}"
+        );
     }
 
     let rows: Vec<serde_json::Value> =

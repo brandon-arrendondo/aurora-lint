@@ -10253,6 +10253,78 @@ void caller(char *other) {
         assert!(verbose.contains("(1 more in arms their own file proves are never compiled)"));
     }
 
+    /// Headers from the compiler's built-in and multiarch directories are
+    /// counted apart from the headline, and alone get a line of their own.
+    #[test]
+    fn compiler_directory_headers_are_not_headlined() {
+        use crate::analyze::context::{
+            in_compiler_directory, IncludeForm, IncludeReport, UnresolvedInclude,
+        };
+        assert!(in_compiler_directory("bits/wordsize.h"));
+        assert!(in_compiler_directory("gnu/stubs.h"));
+        assert!(in_compiler_directory("asm/errno.h"));
+        assert!(in_compiler_directory("stddef.h"));
+        assert!(!in_compiler_directory("stdio.h"));
+        assert!(!in_compiler_directory("sys/bits/x.h"));
+        assert!(!in_compiler_directory("mybits/x.h"));
+        let row = |spelling: &str, outside: bool| UnresolvedInclude {
+            spelling: spelling.into(),
+            form: IncludeForm::Angle,
+            includer: if outside {
+                "/usr/include/stdio.h"
+            } else {
+                "/p/a.c"
+            }
+            .into(),
+            line: 1,
+            in_dead_arm: false,
+            includer_outside_project: outside,
+            project_header: false,
+        };
+        let only_compiler = IncludeReport {
+            unresolved: vec![row("bits/wordsize.h", true), row("stddef.h", false)],
+            ..Default::default()
+        };
+        assert_eq!(
+            only_compiler.summary_line().as_deref(),
+            Some(
+                "Headers: 2 #include'd header(s) not found, all from the compiler's built-in \
+                 and multiarch directories, which the scan searches only with \
+                 --system-includes: bits/wordsize.h, stddef.h. -v lists each, \
+                 --report-headers FILE writes them all."
+            )
+        );
+        let mixed = IncludeReport {
+            unresolved: vec![
+                row("asm/a.h", true),
+                row("bits/b.h", true),
+                row("dep.h", false),
+                row("gnu/c.h", true),
+                row("stdarg.h", false),
+            ],
+            ..Default::default()
+        };
+        let summary = mixed.summary_line().unwrap();
+        assert!(
+            summary.starts_with(
+                "Headers: 1 #include'd header(s) not found (1 named by project files, 0 only \
+                 by system headers): dep.h."
+            ),
+            "{summary}"
+        );
+        assert!(
+            summary.ends_with(
+                " Not counted: 4 from the compiler's built-in and multiarch directories, \
+                 which the scan searches only with --system-includes (asm/a.h, bits/b.h, \
+                 gnu/c.h, ...)."
+            ),
+            "{summary}"
+        );
+        assert!(mixed
+            .render_verbose()
+            .contains("<stdarg.h> from /p/a.c:1: named by a project file (compiler built-in"));
+    }
+
     /// Nothing missing, or only a never-compiled arm's include, is no line.
     #[test]
     fn no_live_unresolved_include_is_no_summary() {

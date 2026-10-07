@@ -336,6 +336,14 @@ proves is never compiled (``#if 0``) is counted, not listed, and one written
 only inside a system header (often a platform arm, such as a NetWare-only
 include in a Linux library header) is listed apart from the project's own.
 
+Headers that live in the compiler's built-in directory or the multiarch
+directory rather than in ``/usr/include`` itself (the ``bits/``, ``gnu/`` and
+``asm/`` trees and the freestanding headers such as ``stddef.h`` and
+``stdarg.h``) are counted apart and kept out of the headline: the scan
+searches those directories only with ``--system-includes``, so without it
+nearly every host misses them, and they would drown out the project's own
+missing headers. ``-v`` and ``--report-headers`` still list each one.
+
 The SARIF export records the same rows under the run's
 ``aurora-lint/headers`` property, with a ``note``-level
 ``toolExecutionNotifications`` entry: a missing header is a difference in the
@@ -350,13 +358,16 @@ findings::
 Each finding that may depend on a missing header says so. A rule that reads
 facts headers supply (function declarations, macros and macro constants,
 summaries of functions a header defines, struct layouts) and reports in a
-file whose ``#include`` graph reaches a header the scan could not find carries
-the names of those headers: ``missing_headers`` in the JSON export,
+file whose ``#include`` graph reaches a header that a project file names and
+the scan could not find carries the names of those headers: ``missing_headers`` in the JSON export,
 ``properties.missingHeaders`` in SARIF, and a ``note: may depend on header(s)
 the scan could not find`` line with ``-v``. It says *may*: the rule could have
 needed something those headers declare, not that it did. A finding without
 the marker did not depend on any missing header, so comparing two hosts'
 exports separates the findings a header explains from the ones it cannot.
+A header missing only from a system header's own includes (``bits/*`` from
+the C library's headers, say) marks no finding; it is in ``-v`` and
+``--report-headers``.
 
 The reverse holds too. A macro the scan took from a header outside the
 project, and nowhere else, can decide what a finding sees: one library's
@@ -364,7 +375,10 @@ project, and nowhere else, can decide what a finding sees: one library's
 finding of such a rule whose line spells a macro only an outside header
 defines names it and that header: ``harvested_from`` in the JSON export,
 ``properties.harvestedFrom`` in SARIF, and a ``note: uses macro(s) defined only
-outside the project`` line with ``-v``.
+outside the project`` line with ``-v``. It goes by the finding's line, not by
+what the rule used: a macro the finding relies on but that is spelled on
+another line (at a declaration, or inside another macro's body) is not named,
+and a macro on the line that the rule did not use is.
 
 None of this changes a finding.
 
