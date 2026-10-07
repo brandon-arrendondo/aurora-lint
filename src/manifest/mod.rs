@@ -215,9 +215,8 @@ pub enum RuleCategory {
 }
 
 /// Ids registered under `cert_c` that are not CERT C identifiers, so have no
-/// rule/recommendation standing: `CON50-C`, `FIO50-C` and `FIO51-C` are CERT
-/// C++ ids.
-pub const NON_CERT_C_IDS: &[&str] = &["CON50-C", "FIO50-C", "FIO51-C"];
+/// rule/recommendation standing: `CON50-C` and `FIO51-C` are CERT C++ ids.
+pub const NON_CERT_C_IDS: &[&str] = &["CON50-C", "FIO51-C"];
 
 impl RuleCategory {
     /// The category CERT C's own numbering assigns `id`: within each
@@ -633,7 +632,7 @@ category = "Recommendation"
     #[test]
     fn from_cert_id_rejects_non_cert_ids() {
         for id in [
-            "FIO50-C",
+            "CON50-C",
             "CWE-428",
             "BRULE-065",
             "ARR30",

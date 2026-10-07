@@ -630,10 +630,6 @@ enabled = true
 enabled = true
 
 
-[rules.cert_c.FIO50-C]
-enabled = true  # RE-ENABLED: the old disable assumed no file I/O in scope, but precalc/precalc.c and examples/tstcrc.c open and read/write FILE streams (fopen/fopen_s), so the rule's scope is present
-
-
 [rules.cert_c.FIO51-C]
 enabled = true
 

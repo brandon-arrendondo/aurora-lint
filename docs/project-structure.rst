@@ -57,7 +57,7 @@ Project Structure
     +-- __main__.py          # Benchmark CLI (python -m bench)
 
     rules_templates/         # Rule manifests
-    +-- rules-all.toml       # 304 of 308 CERT C rules enabled, and the 3 CWE-ruleset rules
+    +-- rules-all.toml       # 303 of 307 CERT C rules enabled, and the 3 CWE-ruleset rules
     +-- cwe/                 # Per-CWE manifests for Juliet benchmarking
 
     docs/                    # Documentation and CI examples

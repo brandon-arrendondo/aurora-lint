@@ -39,6 +39,13 @@
 #
 
 [[removed]]
+id = "FIO50-C"
+removed_in = "0.7.0"
+disposition = "not-cert-c"
+reason = "CERT C has no FIO50-C; it is CERT C++'s FIO50-CPP. FIO39-C reports the same alternation of input and output on one stream"
+covered_by = ["FIO39-C"]
+
+[[removed]]
 id = "MSC42-C"
 removed_in = "0.7.0"
 disposition = "moved-to-cwe"

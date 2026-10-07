@@ -386,7 +386,7 @@ Category    Count   Rules
 **ENV**     8       ENV01-C through ENV34-C (selected)
 **ERR**     11      ERR00-C through ERR34-C (selected)
 **EXP**     31      EXP00-C through EXP47-C (selected)
-**FIO**     35      FIO01-C through FIO51-C (selected)
+**FIO**     34      FIO01-C through FIO51-C (selected)
 **FLP**     13      FLP00-C through FLP37-C (selected)
 **INT**     23      INT00-C through INT36-C (selected)
 **MEM**     17      MEM00-C through MEM36-C (selected)
@@ -473,6 +473,7 @@ The rules removed so far:
 
 .. REMOVED-RULES:START
 
+- **FIO50-C** (removed in v0.7.0, not a CERT C guideline (C++ id)): CERT C has no FIO50-C; it is CERT C++'s FIO50-CPP. FIO39-C reports the same alternation of input and output on one stream. Now covered by FIO39-C.
 - **MSC42-C** (removed in v0.7.0, moved to CWE ruleset): MSC42-C is not a CERT C identifier; the weak-cipher check is unchanged. Now reported as CWE-327 in the CWE ruleset.
 - **POS55-C** (removed in v0.7.0, moved to CWE ruleset): CERT C never published a POS55-C; the socket-ordering check is unchanged. Now reported as CWE-666 in the CWE ruleset.
 - **WIN05-C** (removed in v0.7.0, moved to CWE ruleset): CERT C never published a WIN05-C; the check is unchanged. Now reported as CWE-428 in the CWE ruleset.
