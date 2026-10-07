@@ -86,11 +86,18 @@ impl ReachingDefs {
 
     /// Check if a variable has been freed on any path reaching this block,
     /// with no intervening re-assignment.
+    ///
+    /// Query helper with no rule caller today — exercised only by this
+    /// module's unit tests (as is [`Self::is_potentially_null`]). Kept as the
+    /// queryable surface over the reaching-definitions result.
     pub fn is_potentially_freed(&self, block_id: BlockId, var_name: &str) -> bool {
         self.has_reaching_def_kind(block_id, var_name, &DefinitionKind::FreeCall)
     }
 
     /// Check if a variable is potentially null at block entry.
+    ///
+    /// Query helper with no rule caller today — exercised only by this
+    /// module's unit tests (see [`Self::is_potentially_freed`]).
     pub fn is_potentially_null(&self, block_id: BlockId, var_name: &str) -> bool {
         self.has_reaching_def_kind(block_id, var_name, &DefinitionKind::NullAssignment)
             || self.has_reaching_def_kind(block_id, var_name, &DefinitionKind::NullableCall)

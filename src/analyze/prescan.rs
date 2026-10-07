@@ -2642,8 +2642,9 @@ fn aggregate_callsite_null_states(
 /// For each callee, aggregates per-field null states across all call sites using
 /// the same scheme as `aggregate_callsite_null_states`: any DefinitelyNull or
 /// PossiblyNull caller → PossiblyNull, otherwise (every known caller NotNull)
-/// NotNull. It was a majority vote, which let a pile of NotNull callers
-/// outvote the one caller that can pass a null field.
+/// NotNull. This replaced an earlier majority vote, under which a pile of
+/// NotNull callers could outvote the one caller that can pass a null field;
+/// now that single null-passing caller wins outright.
 fn aggregate_callsite_field_null_states(
     callsite_field_args: &HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
     summaries: &mut HashMap<String, FunctionSummary>,
