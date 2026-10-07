@@ -179,3 +179,51 @@ decided by benchmark counts. If it were, it would contradict 0002.
 - Oracle rows labeled FP because the construct was "intentional" or
   "deliberate" rest on a rejected basis. They are re-derived against the
   rule's written scope (Decision 8).
+
+## Amendment (2026-10-06, Brandon): CERT's "Detectable" rating is a triage signal, not a removal trigger
+
+CERT records a "Detectable" verdict in each guideline's Risk Assessment.
+CERT defines *Detectable* narrowly — whether the guideline can be checked
+automatically **with high accuracy and precision** — so a "Detectable: No"
+rating is a statement about precision, not about whether any sound check
+exists at all. A majority of the guidelines aurora-lint ships carry
+"Detectable: No" at the time of this amendment, the core memory and integer
+rules among them. Reading that rating as "not shipped" would remove most of
+the tool, including its highest-value rules. That reading is withdrawn.
+
+This generalizes Decision 8's recommendation-level ruling — the A5 principle
+in `docs/design/rule-disposition.md`, that a "Detectable: No" recommendation
+with a TS 17961-style checkable form ships as deterministic with review — to
+every guideline, rule or recommendation alike:
+
+1. **Detectable is captured, as a triage signal.** The disposition table
+   records CERT's "Detectable" verdict for each guideline. It tells a reviewer
+   which detectors to scrutinize for imprecision; it never decides a
+   disposition on its own.
+2. **Removal is for the absence of a checkable form, not for imprecision.** A
+   guideline is **unenforceable** (Decision 2 — not shipped) only when it has
+   no checkable form at all, or can be adjudicated only by reading the author's
+   intent (ADR-0011). "Detectable: No" is, by itself, neither of those.
+3. **A "Detectable: No" guideline that has a checkable form ships with its
+   imprecision declared.** It takes the disposition its form earns — ordinarily
+   *deterministic with review* — and the disposition table and the published
+   docs state the known imprecision of that form (its misfire classes, the
+   exceptions it cannot yet honor), so a reader sees precisely what CERT's low
+   rating refers to. This extends A5's treatment of recommendations to rules.
+4. **Keep-or-cut is an FMEA-style judgment (Brandon, 2026-10-06):** CERT's Risk
+   Assessment severity, likelihood and detectability weighed together, never
+   detectability alone. A high-severity guideline (the memory rules) stays even
+   when its only checkable form is heuristic; a low-severity guideline whose
+   checkable form is a coarse pattern proxy is a candidate to cut under "fails
+   the criterion" (Decision 2). **Detectability alone never removes a rule** —
+   doing so would contradict both this amendment and ADR-0002, for which a
+   rule's worth is catching the next violation, not its count on mature code.
+
+ADR-0002 is unaffected: it already bars benchmark counts from deciding a
+disposition, and detectability is CERT's own precision verdict, not one of our
+numbers.
+
+*Forward pointer, not decided here:* a **project-conditional** disposition — a
+rule enabled or suppressed per codebase rather than tool-wide — is under
+consideration as a direction for a later release. It is named here only so a
+reader knows the disposition set may grow; this amendment does not rule on it.
