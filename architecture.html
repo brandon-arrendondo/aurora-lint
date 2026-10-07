@@ -175,8 +175,12 @@ rules (INT, ENV, ERR, FIO, FLP, STR families).</p>
 </dd>
 <dt><strong>Reaching definitions</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/dataflow.rs</span></code>).</dt><dd><p>Standard iterative worklist algorithm computing which definitions
 (Declaration, Assignment, Parameter, NullAssignment, FreeCall, NullableCall)
-reach each program point.  Supports use-after-free and null dereference
-queries.  Primary consumer: MEM01-C.</p>
+reach each program point.  Sole rule consumer: MSC13-C, which reads the
+reaching set directly.  The module also exposes <code class="docutils literal notranslate"><span class="pre">is_potentially_freed</span></code> and
+<code class="docutils literal notranslate"><span class="pre">is_potentially_null</span></code> for use-after-free and null-dereference queries, but
+no rule calls them today; they are exercised only by the module’s own unit
+tests.  (MEM01-C imports just the <code class="docutils literal notranslate"><span class="pre">find_node_at_range</span></code> helper from this
+file, not the reaching-definitions analysis.)</p>
 </dd>
 <dt><strong>Initialization state</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/init_state.rs</span></code>).</dt><dd><p>Forward dataflow tracking initialization status with malloc-aware semantics
 (Uninitialized, MaybeUninitialized, Initialized, MallocUninitialized,

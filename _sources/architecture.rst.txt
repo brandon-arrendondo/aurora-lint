@@ -87,8 +87,12 @@ Analysis Modules
 **Reaching definitions** (``src/analyze/dataflow.rs``).
   Standard iterative worklist algorithm computing which definitions
   (Declaration, Assignment, Parameter, NullAssignment, FreeCall, NullableCall)
-  reach each program point.  Supports use-after-free and null dereference
-  queries.  Primary consumer: MEM01-C.
+  reach each program point.  Sole rule consumer: MSC13-C, which reads the
+  reaching set directly.  The module also exposes ``is_potentially_freed`` and
+  ``is_potentially_null`` for use-after-free and null-dereference queries, but
+  no rule calls them today; they are exercised only by the module's own unit
+  tests.  (MEM01-C imports just the ``find_node_at_range`` helper from this
+  file, not the reaching-definitions analysis.)
 
 **Initialization state** (``src/analyze/init_state.rs``).
   Forward dataflow tracking initialization status with malloc-aware semantics
