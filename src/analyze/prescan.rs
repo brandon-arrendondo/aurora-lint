@@ -7326,6 +7326,9 @@ pub fn resolve_includes_scoped(
     if let Some(reporter) = progress {
         reporter.report_include_resolve_start(include_paths.len());
     }
+    // The report is this resolution's alone: rows a loaded prescan cache
+    // carries came from the host that saved it.
+    context.include_report = Default::default();
 
     // Only search roots inside the project can make an unresolvable include a
     // *project* header. Computed once: the check is filesystem-
@@ -10399,6 +10402,129 @@ void caller(char *other) {
         assert!(ctx
             .unresolved_project_headers
             .contains("arch/object/structures_gen.h"));
+
+        // A finding in a.c may depend on it: the marker walks the edges
+        // beyond the search path too.
+        let dependence = crate::analyze::context::HeaderDependence::build(
+            ["DCL31-C".to_string()].into(),
+            [(a_c.as_str(), 1)],
+            &ctx.include_report,
+            &[&ctx.include_edges, &ctx.include_edges_beyond_search_path],
+            &Default::default(),
+        );
+        assert_eq!(
+            dependence.of("DCL31-C", &a_c),
+            Some(
+                &[
+                    "arch/machine.h".to_string(),
+                    "arch/object/structures_gen.h".to_string()
+                ][..]
+            )
+        );
+    }
+
+    /// The include report is one resolution's: resolving again (as after
+    /// `--load-prescan`) replaces the rows, never adds to them.
+    #[test]
+    fn resolving_again_replaces_the_include_report() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.c"), "#include <gone_a.h>\n").unwrap();
+        std::fs::write(tmp.path().join("b.c"), "#include <gone_b.h>\n").unwrap();
+        let mut ctx = ProjectContext::new();
+        for file in ["a.c", "b.c"] {
+            resolve_includes(
+                &[tmp.path().join(file).to_string_lossy().to_string()],
+                &[],
+                &[tmp.path().join("inc").to_string_lossy().to_string()],
+                &[tmp.path().to_string_lossy().to_string()],
+                &mut ctx,
+                None,
+                false,
+                Default::default(),
+                &HeaderLookup::default(),
+            )
+            .unwrap();
+        }
+        let spellings: Vec<&str> = ctx
+            .include_report
+            .unresolved
+            .iter()
+            .map(|u| u.spelling.as_str())
+            .collect();
+        assert_eq!(spellings, ["gone_b.h"]);
+    }
+
+    /// The marker leaves out the compiler's built-in and multiarch headers a
+    /// project file names, but not a missing project header that shares the
+    /// name; it counts a forced include that resolved to no file for every
+    /// file, edges or not.
+    #[test]
+    fn the_marker_skips_compiler_headers_and_counts_forced_includes() {
+        use crate::analyze::context::{
+            HeaderDependence, IncludeForm, IncludeReport, UnresolvedInclude,
+        };
+        let row = |spelling: &str, includer: &str, project_header| UnresolvedInclude {
+            spelling: spelling.into(),
+            form: IncludeForm::Angle,
+            includer: includer.into(),
+            line: 1,
+            in_dead_arm: false,
+            includer_outside_project: false,
+            project_header,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.c");
+        std::fs::write(&a, "").unwrap();
+        let a_real = crate::analyze::compile_commands::real_path(&a);
+        let a = a.to_string_lossy().to_string();
+        let report = IncludeReport {
+            unresolved: vec![
+                row("stddef.h", &a_real, false),
+                row("asm/generated.h", &a_real, true),
+                row("forced.h", "", false),
+            ],
+            ..Default::default()
+        };
+        let dependence = HeaderDependence::build(
+            ["DCL31-C".to_string()].into(),
+            [(a.as_str(), 1)],
+            &report,
+            &[&HashMap::new()],
+            &Default::default(),
+        );
+        assert_eq!(
+            dependence.of("DCL31-C", &a),
+            Some(&["asm/generated.h".to_string(), "forced.h".to_string()][..])
+        );
+        // The generated asm/ header is the project's: headlined.
+        assert!(report
+            .summary_line()
+            .unwrap()
+            .contains("not found (2 named by project files"));
+    }
+
+    /// A spelling a project file and a system header both name counts once,
+    /// as the project's.
+    #[test]
+    fn a_header_named_by_both_counts_as_the_projects() {
+        use crate::analyze::context::{IncludeForm, IncludeReport, UnresolvedInclude};
+        let row = |includer: &str, outside| UnresolvedInclude {
+            spelling: "dep.h".into(),
+            form: IncludeForm::Angle,
+            includer: includer.into(),
+            line: 1,
+            in_dead_arm: false,
+            includer_outside_project: outside,
+            project_header: false,
+        };
+        let report = IncludeReport {
+            unresolved: vec![row("/p/a.c", false), row("/usr/include/x.h", true)],
+            ..Default::default()
+        };
+        assert!(report.summary_line().unwrap().starts_with(
+            "Headers: 1 #include'd header(s) not found (1 named by project files, 0 only by \
+             system headers): dep.h."
+        ));
     }
 
     /// Nothing missing, or only a never-compiled arm's include, is no line.

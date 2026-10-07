@@ -293,7 +293,7 @@ pub fn export_all_violations_to_sarif(
         results_array.push(result);
     }
 
-    let sarif = serde_json::json!({
+    let mut sarif = serde_json::json!({
         "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
         "version": "2.1.0",
         "runs": [{
@@ -312,17 +312,20 @@ pub fn export_all_violations_to_sarif(
             "invocations": [invocation(incomplete, headers)],
             "properties": {
                 "aurora-lint/settings": settings.to_json(),
-                // What #include resolution could not see, so two hosts'
-                // reports diff to the cause of a header-driven difference.
-                "aurora-lint/headers": headers.report.map(|r| serde_json::json!({
-                    "searchPaths": r.search_paths,
-                    "forcedIncludes": r.forced_includes,
-                    "unresolved": r.unresolved,
-                    "outsideHeaderCount": r.outside_headers.len(),
-                }))
             }
         }]
     });
+    // What #include resolution could not see, so two hosts' reports diff to
+    // the cause of a header-driven difference. Absent when the export has no
+    // report to give (the interactive UI's).
+    if let Some(r) = headers.report {
+        sarif["runs"][0]["properties"]["aurora-lint/headers"] = serde_json::json!({
+            "searchPaths": r.search_paths,
+            "forcedIncludes": r.forced_includes,
+            "unresolved": r.unresolved,
+            "outsideHeaderCount": r.outside_headers.len(),
+        });
+    }
 
     let file = File::create(sarif_path)?;
     let writer = BufWriter::new(file);

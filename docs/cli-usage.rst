@@ -339,10 +339,18 @@ include in a Linux library header) is listed apart from the project's own.
 Headers that live in the compiler's built-in directory or the multiarch
 directory rather than in ``/usr/include`` itself (the ``bits/``, ``gnu/`` and
 ``asm/`` trees and the freestanding headers such as ``stddef.h`` and
-``stdarg.h``) are counted apart and kept out of the headline: the scan
-searches those directories only with ``--system-includes``, so without it
-nearly every host misses them, and they would drown out the project's own
-missing headers. ``-v`` and ``--report-headers`` still list each one.
+``stdarg.h``) are counted apart and not headlined: the scan searches those
+directories only with ``--system-includes``, so without it nearly every host
+misses them, and they would drown out the project's own missing headers.
+``-v`` and ``--report-headers`` still list each one. A missing header of the
+project's own that happens to share such a name (a generated ``asm/...``) is
+headlined as usual. On a Linux scan without ``--system-includes`` this line
+is therefore almost always printed; what matters is which headers it names.
+
+To pin what a scan sees instead of explaining it afterwards, give it the
+headers explicitly, all opt-in: ``-I`` for each directory (the multiarch one
+included), ``--system-includes`` for the compiler's own, or a fixed header
+tree checked out alongside the project.
 
 The SARIF export records the same rows under the run's
 ``aurora-lint/headers`` property, with a ``note``-level
@@ -358,15 +366,17 @@ findings::
 Each finding that may depend on a missing header says so. A rule that reads
 facts headers supply (function declarations, macros and macro constants,
 summaries of functions a header defines, struct layouts) and reports in a
-file whose ``#include`` graph reaches a header that a project file names and
-the scan could not find carries the names of those headers: ``missing_headers`` in the JSON export,
+file whose ``#include`` graph (including the build's forced includes)
+reaches a header that a project file names and the scan could not find
+carries the names of those headers: ``missing_headers`` in the JSON export,
 ``properties.missingHeaders`` in SARIF, and a ``note: may depend on header(s)
 the scan could not find`` line with ``-v``. It says *may*: the rule could have
 needed something those headers declare, not that it did. A finding without
 the marker did not depend on any missing header, so comparing two hosts'
 exports separates the findings a header explains from the ones it cannot.
 A header missing only from a system header's own includes (``bits/*`` from
-the C library's headers, say) marks no finding; it is in ``-v`` and
+the C library's headers, say) marks no finding, and neither does one of the
+compiler's built-in or multiarch headers above; both are in ``-v`` and
 ``--report-headers``.
 
 The reverse holds too. A macro the scan took from a header outside the
@@ -378,7 +388,8 @@ defines names it and that header: ``harvested_from`` in the JSON export,
 outside the project`` line with ``-v``. It goes by the finding's line, not by
 what the rule used: a macro the finding relies on but that is spelled on
 another line (at a declaration, or inside another macro's body) is not named,
-and a macro on the line that the rule did not use is.
+and a macro on the line that the rule did not use is, as is a macro name that
+appears on the line only inside a comment or a string.
 
 None of this changes a finding.
 

@@ -512,7 +512,10 @@ fn header_dependence(
         rules.clone(),
         findings,
         &context.include_report,
-        &context.include_edges,
+        &[
+            &context.include_edges,
+            &context.include_edges_beyond_search_path,
+        ],
         &context.outside_macro_origins,
     )
 }
@@ -625,8 +628,11 @@ fn load_project_context(
             if let Some(reporter) = progress {
                 reporter.report_prescan_start(0);
             }
-            let ctx = context::ProjectContext::load_from_file(path)?;
+            let mut ctx = context::ProjectContext::load_from_file(path)?;
             ctx.check_built_under(&built_under, path)?;
+            // The cache's include report describes the host that saved it;
+            // this run reports its own resolution, or none.
+            ctx.include_report = Default::default();
             let declared = crate::settings::memory::declared();
             if ctx.memory_declarations != *declared {
                 anyhow::bail!(
