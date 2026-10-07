@@ -245,17 +245,19 @@ costs much less than answering them in review.
   ±1, and tcb's table reports both `in_bad` (section) and `flaw_lines_hit`.
   0005 says reported Juliet figures state section-level scoring. Name which
   figure is which unit.
-- **Correction (2026-10-07, proposed; tracks the ADR-0005 amendment, pending
-  Brandon):** the §8.1 quote above is partial. §8.1 asks the tool to "report
-  one flaw of the target type" in the bad function — a type-matched report,
-  not bad-section membership alone — and §8.3 says non-target-type reports
-  "are typically ignored when studying a static analysis tool". So the guide
-  does not define a hit as section membership; the section-only coarsening is
-  `bench/analyzer.py`'s automation (a CERT id does not map cleanly onto a CWE
-  target type). The "aligned, and a strength" verdict stands only as a
-  strength of our harness being explicit about its unit, not as the guide
-  confirming the section reading. The E6 row's "0005 says Juliet is
-  section-scored" should likewise read as our harness's scoring.
+- **Correction (2026-10-07; tracks the ADR-0005 amendment):** the §8.1 quote
+  above is partial. §8.1 asks the tool to "report one flaw of the target type"
+  in the bad function — a type-matched report, not bad-section membership alone
+  — and §8.3 says non-target-type reports "are typically ignored when studying
+  a static analysis tool". So the guide does not define a hit as section
+  membership. Our harness does match the type (by rule selection in fast mode —
+  only CWE-mapped rules run — and by the scorer's CWE-matched unit in both
+  modes, `bench/analyzer.py`); what is coarse is the bad-section span (a finding
+  anywhere in the bad function, not pinned to the flaw line) and the
+  many-to-many rule↔CWE mapping. The "aligned, and a strength" verdict stands
+  only as a strength of our harness being explicit about its unit, not as the
+  guide confirming a section-membership reading. The E6 row's "0005 says Juliet
+  is section-scored" should likewise read as our harness's scoring.
 
 ### Amendment list, updated
 
