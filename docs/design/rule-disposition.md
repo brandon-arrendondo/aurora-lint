@@ -293,7 +293,7 @@ the tool prints is the authority.
 | FIO46-C | rule | deterministic | proposed | On some path after `fclose(s)`, with no reassignment of `s`, `s` is passed to any function (`fclose` included) or read. After `fclose(stdout)`, the implicit-stdout functions count too (C11 7.21.3p4; CERT examples; PC-lint 2471). | verified: CWE-675 (proposed mapping, moved from FIO24-C) | Fix: control flow is ignored, so a close on an early-return branch is reported (misfire). A double `fclose` isn't checked, and `putc` is wrongly listed as an implicit-stdout function. |
 | FIO47-C | rule | deterministic | proposed | A formatted I/O call with a literal format whose conversion specifications are malformed, or whose arguments don't match in count or type per conversion (C11 7.21.6; CERT examples; GCC/Clang `-Wformat`). | verified: CWE-685, CWE-688 (CWE-688 proposed) | Recent fixes addressed `*` width/precision, macro-prefixed formats, argument typing and scansets. Next: typedef'd integer widths and formats given as object-like macros. Both are silent today. |
 | FIO50-C | rule | not a CERT C guideline (C++ id; covered by FIO39-C) | ruled | FIO39-C's construct: alternating input and output on one stream. | none | CERT C has no FIO50-C; the id is CERT C++'s FIO50-CPP. Its stream-aware logic was ported into FIO39-C; removed in v0.7.0. |
-| FIO51-C | rule | not a CERT C guideline (C++ id; covered by FIO42-C) | ruled | FIO42-C's construct: a file not closed when its last reference is lost. | none | CERT C has no FIO51-C; the id is CERT C++'s FIO51-CPP. FIO42-C already reports everything it does. |
+| FIO51-C | rule | not a CERT C guideline (C++ id; covered by FIO42-C) | ruled | FIO42-C's construct: a file not closed when its last reference is lost. | none | CERT C has no FIO51-C; the id is CERT C++'s FIO51-CPP. FIO42-C already reports everything it does. Removed in v0.7.0. |
 
 ## ENV: Environment (9)
 
@@ -485,7 +485,7 @@ Every rule and checkable form the tool does not ship, with its reason (ADR-0013 
 - **FIO18-C**: covered by ARR38-C. The decidable harm in CERT's example is an `fwrite` count past the buffer, which is ARR38-C's construct. The string-intent reading can't be decided from source. (Removal waits on ARR38-C reporting it.)
 - **FIO24-C, double-close form**: not this guideline's construct. It moves to FIO46-C, which covers use of a closed stream.
 - **FIO50-C**: not a CERT C guideline. It is CERT C++'s FIO50-CPP; FIO39-C covers the construct, with FIO50-C's stream-aware logic ported. Removed in v0.7.0.
-- **FIO51-C**: not a CERT C guideline. It is CERT C++'s FIO51-CPP, and FIO42-C covers the construct.
+- **FIO51-C**: not a CERT C guideline. It is CERT C++'s FIO51-CPP, and FIO42-C covers the construct. Removed in v0.7.0.
 - **PRE05-C, definition-level form**: dropped. CERT's first noncompliant example and first compliant solution share one shape at the definition, so the rule is checked at the invocation instead.
 - INT00-C: covered by FIO47-C, INT30-C and INT18-C. Each checkable form in CERT's examples is one of those rules'
   constructs, and "understand the data model" can't be checked.

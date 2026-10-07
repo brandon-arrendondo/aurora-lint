@@ -20,7 +20,7 @@ aurora-lint uses a multi-pass analysis architecture:
     [Dataflow Analysis] --> Null state, value range, reaching defs, init state
         |
         v
-    [Rule Evaluation] --> 303 CERT C rules applied to AST + CFG + context
+    [Rule Evaluation] --> 302 CERT C rules applied to AST + CFG + context
         |
         v
     [Suppression Filter] --> Hash-based + wildcard (glob/prefix) suppression

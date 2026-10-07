@@ -632,10 +632,6 @@ enabled = true
 enabled = true
 
 
-[rules.cert_c.FIO51-C]
-enabled = true
-
-
 [rules.cert_c.FLP00-C]
 enabled = true
 

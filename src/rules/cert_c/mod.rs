@@ -447,8 +447,6 @@ pub mod fio23_c;
 
 #[path = "FIO/FIO24-C/fio24_c.rs"]
 pub mod fio24_c;
-#[path = "FIO/FIO51-C/fio51_c.rs"]
-pub mod fio51_c;
 
 #[path = "FIO/FIO15-C/fio15_c.rs"]
 pub mod fio15_c;
@@ -1055,7 +1053,6 @@ impl RuleRegistry {
         registry.register(Box::new(fio17_c::Fio17C));
         registry.register(Box::new(fio23_c::Fio23C));
         registry.register(Box::new(fio24_c::Fio24C));
-        registry.register(Box::new(fio51_c::Fio51C));
         registry.register(Box::new(fio15_c::Fio15C));
         registry.register(Box::new(fio32_c::Fio32C));
         registry.register(Box::new(fio38_c::Fio38C));

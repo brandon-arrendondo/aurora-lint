@@ -215,8 +215,8 @@ pub enum RuleCategory {
 }
 
 /// Ids registered under `cert_c` that are not CERT C identifiers, so have no
-/// rule/recommendation standing: `CON50-C` and `FIO51-C` are CERT C++ ids.
-pub const NON_CERT_C_IDS: &[&str] = &["CON50-C", "FIO51-C"];
+/// rule/recommendation standing: `CON50-C` is a CERT C++ id.
+pub const NON_CERT_C_IDS: &[&str] = &["CON50-C"];
 
 impl RuleCategory {
     /// The category CERT C's own numbering assigns `id`: within each

@@ -5339,9 +5339,6 @@
       }
     ]
   },
-  "FIO51-C": {
-    "status": "no_longer_on_site"
-  },
   "FLP00-C": {
     "status": "checked",
     "current_block_count": 0,
