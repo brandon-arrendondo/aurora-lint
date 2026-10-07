@@ -649,7 +649,7 @@ fn load_project_context(
         // *project* header.
         let mut project_roots: Vec<String> = vec![project_source.get_root_path().to_string()];
         project_roots.extend(directories.iter().cloned());
-        prescan::resolve_includes(
+        prescan::resolve_includes_scoped(
             &c_files,
             forced_includes,
             include_paths,
@@ -659,6 +659,7 @@ fn load_project_context(
             needs_vra,
             data_model,
             header_lookup,
+            &scoped_out,
         )?;
     }
 

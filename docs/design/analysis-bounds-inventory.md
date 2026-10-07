@@ -127,6 +127,7 @@ Kinds:
 | `paren_preproc_guard` | 64-line statement lookback | d | silent | misparse, either direction |
 | `compile_commands` response files | depth 8 | b | silent: the file is dropped | lost `-D`/`-I`, either direction |
 | `resolve_includes`, `IncludeClosure`, `concurrency_roots` | explicit queue and visited set | a | – | terminate |
+| `prescan::walk_beyond_search_path` (DCL31-C's stand-down decision only) | explicit queue and visited set; each file read once; suffix matches memoized per spelling | a | – | terminate |
 | tree-sitter parse | no timeout set | – | – | relies on tree-sitter's own linear-time parse |
 
 ## Utility helpers

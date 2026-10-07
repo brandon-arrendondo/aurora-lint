@@ -48,7 +48,24 @@ impl IncludeClosure {
         }
         let mut closure = Self::default();
         closure.files.insert(file.clone());
-        let mut stack = vec![file, String::new()];
+        closure.walk(layers, vec![file, String::new()]);
+        Some(closure)
+    }
+
+    /// What every translation unit includes regardless of its own
+    /// `#include` lines: the build's forced includes (filed under the empty
+    /// name) and everything they include. `None` when there are none.
+    pub fn of_forced_includes(layers: &[&HashMap<String, Vec<String>>]) -> Option<Self> {
+        if !layers.iter().any(|edges| edges.contains_key("")) {
+            return None;
+        }
+        let mut closure = Self::default();
+        closure.walk(layers, vec![String::new()]);
+        Some(closure)
+    }
+
+    fn walk(&mut self, layers: &[&HashMap<String, Vec<String>>], mut stack: Vec<String>) {
+        let closure = self;
         while let Some(f) = stack.pop() {
             for next in layers.iter().filter_map(|edges| edges.get(&f)).flatten() {
                 if next == ANY_INCLUDE {
@@ -70,7 +87,6 @@ impl IncludeClosure {
                 }
             }
         }
-        Some(closure)
     }
 
     /// Whether the translation unit may include the file at real path
@@ -113,8 +129,11 @@ pub fn unresolved_project_headers_reached(
     if unresolved_project_headers.is_empty() {
         return Vec::new();
     }
-    let Some(closure) =
-        IncludeClosure::of_layers(&[include_edges, include_edges_beyond_search_path], path)
+    let layers = [include_edges, include_edges_beyond_search_path];
+    // A file with no #include of its own has no edge, but the build's forced
+    // includes (`-include gen.h`) still reach it.
+    let Some(closure) = IncludeClosure::of_layers(&layers, path)
+        .or_else(|| IncludeClosure::of_forced_includes(&layers))
     else {
         return Vec::new();
     };
@@ -1371,6 +1390,36 @@ fn overlay<V: Clone + PartialEq>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_with_no_include_of_its_own_still_reaches_a_forced_generated_header() {
+        // `-include gen/defs_gen.h` on every compile line: a file with no
+        // #include has no edge of its own, but the forced include reaches it.
+        let edges: HashMap<String, Vec<String>> = HashMap::from([(
+            String::new(),
+            vec![format!("{UNRESOLVED_INCLUDE}gen/defs_gen.h")],
+        )]);
+        let beyond = HashMap::new();
+        let unresolved: HashSet<String> = HashSet::from(["gen/defs_gen.h".to_string()]);
+        assert_eq!(
+            unresolved_project_headers_reached(
+                &edges,
+                &beyond,
+                &unresolved,
+                Path::new("/nowhere/no_includes.c")
+            ),
+            vec!["gen/defs_gen.h".to_string()]
+        );
+        // Without forced includes, a file with no edge reaches nothing.
+        let none: HashMap<String, Vec<String>> = HashMap::new();
+        assert!(unresolved_project_headers_reached(
+            &none,
+            &beyond,
+            &unresolved,
+            Path::new("/nowhere/no_includes.c")
+        )
+        .is_empty());
+    }
 
     fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs

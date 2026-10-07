@@ -7265,6 +7265,36 @@ pub fn resolve_includes(
     model: IntFacts,
     lookup: &HeaderLookup,
 ) -> Result<()> {
+    resolve_includes_scoped(
+        source_files,
+        forced_includes,
+        include_paths,
+        project_roots,
+        context,
+        progress,
+        needs_vra,
+        model,
+        lookup,
+        &|_, _| false,
+    )
+}
+
+/// [`resolve_includes`] with the prescan scope: `scoped_out(path, root)` is
+/// true for a project file the scan leaves out ([`is_scoped_out`]), which then
+/// can't stand for a header an include names.
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_includes_scoped(
+    source_files: &[String],
+    forced_includes: &[String],
+    include_paths: &[String],
+    project_roots: &[String],
+    context: &mut super::context::ProjectContext,
+    progress: Option<&dyn ProgressReporter>,
+    needs_vra: bool,
+    model: IntFacts,
+    lookup: &HeaderLookup,
+    scoped_out: &dyn Fn(&Path, &str) -> bool,
+) -> Result<()> {
     if let Some(reporter) = progress {
         reporter.report_include_resolve_start(include_paths.len());
     }
@@ -7475,6 +7505,7 @@ pub fn resolve_includes(
                 in_dead_arm,
                 project_roots,
                 lookup,
+                scoped_out,
             );
         }
     }
@@ -7490,6 +7521,7 @@ pub fn resolve_includes(
         project_roots,
         &mut unresolved.project_files,
         lookup,
+        scoped_out,
     );
 
     // Resolve trailing-macro packed-struct candidates against the
@@ -7724,26 +7756,41 @@ pub(crate) fn find_header(
         .find_map(|search_dir| lookup.find_in(Path::new(search_dir), include_path))
 }
 
-/// Every file under the project roots, keyed by its root-relative path under
-/// a [`HeaderLookup`]'s rule, listed the first time it is asked for. Only an
-/// include that already looks like a missing project header asks, so most
-/// scans never walk the tree.
+/// Every in-scope file under the project roots, keyed by its root-relative
+/// path under a [`HeaderLookup`]'s rule. Listed the first time an
+/// unresolvable include from inside the project asks (which most scans with
+/// any such include will), and each spelling's answer is memoized.
 #[derive(Default)]
 struct ProjectFiles {
-    /// (root-relative path key, path on disk), sorted by path.
+    /// (root-relative path key, path on disk), in walk order (sorted by name).
     files: Option<Vec<(String, PathBuf)>>,
+    /// Normalized spelling -> its matches.
+    memo: HashMap<String, Vec<PathBuf>>,
 }
 
 impl ProjectFiles {
     /// The project files whose root-relative path ends in `include_path`,
     /// whole components only (`utils/common.h` matches `src/utils/common.h`
-    /// but not `src/myutils/common.h`), in path order.
+    /// but not `src/myutils/common.h`), in path order. Files the prescan scope
+    /// leaves out (`scoped_out`, as for the prescan itself) don't count: a copy
+    /// of a generated header under an excluded build tree is never read, so it
+    /// can't stand for the missing one. A spelling must have a directory
+    /// component: `<stdio.h>` or `"config.h"` would match every shim or
+    /// per-directory config of that name. `.` and `..` segments are dropped
+    /// first, as `IncludeClosure` drops them.
     fn files_ending_in(
         &mut self,
         include_path: &str,
         project_roots: &[String],
         lookup: &HeaderLookup,
+        scoped_out: &dyn Fn(&Path, &str) -> bool,
     ) -> Vec<PathBuf> {
+        let Some(spelling) = normalized_include_spelling(include_path) else {
+            return Vec::new();
+        };
+        if let Some(found) = self.memo.get(&spelling) {
+            return found.clone();
+        }
         let files = self.files.get_or_insert_with(|| {
             let mut files = Vec::new();
             for root in project_roots {
@@ -7752,7 +7799,7 @@ impl ProjectFiles {
                     .into_iter()
                     .filter_map(|e| e.ok())
                 {
-                    if !entry.file_type().is_file() {
+                    if !entry.file_type().is_file() || scoped_out(entry.path(), root) {
                         continue;
                     }
                     if let Ok(rel) = entry.path().strip_prefix(root) {
@@ -7763,14 +7810,27 @@ impl ProjectFiles {
             }
             files
         });
-        let wanted = lookup.key(include_path);
+        let wanted = lookup.key(&spelling);
         let suffix = format!("/{wanted}");
-        files
+        let found: Vec<PathBuf> = files
             .iter()
             .filter(|(k, _)| *k == wanted || k.ends_with(&suffix))
             .map(|(_, path)| path.clone())
-            .collect()
+            .collect();
+        self.memo.insert(spelling, found.clone());
+        found
     }
+}
+
+/// `include_path` with `\\` read as `/` and empty, `.` and `..` segments
+/// dropped, or `None` when fewer than two components remain (a bare
+/// `"config.h"` names no particular project file).
+fn normalized_include_spelling(include_path: &str) -> Option<String> {
+    let parts: Vec<&str> = include_path
+        .split(['/', '\\'])
+        .filter(|segment| !matches!(*segment, "" | "." | ".."))
+        .collect();
+    (parts.len() >= 2).then(|| parts.join("/"))
 }
 
 /// What `resolve_includes` keeps about the includes it can't resolve.
@@ -7780,8 +7840,6 @@ struct UnresolvedIncludes {
     /// a *project* header ([`project_local_search_paths`]).
     project_search_paths: Vec<String>,
     project_files: ProjectFiles,
-    /// The project files whose path ends in an include's spelling.
-    elsewhere_by_spelling: HashMap<String, Vec<PathBuf>>,
     /// (includer's real path, the include's spelling, a project file whose
     /// path ends in it): where the walk beyond the search path starts.
     beyond: Vec<(String, String, PathBuf)>,
@@ -7808,6 +7866,7 @@ impl UnresolvedIncludes {
         in_dead_arm: bool,
         project_roots: &[String],
         lookup: &HeaderLookup,
+        scoped_out: &dyn Fn(&Path, &str) -> bool,
     ) {
         // Only an include the project itself makes can name a header the
         // project is missing. One written inside a header outside every
@@ -7823,19 +7882,15 @@ impl UnresolvedIncludes {
         // include/arch/x86/arch/kernel/apic.h. The walk beyond the search
         // path follows it from every includer (not just the first in a
         // directory), since each file's own closure is what decides.
-        let project_files = &mut self.project_files;
-        let elsewhere: &[PathBuf] = if !in_dead_arm && !includer_outside {
-            self.elsewhere_by_spelling
-                .entry(include_path.clone())
-                .or_insert_with(|| {
-                    project_files.files_ending_in(&include_path, project_roots, lookup)
-                })
+        let elsewhere: Vec<PathBuf> = if !in_dead_arm && !includer_outside {
+            self.project_files
+                .files_ending_in(&include_path, project_roots, lookup, scoped_out)
         } else {
-            &[]
+            Vec::new()
         };
         if let Some(includer) = includer {
             let from = crate::analyze::compile_commands::real_path(Path::new(&**includer));
-            for file in elsewhere {
+            for file in &elsewhere {
                 self.beyond
                     .push((from.clone(), include_path.clone(), file.clone()));
             }
@@ -7875,10 +7930,14 @@ impl UnresolvedIncludes {
 
 /// Follow the project files an unresolvable include names (`beyond`) through
 /// their own `#include` lines, recording the edges in
-/// `include_edges_beyond_search_path` and any missing generated header found
-/// on the way in `unresolved_project_headers`. Reads include lines only:
-/// nothing is harvested, so what other rules see is unchanged. Each file is
-/// read once.
+/// `include_edges_beyond_search_path`. Reads include lines only, so no rule
+/// sees a new declaration, macro or closure. The one thing it adds outside
+/// that field: a missing generated header it finds joins
+/// `unresolved_project_headers`, so `--report-macro-gaps` also labels that
+/// spelling "project" (a report label, not a finding). Each file is read once
+/// (explicit queue plus visited set); a missing header is classified only
+/// after the walk, against every search root the matches imply, so the
+/// answer doesn't depend on visit order.
 #[allow(clippy::too_many_arguments)]
 fn walk_beyond_search_path(
     context: &mut super::context::ProjectContext,
@@ -7889,6 +7948,7 @@ fn walk_beyond_search_path(
     project_roots: &[String],
     project_files: &mut ProjectFiles,
     lookup: &HeaderLookup,
+    scoped_out: &dyn Fn(&Path, &str) -> bool,
 ) {
     let mut edges: HashMap<String, Vec<String>> = HashMap::new();
     let mut add = |from: &str, to: String| {
@@ -7905,10 +7965,10 @@ fn walk_beyond_search_path(
     // <arch/object/structures_gen.h> is under include/arch/x86.
     let mut implied_roots: Vec<String> = project_search_paths.to_vec();
     let imply = |spelling: &str, file: &Path, roots: &mut Vec<String>| {
-        let depth = spelling
-            .split(['/', '\\'])
-            .filter(|c| !c.is_empty())
-            .count();
+        let Some(normalized) = normalized_include_spelling(spelling) else {
+            return;
+        };
+        let depth = normalized.split('/').count();
         if let Some(root) = file.ancestors().nth(depth) {
             let root = root.to_string_lossy().to_string();
             if !roots.contains(&root) {
@@ -7924,6 +7984,9 @@ fn walk_beyond_search_path(
             queue.push(file);
         }
     }
+    // (spelling, includer's directory): unresolved, no project file of that
+    // name; classified once the walk has found every implied root.
+    let mut unplaced: Vec<(String, Option<PathBuf>)> = Vec::new();
     while let Some(file) = queue.pop() {
         let from = crate::analyze::compile_commands::real_path(&file);
         let Ok((tree, source)) = parser.parse_file(&file.to_string_lossy()) else {
@@ -7945,16 +8008,15 @@ fn walk_beyond_search_path(
                 }
                 continue;
             }
-            let looks_missing =
-                is_missing_project_header(&include, dir.as_deref(), &implied_roots, lookup);
-            let elsewhere = project_files.files_ending_in(&include, project_roots, lookup);
-            if looks_missing && elsewhere.is_empty() {
-                context.unresolved_project_headers.insert(include.clone());
-            }
             add(
                 &from,
                 format!("{}{include}", super::context::UNRESOLVED_INCLUDE),
             );
+            let elsewhere =
+                project_files.files_ending_in(&include, project_roots, lookup, scoped_out);
+            if elsewhere.is_empty() {
+                unplaced.push((include.clone(), dir.clone()));
+            }
             for other in elsewhere {
                 imply(&include, &other, &mut implied_roots);
                 let real = crate::analyze::compile_commands::real_path(&other);
@@ -7963,6 +8025,11 @@ fn walk_beyond_search_path(
                     queue.push(other);
                 }
             }
+        }
+    }
+    for (include, dir) in unplaced {
+        if is_missing_project_header(&include, dir.as_deref(), &implied_roots, lookup) {
+            context.unresolved_project_headers.insert(include);
         }
     }
     if !edges.is_empty() {
@@ -9988,19 +10055,36 @@ void caller(char *other) {
         let lookup = HeaderLookup::default();
         let mut files = ProjectFiles::default();
         assert!(!files
-            .files_ending_in("utils/common.h", &roots, &lookup)
+            .files_ending_in("utils/common.h", &roots, &lookup, &|_, _| false)
             .is_empty());
         assert!(!files
-            .files_ending_in("src/utils/common.h", &roots, &lookup)
+            .files_ending_in("src/utils/common.h", &roots, &lookup, &|_, _| false)
             .is_empty());
         assert!(files
-            .files_ending_in("tils/common.h", &roots, &lookup)
+            .files_ending_in("tils/common.h", &roots, &lookup, &|_, _| false)
             .is_empty());
         assert!(files
-            .files_ending_in("utils/other.h", &roots, &lookup)
+            .files_ending_in("utils/other.h", &roots, &lookup, &|_, _| false)
             .is_empty());
         assert!(files
-            .files_ending_in("object/structures_gen.h", &roots, &lookup)
+            .files_ending_in("object/structures_gen.h", &roots, &lookup, &|_, _| false)
+            .is_empty());
+
+        // A bare file name names no particular project file.
+        std::fs::write(tmp.path().join("src/config.h"), "").unwrap();
+        assert!(files
+            .files_ending_in("config.h", &roots, &lookup, &|_, _| false)
+            .is_empty());
+        // `.`/`..` segments are dropped before matching.
+        assert!(!files
+            .files_ending_in("../utils/./common.h", &roots, &lookup, &|_, _| false)
+            .is_empty());
+        // A file the prescan scope leaves out doesn't count.
+        let mut scoped = ProjectFiles::default();
+        assert!(scoped
+            .files_ending_in("utils/common.h", &roots, &lookup, &|path, _| {
+                path.to_string_lossy().contains("/src/")
+            })
             .is_empty());
     }
 
