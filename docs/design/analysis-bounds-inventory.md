@@ -47,11 +47,11 @@ Kinds:
   (raylib's `miniaudio.h`). The largest real C inputs a scanner meets are
   amalgamations and SDK headers of 9-10 MiB (sqlite3.c, the Windows SDK's
   biggest WinRT header). The 64 MiB default is several times either.
-- **Quadratic input.** A comment-heavy file is processed in time quadratic
-  in its length, in a file-level pass rather than a rule. With one rule
-  enabled, 1 MiB takes about 30 s and 2 MiB close to 2 minutes. This is
-  within the default limits, but it is the kind of input the bounds exist
-  for.
+- **Comment-heavy input.** A comment-heavy file used to cost time
+  quadratic in its length: walks that took a node's children by index
+  re-walked every earlier sibling, comments included, for each one. They
+  iterate the children instead, and the cost is now linear: 2 MiB of comment padding takes about
+  1.3 s under the default rules. A test checks the ratio, not the time.
 
 ## Checkpoint sites
 
