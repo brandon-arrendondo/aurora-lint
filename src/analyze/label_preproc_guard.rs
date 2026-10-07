@@ -50,11 +50,33 @@
 //! in `analyze::cfg`) in exchange for the guarded statements being visible
 //! to analysis at all.
 //!
+//! The mirror image has the same cause: a bare label as the *last* line of
+//! the guarded block, directly before its `#endif` (mbedtls
+//! `ssl_tls12_client.c`, `ssl_parse_server_key_exchange`):
+//! ```c
+//! #if defined(MBEDTLS_SSL_ECP_RESTARTABLE_ENABLED)
+//!     if (ssl->handshake->ecrs_enabled) {
+//!         ssl->handshake->ecrs_state = ssl_ecrs_ske_start_processing;
+//!     }
+//!
+//! start_processing:
+//! #endif
+//!     p   = ssl->in_msg + mbedtls_ssl_hs_hdr_len(ssl);
+//! ```
+//! The `#endif` cannot fill the label's statement slot either, so it
+//! becomes an `ERROR` and the `#if` never closes: it runs on past the
+//! function's own closing `}`. Alone, the parser inserts a `MISSING #endif`
+//! at the end of the function. In a file it borrows a later `#endif`, so the
+//! function swallows the definitions after it, or, once other repairs have
+//! run, the whole file becomes one `ERROR` and the function is not a
+//! `function_definition` anywhere. The same blanking fixes it: the label
+//! then labels the statement after the old `#endif`, which is where control
+//! goes from it in every build.
+//!
 //! Deliberately conservative: skips any block containing its own nested
 //! `#else`/`#elif` at the top depth -- unclear how to preserve two-branch
-//! semantics while still fitting the single-statement slot, and no
-//! confirmed real-world instance needs it (same call `preproc_dangling_else`
-//! makes for the analogous case).
+//! semantics while still fitting the single-statement slot (same call
+//! `preproc_dangling_else` makes for the analogous case).
 
 fn is_directive_start(trimmed: &str) -> bool {
     trimmed.starts_with("#if") // covers #if, #ifdef, #ifndef (all start "#if")
@@ -166,9 +188,45 @@ fn write_marker_or_blank(out: &mut [u8], line_start: usize, line_len: usize, mar
     blank_line(out, line_start, line_len);
 }
 
+/// One `#if`/`#ifdef`/`#ifndef` group: its opening and `#endif` line
+/// indexes, and whether it has an `#else`/`#elif` of its own.
+struct Group {
+    open: usize,
+    end: usize,
+    has_branch: bool,
+}
+
+/// Every matched group in `lines`, in order of their opening lines. An
+/// unmatched `#if` or `#endif` belongs to no group.
+fn directive_groups(lines: &[&str]) -> Vec<Group> {
+    let mut groups = Vec::new();
+    let mut open: Vec<(usize, bool)> = Vec::new();
+    for (j, line) in lines.iter().enumerate() {
+        let t = line.trim_start();
+        if is_directive_start(t) {
+            open.push((j, false));
+        } else if is_branch_directive(t) {
+            if let Some(top) = open.last_mut() {
+                top.1 = true;
+            }
+        } else if is_endif(t) {
+            if let Some((start, has_branch)) = open.pop() {
+                groups.push(Group {
+                    open: start,
+                    end: j,
+                    has_branch,
+                });
+            }
+        }
+    }
+    groups.sort_by_key(|g| g.open);
+    groups
+}
+
 /// Blank the `#if`/`#ifdef`/`#ifndef` + matching `#endif` directive lines
-/// that open immediately after a bare goto-label line, per the module docs
-/// above. Length-preserving.
+/// of a group that opens immediately after a bare goto-label line, or whose
+/// last line before the `#endif` is one, per the module docs above.
+/// Length-preserving.
 pub fn blank_label_guarded_preproc(source: &str) -> String {
     let lines: Vec<&str> = source.lines().collect();
     let mut line_starts = Vec::with_capacity(lines.len());
@@ -180,49 +238,21 @@ pub fn blank_label_guarded_preproc(source: &str) -> String {
 
     let mut out = source.as_bytes().to_vec();
 
-    let mut i = 0usize;
-    while i < lines.len() {
+    for Group {
+        open: i,
+        end: end_idx,
+        has_branch,
+    } in directive_groups(&lines)
+    {
         let trimmed = lines[i].trim_start();
-        if !is_directive_start(trimmed) {
-            i += 1;
-            continue;
-        }
-
         let prev_content = (0..i).rev().find(|&k| !lines[k].trim().is_empty());
         let follows_label = prev_content.is_some_and(|k| is_bare_label_line(lines[k]));
+        let last_content = (i + 1..end_idx)
+            .rev()
+            .find(|&k| !lines[k].trim().is_empty());
+        let ends_in_label = last_content.is_some_and(|k| is_bare_label_line(lines[k]));
 
-        if !follows_label {
-            i += 1;
-            continue;
-        }
-
-        let mut depth = 1i32;
-        let mut end_idx = None;
-        let mut has_branch = false;
-        let mut j = i + 1;
-        while j < lines.len() {
-            let t = lines[j].trim_start();
-            if is_directive_start(t) {
-                depth += 1;
-            } else if is_endif(t) {
-                depth -= 1;
-                if depth == 0 {
-                    end_idx = Some(j);
-                    break;
-                }
-            } else if depth == 1 && is_branch_directive(t) {
-                has_branch = true;
-            }
-            j += 1;
-        }
-
-        let Some(end_idx) = end_idx else {
-            // No matching #endif found -- move on rather than halt the scan.
-            i += 1;
-            continue;
-        };
-
-        if !has_branch {
+        if (follows_label || ends_in_label) && !has_branch {
             // Only emit the close marker when the open marker actually fit
             // on its own line -- an orphaned "/*E*/" with no matching open
             // marker is harmless (a backward scan starting inside this
@@ -244,8 +274,6 @@ pub fn blank_label_guarded_preproc(source: &str) -> String {
                 open_text.as_ref().map(|_| CLOSE_MARKER),
             );
         }
-
-        i += 1;
     }
 
     String::from_utf8(out).unwrap_or_else(|_| source.to_string())
@@ -470,5 +498,162 @@ out:
         assert!(!fixed.contains("/*G"));
         assert!(!fixed.contains("/*E*/"));
         assert!(parses_clean(src));
+    }
+
+    /// The shape of mbedtls `ssl_tls12_client.c`'s
+    /// `ssl_parse_server_key_exchange`: a goto label as the last line of a
+    /// guarded block, a dangling-`else` chain after it, and a function
+    /// defined once per arm of the next `#if`.
+    const LABEL_BEFORE_ENDIF: &str = "\
+static int parse_key_exchange(struct ctx *ssl)
+{
+    int ret = 0;
+
+    if (ssl->restart_state == 1) {
+        goto start_processing;
+    }
+#if defined(RESTARTABLE)
+    if (ssl->restart) {
+        ssl->state = 1;
+    }
+
+start_processing:
+#endif
+    ret = read_message(ssl);
+
+#if defined(PSK_ENABLED)
+    if (ssl->kex == KEX_PSK) {
+        ret = parse_psk_hint(ssl);
+    } else
+#endif
+    {
+        return -1;
+    }
+    return ret;
+}
+
+#if !defined(CERT_REQ_ALLOWED)
+static int parse_certificate_request(struct ctx *ssl)
+{
+    return 0;
+}
+#else
+static int parse_certificate_request(struct ctx *ssl)
+{
+    return read_message(ssl);
+}
+#endif
+
+static int parse_server_hello_done(struct ctx *ssl)
+{
+    return read_message(ssl);
+}
+";
+
+    /// Names of the `function_definition`s anywhere in `src` as
+    /// [`crate::parser::CParser`] parses it, and whether the tree has an
+    /// error.
+    fn functions_after_repair(src: &str) -> (Vec<String>, bool) {
+        let mut parser = crate::parser::CParser::new().unwrap();
+        let (tree, fixed) = parser.parse_source(src).unwrap();
+        let names = lang_parsing_substrate::query::find_descendants_of_kind(
+            tree.root_node(),
+            "function_definition",
+        )
+        .iter()
+        .filter_map(|f| crate::analyze::cfg::get_function_name(f, &fixed).map(str::to_string))
+        .collect();
+        (names, tree.root_node().has_error())
+    }
+
+    #[test]
+    fn a_label_before_the_endif_no_longer_leaves_the_if_open() {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&c_language()).unwrap();
+        let raw = parser.parse(LABEL_BEFORE_ENDIF, None).unwrap();
+        // Unrepaired, the label takes the `#endif` for its statement and the
+        // `#if` never closes.
+        assert!(raw.root_node().has_error());
+
+        // The dangling `else` is the next pass's to repair, so this checks
+        // the whole pipeline, not this pass alone.
+        let (names, has_error) = functions_after_repair(LABEL_BEFORE_ENDIF);
+        assert!(!has_error);
+        assert_eq!(
+            names,
+            [
+                "parse_key_exchange",
+                "parse_certificate_request",
+                "parse_certificate_request",
+                "parse_server_hello_done"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_label_before_the_endif_keeps_the_guard_marker() {
+        let fixed = blank_label_guarded_preproc(
+            "\
+void f(void) {
+    goto out;
+#ifdef X
+    os_free(rfds);
+out:
+#endif
+    return;
+}
+",
+        );
+        assert!(fixed.contains("/*Gd:X*/"));
+        assert!(fixed.contains("/*E*/"));
+        assert!(!fixed.contains("#ifdef"));
+        assert!(!fixed.contains("#endif"));
+    }
+
+    #[test]
+    fn a_label_before_the_else_is_left_alone() {
+        // The control: a group with its own `#else` keeps both arms, as for
+        // a label before the `#if`.
+        let src = "\
+void f(void) {
+    goto out;
+#ifdef X
+    os_free(rfds);
+out:
+#else
+    noop();
+#endif
+    return;
+}
+";
+        assert_eq!(blank_label_guarded_preproc(src), src);
+        let src = "\
+void f(void) {
+    goto out;
+#ifdef X
+    noop();
+#else
+    os_free(rfds);
+out:
+#endif
+    return;
+}
+";
+        assert_eq!(blank_label_guarded_preproc(src), src);
+    }
+
+    #[test]
+    fn a_label_inside_the_block_but_not_last_is_left_alone() {
+        let src = "\
+void f(void) {
+    goto out;
+#ifdef X
+out:
+    os_free(rfds);
+#endif
+    return;
+}
+";
+        assert_eq!(blank_label_guarded_preproc(src), src);
     }
 }
