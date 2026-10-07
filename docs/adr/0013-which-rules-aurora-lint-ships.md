@@ -231,3 +231,53 @@ numbers.
 rule enabled or suppressed per codebase rather than tool-wide — is under
 consideration as a direction for a later release. It is named here only so a
 reader knows the disposition set may grow; this amendment does not rule on it.
+
+## Amendment (2026-10-07, Brandon): a compiler is a comparison point, not a scope boundary — three tiers of what aurora-lint checks without one
+
+A standing claim of aurora-lint is that it does not need a compiler to flag a
+rule violation. Two rulings fix what that does and does not mean for which
+rules ship (Brandon, 2026-10-07).
+
+**1. Compiler overlap is validation, not a reason to cut.** That another tool
+— a compiler, clang-tidy, cppcheck, CodeQL — already diagnoses a construct is
+never a reason to remove an aurora-lint rule. aurora-lint flags the violation
+without a compiler, which is the point; those tools are partial comparison and
+validation sets where their coverage overlaps ours, nothing more. A build-flag
+or compiler-behaviour trait may at most drive an *optional* project-conditional
+suggestion when the project supplies `compile_commands.json` (the
+project-conditional forward pointer above); it never gates a rule off by
+default. This is the compiler-overlap counterpart to Decision 1 and ADR-0002:
+a rule's worth is deciding the violation from the source, not whether something
+else also decides it.
+
+**2. Three tiers of scope relative to a compiler.** There are things aurora-lint
+cannot do *because* it is not a compiler. The environment and definition facts a
+project would feed a compiler, it may also feed aurora-lint
+(`compile_commands.json`, `-D`/`-I`/`-std`/target, or a preset — ADR-0015), to
+extend and sharpen adjudication. Each rule falls into one of three tiers by how
+it depends on those facts:
+
+1. **A fact with a safe default.** The rule always runs, read strictly, and a
+   declared fact only refines it — language edition, data model, POSIX
+   environment, `FLT_EVAL_METHOD` and the like. The default is the strict
+   reading (ADR-0010: every compilable configuration counts; ADR-0015 holds the
+   presets).
+2. **A fact with no safe default.** The rule is in scope only when the project
+   supplies the same environment/definition facts a compiler would get. Without
+   them it does not run, or it reports what it needs rather than guessing. This
+   is the *environment-gated* disposition (Decision 2), stated as a scope rule.
+3. **Compiler or linker behaviour no source input can express** — optimizer
+   choices, generated object code, a specific compiler's defect, link-time
+   resolution. Out of scope, *unless the guideline also has a source-level
+   checkable form*, in which case the rule ships on that form alone. DCL17-C (a
+   miscompiled `volatile` access is a property of one compiler's object code,
+   which CERT says must be inspected directly) has no source-level form and is
+   unenforceable; MSC06-C keeps its source-level form — a clear of an automatic
+   object never read again before its lifetime ends, without
+   `memset_s`/`explicit_bzero` — even though the underlying hazard is an
+   optimizer's dead-store elimination.
+
+Neither ruling changes ADR-0011 (what counts as proof) or ADR-0002. They draw
+the line between what being compiler-free buys — tiers 1 and 2, adjudicated from
+the source and optionally sharpened by supplied facts — and what it costs: tier
+3, unless a source-level form exists.
