@@ -49,6 +49,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#cross-file-analysis">Cross-File Analysis</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#using-a-compile-database">Using a Compile Database</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#reaching-the-compiler-s-own-headers">Reaching the Compiler’s Own Headers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#headers-the-scan-could-not-find">Headers the Scan Could Not Find</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#seeing-where-the-engine-is-blind">Seeing Where the Engine Is Blind</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#deallocators-the-scan-cannot-see">Deallocators the Scan Cannot See</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#file-exclusion">File Exclusion</a></li>
@@ -156,6 +157,10 @@ Options:
                                    Off by default: it spawns a compiler. Usable with or
                                    without --compile-commands, which can never contain
                                    these paths
+      --report-headers FILE        Write what #include resolution could and could not
+                                   see as JSON: the search path, every #include that
+                                   resolved to no file, every header read from outside
+                                   the project with its SHA-256. Never changes a finding
       --report-macro-gaps[=FILE]   After the scan, report where the macro-expansion
                                    engine was blind: definitions it skipped, #includes
                                    it could not resolve, calls it could not attribute.
@@ -402,6 +407,72 @@ silently resolving nothing.</p></li>
 <p>The compiler’s own built-in system header directories are <em>not</em> in a compile
 database (they are implicit), so headers found only in <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> remain
 out of reach.</p>
+</section>
+<section id="headers-the-scan-could-not-find">
+<h2>Headers the Scan Could Not Find<a class="headerlink" href="#headers-the-scan-could-not-find" title="Link to this heading"></a></h2>
+<p>A header the scan cannot find changes what it can see: the declarations,
+macros and function bodies that header would supply are missing, and findings
+that rely on them can differ from a scan on a host that has the header. So a
+missing header is never silent. Whenever an <code class="docutils literal notranslate"><span class="pre">#include</span></code> in code some
+configuration compiles resolves to no file, aurora-lint prints one line on
+stderr naming how many headers were not found and the first few of them; with
+<code class="docutils literal notranslate"><span class="pre">-v</span></code> it lists each one with the file and line that includes it and the
+search path it was looked up on. An <code class="docutils literal notranslate"><span class="pre">#include</span></code> inside an arm its own file
+proves is never compiled (<code class="docutils literal notranslate"><span class="pre">#if</span> <span class="pre">0</span></code>) is counted, not listed, and one written
+only inside a system header (often a platform arm, such as a NetWare-only
+include in a Linux library header) is listed apart from the project’s own.</p>
+<p>Headers that live in the compiler’s built-in directory or the multiarch
+directory rather than in <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> itself (the <code class="docutils literal notranslate"><span class="pre">bits/</span></code>, <code class="docutils literal notranslate"><span class="pre">gnu/</span></code> and
+<code class="docutils literal notranslate"><span class="pre">asm/</span></code> trees and the freestanding headers such as <code class="docutils literal notranslate"><span class="pre">stddef.h</span></code> and
+<code class="docutils literal notranslate"><span class="pre">stdarg.h</span></code>) are counted apart and not headlined: the scan searches those
+directories only with <code class="docutils literal notranslate"><span class="pre">--system-includes</span></code>, so without it nearly every host
+misses them, and they would drown out the project’s own missing headers.
+<code class="docutils literal notranslate"><span class="pre">-v</span></code> and <code class="docutils literal notranslate"><span class="pre">--report-headers</span></code> still list each one. A missing header of the
+project’s own that happens to share such a name (a generated <code class="docutils literal notranslate"><span class="pre">asm/...</span></code>) is
+headlined as usual. On a Linux scan without <code class="docutils literal notranslate"><span class="pre">--system-includes</span></code> this line
+is therefore almost always printed; what matters is which headers it names.</p>
+<p>To pin what a scan sees instead of explaining it afterwards, give it the
+headers explicitly, all opt-in: <code class="docutils literal notranslate"><span class="pre">-I</span></code> for each directory (the multiarch one
+included), <code class="docutils literal notranslate"><span class="pre">--system-includes</span></code> for the compiler’s own, or a fixed header
+tree checked out alongside the project.</p>
+<p>The SARIF export records the same rows under the run’s
+<code class="docutils literal notranslate"><span class="pre">aurora-lint/headers</span></code> property, with a <code class="docutils literal notranslate"><span class="pre">note</span></code>-level
+<code class="docutils literal notranslate"><span class="pre">toolExecutionNotifications</span></code> entry: a missing header is a difference in the
+scan’s input, not an incomplete scan, so the run stays successful and the exit
+status is unaffected. <code class="docutils literal notranslate"><span class="pre">--report-headers</span> <span class="pre">FILE</span></code> writes everything as JSON,
+including each header read from outside the project with its SHA-256, so the
+reports of two hosts diff to the header that explains a difference in their
+findings:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">I</span> <span class="n">include</span><span class="o">/</span> <span class="o">-</span><span class="n">I</span> <span class="o">/</span><span class="n">usr</span><span class="o">/</span><span class="n">include</span> <span class="o">--</span><span class="n">report</span><span class="o">-</span><span class="n">headers</span> <span class="n">headers</span><span class="o">.</span><span class="n">json</span>
+</pre></div>
+</div>
+<p>Each finding that may depend on a missing header says so. A rule that reads
+facts headers supply (function declarations, macros and macro constants,
+summaries of functions a header defines, struct layouts) and reports in a
+file whose <code class="docutils literal notranslate"><span class="pre">#include</span></code> graph (including the build’s forced includes)
+reaches a header that a project file names and the scan could not find
+carries the names of those headers: <code class="docutils literal notranslate"><span class="pre">missing_headers</span></code> in the JSON export,
+<code class="docutils literal notranslate"><span class="pre">properties.missingHeaders</span></code> in SARIF, and a <code class="docutils literal notranslate"><span class="pre">note:</span> <span class="pre">may</span> <span class="pre">depend</span> <span class="pre">on</span> <span class="pre">header(s)</span>
+<span class="pre">the</span> <span class="pre">scan</span> <span class="pre">could</span> <span class="pre">not</span> <span class="pre">find</span></code> line with <code class="docutils literal notranslate"><span class="pre">-v</span></code>. It says <em>may</em>: the rule could have
+needed something those headers declare, not that it did. A finding without
+the marker did not depend on any missing header, so comparing two hosts’
+exports separates the findings a header explains from the ones it cannot.
+A header missing only from a system header’s own includes (<code class="docutils literal notranslate"><span class="pre">bits/*</span></code> from
+the C library’s headers, say) marks no finding, and neither does one of the
+compiler’s built-in or multiarch headers above; both are in <code class="docutils literal notranslate"><span class="pre">-v</span></code> and
+<code class="docutils literal notranslate"><span class="pre">--report-headers</span></code>.</p>
+<p>The reverse holds too. A macro the scan took from a header outside the
+project, and nowhere else, can decide what a finding sees: one library’s
+<code class="docutils literal notranslate"><span class="pre">#define</span> <span class="pre">XFREE</span> <span class="pre">free</span></code> read in place of another library’s own <code class="docutils literal notranslate"><span class="pre">XFREE</span></code>. A
+finding of such a rule whose line spells a macro only an outside header
+defines names it and that header: <code class="docutils literal notranslate"><span class="pre">harvested_from</span></code> in the JSON export,
+<code class="docutils literal notranslate"><span class="pre">properties.harvestedFrom</span></code> in SARIF, and a <code class="docutils literal notranslate"><span class="pre">note:</span> <span class="pre">uses</span> <span class="pre">macro(s)</span> <span class="pre">defined</span> <span class="pre">only</span>
+<span class="pre">outside</span> <span class="pre">the</span> <span class="pre">project</span></code> line with <code class="docutils literal notranslate"><span class="pre">-v</span></code>. It goes by the finding’s line, not by
+what the rule used: a macro the finding relies on but that is spelled on
+another line (at a declaration, or inside another macro’s body) is not named,
+and a macro on the line that the rule did not use is, as is a macro name that
+appears on the line only inside a comment or a string.</p>
+<p>None of this changes a finding.</p>
 </section>
 <section id="seeing-where-the-engine-is-blind">
 <h2>Seeing Where the Engine Is Blind<a class="headerlink" href="#seeing-where-the-engine-is-blind" title="Link to this heading"></a></h2>

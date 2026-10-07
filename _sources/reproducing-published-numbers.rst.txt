@@ -390,7 +390,12 @@ reproducer will not guess:
 1. **The host's installed headers**, which the scan reads through
    ``-I /usr/include`` and the per-project include paths. Which ``-dev``
    packages are installed matters, not only their versions, and the
-   effects are not always local to the library a header belongs to. When
+   effects are not always local to the library a header belongs to. Run
+   both hosts with ``--report-headers FILE`` and diff the reports: they list
+   every header each host could not find and every outside header it read,
+   with its SHA-256, and each finding that may depend on a missing header,
+   or uses a macro only an outside header defines, says so in the export
+   (*Headers the Scan Could Not Find* in :doc:`cli-usage`). When
    the prescan meets an ``#include "dir/file.h"`` it cannot resolve but
    ``dir`` exists, DCL31-C takes the file to be generated at build time and
    stops reporting undeclared calls for the whole project. Up to and
