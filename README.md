@@ -421,11 +421,9 @@ For advanced usage, CI/CD integration details, interactive UI reference, testing
 
 ## AI Assistance
 
-This project was developed with assistance from [Claude](https://claude.ai) (Anthropic). Claude was used throughout the development process for code generation, rule implementation, analysis, and documentation.
+This project was developed with assistance from [Claude](https://claude.ai) (Anthropic). Claude was used throughout the development process for code generation, rule implementation, analysis, and documentation. From October 2026, [Codex](https://openai.com/codex/) (OpenAI) also contributed documentation fixes and the tooling that enforces the agent and commit guidelines. Each of its changes was reviewed before it was merged.
 
-Claude is deliberately not listed as a commit co-author — the acknowledgment
-belongs once, here, rather than repeated across several thousand commit
-messages. See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the people involved.
+Their contribution is acknowledged once, here, and deliberately not with a co-author trailer on each of several thousand commits. See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the people involved.
 
 ## License
 

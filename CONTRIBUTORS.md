@@ -39,10 +39,10 @@ doubled as the group's hands-on introduction to working with Claude:
 
 aurora-lint was developed with substantial assistance from
 [Claude](https://claude.ai) (Anthropic) — code generation, rule
-implementation, false-positive analysis, and documentation. See the **AI
+implementation, false-positive analysis, and documentation. From October 2026, [Codex](https://openai.com/codex/) (OpenAI) also contributed documentation fixes and the tooling that enforces the agent and commit guidelines. Each of its changes was reviewed before it was merged. See the **AI
 Assistance** section of `README.md`.
 
-Claude is deliberately *not* listed as a commit co-author. That is a decision
+Neither is listed as a commit co-author. That is a decision
 about placement, not about credit: the acknowledgement belongs once, visibly,
 rather than repeated across several thousand commit messages. See the [Git Commit Rules](AGENTS.md#git-commit-rules)
 for the full reasoning.

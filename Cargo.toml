@@ -25,6 +25,7 @@ include = [
     "build.rs",
     "Cargo.toml",
     "README.md",
+    "CONTRIBUTORS.md",
     "LICENSE",
     "NOTICE",
     "thirdparty/cert/**",
