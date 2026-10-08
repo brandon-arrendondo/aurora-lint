@@ -41,12 +41,14 @@
   "packages": [],
   "apt": [
    "libxml2-utils",
-   "python3-ply",
-   "python3-lxml",
-   "python3-typing-extensions",
+   "python3-future",
    "python3-jinja2",
+   "python3-jsonschema",
+   "python3-lxml",
+   "python3-ply",
    "python3-six",
-   "python3-future"
+   "python3-typing-extensions",
+   "python3-yaml"
   ],
   "why": "The declared configuration: KernelPlatform=pc99, KernelArch=x86, KernelWordSize=64 (x86_64), Ninja generator. The build generates the gen_config, autoconf and *_gen.h headers the database references."
  },
