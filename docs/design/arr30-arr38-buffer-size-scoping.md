@@ -2,7 +2,8 @@
 
 **Status:** Scoping complete for both the size-resolution layer
 and the bounds-checking layer (this document's own extension pass, sections 6-8 below). Migration/fix
-work NOT started — no rule file has been touched by either pass. This
+work: the `is_alloc_call` migration has landed (`3e1a18a33`, 2026-08-22;
+§6.3); the rest was not started when this was written. This
 document is the "dedicated fix-scoping pass" the original scoping request asked for before any
 migration attempt, extended by this document's own extension pass to cover the layer the original scoping request
 explicitly left unread.

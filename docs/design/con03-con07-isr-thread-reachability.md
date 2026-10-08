@@ -1,6 +1,8 @@
 # CON03-C/CON07-C: ISR/thread/signal reachability
 
-**Status:** SCOPED, NOT IMPLEMENTED (2026-08-27). This plan is the "Option B"
+**Status:** IMPLEMENTED (v0.4.286, `4497bc307`, 2026-08-27); extended in
+`4e3e2d5db` (2026-09-26). The Goal section below describes the rules before
+that change. This plan is the "Option B"
 follow-on of `concurrency-rule-evaluation.md` §4 item 5, gated on Follow-on
 task B (done — see its precision-split numbers below) and on
 `lang-parsing-substrate` shipping real ISR detection (done — v0.7.0, this

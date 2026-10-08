@@ -1,8 +1,8 @@
 # Where does a finding live? Forwarded pointers under API00-C and EXP34-C
 
 **Status:** research for a decision (2026-09-25). Nothing here changes a
-rule or a label. The companion ADR draft is
-`docs/adr/0012-where-a-finding-lives.md` (Proposed). Brandon decides.
+rule or a label. The decision is recorded in
+`docs/adr/0012-where-a-finding-lives.md` (Accepted 2026-09-25).
 
 ## The question
 

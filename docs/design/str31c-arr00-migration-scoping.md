@@ -1,7 +1,9 @@
 # Scoping: STR31-C's Text-Based Buffer-Size Engine vs. ARR00-C/buffer_size.rs
 
-**Status:** Scoping complete. Migration NOT started — no rule
-file has been touched by this pass. This document is the dedicated
+**Status:** Scoping complete. Phases 1-2 landed (`161bc09b2`, `cd0791de6`,
+2026-08-21), Phase 3 landed (`f28470374`, 2026-08-23), and Phase 4's relay
+part is done (`d5e28fdef`, 2026-08-27; see `str31c-relay-function-scoping.md`).
+This document is the dedicated
 design/scoping pass a prior audit asked for before any migration attempt.
 
 **Driver:** "`src/rules/cert_c/STR/STR31-C/str31_c.rs` is a large,
