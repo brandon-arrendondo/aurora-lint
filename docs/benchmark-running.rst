@@ -1,24 +1,17 @@
-Running Benchmarks (MCP Server)
-===============================
+Running Benchmarks
+==================
 
-The MCP benchmark servers provide a programmatic interface for running Juliet and
-real-world benchmarks. All results are stored in ``data/benchmarks.db`` (SQLite,
-WAL mode).
+``python -m bench`` runs Juliet and real-world benchmarks synchronously in your
+terminal and writes to this checkout's ``data/benchmarks.db`` (SQLite, WAL
+mode). Those results describe your runs; official numbers come only from the
+``sqc_bench`` Postgres instance through ``benchmarking_db``
+(``docs/adr/0004-postgres-is-the-single-source-of-truth.md``).
 
 Benchmark Infrastructure
 ------------------------
 
-::
-
-    bench/
-      __init__.py      Package marker
-      __main__.py      CLI: python -m bench juliet [--full] [--jobs N]
-                            [--keep-reports] [--compile-commands]
-      config.py        Paths, constants, defaults
-      db.py            SQLite schema, WAL mode, CRUD + query API
-      analyzer.py      TP/FP classifier (Juliet ground truth)
-      runner.py        Parallel CWE runner
-      machine.py       Machine metadata (CPU, RAM, hostname)
+The harness is the ``bench/`` package; ``python -m bench --help`` lists every
+subcommand. The Juliet and real-world commands are described below.
 
 SQLite Schema
 ~~~~~~~~~~~~~
@@ -47,10 +40,21 @@ SQLite Schema
      - Every individual real-world aurora-lint finding (file, line, rule)
    * - ``ground_truth``
      - Adjudicated TP/FP oracle keyed on (project, commit, file, line, rule)
+   * - ``calibration_labels``
+     - Second, independent verdicts on already-labeled findings
+       (``calibration-*`` subcommands)
+   * - ``audited_files``
+     - Files exhaustively audited (``audit-complete``, ``audit-score``)
+   * - ``audit_corpus_meta``
+     - In-scope file count per project and commit (``audit-coverage``)
+   * - ``oracle_versions``
+     - Frozen, citable oracle snapshots (``oracle-freeze``, ``oracle-versions``)
 
 Historical data from ``JULIET_RESULTS.md`` and ``REALWORLD_RESULTS.md``
 (both retired 2026-09-03 once this backfill made them redundant with
-Postgres) has been backfilled into the database.
+Postgres) has been backfilled into ``sqc_bench`` Postgres through
+``benchmarking_db``; a fresh clone's ``data/benchmarks.db`` holds only its
+own runs.
 
 Benchmark Workflow Protocol
 ---------------------------
@@ -59,16 +63,17 @@ Benchmark Workflow Protocol
 
     1. **Commit BEFORE benchmark, do not bump the version**: rebuild
        (``cargo build --release``) and commit before starting. The run_id is
-       ``sqc-{version}-{sha}`` (full mode appends ``-full``, compile-db
-       ``-cdb``), and the **SHA** is what discriminates runs;
+       ``sqc-{version}-{sha}[-full][-cdb]-{label}-{hash12}`` (see *Policy and
+       Environment Settings*), and the **SHA** is what discriminates runs;
        the version string is a release artifact, bumped only when a release
        is cut (see ``CLAUDE.md``).
 
     2. **NEVER modify code while a benchmark is running**: The benchmark uses
        ``target/release/aurora-lint``. Rebuilding while running corrupts results.
 
-    3. **Wait for completion**: Fast-mode ~7-15 min and full-suite ~20-30 min,
-       depending on the machine. Check status no more than once every 5 minutes.
+    3. **Wait for completion**: a dated Juliet run time is in
+       :doc:`reproducing-published-numbers` (*Hardware, time and memory*).
+       Check status no more than once every 5 minutes.
 
     4. **Compare runs after completion**.
 
@@ -98,9 +103,9 @@ Juliet Benchmark
 Run identifiers accepted by ``status``/``compare``:
 
 - ``"latest"`` -- most recent run (default)
-- Full run name: ``"aurora-lint-0.3.20-abc1234"``
+- Full run name: ``"sqc-0.3.20-abc1234"``
 - Commit SHA: ``"abc1234"``
-- Historical runs: ``"aurora-lint-0.3.17-historical"``
+- Historical runs: ``"sqc-0.3.17-historical"``
 
 **Notes**:
 
@@ -195,10 +200,10 @@ indistinguishable from a genuine "the compile DB made no difference" result.
 
 .. note::
 
-   **Juliet gains nothing from this.** Measured on the synthesized database
-   (54,486 entries): its only flag is ``-I<testcasesupport>``, which the runner
-   already passes as ``-d testcasesupport``. A with/without pair on
-   CWE457/s01 produced an identical 6,783 violations. The plumbing exists for
+   **Juliet gains nothing from this.** The synthesized database's only flag
+   is ``-I<testcasesupport>``, which the runner already passes as
+   ``-d testcasesupport``. A with/without pair on CWE457/s01 produced
+   identical violations. The plumbing exists for
    symmetry and for future Juliet build changes; the real payoff is on the
    real-world corpora, whose databases carry genuine per-project include trees
    and ``-D`` state.
@@ -266,23 +271,22 @@ gap — an omission is indistinguishable from an oversight, which is a defect th
 has actually shipped. ``scripts/check_realworld_manifests.py`` (pre-commit hook
 ``check-realworld-manifests``) asserts every manifest decides every rule, and
 that every ``enabled = false`` carries a comment naming its reason.
-``libcrc`` is fully audited (every enabled-rule finding labeled); the four
-large codebases grow their labels incrementally.
+``libcrc`` is fully audited (every enabled-rule finding labeled); the other
+eleven codebases grow their labels incrementally.
 
 Per-Codebase Scan Scope
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 Each codebase's ``CODEBASES[<name>]["sqc"]["extra_args"]`` entry in
-``bench/realworld_runner.py`` also carries ``--report-exclude`` globs that
+``bench/realworld_runner.py`` also carries exclude globs that
 scope the scan to the *shipped product*, not the whole checked-out repo —
 test harnesses, build tooling, vendored/bundled code, and companion tools
 (fuzzers, example plugins, separate CLI utilities) are excluded so they don't
 inflate the violation count or dilute the precision/recall denominator.
-``--report-exclude`` is what these globs always meant: nothing is reported in
-those trees, but they are still read for cross-file facts. Taking a tree out
-of the cross-file facts as well (``--exclude-all``) changes findings in the
-files that remain, so it is a per-codebase decision recorded in
-``docs/design/realworld-corpus-scope.md`` and made with its own A/B run.
+Test, demo and tooling trees are ``--exclude-all`` globs: out of the report
+and out of the cross-file facts. Trees still read for cross-file facts but
+not reported are ``--report-exclude`` globs. Each choice is recorded in
+``docs/design/realworld-corpus-scope.md``.
 These globs are derived from each codebase's ground-truth oracle scope,
 documented per project in ``docs/design/realworld-corpus-scope.md`` — exactly
 which directories were ruled in/out during that codebase's adjudication
@@ -298,13 +302,14 @@ only what your own adjudication pass produces.)
     restrict the scan — it only adds cross-file pre-scan context (see
     :doc:`cli-usage`). A codebase's primary scan root is the whole repo
     whenever ``scan_path`` is ``None``, regardless of any ``-d`` entries in
-    ``extra_args``. To actually narrow scope, use ``--report-exclude`` globs (or set
+    ``extra_args``. To actually narrow scope, use ``--exclude-all`` or
+    ``--report-exclude`` globs (or set
     ``scan_path`` to a single subdirectory, as ``raylib`` does for
     ``{path}/src``).
 
 When adding a new real-world codebase or revisiting an existing one's
 ground-truth audit, check whether its scope notes call for new
-``--report-exclude`` entries here — a mismatch between the oracle's labeled scope
+exclude entries here — a mismatch between the oracle's labeled scope
 and the live scan's actual scope means dashboard numbers include findings
 that were never meant to be measured (or, more subtly, that the ground-truth
 denominator no longer matches what's being scanned).
@@ -313,18 +318,21 @@ denominator no longer matches what's being scanned).
 
     **That mismatch is not hypothetical, and it is measured.** Scope is
     declared in *three* places per codebase and nothing keeps them in sync:
-    the ``--report-exclude`` globs here (what aurora-lint reports), ``scope_include`` /
+    the exclude globs here (what aurora-lint reports), ``scope_include`` /
     ``scope_exclude`` in ``data/benchmark_repos.json`` (what the oracle may
     adjudicate), and the codebase's *Scope* section in
     ``docs/design/realworld-corpus-scope.md`` (the rationale the other
     two claim to derive from).
 
-    Audited across all nine codebases, six agree and three do not — always
-    in the same direction, with the scan wider than the scope, so aurora-lint emits
-    findings that can never be labeled: **sqlite 992, mosquitto 168, curl
-    144**. That is 1,304 findings, roughly a fifth of that run's whole
-    unlabeled pool, unadjudicable by construction. They depress label
-    coverage permanently, with work nobody is allowed to do.
+    An audit on 2026-09-03, across the nine codebases of that time, found
+    six agreeing and three not — always
+    in the same direction, with the scan wider than the scope, so aurora-lint emitted
+    findings that could never be labeled: **sqlite 992, mosquitto 168, curl
+    144** in the run it audited. That was 1,304 findings, roughly a fifth of
+    that run's whole unlabeled pool, unadjudicable by construction. Findings
+    like these depress label coverage permanently, with work nobody is
+    allowed to do. The scan scope has changed since (see above), and this
+    audit has not been repeated here.
 
     The sharpest case is one category of file treated two ways in the same
     suite: curl excludes ``include/**`` here, so its installed public
@@ -398,13 +406,14 @@ Typical real-world workflow:
 
     python -m bench realworld-run --tool sqc                  # blocks until every codebase is done
     python -m bench realworld latest                   # view results
-    python -m bench realworld latest --compare 0.2.6   # compare against a prior run
+    python -m bench realworld latest --compare 12      # compare against run 12 (ids from realworld-runs)
 
 Real-World Ground-Truth Oracle (measured precision/recall)
 ----------------------------------------------------------
 
 Volume deltas and CWE-aware Juliet rates do not predict real-world precision
-(the v0.4.22 audit measured ~2--34% precision for the noisiest rules). The
+(a historical audit at v0.4.22 measured ~2--34% precision for the noisiest
+rules). The
 ``ground_truth`` table is a growing, manually/AI-adjudicated TP/FP oracle for
 the real-world codebases --- the real-world analog of Juliet's
 OMITGOOD/OMITBAD. Because each benchmark checkout is pinned to a fixed git
@@ -450,8 +459,8 @@ Incremental adjudication loop (need not be one-shot):
 3. ``realworld-import-labels CSV --run RUN`` --- append (existing labels are
    skipped unless ``--update`` re-adjudicates them).
 
-The first 200 labels were seeded from an early adjudication pass
-(``adjudication_0.4.22.csv``).
+The first 200 labels were seeded from an early adjudication pass at v0.4.22;
+that CSV is historical and is not in this repo.
 
 Delta-Adjudication Gate
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -483,9 +492,9 @@ Procedure:
 
 2. **Derive each project's in-scope file predicate from its section of**
    ``docs/design/realworld-corpus-scope.md`` **before batching, not
-   after.** One delta-adjudication pass found 2,548 of 4,026 (63%) raw
+   after.** One delta-adjudication pass found that most of its raw
    unlabeled findings were out-of-scope noise (test harnesses, vendored
-   deps, language bindings) — mosquitto alone was 73% contamination.
+   deps, language bindings), and mosquitto's share was higher still.
    Scoping after batches are already generated means redoing completed
    adjudication work.
 3. Batch (~110-150 findings/batch), adjudicate, and import with
@@ -494,8 +503,8 @@ Procedure:
 4. Only after ``ground_truth`` reflects the new lines is a precision/recall
    claim about the changed rule safe to publish.
 
-A worked example from this pattern: 6 projects, 14 batches, 1,478 findings,
-0.7% delta precision — a very different number than the aggregate raw-count
+A worked example from this pattern, across six projects, measured a delta
+precision near zero, a very different number than the aggregate raw-count
 comparison suggested.
 
 Comparing Across Runs
@@ -506,7 +515,7 @@ Juliet
 
 .. code-block:: bash
 
-    python -m bench compare aurora-lint-0.3.17-historical latest
+    python -m bench compare sqc-0.3.17-historical latest
 
 Positive FP delta = regression. Negative = improvement.
 
@@ -515,13 +524,13 @@ Real-World
 
 .. code-block:: bash
 
-    python -m bench realworld 0.2.7 --compare 0.2.6
+    python -m bench realworld 14 --compare 12   # integer run ids, from realworld-runs
 
-Competitor Benchmarks (Infer / Frama-C)
-----------------------------------------
+Competitor Benchmarks
+---------------------
 
-The ``bench/competitors.py`` module runs Facebook Infer and Frama-C EVA on
-Juliet test cases and classifies findings as TP/FP using the same ground truth
+The ``bench/competitors.py`` module runs Facebook Infer, Frama-C EVA, cppcheck
+and clang-tidy on Juliet test cases and classifies findings as TP/FP using the same ground truth
 as the aurora-lint benchmark (``OMITBAD``/``OMITGOOD`` guards and procedure names).
 
 Results are written to ``data/competitor_results/<tool>_<timestamp>.json``.
@@ -532,15 +541,18 @@ Infrastructure
 ::
 
     bench/
-      competitors.py   Infer + Frama-C runners, TP/FP classification, comparison
+      competitors.py   Infer, Frama-C, cppcheck and clang-tidy runners,
+                       TP/FP classification, comparison
 
 Default CWE sets:
 
 ===========  ==================================================================
 Tool         CWEs
 ===========  ==================================================================
-Infer        476, 690, 416, 401, 415, 761, 762, 121, 122, 124, 127
+Infer        476, 690, 416, 401, 415, 761, 121, 122, 124, 127
 Frama-C      190, 191, 476, 369, 197, 680
+cppcheck     the union of the two sets above
+clang-tidy   the union of the two sets above
 ===========  ==================================================================
 
 Running
@@ -548,11 +560,14 @@ Running
 
 .. code-block:: bash
 
-    # Run Infer on default CWEs (~80 min on 24-core)
+    # Run Infer on default CWEs
     python3 -m bench.competitors infer --jobs 8
 
-    # Run Frama-C on default CWEs (~7-9 hours)
+    # Run Frama-C on default CWEs
     eval $(opam env) && python3 -m bench.competitors framac --jobs 8
+
+    # Run cppcheck, clang-tidy, or all four tools
+    python3 -m bench.competitors {cppcheck,clangtidy,all} --jobs 8
 
     # Run a specific subset
     python3 -m bench.competitors infer --cwes CWE476,CWE690
@@ -562,15 +577,11 @@ Running
       data/competitor_results/infer_*.json \
       data/competitor_results/framac_*.json
 
-Timing Estimates
-~~~~~~~~~~~~~~~~
+Timing
+~~~~~~
 
-===========  ============  ===============  =============
-Tool         CWEs          Files            Estimated Time
-===========  ============  ===============  =============
-Infer        11            17,232           ~80 min
-Frama-C      6             11,628           ~7--9 hours
-===========  ============  ===============  =============
+Dated wall-clock figures for all four tools, with the host they ran on, are in
+:doc:`tool-comparison` (*Speed*).
 
 Infer uses incremental capture (``infer capture --continue``) per file then a
 single ``infer analyze`` pass per CWE.  Frama-C runs EVA per-function per-file
@@ -627,7 +638,8 @@ Resolved Issues
   ``jimsh0.c``'s STR31-C count dropped from 180,297 to 10. (Migrated here
   2026-09-03 from ``REALWORLD_RESULTS.md``, retired that day.)
 
-- **Output Buffer Saturation**: aurora-lint emits one status line per rule per file
-  (~100 rules × N files). Always suppress or redirect output during scans::
+- **Output Buffer Saturation**: aurora-lint prints a progress bar and every
+  finding to standard output (``-v`` adds per-rule progress lines), which is
+  large on a big corpus. When only the export is wanted, redirect it::
 
-      ./target/release/aurora-lint directory/ --export results.sarif 2>/dev/null
+      ./target/release/aurora-lint directory/ --export results.sarif > /dev/null
