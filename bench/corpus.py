@@ -10,7 +10,7 @@ oracle was never adjudicated against. The oracle is keyed on
 project+commit+file+line+rule, so those findings fall outside the
 precision/recall denominator in either direction and nothing complains.
 
-This was not hypothetical: on the work node curl, hostap and sqlite had all
+This was not hypothetical: on one machine curl, hostap and sqlite had all
 drifted, and libcrc and lua sat on tracking branches matching their pins only
 by coincidence. A gate run against the drifted trees reported hostap 452 /
 sqlite 516 findings where the pinned snapshots give 447 / 506.

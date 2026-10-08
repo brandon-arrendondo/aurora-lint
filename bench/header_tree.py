@@ -3,7 +3,7 @@ and verified the way its source checkout is.
 
 There are two kinds, sharing the hash, the verification and the provenance
 below. ventoy's Windows SDK/CRT tree (this docstring's first half) supplies
-headers a Linux node does not have at all. The Debian tree (the 'debs'
+headers a Linux host does not have at all. The Debian tree (the 'debs'
 section further down) stands in for the host's own /usr/include on the
 corpora whose runner config passes -I /usr/include (curl, hostap,
 mosquitto, sqlite, valkey): which -dev packages a host happens to have
@@ -20,18 +20,18 @@ names that prefix under 'host_headers', and by default it is scanned
 against the host's own /usr/include, as official runs are (the benchmark
 node's headers are its environment of record; docs/adr/0004).
 `realworld-run --header-tree ID` scans those corpora against a named tree
-that replaces the same prefix instead, to reproduce another node's
+that replaces the same prefix instead, to reproduce another machine's
 environment or to take the host out of an A/B; such a run gets its own
 run id (-hdr-ID), so it never overwrites the default run.
 
-Why this exists: ventoy is the suite's Win32 corpus, and a Linux node has no
+Why this exists: ventoy is the suite's Win32 corpus, and a Linux host has no
 <windows.h>. Scanned without one, aurora-lint still parses Ventoy2Disk, but
 every Win32 API call is an undeclared identifier, which DCL31-C reports by the
 hundred and which shifts what API00-C and INT30-C see. Those findings describe
 the benchmark node's missing headers, not the corpus. Scanning against the
-real headers fixes that, but only if every node scans against the SAME
+real headers fixes that, but only if every scan uses the SAME
 headers: a different SDK servicing build can declare different functions, and
-the findings would differ between nodes with nothing recording why.
+the findings would differ between machines with nothing recording why.
 
 So a corpus that needs one declares a header tree in
 data/benchmark_repos.json under 'header_tree', alongside its commit pin:

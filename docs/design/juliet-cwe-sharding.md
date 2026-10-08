@@ -3,7 +3,7 @@
 **Status:** IMPLEMENTED (`f9069d479`, 2026-08-27). The problem statement
 below describes the runner before sharding; its line numbers no longer
 apply. Scoped 2026-08-27 (P4, `benchmark`). This
-document was written on the **work node**, which has no
+document was written on a machine with no
 Juliet suite (`~/toolchain/benchmarks/` absent) and an empty
 `data/benchmarks.db` (0 runs, 0 `cwe_scans`). Everything below marked
 **[verified]** was read out of the source in this repo and is reliable.

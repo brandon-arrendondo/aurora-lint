@@ -580,7 +580,7 @@ Running
 Timing
 ~~~~~~
 
-Dated wall-clock figures for all four tools, measured on one host, dated, are in
+Dated wall-clock figures for all four tools, measured on one host, are in
 :doc:`tool-comparison` (*Speed*).
 
 Infer uses incremental capture (``infer capture --continue``) per file then a

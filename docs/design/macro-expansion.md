@@ -652,7 +652,7 @@ correct; it is simply not worth a default.
 revision of this section quoted precision 18.9% / recall 95.0% and "no TP
 moved". Those came from this checkout's local `data/benchmarks.db`, which on
 the benchmark node is scratch and falls behind the shared `sqc_bench` Postgres
-that every node's runs feed into — at the time it held 609 sel4 labels against
+database — at the time it held 609 sel4 labels against
 the oracle's 925, and neither A/B run had been ingested there at all. Scoring
 against the real oracle changes the absolute precision by 5.4 points and flips
 the mosquitto API00-C addition from FP to TP. CLAUDE.md's "Refreshing Published

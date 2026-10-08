@@ -4,7 +4,7 @@ Single persistent DB at data/benchmarks.db with WAL mode for concurrent
 read (MCP server) + write (runner). SQLite-only, deliberately: this is the
 zero-setup path for an individual running a Juliet or real-world benchmark
 locally, with no shared-infrastructure dependency. The maintainer's shared
-Postgres instance (multi-node querying/queueing) lives entirely in the
+Postgres instance (shared querying and queueing) lives entirely in the
 separate benchmarking_db repo -- this module has no knowledge of it.
 """
 

@@ -19,7 +19,7 @@ reduction from this module's predecessor (mcp_servers/realworld_server.py,
 removed): those features existed to let an always-on MCP server juggle
 multiple concurrent/detached scans and remote hosts across many client
 sessions, none of which apply to one person running one benchmark in their
-own terminal. The maintainer's own shared/multi-node infrastructure lives
+own terminal. The maintainer's own shared infrastructure lives
 separately in the benchmarking_db repo, not here.
 """
 

@@ -8,9 +8,9 @@ always uses `bench.db.BenchDB` against the local SQLite file.
 CROSS-REPO CONTRACT. The
 other caller is a `benchmarking_db` script that imports `render_juliet_
 coverage` and hands it a Postgres-backed handle, so the same report can be
-regenerated from the shared multi-node database instead of one checkout's
+regenerated from the shared database instead of one checkout's
 local runs (see this repo's CLAUDE.md on why the committed file must not
-describe a single node's runs as a project measurement). That makes `db` an
+describe one checkout's runs as a project measurement). That makes `db` an
 implicit protocol owned by this module, same reasoning as render_docs.py's
 `BenchDBLike`:
 

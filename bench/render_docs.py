@@ -19,7 +19,7 @@ SQLite file, same as every other `bench` subcommand).
 CROSS-REPO CONTRACT. The other caller is `benchmarking_db`'s
 `bin/refresh_tools_sqc_docs.py`, which imports these functions and hands them
 its own Postgres-backed handle so the same blocks render from the shared
-multi-node database. That makes `db` an implicit protocol owned by this
+database. That makes `db` an implicit protocol owned by this
 module, and it used to be an undeclared one: a foreign class with ~90 methods
 was satisfying it by accident, and any method added here became a silent
 cross-repo break found at runtime. Two things fix that, and both are load-
