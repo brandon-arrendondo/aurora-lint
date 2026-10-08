@@ -1,14 +1,14 @@
 /*
  * Rule: API00-C
  * Source: synthetic
- * Status: PASS under the default preset; VIOLATION under strict
- * Expect: default=clean strict=violation
+ * Status: PASS under every preset
+ * Expect: default=clean strict=clean pedantic=clean
  *
  * A hosted environment guarantees that main's argv is a non-null array of
- * argc + 1 pointers (C11 5.1.2.2.1p2), so main has nothing to validate. The
- * strict preset declares a freestanding environment, where that guarantee
- * does not exist and main is an ordinary function whose pointer parameter
- * arrives unchecked.
+ * argc + 1 pointers (C11 5.1.2.2.1p2), so main has nothing to validate.
+ * Every preset is hosted. A project that declares a freestanding
+ * environment loses the guarantee (main_argv_guarantees), and main becomes an
+ * ordinary function whose pointer parameter arrives unchecked.
  */
 #include <string.h>
 

@@ -31,10 +31,12 @@ use std::str::FromStr;
 pub enum Preset {
     /// Default policy, hosted environment: the average codebase.
     Default,
-    /// Strict policy, freestanding environment: trust nothing.
+    /// Strict policy, hosted environment: each rule as written, trusting the
+    /// ISO C and POSIX library unless a `libc` is declared.
     Strict,
-    /// Pedantic policy, freestanding environment: a sound or closed-form
-    /// reading beyond each rule's text (ADR-0015, 2026-10-07 amendment).
+    /// Pedantic policy, hosted environment: a sound or closed-form reading
+    /// beyond each rule's text (ADR-0015, 2026-10-07 amendment). No library
+    /// contract is trusted unless a `libc` is declared.
     Pedantic,
 }
 
@@ -46,9 +48,15 @@ impl Preset {
     pub fn axes(self) -> (Policy, EnvironmentKind) {
         match self {
             Preset::Default => (Policy::Default, EnvironmentKind::Hosted),
-            Preset::Strict => (Policy::Strict, EnvironmentKind::Freestanding),
-            Preset::Pedantic => (Policy::Pedantic, EnvironmentKind::Freestanding),
+            Preset::Strict => (Policy::Strict, EnvironmentKind::Hosted),
+            Preset::Pedantic => (Policy::Pedantic, EnvironmentKind::Hosted),
         }
+    }
+
+    /// Whether this preset trusts a library only when one is declared:
+    /// otherwise a hosted environment implies the ISO C and POSIX model.
+    pub fn requires_libc_declaration(self) -> bool {
+        self == Preset::Pedantic
     }
 
     /// The preset whose policy is `policy`.
@@ -101,6 +109,13 @@ pub enum Libc {
     Musl,
     /// newlib.
     Newlib,
+    /// newlib built with nano-malloc and nano formatted I/O, which replace only
+    /// the allocator and the formatted I/O functions (newlib's README,
+    /// `--enable-newlib-nano-malloc`, `--enable-newlib-nano-formatted-io`).
+    /// Its `free(NULL)` returns at once and its `realloc(NULL, n)` calls
+    /// malloc (newlib-cygwin 06add56f, `newlib/libc/stdlib/nano-mallocr.c`,
+    /// `nano_free` and `nano_realloc`).
+    NewlibNano,
     /// picolibc.
     Picolibc,
     /// An in-house library: no contract is trusted until an override
@@ -121,6 +136,44 @@ pub enum IncludeNames {
     /// case-insensitively unless a directory has been marked case-sensitive
     /// (Microsoft Learn, "Case sensitivity"). An exact-case entry still wins.
     CaseInsensitive,
+}
+
+/// The edition of ISO C the code is written for: a fact a project declares,
+/// never inferred. Unset, no edition-specific reading is credited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CStandard {
+    /// ISO/IEC 9899:1990 (ANSI C89).
+    C89,
+    /// ISO/IEC 9899:1999.
+    C99,
+    /// ISO/IEC 9899:2011.
+    C11,
+    /// ISO/IEC 9899:2018.
+    C17,
+    /// ISO/IEC 9899:2024.
+    C23,
+}
+
+/// The edition of POSIX the code is built against: a fact a project
+/// declares, never inferred. Unset, no edition-specific reading is credited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum PosixVersion {
+    /// Not a POSIX system.
+    #[serde(rename = "none")]
+    None,
+    /// POSIX.1-2001.
+    #[serde(rename = "2001")]
+    Posix2001,
+    /// POSIX.1-2008.
+    #[serde(rename = "2008")]
+    Posix2008,
+    /// POSIX.1-2017.
+    #[serde(rename = "2017")]
+    Posix2017,
+    /// POSIX.1-2024.
+    #[serde(rename = "2024")]
+    Posix2024,
 }
 
 /// Which axis an option belongs to.
@@ -193,6 +246,7 @@ const CONFORMING_LIBCS: &[Libc] = &[
     Libc::Glibc,
     Libc::Musl,
     Libc::Newlib,
+    Libc::NewlibNano,
     Libc::Picolibc,
 ];
 
@@ -203,6 +257,9 @@ const CONFORMING_LIBCS: &[Libc] = &[
 const HASHED_ONLY_WHEN_OVERRIDDEN: &[&str] = &[
     "library_macros_evaluate_once",
     "env33_locally_constructed_command_allowed",
+    "env33_exec_spawn_exempt",
+    "flp36_constant_assert_is_guard",
+    "pre31_listed_library_calls_pure",
 ];
 
 /// The value `o` takes from its source before any override.
@@ -267,15 +324,16 @@ pub static OPTIONS: &[OptionSpec] = &[
         scope: Scope::CrossCutting,
         source: Source::Policy {
             default: true,
-            strict: false,
+            strict: true,
             pedantic: false,
         },
         oracle_tag: "noreturn-trusted",
         summary: "A function declared _Noreturn (or <stdnoreturn.h> noreturn, or C23 \
                   [[noreturn]]) is trusted not to return; otherwise only a body verified \
                   never to return proves it.",
-        basis: "C11 6.7.4p8, 7.23; C23 6.7.13.7. A GNU noreturn attribute, [[gnu::noreturn]] \
-                included, is proof under neither policy.",
+        basis: "C11 6.7.4p8, 7.23; C23 6.7.13.7. CERT MSC37-C-EX2 exempts a path that \
+                calls a function marked _Noreturn. A GNU noreturn attribute, [[gnu::noreturn]] \
+                included, is proof under no policy.",
     },
     OptionSpec {
         name: "pre31_unknown_call_pure",
@@ -302,6 +360,26 @@ pub static OPTIONS: &[OptionSpec] = &[
                 CERT_C-PRE31-c count every call, as the strict policy does.",
     },
     OptionSpec {
+        name: "pre31_listed_library_calls_pure",
+        axis: Axis::Policy,
+        scope: Scope::RuleSpecific("PRE31-C"),
+        source: Source::Policy {
+            default: true,
+            strict: false,
+            pedantic: false,
+        },
+        oracle_tag: "library-call-errno-unproven",
+        summary: "PRE31-C: a call to an ISO C or POSIX function the stdlib_call_effects \
+                  contract lists as free of side effects (strlen, memcmp, isdigit, fabs, \
+                  ntohs, ...) is not a side effect. Off, such a call is an unproven one, \
+                  like a call to a function the scan has no body for.",
+        basis: "Those functions modify no object (C11 7.24 and 7.4), and analyzers that \
+                exempt calls they can show are pure treat them so. CERT PRE31-C-EX1 counts \
+                \"even changing errno\" as a side effect, and C11 7.5p3 lets any library \
+                function set errno unless its description says otherwise, so the strict \
+                policy does not credit them.",
+    },
+    OptionSpec {
         name: "env33_locally_constructed_command_allowed",
         axis: Axis::Policy,
         scope: Scope::RuleSpecific("ENV33-C"),
@@ -323,6 +401,40 @@ pub static OPTIONS: &[OptionSpec] = &[
                 data reaches it: CodeQL's cpp/command-line-injection. clang-tidy's \
                 cert-env33-c reports every call except system(NULL), as the strict policy \
                 does (ADR-0001).",
+    },
+    OptionSpec {
+        name: "env33_exec_spawn_exempt",
+        axis: Axis::Policy,
+        scope: Scope::RuleSpecific("ENV33-C"),
+        source: Source::Policy {
+            default: true,
+            strict: true,
+            pedantic: false,
+        },
+        oracle_tag: "exec-spawn-not-command-processor",
+        summary: "ENV33-C: a call to a Windows _exec* or _spawn* function is not reported: it \
+                  runs a program directly, not through a command processor. Off, each is \
+                  reported like system().",
+        basis: "CERT ENV33-C: \"Do not invoke a command processor via system() or equivalent \
+                functions\"; its compliant solutions call execve() and CreateProcess(), which \
+                run a program the same way _exec* and _spawn* do.",
+    },
+    OptionSpec {
+        name: "flp36_constant_assert_is_guard",
+        axis: Axis::Policy,
+        scope: Scope::RuleSpecific("FLP36-C"),
+        source: Source::Policy {
+            default: true,
+            strict: true,
+            pedantic: false,
+        },
+        oracle_tag: "platform-constant-assert",
+        summary: "FLP36-C: an assert whose condition only compares compile-time constants \
+                  (LONG_MAX, DBL_MANT_DIG and the like) checks the platform, so it counts as \
+                  a precision check even though NDEBUG can strip it.",
+        basis: "CERT FLP36-C's compliant solution is such an assert. Its condition has the \
+                same value in every build for one target, so a build that strips it is no \
+                less safe than the build that checked it.",
     },
     OptionSpec {
         name: "closed_program",
@@ -393,11 +505,12 @@ pub static OPTIONS: &[OptionSpec] = &[
         scope: Scope::Contract,
         source: Source::Library(CONFORMING_LIBCS),
         oracle_tag: "contract:stdlib_call_effects",
-        summary: "The ISO C and POSIX functions the tool lists as free of side effects \
-                  (strlen, memcmp, isdigit, fabs, ntohs, ...) have none, and every other ISO C \
-                  or POSIX function it knows has one (it sets errno, touches a stream, allocates, or \
-                  keeps hidden state). Withdrawn, a library call is a call to an unknown \
-                  function.",
+        summary: "Every ISO C or POSIX function the tool knows to have a side effect has one \
+                  (it sets errno, touches a stream, allocates, or keeps hidden state), and the \
+                  ones it lists as free of side effects (strlen, memcmp, isdigit, fabs, ntohs, \
+                  ...) modify no object; whether that makes a call pure is the policy's \
+                  pre31_listed_library_calls_pure. Withdrawn, a library call is a call to an \
+                  unknown function.",
         basis: "C11 7.24 and 7.4: memcmp, strcmp, strncmp, memchr, strchr, \
                 strcspn, strpbrk, strrchr, strspn, strstr, strlen and the character \
                 classification and case mapping functions modify no object; 7.22.1.4p8 and 7.12.1 (strtol and math functions report \
@@ -456,6 +569,18 @@ pub static OPTIONS: &[OptionSpec] = &[
 /// it), and the settings name it, so their hash moves with the table. A rule that only reads differently under a policy
 /// stays out of this table and branches on [`AnalysisSettings::policy`].
 pub static DECLINED_RULES: &[(&str, &[Policy])] = &[];
+
+/// The rules whose findings a library contract can change: those that read
+/// `free_null_is_noop`, `realloc_null_is_malloc`, `stdlib_noreturn`,
+/// `stdlib_call_effects` or `library_macros_evaluate_once` themselves, and
+/// those whose control-flow graph or noreturn set the `stdlib_noreturn`
+/// contract shapes. When the pedantic preset withholds every contract, these
+/// are the rules a project can disable instead of declaring its library.
+pub static LIBRARY_CONTRACT_READERS: &[&str] = &[
+    "API00-C", "ARR30-C", "ARR38-C", "EXP33-C", "EXP34-C", "INT08-C", "INT10-C", "INT16-C",
+    "INT30-C", "INT31-C", "INT32-C", "INT33-C", "INT34-C", "MEM01-C", "MEM30-C", "MEM31-C",
+    "MSC37-C", "PRE31-C",
+];
 
 /// Whether `table` declines `rule_id` under `policy`.
 fn declined_in(table: &[(&str, &[Policy])], policy: Policy, rule_id: &str) -> bool {
@@ -517,6 +642,16 @@ pub struct EnvironmentConfig {
     /// The libc model whose contracts are trusted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub libc: Option<Libc>,
+    /// The declared library's version, as the project names it. Recorded
+    /// and hashed; it grants no contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub libc_version: Option<String>,
+    /// The edition of ISO C the code is written for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub c_standard: Option<CStandard>,
+    /// The edition of POSIX the code is built against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub posix_version: Option<PosixVersion>,
     /// How `#include` names match files. Unset, an MSVC compile database
     /// makes it case-insensitive and anything else exact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -636,7 +771,7 @@ impl EnvironmentConfig {
 impl SettingsConfig {
     /// Only what these settings say about the project itself rather than
     /// which preset or options it wants: its declared allocators and
-    /// deallocators, and the data model of its target. A `--profile`
+    /// deallocators, and its target's data model, C library and editions. A `--profile`
     /// restarts from its preset and keeps these, since a preset chooses
     /// policy and never erases what a project's own functions do or what it
     /// is built for.
@@ -647,6 +782,10 @@ impl SettingsConfig {
         if env.allocators.is_empty()
             && env.deallocators.is_empty()
             && env.data_model.is_none()
+            && env.libc.is_none()
+            && env.libc_version.is_none()
+            && env.c_standard.is_none()
+            && env.posix_version.is_none()
             && !env.writes_a_fact()
         {
             return SettingsConfig::default();
@@ -655,6 +794,10 @@ impl SettingsConfig {
             allocators: env.allocators.clone(),
             deallocators: env.deallocators.clone(),
             data_model: env.data_model,
+            libc: env.libc,
+            libc_version: env.libc_version.clone(),
+            c_standard: env.c_standard,
+            posix_version: env.posix_version,
             ..Default::default()
         };
         for fact in Fact::ALL {
@@ -698,6 +841,15 @@ impl SettingsConfig {
             }
             if e.libc.is_some() {
                 mine.libc = e.libc;
+            }
+            if e.libc_version.is_some() {
+                mine.libc_version = e.libc_version.clone();
+            }
+            if e.c_standard.is_some() {
+                mine.c_standard = e.c_standard;
+            }
+            if e.posix_version.is_some() {
+                mine.posix_version = e.posix_version;
             }
             if e.include_names.is_some() {
                 mine.include_names = e.include_names;
@@ -746,6 +898,33 @@ impl SettingsConfig {
                 .data_model = Some(model);
             return Ok(());
         }
+        match name {
+            "libc_version" => {
+                self.environment
+                    .get_or_insert_with(Default::default)
+                    .libc_version = Some(value.to_string());
+                return Ok(());
+            }
+            "c_standard" => {
+                let v = value
+                    .parse()
+                    .map_err(|e: String| anyhow::anyhow!("c_standard: {e}"))?;
+                self.environment
+                    .get_or_insert_with(Default::default)
+                    .c_standard = Some(v);
+                return Ok(());
+            }
+            "posix_version" => {
+                let v = value
+                    .parse()
+                    .map_err(|e: String| anyhow::anyhow!("posix_version: {e}"))?;
+                self.environment
+                    .get_or_insert_with(Default::default)
+                    .posix_version = Some(v);
+                return Ok(());
+            }
+            _ => {}
+        }
         if let Some(fact) = Fact::from_key(name) {
             let number = if fact.is_flag() {
                 match value {
@@ -766,7 +945,7 @@ impl SettingsConfig {
         let Some(spec) = option(name) else {
             bail!(
                 "unknown option '{name}'; run --list-options for the supported set ({}, and \
-                 the integer facts {}, data_model)",
+                 the integer facts {}, data_model, libc_version, c_standard, posix_version)",
                 OPTIONS
                     .iter()
                     .map(|o| o.name)
@@ -806,8 +985,21 @@ pub struct AnalysisSettings {
     pub policy: Policy,
     /// The environment in force.
     pub environment: EnvironmentKind,
-    /// The libc model, `None` when a freestanding environment declares none.
+    /// The libc model, `None` when none is declared and the preset implies
+    /// none (a freestanding environment, or the pedantic preset).
     pub libc: Option<Libc>,
+    /// Whether the project declared `libc`, rather than taking the one the
+    /// preset implies.
+    pub libc_declared: bool,
+    /// The pedantic preset trusts a library only when one is declared, and
+    /// none was: every library contract is withheld, and the scan says so.
+    pub libc_declaration_missing: bool,
+    /// The declared library version, if any.
+    pub libc_version: Option<String>,
+    /// The declared edition of ISO C, if any.
+    pub c_standard: Option<CStandard>,
+    /// The declared edition of POSIX, if any.
+    pub posix_version: Option<PosixVersion>,
     /// How `#include` names match files.
     pub include_names: IncludeNames,
     /// The data model selected (`DataModel::Iso` unless declared).
@@ -848,6 +1040,9 @@ impl AnalysisSettings {
         let preset = config.profile.unwrap_or(Preset::Default);
         let (mut policy, mut environment) = preset.axes();
         let mut libc = None;
+        let mut libc_version = None;
+        let mut c_standard = None;
+        let mut posix_version = None;
         let mut include_names = IncludeNames::default();
         let mut data_model = DataModel::default();
         let mut facts_config: Option<&EnvironmentConfig> = None;
@@ -858,6 +1053,9 @@ impl AnalysisSettings {
         if let Some(e) = &config.environment {
             environment = e.kind.unwrap_or(environment);
             libc = e.libc;
+            libc_version = e.libc_version.clone();
+            c_standard = e.c_standard;
+            posix_version = e.posix_version;
             include_names = e.include_names.unwrap_or_default();
             data_model = e.data_model.unwrap_or_default();
             facts_config = Some(e);
@@ -869,8 +1067,17 @@ impl AnalysisSettings {
         }
         // A hosted implementation provides the standard library, so its
         // contracts hold unless a model says otherwise; a freestanding one
-        // provides none unless a library is declared.
-        if libc.is_none() && environment == EnvironmentKind::Hosted {
+        // provides none unless a library is declared. The pedantic preset
+        // trusts only a declared library: small targets often link a reduced
+        // one, so a full ISO C library is not assumed.
+        let libc_declared = libc.is_some();
+        let libc_declaration_missing = !libc_declared
+            && environment == EnvironmentKind::Hosted
+            && preset.requires_libc_declaration();
+        if !libc_declared
+            && environment == EnvironmentKind::Hosted
+            && !preset.requires_libc_declaration()
+        {
             libc = Some(Libc::IsoPosix);
         }
 
@@ -949,6 +1156,11 @@ impl AnalysisSettings {
             policy,
             environment,
             libc,
+            libc_declared,
+            libc_declaration_missing,
+            libc_version,
+            c_standard,
+            posix_version,
             include_names,
             data_model,
             facts,
@@ -984,6 +1196,37 @@ impl AnalysisSettings {
         declined_in(DECLINED_RULES, self.policy, rule_id)
     }
 
+    /// When the preset trusts only a declared C library and none is declared:
+    /// the notice a scan prints, naming both remedies, the `libc` key to
+    /// declare and the enabled rules (those `enabled` accepts) a project
+    /// could disable instead.
+    pub fn libc_notice(&self, enabled: impl Fn(&str) -> bool) -> Option<String> {
+        if !self.libc_declaration_missing {
+            return None;
+        }
+        let rules: Vec<&str> = LIBRARY_CONTRACT_READERS
+            .iter()
+            .copied()
+            .filter(|r| enabled(r))
+            .collect();
+        let mut text = String::from(
+            "the pedantic preset trusts only a declared C library, and none is declared, so no \
+             library contract holds: free(NULL) and realloc(NULL, n) are not credited, and exit, \
+             abort and longjmp are not trusted to end a path. Declare the library with \
+             [environment] libc = \"glibc\" (or musl, newlib, newlib-nano, picolibc, iso-posix, \
+             or custom with per-contract overrides) or --libc",
+        );
+        if rules.is_empty() {
+            text.push('.');
+        } else {
+            text.push_str(&format!(
+                ", or disable the rules whose findings depend on it: {}.",
+                rules.join(", ")
+            ));
+        }
+        Some(text)
+    }
+
     /// Every rule the policy in force declines, sorted.
     pub fn declined_rules(&self) -> Vec<&'static str> {
         let mut ids: Vec<&'static str> = DECLINED_RULES
@@ -996,11 +1239,23 @@ impl AnalysisSettings {
     }
 
     /// The preset these settings equal, if any. A preset says nothing about
-    /// how `#include` names match, the data model, which functions a
-    /// project declares or which files the prescan reads, so those fields
-    /// are not compared.
+    /// how `#include` names match, the data model, which C library and
+    /// editions the target has, which functions a project declares or which
+    /// files the prescan reads, so those fields are not compared.
     pub fn matching_preset(&self) -> Option<Preset> {
         Preset::ALL.into_iter().find(|p| {
+            // The preset as it resolves with the library this project
+            // declared, if any: a declared library describes the target,
+            // like the facts below, and is not a departure from the preset.
+            let base = Self::resolve(&SettingsConfig {
+                profile: Some(*p),
+                environment: self.libc_declared.then(|| EnvironmentConfig {
+                    libc: self.libc,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .expect("a preset with a library model always resolves");
             *self
                 == Self {
                     include_names: self.include_names,
@@ -1008,7 +1263,10 @@ impl AnalysisSettings {
                     facts: self.facts,
                     memory: self.memory.clone(),
                     prescan_scope: self.prescan_scope.clone(),
-                    ..Self::preset(*p)
+                    libc_version: self.libc_version.clone(),
+                    c_standard: self.c_standard,
+                    posix_version: self.posix_version,
+                    ..base
                 }
         })
     }
@@ -1070,6 +1328,21 @@ impl AnalysisSettings {
         // every run scanned under before the field existed keep their hash.
         if self.include_names != IncludeNames::Exact {
             identity["include_names"] = serde_json::json!(self.include_names);
+        }
+        // Likewise only when declared.
+        if let Some(v) = &self.libc_version {
+            identity["libc_version"] = serde_json::json!(v);
+        }
+        if let Some(v) = self.c_standard {
+            identity["c_standard"] = serde_json::json!(v);
+        }
+        if let Some(v) = self.posix_version {
+            identity["posix_version"] = serde_json::json!(v);
+        }
+        // Present only when the preset needed a library declaration and got
+        // none, so a report says its library contracts were withheld.
+        if self.libc_declaration_missing {
+            identity["libc_declared"] = serde_json::json!(false);
         }
         // Likewise only when a model is declared.
         if self.data_model != DataModel::Iso {
@@ -1134,7 +1407,9 @@ display_via_serde!(
     EnvironmentKind,
     Libc,
     IncludeNames,
-    DataModel
+    DataModel,
+    CStandard,
+    PosixVersion
 );
 
 /// `v` serialized with every object's keys in sorted order and no
@@ -1257,17 +1532,48 @@ pub fn render_config_settings(current: &AnalysisSettings) -> String {
         &format!("\"{}\"", current.environment),
         "",
     );
-    let implied_libc = (current.environment == EnvironmentKind::Hosted).then_some(Libc::IsoPosix);
     out.push_str(
         "# The C library whose documented contracts are trusted: iso-posix, glibc, musl, newlib,\n\
-         # picolibc or custom. Unset: iso-posix when hosted, none when freestanding.\n",
+         # newlib-nano, picolibc or custom. Unset: iso-posix when hosted (none under the pedantic\n\
+         # preset, which trusts only a declared library), none when freestanding.\n",
     );
     config_entry(
         &mut out,
-        current.libc != implied_libc,
+        current.libc_declared,
         "libc",
         &format!("\"{}\"", current.libc.unwrap_or(Libc::IsoPosix)),
         "",
+    );
+    out.push_str(
+        "# The declared library's version, as the project names it. Grants no contract.\n",
+    );
+    config_entry(
+        &mut out,
+        current.libc_version.is_some(),
+        "libc_version",
+        &format!("{:?}", current.libc_version.as_deref().unwrap_or("1.0")),
+        "",
+    );
+    out.push_str("# The edition of ISO C the code is written for: c89, c99, c11, c17 or c23.\n");
+    config_entry(
+        &mut out,
+        current.c_standard.is_some(),
+        "c_standard",
+        &format!("\"{}\"", current.c_standard.unwrap_or(CStandard::C11)),
+        "unknown unless declared",
+    );
+    out.push_str(
+        "# The edition of POSIX the code is built against: none, 2001, 2008, 2017 or 2024.\n",
+    );
+    config_entry(
+        &mut out,
+        current.posix_version.is_some(),
+        "posix_version",
+        &format!(
+            "\"{}\"",
+            current.posix_version.unwrap_or(PosixVersion::Posix2008)
+        ),
+        "unknown unless declared",
     );
     out.push_str("# How #include names match files: \"exact\" or \"case-insensitive\".\n");
     config_entry(
@@ -1411,12 +1717,33 @@ pub fn render_text(current: &AnalysisSettings) -> String {
         "Current: policy={}, environment={}, libc={}, include_names={}, data_model={}\n\n",
         current.policy,
         current.environment,
-        current
-            .libc
-            .map_or_else(|| "none".to_string(), |l| l.to_string()),
+        current.libc.map_or_else(
+            || {
+                if current.libc_declaration_missing {
+                    "none (undeclared)".to_string()
+                } else {
+                    "none".to_string()
+                }
+            },
+            |l| l.to_string()
+        ),
         current.include_names,
         current.data_model,
     );
+    for (key, value) in [
+        ("libc_version", current.libc_version.clone()),
+        ("c_standard", current.c_standard.map(|v| v.to_string())),
+        (
+            "posix_version",
+            current.posix_version.map(|v| v.to_string()),
+        ),
+    ] {
+        if let Some(value) = value {
+            out.pop();
+            out.pop();
+            out.push_str(&format!(", {key}={value}\n\n"));
+        }
+    }
     // Each integer fact the project or the command line declared on top of
     // the preset, so the line names everything that is not a default.
     let declared: Vec<String> = current
@@ -1535,11 +1862,13 @@ pub fn render_rst() -> String {
          them.\n\n\
          - The **default** preset is ``policy = default`` with a ``hosted``\n  \
          environment and the ISO C + POSIX library model.\n\
-         - The **strict** preset is ``policy = strict`` with a ``freestanding``\n  \
-         environment and no library model.\n\
-         - The **pedantic** preset is ``policy = pedantic`` with a ``freestanding``\n  \
-         environment and no library model. It reads a rule beyond its text where\n  \
-         that rule has a pedantic reading, and may decline a rule outright.\n\n",
+         - The **strict** preset is ``policy = strict`` with a ``hosted``\n  \
+         environment and the ISO C + POSIX library model.\n\
+         - The **pedantic** preset is ``policy = pedantic`` with a ``hosted``\n  \
+         environment and only the library model a project declares (``libc``);\n  \
+         with none declared, no library contract below holds. It reads a rule\n  \
+         beyond its text where that rule has a pedantic reading, and may decline\n  \
+         a rule outright.\n\n",
     );
     for (axis, title) in [
         (Axis::Policy, "Policy options"),
@@ -1590,7 +1919,20 @@ pub fn render_rst() -> String {
          - Part of the settings hash only when not ``iso``\n   \
          - Basis: C11 5.2.4.2.1 (minimum magnitudes), 6.3.1.1 (rank order) and\n     \
          7.20.1.1 (exact-width types); integer widths are otherwise\n     \
-         implementation-defined.\n",
+         implementation-defined.\n\n\
+         ``libc``, ``libc_version``, ``c_standard`` and ``posix_version``\n   \
+         The C library the target links, its version, and the editions of ISO C and\n   \
+         POSIX the code is written for. Like the data model they describe the target,\n   \
+         so a ``--profile`` keeps them. ``libc`` selects which library contracts\n   \
+         above hold (``custom`` trusts none until an override states it); the\n   \
+         other three grant nothing and are recorded for rules whose reading depends\n   \
+         on an edition. None is inferred, each is unknown unless declared, and each\n   \
+         enters the settings hash only when declared.\n\n   \
+         - Set with ``[environment]`` keys, ``--libc``, or ``--set c_standard=c99``\n     \
+         (also ``posix_version``, ``libc_version``)\n   \
+         - ``newlib-nano``: newlib with nano-malloc, whose ``free(NULL)`` returns at\n     \
+         once and whose ``realloc(NULL, n)`` calls ``malloc`` (newlib's\n     \
+         ``nano-mallocr.c``)\n",
     );
     out.push_str(
         "\nDeclared memory functions\n\
@@ -1693,7 +2035,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_keeps_the_projects_declarations_and_nothing_else() {
+    fn a_profile_keeps_the_projects_declarations_and_target_facts_and_nothing_else() {
         let manifest: SettingsConfig = toml::from_str(
             "[policy]\nlevel = \"strict\"\n\
              [environment]\nlibc = \"musl\"\n\
@@ -1704,30 +2046,43 @@ mod tests {
         let facts = manifest.project_facts();
         assert!(facts.profile.is_none() && facts.policy.is_none());
         let env = facts.environment.unwrap();
-        assert_eq!(env.libc, None);
+        // The C library describes the target, like the data model.
+        assert_eq!(env.libc, Some(Libc::Musl));
         assert_eq!(env.deallocators["hook_put"], 2);
         assert_eq!(env.allocators["hook_take"], AllocatorContract::Calloc);
-        let bare: SettingsConfig = toml::from_str("[environment]\nlibc = \"musl\"\n").unwrap();
+        let bare: SettingsConfig =
+            toml::from_str("[environment]\nkind = \"freestanding\"\n").unwrap();
         assert_eq!(bare.project_facts(), SettingsConfig::default());
-        let target: SettingsConfig =
-            toml::from_str("[environment]\nlibc = \"musl\"\ndata_model = \"lp64\"\n").unwrap();
+        let target: SettingsConfig = toml::from_str(
+            "[environment]\nkind = \"freestanding\"\nlibc = \"musl\"\nlibc_version = \"1.2.5\"\n\
+             c_standard = \"c99\"\nposix_version = \"2008\"\ndata_model = \"lp64\"\n",
+        )
+        .unwrap();
         let facts = target.project_facts().environment.unwrap();
         assert_eq!(facts.data_model, Some(DataModel::Lp64));
-        assert_eq!(facts.libc, None);
+        assert_eq!(facts.libc, Some(Libc::Musl));
+        assert_eq!(facts.libc_version.as_deref(), Some("1.2.5"));
+        assert_eq!(facts.c_standard, Some(CStandard::C99));
+        assert_eq!(facts.posix_version, Some(PosixVersion::Posix2008));
+        assert_eq!(
+            facts.kind, None,
+            "the environment kind is the preset's choice"
+        );
     }
 
     #[test]
     fn exact_include_names_leave_every_preset_hash_as_it_was() {
         // The presets' hashes with the current option table (`closed_program`
-        // added a declared option, which moved both). Benchmark run ids carry
-        // them, so exact include-name matching must not move them.
+        // added a declared option, which moved both; the strict preset's
+        // hosted environment and trusted _Noreturn moved strict's). Benchmark
+        // run ids carry them, so exact include-name matching must not move them.
         assert_eq!(
             AnalysisSettings::preset(Preset::Default).settings_hash(),
             "6a42bd4cf1e02bd610c081ad24a69ebfc4a214e67a7f338449fd9651ddf24c8f"
         );
         assert_eq!(
             AnalysisSettings::preset(Preset::Strict).settings_hash(),
-            "b15a42e2ed2094bb968fc6ff764429d5f3e598d0103e91ab3ff660286dc648f9"
+            "f017c4b47de7072fe7c1c988c050120878b17f27c0f81d0be329a453c68f1623"
         );
         assert_eq!(
             with_names(Preset::Default, Some(IncludeNames::Exact)).settings_hash(),
@@ -1749,6 +2104,86 @@ mod tests {
             .map(|p| AnalysisSettings::preset(p).settings_hash())
             .collect();
         assert_eq!(hashes.len(), Preset::ALL.len());
+    }
+
+    #[test]
+    fn strict_trusts_the_hosted_library_and_pedantic_only_a_declared_one() {
+        let library = [
+            "free_null_is_noop",
+            "realloc_null_is_malloc",
+            "stdlib_noreturn",
+            "stdlib_call_effects",
+            "library_macros_evaluate_once",
+        ];
+        let strict = AnalysisSettings::preset(Preset::Strict);
+        assert_eq!(strict.libc, Some(Libc::IsoPosix));
+        assert!(!strict.libc_declaration_missing);
+        assert!(library.iter().all(|o| strict.flag(o)));
+
+        let pedantic = AnalysisSettings::preset(Preset::Pedantic);
+        assert_eq!(pedantic.environment, EnvironmentKind::Hosted);
+        assert_eq!(pedantic.libc, None);
+        assert!(pedantic.libc_declaration_missing);
+        assert!(library.iter().all(|o| !pedantic.flag(o)));
+        assert!(pedantic.flag("main_argv_guarantees"), "still hosted");
+        assert_eq!(pedantic.to_json()["libc_declared"], false);
+        assert!(strict.to_json()["libc_declared"].is_null());
+
+        let mut declared = SettingsConfig {
+            profile: Some(Preset::Pedantic),
+            ..Default::default()
+        };
+        declared.environment = Some(EnvironmentConfig {
+            libc: Some(Libc::NewlibNano),
+            ..Default::default()
+        });
+        let declared = AnalysisSettings::resolve(&declared).unwrap();
+        assert!(!declared.libc_declaration_missing);
+        assert!(library.iter().all(|o| declared.flag(o)));
+        // A declared library describes the target; it is still the preset.
+        assert_eq!(declared.matching_preset(), Some(Preset::Pedantic));
+        assert!(declared.libc_notice(|_| true).is_none());
+    }
+
+    #[test]
+    fn the_missing_library_notice_names_the_key_and_the_enabled_readers() {
+        let pedantic = AnalysisSettings::preset(Preset::Pedantic);
+        let notice = pedantic
+            .libc_notice(|r| r == "EXP34-C" || r == "MSC37-C")
+            .unwrap();
+        assert!(notice.contains("[environment] libc"), "{notice}");
+        assert!(notice.contains("EXP34-C, MSC37-C"), "{notice}");
+        assert!(!notice.contains("PRE31-C"), "{notice}");
+        let none = pedantic.libc_notice(|_| false).unwrap();
+        assert!(!none.contains("disable"), "{none}");
+        assert!(AnalysisSettings::preset(Preset::Strict)
+            .libc_notice(|_| true)
+            .is_none());
+        let registry = crate::rules::RuleRegistry::new();
+        for id in LIBRARY_CONTRACT_READERS {
+            assert!(registry.get_rule(id).is_some(), "{id} is not a rule");
+        }
+    }
+
+    #[test]
+    fn edition_facts_are_set_named_and_hashed_only_when_declared() {
+        let base = AnalysisSettings::preset(Preset::Default);
+        let mut config = SettingsConfig::default();
+        config.set("c_standard=c99").unwrap();
+        config.set("posix_version=2008").unwrap();
+        config.set("libc_version=2.39").unwrap();
+        assert!(config.set("c_standard=c42").is_err());
+        assert!(config.set("posix_version=1988").is_err());
+        let s = AnalysisSettings::resolve(&config).unwrap();
+        assert_eq!(s.c_standard, Some(CStandard::C99));
+        assert_eq!(s.posix_version, Some(PosixVersion::Posix2008));
+        assert_eq!(s.matching_preset(), Some(Preset::Default));
+        let json = s.to_json();
+        assert_eq!(json["c_standard"], "c99");
+        assert_eq!(json["posix_version"], "2008");
+        assert_eq!(json["libc_version"], "2.39");
+        assert_ne!(s.settings_hash(), base.settings_hash());
+        assert!(base.to_json()["c_standard"].is_null());
     }
 
     #[test]

@@ -217,10 +217,10 @@ safety-critical user unprotected.
 
 ## Amendment (2026-10-07, Brandon): a third preset, and how each preset reads a rule's text
 
-**Status:** direction. The tool accepts the `pedantic` preset
-(`--profile pedantic`) and lets any preset decline a rule, but no rule has a
-pedantic reading yet, so it reads every rule as `strict` does. "Relaxed"
-below names only `default`'s position on the axis, not a flag.
+**Status:** direction; the points settled below are implemented. The tool
+accepts the `pedantic` preset (`--profile pedantic`) and lets any preset
+decline a rule. "Relaxed" below names only `default`'s position on the axis,
+not a flag.
 
 ### Decision
 
@@ -356,3 +356,68 @@ recorded here and left unchanged until decided:
   amendment lets a preset decline a rule; and the 2026-10-07 amendment to
   ADR-0013 says of a tier-1 fact "The default is the strict reading",
   where neither word names a preset.
+
+### Settled (2026-10-07, Brandon)
+
+An audit of what `--strict` did beyond the text of the rules it reads
+settled the environment points above and several rule readings.
+
+1. **`--strict` assumes a hosted C library.** The strict preset is
+   `policy = strict` with a `hosted` environment, so with no library
+   declared the ISO C and POSIX contracts hold: `free(NULL)` does nothing,
+   `exit` does not return, a library macro evaluates its argument once,
+   `main`'s `argv` is valid. No rule's text distrusts them. Which edition
+   holds comes from the facts (item 3). This replaces Decision 4's
+   `environment = freestanding` for the strict preset, and the oracle
+   (Decision 5) records the strict, hosted truth. A team that trusts no
+   library still declares `freestanding` or `libc = "custom"`.
+2. **`--pedantic` trusts only a declared C library.** Small targets often
+   link a reduced library ("embedded micros typically use tiny or micro
+   variants"), so the pedantic preset is `policy = pedantic` with a
+   `hosted` environment and no library implied. With none declared, the
+   scan still runs, since Decision 3's build-fact clause makes every fact
+   optional, but no library contract holds, and the scan says so: it names
+   the `libc` key, and the enabled rules whose findings depend on a library
+   contract, because the two remedies are to declare the library or to
+   disable those rules. `--check-config` warns the same way, and the run's
+   settings record `libc_declared = false`. A scan that refuses to run
+   without a declaration would need its own opt-in and an amendment to
+   Decision 3.
+3. **The C library and the editions are facts**, in the sense of
+   Decision 4's 2026-10-03 amendment: `libc`, `libc_version`,
+   `c_standard` and `posix_version`. Each is declared, never inferred, and
+   unknown unless declared; each enters the settings hash only when
+   declared; a `--profile` keeps them. A library model grants a contract
+   only with a citation to the library's documentation or source, and an
+   in-house or vendor library with no citation grants none until
+   per-contract overrides state them.
+4. **Rule readings.** Under `--strict`:
+   - a function declared `_Noreturn` is trusted not to return, as CERT
+     MSC37-C-EX2 reads it; `--pedantic` accepts only a body shown never to
+     return;
+   - FLP36-C counts an `assert` whose condition compares only compile-time
+     constants as a precision check, as CERT's compliant solution does; it
+     has the same value in every build for one target. `--pedantic` does
+     not;
+   - ENV33-C does not report the Windows `_exec*` and `_spawn*` functions,
+     which run a program without a command processor, as the rule's
+     compliant `execve()` and `CreateProcess()` solutions do; `--pedantic`
+     reports them;
+   - EXP34-C reports every dependent site (`first_site_only` stays a
+     relaxation of `--default`), and a strippable `assert` stays no guard
+     (ADR-0010 Decision 5);
+   - PRE31-C does not count a call to a library function the tool lists as
+     free of side effects (`strlen`, `memcmp`, ...) as pure: CERT PRE31-C-EX1
+     counts "even changing errno" as a side effect, and C11 7.5p3 lets any
+     library function set `errno` unless its description says otherwise.
+     That a library function known to have a side effect has one stays a
+     library contract; that a listed one has none is a reading `--default`
+     makes (`pre31_listed_library_calls_pure`).
+   Each move of pedantic's boundary is a named option with its value under
+   every preset, and an oracle tag, as Decision 7 requires of a relaxation.
+
+Items 1 and 2 settle the third point above. Item 4 settles the fourth for
+the rules it names, and items 1 to 3 and Decision 3's fixture clause are
+read with three presets: a fixture runs under `default` and `strict`, and
+under `pedantic` when its expectation names it, which it does where the
+verdict differs.

@@ -39,7 +39,8 @@
 //!
 //! ## Detection Strategy:
 //! - Detect any calls to system(), popen(), or _popen()
-//! - Also detects Windows exec/spawn variants (_execl, _spawnl, etc.)
+//! - Under the pedantic policy, also detects the Windows exec/spawn variants
+//!   (_execl, _spawnl, etc.), which run a program without a command processor
 //! - Resolves macro aliases (#define SYSTEM system) via project context
 //! - These functions are inherently risky and should be avoided
 //! - Suggest safer alternatives like exec() family functions
@@ -47,8 +48,10 @@
 //! ## Presets
 //! - `system(NULL)`, which only asks whether a command processor exists, is
 //!   never reported (CERT ENV33-C-EX1).
-//! - The strict policy reports every other call, as CERT's page is written
-//!   (ADR-0001).
+//! - The strict policy reports every other call to a command processor, as
+//!   CERT's page is written (ADR-0001). The Windows `_exec*` and `_spawn*`
+//!   functions run a program directly, so only the pedantic policy reports
+//!   them (`env33_exec_spawn_exempt`).
 //! - The default policy also withholds a call whose command no untrusted
 //!   input can reach: the named option
 //!   `env33_locally_constructed_command_allowed` (ADR-0015 Decision 7;
@@ -87,6 +90,9 @@ pub struct Env33C {
 /// The option that withholds a report on a command no untrusted input
 /// reaches (`settings::OPTIONS`).
 const LOCALLY_CONSTRUCTED_OPTION: &str = "env33_locally_constructed_command_allowed";
+
+/// The option that exempts the Windows `_exec*` and `_spawn*` functions.
+const EXEC_SPAWN_OPTION: &str = "env33_exec_spawn_exempt";
 
 impl Env33C {
     pub fn new() -> Self {
@@ -409,17 +415,23 @@ impl Env33C {
         Self::dangerous_function(name) || TAINTED_SOURCE_FUNCTIONS.contains(&name)
     }
 
+    /// Whether this run reports a call to `name`: a Windows `_exec*` or
+    /// `_spawn*` runs a program without a command processor, so it is
+    /// reported only when `env33_exec_spawn_exempt` is off.
     fn is_dangerous_function(&self, name: &str) -> bool {
         Self::dangerous_function(name)
+            && !(Self::exec_or_spawn(name) && self.settings.borrow().flag(EXEC_SPAWN_OPTION))
     }
 
     fn dangerous_function(name: &str) -> bool {
+        matches!(name, "system" | "popen" | "_popen") || Self::exec_or_spawn(name)
+    }
+
+    /// The Windows CRT functions that run a program directly.
+    fn exec_or_spawn(name: &str) -> bool {
         matches!(
             name,
-            "system"
-                | "popen"
-                | "_popen"
-                | "_execl"
+            "_execl"
                 | "_execle"
                 | "_execlp"
                 | "_execv"

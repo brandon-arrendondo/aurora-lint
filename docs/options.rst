@@ -12,11 +12,13 @@ them.
 
 - The **default** preset is ``policy = default`` with a ``hosted``
   environment and the ISO C + POSIX library model.
-- The **strict** preset is ``policy = strict`` with a ``freestanding``
-  environment and no library model.
-- The **pedantic** preset is ``policy = pedantic`` with a ``freestanding``
-  environment and no library model. It reads a rule beyond its text where
-  that rule has a pedantic reading, and may decline a rule outright.
+- The **strict** preset is ``policy = strict`` with a ``hosted``
+  environment and the ISO C + POSIX library model.
+- The **pedantic** preset is ``policy = pedantic`` with a ``hosted``
+  environment and only the library model a project declares (``libc``);
+  with none declared, no library contract below holds. It reads a rule
+  beyond its text where that rule has a pedantic reading, and may decline
+  a rule outright.
 
 Policy options
 --------------
@@ -40,10 +42,10 @@ Policy options
 ``trust_noreturn_keyword``
    A function declared _Noreturn (or <stdnoreturn.h> noreturn, or C23 [[noreturn]]) is trusted not to return; otherwise only a body verified never to return proves it.
 
-   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
+   - Default preset: ``true``; strict preset: ``true``; pedantic preset: ``false``
    - Scope: cross-cutting
    - Oracle tag: ``noreturn-trusted``
-   - Basis: C11 6.7.4p8, 7.23; C23 6.7.13.7. A GNU noreturn attribute, [[gnu::noreturn]] included, is proof under neither policy.
+   - Basis: C11 6.7.4p8, 7.23; C23 6.7.13.7. CERT MSC37-C-EX2 exempts a path that calls a function marked _Noreturn. A GNU noreturn attribute, [[gnu::noreturn]] included, is proof under no policy.
 
 ``pre31_unknown_call_pure``
    PRE31-C: an unproven call, in an argument an unsafe macro may evaluate other than once, is not treated as a side effect: a call to a function with no definition in the scanned files and no library contract, a call through a pointer, strerror, inet_ntoa, strsignal, gai_strerror, getenv, gmtime and asctime (whose only effect is the static buffer they return), or a call to a scanned function that reaches one of these and nothing shown to have a side effect. A callee shown to have a side effect, in whichever scanned file it is defined, is reported either way.
@@ -53,6 +55,14 @@ Policy options
    - Oracle tag: ``call-side-effect-unproven``
    - Basis: C11 5.1.2.3p2 (which CERT quotes) makes a call a side effect only when the function does one. cppcheck's assertWithSideEffect and Polyspace's MISRA C:2012 Rule 13.5 flag only callees they can show are impure. clang-tidy's bugprone-assert-side-effect ignores calls by default. PC-lint and Parasoft's CERT_C-PRE31-c count every call, as the strict policy does.
 
+``pre31_listed_library_calls_pure``
+   PRE31-C: a call to an ISO C or POSIX function the stdlib_call_effects contract lists as free of side effects (strlen, memcmp, isdigit, fabs, ntohs, ...) is not a side effect. Off, such a call is an unproven one, like a call to a function the scan has no body for.
+
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
+   - Scope: PRE31-C
+   - Oracle tag: ``library-call-errno-unproven``
+   - Basis: Those functions modify no object (C11 7.24 and 7.4), and analyzers that exempt calls they can show are pure treat them so. CERT PRE31-C-EX1 counts "even changing errno" as a side effect, and C11 7.5p3 lets any library function set errno unless its description says otherwise, so the strict policy does not credit them.
+
 ``env33_locally_constructed_command_allowed``
    ENV33-C: a call to system(), popen() or an equivalent is not reported when the command is not a string literal and no untrusted input can reach it: the calling function reads none (no recv, fgets, getenv, read and the like) and either takes no pointer or array parameter, or is static with its address never taken and every caller, up to ones taking no parameters, reads none and returns no tainted value (closed_program does not widen this: ADR-0011). Off, every call is reported as CERT's page is written. system(NULL) (CERT EX1) is not reported under either value.
 
@@ -60,6 +70,22 @@ Policy options
    - Scope: ENV33-C
    - Oracle tag: ``command-untainted``
    - Basis: Taint-tracking command-injection checkers report a command only when untrusted data reaches it: CodeQL's cpp/command-line-injection. clang-tidy's cert-env33-c reports every call except system(NULL), as the strict policy does (ADR-0001).
+
+``env33_exec_spawn_exempt``
+   ENV33-C: a call to a Windows _exec* or _spawn* function is not reported: it runs a program directly, not through a command processor. Off, each is reported like system().
+
+   - Default preset: ``true``; strict preset: ``true``; pedantic preset: ``false``
+   - Scope: ENV33-C
+   - Oracle tag: ``exec-spawn-not-command-processor``
+   - Basis: CERT ENV33-C: "Do not invoke a command processor via system() or equivalent functions"; its compliant solutions call execve() and CreateProcess(), which run a program the same way _exec* and _spawn* do.
+
+``flp36_constant_assert_is_guard``
+   FLP36-C: an assert whose condition only compares compile-time constants (LONG_MAX, DBL_MANT_DIG and the like) checks the platform, so it counts as a precision check even though NDEBUG can strip it.
+
+   - Default preset: ``true``; strict preset: ``true``; pedantic preset: ``false``
+   - Scope: FLP36-C
+   - Oracle tag: ``platform-constant-assert``
+   - Basis: CERT FLP36-C's compliant solution is such an assert. Its condition has the same value in every build for one target, so a build that strips it is no less safe than the build that checked it.
 
 Environment contracts
 ---------------------
@@ -75,7 +101,7 @@ Environment contracts
 ``free_null_is_noop``
    free(NULL) does nothing.
 
-   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
+   - Default preset: ``true``; strict preset: ``true``; pedantic preset: ``false``
    - Scope: contract
    - Oracle tag: ``contract:free_null_is_noop``
    - Basis: C11 7.22.3.3p2.
@@ -83,7 +109,7 @@ Environment contracts
 ``realloc_null_is_malloc``
    realloc(NULL, size) behaves like malloc(size).
 
-   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
+   - Default preset: ``true``; strict preset: ``true``; pedantic preset: ``false``
    - Scope: contract
    - Oracle tag: ``contract:realloc_null_is_malloc``
    - Basis: C11 7.22.3.5p3.
@@ -91,15 +117,15 @@ Environment contracts
 ``stdlib_noreturn``
    abort, exit, _Exit, quick_exit, longjmp, thrd_exit and POSIX _exit never return to their caller.
 
-   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
+   - Default preset: ``true``; strict preset: ``true``; pedantic preset: ``false``
    - Scope: contract
    - Oracle tag: ``contract:stdlib_noreturn``
    - Basis: C11 7.22.4.1, 7.22.4.4, 7.22.4.5, 7.22.4.7, 7.13.2.1 and 7.26.5.5; POSIX.1-2024 _exit(). A freestanding implementation need not provide <stdlib.h>, <setjmp.h> or <threads.h> at all. Known limitation: two cross-file summaries built by the prescan (a parameter's null state after `if (!p) exit(1);`, and whether a function never returns) still credit these calls whatever this option says.
 
 ``stdlib_call_effects``
-   The ISO C and POSIX functions the tool lists as free of side effects (strlen, memcmp, isdigit, fabs, ntohs, ...) have none, and every other ISO C or POSIX function it knows has one (it sets errno, touches a stream, allocates, or keeps hidden state). Withdrawn, a library call is a call to an unknown function.
+   Every ISO C or POSIX function the tool knows to have a side effect has one (it sets errno, touches a stream, allocates, or keeps hidden state), and the ones it lists as free of side effects (strlen, memcmp, isdigit, fabs, ntohs, ...) modify no object; whether that makes a call pure is the policy's pre31_listed_library_calls_pure. Withdrawn, a library call is a call to an unknown function.
 
-   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
+   - Default preset: ``true``; strict preset: ``true``; pedantic preset: ``false``
    - Scope: contract
    - Oracle tag: ``contract:stdlib_call_effects``
    - Basis: C11 7.24 and 7.4: memcmp, strcmp, strncmp, memchr, strchr, strcspn, strpbrk, strrchr, strspn, strstr, strlen and the character classification and case mapping functions modify no object; 7.22.1.4p8 and 7.12.1 (strtol and math functions report errors through errno); CERT PRE31-C-EX1: "even changing errno is a side effect".
@@ -107,7 +133,7 @@ Environment contracts
 ``library_macros_evaluate_once``
    A C library function the implementation's headers define as a macro (glibc's tolower) evaluates each argument exactly once, whatever its replacement list looks like, including when a project macro hands it an argument. "The implementation's headers" are any defining the name outside the scanned project, so a third-party library on the search path that redefines a standard name is trusted too (a redefinition C11 7.1.3 already makes undefined). Withdrawn, such a macro is judged by its definition like any other.
 
-   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
+   - Default preset: ``true``; strict preset: ``true``; pedantic preset: ``false``
    - Scope: contract
    - Oracle tag: ``contract:library_macros_evaluate_once``
    - Basis: C11 7.1.4p1: "Any invocation of a library function that is implemented as a macro shall expand to code that evaluates each of its arguments exactly once". The standard's own exceptions (the stream argument of getc, putc, getwc and putwc, and assert) stay unsafe.
@@ -115,7 +141,7 @@ Environment contracts
 ``main_argv_guarantees``
    main's argc is nonnegative, argv[argc] is a null pointer, and argv[0..argc) point to strings.
 
-   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
+   - Default preset: ``true``; strict preset: ``true``; pedantic preset: ``true``
    - Scope: contract
    - Oracle tag: ``contract:main_argv_guarantees``
    - Basis: C11 5.1.2.2.1p2, which binds hosted environments only.
@@ -159,6 +185,21 @@ Toolchain
    - Basis: C11 5.2.4.2.1 (minimum magnitudes), 6.3.1.1 (rank order) and
      7.20.1.1 (exact-width types); integer widths are otherwise
      implementation-defined.
+
+``libc``, ``libc_version``, ``c_standard`` and ``posix_version``
+   The C library the target links, its version, and the editions of ISO C and
+   POSIX the code is written for. Like the data model they describe the target,
+   so a ``--profile`` keeps them. ``libc`` selects which library contracts
+   above hold (``custom`` trusts none until an override states it); the
+   other three grant nothing and are recorded for rules whose reading depends
+   on an edition. None is inferred, each is unknown unless declared, and each
+   enters the settings hash only when declared.
+
+   - Set with ``[environment]`` keys, ``--libc``, or ``--set c_standard=c99``
+     (also ``posix_version``, ``libc_version``)
+   - ``newlib-nano``: newlib with nano-malloc, whose ``free(NULL)`` returns at
+     once and whose ``realloc(NULL, n)`` calls ``malloc`` (newlib's
+     ``nano-mallocr.c``)
 
 Declared memory functions
 -------------------------

@@ -1482,8 +1482,16 @@ impl ClosedEffects {
     /// own storage (`int v; fill(&v);`) is [`Self::writes_any`] alone and
     /// unproven, left to the consumer's policy. `stdlib_contract` is the
     /// `stdlib_call_effects` environment contract: withdrawn, a library
-    /// callee is as unknown as any other body-less one.
+    /// callee is as unknown as any other body-less one. A library callee the
+    /// contract lists as free of side effects counts as pure.
     pub fn proof(&self, stdlib_contract: bool) -> Proof {
+        self.proof_crediting(stdlib_contract, true)
+    }
+
+    /// [`Self::proof`], where `pure_library_calls` says whether a library
+    /// callee the contract lists as free of side effects counts as pure. Off,
+    /// it is unproven: C11 7.5p3 lets any library function set `errno`.
+    pub fn proof_crediting(&self, stdlib_contract: bool, pure_library_calls: bool) -> Proof {
         if !self.writes.is_empty()
             || self.volatile_read
             || (stdlib_contract && self.lib_side_effect)
@@ -1492,7 +1500,7 @@ impl ClosedEffects {
         } else if self.writes_any
             || self.opaque
             || (stdlib_contract && self.lib_own_buffer)
-            || (!stdlib_contract && self.lib_any)
+            || (!(stdlib_contract && pure_library_calls) && self.lib_any)
         {
             Proof::Unproven
         } else {
@@ -2768,6 +2776,22 @@ mod tests {
         let effects = ctx.effects();
         assert_eq!(effects.get("known").unwrap().proof(true), Proof::Pure);
         assert_eq!(effects.get("unknown").unwrap().proof(true), Proof::Unproven);
+    }
+
+    #[test]
+    fn a_listed_pure_library_call_is_pure_only_where_the_policy_credits_it() {
+        let code = "#include <string.h>\n\
+            unsigned long len(const char *s) { return strlen(s); }\n\
+            int bump(int *p) { return ++*p; }\n";
+        let ctx = scanned(&[("l.c", code)], "listed-pure");
+        let effects = ctx.effects();
+        let len = effects.get("len").unwrap();
+        assert_eq!(len.proof_crediting(true, true), Proof::Pure);
+        assert_eq!(len.proof_crediting(true, false), Proof::Unproven);
+        assert_eq!(len.proof_crediting(false, true), Proof::Unproven);
+        // A shown write stays a side effect whatever the policy credits.
+        let bump = effects.get("bump").unwrap();
+        assert_eq!(bump.proof_crediting(true, false), Proof::Impure);
     }
 
     #[test]

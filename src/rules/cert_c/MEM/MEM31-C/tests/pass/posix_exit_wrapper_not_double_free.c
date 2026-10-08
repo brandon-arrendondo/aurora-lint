@@ -1,14 +1,15 @@
 /*
  * Rule: MEM31-C
  * Source: real-world regression (pure-ftpd's _EXIT shape)
- * Status: PASS under the default preset; VIOLATION under strict
- * Expect: default=clean strict=violation
+ * Status: PASS under the default and strict presets; VIOLATION under pedantic
+ * Expect: default=clean strict=clean pedantic=violation
  *
  * _EXIT's GNU noreturn attribute proves nothing (ADR-0015), but its body
  * ends in POSIX _exit(), which a hosted ISO C + POSIX environment never
  * returns from (stdlib_noreturn), so _EXIT is verified noreturn and the
- * free() before it cannot reach the one after the `if`. The strict preset
- * declares no library model, so nothing is known to end the path.
+ * free() before it cannot reach the one after the `if`. The pedantic preset
+ * trusts only a declared library, and this fixture declares none, so nothing
+ * is known to end the path.
  */
 
 #include <stdlib.h>

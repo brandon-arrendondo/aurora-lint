@@ -497,7 +497,10 @@ fn the_pedantic_preset_is_named_in_the_settings_and_the_banner() {
     let s = sarif_settings(&manifest_msc04(), &["--profile", "pedantic"]);
     assert_eq!(s["preset"], "pedantic");
     assert_eq!(s["policy"], "pedantic");
-    assert_eq!(s["environment"], "freestanding");
+    assert_eq!(s["environment"], "hosted");
+    assert_eq!(s["libc"], serde_json::Value::Null);
+    assert_eq!(s["libc_declared"], false);
+    assert_eq!(s["options"]["trust_noreturn_keyword"], false);
     assert_ne!(
         s["hash"],
         sarif_settings(&manifest_msc04(), &["--profile", "strict"])["hash"]
@@ -511,33 +514,69 @@ fn the_pedantic_preset_is_named_in_the_settings_and_the_banner() {
     ]);
     assert_eq!(code, 0, "stderr: {stderr}");
     assert!(
-        stdout.contains("Settings: pedantic preset (policy=pedantic, environment=freestanding)"),
+        stdout.contains("Settings: pedantic preset (policy=pedantic, environment=hosted)"),
         "{stdout}"
     );
+    // No library is declared: the scan names the key and the enabled rules
+    // whose findings depend on one.
+    assert!(
+        stderr.contains("notice: the pedantic preset trusts only a declared C library"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("[environment] libc"), "{stderr}");
+    assert!(
+        stderr.contains("disable the rules whose findings depend on it: EXP34-C."),
+        "{stderr}"
+    );
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        "--check-config",
+        "-m",
+        fixtures().join("manifest_exp34.toml").to_str().unwrap(),
+        "--profile",
+        "pedantic",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout.trim(), "configuration ok");
+    assert!(
+        stderr.starts_with("warning: the pedantic preset"),
+        "{stderr}"
+    );
+    let (code, _stdout, stderr) = run_aurora_lint(&[
+        "--check-config",
+        "-m",
+        fixtures().join("manifest_exp34.toml").to_str().unwrap(),
+        "--profile",
+        "pedantic",
+        "--libc",
+        "newlib-nano",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stderr.is_empty(), "{stderr}");
 }
 
 #[test]
 fn sarif_records_strict_preset_from_cli() {
     let s = sarif_settings(&manifest_msc04(), &["--profile", "strict"]);
     assert_eq!(s["preset"], "strict");
-    assert_eq!(s["environment"], "freestanding");
-    assert_eq!(s["libc"], serde_json::Value::Null);
+    assert_eq!(s["environment"], "hosted");
+    assert_eq!(s["libc"], "iso-posix");
     assert_eq!(s["options"]["assert_is_guard"], false);
-    assert_eq!(s["options"]["free_null_is_noop"], false);
-    assert_eq!(s["options"]["main_argv_guarantees"], false);
+    assert_eq!(s["options"]["trust_noreturn_keyword"], true);
+    assert_eq!(s["options"]["free_null_is_noop"], true);
+    assert_eq!(s["options"]["main_argv_guarantees"], true);
 }
 
 #[test]
 fn manifest_settings_apply_and_name_no_preset_when_overridden() {
     let manifest = fixtures().join("manifest_msc04_strict_newlib.toml");
     let s = sarif_settings(&manifest, &[]);
-    // Strict policy, but newlib's documented contracts are trusted and one
-    // startup guarantee is withdrawn: neither preset.
+    // The strict preset on newlib, whose documented contracts are trusted,
+    // with one startup guarantee withdrawn: not the preset any more.
     assert_eq!(s["preset"], serde_json::Value::Null);
     assert_eq!(s["policy"], "strict");
     assert_eq!(s["libc"], "newlib");
     assert_eq!(s["options"]["free_null_is_noop"], true);
-    assert_eq!(s["options"]["main_argv_guarantees"], false);
+    assert_eq!(s["options"]["main_argv_guarantees"], true);
     assert_eq!(s["options"]["static_zero_init"], false);
 }
 
@@ -4383,10 +4422,21 @@ fn a_library_macro_is_judged_by_its_body_once_the_contract_is_withdrawn() {
 }
 
 #[test]
-fn the_strict_profile_withdraws_the_library_macro_contract() {
-    // Strict is freestanding: no C library is provided, so none is trusted.
-    let found = pre31_findings("pre31_library_macro", "main.c", &["--profile", "strict"]);
+fn pedantic_withdraws_the_library_macro_contract_until_a_library_is_declared() {
+    // Pedantic trusts only a declared C library; strict trusts the hosted one.
+    let found = pre31_findings("pre31_library_macro", "main.c", &["--profile", "pedantic"]);
     assert_eq!(pre31_lines(&found), vec![6, 11], "{found:?}");
+    let declared = pre31_findings(
+        "pre31_library_macro",
+        "main.c",
+        &["--profile", "pedantic", "--libc", "glibc"],
+    );
+    let strict = pre31_findings("pre31_library_macro", "main.c", &["--profile", "strict"]);
+    assert_eq!(pre31_lines(&declared), pre31_lines(&strict));
+    assert_eq!(
+        pre31_lines(&strict),
+        pre31_lines(&pre31_findings("pre31_library_macro", "main.c", &[]))
+    );
 }
 
 #[test]

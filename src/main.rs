@@ -179,6 +179,11 @@ fn settings_from_cli(matches: &clap::ArgMatches) -> Result<SettingsConfig> {
     }
 }
 
+/// Whether the manifest enables `rule_id`.
+fn rule_enabled(manifest: &RuleManifest, rule_id: &str) -> bool {
+    manifest.get_rule(rule_id).is_some_and(|c| c.enabled)
+}
+
 /// The manifest's settings with the command line's layered over them.
 ///
 /// A `--profile` on the command line restarts from that preset: the
@@ -478,7 +483,7 @@ fn run() -> Result<i32> {
                 .long("libc")
                 .help("C library model whose documented contracts are trusted")
                 .value_name("MODEL")
-                .value_parser(["iso-posix", "glibc", "musl", "newlib", "picolibc", "custom"]),
+                .value_parser(["iso-posix", "glibc", "musl", "newlib", "newlib-nano", "picolibc", "custom"]),
         )
         .arg(
             Arg::new("include_names")
@@ -724,11 +729,16 @@ fn run() -> Result<i32> {
         // ones that parsed, so each problem is named once.
         let (settings_cli, mut problems) = parse_settings_from_cli(&matches);
         let checked = load_manifest(manifest_path).and_then(|manifest| {
-            resolve_settings(
+            let settings = resolve_settings(
                 &manifest,
                 &settings_cli,
                 compile_db.as_ref().is_some_and(|db| db.msvc),
-            )
+            )?;
+            // Valid, but the scan would trust no library: say so, and pass.
+            if let Some(notice) = settings.libc_notice(|r| rule_enabled(&manifest, r)) {
+                eprintln!("warning: {notice}");
+            }
+            Ok(())
         });
         if let Err(e) = checked {
             let text = format!("{e:#}");
@@ -868,6 +878,9 @@ fn run() -> Result<i32> {
     let scope = scan_scope(&matches, &manifest);
     analysis_settings.set_prescan_scope(scope.prescan_scope());
     let declined = manifest.declined_rules(|id| analysis_settings.declines(id));
+    if let Some(notice) = analysis_settings.libc_notice(|r| rule_enabled(&manifest, r)) {
+        eprintln!("notice: {notice}");
+    }
 
     // Handle suppression generation
     if let Some(gen_spec) = generate_suppression {

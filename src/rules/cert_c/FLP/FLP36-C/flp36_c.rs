@@ -15,6 +15,7 @@
 //! - With precision assertion checking before conversion
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::const_eval;
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils;
@@ -171,6 +172,18 @@ impl Flp36C {
             return true;
         }
 
+        // An assert over constants alone checks the platform, whatever the
+        // build: CERT's own compliant solution is one
+        // (`flp36_constant_assert_is_guard`).
+        if self
+            .settings
+            .borrow()
+            .flag("flp36_constant_assert_is_guard")
+            && has_constant_assert(&body, source)
+        {
+            return true;
+        }
+
         // Using double instead of float is compliant
         if body_text.contains("double") && !body_text.contains("float") {
             return true;
@@ -195,5 +208,68 @@ impl Flp36C {
         }
 
         None
+    }
+}
+
+/// Whether `body` holds an `assert` whose condition only compares
+/// compile-time constants, in [`const_eval::is_compile_time_constant_expr`]'s
+/// sense: the same value in every build for one target.
+fn has_constant_assert(body: &Node, source: &str) -> bool {
+    let mut stack = vec![*body];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "call_expression"
+            && node.child_by_field_name("function").is_some_and(|f| {
+                f.kind() == "identifier" && ast_utils::get_node_text(&f, source) == "assert"
+            })
+            && node
+                .child_by_field_name("arguments")
+                .and_then(|args| args.named_child(0))
+                .is_some_and(|cond| is_constant_condition(&cond, source))
+        {
+            return true;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    false
+}
+
+/// A comparison or logical combination whose operands are all compile-time
+/// constants, or a constant itself.
+fn is_constant_condition(node: &Node, source: &str) -> bool {
+    match node.kind() {
+        "parenthesized_expression" => node
+            .named_child(0)
+            .is_some_and(|inner| is_constant_condition(&inner, source)),
+        "unary_expression"
+            if ast_utils::get_node_text(node, source)
+                .trim_start()
+                .starts_with('!') =>
+        {
+            node.child_by_field_name("argument")
+                .is_some_and(|arg| is_constant_condition(&arg, source))
+        }
+        "binary_expression"
+            if matches!(
+                ast_utils::get_binary_operator(node, source).unwrap_or_default(),
+                "<" | "<=" | ">" | ">=" | "==" | "!=" | "&&" | "||"
+            ) =>
+        {
+            match (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) {
+                (Some(l), Some(r)) => {
+                    is_constant_condition(&l, source) && is_constant_condition(&r, source)
+                }
+                _ => false,
+            }
+        }
+        _ => const_eval::is_compile_time_constant_expr(
+            node,
+            source,
+            &const_eval::MacroConstantMap::new(),
+            const_eval::ConstantNameSets::none(),
+        ),
     }
 }

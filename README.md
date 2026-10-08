@@ -350,12 +350,14 @@ First run against an existing codebase surfacing more findings than your team ca
 # (a dominating assert is a guard; the ISO C/POSIX library contracts hold)
 aurora-lint /path/to/project
 
-# The strict preset credits none of them: for MISRA-style and certified code
+# The strict preset applies each rule as written: no strippable assert is a
+# guard, and every dependent site is reported. For MISRA-style and certified code
 aurora-lint /path/to/project --profile strict
 
 # The pedantic preset reads a rule beyond its text where the rule has a sound
-# or closed-form reading stricter than the text
-aurora-lint /path/to/project --profile pedantic
+# or closed-form reading stricter than the text, and trusts only the C library
+# you declare
+aurora-lint /path/to/project --profile pedantic --libc newlib-nano
 
 # Every option each preset sets, and its current value
 aurora-lint --list-options

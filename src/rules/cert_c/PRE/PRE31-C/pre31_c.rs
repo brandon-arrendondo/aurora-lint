@@ -25,6 +25,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tree_sitter::Node;
 
+/// The policy option that credits the library functions the
+/// `stdlib_call_effects` contract lists as free of side effects.
+const PURE_LIBRARY_CALLS: &str = "pre31_listed_library_calls_pure";
+
 pub struct Pre31C {
     /// Function-like macro definitions from the cross-file prescan
     /// (`ProjectContext::function_macros`) — needed because an unsafe
@@ -57,7 +61,8 @@ pub struct Pre31C {
     /// Struct member and typedef types as this file sees them, for a read
     /// of a `volatile` member.
     types: RefCell<VisibleTypes>,
-    /// `pre31_unknown_call_pure` and `stdlib_call_effects` decide how a
+    /// `pre31_unknown_call_pure`, `pre31_listed_library_calls_pure` and
+    /// `stdlib_call_effects` decide how a
     /// call inside an argument is classified; `library_macros_evaluate_once`
     /// whether the C library's own macros are single-evaluation.
     settings: RefCell<Arc<AnalysisSettings>>,
@@ -460,10 +465,10 @@ impl<'a> Ctx<'a> {
         // An identifier in the argument is not a call: only what the project
         // shows it to be (a volatile object, a macro that calls or writes)
         // counts, and a name nothing knows reads nothing here.
-        match view
-            .name_effects(name, false)
-            .proof(self.settings.flag("stdlib_call_effects"))
-        {
+        match view.name_effects(name, false).proof_crediting(
+            self.settings.flag("stdlib_call_effects"),
+            self.settings.flag(PURE_LIBRARY_CALLS),
+        ) {
             Proof::Pure => Effect::None,
             Proof::Unproven => Effect::Unknown,
             Proof::Impure => Effect::Definite,
@@ -580,7 +585,12 @@ impl<'a> Ctx<'a> {
         let stdlib_contract = self.settings.flag("stdlib_call_effects");
         if stdlib_contract {
             match library_call_effect(name) {
-                Some(LibraryEffect::Pure) => return Effect::None,
+                // Listed free of side effects: pure only where the policy
+                // credits the list; otherwise as unknown as any callee.
+                Some(LibraryEffect::Pure) if self.settings.flag(PURE_LIBRARY_CALLS) => {
+                    return Effect::None
+                }
+                Some(LibraryEffect::Pure) => return Effect::Unknown,
                 Some(LibraryEffect::SideEffect) => return Effect::Definite,
                 // Only its own returned buffer changes: relaxed with the
                 // unknown-callee bucket (default), reported under strict.
@@ -616,13 +626,16 @@ impl<'a> Ctx<'a> {
                 .get(k)
                 .is_some_and(|a| is_null_pointer_constant(a, self.source))
         };
-        closed.map(
-            |closed| match closed.past_null_arguments(null).proof(stdlib_contract) {
+        closed.map(|closed| {
+            match closed
+                .past_null_arguments(null)
+                .proof_crediting(stdlib_contract, self.settings.flag(PURE_LIBRARY_CALLS))
+            {
                 Proof::Pure => Effect::None,
                 Proof::Unproven => Effect::Unknown,
                 Proof::Impure => Effect::Definite,
-            },
-        )
+            }
+        })
     }
 
     /// A function-like macro invoked inside the argument: its body is its

@@ -633,14 +633,21 @@ mod tests {
     fn collect_noreturn_function_names_selects_by_settings() {
         use crate::settings::Preset;
         let (tree, source) = parse("_Noreturn void die(void);\n");
-        let default = AnalysisSettings::preset(Preset::Default);
-        let strict = AnalysisSettings::preset(Preset::Strict);
-        assert!(
-            collect_noreturn_function_names(&tree.root_node(), &source, &default).contains("die")
-        );
-        assert!(
-            !collect_noreturn_function_names(&tree.root_node(), &source, &strict).contains("die")
-        );
+        // Default and strict trust the keyword (CERT MSC37-C-EX2); pedantic
+        // accepts only a body verified never to return.
+        for (preset, trusted) in [
+            (Preset::Default, true),
+            (Preset::Strict, true),
+            (Preset::Pedantic, false),
+        ] {
+            let settings = AnalysisSettings::preset(preset);
+            assert_eq!(
+                collect_noreturn_function_names(&tree.root_node(), &source, &settings)
+                    .contains("die"),
+                trusted,
+                "{preset}"
+            );
+        }
     }
 
     #[test]
