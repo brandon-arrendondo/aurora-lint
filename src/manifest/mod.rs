@@ -20,7 +20,8 @@ pub struct RuleManifest {
     pub metadata: ManifestMetadata,
     /// The rule configs themselves, namespaced by rule family.
     pub rules: RuleNamespaces,
-    /// `profile = "default" | "strict"`: the preset both axes start from.
+    /// `profile = "default" | "strict" | "pedantic"`: the preset both axes
+    /// start from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<Preset>,
     /// The `[policy]` table: overrides of the policy axis.
@@ -485,6 +486,25 @@ impl RuleManifest {
                 config.enabled = config.enabled && rule_ids.contains(id);
             }
         }
+    }
+
+    /// Disables every enabled rule the policy in force declines
+    /// (`settings::DECLINED_RULES`), and returns their IDs, sorted.
+    pub fn withhold_declined(
+        &mut self,
+        settings: &crate::settings::AnalysisSettings,
+    ) -> Vec<String> {
+        let mut declined = Vec::new();
+        for (_, rules) in self.rules.families_mut() {
+            for (id, config) in rules.iter_mut() {
+                if config.enabled && settings.declines(id) {
+                    config.enabled = false;
+                    declined.push(id.clone());
+                }
+            }
+        }
+        declined.sort();
+        declined
     }
 }
 

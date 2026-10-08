@@ -217,9 +217,10 @@ safety-critical user unprotected.
 
 ## Amendment (2026-10-07, Brandon): a third preset, and how each preset reads a rule's text
 
-**Status:** direction. The `--pedantic` preset is not yet implemented;
-`--default` and `--strict` are the shipped presets. "Relaxed" below names
-only `default`'s position on the axis, not a flag.
+**Status:** direction. The tool accepts the `pedantic` preset
+(`--profile pedantic`) and lets any preset decline a rule, but no rule has a
+pedantic reading yet, so it reads every rule as `strict` does. "Relaxed"
+below names only `default`'s position on the axis, not a flag.
 
 ### Decision
 

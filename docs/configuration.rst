@@ -47,7 +47,10 @@ assume (ADR-0015):
   are reported. ``default`` credits the assumptions mainstream analyzers make
   (for example, a dominating ``assert`` is a guard even though ``NDEBUG`` can
   strip it). ``strict`` credits none of them: the reading MISRA-style and
-  certified code needs.
+  certified code needs. ``pedantic`` goes beyond a rule's text where the
+  rule has a sound or closed-form reading stricter than the text, and may
+  decline a rule that has none; a rule with no pedantic reading is read as
+  ``strict`` reads it.
 - **Environment** says what the analyzer may believe about the platform the
   code runs on. ``hosted`` trusts the ISO C and POSIX library contracts (for
   example, ``free(NULL)`` does nothing) and ``main``'s ``argv`` guarantees.
@@ -57,12 +60,14 @@ assume (ADR-0015):
 
 Two presets set both at once. The **default** preset is the default policy on
 a hosted environment. The **strict** preset is the strict policy on a
-freestanding environment, for teams that trust nothing. Any combination can
-be set explicitly, down to single options:
+freestanding environment, for teams that trust nothing. The **pedantic**
+preset is the pedantic policy on a freestanding environment. Benchmark
+precision and recall are scored against the strict reading. Any combination
+can be set explicitly, down to single options:
 
 .. code-block:: toml
 
-    profile = "strict"          # preset: "default" (the default) or "strict"
+    profile = "strict"          # preset: "default" (the default), "strict" or "pedantic"
 
     [metadata]
     name = "Firmware rules"
@@ -70,7 +75,7 @@ be set explicitly, down to single options:
     cert_version = "2016"
 
     [policy]
-    level = "strict"            # "default" | "strict"; overrides the preset
+    level = "strict"            # "default" | "strict" | "pedantic"; overrides the preset
 
     [environment]
     kind = "freestanding"       # "hosted" | "freestanding"; overrides the preset

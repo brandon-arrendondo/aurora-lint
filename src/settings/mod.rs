@@ -33,6 +33,32 @@ pub enum Preset {
     Default,
     /// Strict policy, freestanding environment: trust nothing.
     Strict,
+    /// Pedantic policy, freestanding environment: a sound or closed-form
+    /// reading beyond each rule's text (ADR-0015, 2026-10-07 amendment).
+    Pedantic,
+}
+
+impl Preset {
+    /// Every preset, in the order of the axis ADR-0015 orders them on.
+    pub const ALL: [Preset; 3] = [Preset::Default, Preset::Strict, Preset::Pedantic];
+
+    /// The policy and environment this preset names.
+    pub fn axes(self) -> (Policy, EnvironmentKind) {
+        match self {
+            Preset::Default => (Policy::Default, EnvironmentKind::Hosted),
+            Preset::Strict => (Policy::Strict, EnvironmentKind::Freestanding),
+            Preset::Pedantic => (Policy::Pedantic, EnvironmentKind::Freestanding),
+        }
+    }
+
+    /// The preset whose policy is `policy`.
+    pub fn of_policy(policy: Policy) -> Self {
+        match policy {
+            Policy::Default => Preset::Default,
+            Policy::Strict => Preset::Strict,
+            Policy::Pedantic => Preset::Pedantic,
+        }
+    }
 }
 
 /// What the rules require of the code.
@@ -43,6 +69,11 @@ pub enum Policy {
     Default,
     /// Every violating line reported; no assumption credited.
     Strict,
+    /// Beyond the text where a rule's pedantic reading says so; otherwise
+    /// the strict policy. A rule reads it through
+    /// [`AnalysisSettings::policy`], and [`DECLINED_RULES`] lets it decline
+    /// a rule outright.
+    Pedantic,
 }
 
 /// Whether the code runs under a hosted or a freestanding implementation
@@ -121,6 +152,8 @@ pub enum Source {
         default: bool,
         /// Value under the strict policy.
         strict: bool,
+        /// Value under the pedantic policy.
+        pedantic: bool,
     },
     /// Holds only in a hosted environment.
     Hosted,
@@ -180,9 +213,14 @@ fn derived_value(
     libc: Option<Libc>,
 ) -> bool {
     match o.source {
-        Source::Policy { default, strict } => match policy {
+        Source::Policy {
+            default,
+            strict,
+            pedantic,
+        } => match policy {
             Policy::Default => default,
             Policy::Strict => strict,
+            Policy::Pedantic => pedantic,
         },
         Source::Hosted => environment == EnvironmentKind::Hosted,
         Source::Library(libcs) => libc.is_some_and(|l| libcs.contains(&l)),
@@ -201,6 +239,7 @@ pub static OPTIONS: &[OptionSpec] = &[
         source: Source::Policy {
             default: true,
             strict: false,
+            pedantic: false,
         },
         oracle_tag: "assert-dominated",
         summary: "A dominating assert whose condition establishes the property is a guard, \
@@ -215,6 +254,7 @@ pub static OPTIONS: &[OptionSpec] = &[
         source: Source::Policy {
             default: true,
             strict: false,
+            pedantic: false,
         },
         oracle_tag: "dependent-site",
         summary: "In a proof chain, only the first failing site is reported, not the sites \
@@ -228,6 +268,7 @@ pub static OPTIONS: &[OptionSpec] = &[
         source: Source::Policy {
             default: true,
             strict: false,
+            pedantic: false,
         },
         oracle_tag: "noreturn-trusted",
         summary: "A function declared _Noreturn (or <stdnoreturn.h> noreturn, or C23 \
@@ -243,6 +284,7 @@ pub static OPTIONS: &[OptionSpec] = &[
         source: Source::Policy {
             default: true,
             strict: false,
+            pedantic: false,
         },
         oracle_tag: "call-side-effect-unproven",
         summary: "PRE31-C: an unproven call, in an argument an unsafe macro may evaluate other \
@@ -266,6 +308,7 @@ pub static OPTIONS: &[OptionSpec] = &[
         source: Source::Policy {
             default: true,
             strict: false,
+            pedantic: false,
         },
         oracle_tag: "command-untainted",
         summary: "ENV33-C: a call to system(), popen() or an equivalent is not reported when \
@@ -403,6 +446,22 @@ pub static OPTIONS: &[OptionSpec] = &[
                 file-scope objects, which any function may write first, are not tracked.",
     },
 ];
+
+/// Rules a policy declines to enforce, each with the policies that decline
+/// it. The presets are not nested (ADR-0015, 2026-10-07 amendment, Decision
+/// 3): any of them may take a rule out of play, as `default` does for a rule
+/// too noisy for everyday code or `pedantic` for one with no sound form,
+/// rather than run a weaker form of it. A declined rule does not run, whatever
+/// the manifest enables. A rule that only reads differently under a policy
+/// stays out of this table and branches on [`AnalysisSettings::policy`].
+pub static DECLINED_RULES: &[(&str, &[Policy])] = &[];
+
+/// Whether `table` declines `rule_id` under `policy`.
+fn declined_in(table: &[(&str, &[Policy])], policy: Policy, rule_id: &str) -> bool {
+    table
+        .iter()
+        .any(|(id, policies)| *id == rule_id && policies.contains(&policy))
+}
 
 /// Look up an option by name.
 pub fn option(name: &str) -> Option<&'static OptionSpec> {
@@ -786,10 +845,7 @@ impl AnalysisSettings {
     /// an unknown option, or an option of the other axis, is refused by name.
     pub fn resolve(config: &SettingsConfig) -> Result<Self> {
         let preset = config.profile.unwrap_or(Preset::Default);
-        let (mut policy, mut environment) = match preset {
-            Preset::Default => (Policy::Default, EnvironmentKind::Hosted),
-            Preset::Strict => (Policy::Strict, EnvironmentKind::Freestanding),
-        };
+        let (mut policy, mut environment) = preset.axes();
         let mut libc = None;
         let mut include_names = IncludeNames::default();
         let mut data_model = DataModel::default();
@@ -922,12 +978,17 @@ impl AnalysisSettings {
         }
     }
 
+    /// Whether the policy in force declines `rule_id` ([`DECLINED_RULES`]).
+    pub fn declines(&self, rule_id: &str) -> bool {
+        declined_in(DECLINED_RULES, self.policy, rule_id)
+    }
+
     /// The preset these settings equal, if any. A preset says nothing about
     /// how `#include` names match, the data model, which functions a
     /// project declares or which files the prescan reads, so those fields
     /// are not compared.
     pub fn matching_preset(&self) -> Option<Preset> {
-        [Preset::Default, Preset::Strict].into_iter().find(|p| {
+        Preset::ALL.into_iter().find(|p| {
             *self
                 == Self {
                     include_names: self.include_names,
@@ -1135,17 +1196,10 @@ fn example_fact_value(fact: Fact) -> String {
 /// and validation ([`OPTIONS`], [`Fact::ALL`], [`DataModel::bundle`]), so it
 /// cannot drift from them, and it resolves to exactly `current`.
 pub fn render_config_settings(current: &AnalysisSettings) -> String {
-    let profile = if current.policy == Policy::Strict {
-        Preset::Strict
-    } else {
-        Preset::Default
-    };
-    let (base_policy, base_environment) = match profile {
-        Preset::Default => (Policy::Default, EnvironmentKind::Hosted),
-        Preset::Strict => (Policy::Strict, EnvironmentKind::Freestanding),
-    };
+    let profile = Preset::of_policy(current.policy);
+    let (base_policy, base_environment) = profile.axes();
     let mut out = String::new();
-    out.push_str("# A preset that sets both axes: \"default\" or \"strict\".\n");
+    out.push_str("# A preset that sets both axes: \"default\", \"strict\" or \"pedantic\".\n");
     config_entry(
         &mut out,
         profile != Preset::Default,
@@ -1154,7 +1208,7 @@ pub fn render_config_settings(current: &AnalysisSettings) -> String {
         "",
     );
 
-    out.push_str("\n[policy]\n# What the rules require of the code: \"default\" or \"strict\".\n");
+    out.push_str("\n[policy]\n# What the rules require of the code: \"default\", \"strict\" or \"pedantic\".\n");
     config_entry(
         &mut out,
         current.policy != base_policy,
@@ -1333,6 +1387,7 @@ pub fn fact_rows(current: &AnalysisSettings) -> Vec<FactRow> {
 pub fn render_text(current: &AnalysisSettings) -> String {
     let default = AnalysisSettings::preset(Preset::Default);
     let strict = AnalysisSettings::preset(Preset::Strict);
+    let pedantic = AnalysisSettings::preset(Preset::Pedantic);
     let mut out = format!(
         "Current: policy={}, environment={}, libc={}, include_names={}, data_model={}\n\n",
         current.policy,
@@ -1373,17 +1428,18 @@ pub fn render_text(current: &AnalysisSettings) -> String {
         out.push('\n');
     }
     out.push_str(&format!(
-        "{:<24} {:<12} {:<14} {:>7} {:>7} {:>7}\n",
-        "OPTION", "AXIS", "SCOPE", "default", "strict", "current"
+        "{:<24} {:<12} {:<14} {:>7} {:>7} {:>8} {:>7}\n",
+        "OPTION", "AXIS", "SCOPE", "default", "strict", "pedantic", "current"
     ));
     for o in OPTIONS {
         out.push_str(&format!(
-            "{:<24} {:<12} {:<14} {:>7} {:>7} {:>7}\n    {}\n    Basis: {}\n",
+            "{:<24} {:<12} {:<14} {:>7} {:>7} {:>8} {:>7}\n    {}\n    Basis: {}\n",
             o.name,
             axis_label(o.axis),
             scope_label(o.scope),
             default.flag(o.name),
             strict.flag(o.name),
+            pedantic.flag(o.name),
             current.flag(o.name),
             o.summary,
             o.basis,
@@ -1411,6 +1467,7 @@ pub fn render_text(current: &AnalysisSettings) -> String {
 pub fn render_json(current: &AnalysisSettings) -> serde_json::Value {
     let default = AnalysisSettings::preset(Preset::Default);
     let strict = AnalysisSettings::preset(Preset::Strict);
+    let pedantic = AnalysisSettings::preset(Preset::Pedantic);
     let options: Vec<serde_json::Value> = OPTIONS
         .iter()
         .map(|o| {
@@ -1421,6 +1478,7 @@ pub fn render_json(current: &AnalysisSettings) -> serde_json::Value {
                 "oracle_tag": o.oracle_tag,
                 "default": default.flag(o.name),
                 "strict": strict.flag(o.name),
+                "pedantic": pedantic.flag(o.name),
                 "current": current.flag(o.name),
                 "summary": o.summary,
                 "basis": o.basis,
@@ -1446,6 +1504,7 @@ pub fn render_json(current: &AnalysisSettings) -> serde_json::Value {
 pub fn render_rst() -> String {
     let default = AnalysisSettings::preset(Preset::Default);
     let strict = AnalysisSettings::preset(Preset::Strict);
+    let pedantic = AnalysisSettings::preset(Preset::Pedantic);
     let mut out = String::from(
         "..\n   Generated by `aurora-lint --list-options rst`. Do not edit by hand:\n   \
          change the table in src/settings/mod.rs and regenerate.\n\n\
@@ -1458,7 +1517,10 @@ pub fn render_rst() -> String {
          - The **default** preset is ``policy = default`` with a ``hosted``\n  \
          environment and the ISO C + POSIX library model.\n\
          - The **strict** preset is ``policy = strict`` with a ``freestanding``\n  \
-         environment and no library model.\n\n",
+         environment and no library model.\n\
+         - The **pedantic** preset is ``policy = pedantic`` with a ``freestanding``\n  \
+         environment and no library model. It reads a rule beyond its text where\n  \
+         that rule has a pedantic reading, and may decline a rule outright.\n\n",
     );
     for (axis, title) in [
         (Axis::Policy, "Policy options"),
@@ -1472,9 +1534,10 @@ pub fn render_rst() -> String {
             out.push_str(&format!("``{}``\n", o.name));
             out.push_str(&format!("   {}\n\n", o.summary));
             out.push_str(&format!(
-                "   - Default preset: ``{}``; strict preset: ``{}``\n",
+                "   - Default preset: ``{}``; strict preset: ``{}``; pedantic preset: ``{}``\n",
                 default.flag(o.name),
-                strict.flag(o.name)
+                strict.flag(o.name),
+                pedantic.flag(o.name)
             ));
             out.push_str(&format!("   - Scope: {}\n", scope_label(o.scope)));
             out.push_str(&format!("   - Oracle tag: ``{}``\n", o.oracle_tag));
@@ -1654,6 +1717,40 @@ mod tests {
     }
 
     #[test]
+    fn each_preset_names_its_own_axes_and_is_recognized() {
+        for preset in Preset::ALL {
+            let s = AnalysisSettings::preset(preset);
+            assert_eq!((s.policy, s.environment), preset.axes());
+            assert_eq!(s.matching_preset(), Some(preset));
+            assert_eq!(Preset::of_policy(s.policy), preset);
+            assert_eq!(preset.to_string().parse::<Preset>(), Ok(preset));
+        }
+        let hashes: std::collections::BTreeSet<String> = Preset::ALL
+            .into_iter()
+            .map(|p| AnalysisSettings::preset(p).settings_hash())
+            .collect();
+        assert_eq!(hashes.len(), Preset::ALL.len());
+    }
+
+    #[test]
+    fn a_policy_declines_only_the_rules_its_row_names() {
+        let table: &[(&str, &[Policy])] = &[("MSC04-C", &[Policy::Default, Policy::Pedantic])];
+        assert!(declined_in(table, Policy::Default, "MSC04-C"));
+        assert!(!declined_in(table, Policy::Strict, "MSC04-C"));
+        assert!(declined_in(table, Policy::Pedantic, "MSC04-C"));
+        assert!(!declined_in(table, Policy::Pedantic, "MSC05-C"));
+    }
+
+    #[test]
+    fn every_declined_rule_is_a_known_rule() {
+        let registry = crate::rules::RuleRegistry::new();
+        for (id, policies) in DECLINED_RULES {
+            assert!(registry.get_rule(id).is_some(), "{id} is not a rule");
+            assert!(!policies.is_empty(), "{id} names no policy");
+        }
+    }
+
+    #[test]
     fn a_late_option_moves_the_hash_only_when_overridden() {
         let with = |preset: Preset, value: bool| {
             let mut config = SettingsConfig {
@@ -1665,7 +1762,7 @@ mod tests {
                 .unwrap();
             AnalysisSettings::resolve(&config).unwrap()
         };
-        for preset in [Preset::Default, Preset::Strict] {
+        for preset in Preset::ALL {
             let base = AnalysisSettings::preset(preset);
             let implied = base.flag("library_macros_evaluate_once");
             assert_eq!(with(preset, implied).settings_hash(), base.settings_hash());

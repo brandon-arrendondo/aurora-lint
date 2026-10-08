@@ -599,7 +599,9 @@ fn fixture_findings(
 ///
 /// `preset` and `overrides` (the fixture header's `Settings:` line,
 /// `name=value` pairs separated by commas) are the policy and environment
-/// settings the fixture runs under; every fixture runs under each preset.
+/// settings the fixture runs under; every fixture runs under `default` and
+/// `strict`, and under `pedantic` when its header names it (build.rs,
+/// `OPT_IN_PRESETS`).
 #[cfg(test)]
 fn run_fixture(
     test_name: &str,

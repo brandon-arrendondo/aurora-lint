@@ -493,6 +493,30 @@ fn sarif_records_default_settings() {
 }
 
 #[test]
+fn the_pedantic_preset_is_named_in_the_settings_and_the_banner() {
+    let s = sarif_settings(&manifest_msc04(), &["--profile", "pedantic"]);
+    assert_eq!(s["preset"], "pedantic");
+    assert_eq!(s["policy"], "pedantic");
+    assert_eq!(s["environment"], "freestanding");
+    assert_ne!(
+        s["hash"],
+        sarif_settings(&manifest_msc04(), &["--profile", "strict"])["hash"]
+    );
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        fixtures().join("repeated_deref.c").to_str().unwrap(),
+        "-m",
+        fixtures().join("manifest_exp34.toml").to_str().unwrap(),
+        "--profile",
+        "pedantic",
+    ]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("Settings: pedantic preset (policy=pedantic, environment=freestanding)"),
+        "{stdout}"
+    );
+}
+
+#[test]
 fn sarif_records_strict_preset_from_cli() {
     let s = sarif_settings(&manifest_msc04(), &["--profile", "strict"]);
     assert_eq!(s["preset"], "strict");
@@ -601,14 +625,16 @@ fn options_doc_matches_the_table() {
 }
 
 #[test]
-fn list_options_json_names_every_option_under_both_presets() {
+fn list_options_json_names_every_option_under_every_preset() {
     let (code, stdout, _) = run_aurora_lint(&["--list-options", "json"]);
     assert_eq!(code, 0);
     let listing: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let options = listing["options"].as_array().unwrap();
     assert!(!options.is_empty());
     for o in options {
-        assert!(o["default"].is_boolean() && o["strict"].is_boolean(), "{o}");
+        for preset in ["default", "strict", "pedantic"] {
+            assert!(o[preset].is_boolean(), "{preset}: {o}");
+        }
         assert!(!o["basis"].as_str().unwrap().is_empty(), "{o}");
     }
 }
@@ -4922,7 +4948,7 @@ fn a_profile_keeps_the_manifests_data_model() {
     )
     .unwrap();
     let m = manifest.to_str().unwrap();
-    for profile in ["default", "strict"] {
+    for profile in ["default", "strict", "pedantic"] {
         let (code, stdout, stderr) =
             run_aurora_lint(&["--list-options", "json", "-m", m, "--profile", profile]);
         assert_eq!(code, 0, "{stderr}");
@@ -4959,6 +4985,8 @@ fn a_written_config_passes_check_config_unchanged() {
         ],
         vec!["--data-model", "llp64"],
         vec!["--profile", "strict"],
+        vec!["--profile", "pedantic"],
+        vec!["--profile", "pedantic", "--environment", "hosted"],
     ] {
         let (_dir, path, _text) = written_config(&args);
         let (code, stdout, stderr) = run_aurora_lint(&["--check-config", "-m", &path]);

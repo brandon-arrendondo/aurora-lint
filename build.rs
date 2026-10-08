@@ -730,16 +730,20 @@ fn generate_test_function(
     // the test build's wall-clock and peak memory. An `expected_fail` fixture
     // asserts like a `fail` one; it is ignored above.
     //
-    // Every fixture runs once per preset (ADR-0015: each setting is validated
-    // like rule behavior). The directory states the expectation under both
-    // unless the fixture's header says otherwise; see `fixture_header`.
+    // Every fixture runs under each preset in `PRESETS` (ADR-0015: each
+    // setting is validated like rule behavior), and under each preset in
+    // `OPT_IN_PRESETS` its header names. The directory states the
+    // expectation unless the header says otherwise; see `fixture_header`.
     let dir_expect = if test_type == "pass" {
         "Clean"
     } else {
         "Violation"
     };
     let header = fixture_header(test_path)?;
-    for preset in PRESETS {
+    let opted_in = OPT_IN_PRESETS
+        .iter()
+        .filter(|p| header.expect.iter().any(|(named, _)| named == *p));
+    for preset in PRESETS.iter().chain(opted_in) {
         let expect = header
             .expect
             .iter()
@@ -776,8 +780,15 @@ fn generate_test_function(
     Ok(())
 }
 
-/// The presets every fixture runs under. Must match `settings::Preset`.
+/// The presets every fixture runs under. With [`OPT_IN_PRESETS`], must match
+/// `settings::Preset`.
 const PRESETS: &[&str] = &["default", "strict"];
+
+/// The presets a fixture runs under only when its `Expect:` line names them.
+/// The preset matrix covers only the rules whose verdict a preset changes
+/// (ADR-0015, 2026-10-07 amendment, Decision 5), so a fixture whose header
+/// does not name `pedantic` is not run under it.
+const OPT_IN_PRESETS: &[&str] = &["pedantic"];
 
 /// What a fixture's leading comment says about settings.
 struct FixtureHeader {
@@ -843,7 +854,7 @@ fn fixture_header(path: &std::path::Path) -> Result<FixtureHeader> {
                     .split_once('=')
                     .with_context(|| format!("{}: bad Expect entry '{}'", at, pair))?;
                 anyhow::ensure!(
-                    PRESETS.contains(&preset),
+                    PRESETS.contains(&preset) || OPT_IN_PRESETS.contains(&preset),
                     "{}: Expect names unknown preset '{}'",
                     at,
                     preset

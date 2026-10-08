@@ -343,7 +343,7 @@ The default manifest (`rules_templates/rules-all.toml`) enables 302 of the 306 t
 
 First run against an existing codebase surfacing more findings than your team can triage at once? `--min-severity`/`--fail-on-severity` and `--exclude-all` are the fastest levers; [Configuration's "Strict vs. Relaxed Onboarding"](docs/configuration.rst) has the full discipline for building your own scoped-down manifest, and why this project doesn't ship a one-size-fits-all "relaxed" one.
 
-### Default or strict reading
+### Default, strict or pedantic reading
 
 ```bash
 # The default preset credits the assumptions mainstream analyzers make
@@ -353,7 +353,11 @@ aurora-lint /path/to/project
 # The strict preset credits none of them: for MISRA-style and certified code
 aurora-lint /path/to/project --profile strict
 
-# Every option either preset sets, and its current value
+# The pedantic preset reads a rule beyond its text where the rule has a sound
+# or closed-form reading stricter than the text
+aurora-lint /path/to/project --profile pedantic
+
+# Every option each preset sets, and its current value
 aurora-lint --list-options
 ```
 

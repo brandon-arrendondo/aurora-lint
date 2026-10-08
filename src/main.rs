@@ -455,16 +455,16 @@ fn run() -> Result<i32> {
         .arg(
             Arg::new("profile")
                 .long("profile")
-                .help("Preset for both settings axes: default (default policy, hosted) or strict (strict policy, freestanding). Overrides the manifest's `profile`")
+                .help("Preset for both settings axes: default (default policy, hosted), strict (strict policy, freestanding) or pedantic (pedantic policy, freestanding). Overrides the manifest's `profile`")
                 .value_name("PRESET")
-                .value_parser(["default", "strict"]),
+                .value_parser(["default", "strict", "pedantic"]),
         )
         .arg(
             Arg::new("policy")
                 .long("policy")
                 .help("Policy axis: which findings are reported (overrides the preset)")
                 .value_name("POLICY")
-                .value_parser(["default", "strict"]),
+                .value_parser(["default", "strict", "pedantic"]),
         )
         .arg(
             Arg::new("environment")
@@ -867,6 +867,7 @@ fn run() -> Result<i32> {
     )?;
     let scope = scan_scope(&matches, &manifest);
     analysis_settings.set_prescan_scope(scope.prescan_scope());
+    let declined = manifest.withhold_declined(&analysis_settings);
 
     // Handle suppression generation
     if let Some(gen_spec) = generate_suppression {
@@ -911,6 +912,13 @@ fn run() -> Result<i32> {
         analysis_settings.policy,
         analysis_settings.environment,
     );
+    if !declined.is_empty() {
+        println!(
+            "Declined by the {} policy: {}",
+            analysis_settings.policy,
+            declined.join(", ")
+        );
+    }
 
     if diff_only {
         println!("Mode: diff-only (analyzing modified files)");
