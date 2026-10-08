@@ -20,9 +20,10 @@ page](docs/contributing.rst).
   first is worth it before investing time in an implementation — especially
   for rule detection-logic changes; several of those questions are already
   settled policy in `docs/adr/`, which is worth a skim first.
-- Run `cargo fmt`, `cargo clippy`, and the relevant `cargo test` targets
-  locally (see [`docs/contributing.rst`](docs/contributing.rst)). CI runs the
-  same checks and won't merge a PR that fails them.
+- Install the hooks (`pre-commit install`), then run
+  `pre-commit run --all-files` and the tests the change needs; the checks
+  are listed in the [Repository values](AGENTS.md#repository-values)
+  section of the repository guidelines. CI repeats them.
 
 ## Developer Certificate of Origin (DCO)
 
@@ -39,8 +40,10 @@ which appends `Signed-off-by: Your Name <your.email@example.com>` using your
 git config. Use your real name and a working email — anonymous or pseudonymous
 sign-offs aren't accepted.
 
-CI does not yet enforce this automatically; reviewers check for it manually
-on each PR until that's wired up.
+The `commit-msg` hook rejects a commit without a valid `Signed-off-by`
+trailer, and CI checks the message of every new commit the same way.
+`pre-commit install` installs that hook; an older installation may also
+need `pre-commit install --hook-type commit-msg`.
 
 ## Licensing
 
