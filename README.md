@@ -350,12 +350,13 @@ First run against an existing codebase surfacing more findings than your team ca
 ### Default, strict or pedantic reading
 
 ```bash
-# The default preset credits the assumptions mainstream analyzers make
-# (a dominating assert is a guard; the ISO C/POSIX library contracts hold)
+# The default preset is the relaxed reading mainstream analyzers make: a
+# dominating assert is a guard, and the hosted C library's contracts hold
 aurora-lint /path/to/project
 
-# The strict preset applies each rule as written: no strippable assert is a
-# guard, and every dependent site is reported. For MISRA-style and certified code
+# The strict preset applies each rule as written, on a hosted C library: a
+# strippable assert is no guard, and every dependent site is reported. For
+# MISRA-style and certified code
 aurora-lint /path/to/project --profile strict
 
 # The pedantic preset reads a rule beyond its text where the rule has a sound
