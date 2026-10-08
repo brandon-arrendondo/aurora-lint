@@ -1,0 +1,172 @@
+{
+ "corpus": "pureftpd",
+ "platform": "linux-x86_64",
+ "base": {
+  "archive": "debian",
+  "suite": "bookworm",
+  "arch": "amd64",
+  "snapshot": "20260915T000000Z",
+  "release_sha256": "abcf5882746e0f68171f41adbb4ac01b74b49d62d203379befb9265804311a4f"
+ },
+ "roots": [
+  "usr/include",
+  "usr/lib/gcc/x86_64-linux-gnu/12/include"
+ ],
+ "prune": [
+  "usr/include/linux/netfilter/xt_CONNMARK.h",
+  "usr/include/linux/netfilter/xt_DSCP.h",
+  "usr/include/linux/netfilter/xt_MARK.h",
+  "usr/include/linux/netfilter/xt_RATEEST.h",
+  "usr/include/linux/netfilter/xt_TCPMSS.h",
+  "usr/include/linux/netfilter_ipv4/ipt_ECN.h",
+  "usr/include/linux/netfilter_ipv4/ipt_TTL.h",
+  "usr/include/linux/netfilter_ipv6/ip6t_HL.h"
+ ],
+ "include_dirs": [
+  "usr/lib/gcc/x86_64-linux-gnu/12/include",
+  "usr/include/x86_64-linux-gnu",
+  "usr/include",
+  "usr/include/postgresql",
+  "usr/include/mariadb"
+ ],
+ "exclude": {
+  "libc6-dev-i386": "-m32 multilib; not the x86_64 configuration",
+  "libc6-dev-x32": "x32 ABI; not the x86_64 configuration",
+  "libowfat-dev": "its io.h shadows the Windows CRT header of that name, which the corpus includes only under _WIN32"
+ },
+ "build": {
+  "steps": [
+   "autoreconf -fi",
+   "./configure",
+   "bear -- make -j\"$(nproc)\""
+  ],
+  "db": "$SRC/compile_commands.json",
+  "packages": [],
+  "apt": [
+   "autoconf-archive"
+  ],
+  "why": "The default configure build (no TLS, no optional backends: configure's defaults with none of the set's optional libraries installed). The configure-written config.h is searched after the checkout root."
+ },
+ "manifest_sha256": "e656519b131e74d67ad15567948cf90ca3fee395a1e74eb2477302f378a63112",
+ "why": {
+  "libavahi-compat-libdnssd-dev": "dns_sd.h",
+  "libc6-dev": "alloca.h",
+  "libcap-dev": "sys/capability.h",
+  "libcrypt-dev": "crypt.h",
+  "libdmalloc-dev": "dmalloc.h",
+  "libelf-dev": "nlist.h",
+  "libgcc-12-dev": "stdarg.h",
+  "libldap-dev": "lber.h",
+  "libmariadb-dev": "mysql.h",
+  "libpam0g-dev": "security/pam_appl.h",
+  "libpq-dev": "libpq-fe.h",
+  "libsodium-dev": "sodium.h",
+  "libssl-dev": "openssl/bn.h",
+  "linux-libc-dev": "linux/capability.h"
+ },
+ "sources": [
+  {
+   "kind": "debs",
+   "debs": [
+    {
+     "package": "libavahi-compat-libdnssd-dev",
+     "version": "0.8-10+deb12u1",
+     "file": "libavahi-compat-libdnssd-dev_0.8-10+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/a/avahi/libavahi-compat-libdnssd-dev_0.8-10+deb12u1_amd64.deb",
+     "sha256": "7251ca7450c2cb1d0f41bd690211016e82a58ac103ee9453391bebcc39bb2d1d"
+    },
+    {
+     "package": "libc6-dev",
+     "version": "2.36-9+deb12u14",
+     "file": "libc6-dev_2.36-9+deb12u14_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/g/glibc/libc6-dev_2.36-9+deb12u14_amd64.deb",
+     "sha256": "0218fc2befcd784c1b0c6292c0a137ce89fad054efaa579ad083bee0f2c01aae"
+    },
+    {
+     "package": "libcap-dev",
+     "version": "1:2.66-4+deb12u3+b1",
+     "file": "libcap-dev_2.66-4+deb12u3+b1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libc/libcap2/libcap-dev_2.66-4+deb12u3+b1_amd64.deb",
+     "sha256": "897ee64c93b04c4c8eb46551df2277673c1ab95584c765d8d07e3528a6a1c689"
+    },
+    {
+     "package": "libcrypt-dev",
+     "version": "1:4.4.33-2",
+     "file": "libcrypt-dev_4.4.33-2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libx/libxcrypt/libcrypt-dev_4.4.33-2_amd64.deb",
+     "sha256": "81ccd29130f75a9e3adabc80e61921abff42f76761e1f792fa2d1bb69af7f52f"
+    },
+    {
+     "package": "libdmalloc-dev",
+     "version": "5.5.2-14",
+     "file": "libdmalloc-dev_5.5.2-14_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/d/dmalloc/libdmalloc-dev_5.5.2-14_amd64.deb",
+     "sha256": "7a3297c4513eeb4148057c253000854ec047e7f0f202b5f161e94160d93ac81d"
+    },
+    {
+     "package": "libelf-dev",
+     "version": "0.188-2.1",
+     "file": "libelf-dev_0.188-2.1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/e/elfutils/libelf-dev_0.188-2.1_amd64.deb",
+     "sha256": "79cb66b55021bd0130308369524bac5240d0b5463cb252cd44be6a1500fdebec"
+    },
+    {
+     "package": "libgcc-12-dev",
+     "version": "12.2.0-14+deb12u1",
+     "file": "libgcc-12-dev_12.2.0-14+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/g/gcc-12/libgcc-12-dev_12.2.0-14+deb12u1_amd64.deb",
+     "sha256": "d720259380a84f2ffc6fe516eff5cbe9c8a005138e8d6a5748747ba4b3404a82"
+    },
+    {
+     "package": "libldap-dev",
+     "version": "2.5.13+dfsg-5",
+     "file": "libldap-dev_2.5.13+dfsg-5_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/o/openldap/libldap-dev_2.5.13+dfsg-5_amd64.deb",
+     "sha256": "8ffade80f355bff555db98c39c40a51837a491f358d52a558520bfe02b1ec4f3"
+    },
+    {
+     "package": "libmariadb-dev",
+     "version": "1:10.11.18-0+deb12u1",
+     "file": "libmariadb-dev_10.11.18-0+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/m/mariadb/libmariadb-dev_10.11.18-0+deb12u1_amd64.deb",
+     "sha256": "6ed09c9cfbacba047defb358fb49610a100499a4916546b11c09f2322bdcb560"
+    },
+    {
+     "package": "libpam0g-dev",
+     "version": "1.5.2-6+deb12u2",
+     "file": "libpam0g-dev_1.5.2-6+deb12u2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/p/pam/libpam0g-dev_1.5.2-6+deb12u2_amd64.deb",
+     "sha256": "acee39196e2e3ccf51fd7ccdf1247d7a4bd061cd6fd17c277eccbdcc87d6b6f1"
+    },
+    {
+     "package": "libpq-dev",
+     "version": "15.18-0+deb12u1",
+     "file": "libpq-dev_15.18-0+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/p/postgresql-15/libpq-dev_15.18-0+deb12u1_amd64.deb",
+     "sha256": "59d348c5a42d2ea3aa62ef4fbbea9bda8f643ac28a752ce1917606643761d38a"
+    },
+    {
+     "package": "libsodium-dev",
+     "version": "1.0.18-1+deb12u1",
+     "file": "libsodium-dev_1.0.18-1+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libs/libsodium/libsodium-dev_1.0.18-1+deb12u1_amd64.deb",
+     "sha256": "96c76e95027592650b20987ceef189aa70c614dff3e6ec13c09b786149145700"
+    },
+    {
+     "package": "libssl-dev",
+     "version": "3.0.20-1~deb12u2",
+     "file": "libssl-dev_3.0.20-1~deb12u2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/o/openssl/libssl-dev_3.0.20-1~deb12u2_amd64.deb",
+     "sha256": "43ef5c109056b1507a0972631ee8292e727029aeda1516b4672cb041730ae3af"
+    },
+    {
+     "package": "linux-libc-dev",
+     "version": "6.1.176-1",
+     "file": "linux-libc-dev_6.1.176-1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/l/linux/linux-libc-dev_6.1.176-1_amd64.deb",
+     "sha256": "8bb258735b9dffbb111da778ebdd024750878e435ffd9dfcadcb6762ede6b4cf"
+    }
+   ]
+  }
+ ]
+}

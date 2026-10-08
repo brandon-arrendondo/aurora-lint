@@ -1,0 +1,107 @@
+{
+ "corpus": "raylib",
+ "platform": "linux-x86_64",
+ "base": {
+  "archive": "debian",
+  "suite": "bookworm",
+  "arch": "amd64",
+  "snapshot": "20260915T000000Z",
+  "release_sha256": "abcf5882746e0f68171f41adbb4ac01b74b49d62d203379befb9265804311a4f"
+ },
+ "roots": [
+  "usr/include",
+  "usr/lib/gcc/x86_64-linux-gnu/12/include"
+ ],
+ "prune": [
+  "usr/include/linux/netfilter/xt_CONNMARK.h",
+  "usr/include/linux/netfilter/xt_DSCP.h",
+  "usr/include/linux/netfilter/xt_MARK.h",
+  "usr/include/linux/netfilter/xt_RATEEST.h",
+  "usr/include/linux/netfilter/xt_TCPMSS.h",
+  "usr/include/linux/netfilter_ipv4/ipt_ECN.h",
+  "usr/include/linux/netfilter_ipv4/ipt_TTL.h",
+  "usr/include/linux/netfilter_ipv6/ip6t_HL.h"
+ ],
+ "include_dirs": [
+  "usr/lib/gcc/x86_64-linux-gnu/12/include",
+  "usr/include/x86_64-linux-gnu",
+  "usr/include"
+ ],
+ "exclude": {
+  "libc6-dev-i386": "-m32 multilib; not the x86_64 configuration",
+  "libc6-dev-x32": "x32 ABI; not the x86_64 configuration",
+  "libowfat-dev": "its io.h shadows the Windows CRT header of that name, which the corpus includes only under _WIN32"
+ },
+ "build": {
+  "steps": [
+   "cmake -S \"$SRC\" -B \"$BUILD\" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+   "cmake --build \"$BUILD\" -j\"$(nproc)\""
+  ],
+  "db": "$BUILD/compile_commands.json",
+  "packages": [
+   "libgl1-mesa-dev",
+   "libx11-dev",
+   "libxrandr-dev",
+   "libxinerama-dev",
+   "libxcursor-dev",
+   "libxi-dev",
+   "libwayland-dev",
+   "libxkbcommon-dev"
+  ],
+  "apt": [
+   "libwayland-bin",
+   "wayland-protocols"
+  ],
+  "why": "CMake defaults: PLATFORM_DESKTOP_GLFW, GLFW's X11 and Wayland backends, OpenGL. rcore.c includes exactly one platforms/*.c."
+ },
+ "manifest_sha256": "6f73d2dffea22a0bb2a082666d34382f4dfd077c389df7fc88da20296b044f1f",
+ "why": {
+  "libc6-dev": "ctype.h",
+  "libgcc-12-dev": "emmintrin.h",
+  "libgl-dev": "GL/gl.h",
+  "libgles-dev": "GLES2/gl2.h",
+  "linux-libc-dev": "linux/stat.h"
+ },
+ "sources": [
+  {
+   "kind": "debs",
+   "debs": [
+    {
+     "package": "libc6-dev",
+     "version": "2.36-9+deb12u14",
+     "file": "libc6-dev_2.36-9+deb12u14_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/g/glibc/libc6-dev_2.36-9+deb12u14_amd64.deb",
+     "sha256": "0218fc2befcd784c1b0c6292c0a137ce89fad054efaa579ad083bee0f2c01aae"
+    },
+    {
+     "package": "libgcc-12-dev",
+     "version": "12.2.0-14+deb12u1",
+     "file": "libgcc-12-dev_12.2.0-14+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/g/gcc-12/libgcc-12-dev_12.2.0-14+deb12u1_amd64.deb",
+     "sha256": "d720259380a84f2ffc6fe516eff5cbe9c8a005138e8d6a5748747ba4b3404a82"
+    },
+    {
+     "package": "libgl-dev",
+     "version": "1.6.0-1",
+     "file": "libgl-dev_1.6.0-1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libg/libglvnd/libgl-dev_1.6.0-1_amd64.deb",
+     "sha256": "ebc12df48ae53924e114d9358ef3da4306d7ef8f7179300af52f1faef8b5db3e"
+    },
+    {
+     "package": "libgles-dev",
+     "version": "1.6.0-1",
+     "file": "libgles-dev_1.6.0-1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libg/libglvnd/libgles-dev_1.6.0-1_amd64.deb",
+     "sha256": "901b06c4a5223560617e9362d26ab349f9d9dd3d79e7d87d6ce0b06a7c7128f4"
+    },
+    {
+     "package": "linux-libc-dev",
+     "version": "6.1.176-1",
+     "file": "linux-libc-dev_6.1.176-1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/l/linux/linux-libc-dev_6.1.176-1_amd64.deb",
+     "sha256": "8bb258735b9dffbb111da778ebdd024750878e435ffd9dfcadcb6762ede6b4cf"
+    }
+   ]
+  }
+ ]
+}

@@ -342,6 +342,9 @@ def fetch(decl: dict, bench_root=None, log=print) -> dict:
 
     if stage.exists():
         shutil.rmtree(stage)
+    # Created up front: a set with no packages (a freestanding corpus) is
+    # an empty tree, pinned like any other.
+    stage.mkdir(parents=True)
     manifest: dict[str, str] = {}
     try:
         for _, body in debs:

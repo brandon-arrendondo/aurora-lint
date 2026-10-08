@@ -1,0 +1,61 @@
+{
+ "corpus": "sel4",
+ "platform": "linux-x86_64-pc99",
+ "base": {
+  "archive": "debian",
+  "suite": "bookworm",
+  "arch": "amd64",
+  "snapshot": "20260915T000000Z",
+  "release_sha256": "abcf5882746e0f68171f41adbb4ac01b74b49d62d203379befb9265804311a4f"
+ },
+ "roots": [
+  "usr/include",
+  "usr/lib/gcc/x86_64-linux-gnu/12/include"
+ ],
+ "prune": [
+  "usr/include/linux/netfilter/xt_CONNMARK.h",
+  "usr/include/linux/netfilter/xt_DSCP.h",
+  "usr/include/linux/netfilter/xt_MARK.h",
+  "usr/include/linux/netfilter/xt_RATEEST.h",
+  "usr/include/linux/netfilter/xt_TCPMSS.h",
+  "usr/include/linux/netfilter_ipv4/ipt_ECN.h",
+  "usr/include/linux/netfilter_ipv4/ipt_TTL.h",
+  "usr/include/linux/netfilter_ipv6/ip6t_HL.h"
+ ],
+ "include_dirs": [
+  "usr/lib/gcc/x86_64-linux-gnu/12/include",
+  "usr/include/x86_64-linux-gnu",
+  "usr/include"
+ ],
+ "exclude": {
+  "libc6-dev-i386": "-m32 multilib; not the x86_64 configuration",
+  "libc6-dev-x32": "x32 ABI; not the x86_64 configuration",
+  "libowfat-dev": "its io.h shadows the Windows CRT header of that name, which the corpus includes only under _WIN32"
+ },
+ "build": {
+  "steps": [
+   "cmake -S \"$SRC\" -B \"$BUILD\" -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DKernelPlatform=pc99 -DKernelArch=x86 -DKernelWordSize=64 -DCROSS_COMPILER_PREFIX=",
+   "cmake --build \"$BUILD\" -j\"$(nproc)\""
+  ],
+  "db": "$BUILD/compile_commands.json",
+  "packages": [],
+  "apt": [
+   "libxml2-utils",
+   "python3-ply",
+   "python3-lxml",
+   "python3-typing-extensions",
+   "python3-jinja2",
+   "python3-six",
+   "python3-future"
+  ],
+  "why": "The declared configuration: KernelPlatform=pc99, KernelArch=x86, KernelWordSize=64 (x86_64), Ninja generator. The build generates the gen_config, autoconf and *_gen.h headers the database references."
+ },
+ "manifest_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+ "why": {},
+ "sources": [
+  {
+   "kind": "debs",
+   "debs": []
+  }
+ ]
+}

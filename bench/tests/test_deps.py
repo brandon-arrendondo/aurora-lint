@@ -197,6 +197,13 @@ class TestFetch(_Debs):
         self.assertIn("on disk", str(cm.exception))
         self.assertEqual(deps.check(decl, self.bench)["status"], deps.MISSING)
 
+    def test_a_set_with_no_packages_is_an_empty_pinned_tree(self):
+        import hashlib
+        res = self.fetch(_decl([]))
+        self.assertEqual(res["status"], deps.UNPINNED)
+        self.assertEqual(res["actual"], hashlib.sha256(b"").hexdigest())
+        self.assertTrue(Path(res["path"]).is_dir())
+
     def test_the_same_packages_pin_the_same_on_another_host(self):
         decl = _decl([self.debs["libc"], self.debs["kernel"]])
         a = self.fetch(decl)["actual"]
