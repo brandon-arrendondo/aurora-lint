@@ -320,8 +320,7 @@ Two properties worth knowing:
   silently resolving nothing.
 
 The compiler's own built-in system header directories are *not* in a compile
-database (they are implicit), so headers found only in ``/usr/include`` remain
-out of reach.
+database (they are implicit); ``--system-includes`` (above) adds them.
 
 Headers the Scan Could Not Find
 -------------------------------
@@ -569,12 +568,13 @@ Export Formats
 
 aurora-lint determines the export format from the file extension:
 
-=========== ===============================================================
-Extension   Format
-=========== ===============================================================
-``.json``   JSON array of violation objects
-``.sarif``  `SARIF 2.1.0 <https://sarifweb.azurewebsites.net/>`_ for IDE and CI integration
-=========== ===============================================================
+=============== ===============================================================
+Extension       Format
+=============== ===============================================================
+``.json``       JSON array of violation objects
+``.sarif``      `SARIF 2.1.0 <https://sarifweb.azurewebsites.net/>`_ for IDE and CI integration
+``.sarif.json`` Same as ``.sarif``
+=============== ===============================================================
 
 ::
 
@@ -597,7 +597,9 @@ laid out as Title, Description, Work Item Type, State, Severity, Priority and
 Tags, the layout aurora-lint's built-in CSV/XLSX export used before it was
 removed.
 
-JSON export produces an array of violation objects, each containing:
+JSON export produces an array of violation objects, each containing the keys
+below. ``missing_headers`` and ``harvested_from`` (see *Headers the Scan Could
+Not Find*) appear only on a finding they apply to.
 
 .. code-block:: json
 
@@ -609,7 +611,8 @@ JSON export produces an array of violation objects, each containing:
         "rule_id": "ARR30-C",
         "severity": "High",
         "message": "Do not form or use out-of-bounds pointers or array subscripts",
-        "suggestion": "Validate array index before use"
+        "suggestion": "Validate array index before use",
+        "requires_manual_review": false
     }
 
 
@@ -626,7 +629,7 @@ Control which violations are reported and which trigger failure:
     # Fail only on High or Critical (gate CI but still report Medium)
     aurora-lint /path/to/repo --min-severity Medium --fail-on-severity High
 
-    # Strict mode: fail on any violation
+    # Fail on any violation
     aurora-lint /path/to/repo --fail-on-violation
 
 
@@ -694,16 +697,6 @@ never overwritten by this flag.
 Exit Codes
 ----------
 
-======  ==========================================================================
-Code    Meaning
-======  ==========================================================================
-``0``   Success (no violations, or none meeting the failure threshold)
-``1``   Violations found (when ``--fail-on-violation`` or ``--fail-on-severity`` is set)
-``2``   The scan could not run (invalid path, bad manifest, invalid suppression file)
-``3``   The scan is incomplete: a rule or file crashed or ran out of its budget.
-        Takes precedence over ``1``, with or without ``--fail-on-*``.
-======  ==========================================================================
-
-What a failure costs, how it is reported (stderr and SARIF), the
+The exit codes, what a failure costs, how it is reported (stderr and SARIF), the
 ``--rule-step-limit`` / ``--rule-time-limit`` budgets, the ``--max-file-size``
 input guard, and what CI should do with ``3``: :doc:`error-handling`.
