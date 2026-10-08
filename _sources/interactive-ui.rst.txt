@@ -99,8 +99,8 @@ Violations Tab -- Actions
 Key                             Action
 ==============================  =============================================
 ``s``                           Scan repository for violations
-``i``                           Suppress checked violations (``.aurora-lint-suppress.toml``)
-``e``                           Export checked violations to file (CSV)
+``i``                           Suppress checked violations (a comment above each line in the source)
+``e``                           Export checked violations to a SARIF file
 ``h``                           Toggle suppressed violations and clean files
 ``p``                           Toggle file preview panel
 ==============================  =============================================

@@ -56,7 +56,7 @@
 <li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
 <li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
 <li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
-<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks</a></li>
 <li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
 <li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a></li>
 <li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
@@ -168,9 +168,11 @@ allocation after initialization) in <code class="docutils literal notranslate"><
 more than two levels of pointer indirection. That is the JPL standard’s
 threshold (D-60411 Rule 26, from MISRA-C:2004 Rule 17.5), not rule 9’s
 stricter one level. They and the CWE ruleset (<code class="docutils literal notranslate"><span class="pre">src/rules/cwe/</span></code>) are the
-only non-CERT-C rules aurora-lint ships. They are enabled through
-<code class="docutils literal notranslate"><span class="pre">src/rules/brules/rules-all.toml</span></code> rather than the CERT C manifests,
-while the CWE ruleset is part of the default manifest. The
+only non-CERT-C rules aurora-lint ships. The two BRULEs are opt-in: the
+default manifest does not include them. To enable one, add its
+<code class="docutils literal notranslate"><span class="pre">[rules.brules.BRULE-0NN]</span></code> block (listed in
+<code class="docutils literal notranslate"><span class="pre">src/rules/brules/rules-all.toml</span></code>) to your manifest. The CWE ruleset,
+by contrast, is part of the default manifest. The
 rest of the Power of Ten remains a candidate: rules 1, 2, 4, 6 and 8 are
 plausibly checkable with the AST and CFG infrastructure already here, while
 5 (assertion density) and 10 (build flags) are not really analyzer rules at
@@ -229,7 +231,7 @@ stylistic coding rules have been fully harmonized with MISRA C: 2012”
 <section id="core-safety-rules-pre-misra">
 <h3>Core Safety Rules (Pre-MISRA)<a class="headerlink" href="#core-safety-rules-pre-misra" title="Link to this heading"></a></h3>
 <ul class="simple">
-<li><p>No dynamic memory allocation after initialization</p></li>
+<li><p>No dynamic memory allocation after initialization (shipped as BRULE-060)</p></li>
 <li><p>No recursion</p></li>
 <li><p>Fixed upper bounds on all loops</p></li>
 <li><p>No <code class="docutils literal notranslate"><span class="pre">goto</span></code>, <code class="docutils literal notranslate"><span class="pre">setjmp</span></code>, <code class="docutils literal notranslate"><span class="pre">longjmp</span></code></p></li>
@@ -238,7 +240,7 @@ stylistic coding rules have been fully harmonized with MISRA C: 2012”
 <li><p>Use assertions liberally (2+ per function)</p></li>
 <li><p>Limit function size (~60 lines max)</p></li>
 <li><p>Limit function parameters (~6 max)</p></li>
-<li><p>Limited pointer complexity (2 levels max)</p></li>
+<li><p>Limited pointer complexity (2 levels max; shipped as BRULE-065)</p></li>
 </ul>
 </section>
 <section id="embedded-specific-rules">

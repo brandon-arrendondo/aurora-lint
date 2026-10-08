@@ -56,7 +56,7 @@
 <li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
 <li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
 <li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
-<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks</a></li>
 <li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Measurement Notes</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#a-precision-figure-is-a-property-of-a-triple">A precision figure is a property of a triple</a></li>
@@ -151,14 +151,13 @@ version for the detail.</p>
 </nav>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p><strong>No figure on this page is typed.</strong> Every number sits between a pair of
-<code class="docutils literal notranslate"><span class="pre">..</span> <span class="pre">BENCH:NAME:START</span></code> / <code class="docutils literal notranslate"><span class="pre">..</span> <span class="pre">BENCH:NAME:END</span></code> comments. The host-side
-refresh fills those blocks from Postgres, through <code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code>’s
-<code class="docutils literal notranslate"><span class="pre">bin/refresh_tools_sqc_docs.py</span></code> calling <code class="docutils literal notranslate"><span class="pre">bench/render_docs.py</span></code>, just as
-it fills README’s highlights table. The ERR33-C composition blocks are the
-exception: they come from the public label repository, not Postgres. A
-block that still reads <em>pending</em> has not been rendered yet. The prose
-outside the blocks is hand-written and does not state a figure.</p>
+<p><strong>No figure on this page is typed, and none is official yet.</strong> Each
+figure has a place between a pair of <code class="docutils literal notranslate"><span class="pre">..</span> <span class="pre">BENCH:NAME:START</span></code> /
+<code class="docutils literal notranslate"><span class="pre">..</span> <span class="pre">BENCH:NAME:END</span></code> comments, and those blocks are placeholders: no
+renderer fills them yet (<code class="docutils literal notranslate"><span class="pre">bench/render_docs.py</span></code> renders only README’s
+highlights table). Until one does, they read <em>pending</em>, and no figure on
+this page is official. The prose outside the blocks is hand-written and
+does not state a figure.</p>
 </div>
 <section id="a-precision-figure-is-a-property-of-a-triple">
 <h2><a class="toc-backref" href="#id1" role="doc-backlink">A precision figure is a property of a triple</a><a class="headerlink" href="#a-precision-figure-is-a-property-of-a-triple" title="Link to this heading"></a></h2>

@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Running Benchmarks (MCP Server) &mdash; aurora-lint  documentation</title>
+  <title>Running Benchmarks &mdash; aurora-lint  documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
 
@@ -56,7 +56,7 @@
 <li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
 <li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
 <li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
-<li class="toctree-l1 current"><a class="current reference internal" href="#">Running Benchmarks (MCP Server)</a><ul>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Running Benchmarks</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#benchmark-infrastructure">Benchmark Infrastructure</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#sqlite-schema">SQLite Schema</a></li>
 </ul>
@@ -85,10 +85,10 @@
 <li class="toctree-l3"><a class="reference internal" href="#real-world">Real-World</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="#competitor-benchmarks-infer-frama-c">Competitor Benchmarks (Infer / Frama-C)</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#competitor-benchmarks">Competitor Benchmarks</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#infrastructure">Infrastructure</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#running">Running</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#timing-estimates">Timing Estimates</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#timing">Timing</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#classification-logic">Classification Logic</a></li>
 </ul>
 </li>
@@ -121,7 +121,7 @@
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
       <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
-      <li class="breadcrumb-item active">Running Benchmarks (MCP Server)</li>
+      <li class="breadcrumb-item active">Running Benchmarks</li>
       <li class="wy-breadcrumbs-aside">
             <a href="_sources/benchmark-running.rst.txt" rel="nofollow"> View page source</a>
       </li>
@@ -131,24 +131,17 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="running-benchmarks-mcp-server">
-<h1>Running Benchmarks (MCP Server)<a class="headerlink" href="#running-benchmarks-mcp-server" title="Link to this heading"></a></h1>
-<p>The MCP benchmark servers provide a programmatic interface for running Juliet and
-real-world benchmarks. All results are stored in <code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code> (SQLite,
-WAL mode).</p>
+  <section id="running-benchmarks">
+<h1>Running Benchmarks<a class="headerlink" href="#running-benchmarks" title="Link to this heading"></a></h1>
+<p><code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span></code> runs Juliet and real-world benchmarks synchronously in your
+terminal and writes to this checkout’s <code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code> (SQLite, WAL
+mode). Those results describe your runs; official numbers come only from the
+<code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres instance through <code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code>
+(<code class="docutils literal notranslate"><span class="pre">docs/adr/0004-postgres-is-the-single-source-of-truth.md</span></code>).</p>
 <section id="benchmark-infrastructure">
 <h2>Benchmark Infrastructure<a class="headerlink" href="#benchmark-infrastructure" title="Link to this heading"></a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">bench</span><span class="o">/</span>
-  <span class="fm">__init__</span><span class="o">.</span><span class="n">py</span>      <span class="n">Package</span> <span class="n">marker</span>
-  <span class="n">__main__</span><span class="o">.</span><span class="n">py</span>      <span class="n">CLI</span><span class="p">:</span> <span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">juliet</span> <span class="p">[</span><span class="o">--</span><span class="n">full</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">jobs</span> <span class="n">N</span><span class="p">]</span>
-                        <span class="p">[</span><span class="o">--</span><span class="n">keep</span><span class="o">-</span><span class="n">reports</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="nb">compile</span><span class="o">-</span><span class="n">commands</span><span class="p">]</span>
-  <span class="n">config</span><span class="o">.</span><span class="n">py</span>        <span class="n">Paths</span><span class="p">,</span> <span class="n">constants</span><span class="p">,</span> <span class="n">defaults</span>
-  <span class="n">db</span><span class="o">.</span><span class="n">py</span>            <span class="n">SQLite</span> <span class="n">schema</span><span class="p">,</span> <span class="n">WAL</span> <span class="n">mode</span><span class="p">,</span> <span class="n">CRUD</span> <span class="o">+</span> <span class="n">query</span> <span class="n">API</span>
-  <span class="n">analyzer</span><span class="o">.</span><span class="n">py</span>      <span class="n">TP</span><span class="o">/</span><span class="n">FP</span> <span class="n">classifier</span> <span class="p">(</span><span class="n">Juliet</span> <span class="n">ground</span> <span class="n">truth</span><span class="p">)</span>
-  <span class="n">runner</span><span class="o">.</span><span class="n">py</span>        <span class="n">Parallel</span> <span class="n">CWE</span> <span class="n">runner</span>
-  <span class="n">machine</span><span class="o">.</span><span class="n">py</span>       <span class="n">Machine</span> <span class="n">metadata</span> <span class="p">(</span><span class="n">CPU</span><span class="p">,</span> <span class="n">RAM</span><span class="p">,</span> <span class="n">hostname</span><span class="p">)</span>
-</pre></div>
-</div>
+<p>The harness is the <code class="docutils literal notranslate"><span class="pre">bench/</span></code> package; <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">--help</span></code> lists every
+subcommand. The Juliet and real-world commands are described below.</p>
 <section id="sqlite-schema">
 <h3>SQLite Schema<a class="headerlink" href="#sqlite-schema" title="Link to this heading"></a></h3>
 <table class="docutils align-default">
@@ -189,11 +182,26 @@ WAL mode).</p>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ground_truth</span></code></p></td>
 <td><p>Adjudicated TP/FP oracle keyed on (project, commit, file, line, rule)</p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">calibration_labels</span></code></p></td>
+<td><p>Second, independent verdicts on already-labeled findings
+(<code class="docutils literal notranslate"><span class="pre">calibration-*</span></code> subcommands)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">audited_files</span></code></p></td>
+<td><p>Files exhaustively audited (<code class="docutils literal notranslate"><span class="pre">audit-complete</span></code>, <code class="docutils literal notranslate"><span class="pre">audit-score</span></code>)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">audit_corpus_meta</span></code></p></td>
+<td><p>In-scope file count per project and commit (<code class="docutils literal notranslate"><span class="pre">audit-coverage</span></code>)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">oracle_versions</span></code></p></td>
+<td><p>Frozen, citable oracle snapshots (<code class="docutils literal notranslate"><span class="pre">oracle-freeze</span></code>, <code class="docutils literal notranslate"><span class="pre">oracle-versions</span></code>)</p></td>
+</tr>
 </tbody>
 </table>
 <p>Historical data from <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code> and <code class="docutils literal notranslate"><span class="pre">REALWORLD_RESULTS.md</span></code>
 (both retired 2026-09-03 once this backfill made them redundant with
-Postgres) has been backfilled into the database.</p>
+Postgres) has been backfilled into <code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres through
+<code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code>; a fresh clone’s <code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code> holds only its
+own runs.</p>
 </section>
 </section>
 <section id="benchmark-workflow-protocol">
@@ -203,14 +211,15 @@ Postgres) has been backfilled into the database.</p>
 <ol class="arabic simple">
 <li><p><strong>Commit BEFORE benchmark, do not bump the version</strong>: rebuild
 (<code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">build</span> <span class="pre">--release</span></code>) and commit before starting. The run_id is
-<code class="docutils literal notranslate"><span class="pre">sqc-{version}-{sha}</span></code> (full mode appends <code class="docutils literal notranslate"><span class="pre">-full</span></code>, compile-db
-<code class="docutils literal notranslate"><span class="pre">-cdb</span></code>), and the <strong>SHA</strong> is what discriminates runs;
+<code class="docutils literal notranslate"><span class="pre">sqc-{version}-{sha}[-full][-cdb]-{preset}-{hash12}[-cwe...]</span></code>
+(see <em>Policy and Environment Settings</em>), and the <strong>SHA</strong> is what discriminates runs;
 the version string is a release artifact, bumped only when a release
 is cut (see <code class="docutils literal notranslate"><span class="pre">CLAUDE.md</span></code>).</p></li>
 <li><p><strong>NEVER modify code while a benchmark is running</strong>: The benchmark uses
 <code class="docutils literal notranslate"><span class="pre">target/release/aurora-lint</span></code>. Rebuilding while running corrupts results.</p></li>
-<li><p><strong>Wait for completion</strong>: Fast-mode ~7-15 min and full-suite ~20-30 min,
-depending on the machine. Check status no more than once every 5 minutes.</p></li>
+<li><p><strong>Wait for completion</strong>: a dated Juliet run time is in
+<a class="reference internal" href="reproducing-published-numbers.html"><span class="doc">Reproducing the Published Numbers</span></a> (<em>Hardware, time and memory</em>).
+Check status no more than once every 5 minutes.</p></li>
 <li><p><strong>Compare runs after completion</strong>.</p></li>
 <li><p><strong>Sequence</strong>: <code class="docutils literal notranslate"><span class="pre">implement</span> <span class="pre">-&gt;</span> <span class="pre">commit</span> <span class="pre">-&gt;</span> <span class="pre">build</span> <span class="pre">release</span> <span class="pre">-&gt;</span> <span class="pre">run</span> <span class="pre">benchmark</span>
 <span class="pre">-&gt;</span> <span class="pre">wait</span> <span class="pre">-&gt;</span> <span class="pre">analyze</span></code></p></li>
@@ -239,9 +248,9 @@ python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </
 <p>Run identifiers accepted by <code class="docutils literal notranslate"><span class="pre">status</span></code>/<code class="docutils literal notranslate"><span class="pre">compare</span></code>:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">&quot;latest&quot;</span></code> – most recent run (default)</p></li>
-<li><p>Full run name: <code class="docutils literal notranslate"><span class="pre">&quot;aurora-lint-0.3.20-abc1234&quot;</span></code></p></li>
+<li><p>Full run name: <code class="docutils literal notranslate"><span class="pre">&quot;sqc-0.3.20-abc1234&quot;</span></code></p></li>
 <li><p>Commit SHA: <code class="docutils literal notranslate"><span class="pre">&quot;abc1234&quot;</span></code></p></li>
-<li><p>Historical runs: <code class="docutils literal notranslate"><span class="pre">&quot;aurora-lint-0.3.17-historical&quot;</span></code></p></li>
+<li><p>Historical runs: <code class="docutils literal notranslate"><span class="pre">&quot;sqc-0.3.17-historical&quot;</span></code></p></li>
 </ul>
 <p><strong>Notes</strong>:</p>
 <ul class="simple">
@@ -326,10 +335,10 @@ any precision claim from such a run.</p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p><strong>Juliet gains nothing from this.</strong> Measured on the synthesized database
-(54,486 entries): its only flag is <code class="docutils literal notranslate"><span class="pre">-I&lt;testcasesupport&gt;</span></code>, which the runner
-already passes as <code class="docutils literal notranslate"><span class="pre">-d</span> <span class="pre">testcasesupport</span></code>. A with/without pair on
-CWE457/s01 produced an identical 6,783 violations. The plumbing exists for
+<p><strong>Juliet gains nothing from this.</strong> The synthesized database’s only flag
+is <code class="docutils literal notranslate"><span class="pre">-I&lt;testcasesupport&gt;</span></code>, which the runner already passes as
+<code class="docutils literal notranslate"><span class="pre">-d</span> <span class="pre">testcasesupport</span></code>. A with/without pair on CWE457/s01 produced
+identical violations. The plumbing exists for
 symmetry and for future Juliet build changes; the real payoff is on the
 real-world corpora, whose databases carry genuine per-project include trees
 and <code class="docutils literal notranslate"><span class="pre">-D</span></code> state.</p>
@@ -391,22 +400,21 @@ gap — an omission is indistinguishable from an oversight, which is a defect th
 has actually shipped. <code class="docutils literal notranslate"><span class="pre">scripts/check_realworld_manifests.py</span></code> (pre-commit hook
 <code class="docutils literal notranslate"><span class="pre">check-realworld-manifests</span></code>) asserts every manifest decides every rule, and
 that every <code class="docutils literal notranslate"><span class="pre">enabled</span> <span class="pre">=</span> <span class="pre">false</span></code> carries a comment naming its reason.
-<code class="docutils literal notranslate"><span class="pre">libcrc</span></code> is fully audited (every enabled-rule finding labeled); the four
-large codebases grow their labels incrementally.</p>
+<code class="docutils literal notranslate"><span class="pre">libcrc</span></code> is fully audited (every enabled-rule finding labeled); the other
+eleven codebases grow their labels incrementally.</p>
 </section>
 <section id="per-codebase-scan-scope">
 <h3>Per-Codebase Scan Scope<a class="headerlink" href="#per-codebase-scan-scope" title="Link to this heading"></a></h3>
 <p>Each codebase’s <code class="docutils literal notranslate"><span class="pre">CODEBASES[&lt;name&gt;][&quot;sqc&quot;][&quot;extra_args&quot;]</span></code> entry in
-<code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code> also carries <code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> globs that
+<code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code> also carries exclude globs that
 scope the scan to the <em>shipped product</em>, not the whole checked-out repo —
 test harnesses, build tooling, vendored/bundled code, and companion tools
 (fuzzers, example plugins, separate CLI utilities) are excluded so they don’t
 inflate the violation count or dilute the precision/recall denominator.
-<code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> is what these globs always meant: nothing is reported in
-those trees, but they are still read for cross-file facts. Taking a tree out
-of the cross-file facts as well (<code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code>) changes findings in the
-files that remain, so it is a per-codebase decision recorded in
-<code class="docutils literal notranslate"><span class="pre">docs/design/realworld-corpus-scope.md</span></code> and made with its own A/B run.
+Test, demo and tooling trees are <code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code> globs: out of the report
+and out of the cross-file facts. Trees still read for cross-file facts but
+not reported are <code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> globs. Each choice is recorded in
+<code class="docutils literal notranslate"><span class="pre">docs/design/realworld-corpus-scope.md</span></code>.
 These globs are derived from each codebase’s ground-truth oracle scope,
 documented per project in <code class="docutils literal notranslate"><span class="pre">docs/design/realworld-corpus-scope.md</span></code> — exactly
 which directories were ruled in/out during that codebase’s adjudication
@@ -421,13 +429,14 @@ only what your own adjudication pass produces.)</p>
 restrict the scan — it only adds cross-file pre-scan context (see
 <a class="reference internal" href="cli-usage.html"><span class="doc">Advanced CLI Usage</span></a>). A codebase’s primary scan root is the whole repo
 whenever <code class="docutils literal notranslate"><span class="pre">scan_path</span></code> is <code class="docutils literal notranslate"><span class="pre">None</span></code>, regardless of any <code class="docutils literal notranslate"><span class="pre">-d</span></code> entries in
-<code class="docutils literal notranslate"><span class="pre">extra_args</span></code>. To actually narrow scope, use <code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> globs (or set
+<code class="docutils literal notranslate"><span class="pre">extra_args</span></code>. To actually narrow scope, use <code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code> or
+<code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> globs (or set
 <code class="docutils literal notranslate"><span class="pre">scan_path</span></code> to a single subdirectory, as <code class="docutils literal notranslate"><span class="pre">raylib</span></code> does for
 <code class="docutils literal notranslate"><span class="pre">{path}/src</span></code>).</p>
 </div>
 <p>When adding a new real-world codebase or revisiting an existing one’s
 ground-truth audit, check whether its scope notes call for new
-<code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> entries here — a mismatch between the oracle’s labeled scope
+exclude entries here — a mismatch between the oracle’s labeled scope
 and the live scan’s actual scope means dashboard numbers include findings
 that were never meant to be measured (or, more subtly, that the ground-truth
 denominator no longer matches what’s being scanned).</p>
@@ -435,17 +444,20 @@ denominator no longer matches what’s being scanned).</p>
 <p class="admonition-title">Warning</p>
 <p><strong>That mismatch is not hypothetical, and it is measured.</strong> Scope is
 declared in <em>three</em> places per codebase and nothing keeps them in sync:
-the <code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> globs here (what aurora-lint reports), <code class="docutils literal notranslate"><span class="pre">scope_include</span></code> /
+the exclude globs here (what aurora-lint reports), <code class="docutils literal notranslate"><span class="pre">scope_include</span></code> /
 <code class="docutils literal notranslate"><span class="pre">scope_exclude</span></code> in <code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code> (what the oracle may
 adjudicate), and the codebase’s <em>Scope</em> section in
 <code class="docutils literal notranslate"><span class="pre">docs/design/realworld-corpus-scope.md</span></code> (the rationale the other
 two claim to derive from).</p>
-<p>Audited across all nine codebases, six agree and three do not — always
-in the same direction, with the scan wider than the scope, so aurora-lint emits
-findings that can never be labeled: <strong>sqlite 992, mosquitto 168, curl
-144</strong>. That is 1,304 findings, roughly a fifth of that run’s whole
-unlabeled pool, unadjudicable by construction. They depress label
-coverage permanently, with work nobody is allowed to do.</p>
+<p>An audit on 2026-09-03, across the nine codebases of that time, found
+six agreeing and three not — always
+in the same direction, with the scan wider than the scope, so aurora-lint emitted
+findings that could never be labeled: <strong>sqlite 992, mosquitto 168, curl
+144</strong> in the run it audited. That was 1,304 findings, roughly a fifth of
+that run’s whole unlabeled pool, unadjudicable by construction. Findings
+like these depress label coverage permanently, with work nobody is
+allowed to do. The scan scope has changed since (see above), and this
+audit has not been repeated here.</p>
 <p>The sharpest case is one category of file treated two ways in the same
 suite: curl excludes <code class="docutils literal notranslate"><span class="pre">include/**</span></code> here, so its installed public
 headers are never scanned, while mosquitto does not, so its public
@@ -510,7 +522,7 @@ package set and the include search path differ at once (see
 <p>Typical real-world workflow:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-run<span class="w"> </span>--tool<span class="w"> </span>sqc<span class="w">                  </span><span class="c1"># blocks until every codebase is done</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld<span class="w"> </span>latest<span class="w">                   </span><span class="c1"># view results</span>
-python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld<span class="w"> </span>latest<span class="w"> </span>--compare<span class="w"> </span><span class="m">0</span>.2.6<span class="w">   </span><span class="c1"># compare against a prior run</span>
+python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld<span class="w"> </span>latest<span class="w"> </span>--compare<span class="w"> </span><span class="m">12</span><span class="w">      </span><span class="c1"># compare against run 12 (ids from realworld-runs)</span>
 </pre></div>
 </div>
 </section>
@@ -518,7 +530,8 @@ python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </
 <section id="real-world-ground-truth-oracle-measured-precision-recall">
 <h2>Real-World Ground-Truth Oracle (measured precision/recall)<a class="headerlink" href="#real-world-ground-truth-oracle-measured-precision-recall" title="Link to this heading"></a></h2>
 <p>Volume deltas and CWE-aware Juliet rates do not predict real-world precision
-(the v0.4.22 audit measured ~2–34% precision for the noisiest rules). The
+(a historical audit at v0.4.22 measured ~2–34% precision for the noisiest
+rules). The
 <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> table is a growing, manually/AI-adjudicated TP/FP oracle for
 the real-world codebases — the real-world analog of Juliet’s
 OMITGOOD/OMITBAD. Because each benchmark checkout is pinned to a fixed git
@@ -562,8 +575,8 @@ with no label yet (reproducible sample);</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">realworld-import-labels</span> <span class="pre">CSV</span> <span class="pre">--run</span> <span class="pre">RUN</span></code> — append (existing labels are
 skipped unless <code class="docutils literal notranslate"><span class="pre">--update</span></code> re-adjudicates them).</p></li>
 </ol>
-<p>The first 200 labels were seeded from an early adjudication pass
-(<code class="docutils literal notranslate"><span class="pre">adjudication_0.4.22.csv</span></code>).</p>
+<p>The first 200 labels were seeded from an early adjudication pass at v0.4.22;
+that CSV is historical and is not in this repo.</p>
 <section id="delta-adjudication-gate">
 <h3>Delta-Adjudication Gate<a class="headerlink" href="#delta-adjudication-gate" title="Link to this heading"></a></h3>
 <div class="admonition important">
@@ -593,9 +606,9 @@ after):</p>
 </li>
 <li><p><strong>Derive each project’s in-scope file predicate from its section of</strong>
 <code class="docutils literal notranslate"><span class="pre">docs/design/realworld-corpus-scope.md</span></code> <strong>before batching, not
-after.</strong> One delta-adjudication pass found 2,548 of 4,026 (63%) raw
+after.</strong> One delta-adjudication pass found that most of its raw
 unlabeled findings were out-of-scope noise (test harnesses, vendored
-deps, language bindings) — mosquitto alone was 73% contamination.
+deps, language bindings), and mosquitto’s share was higher still.
 Scoping after batches are already generated means redoing completed
 adjudication work.</p></li>
 <li><p>Batch (~110-150 findings/batch), adjudicate, and import with
@@ -604,8 +617,8 @@ oracle.</p></li>
 <li><p>Only after <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> reflects the new lines is a precision/recall
 claim about the changed rule safe to publish.</p></li>
 </ol>
-<p>A worked example from this pattern: 6 projects, 14 batches, 1,478 findings,
-0.7% delta precision — a very different number than the aggregate raw-count
+<p>A worked example from this pattern, across six projects, measured a delta
+precision near zero, a very different number than the aggregate raw-count
 comparison suggested.</p>
 </section>
 </section>
@@ -613,28 +626,29 @@ comparison suggested.</p>
 <h2>Comparing Across Runs<a class="headerlink" href="#comparing-across-runs" title="Link to this heading"></a></h2>
 <section id="juliet">
 <h3>Juliet<a class="headerlink" href="#juliet" title="Link to this heading"></a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>compare<span class="w"> </span>aurora-lint-0.3.17-historical<span class="w"> </span>latest
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>compare<span class="w"> </span>sqc-0.3.17-historical<span class="w"> </span>latest
 </pre></div>
 </div>
 <p>Positive FP delta = regression. Negative = improvement.</p>
 </section>
 <section id="real-world">
 <h3>Real-World<a class="headerlink" href="#real-world" title="Link to this heading"></a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld<span class="w"> </span><span class="m">0</span>.2.7<span class="w"> </span>--compare<span class="w"> </span><span class="m">0</span>.2.6
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld<span class="w"> </span><span class="m">14</span><span class="w"> </span>--compare<span class="w"> </span><span class="m">12</span><span class="w">   </span><span class="c1"># integer run ids, from realworld-runs</span>
 </pre></div>
 </div>
 </section>
 </section>
-<section id="competitor-benchmarks-infer-frama-c">
-<h2>Competitor Benchmarks (Infer / Frama-C)<a class="headerlink" href="#competitor-benchmarks-infer-frama-c" title="Link to this heading"></a></h2>
-<p>The <code class="docutils literal notranslate"><span class="pre">bench/competitors.py</span></code> module runs Facebook Infer and Frama-C EVA on
-Juliet test cases and classifies findings as TP/FP using the same ground truth
+<section id="competitor-benchmarks">
+<h2>Competitor Benchmarks<a class="headerlink" href="#competitor-benchmarks" title="Link to this heading"></a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">bench/competitors.py</span></code> module runs Facebook Infer, Frama-C EVA, cppcheck
+and clang-tidy on Juliet test cases and classifies findings as TP/FP using the same ground truth
 as the aurora-lint benchmark (<code class="docutils literal notranslate"><span class="pre">OMITBAD</span></code>/<code class="docutils literal notranslate"><span class="pre">OMITGOOD</span></code> guards and procedure names).</p>
 <p>Results are written to <code class="docutils literal notranslate"><span class="pre">data/competitor_results/&lt;tool&gt;_&lt;timestamp&gt;.json</span></code>.</p>
 <section id="infrastructure">
 <h3>Infrastructure<a class="headerlink" href="#infrastructure" title="Link to this heading"></a></h3>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">bench</span><span class="o">/</span>
-  <span class="n">competitors</span><span class="o">.</span><span class="n">py</span>   <span class="n">Infer</span> <span class="o">+</span> <span class="n">Frama</span><span class="o">-</span><span class="n">C</span> <span class="n">runners</span><span class="p">,</span> <span class="n">TP</span><span class="o">/</span><span class="n">FP</span> <span class="n">classification</span><span class="p">,</span> <span class="n">comparison</span>
+  <span class="n">competitors</span><span class="o">.</span><span class="n">py</span>   <span class="n">Infer</span><span class="p">,</span> <span class="n">Frama</span><span class="o">-</span><span class="n">C</span><span class="p">,</span> <span class="n">cppcheck</span> <span class="ow">and</span> <span class="n">clang</span><span class="o">-</span><span class="n">tidy</span> <span class="n">runners</span><span class="p">,</span>
+                   <span class="n">TP</span><span class="o">/</span><span class="n">FP</span> <span class="n">classification</span><span class="p">,</span> <span class="n">comparison</span>
 </pre></div>
 </div>
 <p>Default CWE sets:</p>
@@ -646,21 +660,30 @@ as the aurora-lint benchmark (<code class="docutils literal notranslate"><span c
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Infer</p></td>
-<td><p>476, 690, 416, 401, 415, 761, 762, 121, 122, 124, 127</p></td>
+<td><p>476, 690, 416, 401, 415, 761, 121, 122, 124, 127</p></td>
 </tr>
 <tr class="row-odd"><td><p>Frama-C</p></td>
 <td><p>190, 191, 476, 369, 197, 680</p></td>
+</tr>
+<tr class="row-even"><td><p>cppcheck</p></td>
+<td><p>the union of the two sets above</p></td>
+</tr>
+<tr class="row-odd"><td><p>clang-tidy</p></td>
+<td><p>the union of the two sets above</p></td>
 </tr>
 </tbody>
 </table>
 </section>
 <section id="running">
 <h3>Running<a class="headerlink" href="#running" title="Link to this heading"></a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Run Infer on default CWEs (~80 min on 24-core)</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Run Infer on default CWEs</span>
 python3<span class="w"> </span>-m<span class="w"> </span>bench.competitors<span class="w"> </span>infer<span class="w"> </span>--jobs<span class="w"> </span><span class="m">8</span>
 
-<span class="c1"># Run Frama-C on default CWEs (~7-9 hours)</span>
+<span class="c1"># Run Frama-C on default CWEs</span>
 <span class="nb">eval</span><span class="w"> </span><span class="k">$(</span>opam<span class="w"> </span>env<span class="k">)</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>python3<span class="w"> </span>-m<span class="w"> </span>bench.competitors<span class="w"> </span>framac<span class="w"> </span>--jobs<span class="w"> </span><span class="m">8</span>
+
+<span class="c1"># Run cppcheck, clang-tidy, or all four tools</span>
+python3<span class="w"> </span>-m<span class="w"> </span>bench.competitors<span class="w"> </span><span class="o">{</span>cppcheck,clangtidy,all<span class="o">}</span><span class="w"> </span>--jobs<span class="w"> </span><span class="m">8</span>
 
 <span class="c1"># Run a specific subset</span>
 python3<span class="w"> </span>-m<span class="w"> </span>bench.competitors<span class="w"> </span>infer<span class="w"> </span>--cwes<span class="w"> </span>CWE476,CWE690
@@ -672,29 +695,10 @@ python3<span class="w"> </span>-m<span class="w"> </span>bench.competitors<span 
 </pre></div>
 </div>
 </section>
-<section id="timing-estimates">
-<h3>Timing Estimates<a class="headerlink" href="#timing-estimates" title="Link to this heading"></a></h3>
-<table class="docutils align-default">
-<thead>
-<tr class="row-odd"><th class="head"><p>Tool</p></th>
-<th class="head"><p>CWEs</p></th>
-<th class="head"><p>Files</p></th>
-<th class="head"><p>Estimated Time</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>Infer</p></td>
-<td><p>11</p></td>
-<td><p>17,232</p></td>
-<td><p>~80 min</p></td>
-</tr>
-<tr class="row-odd"><td><p>Frama-C</p></td>
-<td><p>6</p></td>
-<td><p>11,628</p></td>
-<td><p>~7–9 hours</p></td>
-</tr>
-</tbody>
-</table>
+<section id="timing">
+<h3>Timing<a class="headerlink" href="#timing" title="Link to this heading"></a></h3>
+<p>Dated wall-clock figures for all four tools, measured on one host, dated, are in
+<a class="reference internal" href="tool-comparison.html"><span class="doc">Comparison To Other Tools</span></a> (<em>Speed</em>).</p>
 <p>Infer uses incremental capture (<code class="docutils literal notranslate"><span class="pre">infer</span> <span class="pre">capture</span> <span class="pre">--continue</span></code>) per file then a
 single <code class="docutils literal notranslate"><span class="pre">infer</span> <span class="pre">analyze</span></code> pass per CWE.  Frama-C runs EVA per-function per-file
 (<code class="docutils literal notranslate"><span class="pre">-main</span> <span class="pre">&lt;func&gt;</span></code>), which is the main bottleneck.</p>
@@ -766,9 +770,10 @@ Fix: deleted the file-wide fallback, restricted matching to the loop
 condition and body, improved <code class="docutils literal notranslate"><span class="pre">is_string_memcpy</span></code>. After the fix,
 <code class="docutils literal notranslate"><span class="pre">jimsh0.c</span></code>’s STR31-C count dropped from 180,297 to 10. (Migrated here
 2026-09-03 from <code class="docutils literal notranslate"><span class="pre">REALWORLD_RESULTS.md</span></code>, retired that day.)</p></li>
-<li><p><strong>Output Buffer Saturation</strong>: aurora-lint emits one status line per rule per file
-(~100 rules × N files). Always suppress or redirect output during scans:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">./</span><span class="n">target</span><span class="o">/</span><span class="n">release</span><span class="o">/</span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="n">directory</span><span class="o">/</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span> <span class="mi">2</span><span class="o">&gt;/</span><span class="n">dev</span><span class="o">/</span><span class="n">null</span>
+<li><p><strong>Output Buffer Saturation</strong>: aurora-lint prints a progress bar and every
+finding to standard output (<code class="docutils literal notranslate"><span class="pre">-v</span></code> adds per-rule progress lines), which is
+large on a big corpus. When only the export is wanted, redirect it:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">./</span><span class="n">target</span><span class="o">/</span><span class="n">release</span><span class="o">/</span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="n">directory</span><span class="o">/</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span> <span class="o">&gt;</span> <span class="o">/</span><span class="n">dev</span><span class="o">/</span><span class="n">null</span>
 </pre></div>
 </div>
 </li>

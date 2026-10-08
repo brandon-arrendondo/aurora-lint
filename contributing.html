@@ -56,7 +56,7 @@
 <li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
 <li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
 <li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
-<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks</a></li>
 <li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
 <li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a></li>
 <li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
@@ -103,46 +103,27 @@
 <h1>Contributing<a class="headerlink" href="#contributing" title="Link to this heading"></a></h1>
 <section id="adding-a-new-cert-c-rule">
 <h2>Adding a New CERT C Rule<a class="headerlink" href="#adding-a-new-cert-c-rule" title="Link to this heading"></a></h2>
+<p>The full checklist, and the policy a new rule must follow, are in the
+“Build &amp; Test” and “Rule Implementation” sections of
+the <a class="reference external" href="https://github.com/brandon-arrendondo/aurora-lint/blob/main/CLAUDE.md">technical guide</a>.
+In short:</p>
 <ol class="arabic">
-<li><p>Create the rule directory and implementation file:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">src</span><span class="o">/</span><span class="n">rules</span><span class="o">/</span><span class="n">cert_c</span><span class="o">/</span><span class="n">CATEGORY</span><span class="o">/</span><span class="n">RULE</span><span class="o">-</span><span class="n">ID</span><span class="o">/</span><span class="n">rule_id_c</span><span class="o">.</span><span class="n">rs</span>
-</pre></div>
-</div>
-</li>
-<li><p>Implement the <code class="docutils literal notranslate"><span class="pre">CertRule</span></code> trait:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="k">crate</span>::<span class="n">prelude</span>::<span class="o">*</span><span class="p">;</span>
-
-<span class="k">pub</span><span class="w"> </span><span class="k">struct</span> <span class="nc">Mem30C</span><span class="p">;</span>
-
-<span class="k">impl</span><span class="w"> </span><span class="n">CertRule</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">Mem30C</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="k">fn</span> <span class="nf">rule_id</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span>-&gt; <span class="kp">&amp;</span><span class="o">&#39;</span><span class="nb">static</span> <span class="kt">str</span> <span class="p">{</span>
-<span class="w">        </span><span class="s">&quot;MEM30-C&quot;</span>
-<span class="w">    </span><span class="p">}</span>
-
-<span class="w">    </span><span class="k">fn</span> <span class="nf">description</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span>-&gt; <span class="kp">&amp;</span><span class="o">&#39;</span><span class="nb">static</span> <span class="kt">str</span> <span class="p">{</span>
-<span class="w">        </span><span class="s">&quot;Do not access freed memory&quot;</span>
-<span class="w">    </span><span class="p">}</span>
-
-<span class="w">    </span><span class="k">fn</span> <span class="nf">check</span><span class="p">(</span>
-<span class="w">        </span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span>
-<span class="w">        </span><span class="n">node</span>: <span class="kp">&amp;</span><span class="nc">Node</span><span class="p">,</span>
-<span class="w">        </span><span class="n">source</span>: <span class="kp">&amp;</span><span class="kt">str</span><span class="p">,</span>
-<span class="w">        </span><span class="n">_context</span>: <span class="kp">&amp;</span><span class="nc">ProjectContext</span><span class="p">,</span>
-<span class="w">    </span><span class="p">)</span><span class="w"> </span>-&gt; <span class="nb">Vec</span><span class="o">&lt;</span><span class="n">RuleViolation</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="c1">// Implementation here</span>
-<span class="w">        </span><span class="nb">Vec</span>::<span class="n">new</span><span class="p">()</span>
-<span class="w">    </span><span class="p">}</span>
-<span class="p">}</span>
-</pre></div>
-</div>
-</li>
+<li><p>Create <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/CATEGORY/RULE-ID/</span></code> with the implementation
+(<code class="docutils literal notranslate"><span class="pre">rule_id_c.rs</span></code>) and the rule’s <code class="docutils literal notranslate"><span class="pre">RULE-ID.toml</span></code>. Copy a small existing
+rule as the template: <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/MSC/MSC33-C/</span></code> implements the
+<code class="docutils literal notranslate"><span class="pre">CertRule</span></code> trait (<code class="docutils literal notranslate"><span class="pre">src/rules/mod.rs</span></code>) in one short file. The build
+merges each <code class="docutils literal notranslate"><span class="pre">RULE-ID.toml</span></code> into <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code>, so
+do not edit that file by hand.</p></li>
 <li><p>Register the rule in <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/mod.rs</span></code>.</p></li>
-<li><p>Add test cases as <code class="docutils literal notranslate"><span class="pre">.c</span></code> files in <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/CATEGORY/RULE-ID/tests/fail/</span></code>
-and <code class="docutils literal notranslate"><span class="pre">tests/pass/</span></code>.</p></li>
-<li><p>Add the rule entry to <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code>.</p></li>
-<li><p>Build and test:</p>
+<li><p>Add test cases as <code class="docutils literal notranslate"><span class="pre">.c</span></code> files in <code class="docutils literal notranslate"><span class="pre">tests/fail/</span></code> and <code class="docutils literal notranslate"><span class="pre">tests/pass/</span></code>
+(and <code class="docutils literal notranslate"><span class="pre">tests/expected_fail/</span></code> for a known miss) beside the rule. The
+build generates a test from each file; do not add inline tests.</p></li>
+<li><p>Add a block for the rule to every <code class="docutils literal notranslate"><span class="pre">conf/realworld/*-rules.toml</span></code>. The
+<code class="docutils literal notranslate"><span class="pre">check-realworld-manifests</span></code> hook refuses a commit without one.</p></li>
+<li><p>Build and run the rule’s tests. The filter is the rule id in lower case,
+with <code class="docutils literal notranslate"><span class="pre">_</span></code> for <code class="docutils literal notranslate"><span class="pre">-</span></code> (here for MSC33-C):</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">cargo</span> <span class="n">build</span>
-<span class="n">cargo</span> <span class="n">test</span> <span class="o">--</span><span class="n">package</span> <span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">--</span><span class="n">lib</span> <span class="o">--</span> <span class="n">rules</span><span class="p">::</span><span class="n">cert_c</span><span class="p">::</span><span class="n">RULE_ID</span><span class="p">::</span><span class="n">tests</span>
+<span class="n">cargo</span> <span class="n">test</span> <span class="o">--</span><span class="n">lib</span> <span class="o">--</span> <span class="n">msc33_c</span>
 <span class="n">cargo</span> <span class="n">fmt</span>
 </pre></div>
 </div>
@@ -162,8 +143,8 @@ examples. If it doesn’t, the removal waits for that coverage to land.</p></li>
 <li><p>Delete the rule directory <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/CATEGORY/RULE-ID/</span></code> (the
 implementation, its <code class="docutils literal notranslate"><span class="pre">.toml</span></code> and its <code class="docutils literal notranslate"><span class="pre">tests/</span></code> fixtures) and its
 registration in <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/mod.rs</span></code>.</p></li>
-<li><p>Delete its block from <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code> and from every
-<code class="docutils literal notranslate"><span class="pre">conf/realworld/*-rules.toml</span></code>.</p></li>
+<li><p>Delete its block from every <code class="docutils literal notranslate"><span class="pre">conf/realworld/*-rules.toml</span></code>. The build
+regenerates <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code> without it.</p></li>
 <li><p>Add a <code class="docutils literal notranslate"><span class="pre">[[removed]]</span></code> entry to <code class="docutils literal notranslate"><span class="pre">rules_templates/removed-rules.toml</span></code>, in
 id order (the loader refuses an unsorted table, so parallel removals don’t
 all conflict at the end of the file). <code class="docutils literal notranslate"><span class="pre">removed_in</span></code> is the release the
@@ -238,7 +219,7 @@ must be the same in everything except the rule id.</p></li>
 <section id="build-requirements">
 <h2>Build Requirements<a class="headerlink" href="#build-requirements" title="Link to this heading"></a></h2>
 <ul class="simple">
-<li><p><strong>Rust</strong>: 2021 edition (stable toolchain)</p></li>
+<li><p><strong>Rust</strong>: 1.95 or later (stable toolchain; <code class="docutils literal notranslate"><span class="pre">rust-version</span></code> in Cargo.toml)</p></li>
 <li><p><strong>C toolchain</strong>: a C compiler and linker for dependencies with native code
 (e.g. <code class="docutils literal notranslate"><span class="pre">libgit2-sys</span></code>); <code class="docutils literal notranslate"><span class="pre">build-essential</span></code> on Debian/Ubuntu</p></li>
 <li><p><strong>Platform</strong>: Linux, macOS, Windows (cross-platform via crossterm)</p></li>

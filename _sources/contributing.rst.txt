@@ -4,53 +4,34 @@ Contributing
 Adding a New CERT C Rule
 ------------------------
 
-1. Create the rule directory and implementation file:
+The full checklist, and the policy a new rule must follow, are in the
+"Build & Test" and "Rule Implementation" sections of
+the `technical guide <https://github.com/brandon-arrendondo/aurora-lint/blob/main/CLAUDE.md>`_.
+In short:
 
-   ::
+1. Create ``src/rules/cert_c/CATEGORY/RULE-ID/`` with the implementation
+   (``rule_id_c.rs``) and the rule's ``RULE-ID.toml``. Copy a small existing
+   rule as the template: ``src/rules/cert_c/MSC/MSC33-C/`` implements the
+   ``CertRule`` trait (``src/rules/mod.rs``) in one short file. The build
+   merges each ``RULE-ID.toml`` into ``rules_templates/rules-all.toml``, so
+   do not edit that file by hand.
 
-       src/rules/cert_c/CATEGORY/RULE-ID/rule_id_c.rs
+2. Register the rule in ``src/rules/cert_c/mod.rs``.
 
-2. Implement the ``CertRule`` trait:
+3. Add test cases as ``.c`` files in ``tests/fail/`` and ``tests/pass/``
+   (and ``tests/expected_fail/`` for a known miss) beside the rule. The
+   build generates a test from each file; do not add inline tests.
 
-   .. code-block:: rust
+4. Add a block for the rule to every ``conf/realworld/*-rules.toml``. The
+   ``check-realworld-manifests`` hook refuses a commit without one.
 
-       use crate::prelude::*;
-
-       pub struct Mem30C;
-
-       impl CertRule for Mem30C {
-           fn rule_id(&self) -> &'static str {
-               "MEM30-C"
-           }
-
-           fn description(&self) -> &'static str {
-               "Do not access freed memory"
-           }
-
-           fn check(
-               &self,
-               node: &Node,
-               source: &str,
-               _context: &ProjectContext,
-           ) -> Vec<RuleViolation> {
-               // Implementation here
-               Vec::new()
-           }
-       }
-
-3. Register the rule in ``src/rules/cert_c/mod.rs``.
-
-4. Add test cases as ``.c`` files in ``src/rules/cert_c/CATEGORY/RULE-ID/tests/fail/``
-   and ``tests/pass/``.
-
-5. Add the rule entry to ``rules_templates/rules-all.toml``.
-
-6. Build and test:
+5. Build and run the rule's tests. The filter is the rule id in lower case,
+   with ``_`` for ``-`` (here for MSC33-C):
 
    ::
 
        cargo build
-       cargo test --package aurora-lint --lib -- rules::cert_c::RULE_ID::tests
+       cargo test --lib -- msc33_c
        cargo fmt
 
 Removing a Rule
@@ -69,8 +50,8 @@ A rule is removed only on its row in ``docs/design/rule-disposition.md``
    implementation, its ``.toml`` and its ``tests/`` fixtures) and its
    registration in ``src/rules/cert_c/mod.rs``.
 
-3. Delete its block from ``rules_templates/rules-all.toml`` and from every
-   ``conf/realworld/*-rules.toml``.
+3. Delete its block from every ``conf/realworld/*-rules.toml``. The build
+   regenerates ``rules_templates/rules-all.toml`` without it.
 
 4. Add a ``[[removed]]`` entry to ``rules_templates/removed-rules.toml``, in
    id order (the loader refuses an unsorted table, so parallel removals don't
@@ -156,7 +137,7 @@ steps above apply, with these differences:
 Build Requirements
 ------------------
 
-- **Rust**: 2021 edition (stable toolchain)
+- **Rust**: 1.95 or later (stable toolchain; ``rust-version`` in Cargo.toml)
 - **C toolchain**: a C compiler and linker for dependencies with native code
   (e.g. ``libgit2-sys``); ``build-essential`` on Debian/Ubuntu
 - **Platform**: Linux, macOS, Windows (cross-platform via crossterm)

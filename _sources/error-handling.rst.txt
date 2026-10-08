@@ -33,6 +33,10 @@ Code    Meaning
 ``--fail-on-*`` option is set. A scan with a rule missing is never reported
 as clean.
 
+``--check-config`` does not scan. It exits ``0`` when the configuration is
+valid and ``1`` when it is not, with one ``error:`` line per problem. A command-line argument the parser rejects
+still exits ``2``.
+
 What fails, and what it costs
 -----------------------------
 

@@ -240,7 +240,7 @@ for code whose other findings you still want.
 
 **Fields:**
 
-- ``name`` — A label for the entry, unique within the file (required).
+- ``name`` — A label for the entry (required). Keep it unique within the file; aurora-lint does not check.
 - ``tool`` — ``"aurora-lint"``, or ``"*"`` for every tool (required).
 - ``file_glob`` — Glob pattern for file paths. Supports ``*`` (any characters
   except ``/``), ``**`` (any characters including ``/``), and ``?`` (single

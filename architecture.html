@@ -63,7 +63,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
-<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks</a></li>
 <li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
 <li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a></li>
 <li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
@@ -115,7 +115,7 @@
 <span class="p">[</span><span class="n">Dataflow</span> <span class="n">Analysis</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="n">Null</span> <span class="n">state</span><span class="p">,</span> <span class="n">value</span> <span class="nb">range</span><span class="p">,</span> <span class="n">reaching</span> <span class="n">defs</span><span class="p">,</span> <span class="n">init</span> <span class="n">state</span>
     <span class="o">|</span>
     <span class="n">v</span>
-<span class="p">[</span><span class="n">Rule</span> <span class="n">Evaluation</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="mi">302</span> <span class="n">CERT</span> <span class="n">C</span> <span class="n">rules</span> <span class="n">applied</span> <span class="n">to</span> <span class="n">AST</span> <span class="o">+</span> <span class="n">CFG</span> <span class="o">+</span> <span class="n">context</span>
+<span class="p">[</span><span class="n">Rule</span> <span class="n">Evaluation</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="n">Enabled</span> <span class="n">rules</span> <span class="n">applied</span> <span class="n">to</span> <span class="n">AST</span> <span class="o">+</span> <span class="n">CFG</span> <span class="o">+</span> <span class="n">context</span>
     <span class="o">|</span>
     <span class="n">v</span>
 <span class="p">[</span><span class="n">Suppression</span> <span class="n">Filter</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="n">Hash</span><span class="o">-</span><span class="n">based</span> <span class="o">+</span> <span class="n">wildcard</span> <span class="p">(</span><span class="n">glob</span><span class="o">/</span><span class="n">prefix</span><span class="p">)</span> <span class="n">suppression</span>
@@ -127,7 +127,7 @@
 <section id="analysis-modules">
 <h2>Analysis Modules<a class="headerlink" href="#analysis-modules" title="Link to this heading"></a></h2>
 <dl class="simple">
-<dt><strong>Tree-sitter parsing</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/mod.rs</span></code>).</dt><dd><p>Fast, incremental, error-tolerant C parsing.  Each <code class="docutils literal notranslate"><span class="pre">.c</span></code> file is parsed into
+<dt><strong>Tree-sitter parsing</strong> (<code class="docutils literal notranslate"><span class="pre">src/parser/mod.rs</span></code>; orchestration in <code class="docutils literal notranslate"><span class="pre">src/analyze/mod.rs</span></code>).</dt><dd><p>Fast, incremental, error-tolerant C parsing.  Each <code class="docutils literal notranslate"><span class="pre">.c</span></code> file is parsed into
 an AST; the orchestrator coordinates prescan, CFG construction, dataflow, and
 per-rule evaluation with optional Rayon parallelism.</p>
 </dd>
@@ -135,8 +135,9 @@ per-rule evaluation with optional Rayon parallelism.</p>
 collecting function definitions, header prototypes,
 function summaries, call graphs, macro constants/aliases, struct field types,
 global constants, and global pointer null states.  Second pass aggregates
-call-site argument null states and propagates transitive frees through
-parameter pass-through chains (max 8 iterations).  Results stored in
+call-site argument null states (up to 64 passes, with a warning if they do
+not converge) and propagates transitive frees through parameter
+pass-through chains (to a fixpoint).  Results stored in
 <code class="docutils literal notranslate"><span class="pre">ProjectContext</span></code>, optionally cached to binary (<code class="docutils literal notranslate"><span class="pre">--save-prescan</span></code> /
 <code class="docutils literal notranslate"><span class="pre">--load-prescan</span></code>).  Consumed by 15+ rules.</p>
 </dd>
@@ -266,7 +267,7 @@ SHA-256 hash-based point suppressions and glob/prefix wildcard suppressions.</p>
 <td><p>Per-function with <code class="docutils literal notranslate"><span class="pre">condition_range</span></code> metadata</p></td>
 </tr>
 <tr class="row-odd"><td><p>Reaching definitions</p></td>
-<td><p>Iterative worklist dataflow (MEM01-C)</p></td>
+<td><p>Iterative worklist dataflow (MSC13-C)</p></td>
 </tr>
 <tr class="row-even"><td><p>Inter-procedural summaries</p></td>
 <td><p>Null returns, freed params, no-return, return
@@ -380,11 +381,12 @@ the tests that keep it true.</p>
 </section>
 <section id="architectural-ceiling">
 <h2>Architectural Ceiling<a class="headerlink" href="#architectural-ceiling" title="Link to this heading"></a></h2>
-<p>Current TP rate: <strong>83.8%</strong> (Juliet, v0.4.116, 74 CWEs; up from 67.5% at
-v0.3.119).  CWE-190/191 (integer overflow) and CWE-476 (null dereference)
-have since moved substantially with VRA and null-state work; the remaining
-gaps are concentrated in a smaller set of CWEs still requiring deeper
-analysis:</p>
+<p>At v0.4.116 (a historical figure, not re-measured here), the TP rate was
+<strong>83.8%</strong> (Juliet, 74 CWEs; up from 67.5% at v0.3.119). Current figures are
+in the README’s “How Well Does It Work?” section. By v0.4.116, CWE-190/191
+(integer overflow) and CWE-476 (null dereference) had moved substantially
+with VRA and null-state work; the remaining gaps were concentrated in a
+smaller set of CWEs still requiring deeper analysis:</p>
 <ul class="simple">
 <li><p><strong>CWE-190</strong> (integer overflow): 100.0% — resolved via value-range analysis.</p></li>
 <li><p><strong>CWE-191</strong> (integer underflow): 98.5% (was 55.3%) — same VRA work.</p></li>
@@ -402,61 +404,8 @@ CWE-369 and the residual CWE-121/476 share tied to pointer aliasing.</p>
 </section>
 <section id="competitor-landscape">
 <h2>Competitor Landscape<a class="headerlink" href="#competitor-landscape" title="Link to this heading"></a></h2>
-<p>5-tool comparison on 15 overlapping Juliet CWEs (28,488 files):</p>
-<table class="docutils align-default">
-<thead>
-<tr class="row-odd"><th class="head"><p>Tool</p></th>
-<th class="head"><p>Detection Rate</p></th>
-<th class="head"><p>FP Rate</p></th>
-<th class="head"><p>Analysis Depth</p></th>
-<th class="head"><p>Price</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>clang-tidy</p></td>
-<td><p>91.6%</p></td>
-<td><p>0.8%</p></td>
-<td><p>AST + path-sensitive</p></td>
-<td><p>Free</p></td>
-</tr>
-<tr class="row-odd"><td><p><strong>aurora-lint</strong></p></td>
-<td><p>67.5%</p></td>
-<td><p>32.5%</p></td>
-<td><p>AST + CFG + inter-procedural</p></td>
-<td><p>–</p></td>
-</tr>
-<tr class="row-even"><td><p>Frama-C</p></td>
-<td><p>61.0%</p></td>
-<td><p>39.0%</p></td>
-<td><p>Abstract interpretation</p></td>
-<td><p>Free</p></td>
-</tr>
-<tr class="row-odd"><td><p>Infer</p></td>
-<td><p>43.6%</p></td>
-<td><p>56.4%</p></td>
-<td><p>Separation logic</p></td>
-<td><p>Free</p></td>
-</tr>
-<tr class="row-even"><td><p>cppcheck</p></td>
-<td><p>36.4%</p></td>
-<td><p>63.6%</p></td>
-<td><p>Data-flow</p></td>
-<td><p>Free</p></td>
-</tr>
-</tbody>
-</table>
-<p><em>aurora-lint row is from the v0.3.119 Juliet benchmark, held fixed here because the
-other four tools were not re-run at v0.4.116 — this table is a frozen
-snapshot of a one-time comparative study, not a continuously re-measured
-figure. aurora-lint’s own overall TP rate has since risen to 83.8% (see above); it
-is not directly comparable to the 67.5% row without re-running the other
-four tools on the same 15-CWE, 28,488-file slice.</em></p>
-<p>aurora-lint achieved 100% precision (zero FP) on 48 of 74 benchmarked CWEs as of
-v0.4.116 (a frozen figure from this study, not re-measured since; see
-README.md’s Benchmark Highlights for the current 100%-precision-CWE count),
-including CWE-690, CWE-761, CWE-78, and CWE-190. Broadest CWE coverage
-(74+ CWEs benchmarked vs clang-tidy’s 15
-in the frozen study above).</p>
+<p>Measured comparisons with clang-tidy, cppcheck, Infer, and Frama-C, with
+their dates and tool versions, are in <a class="reference internal" href="tool-comparison.html"><span class="doc">Comparison To Other Tools</span></a>.</p>
 <p><strong>Key context</strong>: on real-world vulnerabilities, even the best single C
 analyzer studied misses between 47% and 80%, depending on the evaluation
 scenario (Lipp2022); in another study, 27% of C/C++ vulnerabilities were

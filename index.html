@@ -55,7 +55,7 @@
 <li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
 <li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
 <li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
-<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks</a></li>
 <li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
 <li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a></li>
 <li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
@@ -109,7 +109,7 @@ for example <code class="docutils literal notranslate"><span class="pre">.../aur
 <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="cli-usage.html#full-command-reference">Full Command Reference</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cli-usage.html#command-reference">Command Reference</a></li>
 <li class="toctree-l2"><a class="reference internal" href="cli-usage.html#cross-file-analysis">Cross-File Analysis</a></li>
 <li class="toctree-l2"><a class="reference internal" href="cli-usage.html#using-a-compile-database">Using a Compile Database</a></li>
 <li class="toctree-l2"><a class="reference internal" href="cli-usage.html#reaching-the-compiler-s-own-headers">Reaching the Compiler’s Own Headers</a></li>
@@ -242,7 +242,7 @@ for example <code class="docutils literal notranslate"><span class="pre">.../aur
 <li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-19-fast-benchmark-mode-cwe-78-taint-tracking">v0.3.19 — Fast Benchmark Mode + CWE-78 Taint Tracking</a></li>
 <li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-17-cwe-78-macro-alias-resolution-cwe-253-incorrect-return-check">v0.3.17 — CWE-78 Macro Alias Resolution + CWE-253 Incorrect Return Check</a></li>
 <li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-14-exp33-c-int30-c-exp34-c-fp-fixes-full-suite">v0.3.14 — EXP33-C, INT30-C, EXP34-C FP Fixes (Full Suite)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-9-p3214-real-world-fp-fixes-12-cwe-subset">v0.3.9 — P3214 Real-World FP Fixes (12-CWE Subset)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-9-embedded-firmware-real-world-fp-fixes-12-cwe-subset">v0.3.9 — Embedded Firmware Real-World FP Fixes (12-CWE Subset)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-8-str31-c-api00-c-exp34-c-exp33-c-fp-fixes-12-cwe-subset">v0.3.8 — STR31-C, API00-C, EXP34-C, EXP33-C FP Fixes (12-CWE Subset)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-5-struct-field-type-resolution-real-world-fp-fixes">v0.3.5 — Struct Field Type Resolution, Real-World FP Fixes</a></li>
 <li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-25-arr32-c-tightening-rule-removals-value-range-fp-fixes">v0.2.25 — ARR32-C Tightening, Rule Removals, Value-Range FP Fixes</a></li>
@@ -284,7 +284,7 @@ for example <code class="docutils literal notranslate"><span class="pre">.../aur
 <li class="toctree-l2"><a class="reference internal" href="juliet-history.html#per-rule-data-accuracy-note-2026-03-03">Per-Rule Data Accuracy Note (2026-03-03)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="juliet-history.html#competitor-comparison">Competitor Comparison</a></li>
 <li class="toctree-l2"><a class="reference internal" href="juliet-history.html#version-history-v0-2-1-v0-3-17">Version History (v0.2.1 – v0.3.17)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#version-history-v0-3-20-present-fast-mode">Version History (v0.3.20 – present, fast mode)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#version-history-v0-3-20-v0-4-321-fast-mode">Version History (v0.3.20 – v0.4.321, fast mode)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="juliet-history.html#scripts-and-data-locations">Scripts and Data Locations</a></li>
 </ul>
 </li>
@@ -321,6 +321,7 @@ for example <code class="docutils literal notranslate"><span class="pre">.../aur
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="benchmark-setup.html#running-each-tool-manually">Running Each Tool Manually</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#aurora-lint">aurora-lint</a></li>
 <li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#id1">cppcheck</a></li>
 <li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#id2">clang-tidy</a></li>
 </ul>
@@ -338,11 +339,11 @@ for example <code class="docutils literal notranslate"><span class="pre">.../aur
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="benchmark-setup.html#output-format-reference">Output Format Reference</a></li>
-<li class="toctree-l2"><a class="reference internal" href="benchmark-setup.html#distributed-benchmarking-with-gnu-parallel">Distributed Benchmarking with GNU Parallel</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-setup.html#distributed-benchmarking">Distributed Benchmarking</a></li>
 <li class="toctree-l2"><a class="reference internal" href="benchmark-setup.html#exporting-competitor-results-for-ingest">Exporting competitor results for ingest</a></li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a><ul>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="benchmark-running.html#benchmark-infrastructure">Benchmark Infrastructure</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#sqlite-schema">SQLite Schema</a></li>
 </ul>
@@ -371,10 +372,10 @@ for example <code class="docutils literal notranslate"><span class="pre">.../aur
 <li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#real-world">Real-World</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="benchmark-running.html#competitor-benchmarks-infer-frama-c">Competitor Benchmarks (Infer / Frama-C)</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-running.html#competitor-benchmarks">Competitor Benchmarks</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#infrastructure">Infrastructure</a></li>
 <li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#running">Running</a></li>
-<li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#timing-estimates">Timing Estimates</a></li>
+<li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#timing">Timing</a></li>
 <li class="toctree-l3"><a class="reference internal" href="benchmark-running.html#classification-logic">Classification Logic</a></li>
 </ul>
 </li>

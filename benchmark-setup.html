@@ -19,7 +19,7 @@
     <script src="_static/js/theme.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="Running Benchmarks (MCP Server)" href="benchmark-running.html" />
+    <link rel="next" title="Running Benchmarks" href="benchmark-running.html" />
     <link rel="prev" title="Analysis Architecture" href="architecture.html" /> 
 </head>
 
@@ -80,6 +80,7 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#running-each-tool-manually">Running Each Tool Manually</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#aurora-lint">aurora-lint</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#id1">cppcheck</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#id2">clang-tidy</a></li>
 </ul>
@@ -97,11 +98,11 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#output-format-reference">Output Format Reference</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#distributed-benchmarking-with-gnu-parallel">Distributed Benchmarking with GNU Parallel</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#distributed-benchmarking">Distributed Benchmarking</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#exporting-competitor-results-for-ingest">Exporting competitor results for ingest</a></li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks</a></li>
 <li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
 <li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a></li>
 <li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
@@ -201,8 +202,8 @@ sudo<span class="w"> </span>make<span class="w"> </span>install
 clang-tidy 18.1.3 and tops out at 20, while the published comparison in
 <code class="docutils literal notranslate"><span class="pre">docs/tool-comparison.rst</span></code> is LLVM 21.1.  Taking the distro package makes a
 freshly-provisioned node measure an <em>older</em> competitor than the table it will
-be compared against, and clang-tidy is the tool currently beating aurora-lint on the
-Juliet overlap (99.2% vs 81.7%) — so that regression would flatter aurora-lint by
+be compared against, and clang-tidy is the tool beating aurora-lint on the
+Juliet overlap in that comparison — so that regression would flatter aurora-lint by
 understating a rival.  <code class="docutils literal notranslate"><span class="pre">playbooks/install-static-analyzers.yml</span></code> does this
 automatically; by hand:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>install<span class="w"> </span>-d<span class="w"> </span>-m<span class="w"> </span><span class="m">0755</span><span class="w"> </span>/etc/apt/keyrings
@@ -519,40 +520,11 @@ boundary and measure the change.</p>
 </section>
 <section id="per-project-include-paths">
 <h3>Per-Project Include Paths<a class="headerlink" href="#per-project-include-paths" title="Link to this heading"></a></h3>
-<p>The real-world runner passes these automatically via the <code class="docutils literal notranslate"><span class="pre">includes</span></code> field in
-each codebase’s config:</p>
-<table class="docutils align-default">
-<thead>
-<tr class="row-odd"><th class="head"><p>Project</p></th>
-<th class="head"><p><code class="docutils literal notranslate"><span class="pre">-I</span></code> Paths</p></th>
-<th class="head"><p>Resolves</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>libcrc</p></td>
-<td><p><em>(none)</em></p></td>
-<td><p>Pure C, no external deps</p></td>
-</tr>
-<tr class="row-odd"><td><p>sqlite</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">/usr/include</span></code></p></td>
-<td><p>OpenSSL, zlib, Tcl</p></td>
-</tr>
-<tr class="row-even"><td><p>mosquitto</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">/usr/include</span></code>, <code class="docutils literal notranslate"><span class="pre">/usr/include/cjson</span></code></p></td>
-<td><p>OpenSSL, cJSON, CUnit, sqlite3</p></td>
-</tr>
-<tr class="row-odd"><td><p>curl</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">/usr/include</span></code>, <code class="docutils literal notranslate"><span class="pre">{path}/lib</span></code></p></td>
-<td><p>OpenSSL, mbedTLS, GnuTLS</p></td>
-</tr>
-<tr class="row-even"><td><p>hostap</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">/usr/include</span></code>, <code class="docutils literal notranslate"><span class="pre">/usr/include/libnl3</span></code>,
-<code class="docutils literal notranslate"><span class="pre">/usr/include/dbus-1.0</span></code></p></td>
-<td><p>OpenSSL, wolfSSL, libnl,
-D-Bus, libgcrypt, libpcap</p></td>
-</tr>
-</tbody>
-</table>
+<p>The real-world runner passes each codebase’s <code class="docutils literal notranslate"><span class="pre">-I</span></code> paths automatically, from
+the <code class="docutils literal notranslate"><span class="pre">includes</span></code> field of its entry in <code class="docutils literal notranslate"><span class="pre">CODEBASES</span></code> in
+<code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code>; that registry is the list. The corpora that
+read <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> are the five named under <em>Third-Party Library Headers</em>
+above.</p>
 </section>
 </section>
 <section id="real-world-project-setup">
@@ -723,8 +695,8 @@ not inside <code class="docutils literal notranslate"><span class="pre">$SQC_BEN
 <p>This check exists because the failure is silent and did happen. On the
 work node curl, hostap and sqlite had all drifted, while libcrc and lua
 sat on tracking branches matching their pins only by coincidence. A gate
-run against the drifted trees reported hostap 452 / sqlite 516 findings
-where the pinned snapshots give 447 / 506 – close enough to look
+run against the drifted trees reported slightly more hostap and sqlite
+findings than the pinned snapshots give – close enough to look
 plausible, and not comparable to <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> at all. Fix drift with
 the <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">checkout</span> <span class="pre">--detach</span></code> command the check prints for each row.</p>
 </div>
@@ -734,57 +706,26 @@ the <code class="docutils literal notranslate"><span class="pre">git</span> <spa
 <p>Preferred: run <code class="docutils literal notranslate"><span class="pre">playbooks/setup-benchmark-repos.yml</span></code> (see <a class="reference internal" href="#benchmark-host-layout">Benchmark Host
 Layout</a> above) – it clones, pins, and verifies every pinned checkout in one pass,
 reading the pins from <code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code>.</p>
-<p>Manual fallback:</p>
+<p>Manual fallback: clone each repository in <code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code>
+under its <code class="docutils literal notranslate"><span class="pre">name</span></code> (the registry key, so pure-ftpd lands in <code class="docutils literal notranslate"><span class="pre">pureftpd</span></code>),
+detach at its <code class="docutils literal notranslate"><span class="pre">version</span></code>, and then verify:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mkdir<span class="w"> </span>-p<span class="w"> </span><span class="nv">$SQC_BENCH_ROOT</span><span class="w">   </span><span class="c1"># default: ~/toolchain</span>
 <span class="nb">cd</span><span class="w"> </span><span class="nv">$SQC_BENCH_ROOT</span>
-
-git<span class="w"> </span>clone<span class="w"> </span>https://github.com/lammertb/libcrc.git
-<span class="nb">cd</span><span class="w"> </span>libcrc<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>7719e2112a9a960b1bba130d02bebdf58e8701f1<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
-
-git<span class="w"> </span>clone<span class="w"> </span>https://github.com/sqlite/sqlite.git
-<span class="nb">cd</span><span class="w"> </span>sqlite<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>b1a73ba34d05b32007315e4065c6468cc638e3af<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
-
-git<span class="w"> </span>clone<span class="w"> </span>https://github.com/eclipse-mosquitto/mosquitto.git
-<span class="nb">cd</span><span class="w"> </span>mosquitto<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>d3ee5c5ca62c0fa4983308c6fff558ee978e878c<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
-
-git<span class="w"> </span>clone<span class="w"> </span>https://github.com/curl/curl.git
-<span class="nb">cd</span><span class="w"> </span>curl<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>3e198f75861cc2e12daf299689e145949dddd19b<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
-
-git<span class="w"> </span>clone<span class="w"> </span>https://git.w1.fi/hostap.git
-<span class="nb">cd</span><span class="w"> </span>hostap<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>dcee60436390dd34731560657c4257c3b4c839a6<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
-
-git<span class="w"> </span>clone<span class="w"> </span>https://github.com/lua/lua.git
-<span class="nb">cd</span><span class="w"> </span>lua<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>40b76de2d77e66b70a9d4bf989c3f5340919973f<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
-
-git<span class="w"> </span>clone<span class="w"> </span>https://github.com/raysan5/raylib.git
-<span class="nb">cd</span><span class="w"> </span>raylib<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>962bbfc6bfbd7a5acd08e21314fcfa161003a589<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
-
-<span class="c1"># NOTE: checkout dir must be &quot;pureftpd&quot; (no hyphen) -- see the warning above</span>
-git<span class="w"> </span>clone<span class="w"> </span>https://github.com/jedisct1/pure-ftpd.git<span class="w"> </span>pureftpd
-<span class="nb">cd</span><span class="w"> </span>pureftpd<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>cc28bff52ca28e1d122a2142bf37f2dc578f4d3e<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
-
-<span class="c1"># NOTE: checkout dir must be lowercase &quot;sel4&quot; to match the registry key</span>
-git<span class="w"> </span>clone<span class="w"> </span>https://github.com/seL4/seL4.git<span class="w"> </span>sel4
-<span class="nb">cd</span><span class="w"> </span>sel4<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>1326364bc9135d9445d936ebc01e38a402c1f4c6<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
-
-<span class="c1"># The framework submodule is only needed for the compile_commands.json</span>
-<span class="c1"># capture (playbooks/setup-compile-commands.yml); the aurora-lint scan</span>
-<span class="c1"># of library/ does not need it.</span>
-git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Mbed-TLS/mbedtls.git
-<span class="nb">cd</span><span class="w"> </span>mbedtls<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>068ff080b369adfac81509f9b57b2afabaf82dc5<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
-
-<span class="c1"># Do not build inside this checkout: `make` leaves a gitignored</span>
-<span class="c1"># src/release.h that corpus-check will (correctly) refuse.</span>
-git<span class="w"> </span>clone<span class="w"> </span>https://github.com/valkey-io/valkey.git
-<span class="nb">cd</span><span class="w"> </span>valkey<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>7f1dffedff6de73058b2c2a389422b6ecd56c8fb<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
-
-<span class="c1"># NOTE: checkout dir must be lowercase &quot;ventoy&quot; to match the registry key.</span>
-<span class="c1"># Only Ventoy2Disk/Ventoy2Disk/ is scanned; the rest of the repo is</span>
-<span class="c1"># Linux/GRUB/firmware code outside a CERT-C scan&#39;s interest.</span>
-git<span class="w"> </span>clone<span class="w"> </span>https://github.com/ventoy/Ventoy.git<span class="w"> </span>ventoy
-<span class="nb">cd</span><span class="w"> </span>ventoy<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>7cbdc5cf69935bcf1f085ae67f40e70ea7e74bae<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+python3<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;import json, sys</span>
+<span class="s1">for r in json.load(open(sys.argv[1]))[&quot;repos&quot;]:</span>
+<span class="s1">    print(r[&quot;repo&quot;], r[&quot;name&quot;], r[&quot;version&quot;])&#39;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint/data/benchmark_repos.json<span class="w"> </span><span class="p">|</span>
+<span class="k">while</span><span class="w"> </span><span class="nb">read</span><span class="w"> </span>-r<span class="w"> </span>repo<span class="w"> </span>name<span class="w"> </span>sha<span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">  </span>git<span class="w"> </span>clone<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$repo</span><span class="s2">&quot;</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$name</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>-C<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$name</span><span class="s2">&quot;</span><span class="w"> </span>checkout<span class="w"> </span>--detach<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$sha</span><span class="s2">&quot;</span>
+<span class="k">done</span>
+<span class="nb">cd</span><span class="w"> </span><span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>corpus-check
 </pre></div>
 </div>
+<p>mbedtls’s framework submodule is needed only for the
+<code class="docutils literal notranslate"><span class="pre">compile_commands.json</span></code> capture (<code class="docutils literal notranslate"><span class="pre">playbooks/setup-compile-commands.yml</span></code>),
+not for the aurora-lint scan of <code class="docutils literal notranslate"><span class="pre">library/</span></code>. Do not build inside the valkey
+checkout: <code class="docutils literal notranslate"><span class="pre">make</span></code> leaves a gitignored <code class="docutils literal notranslate"><span class="pre">src/release.h</span></code> that corpus-check
+will (correctly) refuse.</p>
 </section>
 </section>
 <section id="running-each-tool-manually">
@@ -797,8 +738,8 @@ checkout path for ad hoc manual runs. If you provisioned codebases via
 <code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT/&lt;project&gt;</span></code> (default <code class="docutils literal notranslate"><span class="pre">~/toolchain/&lt;project&gt;</span></code>) instead
 – that’s the path <code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code> itself reads.</p>
 </div>
-<p>aurora-lint
-~~~</p>
+<section id="aurora-lint">
+<h3>aurora-lint<a class="headerlink" href="#aurora-lint" title="Link to this heading"></a></h3>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Build</span>
 <span class="nb">cd</span><span class="w"> </span><span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint
 cargo<span class="w"> </span>build<span class="w"> </span>--release
@@ -815,6 +756,7 @@ cargo<span class="w"> </span>build<span class="w"> </span>--release
 <span class="w">  </span>--export<span class="w"> </span>results.json
 </pre></div>
 </div>
+</section>
 <section id="id1">
 <h3>cppcheck<a class="headerlink" href="#id1" title="Link to this heading"></a></h3>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cppcheck<span class="w"> </span>--enable<span class="o">=</span>all<span class="w"> </span>--std<span class="o">=</span>c11<span class="w"> </span>--xml<span class="w"> </span>--xml-version<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
@@ -1084,46 +1026,10 @@ grep<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;war
 </pre></div>
 </div>
 </section>
-<section id="distributed-benchmarking-with-gnu-parallel">
-<h2>Distributed Benchmarking with GNU Parallel<a class="headerlink" href="#distributed-benchmarking-with-gnu-parallel" title="Link to this heading"></a></h2>
-<p>For fast re-benchmarking across multiple machines after rule changes. Cppcheck and
-clang-tidy results are stable across aurora-lint changes – run them once and cache. Only
-aurora-lint needs re-running.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Prerequisites</span>
-sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>parallel
-parallel<span class="w"> </span>--citation<span class="w"> </span><span class="o">&lt;&lt;&lt;</span><span class="w"> </span><span class="s2">&quot;will cite&quot;</span><span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">true</span>
-
-<span class="c1"># SSH key setup</span>
-ssh-keygen<span class="w"> </span>-t<span class="w"> </span>ed25519<span class="w"> </span>-f<span class="w"> </span>~/.ssh/id_benchmark<span class="w"> </span>-N<span class="w"> </span><span class="s2">&quot;&quot;</span>
-<span class="k">for</span><span class="w"> </span>node<span class="w"> </span><span class="k">in</span><span class="w"> </span>node1<span class="w"> </span>node2<span class="w"> </span>node3<span class="w"> </span>node4<span class="p">;</span><span class="w"> </span><span class="k">do</span>
-<span class="w">  </span>ssh-copy-id<span class="w"> </span>-i<span class="w"> </span>~/.ssh/id_benchmark.pub<span class="w"> </span><span class="nv">$node</span>
-<span class="k">done</span>
-</pre></div>
-</div>
-<p>Node file (<code class="docutils literal notranslate"><span class="pre">~/.benchmark_nodes</span></code>):</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">user</span><span class="nd">@node1</span><span class="o">/</span><span class="mi">8</span>
-<span class="n">user</span><span class="nd">@node2</span><span class="o">/</span><span class="mi">8</span>
-<span class="n">user</span><span class="nd">@node3</span><span class="o">/</span><span class="mi">8</span>
-<span class="n">user</span><span class="nd">@node4</span><span class="o">/</span><span class="mi">8</span>
-</pre></div>
-</div>
-<p>Fast re-benchmark workflow:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># 1. Rebuild aurora-lint</span>
-<span class="nb">cd</span><span class="w"> </span><span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>cargo<span class="w"> </span>build<span class="w"> </span>--release
-
-<span class="c1"># 2. Push binary to nodes (if no shared FS)</span>
-parallel<span class="w"> </span>--sshloginfile<span class="w"> </span><span class="nv">$NODES_FILE</span><span class="w"> </span>--nonall<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span><span class="s2">&quot;rsync -az </span><span class="nv">$SQC_BIN</span><span class="s2"> {}/sqc_bin&quot;</span>
-
-<span class="c1"># 3. Generate CWE list</span>
-find<span class="w"> </span><span class="nv">$JULIET_DIR</span><span class="w"> </span>-maxdepth<span class="w"> </span><span class="m">1</span><span class="w"> </span>-type<span class="w"> </span>d<span class="w"> </span>-name<span class="w"> </span><span class="s1">&#39;CWE*&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>sort<span class="w"> </span>&gt;<span class="w"> </span>/tmp/cwe_dirs.txt
-
-<span class="c1"># 4. Run in parallel across nodes</span>
-parallel<span class="w"> </span>--sshloginfile<span class="w"> </span><span class="nv">$NODES_FILE</span><span class="w"> </span>-a<span class="w"> </span>/tmp/cwe_dirs.txt<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span><span class="s2">&quot;</span><span class="nv">$SQC_BIN</span><span class="s2"> {} -d </span><span class="nv">$JULIET_DIR</span><span class="s2"> -d </span><span class="nv">$JULIET_SUPPORT</span><span class="s2"> \</span>
-<span class="s2">    --export </span><span class="nv">$RESULTS_DIR</span><span class="s2">/aurora-lint/juliet/{/.}.json&quot;</span>
-</pre></div>
-</div>
+<section id="distributed-benchmarking">
+<h2>Distributed Benchmarking<a class="headerlink" href="#distributed-benchmarking" title="Link to this heading"></a></h2>
+<p>Multi-host runs belong to the maintainer’s <code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code> infrastructure,
+not to this repo.</p>
 </section>
 <section id="exporting-competitor-results-for-ingest">
 <h2>Exporting competitor results for ingest<a class="headerlink" href="#exporting-competitor-results-for-ingest" title="Link to this heading"></a></h2>
@@ -1155,10 +1061,10 @@ official number comes from, and re-exporting is idempotent and lossless with
 respect to the JSON.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">hostname</span></code> column is blank for every run recorded before
-2026-09-04, which is all four April runs.  Wall clock is
-hardware-dependent, so a blank means “do not compare this run’s duration
-against another host’s”, not “same host”.</p>
+<p>The run JSONs record no hostname. <code class="docutils literal notranslate"><span class="pre">run_hosts.json</span></code> attributes each
+run, and the CSV carries it as <code class="docutils literal notranslate"><span class="pre">hostname</span></code> + <code class="docutils literal notranslate"><span class="pre">hostname_source</span></code>.
+Wall clock is hardware-dependent, so compare durations only between runs
+on the same host.</p>
 </div>
 </section>
 </section>
@@ -1168,7 +1074,7 @@ against another host’s”, not “same host”.</p>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
         <a href="architecture.html" class="btn btn-neutral float-left" title="Analysis Architecture" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="benchmark-running.html" class="btn btn-neutral float-right" title="Running Benchmarks (MCP Server)" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="benchmark-running.html" class="btn btn-neutral float-right" title="Running Benchmarks" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

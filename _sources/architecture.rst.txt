@@ -20,7 +20,7 @@ aurora-lint uses a multi-pass analysis architecture:
     [Dataflow Analysis] --> Null state, value range, reaching defs, init state
         |
         v
-    [Rule Evaluation] --> 302 CERT C rules applied to AST + CFG + context
+    [Rule Evaluation] --> Enabled rules applied to AST + CFG + context
         |
         v
     [Suppression Filter] --> Hash-based + wildcard (glob/prefix) suppression
@@ -31,7 +31,7 @@ aurora-lint uses a multi-pass analysis architecture:
 Analysis Modules
 ----------------
 
-**Tree-sitter parsing** (``src/analyze/mod.rs``).
+**Tree-sitter parsing** (``src/parser/mod.rs``; orchestration in ``src/analyze/mod.rs``).
   Fast, incremental, error-tolerant C parsing.  Each ``.c`` file is parsed into
   an AST; the orchestrator coordinates prescan, CFG construction, dataflow, and
   per-rule evaluation with optional Rayon parallelism.
@@ -41,8 +41,9 @@ Analysis Modules
   collecting function definitions, header prototypes,
   function summaries, call graphs, macro constants/aliases, struct field types,
   global constants, and global pointer null states.  Second pass aggregates
-  call-site argument null states and propagates transitive frees through
-  parameter pass-through chains (max 8 iterations).  Results stored in
+  call-site argument null states (up to 64 passes, with a warning if they do
+  not converge) and propagates transitive frees through parameter
+  pass-through chains (to a fixpoint).  Results stored in
   ``ProjectContext``, optionally cached to binary (``--save-prescan`` /
   ``--load-prescan``).  Consumed by 15+ rules.
 
@@ -170,7 +171,7 @@ Preprocessor block traversal          ``preproc_*`` node recursion
 Standard function database            ~370 C11/POSIX/Windows functions
 Cross-file function scanning          ``-d`` flag pre-scan with binary cache
 CFG construction                      Per-function with ``condition_range`` metadata
-Reaching definitions                  Iterative worklist dataflow (MEM01-C)
+Reaching definitions                  Iterative worklist dataflow (MSC13-C)
 Inter-procedural summaries            Null returns, freed params, no-return, return
                                       ranges, dereferences, pass-throughs
 CFG-based null state dataflow         Forward dataflow with NullState lattice, compound
@@ -241,11 +242,12 @@ the tests that keep it true.
 Architectural Ceiling
 ---------------------
 
-Current TP rate: **83.8%** (Juliet, v0.4.116, 74 CWEs; up from 67.5% at
-v0.3.119).  CWE-190/191 (integer overflow) and CWE-476 (null dereference)
-have since moved substantially with VRA and null-state work; the remaining
-gaps are concentrated in a smaller set of CWEs still requiring deeper
-analysis:
+At v0.4.116 (a historical figure, not re-measured here), the TP rate was
+**83.8%** (Juliet, 74 CWEs; up from 67.5% at v0.3.119). Current figures are
+in the README's "How Well Does It Work?" section. By v0.4.116, CWE-190/191
+(integer overflow) and CWE-476 (null dereference) had moved substantially
+with VRA and null-state work; the remaining gaps were concentrated in a
+smaller set of CWEs still requiring deeper analysis:
 
 - **CWE-190** (integer overflow): 100.0% — resolved via value-range analysis.
 - **CWE-191** (integer underflow): 98.5% (was 55.3%) — same VRA work.
@@ -264,31 +266,8 @@ CWE-369 and the residual CWE-121/476 share tied to pointer aliasing.
 Competitor Landscape
 --------------------
 
-5-tool comparison on 15 overlapping Juliet CWEs (28,488 files):
-
-===============  ==============  =========  ====================================  ===========
-Tool             Detection Rate  FP Rate    Analysis Depth                        Price
-===============  ==============  =========  ====================================  ===========
-clang-tidy       91.6%           0.8%       AST + path-sensitive                  Free
-**aurora-lint**  67.5%           32.5%      AST + CFG + inter-procedural          --
-Frama-C          61.0%           39.0%      Abstract interpretation               Free
-Infer            43.6%           56.4%      Separation logic                      Free
-cppcheck         36.4%           63.6%      Data-flow                             Free
-===============  ==============  =========  ====================================  ===========
-
-*aurora-lint row is from the v0.3.119 Juliet benchmark, held fixed here because the
-other four tools were not re-run at v0.4.116 — this table is a frozen
-snapshot of a one-time comparative study, not a continuously re-measured
-figure. aurora-lint's own overall TP rate has since risen to 83.8% (see above); it
-is not directly comparable to the 67.5% row without re-running the other
-four tools on the same 15-CWE, 28,488-file slice.*
-
-aurora-lint achieved 100% precision (zero FP) on 48 of 74 benchmarked CWEs as of
-v0.4.116 (a frozen figure from this study, not re-measured since; see
-README.md's Benchmark Highlights for the current 100%-precision-CWE count),
-including CWE-690, CWE-761, CWE-78, and CWE-190. Broadest CWE coverage
-(74+ CWEs benchmarked vs clang-tidy's 15
-in the frozen study above).
+Measured comparisons with clang-tidy, cppcheck, Infer, and Frama-C, with
+their dates and tool versions, are in :doc:`tool-comparison`.
 
 **Key context**: on real-world vulnerabilities, even the best single C
 analyzer studied misses between 47% and 80%, depending on the evaluation

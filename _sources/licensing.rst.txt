@@ -100,7 +100,7 @@ University. The copyright licenses above grant nothing here.
 What a packager needs to write
 ------------------------------
 
-Debian ``debian/copyright`` (DEP-5) needs three stanzas rather than one:
+Debian ``debian/copyright`` (DEP-5) needs four stanzas rather than one:
 
 .. code-block:: none
 

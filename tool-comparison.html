@@ -64,7 +64,7 @@
 <li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
 <li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
 <li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
-<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks</a></li>
 <li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
 <li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a></li>
 <li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
@@ -100,9 +100,16 @@
              
   <section id="comparison-to-other-tools">
 <h1>Comparison To Other Tools<a class="headerlink" href="#comparison-to-other-tools" title="Link to this heading"></a></h1>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>Historical snapshot, not a current project figure.</strong> The aurora-lint Juliet
+figures are from v0.4.321 (2026-09-02), and the competitors were
+measured on 2026-09-04. The <code class="docutils literal notranslate"><span class="pre">render-docs</span></code> refresh does not maintain this page, so its tables are
+not updated as aurora-lint changes.</p>
+</div>
 <p>Where aurora-lint sits against the other static analysers you would consider for C.
 The short version is in <code class="docutils literal notranslate"><span class="pre">README.md</span></code>’s <strong>Alternatives</strong> section; this page is
-the measurement behind it.</p>
+the dated measurement behind it.</p>
 <p>Read the coverage table first. Per-CWE precision is only meaningful on the
 CWEs a given tool actually covers, and those sets differ by a factor of five.</p>
 <section id="the-tools">
@@ -221,10 +228,11 @@ is a property of the Juliet corpus rather than of any run.</p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p><strong>PARTLY RESOLVED</strong> — <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">realworld-run</span> <span class="pre">--tool</span> <span class="pre">infer</span></code> and
-<code class="docutils literal notranslate"><span class="pre">--tool</span> <span class="pre">frama-c</span></code> now work against all nine corpora.
+<p><code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">realworld-run</span> <span class="pre">--tool</span> <span class="pre">infer</span></code> and
+<code class="docutils literal notranslate"><span class="pre">--tool</span> <span class="pre">frama-c</span></code> work against every corpus that has a compile database.
 Both are driven from each checkout’s <code class="docutils literal notranslate"><span class="pre">compile_commands.json</span></code>, which
-<code class="docutils literal notranslate"><span class="pre">playbooks/setup-compile-commands.yml</span></code> generates for all nine —
+<code class="docutils literal notranslate"><span class="pre">playbooks/setup-compile-commands.yml</span></code> generates for every corpus but
+ventoy —
 including seL4, hostap and pure-ftpd, whose supposed unbuildability was
 the original blocker and is no longer true.</p>
 <p>What remains is the <strong>sweep itself</strong>, which is a multi-hour job and wants
@@ -259,8 +267,7 @@ it.</p>
 <h2>Juliet, On The Overlap<a class="headerlink" href="#juliet-on-the-overlap" title="Link to this heading"></a></h2>
 <p>Juliet is the only benchmark where every tool can be scored the same way: the
 suite labels its own planted defects, so TP/FP needs no adjudication. This is
-aurora-lint v0.4.321 (run <code class="docutils literal notranslate"><span class="pre">sqc-0.4.321-daff4cf0</span></code>) against each competitor on the
-CWEs that competitor covers — precision, so higher is better.</p>
+aurora-lint v0.4.321 against each competitor on the CWEs that competitor covers — precision, so higher is better.</p>
 <table class="docutils align-default">
 <colgroup>
 <col style="width: 13.3%" />
@@ -453,32 +460,20 @@ and not needing your build.</strong></p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>aurora-lint</p></td>
-<td><p>69,354</p></td>
-<td><p>~1,190 s</p></td>
-<td><p>See the TODO below — run 215 recorded 0.0 s for two projects.</p></td>
-</tr>
-<tr class="row-odd"><td><p>clang-tidy</p></td>
+<tr class="row-even"><td><p>clang-tidy</p></td>
 <td><p>2,694</p></td>
 <td><p>501 s</p></td>
 <td><p>Excludes the time to produce a compilation database.</p></td>
 </tr>
-<tr class="row-even"><td><p>cppcheck</p></td>
+<tr class="row-odd"><td><p>cppcheck</p></td>
 <td><p>4,258</p></td>
 <td><p><strong>11,452 s</strong></p></td>
 <td><p>Over 3 hours. mosquitto alone took 3,578 s.</p></td>
 </tr>
 </tbody>
 </table>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p><strong>TODO</strong> — run 215’s aurora-lint rows for <code class="docutils literal notranslate"><span class="pre">hostap</span></code> and <code class="docutils literal notranslate"><span class="pre">sqlite</span></code> both record
-<code class="docutils literal notranslate"><span class="pre">duration_s</span> <span class="pre">=</span> <span class="pre">0.0</span></code>, so its recorded aurora-lint total is 490.9 s. The ~1,190 s
-above substitutes those two projects’ run-229 figures (450.4 s and
-253.1 s), which mixes runs and is therefore not a citable number. Quoting
-the 490.9 s would be wrong in aurora-lint’s favor, which is worse. Tracked
-as a benchmarking_db follow-up.</p>
-</div>
+<p>Run 215 has no citable aurora-lint wall clock: it recorded 0.0 s for two
+projects, so this table carries no aurora-lint row.</p>
 <p>Frama-C and Infer have no row here yet — see the note above. For an order of
 magnitude on what the Frama-C row will cost: its 6-CWE Juliet run is the
 slowest of the four by a factor of two, over files averaging under 200 lines,
@@ -555,27 +550,22 @@ here rather than a gap to close.</p>
 resolves to zero <code class="docutils literal notranslate"><span class="pre">.c</span></code> files instead of recording a 0/0 row that reads
 the same as “the tool found nothing”. The runs above predate that fix and
 still carry the row; the exported CSV distinguishes them as <code class="docutils literal notranslate"><span class="pre">cwe_count</span></code>
-(rows present) and <code class="docutils literal notranslate"><span class="pre">cwes_measured</span></code>. Tracked separately for both counts.</p>
+(rows present) and <code class="docutils literal notranslate"><span class="pre">cwes_measured</span></code>.</p>
 </div>
 </section>
 <section id="real-world-precision-per-rule">
 <h2>Real-World Precision, Per Rule<a class="headerlink" href="#real-world-precision-per-rule" title="Link to this heading"></a></h2>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p><strong>TODO</strong> — this section cannot be written yet.</p>
-<p><code class="docutils literal notranslate"><span class="pre">realworld_violations</span></code> holds 17.5M aurora-lint rows and <strong>zero</strong> for cppcheck or
-clang-tidy. The runner’s <code class="docutils literal notranslate"><span class="pre">_parse_cppcheck_xml</span></code> and
-<code class="docutils literal notranslate"><span class="pre">_parse_clang_tidy_txt</span></code> return a count per check id and discard file and
-line, so there is no coordinate to adjudicate — and a count cannot be
-labeled TP or FP by anyone. Competitor real-world precision is therefore
-unmeasured, and the Juliet table above is the only cross-tool precision
-figure that exists.</p>
+<p>Competitor real-world precision is unmeasured. The runner’s
+<code class="docutils literal notranslate"><span class="pre">_parse_cppcheck_xml</span></code> and <code class="docutils literal notranslate"><span class="pre">_parse_clang_tidy_txt</span></code> return a count per
+check id and discard file and line, so <code class="docutils literal notranslate"><span class="pre">realworld_violations</span></code> holds no
+cppcheck or clang-tidy rows and there is no coordinate to label TP or FP.
+The Juliet table above is the only cross-tool precision figure that
+exists.</p>
 <p>cppcheck additionally needs a native-id-to-CERT-C mapping before a per-rule
 table is even expressible: its open-source build has no CERT addon to supply
 one (removed in 2.8).</p>
-<p>Tracked as a follow-up for both capture (this repo) and ingest
-(benchmarking_db, plus the <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> key collision that
-adjudicating a second tool at the same coordinate would create).</p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
@@ -625,18 +615,14 @@ April figures <em>exactly</em>:</p>
 almost unchanged (36.4% → 36.7% precision) but individual CWEs move
 materially in both directions — CWE-401 25.7% → 29.1%, CWE-476
 39.7% → 34.5% — so it was refreshed rather than re-dated.</p>
-<p>The aurora-lint column is still from 2026-09-02, so the table is now within days
-of single-date rather than five months from it.  Tracked as a follow-up.</p>
+<p>The aurora-lint column is from 2026-09-02, two days before the
+competitor columns.</p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p><strong>clang-tidy is pinned to LLVM 21, deliberately.</strong>  Ubuntu 24.04 ships
-18.1.3 and tops out at 20, so a freshly-provisioned node would measure an
-<em>older</em> clang-tidy than this table — and since clang-tidy is the tool that
-beats aurora-lint on the overlap, that would flatter aurora-lint by understating a rival.
-<code class="docutils literal notranslate"><span class="pre">playbooks/install-static-analyzers.yml</span></code> adds <code class="docutils literal notranslate"><span class="pre">apt.llvm.org</span></code> for this
-reason.  cppcheck is deliberately <em>not</em> pinned: it drifted forward, and
-the runner records whichever version it saw.</p>
+<p><strong>clang-tidy is pinned to LLVM 21, deliberately</strong>; the reason is in
+<a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a>.  cppcheck is deliberately <em>not</em> pinned: it
+drifted forward, and the runner records whichever version it saw.</p>
 </div>
 </section>
 <section id="what-the-trade-actually-is">
@@ -654,8 +640,8 @@ elsewhere.</p>
 <p>cppcheck is the honest control here: it also runs unbuilt, and on the same
 overlap it scores 36.7% to aurora-lint’s 81.7%.</p>
 <p>The wall-clock gap is on the <em>real-world</em> suite, not this one: cppcheck’s
-run-215 sweep of 8 projects took 11,452 s against aurora-lint’s ~1,190 s, roughly ten
-times. On Juliet the ordering reverses — cppcheck is the fastest of the four
+run-215 sweep of 8 projects took 11,452 s, against clang-tidy’s 501 s.
+On Juliet the ordering reverses — cppcheck is the fastest of the four
 competitors at 350 s. Both facts are about the same tool and neither is the
 other’s counterexample: cppcheck is quick on 5,900 small generated files and
 slow on a real codebase.</p>

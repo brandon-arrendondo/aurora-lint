@@ -45,7 +45,7 @@
               <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
 <ul class="current">
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Advanced CLI Usage</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="#full-command-reference">Full Command Reference</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#command-reference">Command Reference</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#cross-file-analysis">Cross-File Analysis</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#using-a-compile-database">Using a Compile Database</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#reaching-the-compiler-s-own-headers">Reaching the Compiler’s Own Headers</a></li>
@@ -72,7 +72,7 @@
 <li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
 <li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
 <li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
-<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks</a></li>
 <li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
 <li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a></li>
 <li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
@@ -108,145 +108,13 @@
              
   <section id="advanced-cli-usage">
 <h1>Advanced CLI Usage<a class="headerlink" href="#advanced-cli-usage" title="Link to this heading"></a></h1>
-<section id="full-command-reference">
-<h2>Full Command Reference<a class="headerlink" href="#full-command-reference" title="Link to this heading"></a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>aurora-lint [OPTIONS] [PATH]
-
-Arguments:
-  [PATH]  Path to the file, directory, or git repository to analyze [default: .]
-
-Options:
-  -m, --manifest &lt;FILE&gt;            Path to the rules manifest file
-                                   [default: rules_templates/rules-all.toml]
-  -i, --interactive                Run in interactive terminal UI mode
-                                   (requires building with `--features tui`)
-  -e, --export &lt;FILE&gt;              Export violations to file (format by extension:
-                                   .sarif, .sarif.json, .json)
-      --generate-suppression &lt;FILE:LINE:RULE&gt;
-                                   Generate suppression entry for a specific violation
-  -d, --directories &lt;DIR&gt;          Additional directories to pre-scan for function
-                                   definitions (repeatable; enables cross-file context)
-      --fail-on-violation          Exit with code 1 if any violations are found
-      --fail-on-severity &lt;LEVEL&gt;   Exit with code 1 if any violation meets or exceeds
-                                   this severity [Low, Medium, High, Critical]
-      --min-severity &lt;LEVEL&gt;       Only report violations at or above this severity
-                                   [Low, Medium, High, Critical]
-      --rules &lt;RULE1,RULE2,...&gt;    Only report violations from these rules (comma-separated)
-      --exclude-all &lt;GLOB&gt;         Leave files matching this path glob out of
-                                   everything: not scanned, not reported, and not
-                                   read for cross-file facts (repeatable, e.g.
-                                   --exclude-all &#39;**/onelua.c&#39; --exclude-all &#39;testes/**&#39;)
-      --exclude &lt;GLOB&gt;             Deprecated: same as --report-exclude
-      --report-exclude &lt;GLOB&gt;      Report nothing in matching files, but still read
-                                   them for cross-file facts (repeatable)
-      --prescan-exclude &lt;GLOB&gt;     Scan and report matching files, but do not read
-                                   them for cross-file facts (repeatable)
-      --diff                       Only analyze modified/new C files (requires git repo)
-      --suppress-file &lt;FILE&gt;       Path to suppress.toml file
-                                   (auto-detected in project root if not specified;
-                                   [[suppress]] entries, matched by hash or by
-                                   glob/prefix)
-  -I, --include-path &lt;DIR&gt;         Include search paths for resolving #include directives
-                                   (repeatable; like compiler -I flag)
-      --compile-commands &lt;FILE&gt;    Read include search paths and -D macros from a
-                                   compile_commands.json (optional; improves cross-file
-                                   macro/header coverage for projects that already have
-                                   a compile database)
-      --system-includes            Also search the compiler&#39;s own built-in system header
-                                   directories, found by asking it (cc -E -Wp,-v -).
-                                   Off by default: it spawns a compiler. Usable with or
-                                   without --compile-commands, which can never contain
-                                   these paths
-      --report-headers FILE        Write what #include resolution could and could not
-                                   see as JSON: the search path, every #include that
-                                   resolved to no file, every header read from outside
-                                   the project with its SHA-256. Never changes a finding
-      --report-macro-gaps[=FILE]   After the scan, report where the macro-expansion
-                                   engine was blind: definitions it skipped, #includes
-                                   it could not resolve, calls it could not attribute.
-                                   Summary on stdout; =FILE also writes every row as
-                                   JSON. Never changes a finding
-      --report-deallocator-candidates[=FILE]
-                                   After the scan, list callees shaped like
-                                   deallocators by name that nothing shows freeing,
-                                   where an allocation handed to one was reported
-                                   leaked. Summary on stdout; =FILE also writes every
-                                   row as JSON. Never changes a finding
-  -v, --verbose                    Increase output verbosity (repeat for more detail;
-                                   -v shows per-rule scanning progress)
-      --save-prescan &lt;FILE&gt;        Save prescan context to a binary cache file
-                                   (speeds up repeated scans of the same project)
-      --load-prescan &lt;FILE&gt;        Load prescan context from cache instead of
-                                   re-scanning -d directories
-  -j, --jobs &lt;N&gt;                   Number of parallel analysis threads
-                                   (0 = auto-detect, 1 = sequential; default: 0)
-      --profile &lt;PRESET&gt;           Preset for both settings axes: default (default
-                                   policy, hosted), strict (strict policy,
-                                   hosted) or pedantic (pedantic policy, hosted,
-                                   trusting only a declared --libc). Overrides the
-                                   manifest&#39;s `profile`
-      --policy &lt;POLICY&gt;            Policy axis: which findings are reported
-                                   [default, strict, pedantic] (overrides the preset)
-      --environment &lt;KIND&gt;         Environment axis [hosted, freestanding] (overrides
-                                   the preset). Declared, never inferred from the
-                                   scanning host
-      --libc &lt;MODEL&gt;               C library model whose documented contracts are
-                                   trusted [iso-posix, glibc, musl, newlib,
-                                   newlib-nano, picolibc, custom]
-      --data-model &lt;MODEL&gt;         Data model: the bundle of integer facts the code is built for
-                                   [iso, ilp32, lp64, llp64]. The default, iso,
-                                   loads nothing, so only the widths ISO C
-                                   guarantees are credited and limit macros such as
-                                   INT_MAX are unknown. Same as
-                                   ``[environment] data_model``, which a
-                                   ``--profile`` keeps. Override one fact with
-                                   ``--set int_bits=16`` (also char_bits,
-                                   short_bits, long_bits, long_long_bits,
-                                   pointer_bits, wchar_t_bits, char_signed,
-                                   float_bytes, double_bytes, long_double_bytes,
-                                   time_t_bytes, off_t_bytes). See
-                                   :doc:`configuration`
-      --allocator &lt;NAME[=CONTRACT]&gt;
-                                   Declare a function the scan cannot see into as an
-                                   allocator following the named standard allocator&#39;s
-                                   contract [malloc, calloc, realloc, aligned_alloc,
-                                   strdup, strndup; default malloc]. Repeatable; same
-                                   as [environment.allocators] in the manifest
-      --deallocator &lt;NAME[=ARG]&gt;   Declare a function the scan cannot see into as
-                                   freeing its ARG-th argument (default 1).
-                                   Repeatable; same as [environment.deallocators] in
-                                   the manifest
-      --set &lt;NAME=VALUE&gt;           Override one named option (repeatable); see
-                                   --list-options
-      --list-options [&lt;FORMAT&gt;]    List every policy and environment option with its
-                                   value under each preset and the current settings,
-                                   and every integer fact with its source (cli,
-                                   config, data-model:NAME, iso-floor, unknown), then
-                                   exit [text, json, rst]
-      --list-rules [&lt;FORMAT&gt;]      List every rule the tool ships and whether the
-                                   configuration enables it, then the rules it no
-                                   longer ships and why, then exit [text, json]
-      --check-config               Resolve the settings from the manifest and the
-                                   command line exactly as a scan would, validate
-                                   them, and exit without scanning: &quot;configuration
-                                   ok&quot; and status 0, or status 1 and one error per
-                                   problem
-      --write-config &lt;FILE&gt;        Write a complete, commented configuration for the
-                                   current settings (the manifest, --data-model and
-                                   --set applied) and exit; a key at its default is
-                                   commented out. Refuses to replace an existing FILE
-                                   unless --overwrite is given; &quot;-&quot; writes to stdout
-      --overwrite                  With --write-config: replace FILE if it exists
-      --detect-relevance           Detect categorically-inapplicable rule classes
-                                   (CON*/WIN*) in PATH and -d directories, then write
-                                   a relevance-gated manifest with --write-manifest.
-                                   Does not run an analysis.
-      --write-manifest &lt;FILE&gt;      With --detect-relevance: write the generated
-                                   manifest here (requires --detect-relevance)
-  -h, --help                       Print help
-  -V, --version                    Print version
-</pre></div>
-</div>
+<section id="command-reference">
+<h2>Command Reference<a class="headerlink" href="#command-reference" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--help</span></code> lists every option, with its default and allowed values
+where it has them, and <a class="reference internal" href="options.html"><span class="doc">Policy and Environment Options</span></a> lists every policy and environment option.
+The manual page, <code class="docutils literal notranslate"><span class="pre">docs/aurora-lint.1</span></code> (<code class="docutils literal notranslate"><span class="pre">man</span> <span class="pre">-l</span> <span class="pre">docs/aurora-lint.1</span></code> in a
+checkout), is the standalone reference. The sections below cover how the
+options work together.</p>
 </section>
 <section id="cross-file-analysis">
 <h2>Cross-File Analysis<a class="headerlink" href="#cross-file-analysis" title="Link to this heading"></a></h2>
@@ -407,8 +275,7 @@ aurora-lint warns when compile-database include paths are missing rather than
 silently resolving nothing.</p></li>
 </ul>
 <p>The compiler’s own built-in system header directories are <em>not</em> in a compile
-database (they are implicit), so headers found only in <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> remain
-out of reach.</p>
+database (they are implicit); <code class="docutils literal notranslate"><span class="pre">--system-includes</span></code> (above) adds them.</p>
 </section>
 <section id="headers-the-scan-could-not-find">
 <h2>Headers the Scan Could Not Find<a class="headerlink" href="#headers-the-scan-could-not-find" title="Link to this heading"></a></h2>
@@ -666,6 +533,9 @@ with <code class="docutils literal notranslate"><span class="pre">--exclude-all<
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">.sarif</span></code></p></td>
 <td><p><a class="reference external" href="https://sarifweb.azurewebsites.net/">SARIF 2.1.0</a> for IDE and CI integration</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">.sarif.json</span></code></p></td>
+<td><p>Same as <code class="docutils literal notranslate"><span class="pre">.sarif</span></code></p></td>
+</tr>
 </tbody>
 </table>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">json</span>
@@ -686,7 +556,9 @@ scanned tree. Both formats name aurora-lint as their producer: SARIF in
 laid out as Title, Description, Work Item Type, State, Severity, Priority and
 Tags, the layout aurora-lint’s built-in CSV/XLSX export used before it was
 removed.</p>
-<p>JSON export produces an array of violation objects, each containing:</p>
+<p>JSON export produces an array of violation objects, each containing the keys
+below. <code class="docutils literal notranslate"><span class="pre">missing_headers</span></code> and <code class="docutils literal notranslate"><span class="pre">harvested_from</span></code> (see <em>Headers the Scan Could
+Not Find</em>) appear only on a finding they apply to.</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
 <span class="w">    </span><span class="nt">&quot;tool&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aurora-lint&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;src/main.c&quot;</span><span class="p">,</span>
@@ -695,7 +567,8 @@ removed.</p>
 <span class="w">    </span><span class="nt">&quot;rule_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ARR30-C&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;severity&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;High&quot;</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;message&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Do not form or use out-of-bounds pointers or array subscripts&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;suggestion&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Validate array index before use&quot;</span>
+<span class="w">    </span><span class="nt">&quot;suggestion&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Validate array index before use&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;requires_manual_review&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -709,7 +582,7 @@ removed.</p>
 <span class="c1"># Fail only on High or Critical (gate CI but still report Medium)</span>
 <span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="nb">min</span><span class="o">-</span><span class="n">severity</span> <span class="n">Medium</span> <span class="o">--</span><span class="n">fail</span><span class="o">-</span><span class="n">on</span><span class="o">-</span><span class="n">severity</span> <span class="n">High</span>
 
-<span class="c1"># Strict mode: fail on any violation</span>
+<span class="c1"># Fail on any violation</span>
 <span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="n">fail</span><span class="o">-</span><span class="n">on</span><span class="o">-</span><span class="n">violation</span>
 </pre></div>
 </div>
@@ -766,29 +639,7 @@ never overwritten by this flag.</p>
 </section>
 <section id="exit-codes">
 <h2>Exit Codes<a class="headerlink" href="#exit-codes" title="Link to this heading"></a></h2>
-<table class="docutils align-default">
-<thead>
-<tr class="row-odd"><th class="head"><p>Code</p></th>
-<th class="head"><p>Meaning</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
-<td><p>Success (no violations, or none meeting the failure threshold)</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
-<td><p>Violations found (when <code class="docutils literal notranslate"><span class="pre">--fail-on-violation</span></code> or <code class="docutils literal notranslate"><span class="pre">--fail-on-severity</span></code> is set)</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">2</span></code></p></td>
-<td><p>The scan could not run (invalid path, bad manifest, invalid suppression file)</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">3</span></code></p></td>
-<td><p>The scan is incomplete: a rule or file crashed or ran out of its budget.
-Takes precedence over <code class="docutils literal notranslate"><span class="pre">1</span></code>, with or without <code class="docutils literal notranslate"><span class="pre">--fail-on-*</span></code>.</p></td>
-</tr>
-</tbody>
-</table>
-<p>What a failure costs, how it is reported (stderr and SARIF), the
+<p>The exit codes, what a failure costs, how it is reported (stderr and SARIF), the
 <code class="docutils literal notranslate"><span class="pre">--rule-step-limit</span></code> / <code class="docutils literal notranslate"><span class="pre">--rule-time-limit</span></code> budgets, the <code class="docutils literal notranslate"><span class="pre">--max-file-size</span></code>
 input guard, and what CI should do with <code class="docutils literal notranslate"><span class="pre">3</span></code>: <a class="reference internal" href="error-handling.html"><span class="doc">Error Handling and Exit Codes</span></a>.</p>
 </section>

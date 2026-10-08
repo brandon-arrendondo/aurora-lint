@@ -60,7 +60,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#v0-3-19-fast-benchmark-mode-cwe-78-taint-tracking">v0.3.19 — Fast Benchmark Mode + CWE-78 Taint Tracking</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#v0-3-17-cwe-78-macro-alias-resolution-cwe-253-incorrect-return-check">v0.3.17 — CWE-78 Macro Alias Resolution + CWE-253 Incorrect Return Check</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#v0-3-14-exp33-c-int30-c-exp34-c-fp-fixes-full-suite">v0.3.14 — EXP33-C, INT30-C, EXP34-C FP Fixes (Full Suite)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#v0-3-9-p3214-real-world-fp-fixes-12-cwe-subset">v0.3.9 — P3214 Real-World FP Fixes (12-CWE Subset)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-3-9-embedded-firmware-real-world-fp-fixes-12-cwe-subset">v0.3.9 — Embedded Firmware Real-World FP Fixes (12-CWE Subset)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#v0-3-8-str31-c-api00-c-exp34-c-exp33-c-fp-fixes-12-cwe-subset">v0.3.8 — STR31-C, API00-C, EXP34-C, EXP33-C FP Fixes (12-CWE Subset)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#v0-3-5-struct-field-type-resolution-real-world-fp-fixes">v0.3.5 — Struct Field Type Resolution, Real-World FP Fixes</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#v0-2-25-arr32-c-tightening-rule-removals-value-range-fp-fixes">v0.2.25 — ARR32-C Tightening, Rule Removals, Value-Range FP Fixes</a></li>
@@ -102,13 +102,13 @@
 <li class="toctree-l2"><a class="reference internal" href="#per-rule-data-accuracy-note-2026-03-03">Per-Rule Data Accuracy Note (2026-03-03)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#competitor-comparison">Competitor Comparison</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#version-history-v0-2-1-v0-3-17">Version History (v0.2.1 – v0.3.17)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#version-history-v0-3-20-present-fast-mode">Version History (v0.3.20 – present, fast mode)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#version-history-v0-3-20-v0-4-321-fast-mode">Version History (v0.3.20 – v0.4.321, fast mode)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#scripts-and-data-locations">Scripts and Data Locations</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
 <li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
-<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks</a></li>
 <li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
 <li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a></li>
 <li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
@@ -193,7 +193,8 @@ reporting new results.</p>
 </tr>
 </tbody>
 </table>
-<p>The parallel runner (<code class="docutils literal notranslate"><span class="pre">run_juliet_parallel.sh</span></code>) defaults to <code class="docutils literal notranslate"><span class="pre">JOBS=12</span></code>.
+<p>The runner (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">juliet</span></code>) defaults to <code class="docutils literal notranslate"><span class="pre">--jobs</span> <span class="pre">12</span></code>. The shell
+scripts named in the table above were removed at v0.3.33.
 Higher core counts reduce wall-clock time but don’t affect per-CWE results.
 When comparing runtimes across versions, ensure the same machine and job count
 were used.</p>
@@ -201,8 +202,7 @@ were used.</p>
 <section id="fp-reduction-history-full-round-list">
 <h2>FP Reduction History (Full Round List)<a class="headerlink" href="#fp-reduction-history-full-round-list" title="Link to this heading"></a></h2>
 <p>Every tracked round from the original baseline through the last full-suite
-run (v0.3.17). <code class="docutils literal notranslate"><span class="pre">testing-methodology.rst</span></code> carries a condensed milestone
-version of this table; this is the complete list.</p>
+run (v0.3.17). This is the only copy of the table; other pages link here.</p>
 <table class="docutils align-default">
 <colgroup>
 <col style="width: 10.4%" />
@@ -844,10 +844,10 @@ reported 44.3%; full-suite is 44.4% — consistent with subset measurement.</p>
 <p><strong>Duration</strong>: 1h 14m 1s (54,484 files, 118 CWEs), 24-core workstation via MCP
 benchmark server.</p>
 </section>
-<section id="v0-3-9-p3214-real-world-fp-fixes-12-cwe-subset">
-<h3>v0.3.9 — P3214 Real-World FP Fixes (12-CWE Subset)<a class="headerlink" href="#v0-3-9-p3214-real-world-fp-fixes-12-cwe-subset" title="Link to this heading"></a></h3>
-<p>Targeted at 5 high-frequency FP patterns from P3214 embedded firmware
-(CMS80F752x/8051 MCU). 12-CWE subset: TP=61,349, FP=77,245, rate=44.3%
+<section id="v0-3-9-embedded-firmware-real-world-fp-fixes-12-cwe-subset">
+<h3>v0.3.9 — Embedded Firmware Real-World FP Fixes (12-CWE Subset)<a class="headerlink" href="#v0-3-9-embedded-firmware-real-world-fp-fixes-12-cwe-subset" title="Link to this heading"></a></h3>
+<p>Targeted at 5 high-frequency FP patterns from an embedded 8051 firmware
+codebase. 12-CWE subset: TP=61,349, FP=77,245, rate=44.3%
 (-450 TP / -581 FP vs v0.3.8).</p>
 <ul class="simple">
 <li><p><strong>DCL08-C</strong>: Skip pair-offset “relationship” check when all 3+ enumerators
@@ -1441,9 +1441,10 @@ invisible). DCL02-C similar-identifier check. -15,859 FP; CWE-457 TP rate
 <h2>Performance by CWE Category (Historical Snapshot)<a class="headerlink" href="#performance-by-cwe-category-historical-snapshot" title="Link to this heading"></a></h2>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>These tiers reflect an older full-suite run (pre-fast-mode). Get current
-per-CWE precision via <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">get-cwe-detail</span></code> / the MCP
-<code class="docutils literal notranslate"><span class="pre">get_cwe_detail</span></code> tool.</p>
+<p>These tiers reflect an older full-suite run (pre-fast-mode). Current
+figures are in README.md’s Benchmark Highlights table, and
+<code class="docutils literal notranslate"><span class="pre">docs/juliet-coverage.md</span></code> is a generated per-CWE snapshot; compare two
+runs with <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">compare</span> <span class="pre">BASE</span> <span class="pre">TARGET</span></code>.</p>
 </div>
 <section id="tier-1-strong-detection-tp-50-18-categories">
 <h3>Tier 1: Strong Detection (TP &gt; 50%) — 18 categories<a class="headerlink" href="#tier-1-strong-detection-tp-50-18-categories" title="Link to this heading"></a></h3>
@@ -1892,15 +1893,7 @@ accuracy. The overall direction of changes was generally correct.</p>
 <td><p>Community</p></td>
 <td><p>Commercial</p></td>
 </tr>
-<tr class="row-odd"><td><p>Cppcheck</p></td>
-<td><p>Low</p></td>
-<td><p>Very low</p></td>
-<td><p>Data-flow</p></td>
-<td><p>Indirect</p></td>
-<td><p>Partial</p></td>
-<td><p>Free</p></td>
-</tr>
-<tr class="row-even"><td><p>Coverity</p></td>
+<tr class="row-odd"><td><p>Coverity</p></td>
 <td><p>Not published</p></td>
 <td><p>Target &lt;20%</p></td>
 <td><p>Inter-procedural, path-sensitive</p></td>
@@ -1908,7 +1901,7 @@ accuracy. The overall direction of changes was generally correct.</p>
 <td><p>Partial</p></td>
 <td><p>Enterprise</p></td>
 </tr>
-<tr class="row-odd"><td><p>Commercial “Tool C”</p></td>
+<tr class="row-even"><td><p>Commercial “Tool C”</p></td>
 <td><p>~59%</p></td>
 <td><p>~7%</p></td>
 <td><p>Inter-procedural</p></td>
@@ -1919,7 +1912,7 @@ accuracy. The overall direction of changes was generally correct.</p>
 </tbody>
 </table>
 <p>The aurora-lint row above is from the 44.6% full-suite era (v0.2.23); fast-mode TP
-rate was 83.8% as of v0.4.116 (see the fast-mode version table above; it has
+rate was 83.8% as of v0.4.116 (see the fast-mode version table below; it has
 since moved further, see README.md’s Benchmark Highlights for the current
 figure) but is not directly comparable since the competitor figures below
 were not re-measured
@@ -1937,19 +1930,8 @@ rate was found for it.</p>
 them on OWASP WebGoat (Java) and OWASP Juice Shop (Node), and reports one
 false positive on WebGoat and none on Juice Shop for either edition. They
 are not comparable with the Juliet C rows.</p>
-<p>Key context from literature:</p>
-<ul class="simple">
-<li><p>On real-world vulnerabilities, even the best single C analyzer studied
-misses between 47% and 80%, depending on the evaluation scenario; the best
-combination of analyzers still misses 30–69%, while flagging more functions
-(<a class="reference external" href="https://dl.acm.org/doi/10.1145/3533767.3534380">ISSTA 2022</a>).</p></li>
-<li><p>27% of C/C++ vulnerabilities were missed by all three commercial tools
-tested (Goseva 2015).</p></li>
-<li><p>From a developer survey, Christakis and Bird recommend that analysis
-designers aim for a false-positive rate no higher than 15–20%; only 24% of
-respondents accepted 20% (<a class="reference external" href="https://doi.org/10.1145/2970276.2970347">ASE 2016</a>).</p></li>
-</ul>
-<p>See <a class="reference internal" href="bibliography.html"><span class="doc">Bibliography</span></a> for full references.</p>
+<p>For how these figures compare with the literature (missed-vulnerability
+rates, developers’ tolerance for false positives), see <a class="reference internal" href="bibliography.html"><span class="doc">Bibliography</span></a>.</p>
 <p>Sources: <a class="reference external" href="https://dl.acm.org/doi/10.1145/3533767.3534380">ISSTA 2022</a> |
 <a class="reference external" href="https://community.wvu.edu/~kagoseva/Papers/IST-2015.pdf">Goseva 2015</a> |
 <a class="reference external" href="https://doi.org/10.1145/2970276.2970347">ASE 2016</a> |
@@ -1959,8 +1941,9 @@ respondents accepted 20% (<a class="reference external" href="https://doi.org/10
 <section id="version-history-v0-2-1-v0-3-17">
 <h2>Version History (v0.2.1 – v0.3.17)<a class="headerlink" href="#version-history-v0-2-1-v0-3-17" title="Link to this heading"></a></h2>
 <p>Full-suite runs only (pre-fast-mode). See “Version History (v0.3.20 –
-present, fast mode)” below for fast-mode versions from v0.3.20 onward, or
-query <code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code>/<code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres directly for every run.</p>
+v0.4.321, fast mode)” below for fast-mode versions from v0.3.20 onward, or
+query <code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres (canonical; ADR-0004) or this checkout’s
+<code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code> directly for every run.</p>
 <table class="docutils align-default">
 <colgroup>
 <col style="width: 14.0%" />
@@ -2145,14 +2128,14 @@ query <code class="docutils literal notranslate"><span class="pre">data/benchmar
 </tbody>
 </table>
 </section>
-<section id="version-history-v0-3-20-present-fast-mode">
-<h2>Version History (v0.3.20 – present, fast mode)<a class="headerlink" href="#version-history-v0-3-20-present-fast-mode" title="Link to this heading"></a></h2>
+<section id="version-history-v0-3-20-v0-4-321-fast-mode">
+<h2>Version History (v0.3.20 – v0.4.321, fast mode)<a class="headerlink" href="#version-history-v0-3-20-v0-4-321-fast-mode" title="Link to this heading"></a></h2>
 <p>Fast mode (per-CWE manifests) is the default from v0.3.20, when the
 <code class="docutils literal notranslate"><span class="pre">bench/</span></code> runner replaced the shell script; it was introduced as an opt-in
 <code class="docutils literal notranslate"><span class="pre">--fast</span></code> flag at v0.3.19 (see “v0.3.19 — Fast Benchmark Mode” above).
 Migrated here 2026-09-03 from <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code>’s “Recent Progress”
 table when that file was retired (it duplicated <code class="docutils literal notranslate"><span class="pre">README.md</span></code>’s Benchmark Highlights and
-<code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code>/<code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres, same reason
+<code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres, same reason
 <code class="docutils literal notranslate"><span class="pre">REALWORLD_RESULTS.md</span></code> went first) – this table was the one thing in it
 this file didn’t already have a place for; the pre-fast-mode table above
 had pointed here for it since before this file existed.</p>
@@ -2227,19 +2210,20 @@ real-world precision, not Juliet, and the 0.6-point dip is the cost of that
 trade rather than a Juliet regression to chase.</p>
 <p>Current state (whichever version is latest) is README.md’s Benchmark
 Highlights table; <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">compare</span> <span class="pre">BASE</span> <span class="pre">TARGET</span></code> inspects any
-specific pair of versions, and <code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code>/<code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres
-is canonical for every run in between.</p>
+specific pair of versions, and <code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres is canonical for every
+run in between (ADR-0004); this checkout’s <code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code> is working
+data.</p>
 </section>
 <section id="scripts-and-data-locations">
 <h2>Scripts and Data Locations<a class="headerlink" href="#scripts-and-data-locations" title="Link to this heading"></a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">bench</span><span class="o">/</span>                                 <span class="n">Python</span> <span class="n">benchmark</span> <span class="n">module</span> <span class="p">(</span><span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">juliet</span><span class="p">)</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>bench/                                 Python benchmark module (python -m bench juliet)
 
-<span class="o">~/</span><span class="n">data</span><span class="o">/</span><span class="n">benchmarks</span><span class="o">/</span><span class="n">juliet</span><span class="o">-</span><span class="n">test</span><span class="o">-</span><span class="n">suite</span><span class="o">-</span><span class="n">c</span><span class="o">/</span>
-  <span class="n">testcases</span><span class="o">/</span>                           <span class="mi">118</span> <span class="n">CWE</span> <span class="n">categories</span><span class="p">,</span> <span class="mi">54</span><span class="p">,</span><span class="mi">484</span> <span class="o">.</span><span class="n">c</span> <span class="n">files</span>
-  <span class="n">testcasesupport</span><span class="o">/</span>                     <span class="n">Shared</span> <span class="n">helper</span> <span class="n">functions</span>
+$SQC_BENCH_ROOT/benchmarks/juliet-test-suite-c/   (default ~/toolchain)
+  testcases/                           118 CWE categories, 54,484 .c files
+  testcasesupport/                     Shared helper functions
 
-<span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">juliet_results</span><span class="o">/</span>                   <span class="n">Per</span><span class="o">-</span><span class="n">run</span> <span class="n">output</span> <span class="p">(</span><span class="n">MCP</span> <span class="n">benchmark</span> <span class="n">server</span><span class="p">,</span> <span class="n">legacy</span> <span class="n">pre</span><span class="o">-</span><span class="n">SQLite</span><span class="p">)</span>
-<span class="n">data</span><span class="o">/</span><span class="n">benchmarks</span><span class="o">.</span><span class="n">db</span>                     <span class="n">Canonical</span> <span class="n">store</span> <span class="kn">from</span> <span class="nn">v0.</span><span class="mf">3.20</span> <span class="n">onward</span> <span class="p">(</span><span class="n">SQLite</span><span class="p">)</span>
+/tmp/juliet_results/                   Per-run output (MCP benchmark server; legacy, no longer written)
+data/benchmarks.db                     This checkout&#39;s working store (SQLite); official runs are in sqc_bench Postgres (ADR-0004)
 </pre></div>
 </div>
 </section>
