@@ -115,7 +115,7 @@ struct FilePrescanResult {
     callsite_args: HashMap<String, Vec<Vec<NullState>>>,
     callsite_field_args: HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
     callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>>,
-    callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>>,
+    callsite_int_args: CallsiteIntRanges,
     callsite_buf_args: HashMap<String, Vec<Vec<Option<usize>>>>,
     callsite_field_buf_args: HashMap<String, Vec<Vec<HashMap<String, usize>>>>,
     callsite_taint_args: HashMap<String, Vec<Vec<bool>>>,
@@ -465,6 +465,7 @@ fn process_file(
                 &root,
                 &source,
                 &const_eval::cfg_prunable_constants(&root, &source, model),
+                &LoopBounds::file_only(),
                 &mut result.callsite_int_args,
             );
             collect_callsite_buf_args_from_tree(
@@ -816,7 +817,7 @@ fn prescan_file_list(
     let mut callsite_field_args: HashMap<String, Vec<Vec<HashMap<String, NullState>>>> =
         HashMap::new();
     let mut callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
-    let mut callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>> = HashMap::new();
+    let mut callsite_int_args: CallsiteIntRanges = HashMap::new();
     let mut callsite_buf_args: HashMap<String, Vec<Vec<Option<usize>>>> = HashMap::new();
     let mut callsite_field_buf_args: HashMap<String, Vec<Vec<HashMap<String, usize>>>> =
         HashMap::new();
@@ -2740,17 +2741,18 @@ fn aggregate_callsite_pointee_null_states(
     }
 }
 
-/// Aggregate integer constant call-site args into `callsite_param_const_int`.
+/// Aggregate integer call-site args into `callsite_param_int_range`.
 ///
-/// For each parameter index, if every call site within the project passes the
-/// same integer constant literal, that constant is stored so VRA can narrow the
-/// parameter's entry range. Only for a function whose caller set is closed
+/// For each parameter index, if every call site within the project passes an
+/// argument with a known range (a constant, or a counter its own loop bounds),
+/// the hull of those ranges is stored so VRA can narrow the parameter's entry
+/// range. Only for a function whose caller set is closed
 /// (`FunctionSummary::caller_set_is_closed`): an exported function, or a static
 /// one whose address escapes, has callers nothing collected, so the constant
 /// the visible ones agree on says nothing about what the others pass
 /// (ADR-0011). Header-declared functions are skipped as well.
 pub(crate) fn aggregate_callsite_int_args(
-    callsite_int_args: &HashMap<String, Vec<Vec<Option<i64>>>>,
+    callsite_int_args: &CallsiteIntRanges,
     summaries: &mut HashMap<String, FunctionSummary>,
     header_declared: &HashSet<String>,
 ) {
@@ -2764,33 +2766,27 @@ pub(crate) fn aggregate_callsite_int_args(
             }
             let max_params = call_sites.iter().map(|v| v.len()).max().unwrap_or(0);
             for param_idx in 0..max_params {
-                let mut agreed: Option<i64> = None;
-                let mut any_site = false;
-                let mut disagree = false;
+                let mut hull: Option<(i64, i64)> = None;
+                let mut unknown = false;
                 for site in call_sites {
                     match site.get(param_idx) {
-                        Some(Some(v)) => {
-                            any_site = true;
-                            match agreed {
-                                None => agreed = Some(*v),
-                                Some(existing) if existing == *v => {}
-                                _ => {
-                                    disagree = true;
-                                    break;
-                                }
-                            }
+                        Some(Some((lo, hi))) => {
+                            hull = Some(match hull {
+                                None => (*lo, *hi),
+                                Some((min, max)) => (min.min(*lo), max.max(*hi)),
+                            });
                         }
                         Some(None) => {
-                            // Non-constant arg — can't narrow
-                            disagree = true;
+                            // An argument with no known range: no bound at all.
+                            unknown = true;
                             break;
                         }
                         None => {}
                     }
                 }
-                if !disagree && any_site {
-                    if let Some(v) = agreed {
-                        summary.callsite_param_const_int.insert(param_idx, v);
+                if !unknown {
+                    if let Some(range) = hull {
+                        summary.callsite_param_int_range.insert(param_idx, range);
                     }
                 }
             }
@@ -2905,40 +2901,180 @@ pub(crate) fn wraps_definitions(kind: &str) -> bool {
     kind.starts_with("preproc_") || kind == "ERROR"
 }
 
-/// Collect integer constant call-site argument values from a translation unit.
+/// Per callee, each call site's argument ranges, in argument order: `None`
+/// for an argument with no known range.
+pub(crate) type CallsiteIntRanges = HashMap<String, Vec<Vec<Option<(i64, i64)>>>>;
+
+/// Collect integer call-site argument ranges from a translation unit.
 ///
-/// For each function call, records the constant value (if determinable) for each
-/// argument. Tracks local variable assignments (`data = 2`) to resolve identifiers.
+/// For each function call, records the range (if determinable) of each
+/// argument: a constant, a local the body last set to one (`data = 2`), or a
+/// `for` loop's counter over the values the loop proves (`loop_counter_range`).
+///
+/// A loop's bounds may also name a constant the file does not define, read
+/// from `loop_bounds`: one `admits` accepts, which the caller does only for a
+/// name that has the one value everywhere it could come from (a header's
+/// `#define`, defined once in the whole project).
 pub(crate) fn collect_callsite_int_args_from_tree(
     node: &Node,
     source: &str,
     macros: &const_eval::MacroConstantMap,
-    callsite_int_args: &mut HashMap<String, Vec<Vec<Option<i64>>>>,
+    loop_bounds: &LoopBounds,
+    callsite_int_args: &mut CallsiteIntRanges,
+) {
+    let mut callees = PlainCallees::default();
+    collect_plain_callees(node, source, &mut callees);
+    collect_callsite_int_args_in(
+        node,
+        source,
+        macros,
+        loop_bounds,
+        &callees,
+        callsite_int_args,
+    );
+}
+
+/// The project constants a loop bound may name besides the file's own:
+/// `constants` to fold them, and `admits` to say which may be relied on.
+pub(crate) struct LoopBounds<'a> {
+    pub(crate) constants: &'a const_eval::MacroConstantMap,
+    pub(crate) admits: &'a dyn Fn(&str) -> bool,
+}
+
+impl LoopBounds<'_> {
+    /// Only the file's own constants.
+    pub(crate) fn file_only() -> LoopBounds<'static> {
+        static EMPTY: std::sync::LazyLock<const_eval::MacroConstantMap> =
+            std::sync::LazyLock::new(Default::default);
+        LoopBounds {
+            constants: &EMPTY,
+            admits: &|_| false,
+        }
+    }
+}
+
+fn collect_callsite_int_args_in(
+    node: &Node,
+    source: &str,
+    macros: &const_eval::MacroConstantMap,
+    loop_bounds: &LoopBounds,
+    callees: &PlainCallees,
+    callsite_int_args: &mut CallsiteIntRanges,
 ) {
     for child in node.child_nodes() {
         match child.kind() {
             "function_definition" => {
                 if let Some(body) = child.child_by_field_name("body") {
                     let local_ints = collect_local_var_int_values(&body, source, macros);
-                    collect_int_calls_in_node(
-                        &body,
+                    let mut walk = IntCallWalk {
                         source,
                         macros,
-                        &local_ints,
-                        callsite_int_args,
-                    );
+                        loop_bounds,
+                        callees,
+                        function: child,
+                        local_ints: &local_ints,
+                        loop_ranges: HashMap::new(),
+                    };
+                    walk.collect(&body, callsite_int_args);
                 }
             }
             kind if wraps_definitions(kind) => {
-                collect_callsite_int_args_from_tree(&child, source, macros, callsite_int_args);
+                collect_callsite_int_args_in(
+                    &child,
+                    source,
+                    macros,
+                    loop_bounds,
+                    callees,
+                    callsite_int_args,
+                );
             }
             _ => {}
         }
     }
 }
 
+/// The names a translation unit declares as functions, and the names it
+/// defines as function-like macros. A call to a name in the first set and not
+/// the second is a call of a function, which receives its arguments by value
+/// and cannot write the caller's variable named in one; a macro can
+/// (`#define NEXT(i) ((i)++)`), and so can one this file never declares,
+/// which may be a macro from a header.
+#[derive(Default)]
+struct PlainCallees {
+    functions: HashSet<String>,
+    /// Every macro the file defines, object-like or function-like, with its
+    /// replacement text.
+    macros: HashMap<String, String>,
+}
+
+impl PlainCallees {
+    fn is_plain_function(&self, name: &str) -> bool {
+        self.functions.contains(name) && !self.macros.contains_key(name)
+    }
+
+    /// Whether `name` is a macro this file defines whose replacement names
+    /// `word` as a whole token, and so can read or write a caller's `word`.
+    fn macro_names_word(&self, name: &str, word: &str) -> bool {
+        self.macros.get(name).is_some_and(|body| {
+            body.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .any(|token| token == word)
+        })
+    }
+}
+
+fn collect_plain_callees(node: &Node, source: &str, out: &mut PlainCallees) {
+    for child in node.child_nodes() {
+        match child.kind() {
+            "function_definition" | "declaration" => {
+                for declarator in child.child_nodes() {
+                    if let Some(name) = declared_function_name(&declarator, source) {
+                        out.functions.insert(name);
+                    }
+                }
+            }
+            "preproc_def" | "preproc_function_def" => {
+                if let Some(name) = child.child_by_field_name("name") {
+                    let body = child
+                        .child_by_field_name("value")
+                        .map(|v| get_node_text(&v, source))
+                        .unwrap_or("");
+                    out.macros
+                        .insert(get_node_text(&name, source).to_string(), body.to_string());
+                }
+            }
+            kind if wraps_definitions(kind)
+                || matches!(kind, "linkage_specification" | "declaration_list") =>
+            {
+                collect_plain_callees(&child, source, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The function a declarator declares: `f` in `f(int)` or `*f(int)`, and
+/// nothing for an object, a function pointer included (`(*fp)(int)`).
+fn declared_function_name(declarator: &Node, source: &str) -> Option<String> {
+    let mut d = *declarator;
+    loop {
+        match d.kind() {
+            "function_declarator" => {
+                let name = d.child_by_field_name("declarator")?;
+                return (name.kind() == "identifier")
+                    .then(|| get_node_text(&name, source).to_string());
+            }
+            "pointer_declarator" | "attributed_declarator" => {
+                d = d.child_by_field_name("declarator")?;
+            }
+            _ => return None,
+        }
+    }
+}
+
 /// Collect the last constant integer assignment to each local variable in a function body.
-/// Variables passed by address to any call are invalidated (fscanf-style side effects).
+/// Variables passed by address to any call are invalidated (fscanf-style side effects), and
+/// so are variables any statement steps (`i++`, `n += k`): the last constant assigned is not
+/// what such a variable holds everywhere after it.
 fn collect_local_var_int_values(
     body: &Node,
     source: &str,
@@ -2948,7 +3084,30 @@ fn collect_local_var_int_values(
     collect_int_assignments_in_node(body, source, macros, &mut result);
     // Invalidate any variable that appears as &var in a call — it may be written via pointer.
     invalidate_address_taken_vars(body, source, &mut result);
+    invalidate_stepped_vars(body, source, &mut result);
     result
+}
+
+/// Remove from `vals` any variable an increment, decrement or compound
+/// assignment writes.
+fn invalidate_stepped_vars(node: &Node, source: &str, vals: &mut HashMap<String, i64>) {
+    let stepped = match node.kind() {
+        "update_expression" => node.child_by_field_name("argument"),
+        "assignment_expression"
+            if node
+                .child_by_field_name("operator")
+                .is_some_and(|op| get_node_text(&op, source) != "=") =>
+        {
+            node.child_by_field_name("left")
+        }
+        _ => None,
+    };
+    if let Some(target) = stepped.filter(|t| t.kind() == "identifier") {
+        vals.remove(get_node_text(&target, source));
+    }
+    for child in node.child_nodes() {
+        invalidate_stepped_vars(&child, source, vals);
+    }
 }
 
 /// Remove from `vals` any variable whose address is taken in a call expression (&var).
@@ -3082,56 +3241,345 @@ fn extract_init_decl_name(node: &Node, source: &str) -> String {
     }
 }
 
-/// Walk call expressions in a function body, recording integer constant args.
-fn collect_int_calls_in_node(
-    node: &Node,
-    source: &str,
-    macros: &const_eval::MacroConstantMap,
-    local_ints: &HashMap<String, i64>,
-    callsite_int_args: &mut HashMap<String, Vec<Vec<Option<i64>>>>,
-) {
-    if node.kind() == "call_expression" {
-        if let Some(function) = node.child_by_field_name("function") {
-            if function.kind() == "identifier" {
-                let callee = function.utf8_text(source.as_bytes()).unwrap_or("");
-                if !callee.is_empty() {
-                    if let Some(args_node) = node.child_by_field_name("arguments") {
-                        let mut arg_vals = Vec::new();
-                        for arg in args_node.child_nodes() {
-                            if matches!(arg.kind(), "," | "(" | ")") {
-                                continue;
-                            }
-                            // A local the body last set to a constant reads
-                            // as that constant; anything else folds only over
-                            // the macro constants, so a local the body set
-                            // otherwise stays unknown.
-                            let val = if arg.kind() == "identifier" {
-                                let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
-                                local_ints.get(name).copied().or_else(|| {
-                                    macros
-                                        .contains_key(name)
-                                        .then(|| constant_int(&arg, source, macros))
-                                        .flatten()
-                                })
-                            } else {
-                                constant_int(&arg, source, macros)
-                            };
-                            arg_vals.push(val);
-                        }
-                        if !arg_vals.is_empty() {
-                            callsite_int_args
-                                .entry(callee.to_string())
-                                .or_default()
-                                .push(arg_vals);
-                        }
-                    }
+/// A loop counter's proved range, and the id of the declaration it names.
+type ProvedCounter = ((i64, i64), usize);
+
+/// One function body's walk for `collect_callsite_int_args_from_tree`.
+struct IntCallWalk<'s, 't> {
+    source: &'s str,
+    macros: &'s const_eval::MacroConstantMap,
+    loop_bounds: &'s LoopBounds<'s>,
+    callees: &'s PlainCallees,
+    function: Node<'t>,
+    local_ints: &'s HashMap<String, i64>,
+    /// `loop_counter_range` per `(loop, name)`, proved once per loop however
+    /// many calls it holds.
+    loop_ranges: HashMap<(usize, String), Option<ProvedCounter>>,
+}
+
+impl<'t> IntCallWalk<'_, 't> {
+    /// A loop bound's value: a constant over the file's own macros, or over
+    /// project constants `loop_bounds` admits as well.
+    fn bound_int(&self, node: &Node) -> Option<i64> {
+        if let Some(v) = constant_int(node, self.source, self.macros) {
+            return Some(v);
+        }
+        let mut names = Vec::new();
+        collect_identifier_texts(node, self.source, &mut names);
+        if !names
+            .iter()
+            .all(|n| self.macros.contains_key(*n) || (self.loop_bounds.admits)(n))
+        {
+            return None;
+        }
+        const_eval::try_evaluate_expr(node, self.source, self.loop_bounds.constants)
+    }
+
+    /// Record the argument ranges of every call under `node`.
+    fn collect(&mut self, node: &Node<'t>, callsite_int_args: &mut CallsiteIntRanges) {
+        if node.kind() == "call_expression" {
+            let callee = node
+                .child_by_field_name("function")
+                .filter(|f| f.kind() == "identifier")
+                .map(|f| get_node_text(&f, self.source));
+            if let (Some(callee), Some(args_node)) = (callee, node.child_by_field_name("arguments"))
+            {
+                let arg_vals: Vec<Option<(i64, i64)>> = args_node
+                    .child_nodes()
+                    .filter(|arg| !matches!(arg.kind(), "," | "(" | ")"))
+                    .map(|arg| self.arg_range(&arg))
+                    .collect();
+                if !callee.is_empty() && !arg_vals.is_empty() {
+                    callsite_int_args
+                        .entry(callee.to_string())
+                        .or_default()
+                        .push(arg_vals);
                 }
             }
         }
+        for child in node.child_nodes() {
+            self.collect(&child, callsite_int_args);
+        }
+    }
+
+    /// The values one argument can hold. A `for` loop's counter holds what its
+    /// loop proves; a local the body last set to a constant reads as that
+    /// constant; anything else folds only over the macro constants, so a local
+    /// the body set otherwise stays unknown.
+    fn arg_range(&mut self, arg: &Node<'t>) -> Option<(i64, i64)> {
+        if arg.kind() != "identifier" {
+            return constant_int(arg, self.source, self.macros).map(|v| (v, v));
+        }
+        let name = get_node_text(arg, self.source);
+        self.loop_counter_range(arg, name)
+            .or_else(|| self.local_ints.get(name).map(|&v| (v, v)))
+            .or_else(|| {
+                self.macros
+                    .contains_key(name)
+                    .then(|| constant_int(arg, self.source, self.macros))
+                    .flatten()
+                    .map(|v| (v, v))
+            })
+    }
+
+    /// The values `ident` (an occurrence of `name`) holds when it is the
+    /// counter of a `for` loop whose body it sits in, and the loop proves them
+    /// (`prove_loop_counter`). The nearest such loop decides: an inner loop
+    /// over another counter is passed over, and the outer loop's body holds
+    /// the inner one, so its writes are seen.
+    fn loop_counter_range(&mut self, ident: &Node<'t>, name: &str) -> Option<(i64, i64)> {
+        let mut inner = *ident;
+        let mut current = ident.parent();
+        while let Some(node) = current {
+            if node.id() == self.function.id() {
+                return None;
+            }
+            if node.kind() == "for_statement"
+                && node
+                    .child_by_field_name("body")
+                    .is_some_and(|b| b.id() == inner.id())
+            {
+                let key = (node.id(), name.to_string());
+                let proved = match self.loop_ranges.get(&key) {
+                    Some(proved) => *proved,
+                    None => {
+                        let proved = self.prove_loop_counter(&node, name);
+                        self.loop_ranges.insert(key, proved);
+                        proved
+                    }
+                };
+                if let Some((range, decl)) = proved {
+                    return (local_declaration_id(ident, name, self.source) == Some(decl))
+                        .then_some(range);
+                }
+            }
+            inner = node;
+            current = node.parent();
+        }
+        None
+    }
+
+    /// The range `for (v = A; v < B; v++) body` proves for `v` inside `body`,
+    /// with the declaration `v` names: `[A, B - 1]` (`[A, B]` for `<=`).
+    ///
+    /// Proved only when every iteration starts from the initializer and only
+    /// the update steps the counter upward: `A` and `B` are constants, the
+    /// initializer is `v = A` or `T v = A`, the condition compares `v` with
+    /// `B` and nothing else, the update is `v++`, `++v` or `v += c` with
+    /// `c > 0`, `v`'s declared type holds `A` through `B + c` in every
+    /// implementation the facts allow, `v` is a non-`static` local whose
+    /// address the function never
+    /// takes, and the body neither writes `v` nor holds a label a `goto` could
+    /// enter by. A call can write `v` only as a macro, so the body may not
+    /// pass `v` to a callee this file does not declare as a function, nor use
+    /// a macro this file defines whose replacement names `v`. A loop that
+    /// never runs proves nothing.
+    fn prove_loop_counter(&self, for_node: &Node<'t>, name: &str) -> Option<ProvedCounter> {
+        let source = self.source;
+        let (decl, low) = self.counter_initializer(for_node, name)?;
+        if ast_utils::declaration_has_storage_class(&decl, "static", source) {
+            return None;
+        }
+        let decl_id = decl.id();
+        let names_counter = |n: &Node| {
+            n.kind() == "identifier"
+                && get_node_text(n, source) == name
+                && local_declaration_id(n, name, source) == Some(decl_id)
+        };
+
+        let condition = strip_parens(for_node.child_by_field_name("condition")?);
+        if condition.kind() != "binary_expression" {
+            return None;
+        }
+        let (left, right) = (
+            condition.child_by_field_name("left")?,
+            condition.child_by_field_name("right")?,
+        );
+        let op = condition.child_by_field_name("operator")?;
+        let high = match get_node_text(&op, source) {
+            "<" if names_counter(&left) => self.bound_int(&right)?.checked_sub(1)?,
+            "<=" if names_counter(&left) => self.bound_int(&right)?,
+            ">" if names_counter(&right) => self.bound_int(&left)?.checked_sub(1)?,
+            ">=" if names_counter(&right) => self.bound_int(&left)?,
+            _ => return None,
+        };
+        if low > high {
+            return None;
+        }
+
+        let update = strip_parens(for_node.child_by_field_name("update")?);
+        let operator = update
+            .child_by_field_name("operator")
+            .map(|o| get_node_text(&o, source));
+        let step = match update.kind() {
+            "update_expression"
+                if operator == Some("++")
+                    && update
+                        .child_by_field_name("argument")
+                        .is_some_and(|a| names_counter(&a)) =>
+            {
+                1
+            }
+            "assignment_expression"
+                if operator == Some("+=")
+                    && update
+                        .child_by_field_name("left")
+                        .is_some_and(|l| names_counter(&l)) =>
+            {
+                self.bound_int(&update.child_by_field_name("right")?)
+                    .filter(|&c| c > 0)?
+            }
+            _ => return None,
+        };
+        // The counter's type must hold every value it takes, the one that ends
+        // the loop included: `char i; i < 300` wraps and never ends.
+        let counter_type =
+            super::value_range::declaration_guaranteed_range(&decl, source, self.macros)?;
+        if low < counter_type.min || high.checked_add(step)? > counter_type.max {
+            return None;
+        }
+
+        let body = for_node.child_by_field_name("body")?;
+        if self.writes_counter(&body, name, &names_counter)
+            || takes_address_of(&self.function, &names_counter)
+        {
+            return None;
+        }
+        Some(((low, high), decl_id))
+    }
+
+    /// The declaration a `for` initializer binds `name` with, and the constant
+    /// it starts from: `T v = A` declares it there, `v = A` assigns the local
+    /// it resolves to.
+    fn counter_initializer(&self, for_node: &Node<'t>, name: &str) -> Option<(Node<'t>, i64)> {
+        let source = self.source;
+        let init = for_node.child_by_field_name("initializer")?;
+        match init.kind() {
+            "declaration" => {
+                let mut declarators = init
+                    .named_child_nodes()
+                    .filter(|c| c.kind() == "init_declarator");
+                let only = declarators.next()?;
+                if declarators.next().is_some() {
+                    return None;
+                }
+                let var = only.child_by_field_name("declarator")?;
+                if var.kind() != "identifier" || get_node_text(&var, source) != name {
+                    return None;
+                }
+                let value = self.bound_int(&only.child_by_field_name("value")?)?;
+                Some((init, value))
+            }
+            "assignment_expression" => {
+                let op = init.child_by_field_name("operator")?;
+                let left = init.child_by_field_name("left")?;
+                if get_node_text(&op, source) != "="
+                    || left.kind() != "identifier"
+                    || get_node_text(&left, source) != name
+                {
+                    return None;
+                }
+                let value = self.bound_int(&init.child_by_field_name("right")?)?;
+                match ast_utils::resolve_identifier_binding(&left, name, source)? {
+                    ast_utils::IdentifierBinding::Local(decl) => Some((decl, value)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether anything under `node` can write the counter: an assignment or
+    /// increment of it, a label, a macro call it is passed to, or a macro
+    /// this file defines whose replacement names it.
+    fn writes_counter(
+        &self,
+        node: &Node<'t>,
+        name: &str,
+        names_counter: &dyn Fn(&Node) -> bool,
+    ) -> bool {
+        let source = self.source;
+        let target = match node.kind() {
+            "labeled_statement" => return true,
+            "assignment_expression" => node.child_by_field_name("left"),
+            "update_expression" => node.child_by_field_name("argument"),
+            "call_expression" => {
+                let callee = node
+                    .child_by_field_name("function")
+                    .filter(|f| f.kind() == "identifier")
+                    .map(|f| get_node_text(&f, source));
+                if let Some(callee) = callee {
+                    if !self.callees.is_plain_function(callee)
+                        && node.child_by_field_name("arguments").is_some_and(|args| {
+                            args.named_child_nodes()
+                                .any(|a| names_counter(&strip_parens(a)))
+                        })
+                    {
+                        return true;
+                    }
+                }
+                None
+            }
+            "identifier" => {
+                if self
+                    .callees
+                    .macro_names_word(get_node_text(node, source), name)
+                {
+                    return true;
+                }
+                None
+            }
+            _ => None,
+        };
+        if target.is_some_and(|t| names_counter(&strip_parens(t))) {
+            return true;
+        }
+        node.child_nodes()
+            .any(|child| self.writes_counter(&child, name, names_counter))
+    }
+}
+
+/// Whether `&v` appears anywhere under `node` for an occurrence `names_counter`
+/// accepts.
+fn takes_address_of(node: &Node, names_counter: &dyn Fn(&Node) -> bool) -> bool {
+    if node.kind() == "pointer_expression"
+        && node.child(0).is_some_and(|op| op.kind() == "&")
+        && node
+            .child_by_field_name("argument")
+            .is_some_and(|a| names_counter(&strip_parens(a)))
+    {
+        return true;
+    }
+    node.child_nodes()
+        .any(|child| takes_address_of(&child, names_counter))
+}
+
+/// The text of every identifier under `node`.
+fn collect_identifier_texts<'s>(node: &Node, source: &'s str, out: &mut Vec<&'s str>) {
+    if node.kind() == "identifier" {
+        out.push(get_node_text(node, source));
     }
     for child in node.child_nodes() {
-        collect_int_calls_in_node(&child, source, macros, local_ints, callsite_int_args);
+        collect_identifier_texts(&child, source, out);
     }
+}
+
+/// The id of the block-scope declaration an occurrence of `name` refers to.
+fn local_declaration_id(ident: &Node, name: &str, source: &str) -> Option<usize> {
+    match ast_utils::resolve_identifier_binding(ident, name, source)? {
+        ast_utils::IdentifierBinding::Local(decl) => Some(decl.id()),
+        _ => None,
+    }
+}
+
+fn strip_parens(mut node: Node) -> Node {
+    while node.kind() == "parenthesized_expression" {
+        match node.named_child(0) {
+            Some(inner) => node = inner,
+            None => break,
+        }
+    }
+    node
 }
 
 /// Aggregate per-call-site buffer-size args into `callsite_param_buffer_size`.
@@ -8530,7 +8978,7 @@ mod tests {
             let mut summaries: HashMap<String, FunctionSummary> = HashMap::new();
             summaries.insert("f".into(), open);
 
-            let ints = HashMap::from([("f".to_string(), vec![vec![Some(2i64)]])]);
+            let ints = HashMap::from([("f".to_string(), vec![vec![Some((2i64, 2i64))]])]);
             aggregate_callsite_int_args(&ints, &mut summaries, &HashSet::new());
             let bufs = HashMap::from([("f".to_string(), vec![vec![Some(100usize)]])]);
             aggregate_callsite_buf_args(&bufs, &mut summaries, &HashSet::new());
@@ -8545,7 +8993,7 @@ mod tests {
             aggregate_callsite_taint_args(&taint, &mut summaries, &HashSet::new());
 
             let f = &summaries["f"];
-            assert!(f.callsite_param_const_int.is_empty());
+            assert!(f.callsite_param_int_range.is_empty());
             assert!(f.callsite_param_buffer_size.is_empty());
             assert!(f.callsite_param_field_buffer_size.is_empty());
             assert!(f.callsite_param_validated.is_empty());
@@ -11228,7 +11676,7 @@ void caller(char *other) {
         assert!(sink_of("a_ptr.c").address_taken);
         let b = sink_of("b_direct.c");
         assert!(b.caller_set_is_closed());
-        assert_eq!(b.callsite_param_const_int.get(&0), Some(&2));
+        assert_eq!(b.callsite_param_int_range.get(&0), Some(&(2, 2)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -11334,5 +11782,133 @@ void caller(char *other) {
         assert!(sink.caller_set_is_closed());
         assert!(sink.callsite_param_taint_observed.contains(&0));
         assert!(sink.callsite_param_tainted.contains(&0));
+    }
+
+    // -- caller argument ranges: loop counters and stepped locals --
+
+    /// The argument ranges recorded for `sink` (the callee every snippet
+    /// calls), with the file's own constants and no project bounds.
+    fn sink_arg_ranges(code: &str) -> Vec<Vec<Option<(i64, i64)>>> {
+        let (tree, source) = parse_c(code);
+        let root = tree.root_node();
+        let macros = const_eval::cfg_prunable_constants(&root, &source, Default::default());
+        let mut out = CallsiteIntRanges::new();
+        collect_callsite_int_args_from_tree(
+            &root,
+            &source,
+            &macros,
+            &LoopBounds::file_only(),
+            &mut out,
+        );
+        out.remove("sink").unwrap_or_default()
+    }
+
+    #[test]
+    fn a_loop_counter_argument_has_the_range_its_loop_proves() {
+        let sites = sink_arg_ranges(
+            "#define N 40\nstatic void sink(int k) { (void)k; }\n\
+             void f(void) { int i; for (i = 0; i < N; i++) sink(i); }\n\
+             void g(void) { for (int j = 2; j <= 9; j += 3) { sink(j); } }\n",
+        );
+        assert_eq!(sites, vec![vec![Some((0, 39))], vec![Some((2, 9))]]);
+    }
+
+    /// Each of these can leave the counter outside `[0, 39]` at the call, so
+    /// none proves a range; before, the first read as the constant 0.
+    #[test]
+    fn a_loop_counter_something_else_writes_has_no_range() {
+        for (locals, loop_body) in [
+            ("int i;", "{ sink(i); i += 300; }"),
+            ("int i;", "{ BUMP(); sink(i); }"),
+            ("int i; int *p = &i;", "{ *p = 300; sink(i); }"),
+            ("int i;", "{ STEP(i); sink(i); }"),
+            ("int i;", "{ again: sink(i); }"),
+        ] {
+            let code = format!(
+                "#define N 40\n#define BUMP() (i = 300)\nstatic void sink(int k) {{ (void)k; }}\n\
+                 void f(void) {{ {locals} for (i = 0; i < N; i++) {loop_body} }}\n"
+            );
+            assert_eq!(sink_arg_ranges(&code), vec![vec![None]], "{loop_body}");
+        }
+        // The same loop with none of those proves its range.
+        let code = "#define N 40\nstatic void sink(int k) { (void)k; }\n\
+                    void f(void) { int i; for (i = 0; i < N; i++) { sink(i); } }\n";
+        assert_eq!(sink_arg_ranges(code), vec![vec![Some((0, 39))]]);
+    }
+
+    #[test]
+    fn a_counter_whose_type_cannot_reach_the_bound_has_no_range() {
+        let sites = sink_arg_ranges(
+            "static void sink(int k) { (void)k; }\n\
+             void f(void) { for (signed char c = 0; c < 300; c++) sink(c); }\n\
+             void g(void) { for (unsigned char u = 0; u <= 255; u++) sink(u); }\n",
+        );
+        assert_eq!(sites, vec![vec![None], vec![None]]);
+    }
+
+    #[test]
+    fn a_global_or_static_counter_has_no_range() {
+        for code in [
+            "int i;\nstatic void sink(int k) { (void)k; }\nvoid f(void) { for (i = 0; i < 4; i++) sink(i); }\n",
+            "static void sink(int k) { (void)k; }\nvoid f(void) { static int i; for (i = 0; i < 4; i++) sink(i); }\n",
+        ] {
+            assert_eq!(sink_arg_ranges(code), vec![vec![None]], "{code}");
+        }
+    }
+
+    #[test]
+    fn a_stepped_local_is_not_the_constant_it_started_as() {
+        let sites = sink_arg_ranges(
+            "static void sink(int k) { (void)k; }\n\
+             void f(void) { int n = 0; while (n < 1000) { sink(n); n++; } }\n",
+        );
+        assert_eq!(sites, vec![vec![None]]);
+    }
+
+    /// A bound from a header folds only through a constant the caller admits.
+    #[test]
+    fn a_loop_bound_from_a_header_needs_an_admitted_constant() {
+        let code = "static void sink(int k) { (void)k; }\n\
+                    void f(void) { int i; for (i = 0; i < HDR_N; i++) sink(i); }\n";
+        let (tree, source) = parse_c(code);
+        let root = tree.root_node();
+        let file = const_eval::MacroConstantMap::new();
+        let project: const_eval::MacroConstantMap = [("HDR_N".to_string(), 40)].into();
+        for (admitted, expected) in [(true, Some((0, 39))), (false, None)] {
+            let admits = move |_: &str| admitted;
+            let mut out = CallsiteIntRanges::new();
+            collect_callsite_int_args_from_tree(
+                &root,
+                &source,
+                &file,
+                &LoopBounds {
+                    constants: &project,
+                    admits: &admits,
+                },
+                &mut out,
+            );
+            assert_eq!(out["sink"], vec![vec![expected]]);
+        }
+    }
+
+    #[test]
+    fn caller_ranges_aggregate_to_their_hull() {
+        let mut summaries: HashMap<String, FunctionSummary> = HashMap::new();
+        summaries.insert(
+            "f".into(),
+            FunctionSummary {
+                has_internal_linkage: true,
+                ..Default::default()
+            },
+        );
+        let ints = HashMap::from([(
+            "f".to_string(),
+            vec![vec![Some((0, 39))], vec![Some((50, 50))]],
+        )]);
+        aggregate_callsite_int_args(&ints, &mut summaries, &HashSet::new());
+        assert_eq!(
+            summaries["f"].callsite_param_int_range.get(&0),
+            Some(&(0, 50))
+        );
     }
 }

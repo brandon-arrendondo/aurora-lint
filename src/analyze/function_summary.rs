@@ -729,13 +729,15 @@ pub struct FunctionSummary {
     /// clean, regardless of `has_env03_taint_source`.
     #[serde(default)]
     pub has_relative_command_write: bool,
-    /// Integer constant values for parameters where ALL call sites within the
-    /// project pass the same constant literal. Maps parameter index → value.
-    /// Absent entry means callers disagree or pass non-constant arguments.
-    /// Used by VRA to narrow parameter entry ranges so integer overflow rules
-    /// suppress goodG2B-style FPs where data is provably a small constant.
+    /// The values a parameter can receive, where EVERY call site within the
+    /// project passes an argument with a known range: a constant, or a loop
+    /// counter its own `for` bounds. Maps parameter index → `(min, max)`, the
+    /// hull of every caller's range. Absent when any caller's argument has no
+    /// known range. Used by VRA to narrow parameter entry ranges, so integer
+    /// overflow rules suppress goodG2B-style FPs where data is provably a
+    /// small constant, and an index a bounded loop passes stays in bounds.
     #[serde(default)]
-    pub callsite_param_const_int: HashMap<usize, i64>,
+    pub callsite_param_int_range: HashMap<usize, (i64, i64)>,
     /// Minimum element-count buffer size passed by callers at each parameter
     /// position, recorded only when EVERY call site within the project passes a
     /// pointer to a buffer of statically-known size. Absent when any caller

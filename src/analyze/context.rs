@@ -1091,6 +1091,25 @@ pub struct ProjectContext {
 }
 
 impl ProjectContext {
+    /// Whether `name` is a constant macro with one value wherever a file
+    /// could take it from: every scanned file and header that defines it
+    /// writes the same object-like definition, in every live arm
+    /// (`macro_definitions`), its value does not vary by configuration
+    /// (`config_dependent_constants`), and no system header defines it. A
+    /// `macro_constants` entry alone is whichever definition the merge met
+    /// last.
+    pub fn has_one_project_value(&self, name: &str) -> bool {
+        self.macro_constants.contains_key(name)
+            && !self.config_dependent_constants.contains(name)
+            && !self.macros_defined_outside_project.contains(name)
+            && self.macro_definitions.get(name).is_some_and(|defs| {
+                matches!(
+                    defs.as_slice(),
+                    [crate::analyze::check_macros::MacroDefinition::Object { .. }]
+                )
+            })
+    }
+
     /// The file-scope objects declared as arrays somewhere in the project,
     /// less any name some scanned file or header also declares as something
     /// else: a name two unrelated objects share is not known to be an array.

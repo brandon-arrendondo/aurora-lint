@@ -1361,6 +1361,7 @@ pub(crate) fn build_file_analysis(
         source,
         &context.function_summaries,
         &context.macro_constants,
+        &|name| context.has_one_project_value(name),
         context.settings.facts,
     );
 
@@ -1385,6 +1386,7 @@ pub(crate) fn compute_vra_if_needed(
     source: &str,
     prescan_summaries: &(impl crate::analyze::context::SummaryLookup + ?Sized),
     project_macros: &const_eval::MacroConstantMap,
+    loop_bound_admits: &dyn Fn(&str) -> bool,
     data_model: crate::settings::IntFacts,
 ) -> HashMap<usize, value_range::RangeAnalysisResult> {
     if !needs_vra || function_cfgs.is_empty() {
@@ -1440,6 +1442,10 @@ pub(crate) fn compute_vra_if_needed(
             root_node,
             source,
             &const_eval::cfg_prunable_constants(root_node, source, data_model),
+            &prescan::LoopBounds {
+                constants: &macros,
+                admits: loop_bound_admits,
+            },
             &mut callsite_int_args,
         );
         prescan::aggregate_callsite_int_args(
@@ -1698,6 +1704,7 @@ mod tests {
             &source,
             &summaries,
             &const_eval::MacroConstantMap::new(),
+            &|_| false,
             Default::default(),
         );
         assert!(results.is_empty());
@@ -1716,6 +1723,7 @@ mod tests {
             &source,
             &summaries,
             &const_eval::MacroConstantMap::new(),
+            &|_| false,
             Default::default(),
         );
         assert!(results.is_empty());

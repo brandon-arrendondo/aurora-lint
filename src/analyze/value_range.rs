@@ -166,11 +166,78 @@ fn widen_typed(old: &TypedRange, new: &TypedRange) -> TypedRange {
 // ---------------------------------------------------------------------------
 
 /// Extract type info from a declaration node's type specifiers.
-fn extract_var_type_from_declaration(
+pub(crate) fn extract_var_type_from_declaration(
     decl_node: &Node,
     source: &str,
     macros: &MacroConstantMap,
 ) -> Option<VarType> {
+    let (signed, spelling) = declaration_int_spelling(decl_node, source)?;
+    Some(VarType {
+        is_signed: signed,
+        bit_width: declared_width(&spelling, macros),
+    })
+}
+
+/// The values a variable of the declaration's integer type holds in every
+/// implementation the facts allow: the full range of the width they fix,
+/// otherwise the least range C11 5.2.4.2.1 grants the spelling (an `int` holds
+/// [-32767, 32767] everywhere, a plain `char` [0, 127]). `None` for a type
+/// whose range nothing guarantees here, such as a typedef the scan cannot
+/// resolve or `int_least16_t`.
+pub(crate) fn declaration_guaranteed_range(
+    decl_node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+) -> Option<ValueRange> {
+    let (signed, spelling) = declaration_int_spelling(decl_node, source)?;
+    let bits = declared_width(&spelling, macros);
+    if bits != 0 {
+        return Some(
+            VarType {
+                is_signed: signed,
+                bit_width: bits,
+            }
+            .full_range(),
+        );
+    }
+    let words: Vec<&str> = spelling.split_whitespace().collect();
+    let least_bits = if words.contains(&"char") {
+        if !signed || words.contains(&"signed") {
+            8
+        } else {
+            // Plain `char`: signed or not as the implementation chooses.
+            return Some(ValueRange::new(0, 127));
+        }
+    } else if words.iter().filter(|w| **w == "long").count() >= 2 {
+        64
+    } else if words.contains(&"long") {
+        32
+    } else if words.contains(&"short")
+        || words.contains(&"int")
+        || matches!(spelling.as_str(), "signed" | "unsigned")
+        || spelling.starts_with("size_t")
+    {
+        16
+    } else {
+        return None;
+    };
+    let max_unsigned = if least_bits == 64 {
+        i64::MAX
+    } else {
+        (1i64 << least_bits) - 1
+    };
+    Some(if signed {
+        // One's complement and sign-magnitude are excluded only from C23 on.
+        let max = max_unsigned >> 1;
+        ValueRange::new(-max, max)
+    } else {
+        ValueRange::new(0, max_unsigned)
+    })
+}
+
+/// The signedness and the normalized spelling of a declaration's integer
+/// type, from its type specifiers.
+fn declaration_int_spelling(decl_node: &Node, source: &str) -> Option<(bool, String)> {
     let mut is_unsigned = false;
     let mut is_signed = false;
     let mut base_type: Option<String> = None;
@@ -253,10 +320,7 @@ fn extract_var_type_from_declaration(
     } else {
         "int"
     };
-    Some(VarType {
-        is_signed: signed,
-        bit_width: declared_width(spelling, macros),
-    })
+    Some((signed, spelling.to_string()))
 }
 
 /// The width in bits of the type `spelling` names, as this translation unit's
@@ -1597,18 +1661,18 @@ fn build_initial_state(
     if let Some(declarator) = func_node.child_by_field_name("declarator") {
         collect_param_ranges(&declarator, source, macros, &mut initial_state);
     }
-    // Narrow parameter ranges when ALL callers pass the same integer constant.
-    // This suppresses goodG2B-style FPs where data=2 is always safe but VRA
-    // would otherwise assign the full type range (e.g. [INT64_MIN, INT64_MAX]).
+    // Narrow parameter ranges to what every caller passes. This suppresses
+    // goodG2B-style FPs where data=2 is always safe but VRA would otherwise
+    // assign the full type range (e.g. [INT64_MIN, INT64_MAX]).
     if let Some(func_name) = super::function_summary::extract_function_name(func_node, source) {
         if let Some(summary) = summaries.get(&func_name) {
-            if !summary.callsite_param_const_int.is_empty() {
+            if !summary.callsite_param_int_range.is_empty() {
                 let param_names = super::function_summary::collect_param_names(func_node, source);
-                for (&param_idx, &const_val) in &summary.callsite_param_const_int {
+                for (&param_idx, &(min, max)) in &summary.callsite_param_int_range {
                     if let Some(name) = param_names.get(param_idx) {
                         if !name.is_empty() {
                             if let Some(typed_range) = initial_state.get_mut(name) {
-                                typed_range.range = ValueRange::new(const_val, const_val);
+                                typed_range.range = ValueRange::new(min, max);
                             }
                         }
                     }
@@ -3137,5 +3201,38 @@ void f(int x) {
             range_at_expr(code, "x", "x + 1"),
             Some(ValueRange::new(6, 19))
         );
+    }
+
+    /// The range a declaration's type holds everywhere: the data model's
+    /// width when one is declared, otherwise C's least range.
+    #[test]
+    fn a_declarations_guaranteed_range_falls_back_to_cs_least_range() {
+        let range_of = |decl: &str, facts| {
+            let mut parser = tree_sitter::Parser::new();
+            parser.set_language(&crate::parser::c_language()).unwrap();
+            let tree = parser.parse(decl, None).unwrap();
+            let macros = const_eval::collect_macro_constants(&tree.root_node(), decl, facts);
+            let node = tree.root_node().named_child(0).unwrap();
+            declaration_guaranteed_range(&node, decl, &macros).map(|r| (r.min, r.max))
+        };
+        use crate::settings::IntFacts;
+        assert_eq!(
+            range_of("int i;", IntFacts::LP64),
+            Some((i32::MIN as i64, i32::MAX as i64))
+        );
+        assert_eq!(
+            range_of("int i;", IntFacts::default()),
+            Some((-32767, 32767))
+        );
+        assert_eq!(range_of("char c;", IntFacts::default()), Some((0, 127)));
+        assert_eq!(
+            range_of("unsigned char c;", IntFacts::default()),
+            Some((0, 255))
+        );
+        assert_eq!(
+            range_of("long n;", IntFacts::default()),
+            Some((-2147483647, 2147483647))
+        );
+        assert_eq!(range_of("my_index_t i;", IntFacts::default()), None);
     }
 }
