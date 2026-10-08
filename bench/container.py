@@ -73,9 +73,12 @@ def command(run_args: list[str], image: str, pin: str, runtime: str = "podman",
            "-e", f"SQC_BENCH_ROOT={IN_BENCH_ROOT}",
            "-w", WORK]
     for name in sorted(CODEBASES):
+        # Mounted under the project's own name: scoring keys strip a path up
+        # to its first /<project>/ (BenchDB.project_relpath), so the
+        # container path and the host path normalize to the same key.
         host = bench_root / Path(CODEBASES[name]["path"]).name
         if host.is_dir():
-            cmd += ["-v", f"{host}:{IN_BENCH_ROOT}/{host.name}:ro"]
+            cmd += ["-v", f"{host}:{IN_BENCH_ROOT}/{name}:ro"]
     trees = bench_root / "header-trees"
     if trees.is_dir():
         cmd += ["-v", f"{trees}:{IN_BENCH_ROOT}/header-trees:ro"]

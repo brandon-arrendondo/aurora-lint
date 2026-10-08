@@ -52,5 +52,25 @@ class TestCommand(unittest.TestCase):
         self.assertIn("realworld-run --codebase mosquitto", cmd[-1])
 
 
+class TestScoringKeys(unittest.TestCase):
+    """A finding's scoring key is the same whether the scan ran in the
+    container (/bench/<project>/...) or on the host."""
+
+    def test_every_checkout_directory_is_named_after_its_project(self):
+        from bench.realworld_runner import CODEBASES
+        for name, cfg in CODEBASES.items():
+            self.assertEqual(Path(cfg["path"]).name, name)
+
+    def test_container_and_host_paths_normalize_to_one_key(self):
+        from bench.db import BenchDB
+        # mosquitto holds an include/mosquitto/ of its own: the case where
+        # stripping to the last /mosquitto/ instead of the first went wrong.
+        for rel in ("include/mosquitto/libmosquitto.h", "lib/send_mosq.c"):
+            host = BenchDB.project_relpath("mosquitto", f"/home/a/toolchain/mosquitto/{rel}")
+            ctr = BenchDB.project_relpath("mosquitto", f"/bench/mosquitto/{rel}")
+            self.assertEqual(host, rel)
+            self.assertEqual(ctr, rel)
+
+
 if __name__ == "__main__":
     unittest.main()
