@@ -42,9 +42,10 @@ aurora-lint was developed with substantial assistance from
 implementation, false-positive analysis, and documentation. From October 2026, [Codex](https://openai.com/codex/) (OpenAI) also contributed documentation fixes and the tooling that enforces the agent and commit guidelines. Each of its changes was reviewed before it was merged. See the **AI
 Assistance** section of `README.md`.
 
-Neither is listed as a commit co-author. That is a decision
+New commits have no AI co-author trailer, and the few earlier commits
+that have one keep it. That is a decision
 about placement, not about credit: the acknowledgement belongs once, visibly,
-rather than repeated across several thousand commit messages. See the [Git Commit Rules](AGENTS.md#git-commit-rules)
+rather than repeated across several thousand commit messages. See the AI attribution rule in the [repository values](AGENTS.md#repository-values)
 for the full reasoning.
 
 ---
