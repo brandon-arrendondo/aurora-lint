@@ -48,38 +48,9 @@ By submitting a contribution, you agree it's licensed under this project's
 license, [Apache-2.0](LICENSE), the same as the rest of the codebase — no
 separate CLA is required beyond the DCO sign-off above.
 
-## Git Commit Rules (CRITICAL)
+## Commit messages
 
-**EXPLICITLY DENIED:**
-
-- `git commit --no-verify` — never. Pre-commit hooks MUST pass; only humans skip
-  hooks. Same for any other hook-skipping flag (`--no-gpg-sign`, etc.).
-- No AI co-author trailers (any agent), or other per-commit AI attribution trailers.
-
-  **The reason is placement, not prohibition.** AI use is
-  acknowledged deliberately, in README.md's "AI Assistance" section. The trailer
-  would repeat that fact in every one of thousands of commits, crowding out the
-  message and telling a reader nothing the README has not already said clearly
-  once. So do not read this as attribution being a compliance problem, and do
-  not remove the README section for consistency. Acknowledge once, visibly.
-  Other repositories may deliberately use a different attribution policy;
-  follow their own rules.
-
-  **Enforced by a `commit-msg` hook** (`scripts/check_commit_message.py`), because
-  prose alone did not hold. A human co-author named normally still passes.
-  `commit-msg` is a *second* hook type, so a clone that ran `pre-commit
-  install` before the hook existed has the config and no hook, silently. One
-  manual pass fixes it:
-
-  ```bash
-  pre-commit install --hook-type commit-msg
-  ```
-
-  `default_install_hook_types` in `.pre-commit-config.yaml` covers every fresh
-  install, so this is only for older clones.
-
-**REQUIRED:** hooks pass before a commit succeeds; if they fail, fix the cause;
-standard commit message format without AI attribution trailers.
+Follow the canonical [Git Commit Rules](AGENTS.md#git-commit-rules).
 
 ## Getting help
 

@@ -31,7 +31,7 @@ repos:
         name: no AI attribution trailers
         description: >-
           Reject parsed Git trailers naming a listed AI tool or vendor.
-          CONTRIBUTING.md is the canonical policy: AI use is acknowledged
+          AGENTS.md is the canonical policy: AI use is acknowledged
           once in README.md, rather than repeated per commit. Ordinary body
           mentions and human co-authors remain allowed.
         entry: python3 scripts/check_commit_message.py

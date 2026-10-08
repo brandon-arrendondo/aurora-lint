@@ -44,8 +44,8 @@ Assistance** section of `README.md`.
 
 Claude is deliberately *not* listed as a commit co-author. That is a decision
 about placement, not about credit: the acknowledgement belongs once, visibly,
-rather than repeated across several thousand commit messages. See CLAUDE.md's
-"Git Commit Rules" for the full reasoning.
+rather than repeated across several thousand commit messages. See the [Git Commit Rules](AGENTS.md#git-commit-rules)
+for the full reasoning.
 
 ---
 

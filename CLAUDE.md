@@ -381,11 +381,7 @@ ground-truth-labeled instance, not frequent co-location. See
 `docs/design/cross-rule-overlap.md` for the policy and a counterexample where
 hard precedence in either direction is measurably wrong.
 
-## Git Commit Rules (CRITICAL)
-
-Read and follow [CONTRIBUTING.md's Git Commit Rules](CONTRIBUTING.md#git-commit-rules)
-before committing. That section is the canonical policy for every contributor
-and agent; do not duplicate it in agent instruction files.
+@AGENTS.md
 
 ---
 

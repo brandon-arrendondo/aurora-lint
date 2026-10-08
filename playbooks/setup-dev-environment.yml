@@ -16,7 +16,7 @@
 #   - invoke (pyinvoke) -- CLAUDE.md's version-bump workflow runs
 #     `invoke bump-version --new-version X.Y.Z`; there's a tasks.py at the
 #     repo root but nothing that installs the `invoke` package itself.
-#   - pre-commit + the git hook it installs -- CLAUDE.md requires every
+#   - pre-commit + the git hook it installs -- AGENTS.md requires every
 #     pre-commit hook to pass before a commit; nothing previously installed
 #     the tool or ran `pre-commit install` in the repo.
 #   - Repo-local git config -- .git/config is not tracked, so a fresh clone
@@ -174,9 +174,9 @@
 
     # Installs BOTH the pre-commit and commit-msg hooks: the config sets
     # default_install_hook_types, so a plain `install` covers the commit-msg
-    # hook that rejects the Co-Authored-By: Claude trailer. Older clones that
+    # hook that rejects per-commit AI attribution trailers. Older clones that
     # installed before that hook existed need one manual pass --
-    # `pre-commit install --hook-type commit-msg`. See CLAUDE.md.
+    # `pre-commit install --hook-type commit-msg`. See AGENTS.md.
     - name: Install the pre-commit and commit-msg git hooks into this checkout
       command: "{{ dev_venv }}/bin/pre-commit install"
       args:

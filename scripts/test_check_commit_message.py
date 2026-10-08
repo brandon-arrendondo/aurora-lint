@@ -40,11 +40,22 @@ class CommitMessageTests(unittest.TestCase):
                 self.check_message(
                     f"docs: describe {name}\n\nExplain {name} in ordinary prose.\n", 0)
 
+    def test_aliases_and_vendor_addresses_are_rejected(self):
+        for name in ["claude_code", "ClaudeCode", "GPT", "GPT-5",
+                     "Alex <alex@openai.com>", "Alex <alex@anthropic.com>"]:
+            with self.subTest(name=name):
+                self.check_message(f"Update guidance\n\nGenerated-By: {name}\n", 1)
+
+    def test_colon_subject_is_not_an_attribution_trailer(self):
+        self.check_message("docs: update CLAUDE.md\n", 0)
+
     def test_git_comments_are_ignored(self):
         self.check_message("Update guidance\n\n# Co-Authored-By: Codex\n", 0)
 
     def test_word_boundaries_allow_unrelated_names(self):
-        self.check_message("Update guidance\n\nCo-Authored-By: Claudette Example\n", 0)
+        for name in ["Claudette", "Geminid", "Gptella"]:
+            with self.subTest(name=name):
+                self.check_message(f"Update guidance\n\nCo-Authored-By: {name} Example\n", 0)
 
 
 if __name__ == "__main__":

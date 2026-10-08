@@ -247,7 +247,7 @@ components pinned in ``rust-toolchain.toml``), the native build dependencies
 and -- into a venv at ``~/.venvs/aurora-lint-dev`` by default -- the Sphinx + LaTeX
 toolchain this guide itself is built with, ``invoke`` (for the
 ``invoke bump-version`` workflow), ``pre-commit`` (installed as this
-checkout's git hook -- see CLAUDE.md's "Git Commit Rules"), and
+checkout's git hook -- see the Git Commit Rules in AGENTS.md), and
 ``clew-trace`` (the package behind the ``clew-mcp`` command ``.mcp.json``
 points at -- see CLAUDE.md's "Code Navigation (clew)" for registering the
 MCP server itself with ``clew init``, a separate, per-machine step this

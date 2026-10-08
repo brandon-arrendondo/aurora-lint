@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Reject parsed Git trailers naming an AI agent or vendor.
 
-CONTRIBUTING.md's "Git Commit Rules" explains the placement policy: AI use
+AGENTS.md's "Git Commit Rules" explains the placement policy: AI use
 is acknowledged once in README.md, rather than repeated in commit trailers.
-Use Git's trailer parser so ordinary subject/body mentions remain allowed.
-Human co-authors pass unless the parsed trailer names a listed AI tool/vendor.
+Use `git interpret-trailers --parse`, not a scan of every colon-shaped line:
+a subject such as "docs: update CLAUDE.md" looks like a trailer but is not
+a trailing attribution block. Ordinary subject/body mentions remain allowed.
+Human co-authors pass unless the parsed trailer names a listed AI tool/vendor;
+addresses at openai.com or anthropic.com are intentionally rejected too.
+Do not copy this hook to sqc_paper, which deliberately keeps AI trailers.
 """
 import re
 import subprocess
@@ -13,15 +17,21 @@ import sys
 # Add future agents here; avoid bare employer names such as Google/Microsoft.
 AI_TOOL_NAMES = [
     "Claude",
+    "ClaudeCode",
     "Anthropic",
     "Codex",
     "OpenAI",
     "ChatGPT",
     "Gemini",
     "Copilot",
+    "GPT",
+    "Cursor",
+    "Aider",
+    "Devin",
 ]
 AI_ATTRIBUTION = re.compile(
-    r"\b(?:" + "|".join(re.escape(name) for name in AI_TOOL_NAMES) + r")\b",
+    r"(?<![A-Za-z])(?:" + "|".join(re.escape(name) for name in AI_TOOL_NAMES)
+    + r")(?![A-Za-z])",
     re.IGNORECASE,
 )
 
@@ -64,7 +74,7 @@ def main() -> int:
         print(f"    {line}", file=sys.stderr)
     print("", file=sys.stderr)
     print(
-        "CONTRIBUTING.md forbids per-commit AI attribution trailers in aurora-lint\n"
+        "AGENTS.md forbids per-commit AI attribution trailers in aurora-lint\n"
         "(Co-Authored-By or any other trailer naming a listed AI tool/vendor).\n"
         "AI use is acknowledged once in README.md's \"AI Assistance\" section;\n"
         "keep that section and remove the trailer before committing again.",
