@@ -280,7 +280,11 @@ class TestRelease(unittest.TestCase):
         sha = hashlib.sha256(self.contents).hexdigest()
         self.release = (b"Codename: bookworm\nSHA256:\n"
                         + f" {sha} {len(self.contents)} main/Contents-amd64.gz\n".encode())
-        self.files = {"Release": self.release, "main/Contents-amd64.gz": self.contents}
+        self.contents_all = gzip.compress(b"usr/include/X11/Xatom.h    x11/x11proto-dev\n")
+        sha_all = hashlib.sha256(self.contents_all).hexdigest()
+        self.release += f" {sha_all} {len(self.contents_all)} main/Contents-all.gz\n".encode()
+        self.files = {"Release": self.release, "main/Contents-amd64.gz": self.contents,
+                      "main/Contents-all.gz": self.contents_all}
         self.patch = mock.patch.object(deps, "_cached",
                                        side_effect=lambda base, rel, cache, log: self.files[rel])
         self.patch.start()
@@ -294,7 +298,9 @@ class TestRelease(unittest.TestCase):
 
     def test_an_index_matching_release_is_read(self):
         got = deps.contents_index(BASE, ROOTS, self.cache, log=lambda m: None)
-        self.assertEqual(got, {"usr/include/a.h": ["p"]})
+        # Contents-all too: architecture-independent packages are only there.
+        self.assertEqual(got, {"usr/include/a.h": ["p"],
+                               "usr/include/X11/Xatom.h": ["x11proto-dev"]})
 
     def test_an_index_differing_from_release_is_refused(self):
         self.files["main/Contents-amd64.gz"] = self.contents + b"x"
@@ -486,6 +492,26 @@ class TestBuild(unittest.TestCase):
             with self.assertRaises(ValueError):
                 deps.materialize(decl, tmp / "toy", cache, tmp / "bench")
 
+    def test_the_databases_dirs_go_ahead_of_the_sets(self):
+        # aurora-lint appends a database's paths after every -I, so a
+        # benchmark run passes them itself, before the system directories.
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "compile_commands.json"
+            db.write_text(json.dumps([
+                {"directory": "/c", "file": "/c/a.c",
+                 "arguments": ["cc", "-I", "/c/include", "-I", "/g/build", "-c", "a.c"]},
+                {"directory": "/c", "file": "/c/b.c",
+                 "arguments": ["cc", "-I/c/include", "-isystem", "/g/src", "-c", "b.c"]}]))
+            self.assertEqual(deps.db_include_dirs(db), ["/c/include", "/g/build", "/g/src"])
+            first = rr._db_first_includes(str(db))
+        cfg = {"path": Path("/c"), "sqc": {"manifest": rr.CODEBASES["lua"]["sqc"]["manifest"],
+                                           "includes": ["-I", "{path}"]}}
+        cmd = rr._build_sqc_cmd(cfg, Path("/out"), "rid",
+                                deps_includes=first + ["-I", "/set/usr/include"])
+        tail = cmd[-10:]
+        self.assertLess(tail.index("/g/build"), tail.index("/set/usr/include"))
+        self.assertLess(tail.index("/c/include"), tail.index("/set/usr/include"))
+
     def test_the_cache_is_keyed_by_corpus_commit_and_environment(self):
         decl = _decl([], build=self.RECIPE)
         d = deps.build_cache_dir(decl, "a" * 40, "b" * 64, "/x")
@@ -512,34 +538,54 @@ if __name__ == "__main__":
 
 
 class TestSpellings(unittest.TestCase):
-    """What a set must resolve: the includes of the corpus's in-scope,
-    in-configuration files that the checkout does not ship itself."""
+    """What a set must resolve: the includes of the corpus's in-scope files,
+    other platforms' files aside, that the corpus does not provide."""
 
-    def test_only_in_scope_files_and_only_what_the_checkout_lacks(self):
+    FILES = {
+        "src/a.c": '#include <zlib.h>\n#include "own.h"\n#include <proj/api.h>\n'
+                   '#ifdef _WIN32\n#include <windows.h>\n#endif\n',
+        "src/own.h": "",
+        "include/proj/api.h": "",
+        "src/os_win.c": "#include <winsock2.h>\n",        # another platform
+        "src/drm.c": "#include <xf86drm.h>\n",            # a Linux backend, out of config
+        "tests/t.c": "#include <cunit.h>\n",              # out of scope
+        "compat/stdbool.h": "",                           # an out-of-scope copy
+        "src/b.c": "#include <stdbool.h>\n",
+    }
+
+    def spell(self, dropped=None):
         import subprocess
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            files = {
-                "src/a.c": '#include <zlib.h>\n#include "own.h"\n#include <proj/api.h>\n'
-                           '#ifdef _WIN32\n#include <windows.h>\n#endif\n',
-                "src/own.h": "",
-                "include/proj/api.h": "",
-                "src/os_win.c": "#include <winsock2.h>\n",      # out_of_config
-                "tests/t.c": "#include <cunit.h>\n",            # out of scope
-            }
-            for rel, text in files.items():
+            for rel, text in self.FILES.items():
                 (root / rel).parent.mkdir(parents=True, exist_ok=True)
                 (root / rel).write_text(text)
             subprocess.run(["git", "-C", td, "init", "-q"], check=True)
             subprocess.run(["git", "-C", td, "add", "."], check=True)
             entry = {"name": "toy", "scope_include": ["src/**", "include/**"],
-                     "primary_build_config": {"out_of_config": ["src/os_win.c"]}}
+                     "primary_build_config": {"out_of_config": ["src/os_win.c", "src/drm.c"]}}
             with mock.patch.object(corpus, "load_repos", return_value=[entry]):
-                got = deps.spellings("toy", root)
+                return deps.spellings("toy", root, other_platform=["src/os_win.c"],
+                                      dropped=dropped)
+
+    def test_in_scope_files_except_another_platforms(self):
+        got = self.spell()
         # Every arm counts (windows.h is listed; the resolver reports it
-        # unresolved), the corpus's own headers do not, and out-of-scope or
-        # out-of-configuration files contribute nothing.
-        self.assertEqual(got, ["windows.h", "zlib.h"])
+        # unresolved); the corpus's own headers do not; an out-of-scope
+        # file contributes nothing; another platform's file is skipped, but
+        # an alternative Linux backend outside the default build is read.
+        self.assertIn("xf86drm.h", got)
+        self.assertNotIn("winsock2.h", got)
+        self.assertNotIn("cunit.h", got)
+        self.assertNotIn("own.h", got)
+        self.assertNotIn("proj/api.h", got)
+        self.assertIn("zlib.h", got)
+
+    def test_an_out_of_scope_copy_does_not_hide_a_system_header(self):
+        dropped = {}
+        got = self.spell(dropped)
+        self.assertIn("stdbool.h", got)
+        self.assertEqual(dropped, {"stdbool.h": "src/b.c"})
 
 
 class TestBuildInstall(unittest.TestCase):

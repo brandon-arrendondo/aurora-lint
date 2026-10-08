@@ -28,11 +28,15 @@
   "usr/include",
   "usr/include/cjson"
  ],
+ "other_platform": [
+  "src/service.c"
+ ],
  "exclude": {
   "libc6-dev-i386": "-m32 multilib; not the x86_64 configuration",
   "libc6-dev-x32": "x32 ABI; not the x86_64 configuration",
   "libowfat-dev": "its io.h shadows the Windows CRT header of that name, which the corpus includes only under _WIN32",
-  "libmosquitto-dev": "ships a copy of the corpus's own headers (an older release)"
+  "libmosquitto-dev": "ships a copy of the corpus's own headers (an older release)",
+  "uthash-dev": "the corpus bundles its own uthash (deps/uthash.h), which its build uses; a system copy would shadow it"
  },
  "build": {
   "steps": [

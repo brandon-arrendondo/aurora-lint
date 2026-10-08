@@ -25,12 +25,20 @@
  "include_dirs": [
   "usr/lib/gcc/x86_64-linux-gnu/12/include",
   "usr/include/x86_64-linux-gnu",
-  "usr/include"
+  "usr/include",
+  "usr/include/SDL2"
+ ],
+ "other_platform": [
+  "src/platforms/rcore_android.c",
+  "src/platforms/rcore_desktop_win32.c",
+  "src/platforms/rcore_web.c",
+  "src/platforms/rcore_web_emscripten.c"
  ],
  "exclude": {
   "libc6-dev-i386": "-m32 multilib; not the x86_64 configuration",
   "libc6-dev-x32": "x32 ABI; not the x86_64 configuration",
-  "libowfat-dev": "its io.h shadows the Windows CRT header of that name, which the corpus includes only under _WIN32"
+  "libowfat-dev": "its io.h shadows the Windows CRT header of that name, which the corpus includes only under _WIN32",
+  "libglfw3-dev": "the corpus bundles its own GLFW (src/external/glfw), which its build uses; a system copy would shadow it"
  },
  "build": {
   "steps": [
@@ -54,13 +62,19 @@
   ],
   "why": "CMake defaults: PLATFORM_DESKTOP_GLFW, GLFW's X11 and Wayland backends, OpenGL. rcore.c includes exactly one platforms/*.c."
  },
- "manifest_sha256": "6f73d2dffea22a0bb2a082666d34382f4dfd077c389df7fc88da20296b044f1f",
+ "manifest_sha256": "7fb2949ae3f6974ba1201ec0c195548e333017341cc6c57ee751ef5a2259564c",
  "why": {
   "libc6-dev": "ctype.h",
+  "libdrm-dev": "xf86drm.h",
+  "libegl-dev": "EGL/egl.h",
+  "libgbm-dev": "gbm.h",
   "libgcc-12-dev": "emmintrin.h",
   "libgl-dev": "GL/gl.h",
   "libgles-dev": "GLES2/gl2.h",
-  "linux-libc-dev": "linux/stat.h"
+  "libsdl2-dev": "SDL.h",
+  "libx11-dev": "X11/Xlib.h",
+  "linux-libc-dev": "linux/input.h",
+  "x11proto-dev": "X11/Xatom.h"
  },
  "sources": [
   {
@@ -72,6 +86,27 @@
      "file": "libc6-dev_2.36-9+deb12u14_amd64.deb",
      "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/g/glibc/libc6-dev_2.36-9+deb12u14_amd64.deb",
      "sha256": "0218fc2befcd784c1b0c6292c0a137ce89fad054efaa579ad083bee0f2c01aae"
+    },
+    {
+     "package": "libdrm-dev",
+     "version": "2.4.114-1+b1",
+     "file": "libdrm-dev_2.4.114-1+b1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libd/libdrm/libdrm-dev_2.4.114-1+b1_amd64.deb",
+     "sha256": "073e7ac28672c7fb55141cf39ba1daa25667bd578c76dc43eb4f911b8d3a259a"
+    },
+    {
+     "package": "libegl-dev",
+     "version": "1.6.0-1",
+     "file": "libegl-dev_1.6.0-1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libg/libglvnd/libegl-dev_1.6.0-1_amd64.deb",
+     "sha256": "0ec9bffb024527dfb61eaeae44966e2b5b3114b3dc315b4117b0df95b1c96ef8"
+    },
+    {
+     "package": "libgbm-dev",
+     "version": "22.3.6-1+deb12u2",
+     "file": "libgbm-dev_22.3.6-1+deb12u2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/m/mesa/libgbm-dev_22.3.6-1+deb12u2_amd64.deb",
+     "sha256": "9466470521feea866207e5c03213fca62098daa9566ce03990b663553cfe6ec1"
     },
     {
      "package": "libgcc-12-dev",
@@ -95,11 +130,32 @@
      "sha256": "901b06c4a5223560617e9362d26ab349f9d9dd3d79e7d87d6ce0b06a7c7128f4"
     },
     {
+     "package": "libsdl2-dev",
+     "version": "2.26.5+dfsg-1",
+     "file": "libsdl2-dev_2.26.5+dfsg-1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libs/libsdl2/libsdl2-dev_2.26.5+dfsg-1_amd64.deb",
+     "sha256": "c5f5d683f8a1c0772e75e82c0696e03476ddbb012ee0fc592d8472ebee524940"
+    },
+    {
+     "package": "libx11-dev",
+     "version": "2:1.8.4-2+deb12u2",
+     "file": "libx11-dev_1.8.4-2+deb12u2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libx/libx11/libx11-dev_1.8.4-2+deb12u2_amd64.deb",
+     "sha256": "8493220d4309af1907a1f2f6eeb204c8103dafcc368394fbc4a0858c28612ff9"
+    },
+    {
      "package": "linux-libc-dev",
      "version": "6.1.176-1",
      "file": "linux-libc-dev_6.1.176-1_amd64.deb",
      "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/l/linux/linux-libc-dev_6.1.176-1_amd64.deb",
      "sha256": "8bb258735b9dffbb111da778ebdd024750878e435ffd9dfcadcb6762ede6b4cf"
+    },
+    {
+     "package": "x11proto-dev",
+     "version": "2022.1-1",
+     "file": "x11proto-dev_2022.1-1_all.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/x/xorgproto/x11proto-dev_2022.1-1_all.deb",
+     "sha256": "3cab66a6591774188a568f9b54c4e7956f18da76e0e0fc4a779db5f6bcc3f148"
     }
    ]
   }

@@ -27,6 +27,7 @@
   "usr/include/x86_64-linux-gnu",
   "usr/include"
  ],
+ "other_platform": [],
  "exclude": {
   "libc6-dev-i386": "-m32 multilib; not the x86_64 configuration",
   "libc6-dev-x32": "x32 ABI; not the x86_64 configuration",

@@ -841,6 +841,19 @@ def _verified_header_tree(codebase: str):
     return spec
 
 
+def _db_first_includes(compile_db) -> list[str]:
+    """-I for every include directory of the run's materialized compile
+    database, to go ahead of the dependency set's (bench/deps.py
+    db_include_dirs: search order is project, generated, then system)."""
+    if not compile_db:
+        return []
+    from bench.deps import db_include_dirs
+    out = []
+    for d in db_include_dirs(compile_db):
+        out += ["-I", d]
+    return out
+
+
 def _verified_deps(codebase: str):
     """The dependency set `codebase` declares (bench/deps.py), verified, or
     None if it declares none. Raises if the set's tree is missing, unpinned
@@ -1764,7 +1777,8 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
                 cfg, version_dir, run_id, compile_db, profile,
                 include_args(header_spec) if header_spec and not replaces else None,
                 header_spec if replaces else None,
-                deps_include_args(deps_decl) if deps_decl else None)
+                (_db_first_includes(compile_db) + deps_include_args(deps_decl))
+                if deps_decl else None)
             result_file = version_dir / f"{run_id}.json"
             proc = subprocess.run(cmd, stdout=log_fh, stderr=subprocess.STDOUT)
         elif tool == "cppcheck":

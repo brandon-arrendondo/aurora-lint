@@ -37,6 +37,9 @@ corpus names it with 'deps' in data/benchmark_repos.json:
                    which resolve never picks (the -m32 multilib packages
                    an x86_64 glibc header names in an arm for another ABI)
   manifest_sha256  the fifth pin (below)
+  other_platform   globs of the in-scope files written for another platform
+                   (Windows, a BSD, Android, the web), whose includes the
+                   set does not resolve
   why              {package: the #include that needs it}, for review only
 
 The tree lives at BENCH_ROOT/deps/<id>/, where the id is
@@ -101,6 +104,8 @@ def validate(decl: dict) -> dict:
     minimal), and only 'debs' sources are fetched: an SDK tree such as
     ventoy's (fetched by xwin, bench/header_tree.py) is not a source kind
     here yet."""
+    if not isinstance(decl.get("other_platform", []), list):
+        raise ValueError(f"{decl.get('corpus')}: other_platform must be a list of globs")
     for key in ("roots", "prune", "include_dirs"):
         decl[key] = [_tree_relative(p, key) for p in decl.get(key, [])]
     build = decl.get("build")
@@ -130,32 +135,60 @@ def load(name: str) -> dict:
     return validate(json.loads(path.read_text()))
 
 
-def spellings(project: str, checkout=None) -> list[str]:
+def spellings(project: str, checkout=None, other_platform=None,
+              dropped: dict | None = None) -> list[str]:
     """The #include spellings a dependency set must resolve for `project`:
-    every <...> and "..." include in the corpus's IN-SCOPE source files
-    (scope_include/scope_exclude, minus primary_build_config.out_of_config:
-    bench/corpus.py) that names no file the checkout itself ships. A set
-    covers every configuration of those files Debian can supply, not only the
-    default build (docs/adr/0018; ADR-0010), so every arm's includes count."""
+    every <...> and "..." include in the corpus's in-scope source files
+    (scope_include/scope_exclude: bench/corpus.py), except those of files
+    for another platform, that the corpus does not provide itself. A set
+    covers every configuration of those files Debian can supply, not only
+    the default build (docs/adr/0018; ADR-0010), so every arm's includes
+    count, and so do the files for an alternative Linux backend.
+
+    `other_platform` are globs naming the in-scope files written for another
+    platform (Windows, a BSD, Android, the web): their includes are not
+    Debian's to supply. Default: the declaration's 'other_platform'.
+
+    A spelling is the corpus's own when it names an in-scope file (as a
+    path suffix), a file under one of the corpus's own -I directories
+    (bench/realworld_runner.py CODEBASES), or a file relative to the
+    including file. A copy somewhere else in the checkout (a vendored
+    compatibility header, an example's bundled library) does not count:
+    `dropped`, when given, records each spelling the narrower rule kept
+    that a match against the whole checkout would have dropped."""
     import subprocess
     from bench import corpus
-    entry = next(e for e in corpus.load_repos() if e["name"] == project)
+    from bench.realworld_runner import CODEBASES
     root = Path(checkout) if checkout else BENCH_ROOT / project
-    out_of_config = (entry.get("primary_build_config") or {}).get("out_of_config", [])
+    if other_platform is None:
+        name = deps_name(project)
+        other_platform = load(name).get("other_platform", []) if name else []
     files = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True,
                            check=True).stdout.decode().split("\0")
     files = [f for f in files if f]
     shipped = set(files)
-    suffixes = {}
-    for f in files:
-        parts = f.split("/")
-        for i in range(len(parts)):
-            suffixes.setdefault("/".join(parts[i:]), True)
+    in_scope = [f for f in files if corpus.in_scope(project, f)]
+
+    def suffixes(paths):
+        out = set()
+        for f in paths:
+            parts = f.split("/")
+            out.update("/".join(parts[i:]) for i in range(len(parts)))
+        return out
+
+    own = suffixes(in_scope)
+    anywhere = suffixes(files)
+    inc_dirs = [""]
+    cfg = CODEBASES.get(project, {}).get("sqc", {})
+    incs = cfg.get("includes", [])
+    for flag, val in zip(incs, incs[1:]):
+        if flag == "-I" and (val == "{path}" or val.startswith("{path}/")):
+            inc_dirs.append(val[len("{path}"):].lstrip("/"))
     found = set()
-    for f in files:
-        if not f.endswith((".c", ".h")) or not corpus.in_scope(project, f):
+    for f in in_scope:
+        if not f.endswith((".c", ".h")):
             continue
-        if any(corpus._match(f, pat) for pat in out_of_config):
+        if any(corpus._match(f, pat) for pat in other_platform):
             continue
         try:
             text = (root / f).read_bytes()
@@ -163,8 +196,12 @@ def spellings(project: str, checkout=None) -> list[str]:
             continue
         for _, inc in _INCLUDE.findall(text):
             name = posixpath.normpath(inc.decode(errors="replace").strip())
-            if name in suffixes or posixpath.normpath(posixpath.join(posixpath.dirname(f), name)) in shipped:
+            if (name in own
+                    or posixpath.normpath(posixpath.join(posixpath.dirname(f), name)) in shipped
+                    or any(posixpath.normpath(posixpath.join(d, name)) in shipped for d in inc_dirs)):
                 continue
+            if dropped is not None and name in anywhere:
+                dropped.setdefault(name, f)
             found.add(name)
     return sorted(found)
 
@@ -471,17 +508,20 @@ def packages_index(base: dict, cache: Path, log=print, rel_info=None) -> dict:
 
 def contents_index(base: dict, roots, cache: Path, log=print, rel_info=None) -> dict:
     """{path: [package, ...]} for every path under `roots`, from the
-    snapshot's Contents index for base['arch']."""
-    out: dict[str, list[str]] = {}
-    text = _index(base, f"main/Contents-{base['arch']}.gz", cache, log,
-                  rel_info).decode(errors="replace")
-    for line in text.splitlines():
-        path, _, owners = line.rpartition(" ")
-        path = path.strip()
-        if not _under(path, roots):
-            continue
-        out[path] = sorted(o.rsplit("/", 1)[-1] for o in owners.split(","))
-    return out
+    snapshot's Contents indices for base['arch'] AND for 'all': an
+    architecture-independent package (x11proto-dev's X11/*.h, for one) is
+    listed only in Contents-all, though the Packages index carries it."""
+    out: dict[str, set] = {}
+    for arch in (base["arch"], "all"):
+        text = _index(base, f"main/Contents-{arch}.gz", cache, log,
+                      rel_info).decode(errors="replace")
+        for line in text.splitlines():
+            path, _, owners = line.rpartition(" ")
+            path = path.strip()
+            if not _under(path, roots):
+                continue
+            out.setdefault(path, set()).update(o.rsplit("/", 1)[-1] for o in owners.split(","))
+    return {p: sorted(o) for p, o in out.items()}
 
 
 def deb_entry(base: dict, package: str, info: dict) -> dict:
@@ -715,6 +755,22 @@ def overlay_source_dirs(template: list[dict], overlay: set[str]) -> list[dict]:
                 continue
             i += 1
         out.append(dict(e, arguments=norm))
+    return out
+
+
+def db_include_dirs(db_path) -> list[str]:
+    """The include directories a materialized compile database searches,
+    in its own order, each once. aurora-lint appends a database's paths
+    AFTER every -I on its command line (src/main.rs), so a benchmark run
+    passes these as -I itself, ahead of the dependency set's system
+    directories: the corpus's own and generated headers must win over any
+    system copy of the same name."""
+    out = []
+    for e in json.loads(Path(db_path).read_text()):
+        args = e["arguments"]
+        for flag, val in zip(args, args[1:]):
+            if flag in _DIR_FLAGS and val not in out:
+                out.append(val)
     return out
 
 
