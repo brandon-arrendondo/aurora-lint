@@ -160,6 +160,8 @@ configuration that still names one loads with a warning, and
 
 Measured, not asserted. Two benchmarks, both with published methodology.
 
+### Benchmark Highlights
+
 <!-- BENCH:HIGHLIGHTS:START -->
 | Metric | Value |
 |--------|-------|
