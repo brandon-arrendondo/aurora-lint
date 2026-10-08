@@ -449,8 +449,6 @@ pub struct InitAnalysisConfig {
     /// Maps function name → set of parameter indices where `*param = ...` only
     /// appears inside conditionals. Other params are assumed initialized normally.
     pub conditionally_init_fns: HashMap<String, HashSet<usize>>,
-    /// Functions that wrap realloc (return uninitialized new portion).
-    pub realloc_wrapper_fns: HashSet<String>,
     /// Cross-file functions that dereference pointer params without modifying them.
     /// Maps function name → set of param indices that are read-only dereferenced.
     /// When `&var` is passed at these positions, var should NOT be marked initialized.
@@ -822,9 +820,11 @@ fn call_arguments<'t>(call: &Node<'t>) -> Vec<Node<'t>> {
 
 /// Classify an initializer or assigned value. Only a call whose callee is
 /// an allocator allocates: a standard one or one declared in
-/// `[environment.allocators]` (`call_roles::allocator_contract`), `alloca`,
-/// or a function this file defines around `realloc`, each reached through
-/// any object-like alias (`config.macro_aliases`). A function-like macro is
+/// `[environment.allocators]` (`call_roles::allocator_contract`) or
+/// `alloca`, reached through any object-like alias (`config.macro_aliases`).
+/// A function whose body wraps an allocator is not one until the project
+/// declares it: what it returns is the project's contract to state. A
+/// function-like macro is
 /// classified as its expansion. Parentheses and casts are seen through;
 /// a comma expression is its last operand; a conditional is uninitialized
 /// memory when one arm is and the other is a null pointer constant (a read
@@ -909,11 +909,6 @@ fn call_allocation(
             Some(C::Realloc) => (InitState::MallocUninitialized, None),
             Some(C::Calloc) => (InitState::MallocInitialized, None),
             Some(C::Strdup | C::Strndup) => return Allocation::NONE,
-            None if config.realloc_wrapper_fns.contains(spelled)
-                || config.realloc_wrapper_fns.contains(name) =>
-            {
-                (InitState::MallocUninitialized, None)
-            }
             None => return macro_allocation(call, spelled, name, source, config, depth),
         },
     };

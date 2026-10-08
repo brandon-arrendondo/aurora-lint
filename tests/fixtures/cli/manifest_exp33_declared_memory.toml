@@ -7,6 +7,7 @@ cert_version = "2016"
 [environment.allocators]
 pool_take = "malloc"
 pool_take_zeroed = "calloc"
+resize_array = "realloc"
 
 [rules.cert_c.EXP33-C]
 enabled = true

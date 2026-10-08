@@ -3819,6 +3819,27 @@ fn exp33_classifies_an_aliased_call_by_the_declared_allocator_it_names() {
 }
 
 #[test]
+fn exp33_reads_a_wrapper_as_an_allocator_only_once_it_is_declared() {
+    // The CERT wiki's EXP33-C realloc example (the rule's expected_fail
+    // fixture): `resize_array` wraps realloc, so its new elements are
+    // uninitialized, but only a declaration says what it returns.
+    let declared = declared_memory_findings(
+        "declared_realloc_wrapper.c",
+        "manifest_exp33_declared_memory.toml",
+        &[],
+    );
+    assert!(
+        has(&declared, "EXP33-C", 36, "uninitialized"),
+        "resize_array is declared to follow realloc: {declared:?}"
+    );
+    let bare = declared_memory_findings("declared_realloc_wrapper.c", "manifest_exp33.toml", &[]);
+    assert!(
+        !bare.iter().any(|(r, _, _)| r == "EXP33-C"),
+        "an undeclared wrapper allocates nothing: {bare:?}"
+    );
+}
+
+#[test]
 fn declared_allocators_allocate_and_a_realloc_like_one_releases_its_old_block() {
     let declared =
         declared_memory_findings("pool_allocators.c", "manifest_declared_memory.toml", &[]);

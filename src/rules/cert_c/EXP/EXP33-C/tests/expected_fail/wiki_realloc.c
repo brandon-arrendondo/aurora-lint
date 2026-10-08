@@ -1,7 +1,12 @@
 /*
  * Rule: EXP33-C
  * Source: wiki
- * Status: FAIL - Should trigger EXP33-C violation
+ * Status: EXPECTED FAIL - Known limitation: the CERT noncompliant example is
+ * reported only once `resize_array` is declared as following realloc's
+ * contract (`[environment.allocators] resize_array = "realloc"`, or
+ * `--allocator resize_array=realloc`). A function whose body wraps an
+ * allocator is not treated as one until the project says so. The declared
+ * case is asserted by tests/cli_integration.rs.
  */
 
 #include <stdlib.h>

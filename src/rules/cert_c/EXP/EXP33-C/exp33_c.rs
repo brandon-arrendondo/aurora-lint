@@ -28,8 +28,6 @@ pub struct Exp33C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     /// File-scope static variable init states (collected at translation_unit level).
     file_scope_statics: RefCell<InitStateMap>,
-    /// Functions that return realloc results (interprocedural pre-scan).
-    realloc_wrapper_fns: RefCell<HashSet<String>>,
     /// Functions with pointer params that are only conditionally initialized.
     /// Maps function name → set of pointer parameter indices that are conditional.
     conditionally_init_fns: RefCell<HashMap<String, HashSet<usize>>>,
@@ -101,7 +99,6 @@ impl Exp33C {
         Self {
             function_cfgs: RefCell::new(HashMap::new()),
             file_scope_statics: RefCell::new(InitStateMap::new()),
-            realloc_wrapper_fns: RefCell::new(HashSet::new()),
             conditionally_init_fns: RefCell::new(HashMap::new()),
             cross_file_summaries: RefCell::default(),
             file_scope_constants: RefCell::new(HashMap::new()),
@@ -405,11 +402,6 @@ impl CertRule for Exp33C {
                     constants.extend(fn_constants);
                 }
 
-                // Pre-scan for realloc wrapper functions
-                let mut wrappers = HashSet::new();
-                scan_realloc_wrappers(node, source, &mut wrappers);
-                *self.realloc_wrapper_fns.borrow_mut() = wrappers;
-
                 // Pre-scan for functions that conditionally initialize pointer params
                 let mut cond_init = HashMap::new();
                 {
@@ -493,7 +485,6 @@ impl CertRule for Exp33C {
                     // Run CFG-based init-state dataflow
                     let statics = self.file_scope_statics.borrow();
                     let cond_fns = self.conditionally_init_fns.borrow();
-                    let realloc_fns = self.realloc_wrapper_fns.borrow();
                     let read_only_fns = self.build_read_only_deref_fns();
                     let cross_file_output_params = self.build_cross_file_output_params();
                     let cross_file_conditional_output_params =
@@ -505,7 +496,6 @@ impl CertRule for Exp33C {
                     let macro_untouched = self.macro_untouched_params.borrow();
                     let config = init_state::InitAnalysisConfig {
                         conditionally_init_fns: cond_fns.clone(),
-                        realloc_wrapper_fns: realloc_fns.clone(),
                         read_only_deref_fns: read_only_fns.clone(),
                         file_scope_constants: file_constants.clone(),
                         macro_output_params: macro_out.clone(),
@@ -2244,36 +2234,6 @@ fn is_subscript_read_context(
 // ---------------------------------------------------------------------------
 // Interprocedural pre-scan
 // ---------------------------------------------------------------------------
-
-/// Whether `body` contains a call to a function named `name`, matched
-/// against the callee identifier node rather than the body's raw text — a
-/// comment or string literal mentioning the name can't fake a call.
-fn body_calls_function(body: &Node, source: &str, name: &str) -> bool {
-    query::find_descendants_of_kind(*body, "call_expression")
-        .iter()
-        .any(|c| {
-            c.child_by_field_name("function")
-                .is_some_and(|f| get_node_text(&f, source) == name)
-        })
-}
-
-/// Scan translation unit for functions that wrap realloc.
-fn scan_realloc_wrappers(node: &Node, source: &str, wrappers: &mut HashSet<String>) {
-    for func_def in query::find_descendants_of_kind(*node, "function_definition") {
-        if let Some(body) = func_def.child_by_field_name("body") {
-            if body_calls_function(&body, source, "realloc")
-                && !body_calls_function(&body, source, "memset")
-            {
-                if let Some(declarator) = func_def.child_by_field_name("declarator") {
-                    let name = get_func_name(&declarator, source);
-                    if !name.is_empty() {
-                        wrappers.insert(name);
-                    }
-                }
-            }
-        }
-    }
-}
 
 /// Scan for functions that only conditionally initialize pointer params.
 /// e.g., void set_flag(int n, int *flag) { if (n > 0) *flag = 1; }
