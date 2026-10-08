@@ -17,8 +17,11 @@ corpus names it with 'deps' in data/benchmark_repos.json:
                    for, not the host that scans it. A macOS host scanning a
                    Linux corpus installs the same Linux headers.
   base             where the packages come from: {"archive", "suite",
-                   "arch", "snapshot"}, a snapshot.debian.org timestamp, so
-                   resolving a header to a package is repeatable
+                   "arch", "snapshot", "release_sha256"}: a
+                   snapshot.debian.org timestamp, so resolving a header to a
+                   package is repeatable, and the sha256 of that snapshot's
+                   Release file, which every index resolve reads is checked
+                   against (`release`)
   sources          what to fetch. Kind "debs": Debian binary packages, each
                    {"package", "version", "file", "url", "sha256"} with the
                    sha256 of the .deb itself
@@ -58,6 +61,7 @@ import hashlib
 import json
 import lzma
 import os
+import posixpath
 import re
 import shutil
 from pathlib import Path
@@ -81,22 +85,58 @@ def _canonical(obj) -> bytes:
                       ensure_ascii=True).encode()
 
 
+def _tree_relative(path: str, what: str) -> str:
+    """`path` as a normalized path inside the tree. A trailing slash would
+    make a prefix match nothing, and an absolute or escaping path names
+    something outside the tree, so both are refused rather than ignored."""
+    norm = posixpath.normpath(path)
+    if posixpath.isabs(norm) or norm == ".." or norm.startswith("../") or norm == ".":
+        raise ValueError(f"{what} '{path}' is not a path inside the tree")
+    return norm
+
+
+def validate(decl: dict) -> dict:
+    """`decl` with its tree paths normalized, or ValueError. Every pinned
+    package must say why it is in the set (review is how a set stays
+    minimal), and only 'debs' sources are fetched: an SDK tree such as
+    ventoy's (fetched by xwin, bench/header_tree.py) is not a source kind
+    here yet."""
+    for key in ("roots", "prune", "include_dirs"):
+        decl[key] = [_tree_relative(p, key) for p in decl.get(key, [])]
+    why = decl.get("why", {})
+    for src in decl.get("sources", []):
+        if src.get("kind") != "debs":
+            raise ValueError(f"{decl.get('corpus')}: source kind '{src.get('kind')}' "
+                             "is not supported (only 'debs')")
+        unexplained = [d["package"] for d in src.get("debs", []) if d["package"] not in why]
+        if unexplained:
+            raise ValueError(f"{decl.get('corpus')}: no 'why' entry for "
+                             f"{', '.join(unexplained)}")
+    return decl
+
+
 def load(name: str) -> dict:
     """The declaration data/benchmark_deps/`name`.json, or the file `name`
-    itself when it ends in .json (a declaration being drafted)."""
+    itself when it ends in .json (a declaration being drafted), validated."""
     path = Path(name) if name.endswith(".json") else DEPS_DIR / f"{name}.json"
     if not path.is_file():
         raise KeyError(f"no dependency set '{name}' ({path} does not exist)")
-    return json.loads(path.read_text())
+    return validate(json.loads(path.read_text()))
 
 
-def declared_for(project: str):
-    """The dependency set `project` declares ('deps' in
+def deps_name(project: str):
+    """The name of the dependency set `project` declares ('deps' in
     data/benchmark_repos.json), or None if it declares none."""
     for entry in json.loads(REPOS_JSON.read_text())["repos"]:
         if entry["name"] == project:
-            return load(entry["deps"]) if entry.get("deps") else None
+            return entry.get("deps") or None
     return None
+
+
+def declared_for(project: str):
+    """The dependency set `project` declares, or None if it declares none."""
+    name = deps_name(project)
+    return load(name) if name else None
 
 
 def decl_sha256(decl: dict) -> str:
@@ -109,7 +149,8 @@ def decl_sha256(decl: dict) -> str:
 def set_id(decl: dict) -> str:
     """The tree's directory name. Only what changes the tree's contents
     goes into it, so editing include_dirs or 'why' keeps the tree."""
-    key = {k: decl.get(k) for k in ("platform", "base", "sources", "roots", "prune")}
+    key = {k: decl.get(k) for k in ("platform", "base", "sources", "roots")}
+    key["prune"] = decl.get("prune") or []
     return f"{decl['corpus']}-{decl['platform']}-{hashlib.sha256(_canonical(key)).hexdigest()[:8]}"
 
 
@@ -179,7 +220,7 @@ def member_paths(deb_bytes: bytes, roots, prune=()) -> list[str]:
             if m.isdir():
                 continue
             raw = m.name[2:] if m.name.startswith("./") else m.name
-            rel = os.path.normpath(raw)
+            rel = posixpath.normpath(raw)
             if _under(rel, roots) and not _under(rel, prune):
                 out.append(rel)
     return out
@@ -187,10 +228,14 @@ def member_paths(deb_bytes: bytes, roots, prune=()) -> list[str]:
 
 def case_collisions(paths) -> list[list[str]]:
     """Groups of distinct paths that are one path on a case-insensitive
-    filesystem."""
+    filesystem. The directories along each path count too, so a file a/B
+    and a directory a/b (from a/b/c) are a group."""
     groups: dict[str, set[str]] = {}
     for p in paths:
-        groups.setdefault(p.casefold(), set()).add(p)
+        parts = p.split("/")
+        for i in range(1, len(parts) + 1):
+            sub = "/".join(parts[:i])
+            groups.setdefault(sub.casefold(), set()).add(sub)
     return sorted(sorted(g) for g in groups.values() if len(g) > 1)
 
 
@@ -258,6 +303,12 @@ def fetch(decl: dict, bench_root=None, log=print) -> dict:
             extract_headers(body, stage, decl["roots"], manifest, prune)
         lines = sorted(manifest.values())
         actual = hashlib.sha256("".join(l + "\n" for l in lines).encode()).hexdigest()
+        on_disk = manifest_sha256(stage, decl["roots"])
+        if on_disk != actual:
+            # The filesystem did not keep what was unpacked: a link it could
+            # not make, a name it changed. A scan would read the disk.
+            raise ValueError(f"{set_id(decl)}: the unpacked tree hashes to "
+                             f"{on_disk} on disk but {actual} from the packages")
         expected = decl.get("manifest_sha256")
         if expected and actual != expected:
             raise ValueError(f"{set_id(decl)}: unpacked set has manifest hash "
@@ -291,20 +342,75 @@ def _dists_url(base: dict) -> str:
     return f"{SNAPSHOT}/archive/{base['archive']}/{base['snapshot']}/dists/{base['suite']}"
 
 
-def _index(base: dict, rel: str, cache: Path, log) -> bytes:
+# Where Debian's archive signing keys live when the debian-archive-keyring
+# package is installed. Without it (or without gpgv) the Release file's
+# signature is not checked, and its pinned sha256 is the trust anchor.
+ARCHIVE_KEYRING = Path("/usr/share/keyrings/debian-archive-keyring.gpg")
+
+
+def _cached(base: dict, rel: str, cache: Path, log) -> bytes:
     name = f"{base['archive']}-{base['snapshot']}-{base['suite']}-{rel.replace('/', '_')}"
     f = cache / name
     if not f.is_file():
         log(f"  fetch {rel} @ {base['snapshot']}")
         _download(f"{_dists_url(base)}/{rel}", f)
-    data = f.read_bytes()
+    return f.read_bytes()
+
+
+def release(base: dict, cache: Path, log=print) -> dict:
+    """The snapshot's Release file: {"sha256", "hashes": {path: sha256},
+    "signature"}. A declared base['release_sha256'] must match; the hashes
+    it lists are what every index is checked against, and each .deb is
+    pinned by the sha256 its Packages entry gives, so one pinned hash
+    anchors the whole chain. The signature is verified with gpgv when the
+    Debian archive keyring is installed ("verified"), and otherwise left
+    unchecked ("unchecked"); a bad signature raises."""
+    import subprocess
+    import tempfile
+    body = _cached(base, "Release", cache, log)
+    sha = hashlib.sha256(body).hexdigest()
+    pinned = base.get("release_sha256")
+    if pinned and sha != pinned:
+        raise ValueError(f"Release @ {base['snapshot']}: sha256 {sha}, pinned {pinned}")
+    hashes, in_sha256 = {}, False
+    for line in body.decode(errors="replace").splitlines():
+        if not line.startswith(" "):
+            in_sha256 = line.startswith("SHA256:")
+            continue
+        if in_sha256:
+            digest, _size, path = line.split()
+            hashes[path] = digest
+    signature = "unchecked"
+    if shutil.which("gpgv") and ARCHIVE_KEYRING.is_file():
+        sig = _cached(base, "Release.gpg", cache, log)
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "Release").write_bytes(body)
+            (Path(td) / "Release.gpg").write_bytes(sig)
+            proc = subprocess.run(["gpgv", "--keyring", str(ARCHIVE_KEYRING),
+                                   str(Path(td) / "Release.gpg"), str(Path(td) / "Release")],
+                                  capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise ValueError(f"Release @ {base['snapshot']}: bad signature\n{proc.stderr}")
+        signature = "verified"
+    return {"sha256": sha, "hashes": hashes, "signature": signature}
+
+
+def _index(base: dict, rel: str, cache: Path, log, rel_info: dict | None = None) -> bytes:
+    """One index file, checked against the hash the Release file lists."""
+    rel_info = rel_info or release(base, cache, log)
+    data = _cached(base, rel, cache, log)
+    want = rel_info["hashes"].get(rel)
+    got = hashlib.sha256(data).hexdigest()
+    if want != got:
+        raise ValueError(f"{rel} @ {base['snapshot']}: sha256 {got}, Release lists {want}")
     return lzma.decompress(data) if rel.endswith(".xz") else gzip.decompress(data)
 
 
-def packages_index(base: dict, cache: Path, log=print) -> dict:
+def packages_index(base: dict, cache: Path, log=print, rel_info=None) -> dict:
     """{package: {"version", "filename", "sha256"}} from the snapshot's
     main Packages index for base['arch']."""
-    text = _index(base, f"main/binary-{base['arch']}/Packages.xz", cache, log).decode()
+    text = _index(base, f"main/binary-{base['arch']}/Packages.xz", cache, log,
+                  rel_info).decode()
     out = {}
     for stanza in text.split("\n\n"):
         fields = dict(re.findall(r"^([A-Za-z0-9-]+): (.*)$", stanza, re.M))
@@ -315,11 +421,12 @@ def packages_index(base: dict, cache: Path, log=print) -> dict:
     return out
 
 
-def contents_index(base: dict, roots, cache: Path, log=print) -> dict:
+def contents_index(base: dict, roots, cache: Path, log=print, rel_info=None) -> dict:
     """{path: [package, ...]} for every path under `roots`, from the
     snapshot's Contents index for base['arch']."""
     out: dict[str, list[str]] = {}
-    text = _index(base, f"main/Contents-{base['arch']}.gz", cache, log).decode(errors="replace")
+    text = _index(base, f"main/Contents-{base['arch']}.gz", cache, log,
+                  rel_info).decode(errors="replace")
     for line in text.splitlines():
         path, _, owners = line.rpartition(" ")
         path = path.strip()
@@ -346,8 +453,9 @@ def resolve(decl: dict, spellings, bench_root=None, log=print) -> dict:
     base = decl["base"]
     cache = deps_root(bench_root) / ".cache"
     cache.mkdir(parents=True, exist_ok=True)
-    pkgs = packages_index(base, cache, log)
-    contents = contents_index(base, decl["roots"], cache, log)
+    rel_info = release(base, cache, log)
+    pkgs = packages_index(base, cache, log, rel_info)
+    contents = contents_index(base, decl["roots"], cache, log, rel_info)
     excluded = set(decl.get("exclude", {}))
     chosen: dict[str, dict] = {}
     why: dict[str, str] = {}
@@ -363,7 +471,7 @@ def resolve(decl: dict, spellings, bench_root=None, log=print) -> dict:
         with _data_members(body) as tar:
             for m in tar.getmembers():
                 if m.isfile():
-                    rel = os.path.normpath(m.name[2:] if m.name.startswith("./") else m.name)
+                    rel = posixpath.normpath(m.name[2:] if m.name.startswith("./") else m.name)
                     if _under(rel, decl["roots"]) and not _under(rel, decl.get("prune", [])):
                         files[rel] = tar.extractfile(m).read()
 
@@ -380,9 +488,9 @@ def resolve(decl: dict, spellings, bench_root=None, log=print) -> dict:
         seen.add(key)
         dirs = ([includer_dir] if includer_dir else []) + list(decl["include_dirs"])
         hit = next((f"{d}/{spelling}" for d in dirs
-                    if os.path.normpath(f"{d}/{spelling}") in files), None)
+                    if posixpath.normpath(f"{d}/{spelling}") in files), None)
         if hit is None:
-            cands = [(d, os.path.normpath(f"{d}/{spelling}")) for d in dirs]
+            cands = [(d, posixpath.normpath(f"{d}/{spelling}")) for d in dirs]
             found = next(((path, contents[path]) for _, path in cands if path in contents), None)
             owners = [o for o in found[1] if o in pkgs and o not in excluded] if found else []
             if not owners:
@@ -402,11 +510,13 @@ def resolve(decl: dict, spellings, bench_root=None, log=print) -> dict:
                 why[pkg] = spelling
                 load_pkg(pkg)
             hit = path
-        rel = os.path.normpath(hit)
+        rel = posixpath.normpath(hit)
         for kind, inc in _INCLUDE.findall(files.get(rel, b"")):
             inc = inc.decode(errors="replace").strip()
-            queue.append((inc, os.path.dirname(rel) if kind == b'"' else None, rel))
-    return {"debs": sorted(chosen.values(), key=lambda d: d["package"]),
+            queue.append((inc, posixpath.dirname(rel) if kind == b'"' else None, rel))
+    return {"release_sha256": rel_info["sha256"],
+            "release_signature": rel_info["signature"],
+            "debs": sorted(chosen.values(), key=lambda d: d["package"]),
             "why": dict(sorted(why.items())),
             "unresolved": sorted(set(unresolved)),
             # Named only by a header in the set, usually in an arm for
@@ -418,8 +528,10 @@ def resolve(decl: dict, spellings, bench_root=None, log=print) -> dict:
 
 
 def fix_hint(name: str) -> str:
+    """How to provision the set `name` (its data/benchmark_deps/ file name)."""
     return (f"provision it with: python3 -m bench.deps fetch {name}   or "
-            f"ansible-playbook playbooks/benchmarks/{name}.yml -i 'localhost,' -c local")
+            f"ansible-playbook playbooks/setup-benchmark-deps.yml -i localhost, "
+            f"-c local -e benchmarks={name}")
 
 
 def main(argv=None) -> int:

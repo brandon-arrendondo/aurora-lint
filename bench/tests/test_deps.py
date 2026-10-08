@@ -7,7 +7,10 @@ machine runs against snapshot.debian.org, without the network.
 """
 
 import json
+import ntpath
+import os
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -25,7 +28,8 @@ def _decl(debs, **kw) -> dict:
     d = {"corpus": "toy", "platform": "linux-x86_64", "base": BASE,
          "sources": [{"kind": "debs", "debs": debs}], "roots": ROOTS,
          "include_dirs": ["usr/include/x86_64-linux-gnu", "usr/include"],
-         "manifest_sha256": None}
+         "manifest_sha256": None,
+         "why": {d["package"]: "test" for d in debs}}
     d.update(kw)
     return d
 
@@ -80,7 +84,33 @@ class TestIdentity(unittest.TestCase):
 
     def test_case_collisions_group_paths_that_differ_only_in_case(self):
         self.assertEqual(deps.case_collisions(["a/X.h", "a/x.h", "a/y.h", "B/z.h", "b/z.h"]),
-                         [["B/z.h", "b/z.h"], ["a/X.h", "a/x.h"]])
+                         [["B", "b"], ["B/z.h", "b/z.h"], ["a/X.h", "a/x.h"]])
+
+    def test_a_file_and_a_directory_differing_in_case_collide(self):
+        self.assertEqual(deps.case_collisions(["a/B", "a/b/c.h"]), [["a/B", "a/b"]])
+
+
+class TestValidate(unittest.TestCase):
+    def test_tree_paths_are_normalized(self):
+        d = deps.validate(_decl([], prune=["usr/include/linux/netfilter/"],
+                                roots=["usr/include/"]))
+        self.assertEqual(d["prune"], ["usr/include/linux/netfilter"])
+        self.assertEqual(d["roots"], ["usr/include"])
+
+    def test_paths_outside_the_tree_are_refused(self):
+        for bad in ("/usr/include", "../x", "usr/../..", "."):
+            with self.assertRaises(ValueError, msg=bad):
+                deps.validate(_decl([], prune=[bad]))
+
+    def test_a_package_without_a_why_is_refused(self):
+        d = _decl([{"package": "p", "sha256": "a" * 64}], why={})
+        with self.assertRaises(ValueError) as cm:
+            deps.validate(d)
+        self.assertIn("p", str(cm.exception))
+
+    def test_only_debs_sources_are_supported(self):
+        with self.assertRaises(ValueError):
+            deps.validate(_decl([], sources=[{"kind": "xwin"}]))
 
 
 class TestFetch(_Debs):
@@ -140,6 +170,33 @@ class TestFetch(_Debs):
         whole = self.fetch(_decl([self.debs["kernel"]]))
         self.assertNotEqual(res["actual"], whole["actual"])
 
+    def test_archive_paths_do_not_follow_the_host_path_flavour(self):
+        # On Windows os.path is ntpath. Archive member names are POSIX
+        # whatever the host, so the set and its pin must not change.
+        decl = _decl([self.debs["libc"], self.debs["kernel"]])
+        posix = self.fetch(decl)
+        windowsish = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os)
+                                              if not k.startswith("__")})
+        windowsish.path = ntpath
+        paths = None
+        with mock.patch.object(deps, "os", windowsish), \
+             mock.patch.object(header_tree, "os", windowsish):
+            paths = deps.member_paths(Path(self.debs["libc"]["url"][7:]).read_bytes(), ROOTS)
+            other = deps.fetch(decl, self.tmp / "win", log=lambda m: None)
+        self.assertIn("usr/include/x86_64-linux-gnu/bits/types.h", paths)
+        self.assertEqual(other["archive_manifest"], posix["archive_manifest"])
+
+    def test_a_tree_the_filesystem_did_not_keep_is_refused(self):
+        decl = _decl([self.debs["libc"]])
+        real = deps.manifest_sha256
+        with mock.patch.object(deps, "manifest_sha256",
+                               side_effect=lambda root, roots: "f" * 64
+                               if str(root).endswith(".partial") else real(root, roots)):
+            with self.assertRaises(ValueError) as cm:
+                self.fetch(decl)
+        self.assertIn("on disk", str(cm.exception))
+        self.assertEqual(deps.check(decl, self.bench)["status"], deps.MISSING)
+
     def test_the_same_packages_pin_the_same_on_another_host(self):
         decl = _decl([self.debs["libc"], self.debs["kernel"]])
         a = self.fetch(decl)["actual"]
@@ -161,6 +218,8 @@ class TestResolve(_Debs):
         urls = {d["file"]: d["url"] for d in self.debs.values()}
         real_entry = deps.deb_entry
         self.patches = [
+            mock.patch.object(deps, "release", return_value={
+                "sha256": "r" * 64, "hashes": {}, "signature": "unchecked"}),
             mock.patch.object(deps, "packages_index", return_value=index),
             mock.patch.object(deps, "contents_index", return_value=contents),
             mock.patch.object(deps, "deb_entry", side_effect=lambda base, p, info: dict(
@@ -201,14 +260,58 @@ class TestResolve(_Debs):
                          {"usr/include/linux/netfilter/xt_dscp.h": "(inventory)"})
 
 
+class TestRelease(unittest.TestCase):
+    """Every index resolve reads is checked against the snapshot's Release
+    file, and the Release file against its pinned sha256."""
+
+    def setUp(self):
+        import gzip
+        import hashlib
+        self._tmp = tempfile.TemporaryDirectory()
+        self.cache = Path(self._tmp.name)
+        self.contents = gzip.compress(b"usr/include/a.h    libdevel/p\n")
+        sha = hashlib.sha256(self.contents).hexdigest()
+        self.release = (b"Codename: bookworm\nSHA256:\n"
+                        + f" {sha} {len(self.contents)} main/Contents-amd64.gz\n".encode())
+        self.files = {"Release": self.release, "main/Contents-amd64.gz": self.contents}
+        self.patch = mock.patch.object(deps, "_cached",
+                                       side_effect=lambda base, rel, cache, log: self.files[rel])
+        self.patch.start()
+        self.nogpg = mock.patch.object(deps.shutil, "which", return_value=None)
+        self.nogpg.start()
+
+    def tearDown(self):
+        self.nogpg.stop()
+        self.patch.stop()
+        self._tmp.cleanup()
+
+    def test_an_index_matching_release_is_read(self):
+        got = deps.contents_index(BASE, ROOTS, self.cache, log=lambda m: None)
+        self.assertEqual(got, {"usr/include/a.h": ["p"]})
+
+    def test_an_index_differing_from_release_is_refused(self):
+        self.files["main/Contents-amd64.gz"] = self.contents + b"x"
+        with self.assertRaises(ValueError):
+            deps.contents_index(BASE, ROOTS, self.cache, log=lambda m: None)
+
+    def test_a_release_differing_from_its_pin_is_refused(self):
+        with self.assertRaises(ValueError):
+            deps.release(dict(BASE, release_sha256="0" * 64), self.cache, log=lambda m: None)
+        info = deps.release(BASE, self.cache, log=lambda m: None)
+        self.assertEqual(info["signature"], "unchecked")
+        self.assertEqual(deps.release(dict(BASE, release_sha256=info["sha256"]),
+                                      self.cache, log=lambda m: None)["sha256"], info["sha256"])
+
+
 class TestRunner(unittest.TestCase):
     def test_no_declaration_means_no_set(self):
-        with mock.patch.object(deps, "declared_for", return_value=None):
+        with mock.patch.object(deps, "deps_name", return_value=None):
             self.assertIsNone(rr._verified_deps("lua"))
 
     def _refusal(self, status, actual=None, expected="a" * 64):
         decl = _decl([], manifest_sha256=expected)
-        with mock.patch.object(deps, "declared_for", return_value=decl), \
+        with mock.patch.object(deps, "deps_name", return_value="toy-set"), \
+             mock.patch.object(deps, "load", return_value=decl), \
              mock.patch.object(deps, "check", return_value={
                  "status": status, "path": "/d", "actual": actual, "expected": expected}):
             with self.assertRaises(FileNotFoundError) as cm:
@@ -217,7 +320,10 @@ class TestRunner(unittest.TestCase):
 
     def test_a_missing_unpinned_or_different_set_refuses_the_scan(self):
         self.assertIn("is missing", self._refusal(deps.MISSING))
-        self.assertIn("bench.deps fetch toy", self._refusal(deps.MISSING))
+        # The hint names the set's file, which is what fetch and the
+        # playbook take, not the corpus.
+        self.assertIn("bench.deps fetch toy-set", self._refusal(deps.MISSING))
+        self.assertIn("-e benchmarks=toy-set", self._refusal(deps.MISSING))
         self.assertIn("no manifest_sha256", self._refusal(deps.UNPINNED, "b" * 64, None))
         self.assertIn("bbbbbbbbbbbb", self._refusal(deps.MISMATCH, "b" * 64))
 
@@ -231,6 +337,32 @@ class TestRunner(unittest.TestCase):
         self.assertEqual(cmd[-6:], ["-I", "/cb/lib", "-I", "/cb/include",
                                     "-I", "/d/usr/include"])
         self.assertNotIn("/usr/include/tcl8.6", cmd)
+
+    def test_the_run_id_names_any_headers_other_than_the_set(self):
+        decl = _decl([], manifest_sha256="c" * 64)
+        tree = {"id": "debian12-x", "replaces": "/usr/include"}
+        host = header_tree.host_spec("/usr/include")
+        # Scanned against its set: the benchmark run, under the bare id.
+        self.assertEqual(rr._header_variant(True, decl, None), "")
+        # Declares a set but scanned against something else: never the bare id.
+        self.assertEqual(rr._header_variant(True, None, tree), "-hdr-debian12-x")
+        self.assertEqual(rr._header_variant(True, None, host), "-hdr-host")
+        self.assertEqual(rr._header_variant(True, None, None), "-hdr-none")
+        # No set declared: as before.
+        self.assertEqual(rr._header_variant(False, None, host), "")
+        self.assertEqual(rr._header_variant(False, None, tree), "-hdr-debian12-x")
+
+    def test_a_compile_database_run_is_refused_for_a_corpus_with_a_set(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = dict(rr.CODEBASES["lua"], path=Path(td))
+            with mock.patch.dict(rr.CODEBASES, {"lua": cfg}), \
+                 mock.patch.object(rr, "_check_tool_available", return_value=True), \
+                 mock.patch("bench.config.compile_db_for",
+                            return_value=Path(td) / "compile_commands.json"), \
+                 mock.patch.object(deps, "deps_name", return_value="lua"):
+                with self.assertRaises(ValueError) as cm:
+                    rr.run_one("sqc", "lua", compile_commands=True)
+        self.assertIn("dependency set", str(cm.exception))
 
     def test_provenance_is_the_fifth_pin(self):
         decl = _decl([], manifest_sha256="c" * 64)

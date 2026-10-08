@@ -10,6 +10,11 @@
 # Debian one), refuse a layout the filesystem cannot hold, and verify the
 # manifest hash. The runner refuses to scan a benchmark whose set is missing
 # or different, so a failure here is a failure to provision, not a warning.
+#
+# Local only: the role runs bench/deps.py from this checkout, on the machine
+# running Ansible. It runs with the Python that runs Ansible
+# (ansible_playbook_python), which has everything bench/deps.py needs; a
+# FreeBSD or macOS host need not have a `python3` on PATH.
 
 - name: "{{ benchmark_deps_name }}: a benchmark is named"
   assert:
@@ -20,7 +25,6 @@
   stat:
     path: "{{ role_path }}/../../../data/benchmark_deps/{{ benchmark_deps_name }}.json"
   register: benchmark_deps_decl
-  delegate_to: localhost
 
 - name: "{{ benchmark_deps_name }}: fail without a declaration"
   fail:
@@ -30,21 +34,19 @@
   when: not benchmark_deps_decl.stat.exists
 
 - name: "{{ benchmark_deps_name }}: is the tree already present with the pinned hash?"
-  command: python3 -m bench.deps verify {{ benchmark_deps_name }}
+  command: "{{ ansible_playbook_python }} -m bench.deps verify {{ benchmark_deps_name }}"
   args:
     chdir: "{{ role_path }}/../../.."
-  environment:
-    SQC_BENCH_ROOT: "{{ benchmark_deps_bench_root }}"
+  environment: "{{ {'SQC_BENCH_ROOT': benchmark_deps_bench_root} if benchmark_deps_bench_root else {} }}"
   register: benchmark_deps_verify
   changed_when: false
   failed_when: false
 
 - name: "{{ benchmark_deps_name }}: fetch, unpack and verify the set"
-  command: python3 -m bench.deps fetch {{ benchmark_deps_name }}
+  command: "{{ ansible_playbook_python }} -m bench.deps fetch {{ benchmark_deps_name }}"
   args:
     chdir: "{{ role_path }}/../../.."
-  environment:
-    SQC_BENCH_ROOT: "{{ benchmark_deps_bench_root }}"
+  environment: "{{ {'SQC_BENCH_ROOT': benchmark_deps_bench_root} if benchmark_deps_bench_root else {} }}"
   register: benchmark_deps_fetch
   when: benchmark_deps_verify.rc != 0
   changed_when: true

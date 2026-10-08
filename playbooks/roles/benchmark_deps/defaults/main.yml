@@ -2,5 +2,8 @@
 # The benchmark whose dependency set to install: the name of a file in
 # data/benchmark_deps/ (without .json). Required.
 benchmark_deps_name: ""
-# Where trees go: BENCH_ROOT/deps/<id>/ (bench/deps.py).
-benchmark_deps_bench_root: "{{ lookup('env', 'SQC_BENCH_ROOT') | default(ansible_env.HOME + '/toolchain', true) }}"
+# Where trees go (BENCH_ROOT/deps/<id>/, bench/deps.py). Empty means
+# whatever bench/config.py resolves: $SQC_BENCH_ROOT, then .env, then
+# ~/toolchain. Set it only to override that, or the runner will look for
+# the tree somewhere else than this role put it.
+benchmark_deps_bench_root: ""

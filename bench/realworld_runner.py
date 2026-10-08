@@ -847,9 +847,10 @@ def _verified_deps(codebase: str):
     or different: a real-world benchmark scan without it would record
     findings against headers nothing pins (docs/adr/0018)."""
     from bench import deps
-    decl = deps.declared_for(codebase)
-    if decl is None:
+    name = deps.deps_name(codebase)
+    if name is None:
         return None
+    decl = deps.load(name)
     res = deps.check(decl)
     if res["status"] != deps.OK:
         detail = {deps.MISSING: "is missing",
@@ -860,8 +861,22 @@ def _verified_deps(codebase: str):
         raise FileNotFoundError(
             f"dependency set {res['path']} {detail}.\n"
             f"{codebase} is scanned against its pinned system headers; "
-            + deps.fix_hint(decl["corpus"]))
+            + deps.fix_hint(name))
     return decl
+
+
+def _header_variant(has_deps: bool, deps_decl, header_spec) -> str:
+    """The run-id suffix for the headers a scan read. A corpus scanned
+    against its dependency set adds nothing: the aurora-lint commit pins the
+    declaration. One that declares a set but was scanned against something
+    else (--header-tree, the host's headers included) is not a benchmark
+    run, so it never lands under the benchmark run's id: -hdr-<tree id>,
+    -hdr-host, or -hdr-none when it read no system headers at all."""
+    if deps_decl is not None:
+        return ""
+    if has_deps:
+        return f"-hdr-{header_spec['id'] if header_spec else 'none'}"
+    return _header_tree_suffix(header_spec)
 
 
 def _header_tree_suffix(spec) -> str:
@@ -1677,10 +1692,18 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
     header_spec = None
     deps_decl = None
     if tool == "sqc":
+        from bench import deps as _deps
         from bench import header_tree as _ht
         override = os.environ.get(_ht.HOST_TREE_ENV) or None
-        from bench import deps as _deps
-        if _deps.declared_for(codebase) is not None and override is None:
+        has_deps = _deps.deps_name(codebase) is not None
+        if has_deps and compile_db:
+            # A compile database passes its own -I/-isystem flags, the host's
+            # /usr/include among them, so the scan would not read the set.
+            raise ValueError(
+                f"{codebase} declares a dependency set (docs/adr/0018); "
+                "--compile-commands would scan it against the database's own "
+                "system include paths instead. Run it without the database.")
+        if has_deps and override is None:
             deps_decl = _verified_deps(codebase)
         else:
             header_spec = _verified_header_tree(codebase)
@@ -1689,14 +1712,7 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
             extra_args=_expand(cfg["sqc"].get("extra_args", []), str(cfg["path"])))
         suffix = settings_run_suffix(settings).lstrip("-")
         variant = f"{variant}-{suffix}" if variant else suffix
-        if deps_decl is None and override is not None and \
-                _deps.declared_for(codebase) is not None:
-            # A corpus with a dependency set, scanned against something else
-            # (the host's headers included): not a benchmark run, so never
-            # under the benchmark run's id.
-            variant += f"-hdr-{header_spec['id'] if header_spec else 'none'}"
-        else:
-            variant += _header_tree_suffix(header_spec)
+        variant += _header_variant(has_deps, deps_decl, header_spec)
 
     version = _get_tool_version(tool)
     sha = _get_git_sha()

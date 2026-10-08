@@ -72,6 +72,7 @@ provisioning prunes the libraries.
 import hashlib
 import json
 import os
+import posixpath
 from pathlib import Path
 
 from bench.config import BENCH_ROOT, PROJECT_DIR
@@ -293,8 +294,8 @@ def ar_members(data: bytes):
 
 
 def _within(rel: str) -> bool:
-    norm = os.path.normpath(rel)
-    return not (norm == ".." or norm.startswith("../") or os.path.isabs(norm))
+    norm = posixpath.normpath(rel)
+    return not (norm == ".." or norm.startswith("../") or posixpath.isabs(norm))
 
 
 def _inside(dest_real: Path, path: Path) -> bool:
@@ -361,9 +362,9 @@ def extract_headers(deb_bytes: bytes, dest, prefix="usr/include",
     with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as tar:
         for m in tar.getmembers():
             raw = m.name[2:] if m.name.startswith("./") else m.name
-            if os.path.isabs(raw) or not _within(raw):
+            if posixpath.isabs(raw) or not _within(raw):
                 raise ValueError(f"member escapes the tree: {m.name}")
-            rel = os.path.normpath(raw)
+            rel = posixpath.normpath(raw)
             if not any(rel == p or rel.startswith(p + "/") for p in prefixes):
                 continue
             if any(rel == p or rel.startswith(p + "/") for p in skip):
@@ -375,8 +376,8 @@ def extract_headers(deb_bytes: bytes, dest, prefix="usr/include",
                     raise ValueError(f"path leaves the tree through a symlink: {out}")
                 out.mkdir(exist_ok=True)
             elif m.issym():
-                target = os.path.join(os.path.dirname(rel), m.linkname)
-                if os.path.isabs(m.linkname) or not _within(target):
+                target = posixpath.join(posixpath.dirname(rel), m.linkname)
+                if posixpath.isabs(m.linkname) or not _within(target):
                     raise ValueError(f"symlink leaves the tree: {m.name} -> {m.linkname}")
                 if manifest is not None:
                     manifest[rel] = f"L {rel} {m.linkname}"
@@ -390,7 +391,7 @@ def extract_headers(deb_bytes: bytes, dest, prefix="usr/include",
             elif m.isfile() or m.islnk():
                 if m.islnk():
                     src_name = m.linkname[2:] if m.linkname.startswith("./") else m.linkname
-                    if os.path.isabs(src_name) or not _within(src_name):
+                    if posixpath.isabs(src_name) or not _within(src_name):
                         raise ValueError(f"hardlink leaves the tree: {m.name} -> {m.linkname}")
                     src = tar.extractfile(tar.getmember(m.linkname))
                 else:

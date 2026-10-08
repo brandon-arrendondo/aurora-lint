@@ -40,20 +40,27 @@ every other machine's run non-reproducible by definition.
 1. **Each real-world benchmark declares its dependency set**, in
    `data/benchmark_deps/<benchmark>.json`. That is one set per benchmark and
    build configuration.
-   - The set lists the packages (or, for the Win32 corpus, the SDK and CRT
-     tree) that supply the system headers its declared build configuration
-     includes.
+   - The set lists the packages that supply the system headers its
+     declared build configuration includes.
    - Each entry is pinned by the content hash of what is fetched.
-   - Each package carries one line saying which `#include` needs it.
+   - Each package carries one line saying which `#include` needs it. A
+     package without one is refused, because review is what keeps a set
+     minimal.
+   - The tooling fetches Debian packages today. The Win32 corpus's SDK and
+     CRT tree is already pinned the same way by a different fetcher, its
+     existing header tree. Bringing it, or any other non-Debian source,
+     into this declaration is future work, and it stays as it is meanwhile.
    - The set describes the corpus's **target platform**, its
      `primary_build_config`, not the host that scans it. A macOS host
      scanning a Linux corpus installs the same Linux headers a Linux host
      does.
 2. **The set is installed into a per-benchmark tree**, never into the system.
-   - A per-benchmark Ansible playbook installs it, through the same
-     standard-library Python fetcher a host without Ansible can call directly.
-   - The tree's directory is named by a hash of the declaration's sources, so
-     a re-pin is a new tree and an existing one never changes.
+   - One Ansible playbook installs the sets named with `-e benchmarks=`, or
+     every declared set. It calls the same standard-library Python fetcher
+     a host without Ansible can run directly.
+   - The tree's directory is named by a hash of the declaration's platform,
+     package base, sources, installed roots and pruned paths. So a re-pin is
+     a new tree, and an existing one never changes.
    - Downloads are shared between sets through a content-addressed cache.
 3. **The fifth pin is the set's manifest hash.** It is the SHA-256 of the
    sorted `F <path> <sha256 of bytes>` and `L <path> <link target>` lines, one
@@ -79,6 +86,12 @@ every other machine's run non-reproducible by definition.
    benchmarks, local scans and users' own scans run against whatever include
    paths they are given. A scan reports what it could not resolve; it does not
    refuse.
+
+## Transition
+
+Until a corpus declares its set, its runs continue exactly as before, under
+the same run id. They are not covered by the five-pin claim. Each corpus
+moves when its set is declared and its trend break is measured.
 
 ## Consequences
 

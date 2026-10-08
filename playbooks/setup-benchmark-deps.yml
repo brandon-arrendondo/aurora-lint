@@ -5,16 +5,20 @@
 # BENCH_ROOT/deps/. The same on Linux, macOS and FreeBSD: nothing here uses
 # the host's package manager.
 #
-# Usage:
+# Runs on the local machine only (it calls bench/deps.py from this
+# checkout). Usage:
 #   ansible-playbook playbooks/setup-benchmark-deps.yml -i "localhost," -c local
 #   ansible-playbook playbooks/setup-benchmark-deps.yml -i "localhost," -c local \
 #     -e benchmarks=mosquitto,lua
+# Trees go where bench/config.py says BENCH_ROOT is ($SQC_BENCH_ROOT, .env,
+# ~/toolchain); -e benchmark_deps_bench_root=DIR overrides it.
 #
 # Then `python -m bench corpus-check` reports each set OK, MISSING or
 # MISMATCH alongside the corpus pins.
 
 - name: Install the dependency sets of the real-world benchmarks
-  hosts: all
+  hosts: localhost
+  connection: local
   vars:
     declared: >-
       {{ (lookup('file', playbook_dir + '/../data/benchmark_repos.json') | from_json)['repos']
