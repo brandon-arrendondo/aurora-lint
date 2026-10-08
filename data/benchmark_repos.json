@@ -1361,6 +1361,7 @@
     },
     {
       "name": "lua",
+      "deps": "lua",
       "repo": "https://github.com/lua/lua.git",
       "version": "40b76de2d77e66b70a9d4bf989c3f5340919973f",
       "primary_build_config": {
