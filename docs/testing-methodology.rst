@@ -30,7 +30,8 @@ aurora-lint is benchmarked on two axes:
 
 **Benchmark cadence**:
 
-- **After every significant rule change**: Juliet benchmark (``python -m bench juliet``, ~10 min)
+- **After every significant rule change**: Juliet benchmark (``python -m bench juliet``;
+  a dated run time is in :doc:`reproducing-published-numbers`)
 - **After version milestones**: Full real-world benchmark (``python -m bench
   realworld-run``, every pinned codebase; ``--tool`` adds cppcheck/clang-tidy)
 - **cppcheck/clang-tidy results are stable** across aurora-lint changes — run once and cache
@@ -92,10 +93,10 @@ Tests are auto-generated into Rust test functions from ``.c`` files — no embed
     cargo test
 
     # Tests for a specific rule
-    cargo test --package aurora-lint --lib -- rules::cert_c::sig01_c::tests
+    cargo test --lib -- generated_tests::test_sig01_c_
 
     # Tests for a category
-    cargo test --package aurora-lint --lib -- rules::cert_c::mem
+    cargo test --lib -- generated_tests::test_mem
 
 The Benchmark Harness (Python)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -323,8 +324,7 @@ How Juliet Benchmarking Works
    functions are false positives.
 
 3. **Parallel execution**: CWEs are processed in parallel via Python's
-   ``ProcessPoolExecutor`` for fast turnaround (~8-10 min on 4-core, ~3-5 min
-   on 24-core).
+   ``ProcessPoolExecutor``.
 
 4. **Results stored in SQLite**: All results go to ``data/benchmarks.db`` with
    per-CWE metrics, per-rule breakdowns, and cross-version comparison support.
@@ -345,8 +345,7 @@ Running the benchmark:
 Results at v0.4.116 (historical)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This is a dated snapshot kept for the FP-reduction history below, not the
-current figure. Current Juliet figures are in README.md's Benchmark
+This is a dated snapshot, not the current figure. Current Juliet figures are in README.md's Benchmark
 Highlights table, and :doc:`reproducing-published-numbers` names the run and
 commit each published figure comes from. The fast-mode scanned set has grown
 since this snapshot, so its CWE counts are not comparable with today's.
@@ -386,33 +385,8 @@ full current per-CWE data.
 FP Reduction History
 ~~~~~~~~~~~~~~~~~~~~
 
-Over 30+ rounds of targeted optimization, aurora-lint has reduced false positives by
-99.5% from baseline while improving the TP rate from 41.1% to 83.8%:
-
-========  ==========================================  ==========  =========  =========
-Round     Key Changes                                 FP          TP Rate    FP Delta
-========  ==========================================  ==========  =========  =========
-Baseline  Initial implementation                      839,341     41.1%      --
-Round 3   Standard function database                  537,589     42.8%      -198,974
-Round 6   Cross-file analysis (``-d``)                327,191     43.1%      -148,622
-Round 9   Windows API whitelist                       243,849     43.8%      -52,566
-Round 12  CFG + inter-procedural analysis             215,671     44.5%      -28,178
-v0.2.23   Built-in C limit macros + const_eval        163,585     44.6%      -12,088
-v0.3.37   Fast mode, taint tracking                   9,067       48.4%      --
-v0.3.119  74 CWEs (6 new), precision improvements     11,702      67.5%      +2,635
-v0.4.116  VRA, macro expansion, field-sensitive        4,220       83.8%      -7,482
-          alias tracking, per-rule tuning
-========  ==========================================  ==========  =========  =========
-
-*Note: fast mode (CWE-matched rules only) became the benchmark default at
-v0.3.20, after being introduced as an opt-in flag at v0.3.19; v0.3.37 is simply
-the first fast-mode row in this table. Earlier rounds used full-suite scoring, so absolute FP counts are not directly comparable across
-the two methodologies. TP rate is the consistent metric. The FP increase from
-v0.3.37 to v0.3.119 reflects expanded CWE scope (68 → 74 CWEs) and more test files,
-not regression — TP rate improved 19.1 percentage points over the same span. The
-v0.3.119 → v0.4.116 span (dozens of intermediate releases; see
-``docs/juliet-history.rst``) cut FP by more than half again while gaining a
-further 16.3 points of TP rate.*
+The round-by-round false-positive reduction history, from the baseline to
+v0.4.116 and beyond, is in :doc:`juliet-history`.
 
 Real-World Code Analysis
 ------------------------
@@ -443,7 +417,7 @@ advisory and mandatory) while cppcheck and clang-tidy implement ~20 checks each.
 The difference reflects rule coverage breadth, not false positive rate.
 
 **Measured precision/recall**: 6.2% precision / 91.7% recall against the
-adjudicated ground-truth oracle (``python -m bench realworld-score 118``) —
+adjudicated ground-truth oracle, measured on the maintainers' run #118 —
 the empirical floor across those 7 projects at the time, not a raw violation-count
 comparison, from a run superseded many times since. Current figures are in
 README.md's Benchmark Highlights table; the full version history and
@@ -518,7 +492,8 @@ Published CERT-C Results
 We did not find any published CERT-C violation rates per KLOC on production
 open-source code. Valid comparison strategies:
 
-1. aurora-lint vs. cppcheck vs. clang-tidy on same codebase (done for 5 projects)
+1. aurora-lint vs. cppcheck vs. clang-tidy on same codebase (done for the
+   cppcheck/clang-tidy baseline corpora; see :doc:`tool-comparison`)
 2. aurora-lint on JasPer with reference to David Svoboda, *SCALe Analysis of
    JasPer Codebase* (SEI, April 2015), a CERT C audit of JasPer and the only
    published audit of a named codebase against CERT C that we found
@@ -533,7 +508,7 @@ Test Infrastructure Details
 Build-Time Test Generation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-1. **Test files**: ``.c`` files in ``src/rules/cert_c/CATEGORY/RULE-ID/tests/{fail,pass}/``
+1. **Test files**: ``.c`` files in ``src/rules/cert_c/CATEGORY/RULE-ID/tests/{fail,pass,expected_fail}/``
 2. **Build-time generation**: ``build.rs`` walks the test directories and generates
    Rust test functions in ``$OUT_DIR/integration_tests.rs``
 3. **Test harness**: ``src/rules/cert_c/integration.rs`` includes the generated
@@ -542,9 +517,11 @@ Build-Time Test Generation
 
    - ``fail/`` tests: parse the C file, run the rule, assert violations > 0
    - ``pass/`` tests: parse the C file, run the rule, assert violations == 0
+   - ``expected_fail/`` tests: assert like ``fail/`` tests
 
-5. **Disabled rules**: if ``RULE-ID.toml`` has ``enabled = false``, tests are
-   generated with ``#[ignore]``
+5. **Ignored tests**: if ``RULE-ID.toml`` has ``enabled = false`` (the rule
+   is not implemented), its tests are generated with ``#[ignore]``, and so
+   is every ``expected_fail/`` test
 
 Test File Naming Conventions
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -586,48 +563,30 @@ What Tests Do NOT Cover
   "Every fixture is tested under the context the analyzer really builds"
   above), so a callee, macro or type defined in *another* file is never
   exercised by the fixture corpus
-- **CLI flags**: No tests for ``--diff``, ``--export``, ``--format``, ``--include-path``,
-  ``--save-prescan``, ``--load-prescan``, ``--jobs``
-- **Suppression**: No tests for ``.aurora-lint-suppress.toml`` hash-based suppression
+- **CLI flags and suppression files** are not covered by the fixture corpus;
+  ``tests/cli_integration.rs`` tests them, with its suppression fixtures
+  under ``tests/fixtures/cli/``
 
 Coverage Gate
 ~~~~~~~~~~~~~
 
-Line coverage is enforced at **75%** via ``scripts/coverage-gate.sh``, shared by
-the pre-commit hook and GitHub Actions CI pipeline. The script:
+Line coverage is enforced at **75%** in GitHub Actions CI
+(``scripts/coverage-gate.sh 75``; it is not a pre-commit hook, so run it by
+hand before a tag push). The script:
 
 - Runs tests via ``cargo llvm-cov``
 - Produces ``lcov.info`` (publishable as CI artifact)
 - Excludes from threshold: ``ui/`` (GUI), ``main.rs`` (CLI entry),
   ``integration.rs`` (test harness), ``progress.rs`` (terminal I/O),
-  ``export/`` (SARIF/Excel output), ``files/`` (git/directory I/O),
+  ``export/`` (JSON/SARIF output), ``files/`` (git/directory I/O),
   ``manifest/`` (TOML config loading)
 - Fails with clear output showing current coverage and largest uncovered files
 
 Embedded Rust Unit Tests
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-Files in ``src/analyze/`` with ``#[cfg(test)]`` modules:
-
-=========================  ======  ======
-File                       Lines   Tests
-=========================  ======  ======
-prescan.rs                 2,741   31
-const_eval.rs              2,071   43
-value_range.rs             1,778   13
-init_state.rs              1,729   6
-null_state.rs              1,720   9
-function_summary.rs        1,175   14
-suppression.rs             1,070   34
-dataflow.rs                988     19
-cfg.rs                     761     7
-mod.rs                     705     10
-context.rs                 93      0
-=========================  ======  ======
-
-Rule implementation files with embedded tests (against project convention):
-INT34-C, INT33-C, CON31-C, FIO01-C, EXP32-C, EXP30-C, EXP33-C, EXP08-C,
-EXP42-C, DCL08-C, STR10-C.
+Analysis modules under ``src/analyze/`` carry ``#[cfg(test)]`` unit tests;
+rule implementation files carry none (their tests are the fixtures).
 
 Known Rule Implementation Gaps
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -709,10 +668,10 @@ flags something in over a third of flawed files, but lands on the specific
 planted flaw line in roughly an eighth of cases. When judging headroom, the
 flaw-hit rate is the honest signal to watch for movement, not the TP rate.
 
-Juliet also exercises only part of the rule suite — 127 rules have any
-Juliet true positive, out of |rules_total| implemented. See "Rule-suite coverage"
+Juliet also exercises only part of the rule suite — in the run #226
+measurement below, 127 rules had any Juliet true positive. See "Rule-suite coverage"
 below for what that leaves unmeasured, and
-[``docs/juliet-history.rst``](docs/juliet-history.rst) for the full
+:doc:`juliet-history` for the full
 round-by-round version history behind the table above.
 
 Rule-suite coverage
@@ -720,7 +679,8 @@ Rule-suite coverage
 
 Precision and recall above are aggregates over the rules that actually fire
 on the benchmark corpora. They say nothing about the rest of the suite, and
-the rest of the suite is substantial (measured 2026-09-02, run #226):
+the rest of the suite is substantial (historical: run #226, 2026-09-02, nine
+projects; not refreshed, and only the *Implemented* row is today's count):
 
 .. list-table::
    :header-rows: 1
@@ -736,12 +696,12 @@ the rest of the suite is substantial (measured 2026-09-02, run #226):
      - **125 (40%)**
    * - · fire on the corpus, but have only ever produced FPs
      - 65
-   * - · never fire on the nine projects at all
+   * - · never fire on that run's nine projects at all
      - 60
 
 A rule in that last group has never been shown to detect anything real —
 but that is usually a statement about the corpora, not about the rule. The
-nine real-world projects are mature, warning-clean C, which is the opposite
+nine projects of that run are mature, warning-clean C, which is the opposite
 population from aurora-lint's nominal use case (newer, in-progress, possibly
 non-compiling code wired into CI/CD early — aurora-lint needs no build system, which
 is the whole point). A rule whose defect cannot survive review in released
@@ -753,10 +713,10 @@ suppression exist so the user decides which rules apply to their code,
 rather than detection logic silently deciding for them).
 
 **Worked example of why a per-rule 0.0% is sometimes a corpus artifact, not
-a rule defect** : ``DCL31-C`` shows 364 findings, 324 labeled, 0
-TP — 0.0% precision. That figure measures aurora-lint's header reachability, not
-the rule's quality. ``mosquitto`` alone goes from 1,365 ``DCL31-C`` findings
-with no ``-I`` to 0 with ``-I /usr/include``. The rule guards a genuine defect —
+a rule defect** : in a historical run, ``DCL31-C`` had hundreds of labeled
+findings and no TP — 0.0% precision. That figure measures aurora-lint's header
+reachability, not the rule's quality. ``mosquitto`` alone went from over a
+thousand ``DCL31-C`` findings with no ``-I`` to none with ``-I /usr/include``. The rule guards a genuine defect —
 under C89 an implicit declaration makes the compiler assume ``int f()``, so
 the return type is misread, no argument checking happens, and a returned
 pointer is truncated on LP64; C99 removed implicit declarations and C23
