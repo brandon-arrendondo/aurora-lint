@@ -1710,7 +1710,7 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
             # its build recipe produced there (python -m bench
             # container-build-db), materialized for this run.
             deps_decl = _verified_deps(codebase)
-            if deps_decl.get("build") and env_manifest is not None:
+            if deps_decl and deps_decl.get("build") and env_manifest is not None:
                 cache_dir = _deps.build_cache_dir(
                     deps_decl, _get_codebase_sha(cfg["path"]) or "", _env.pin(env_manifest))
                 if not (cache_dir / "cache.json").is_file():

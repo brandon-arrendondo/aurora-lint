@@ -56,6 +56,24 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
       build-essential cmake ninja-build autoconf automake libtool pkg-config bear \
  && rm -rf /var/lib/apt/lists/*
 
+# Frama-C (with the Eva plugin), built by opam into /opt/opam: a stage of
+# its own, so changing it rebuilds nothing else. opam-repository is pinned
+# to one commit, and opam checks every source tarball against the checksum
+# that commit records.
+FROM tools AS framac
+ARG OPAM_REPOSITORY_COMMIT=e4cd7ede2d55a46570977c0ffaa7e96845190817
+ARG OCAML_VERSION=4.14.2
+ARG FRAMA_C_VERSION=33.0
+ENV OPAMROOT=/opt/opam OPAMYES=1 OPAMCONFIRMLEVEL=unsafe-yes
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends opam m4 unzip libgmp-dev zlib1g-dev graphviz \
+ && rm -rf /var/lib/apt/lists/*
+RUN opam init --bare --disable-sandboxing --no-setup default \
+      "git+https://github.com/ocaml/opam-repository.git#${OPAM_REPOSITORY_COMMIT}" \
+ && opam switch create default "ocaml-base-compiler.${OCAML_VERSION}" \
+ && opam install --switch=default "frama-c.${FRAMA_C_VERSION}" \
+ && opam clean --all-switches --download-cache --logs --repo-cache
+
 FROM tools AS bench
 ARG RUST_VERSION=1.95.0
 ARG RUST_SHA256=2e0338f18ecbaa4a0f631b9e80e8b8e26bb6fe77dd5454fba8a70cf96c1e84a1
@@ -65,19 +83,30 @@ ARG CLANG_TIDY_VERSION=1:21.1.8~++20251221032947+2078da43e25a-1~exp1~20251221153
 ENV CARGO_HOME=/opt/cargo \
     PATH=/opt/rust/bin:/opt/infer/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+# Open-source cppcheck removed its CERT addon (addons/cert.py) in 2022, so
+# cppcheck runs here without it.
+# cppcheck and Flawfinder from the snapshot; libgmp10, zlib1g and graphviz
+# are what Frama-C (copied from its stage below) needs at run time. gcc's
+# -fanalyzer is the snapshot's gcc 12, already in the tools stage.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends cppcheck libtinfo5 \
+ && apt-get install -y --no-install-recommends cppcheck flawfinder libtinfo5 \
+      libgmp10 zlib1g graphviz \
  && rm -rf /var/lib/apt/lists/*
 
-# clang-tidy, pinned to the build the tool comparison is measured against.
+# clang-tidy and the Clang Static Analyzer (scan-build, analyze-build), one
+# LLVM build, pinned to the one the tool comparison is measured against.
 # apt.llvm.org is not snapshotted, so the exact version is named here and
-# recorded in the manifest.
+# recorded in the manifest; the packages are also kept in the maintainers' sha256-keyed artifact cache.
 RUN curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg \
  && echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-21 main" \
     > /etc/apt/sources.list.d/llvm.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends "clang-tidy-21=${CLANG_TIDY_VERSION}" \
+      "clang-21=${CLANG_TIDY_VERSION}" "clang-tools-21=${CLANG_TIDY_VERSION}" \
  && ln -s /usr/bin/clang-tidy-21 /usr/local/bin/clang-tidy \
+ && ln -s /usr/bin/clang-21 /usr/local/bin/clang \
+ && ln -s /usr/bin/scan-build-21 /usr/local/bin/scan-build \
+ && ln -s /usr/bin/analyze-build-21 /usr/local/bin/analyze-build \
  && rm -rf /var/lib/apt/lists/*
 
 # Rust, the version rust-toolchain.toml names, from its sha256-checked
@@ -95,6 +124,11 @@ RUN curl -fsSLo /tmp/infer.tar.xz \
  && echo "${INFER_SHA256}  /tmp/infer.tar.xz" | sha256sum -c - \
  && mkdir /opt/infer && tar -xJf /tmp/infer.tar.xz -C /opt/infer --strip-components=1 \
  && rm /tmp/infer.tar.xz
+
+# Frama-C: the opam root, built in its own stage above.
+COPY --from=framac /opt/opam /opt/opam
+ENV OPAMROOT=/opt/opam \
+    PATH=/opt/opam/default/bin:${PATH}
 
 # aurora-lint's own build dependencies (git2 links libgit2, which needs
 # OpenSSL and zlib headers). They land in the image's /usr/include, which a

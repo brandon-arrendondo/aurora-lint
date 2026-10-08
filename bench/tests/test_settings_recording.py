@@ -93,8 +93,12 @@ class TestManifestDeclarations(unittest.TestCase):
             seen.append(kw.get("manifest"))
             raise RuntimeError("stop after naming the run")
 
+        # The run's dependency set is beside the point here, and a fresh
+        # clone has not fetched it (bench/deps.py): verifying it would stop
+        # the run before the settings are resolved.
         with mock.patch.object(rr, "resolve_settings", side_effect=resolve), \
                 mock.patch.object(rr, "_check_tool_available", return_value=True), \
+                mock.patch.object(rr, "_verified_deps", return_value=None), \
                 mock.patch.dict(rr.CODEBASES["mbedtls"],
                                 {"path": Path(self._tmp())}):
             with self.assertRaises(RuntimeError):
