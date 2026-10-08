@@ -99,6 +99,7 @@ README = ROOT / "README.md"
 # src/rules/cert_c/integration.rs, so it is checked too -- if it disagrees,
 # the generator is wrong and regenerating will not help.
 TARGETS = [
+    "src/lib.rs",
     "README.md",
     "docs/index.rst",
     "docs/configuration.rst",

@@ -77,7 +77,7 @@ repos:
         entry: python3 scripts/check_project_facts.py
         language: system
         pass_filenames: false
-        files: '(rules_templates/(rules-all|removed-rules)\.toml|README\.md|docs/.*\.(rst|md)|src/rules/cert_c/integration\.rs)$'
+        files: '(rules_templates/(rules-all|removed-rules)\.toml|README\.md|docs/.*\.(rst|md)|src/lib\.rs|src/rules/cert_c/integration\.rs)$'
         verbose: true
 
       - id: check-removed-rules

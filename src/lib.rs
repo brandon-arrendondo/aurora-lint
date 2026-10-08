@@ -1,5 +1,6 @@
 //! Library interface for `aurora-lint`, a static analysis tool checking C code
-//! against the SEI CERT C Coding Standard (285 rules across 17 categories).
+//! against the SEI CERT C Coding Standard. See the README and the default rule
+//! manifest (`rules_templates/rules-all.toml`) for current rule coverage.
 //! Exists to let `cargo test` exercise the analysis engine directly; the
 //! `aurora-lint` binary (`main.rs`) is a thin CLI wrapper around
 //! [`analyze::analyze_project`]. See this crate's README for the full
