@@ -19,12 +19,13 @@
 //!    when the declared environment honors that library contract
 //!    (`stdlib_noreturn`: hosted, or a declared libc model).
 //! 2. `_Noreturn`-qualified declarations/definitions (C11 6.7.4p8), trusted
-//!    only when `trust_noreturn_keyword` holds (the default policy).
+//!    only when `trust_noreturn_keyword` holds (the default and strict
+//!    policies).
 //! 3. A definition whose body unconditionally terminates the process, even
 //!    with nothing declaring it noreturn -- pure-ftpd's `pure-pw.c` defines
 //!    its own `static void no_mem(void) { fprintf(...); exit(...); }` with
 //!    no attribute anywhere. Inferred to a fixpoint, so a wrapper around a
-//!    wrapper is recognized too. This is the only proof the strict policy
+//!    wrapper is recognized too. This is the only proof the pedantic policy
 //!    accepts for a project function.
 //!
 //! `__attribute__((noreturn))` is proof under neither policy (ADR-0015): it
@@ -54,14 +55,18 @@ use tree_sitter::Node;
 /// and the rest honor their library contract?).
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ByNoreturnTrust<T> {
-    /// Keyword and library contract both trusted (the default preset).
+    /// Keyword and library contract both trusted (the default and strict
+    /// presets).
     pub keyword_and_stdlib: T,
-    /// Only the library contract trusted (strict policy on a declared libc).
+    /// Only the library contract trusted (the pedantic preset on a declared
+    /// libc).
     pub stdlib_only: T,
-    /// Only the keyword trusted (default policy, freestanding, no libc).
+    /// Only the keyword trusted (default or strict policy with no library
+    /// contract: freestanding, or `libc = "custom"`).
     pub keyword_only: T,
-    /// Neither: only a body verified never to return (the strict preset),
-    /// which with no library contract leaves nothing to verify against.
+    /// Neither: only a body verified never to return (the pedantic preset
+    /// with no C library declared), which with no library contract leaves
+    /// nothing to verify against.
     pub neither: T,
 }
 
@@ -134,8 +139,9 @@ const STDLIB_NORETURN_FUNCTIONS: &[&str] = &[
 /// True when `name` is one of the standard library's noreturn functions and
 /// the declared environment honors that contract (`stdlib_noreturn`). For a
 /// rule that recognizes a terminating call by name rather than through a
-/// [`collect_noreturn_function_names`] set; either way the strict preset's
-/// freestanding environment credits none of them.
+/// [`collect_noreturn_function_names`] set; either way a scan with no library
+/// contract (freestanding, or the pedantic preset with no C library declared)
+/// credits none of them.
 pub fn is_stdlib_noreturn_name(name: &str, settings: &AnalysisSettings) -> bool {
     settings.flag("stdlib_noreturn") && is_stdlib_noreturn_function(name)
 }
@@ -541,9 +547,9 @@ mod tests {
         collect_noreturn_names(&tree.root_node(), &source).keyword_and_stdlib
     }
 
-    /// The names the strict policy accepts in `src`, on an environment that
-    /// honors the library contract (strict policy, declared libc).
-    fn strict_names(src: &str) -> HashSet<String> {
+    /// The names the pedantic policy accepts in `src`, on an environment that
+    /// honors the library contract (a declared libc).
+    fn pedantic_names(src: &str) -> HashSet<String> {
         let (tree, source) = parse(src);
         collect_noreturn_names(&tree.root_node(), &source).stdlib_only
     }
@@ -552,7 +558,7 @@ mod tests {
     fn stdlib_names_always_present() {
         for names in [
             default_names("int main(void) { return 0; }\n"),
-            strict_names("int main(void) { return 0; }\n"),
+            pedantic_names("int main(void) { return 0; }\n"),
         ] {
             assert!(names.contains("abort"));
             assert!(names.contains("exit"));
@@ -564,21 +570,21 @@ mod tests {
     fn c11_noreturn_keyword_is_trusted_only_by_the_default_policy() {
         let src = "_Noreturn void die(void);\n";
         assert!(default_names(src).contains("die"));
-        assert!(!strict_names(src).contains("die"));
+        assert!(!pedantic_names(src).contains("die"));
     }
 
     #[test]
     fn a_wrapper_around_a_keyword_declared_function_follows_the_keyword() {
         let src = "_Noreturn void die(void);\nstatic void bail(void) { die(); }\n";
         assert!(default_names(src).contains("bail"));
-        assert!(!strict_names(src).contains("bail"));
+        assert!(!pedantic_names(src).contains("bail"));
     }
 
     #[test]
     fn a_verified_body_is_proof_under_both_policies() {
         let src = "_Noreturn void die(void) { exit(1); }\n";
         assert!(default_names(src).contains("die"));
-        assert!(strict_names(src).contains("die"));
+        assert!(pedantic_names(src).contains("die"));
     }
 
     #[test]
@@ -604,7 +610,7 @@ mod tests {
             "[[_Noreturn]] void die(void);\n",
         ] {
             assert!(default_names(src).contains("die"), "{src}");
-            assert!(!strict_names(src).contains("die"), "{src}");
+            assert!(!pedantic_names(src).contains("die"), "{src}");
         }
     }
 
@@ -625,7 +631,7 @@ mod tests {
             "void die(void) __attribute__((noreturn));\n",
         ] {
             assert!(!default_names(src).contains("die"), "{src}");
-            assert!(!strict_names(src).contains("die"), "{src}");
+            assert!(!pedantic_names(src).contains("die"), "{src}");
         }
     }
 
@@ -756,12 +762,13 @@ mod tests {
         // proof under neither policy, and the definition's body can return.
         let src = "void NORETURN slowpath(int x);\nvoid slowpath(int x) { for (;;) {} }\n";
         assert!(!default_names(src).contains("slowpath"));
-        assert!(!strict_names(src).contains("slowpath"));
+        assert!(!pedantic_names(src).contains("slowpath"));
     }
 
     #[test]
     fn nothing_is_noreturn_without_the_library_contract_or_the_keyword() {
-        // The strict preset: freestanding with no libc, strict policy.
+        // No library contract and no trust in the keyword: the pedantic
+        // preset with no C library declared.
         let (tree, source) =
             parse("_Noreturn void die(void);\nstatic void bail(void) { exit(1); }\n");
         let names = collect_noreturn_names(&tree.root_node(), &source);

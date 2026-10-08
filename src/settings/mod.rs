@@ -429,12 +429,15 @@ pub static OPTIONS: &[OptionSpec] = &[
             pedantic: false,
         },
         oracle_tag: "platform-constant-assert",
-        summary: "FLP36-C: an assert whose condition only compares compile-time constants \
-                  (LONG_MAX, DBL_MANT_DIG and the like) checks the platform, so it counts as \
-                  a precision check even though NDEBUG can strip it.",
-        basis: "CERT FLP36-C's compliant solution is such an assert. Its condition has the \
-                same value in every build for one target, so a build that strips it is no \
-                less safe than the build that checked it.",
+        summary: "FLP36-C: an assert whose condition compares constants the file can see, \
+                  among them a standard integer limit or floating-point precision (LONG_MAX, \
+                  DBL_MANT_DIG and the like), checks the platform, so it counts as a \
+                  precision check even though NDEBUG can strip it.",
+        basis: "In the spirit of CERT FLP36-C's compliant solution, which asserts the \
+                precision of LONG_MAX against the float's (through popcount() and log2(), so \
+                not itself a constant). A comparison of constants has the same value in \
+                every build for one target, so a build that strips it is no less safe than \
+                the build that checked it.",
     },
     OptionSpec {
         name: "closed_program",

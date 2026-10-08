@@ -520,7 +520,7 @@ fn the_pedantic_preset_is_named_in_the_settings_and_the_banner() {
     // No library is declared: the scan names the key and the enabled rules
     // whose findings depend on one.
     assert!(
-        stderr.contains("notice: the pedantic preset trusts only a declared C library"),
+        stderr.contains("warning: the pedantic preset trusts only a declared C library"),
         "{stderr}"
     );
     assert!(stderr.contains("[environment] libc"), "{stderr}");

@@ -15,7 +15,6 @@
 //! - With precision assertion checking before conversion
 
 use super::super::{CertRule, RuleViolation};
-use crate::analyze::const_eval;
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils;
@@ -172,8 +171,8 @@ impl Flp36C {
             return true;
         }
 
-        // An assert over constants alone checks the platform, whatever the
-        // build: CERT's own compliant solution is one
+        // An assert over platform constants checks the platform, whatever
+        // the build, in the spirit of CERT's compliant solution
         // (`flp36_constant_assert_is_guard`).
         if self
             .settings
@@ -211,9 +210,13 @@ impl Flp36C {
     }
 }
 
-/// Whether `body` holds an `assert` whose condition only compares
-/// compile-time constants, in [`const_eval::is_compile_time_constant_expr`]'s
-/// sense: the same value in every build for one target.
+/// Whether `body` holds an `assert` that checks the platform: a comparison
+/// whose operands are fixed at compile time from what this file can see
+/// (literals, `sizeof`, the standard limit macros, macros the file defines,
+/// and arithmetic over them), at least one of which is a standard integer
+/// limit or floating-point precision macro, so the check bears on a
+/// conversion between the two. A name the file cannot see may be a global,
+/// so it does not count, and neither does a bare constant (`assert(1)`).
 fn has_constant_assert(body: &Node, source: &str) -> bool {
     let mut stack = vec![*body];
     while let Some(node) = stack.pop() {
@@ -224,7 +227,7 @@ fn has_constant_assert(body: &Node, source: &str) -> bool {
             && node
                 .child_by_field_name("arguments")
                 .and_then(|args| args.named_child(0))
-                .is_some_and(|cond| is_constant_condition(&cond, source))
+                .is_some_and(|cond| is_platform_check(&cond, source))
         {
             return true;
         }
@@ -234,42 +237,131 @@ fn has_constant_assert(body: &Node, source: &str) -> bool {
     false
 }
 
-/// A comparison or logical combination whose operands are all compile-time
-/// constants, or a constant itself.
-fn is_constant_condition(node: &Node, source: &str) -> bool {
+/// A comparison, or a logical combination of comparisons, over platform
+/// constants that names a standard limit.
+fn is_platform_check(node: &Node, source: &str) -> bool {
+    let mut names_limit = false;
+    is_constant_comparison(node, source, &mut names_limit) && names_limit
+}
+
+fn is_constant_comparison(node: &Node, source: &str, names_limit: &mut bool) -> bool {
     match node.kind() {
         "parenthesized_expression" => node
             .named_child(0)
-            .is_some_and(|inner| is_constant_condition(&inner, source)),
-        "unary_expression"
-            if ast_utils::get_node_text(node, source)
-                .trim_start()
-                .starts_with('!') =>
-        {
-            node.child_by_field_name("argument")
-                .is_some_and(|arg| is_constant_condition(&arg, source))
-        }
-        "binary_expression"
-            if matches!(
-                ast_utils::get_binary_operator(node, source).unwrap_or_default(),
-                "<" | "<=" | ">" | ">=" | "==" | "!=" | "&&" | "||"
-            ) =>
-        {
-            match (
+            .is_some_and(|inner| is_constant_comparison(&inner, source, names_limit)),
+        "binary_expression" => {
+            let op = ast_utils::get_binary_operator(node, source).unwrap_or_default();
+            let (Some(l), Some(r)) = (
                 node.child_by_field_name("left"),
                 node.child_by_field_name("right"),
-            ) {
-                (Some(l), Some(r)) => {
-                    is_constant_condition(&l, source) && is_constant_condition(&r, source)
+            ) else {
+                return false;
+            };
+            match op {
+                "&&" | "||" => {
+                    is_constant_comparison(&l, source, names_limit)
+                        && is_constant_comparison(&r, source, names_limit)
+                }
+                "<" | "<=" | ">" | ">=" | "==" | "!=" => {
+                    is_platform_constant(&l, source, names_limit)
+                        && is_platform_constant(&r, source, names_limit)
                 }
                 _ => false,
             }
         }
-        _ => const_eval::is_compile_time_constant_expr(
-            node,
-            source,
-            &const_eval::MacroConstantMap::new(),
-            const_eval::ConstantNameSets::none(),
-        ),
+        _ => false,
     }
+}
+
+/// An operand fixed at compile time from what this file can see.
+fn is_platform_constant(node: &Node, source: &str, names_limit: &mut bool) -> bool {
+    match node.kind() {
+        "number_literal" | "sizeof_expression" => true,
+        "parenthesized_expression" => node
+            .named_child(0)
+            .is_some_and(|inner| is_platform_constant(&inner, source, names_limit)),
+        "cast_expression" => node
+            .child_by_field_name("value")
+            .is_some_and(|v| is_platform_constant(&v, source, names_limit)),
+        "binary_expression" => {
+            let op = ast_utils::get_binary_operator(node, source).unwrap_or_default();
+            matches!(
+                op,
+                "+" | "-" | "*" | "/" | "%" | "<<" | ">>" | "&" | "|" | "^"
+            ) && node
+                .child_by_field_name("left")
+                .is_some_and(|l| is_platform_constant(&l, source, names_limit))
+                && node
+                    .child_by_field_name("right")
+                    .is_some_and(|r| is_platform_constant(&r, source, names_limit))
+        }
+        "identifier" => {
+            let name = ast_utils::get_node_text(node, source);
+            if is_standard_limit_macro(name) {
+                *names_limit = true;
+                true
+            } else {
+                ast_utils::is_defined_macro_name(name, source)
+            }
+        }
+        _ => false,
+    }
+}
+
+/// A limit or precision macro of `<limits.h>`, `<stdint.h>` or `<float.h>`
+/// (C11 5.2.4.2, 7.20.2, 7.20.3): reserved names, so the spelling is the
+/// identity.
+fn is_standard_limit_macro(name: &str) -> bool {
+    const INTEGER: &[&str] = &[
+        "CHAR_BIT",
+        "SCHAR_MIN",
+        "SCHAR_MAX",
+        "UCHAR_MAX",
+        "CHAR_MIN",
+        "CHAR_MAX",
+        "SHRT_MIN",
+        "SHRT_MAX",
+        "USHRT_MAX",
+        "INT_MIN",
+        "INT_MAX",
+        "UINT_MAX",
+        "LONG_MIN",
+        "LONG_MAX",
+        "ULONG_MAX",
+        "LLONG_MIN",
+        "LLONG_MAX",
+        "ULLONG_MAX",
+        "INTMAX_MIN",
+        "INTMAX_MAX",
+        "UINTMAX_MAX",
+        "INTPTR_MIN",
+        "INTPTR_MAX",
+        "UINTPTR_MAX",
+        "PTRDIFF_MIN",
+        "PTRDIFF_MAX",
+        "SIZE_MAX",
+    ];
+    if INTEGER.contains(&name) || name == "FLT_RADIX" {
+        return true;
+    }
+    if let Some(rest) = name
+        .strip_prefix("FLT_")
+        .or_else(|| name.strip_prefix("DBL_"))
+        .or_else(|| name.strip_prefix("LDBL_"))
+    {
+        return matches!(rest, "MANT_DIG" | "DIG" | "MAX");
+    }
+    // INTn_MAX, INT_LEASTn_MIN, UINT_FASTn_MAX and the rest of <stdint.h>.
+    let core = name.strip_prefix('U').unwrap_or(name);
+    let Some(core) = core.strip_prefix("INT") else {
+        return false;
+    };
+    let core = core
+        .strip_prefix("_LEAST")
+        .or_else(|| core.strip_prefix("_FAST"))
+        .unwrap_or(core);
+    let Some((width, limit)) = core.split_once('_') else {
+        return false;
+    };
+    !width.is_empty() && width.bytes().all(|b| b.is_ascii_digit()) && matches!(limit, "MIN" | "MAX")
 }

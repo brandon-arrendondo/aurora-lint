@@ -1,21 +1,17 @@
 /*
  * Rule: PRE31-C
  * Source: testcases
- * Status: PASS - Should NOT trigger PRE31-C violation
+ * Status: PASS under the default preset; VIOLATION under strict
  * Expect: default=clean strict=violation
- * strlen/strcmp/strncmp are free of side effects by the stdlib_call_effects
- * contract, which a freestanding environment (the strict preset) withdraws;
- * there they are calls to unknown functions, which strict reports.
- */
-
-/*
- * Rule: PRE31-C - Avoid side effects in arguments to unsafe macros
- * Status: PASS
- * Reason: strlen/strcmp/strncmp only read their arguments and have no
- * observable side effects (PRE31-C-EX1) — re-evaluating them under a
- * double-evaluating macro changes nothing. (Previously misclassified as
- * side-effecting via errno; the C standard does not require strlen to set
- * errno, so this was a rule bug, not a real finding.)
+ *
+ * strlen, strcmp and strncmp only read their arguments, and the
+ * stdlib_call_effects contract lists them as free of side effects, so the
+ * default policy treats a call to them as pure and re-evaluating it under a
+ * double-evaluating macro changes nothing (pre31_listed_library_calls_pure).
+ * The strict policy does not: CERT PRE31-C-EX1 counts "even changing errno"
+ * as a side effect, and C11 7.5p3 lets any library function set errno unless
+ * its description says otherwise, so each call is an unproven one, which
+ * strict reports.
  */
 
 #include <string.h>

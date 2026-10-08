@@ -460,7 +460,7 @@ fn run() -> Result<i32> {
         .arg(
             Arg::new("profile")
                 .long("profile")
-                .help("Preset for both settings axes: default (default policy, hosted), strict (strict policy, freestanding) or pedantic (pedantic policy, freestanding). Overrides the manifest's `profile`")
+                .help("Preset for both settings axes: default (default policy, hosted), strict (strict policy, hosted) or pedantic (pedantic policy, hosted, trusting only a declared --libc). Overrides the manifest's `profile`")
                 .value_name("PRESET")
                 .value_parser(["default", "strict", "pedantic"]),
         )
@@ -879,7 +879,7 @@ fn run() -> Result<i32> {
     analysis_settings.set_prescan_scope(scope.prescan_scope());
     let declined = manifest.declined_rules(|id| analysis_settings.declines(id));
     if let Some(notice) = analysis_settings.libc_notice(|r| rule_enabled(&manifest, r)) {
-        eprintln!("notice: {notice}");
+        eprintln!("warning: {notice}");
     }
 
     // Handle suppression generation

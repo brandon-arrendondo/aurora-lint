@@ -80,12 +80,12 @@ Policy options
    - Basis: CERT ENV33-C: "Do not invoke a command processor via system() or equivalent functions"; its compliant solutions call execve() and CreateProcess(), which run a program the same way _exec* and _spawn* do.
 
 ``flp36_constant_assert_is_guard``
-   FLP36-C: an assert whose condition only compares compile-time constants (LONG_MAX, DBL_MANT_DIG and the like) checks the platform, so it counts as a precision check even though NDEBUG can strip it.
+   FLP36-C: an assert whose condition compares constants the file can see, among them a standard integer limit or floating-point precision (LONG_MAX, DBL_MANT_DIG and the like), checks the platform, so it counts as a precision check even though NDEBUG can strip it.
 
    - Default preset: ``true``; strict preset: ``true``; pedantic preset: ``false``
    - Scope: FLP36-C
    - Oracle tag: ``platform-constant-assert``
-   - Basis: CERT FLP36-C's compliant solution is such an assert. Its condition has the same value in every build for one target, so a build that strips it is no less safe than the build that checked it.
+   - Basis: In the spirit of CERT FLP36-C's compliant solution, which asserts the precision of LONG_MAX against the float's (through popcount() and log2(), so not itself a constant). A comparison of constants has the same value in every build for one target, so a build that strips it is no less safe than the build that checked it.
 
 Environment contracts
 ---------------------

@@ -395,10 +395,11 @@ settled the environment points above and several rule readings.
    - a function declared `_Noreturn` is trusted not to return, as CERT
      MSC37-C-EX2 reads it; `--pedantic` accepts only a body shown never to
      return;
-   - FLP36-C counts an `assert` whose condition compares only compile-time
-     constants as a precision check, as CERT's compliant solution does; it
-     has the same value in every build for one target. `--pedantic` does
-     not;
+   - FLP36-C counts an `assert` whose condition compares compile-time
+     constants, among them a standard integer limit or floating-point
+     precision, as a precision check, in the spirit of CERT's compliant
+     solution (whose assert itself calls functions); it has the same value
+     in every build for one target. `--pedantic` does not;
    - ENV33-C does not report the Windows `_exec*` and `_spawn*` functions,
      which run a program without a command processor, as the rule's
      compliant `execve()` and `CreateProcess()` solutions do; `--pedantic`
