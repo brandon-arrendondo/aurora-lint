@@ -145,7 +145,10 @@ assume (ADR-0015):</p>
 are reported. <code class="docutils literal notranslate"><span class="pre">default</span></code> credits the assumptions mainstream analyzers make
 (for example, a dominating <code class="docutils literal notranslate"><span class="pre">assert</span></code> is a guard even though <code class="docutils literal notranslate"><span class="pre">NDEBUG</span></code> can
 strip it). <code class="docutils literal notranslate"><span class="pre">strict</span></code> credits none of them: the reading MISRA-style and
-certified code needs.</p></li>
+certified code needs. <code class="docutils literal notranslate"><span class="pre">pedantic</span></code> goes beyond a rule’s text where the
+rule has a sound or closed-form reading stricter than the text, and may
+decline a rule that has none; a rule with no pedantic reading is read as
+<code class="docutils literal notranslate"><span class="pre">strict</span></code> reads it.</p></li>
 <li><p><strong>Environment</strong> says what the analyzer may believe about the platform the
 code runs on. <code class="docutils literal notranslate"><span class="pre">hosted</span></code> trusts the ISO C and POSIX library contracts (for
 example, <code class="docutils literal notranslate"><span class="pre">free(NULL)</span></code> does nothing) and <code class="docutils literal notranslate"><span class="pre">main</span></code>’s <code class="docutils literal notranslate"><span class="pre">argv</span></code> guarantees.
@@ -155,9 +158,13 @@ guessed from the machine running the scan.</p></li>
 </ul>
 <p>Two presets set both at once. The <strong>default</strong> preset is the default policy on
 a hosted environment. The <strong>strict</strong> preset is the strict policy on a
-freestanding environment, for teams that trust nothing. Any combination can
-be set explicitly, down to single options:</p>
-<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="n">profile</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strict&quot;</span><span class="w">          </span><span class="c1"># preset: &quot;default&quot; (the default) or &quot;strict&quot;</span>
+freestanding environment, for teams that trust nothing. The <strong>pedantic</strong>
+preset is the pedantic policy on a freestanding environment. Benchmark
+precision and recall are scored against the strict reading. <code class="docutils literal notranslate"><span class="pre">--policy</span></code>
+changes only the policy axis: <code class="docutils literal notranslate"><span class="pre">--policy</span> <span class="pre">pedantic</span></code> alone keeps the default
+preset’s hosted environment. Any combination can be set explicitly, down to
+single options:</p>
+<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="n">profile</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strict&quot;</span><span class="w">          </span><span class="c1"># preset: &quot;default&quot; (the default), &quot;strict&quot; or &quot;pedantic&quot;</span>
 
 <span class="k">[metadata]</span>
 <span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Firmware rules&quot;</span>
@@ -165,7 +172,7 @@ be set explicitly, down to single options:</p>
 <span class="n">cert_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;2016&quot;</span>
 
 <span class="k">[policy]</span>
-<span class="n">level</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strict&quot;</span><span class="w">            </span><span class="c1"># &quot;default&quot; | &quot;strict&quot;; overrides the preset</span>
+<span class="n">level</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strict&quot;</span><span class="w">            </span><span class="c1"># &quot;default&quot; | &quot;strict&quot; | &quot;pedantic&quot;; overrides the preset</span>
 
 <span class="k">[environment]</span>
 <span class="n">kind</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;freestanding&quot;</span><span class="w">       </span><span class="c1"># &quot;hosted&quot; | &quot;freestanding&quot;; overrides the preset</span>

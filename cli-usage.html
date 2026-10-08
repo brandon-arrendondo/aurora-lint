@@ -181,10 +181,11 @@ Options:
   -j, --jobs &lt;N&gt;                   Number of parallel analysis threads
                                    (0 = auto-detect, 1 = sequential; default: 0)
       --profile &lt;PRESET&gt;           Preset for both settings axes: default (default
-                                   policy, hosted) or strict (strict policy,
+                                   policy, hosted), strict (strict policy,
+                                   freestanding) or pedantic (pedantic policy,
                                    freestanding). Overrides the manifest&#39;s `profile`
       --policy &lt;POLICY&gt;            Policy axis: which findings are reported
-                                   [default, strict] (overrides the preset)
+                                   [default, strict, pedantic] (overrides the preset)
       --environment &lt;KIND&gt;         Environment axis [hosted, freestanding] (overrides
                                    the preset). Declared, never inferred from the
                                    scanning host

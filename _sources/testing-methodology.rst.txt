@@ -65,6 +65,9 @@ checkout you have.
 validated like rule behavior. Every fixture runs under both the ``default``
 and the ``strict`` preset; the ``strict`` run's test name ends in
 ``__strict``, and ``docs/test-summary.md`` tabulates the ``default`` run.
+A fixture runs under the ``pedantic`` preset only when its ``Expect:`` line
+names ``pedantic``, since the preset matrix covers only the rules whose
+verdict a preset changes; that run's name ends in ``__pedantic``.
 The directory's expectation holds under both presets unless the fixture's
 leading comment overrides it per preset, and a ``Settings:`` line applies
 option overrides on top of each preset:

@@ -14,6 +14,9 @@ them.
   environment and the ISO C + POSIX library model.
 - The **strict** preset is ``policy = strict`` with a ``freestanding``
   environment and no library model.
+- The **pedantic** preset is ``policy = pedantic`` with a ``freestanding``
+  environment and no library model. It reads a rule beyond its text where
+  that rule has a pedantic reading, and may decline a rule outright.
 
 Policy options
 --------------
@@ -21,7 +24,7 @@ Policy options
 ``assert_is_guard``
    A dominating assert whose condition establishes the property is a guard, even if NDEBUG can strip it.
 
-   - Default preset: ``true``; strict preset: ``false``
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
    - Scope: cross-cutting
    - Oracle tag: ``assert-dominated``
    - Basis: The Clang Static Analyzer, Polyspace and Coverity's models treat a live assert as an assumption; CERT's EXP34-C compliant solution uses one.
@@ -29,7 +32,7 @@ Policy options
 ``first_site_only``
    In a proof chain, only the first failing site is reported, not the sites that depend on the same missing check.
 
-   - Default preset: ``true``; strict preset: ``false``
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
    - Scope: cross-cutting
    - Oracle tag: ``dependent-site``
    - Basis: Mainstream path-sensitive analyzers report one missing check once.
@@ -37,7 +40,7 @@ Policy options
 ``trust_noreturn_keyword``
    A function declared _Noreturn (or <stdnoreturn.h> noreturn, or C23 [[noreturn]]) is trusted not to return; otherwise only a body verified never to return proves it.
 
-   - Default preset: ``true``; strict preset: ``false``
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
    - Scope: cross-cutting
    - Oracle tag: ``noreturn-trusted``
    - Basis: C11 6.7.4p8, 7.23; C23 6.7.13.7. A GNU noreturn attribute, [[gnu::noreturn]] included, is proof under neither policy.
@@ -45,7 +48,7 @@ Policy options
 ``pre31_unknown_call_pure``
    PRE31-C: an unproven call, in an argument an unsafe macro may evaluate other than once, is not treated as a side effect: a call to a function with no definition in the scanned files and no library contract, a call through a pointer, strerror, inet_ntoa, strsignal, gai_strerror, getenv, gmtime and asctime (whose only effect is the static buffer they return), or a call to a scanned function that reaches one of these and nothing shown to have a side effect. A callee shown to have a side effect, in whichever scanned file it is defined, is reported either way.
 
-   - Default preset: ``true``; strict preset: ``false``
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
    - Scope: PRE31-C
    - Oracle tag: ``call-side-effect-unproven``
    - Basis: C11 5.1.2.3p2 (which CERT quotes) makes a call a side effect only when the function does one. cppcheck's assertWithSideEffect and Polyspace's MISRA C:2012 Rule 13.5 flag only callees they can show are impure. clang-tidy's bugprone-assert-side-effect ignores calls by default. PC-lint and Parasoft's CERT_C-PRE31-c count every call, as the strict policy does.
@@ -53,7 +56,7 @@ Policy options
 ``env33_locally_constructed_command_allowed``
    ENV33-C: a call to system(), popen() or an equivalent is not reported when the command is not a string literal and no untrusted input can reach it: the calling function reads none (no recv, fgets, getenv, read and the like) and either takes no pointer or array parameter, or is static with its address never taken and every caller, up to ones taking no parameters, reads none and returns no tainted value (closed_program does not widen this: ADR-0011). Off, every call is reported as CERT's page is written. system(NULL) (CERT EX1) is not reported under either value.
 
-   - Default preset: ``true``; strict preset: ``false``
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
    - Scope: ENV33-C
    - Oracle tag: ``command-untainted``
    - Basis: Taint-tracking command-injection checkers report a command only when untrusted data reaches it: CodeQL's cpp/command-line-injection. clang-tidy's cert-env33-c reports every call except system(NULL), as the strict policy does (ADR-0001).
@@ -64,7 +67,7 @@ Environment contracts
 ``closed_program``
    The scanned files are the whole program: nothing outside them links against it, dlopens it, or loads into it. Then a non-static function's call sites in the scanned files are all of its call sites, so what every one of them passes proves a fact about its parameter, as it does for a static function: a value range, a buffer size, a non-null pointer, an untainted or range-checked argument. As for a static function, the proof needs at least one call site and no use of the function's address anywhere in the scanned files, and main stays open. A proof that accepts a caller only because its body reads no untrusted input, whatever value it passes (ENV03-C, ENV33-C, STR02-C, INT30-C, INT31-C and INT32-C), still holds for static functions only. And a non-static, non-const global that no scanned file writes, and a non-static function that only returns a literal, are constants EXP33-C may fold to prune a branch. Undeclared, another translation unit may call the function, write the global or interpose the function, so none of this holds.
 
-   - Default preset: ``false``; strict preset: ``false``
+   - Default preset: ``false``; strict preset: ``false``; pedantic preset: ``false``
    - Scope: contract
    - Oracle tag: ``contract:closed_program``
    - Basis: ADR-0011: libraries count as external, and an executable that exports its symbols (-rdynamic, dlopen'ed plugins) is a library too, so in-tree callers and writes prove nothing about a function or global with external linkage; a closed set of call sites, all passing a safe argument, is proof (basis 3). C11 6.2.2p2: every declaration of an identifier with external linkage, in any translation unit, denotes the same object. Declared by the user, never assumed: a Juliet testcase set is a closed program; a library is not.
@@ -72,7 +75,7 @@ Environment contracts
 ``free_null_is_noop``
    free(NULL) does nothing.
 
-   - Default preset: ``true``; strict preset: ``false``
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
    - Scope: contract
    - Oracle tag: ``contract:free_null_is_noop``
    - Basis: C11 7.22.3.3p2.
@@ -80,7 +83,7 @@ Environment contracts
 ``realloc_null_is_malloc``
    realloc(NULL, size) behaves like malloc(size).
 
-   - Default preset: ``true``; strict preset: ``false``
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
    - Scope: contract
    - Oracle tag: ``contract:realloc_null_is_malloc``
    - Basis: C11 7.22.3.5p3.
@@ -88,7 +91,7 @@ Environment contracts
 ``stdlib_noreturn``
    abort, exit, _Exit, quick_exit, longjmp, thrd_exit and POSIX _exit never return to their caller.
 
-   - Default preset: ``true``; strict preset: ``false``
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
    - Scope: contract
    - Oracle tag: ``contract:stdlib_noreturn``
    - Basis: C11 7.22.4.1, 7.22.4.4, 7.22.4.5, 7.22.4.7, 7.13.2.1 and 7.26.5.5; POSIX.1-2024 _exit(). A freestanding implementation need not provide <stdlib.h>, <setjmp.h> or <threads.h> at all. Known limitation: two cross-file summaries built by the prescan (a parameter's null state after `if (!p) exit(1);`, and whether a function never returns) still credit these calls whatever this option says.
@@ -96,7 +99,7 @@ Environment contracts
 ``stdlib_call_effects``
    The ISO C and POSIX functions the tool lists as free of side effects (strlen, memcmp, isdigit, fabs, ntohs, ...) have none, and every other ISO C or POSIX function it knows has one (it sets errno, touches a stream, allocates, or keeps hidden state). Withdrawn, a library call is a call to an unknown function.
 
-   - Default preset: ``true``; strict preset: ``false``
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
    - Scope: contract
    - Oracle tag: ``contract:stdlib_call_effects``
    - Basis: C11 7.24 and 7.4: memcmp, strcmp, strncmp, memchr, strchr, strcspn, strpbrk, strrchr, strspn, strstr, strlen and the character classification and case mapping functions modify no object; 7.22.1.4p8 and 7.12.1 (strtol and math functions report errors through errno); CERT PRE31-C-EX1: "even changing errno is a side effect".
@@ -104,7 +107,7 @@ Environment contracts
 ``library_macros_evaluate_once``
    A C library function the implementation's headers define as a macro (glibc's tolower) evaluates each argument exactly once, whatever its replacement list looks like, including when a project macro hands it an argument. "The implementation's headers" are any defining the name outside the scanned project, so a third-party library on the search path that redefines a standard name is trusted too (a redefinition C11 7.1.3 already makes undefined). Withdrawn, such a macro is judged by its definition like any other.
 
-   - Default preset: ``true``; strict preset: ``false``
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
    - Scope: contract
    - Oracle tag: ``contract:library_macros_evaluate_once``
    - Basis: C11 7.1.4p1: "Any invocation of a library function that is implemented as a macro shall expand to code that evaluates each of its arguments exactly once". The standard's own exceptions (the stream argument of getc, putc, getwc and putwc, and assert) stay unsafe.
@@ -112,7 +115,7 @@ Environment contracts
 ``main_argv_guarantees``
    main's argc is nonnegative, argv[argc] is a null pointer, and argv[0..argc) point to strings.
 
-   - Default preset: ``true``; strict preset: ``false``
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
    - Scope: contract
    - Oracle tag: ``contract:main_argv_guarantees``
    - Basis: C11 5.1.2.2.1p2, which binds hosted environments only.
@@ -120,7 +123,7 @@ Environment contracts
 ``static_zero_init``
    Objects with static storage duration and no initializer are zeroed before main runs.
 
-   - Default preset: ``true``; strict preset: ``true``
+   - Default preset: ``true``; strict preset: ``true``; pedantic preset: ``true``
    - Scope: contract
    - Oracle tag: ``contract:static_zero_init``
    - Basis: C11 6.7.9p10. Startup code that skips clearing .bss breaks it. Withdrawn, a block-scope static read before its function writes it is indeterminate; file-scope objects, which any function may write first, are not tracked.

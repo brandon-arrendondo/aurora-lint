@@ -188,6 +188,9 @@ checkout you have.</p>
 validated like rule behavior. Every fixture runs under both the <code class="docutils literal notranslate"><span class="pre">default</span></code>
 and the <code class="docutils literal notranslate"><span class="pre">strict</span></code> preset; the <code class="docutils literal notranslate"><span class="pre">strict</span></code> run’s test name ends in
 <code class="docutils literal notranslate"><span class="pre">__strict</span></code>, and <code class="docutils literal notranslate"><span class="pre">docs/test-summary.md</span></code> tabulates the <code class="docutils literal notranslate"><span class="pre">default</span></code> run.
+A fixture runs under the <code class="docutils literal notranslate"><span class="pre">pedantic</span></code> preset only when its <code class="docutils literal notranslate"><span class="pre">Expect:</span></code> line
+names <code class="docutils literal notranslate"><span class="pre">pedantic</span></code>, since the preset matrix covers only the rules whose
+verdict a preset changes; that run’s name ends in <code class="docutils literal notranslate"><span class="pre">__pedantic</span></code>.
 The directory’s expectation holds under both presets unless the fixture’s
 leading comment overrides it per preset, and a <code class="docutils literal notranslate"><span class="pre">Settings:</span></code> line applies
 option overrides on top of each preset:</p>
