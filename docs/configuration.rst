@@ -37,6 +37,11 @@ Custom Manifest Format
     severity = "Medium"
     description = "Guarantee that storage for strings has sufficient space"
 
+A misspelled table or key is refused, except under ``[metadata]`` and in a
+rule's block, where an unknown key is ignored. In a rule's block,
+``category``, ``cert_id`` and ``parameters`` (removed keys that never had an
+effect) load with a warning.
+
 Policy and Environment Settings
 -------------------------------
 
@@ -280,11 +285,6 @@ scanning: ``configuration ok`` and status 0 when valid, otherwise status 1 and
 one ``error:`` line per problem. Both use the code a scan runs, so they cannot
 disagree with it.
 
-Precedence, highest first: the command line (``--set``, ``--data-model``), the
-project's own keys, the data model's bundle, the ISO minimum. An explicit
-key beats the data model whatever the order of the lines; a key that only repeats
-what the data model loads declares nothing.
-
 ``aurora-lint --write-config FILE`` writes a complete configuration with every
 settings key and a one-line description of each. A key at its built-in default
 is commented out; with ``--data-model X`` or ``--set`` the data model's bundle
@@ -389,34 +389,13 @@ and says when each one fits.
 Supported CERT C Rules
 ----------------------
 
-|rules_total| rules are tracked across 17 categories; |rules_enabled| are implemented and enabled by
-default (the remaining |rules_disabled| are tracked but not implemented — see
-`Tracked but not implemented`_ below):
-
-==========  ======  ===========================================================
-Category    Count   Rules
-==========  ======  ===========================================================
-**API**     9       API00-C through API10-C (selected)
-**ARR**     9       ARR00-C through ARR39-C (selected)
-**CON**     23      CON01-C through CON50-C (selected)
-**DCL**     31      DCL00-C through DCL41-C (selected)
-**ENV**     8       ENV01-C through ENV34-C (selected)
-**ERR**     11      ERR00-C through ERR34-C (selected)
-**EXP**     31      EXP00-C through EXP47-C (selected)
-**FIO**     33      FIO01-C through FIO47-C (selected)
-**FLP**     13      FLP00-C through FLP37-C (selected)
-**INT**     23      INT00-C through INT36-C (selected)
-**MEM**     17      MEM00-C through MEM36-C (selected)
-**MSC**     10      MSC04-C through MSC41-C (selected)
-**POS**     20      POS01-C through POS54-C (selected)
-**PRE**     16      PRE00-C through PRE32-C (selected)
-**SIG**     7       SIG00-C through SIG35-C (selected)
-**STR**     16      STR00-C through STR38-C (selected)
-**WIN**     6       WIN00-C through WIN30-C (selected)
-==========  ======  ===========================================================
-
-For the full list, see ``rules_templates/rules-all.toml`` or the rule source files
-in ``src/rules/cert_c/``.
+|rules_total| rules are tracked across 17 categories (API, ARR, CON, DCL, ENV,
+ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, and WIN); |rules_enabled|
+are implemented and enabled by default (the remaining |rules_disabled| are
+tracked but not implemented; see `Tracked but not implemented`_ below).
+``aurora-lint --list-rules`` lists every rule aurora-lint implements, with its
+default setting and severity (``--list-rules json`` for tooling). The rule
+source files are in ``src/rules/cert_c/``.
 
 .. _relaxed-onboarding:
 
