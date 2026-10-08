@@ -34,11 +34,11 @@ belongs in
 
 - Do not reintroduce a local mirror, cache, or sync of benchmark data for speed
   or offline use. That paradigm was deliberately abandoned: it restores a
-  per-node copy of a corpus this checkout alone already fills 6.5 GB with, and
+  per-machine copy of a corpus this checkout alone already fills 6.5 GB with, and
   adds a second thing that can go stale or disagree. Centralizing in Postgres
-  is what makes a worker node disposable.
-- Do not add maintainer-workflow machinery here to save a hop. Multi-node
-  coordination, shared-instance credentials, queue plumbing and cross-machine
+  is what makes any one checkout disposable.
+- Do not add maintainer-workflow machinery here to save a hop. Coordination
+  with the shared instance, its credentials, queue plumbing and result
   reconciliation are `benchmarking_db`'s.
 
 **This repo stays Postgres-blind**: no DSN, no connection code, no awareness of
@@ -387,7 +387,7 @@ hard precedence in either direction is measurably wrong.
 
 ## Maintaining this file
 
-This file is prepended to **every** session's context, on every node. A line
+This file is prepended to **every** session's context. A line
 earns its place only by changing what an agent does. Before adding anything,
 apply these:
 
