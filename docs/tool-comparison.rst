@@ -108,9 +108,10 @@ Coverage Is The Difference
 .. note::
 
    ``python -m bench realworld-run --tool infer`` and
-   ``--tool frama-c`` work against every corpus.
+   ``--tool frama-c`` work against every corpus that has a compile database.
    Both are driven from each checkout's ``compile_commands.json``, which
-   ``playbooks/setup-compile-commands.yml`` generates for every corpus —
+   ``playbooks/setup-compile-commands.yml`` generates for every corpus but
+   ventoy —
    including seL4, hostap and pure-ftpd, whose supposed unbuildability was
    the original blocker and is no longer true.
 
