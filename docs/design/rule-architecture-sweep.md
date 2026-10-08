@@ -93,8 +93,8 @@ follow-on), one increment (concrete indirect-target resolution) explicitly decli
 against the same "no measured driver" precedent
 `docs/design/cfg-substrate-adoption-decision.md` already set. Combined
 measured local delta: 1489 → 1444 findings (-3.0%, this checkout's own
-record — official measurement still owed to a VLAN30-capable node's A/B +
-delta-adjudication).
+record — official measurement still owed to a benchmark run on the shared database's
+runner + delta-adjudication).
 
 The two lessons this sweep carries forward from that doc's own §6: (1) a
 symptom that looks like one architecture problem is often two or three

@@ -621,8 +621,8 @@ labeled TP by a full re-audit pass). The flag is therefore a small
 reported; it is still far too small to justify running the corpus with the flag
 by default.
 
-**Delta-adjudicated 2026-09-01** (sel4, 39 labels, source
-`delta_compile_db_task623`, private audit archive). Applying each project's `scope_include` predicate
+**Delta-adjudicated 2026-09-01** (sel4, 39 labels, source: a
+compile-database delta run, private audit archive). Applying each project's `scope_include` predicate
 first, per CLAUDE.md, removed the largest raw chunk before any reading:
 pure-ftpd's 38 DCL31-C removals are all in `src/ftpd.c`, and that oracle covers
 only its six SQL-logging files (it was onboarded as a CWE-89 client oracle), so

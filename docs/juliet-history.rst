@@ -489,11 +489,11 @@ CWE366 Race Condition Within Thread           1       12      7.7%
 **Duration**: 1h 14m 1s (54,484 files, 118 CWEs), 24-core workstation via MCP
 benchmark server.
 
-v0.3.9 — P3214 Real-World FP Fixes (12-CWE Subset)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+v0.3.9 — Embedded Firmware Real-World FP Fixes (12-CWE Subset)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Targeted at 5 high-frequency FP patterns from P3214 embedded firmware
-(CMS80F752x/8051 MCU). 12-CWE subset: TP=61,349, FP=77,245, rate=44.3%
+Targeted at 5 high-frequency FP patterns from an embedded 8051 firmware
+codebase. 12-CWE subset: TP=61,349, FP=77,245, rate=44.3%
 (-450 TP / -581 FP vs v0.3.8).
 
 - **DCL08-C**: Skip pair-offset "relationship" check when all 3+ enumerators
