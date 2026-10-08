@@ -1788,6 +1788,13 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
         "scanned_loc": scanned_loc,
         "scanned_basis": "sqc_scan_path+sqc_excludes",
     }
+    from bench import environment
+    env_manifest = environment.load()
+    if env_manifest is not None:
+        # Run inside the benchmark container image: the environment it ran
+        # in, by the pin of the image's manifest (bench/environment.py).
+        meta["environment"] = {"manifest_sha256": environment.pin(env_manifest),
+                               "base": env_manifest.get("base")}
     if deps_decl:
         # The fifth pin (docs/adr/0018). 'header_tree' carries the same
         # record for the shared database's existing column.

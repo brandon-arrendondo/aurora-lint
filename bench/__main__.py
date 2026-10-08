@@ -58,6 +58,13 @@ def cmd_juliet(args):
         sys.exit(2)
 
 
+def cmd_container_run(args):
+    from bench import container
+    run_args = args.run_args[1:] if args.run_args[:1] == ["--"] else args.run_args
+    raise SystemExit(container.run(run_args, args.image or container.DEFAULT_IMAGE,
+                                   args.runtime))
+
+
 def cmd_realworld_run(args):
     from bench.realworld_runner import CODEBASES, VALID_TOOLS, run_and_ingest
 
@@ -1238,6 +1245,16 @@ def main():
                                "/usr/include (the default, also named 'host'); "
                                "the run gets its own id (-hdr-ID)")
     p_rw_run.set_defaults(func=cmd_realworld_run)
+
+    p_ctr = sub.add_parser(
+        "container-run",
+        help="Run realworld-run inside the benchmark container image (docs/adr/0018)")
+    p_ctr.add_argument("--image", default=None,
+                       help="image to run (default $AURORA_BENCH_IMAGE or localhost/aurora-bench:dev)")
+    p_ctr.add_argument("--runtime", default="podman", help="container runtime (default podman)")
+    p_ctr.add_argument("run_args", nargs=argparse.REMAINDER,
+                       help="arguments for realworld-run, after --")
+    p_ctr.set_defaults(func=cmd_container_run)
 
     # competitor-export
     p_ce = sub.add_parser(
