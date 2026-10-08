@@ -34,7 +34,15 @@ struct req {
 	size_t len;
 };
 
-int build(const struct wpabuf **bufs, unsigned int count);
+int build(const struct wpabuf **bufs, unsigned int count)
+{
+	size_t total = 0;
+	unsigned int i;
+
+	for (i = 0; i < count; i++)
+		total += bufs[i]->size;
+	return (int) total;
+}
 
 int send_hlp(struct req *reqs)
 {
