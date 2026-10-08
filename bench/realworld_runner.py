@@ -878,8 +878,22 @@ def _verified_deps(codebase: str):
     return decl
 
 
+ENVIRONMENT_PIN = PROJECT_DIR / "data" / "benchmark_environment.json"
+
+
+def _environment_suffix(pin: str) -> str:
+    """'' when `pin` is the benchmark environment this commit declares
+    (data/benchmark_environment.json), else -env<8 hex>: two images at one
+    aurora-lint commit are two environments, and must not share a run id."""
+    try:
+        expected = json.loads(ENVIRONMENT_PIN.read_text()).get("manifest_sha256")
+    except (OSError, ValueError):
+        expected = None
+    return "" if pin == expected else f"-env{pin[:8]}"
+
+
 def _header_variant(has_deps: bool, deps_decl, header_spec,
-                    in_environment: bool = True) -> str:
+                    in_environment: bool = True, host_db: bool = False) -> str:
     """The run-id suffix for the headers a scan read. A corpus scanned
     against its dependency set inside the benchmark image adds nothing: the
     aurora-lint commit pins the declaration and the sidecar records the
@@ -887,10 +901,15 @@ def _header_variant(has_deps: bool, deps_decl, header_spec,
     compile database) is -hostenv. One that declares a set but was scanned
     against something else (--header-tree, the host's headers included) is
     not a benchmark run either, so it never lands under the benchmark run's
-    id: -hdr-<tree id>, -hdr-host, or -hdr-none when it read no system
-    headers at all."""
+    id: -hdr-<tree id>, -hdr-host (also for the checkout's own compile
+    database, which can pass the host's /usr/include), or -hdr-none when it
+    read no system headers at all."""
     if deps_decl is not None:
         return "" if in_environment else "-hostenv"
+    if has_deps and host_db:
+        # The checkout's own compile database, built against this host: it
+        # can pass the host's /usr/include whatever header tree is named.
+        return "-hdr-host"
     if has_deps:
         return f"-hdr-{header_spec['id'] if header_spec else 'none'}"
     return _header_tree_suffix(header_spec)
@@ -1652,6 +1671,64 @@ def _parse_framac_json(filepath: Path, cfg: dict | None = None) -> dict:
 
 # ── Running one combo ─────────────────────────────────────────────────────────
 
+def _benchmark_compile_db(codebase: str, cfg: dict, deps_decl: dict, env_manifest: dict):
+    """The compile database a benchmark scan of `codebase` reads inside the
+    benchmark image: its build recipe's output, cached per (corpus commit,
+    environment) by python -m bench container-build-db and materialized for
+    this run. Returns (path, cache record)."""
+    from bench import deps as _deps
+    from bench import environment as _env
+    commit = _get_codebase_sha(cfg["path"]) or ""
+    pin = _env.pin(env_manifest)
+    cache_dir = _deps.build_cache_dir(deps_decl, commit, pin)
+    if not (cache_dir / "cache.json").is_file():
+        raise FileNotFoundError(
+            f"no compile database built for {codebase} in this environment "
+            f"({cache_dir}); build it with: python -m bench container-build-db "
+            f"--codebase {codebase}")
+    db_path, record = _deps.materialize(deps_decl, cfg["path"], cache_dir,
+                                        corpus_commit=commit or None, env_pin=pin)
+    return str(db_path), record
+
+
+def _sqc_scan_environment(codebase: str, cfg: dict, compile_db, profile: str, variant):
+    """What an aurora-lint scan of `codebase` runs against, and the run-id
+    variant that names it (docs/adr/0018). The benchmark configuration is
+    the corpus's dependency set and, inside the benchmark image, the compile
+    database its recipe produced there. Anything else on a corpus with a set
+    is a shadow scan under its own run id: --header-tree, or
+    --compile-commands with the checkout's own database, which was built
+    against this host's headers and passes them."""
+    from bench import deps as _deps
+    from bench import environment as _env
+    from bench import header_tree as _ht
+    override = os.environ.get(_ht.HOST_TREE_ENV) or None
+    env_manifest = _env.load()
+    has_deps = _deps.deps_name(codebase) is not None
+    header_spec = deps_decl = build_record = None
+    if has_deps and override is None and not compile_db:
+        deps_decl = _verified_deps(codebase)
+        if deps_decl and deps_decl.get("build") and env_manifest is not None:
+            compile_db, build_record = _benchmark_compile_db(
+                codebase, cfg, deps_decl, env_manifest)
+    else:
+        header_spec = _verified_header_tree(codebase)
+    settings = resolve_settings(
+        profile, compile_db=compile_db, manifest=_sqc_manifest(cfg),
+        extra_args=_expand(cfg["sqc"].get("extra_args", []), str(cfg["path"])))
+    suffix = settings_run_suffix(settings).lstrip("-")
+    variant = f"{variant}-{suffix}" if variant else suffix
+    variant += _header_variant(has_deps, deps_decl, header_spec,
+                               in_environment=env_manifest is not None,
+                               host_db=bool(compile_db) and deps_decl is None)
+    if deps_decl is not None and env_manifest is not None:
+        variant += _environment_suffix(_env.pin(env_manifest))
+    return SimpleNamespace(settings=settings, header_spec=header_spec,
+                           deps_decl=deps_decl, build_record=build_record,
+                           env_manifest=env_manifest, compile_db=compile_db,
+                           variant=variant)
+
+
 def run_one(tool: str, codebase: str, compile_commands: bool = False,
             profile: str = DEFAULT_PROFILE) -> dict:
     """Run one tool against one codebase, synchronously, blocking until done.
@@ -1705,47 +1782,13 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
                 "-i 'localhost,' -c local --ask-become-pass")
         compile_db = str(found)
 
-    settings = None
-    header_spec = None
-    deps_decl = None
-    build_record = None
-    env_manifest = None
+    settings = header_spec = deps_decl = build_record = env_manifest = None
     if tool == "sqc":
-        from bench import deps as _deps
-        from bench import header_tree as _ht
-        override = os.environ.get(_ht.HOST_TREE_ENV) or None
-        from bench import environment as _env
-        env_manifest = _env.load()
-        has_deps = _deps.deps_name(codebase) is not None
-        if has_deps and override is None and not compile_db:
-            # The benchmark configuration (docs/adr/0018): the set's system
-            # headers and, inside the benchmark image, the compile database
-            # its build recipe produced there (python -m bench
-            # container-build-db), materialized for this run.
-            deps_decl = _verified_deps(codebase)
-            if deps_decl and deps_decl.get("build") and env_manifest is not None:
-                cache_dir = _deps.build_cache_dir(
-                    deps_decl, _get_codebase_sha(cfg["path"]) or "", _env.pin(env_manifest))
-                if not (cache_dir / "cache.json").is_file():
-                    raise FileNotFoundError(
-                        f"no compile database built for {codebase} in this environment "
-                        f"({cache_dir}); build it with: python -m bench container-build-db "
-                        f"--codebase {codebase}")
-                db_path, build_record = _deps.materialize(deps_decl, cfg["path"], cache_dir)
-                compile_db = str(db_path)
-        else:
-            # Anything else on a corpus with a set is a shadow scan, under
-            # its own run id (_header_variant): --header-tree, or
-            # --compile-commands with the checkout's own database, which
-            # was built against this host's headers and passes them.
-            header_spec = _verified_header_tree(codebase)
-        settings = resolve_settings(
-            profile, compile_db=compile_db, manifest=_sqc_manifest(cfg),
-            extra_args=_expand(cfg["sqc"].get("extra_args", []), str(cfg["path"])))
-        suffix = settings_run_suffix(settings).lstrip("-")
-        variant = f"{variant}-{suffix}" if variant else suffix
-        variant += _header_variant(has_deps, deps_decl, header_spec,
-                                   in_environment=env_manifest is not None)
+        env = _sqc_scan_environment(codebase, cfg, compile_db, profile, variant)
+        (settings, header_spec, deps_decl, build_record, env_manifest,
+         compile_db, variant) = (env.settings, env.header_spec, env.deps_decl,
+                                 env.build_record, env.env_manifest,
+                                 env.compile_db, env.variant)
 
     version = _get_tool_version(tool)
     sha = _get_git_sha()

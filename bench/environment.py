@@ -16,6 +16,8 @@ built:
              clang-tidy, infer, python
   sets       every dependency set the image holds, id -> manifest_sha256,
              each verified against its tree when the manifest is written
+  tools_stage  the pin of the 'tools' stage's own manifest (base and
+             packages): the stage compile databases are built in
 
 Its pin is the SHA-256 of its canonical JSON (sorted keys, no whitespace).
 Nothing time- or host-dependent goes in: no build date, no hostname, no
@@ -23,6 +25,8 @@ image digest.
 
   python3 -m bench.environment write PATH   collect and write the manifest
                                             (run inside the image build)
+  python3 -m bench.environment write-tools PATH
+                                            the 'tools' stage's manifest
   python3 -m bench.environment hash PATH    print the pin of a manifest
 """
 
@@ -35,12 +39,22 @@ from pathlib import Path
 
 # Where the image keeps its manifest; the runner reads it from here.
 MANIFEST_PATH = Path("/etc/aurora-bench/environment.json")
+# The 'tools' stage's own manifest (its base and packages), written when
+# that stage is built: compile databases are built in that stage, so the
+# bench image's manifest records this one's pin, and container-build-db
+# refuses a tools image whose manifest differs.
+TOOLS_MANIFEST_PATH = Path("/etc/aurora-bench/tools.json")
 
 TOOLS = {
     "rustc": ["rustc", "--version"],
     "cargo": ["cargo", "--version"],
     "cppcheck": ["cppcheck", "--version"],
     "clang-tidy": ["clang-tidy", "--version"],
+    # The Clang Static Analyzer (scan-build, analyze-build) is this clang.
+    "clang": ["clang", "--version"],
+    "gcc": ["gcc", "--version"],
+    "flawfinder": ["flawfinder", "--version"],
+    "frama-c": ["frama-c", "-version"],
     "infer": ["infer", "--version"],
     "python": [sys.executable, "--version"],
 }
@@ -87,14 +101,27 @@ def sets(bench_root=None) -> dict:
     return out
 
 
+def _base() -> dict:
+    return {"image": os.environ.get("AURORA_BENCH_BASE", ""),
+            "snapshot": os.environ.get("AURORA_BENCH_SNAPSHOT", "")}
+
+
+def collect_tools() -> dict:
+    """The 'tools' stage's manifest: what a compile database is built with."""
+    return {"base": _base(), "packages": packages()}
+
+
 def collect(bench_root=None) -> dict:
-    return {
-        "base": {"image": os.environ.get("AURORA_BENCH_BASE", ""),
-                 "snapshot": os.environ.get("AURORA_BENCH_SNAPSHOT", "")},
+    manifest = {
+        "base": _base(),
         "packages": packages(),
         "tools": {name: _first_line(cmd) for name, cmd in sorted(TOOLS.items())},
         "sets": sets(bench_root),
     }
+    tools_stage = load(TOOLS_MANIFEST_PATH)
+    if tools_stage is not None:
+        manifest["tools_stage"] = pin(tools_stage)
+    return manifest
 
 
 def load(path=MANIFEST_PATH) -> dict | None:
@@ -105,11 +132,11 @@ def load(path=MANIFEST_PATH) -> dict | None:
 
 def main(argv=None) -> int:
     args = sys.argv[1:] if argv is None else argv
-    if len(args) != 2 or args[0] not in ("write", "hash"):
+    if len(args) != 2 or args[0] not in ("write", "write-tools", "hash"):
         print(__doc__)
         return 2
-    if args[0] == "write":
-        manifest = collect()
+    if args[0] in ("write", "write-tools"):
+        manifest = collect() if args[0] == "write" else collect_tools()
         Path(args[1]).parent.mkdir(parents=True, exist_ok=True)
         Path(args[1]).write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n")
         print(pin(manifest))

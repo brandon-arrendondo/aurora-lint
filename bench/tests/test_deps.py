@@ -363,6 +363,8 @@ class TestRunner(unittest.TestCase):
         self.assertEqual(rr._header_variant(True, None, tree), "-hdr-debian12-x")
         self.assertEqual(rr._header_variant(True, None, host), "-hdr-host")
         self.assertEqual(rr._header_variant(True, None, None), "-hdr-none")
+        # The checkout's own compile database may pass the host's headers.
+        self.assertEqual(rr._header_variant(True, None, None, host_db=True), "-hdr-host")
         # No set declared: as before.
         self.assertEqual(rr._header_variant(False, None, host), "")
         self.assertEqual(rr._header_variant(False, None, tree), "-hdr-debian12-x")
@@ -393,6 +395,16 @@ class TestRunner(unittest.TestCase):
         # The checkout's own database was built against this host's headers.
         self.assertEqual(self._first_header_step(True), "shadow")
         self.assertEqual(self._first_header_step(False, override="host"), "shadow")
+
+    def test_an_environment_other_than_the_declared_one_names_itself(self):
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "env.json"
+            f.write_text(json.dumps({"manifest_sha256": "a" * 64}))
+            with mock.patch.object(rr, "ENVIRONMENT_PIN", f):
+                self.assertEqual(rr._environment_suffix("a" * 64), "")
+                self.assertEqual(rr._environment_suffix("b" * 64), "-envbbbbbbbb")
+            with mock.patch.object(rr, "ENVIRONMENT_PIN", Path(td) / "missing.json"):
+                self.assertEqual(rr._environment_suffix("a" * 64), "-envaaaaaaaa")
 
     def test_provenance_is_the_fifth_pin(self):
         decl = _decl([], manifest_sha256="c" * 64)
@@ -511,6 +523,20 @@ class TestBuild(unittest.TestCase):
         tail = cmd[-10:]
         self.assertLess(tail.index("/g/build"), tail.index("/set/usr/include"))
         self.assertLess(tail.index("/c/include"), tail.index("/set/usr/include"))
+
+    def test_a_cache_built_for_another_commit_or_environment_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            decl = _decl([], build=self.RECIPE)
+            cache = self._cache(tmp, self.TEMPLATE, {"build/config.h": b"a\n"}, decl)
+            rec = json.loads((cache / "cache.json").read_text())
+            rec.update(corpus_commit="a" * 40, environment="e" * 64)
+            (cache / "cache.json").write_text(json.dumps(rec))
+            deps.materialize(decl, tmp / "toy", cache, tmp / "bench",
+                             corpus_commit="a" * 40, env_pin="e" * 64)
+            for kw in ({"corpus_commit": "b" * 40}, {"env_pin": "f" * 64}):
+                with self.assertRaises(ValueError):
+                    deps.materialize(decl, tmp / "toy", cache, tmp / "bench", **kw)
 
     def test_the_cache_is_keyed_by_corpus_commit_and_environment(self):
         decl = _decl([], build=self.RECIPE)

@@ -18,19 +18,21 @@
 # not share one) but the hash of /etc/aurora-bench/environment.json, written
 # by the last step (bench/environment.py).
 
-# Two stages. 'tools' is the snapshot system plus the corpus build tools and
-# no -dev package beyond libc's: python -m bench container-build-db starts a
-# throwaway container from it per corpus, installs exactly that corpus's
-# dependency set into it, and builds the corpus there to capture its compile
-# database, so no other corpus's packages can shadow its headers or change
-# its configure results. 'bench' adds the analysis tools, aurora-lint's own
-# build dependencies and the dependency-set trees, and is what scans run in.
+# Stages. 'system' is the snapshot system plus the corpus build tools, with
+# no -dev package beyond libc's. 'tools' is that plus its own manifest:
+# python -m bench container-build-db starts a throwaway container from it
+# per corpus, installs exactly that corpus's build packages into it, and
+# builds the corpus there to capture its compile database, so no other
+# corpus's packages can shadow its headers or change its configure results.
+# 'framac' builds Frama-C on 'system' by itself. 'bench' adds the analysis
+# tools, aurora-lint's own build dependencies and the dependency-set trees,
+# and is what scans run in.
 #
 #   podman build --platform linux/amd64 --target tools \
 #     -f container/benchmark.Dockerfile -t aurora-bench-tools .
 
 ARG BASE=docker.io/library/debian@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867
-FROM ${BASE} AS tools
+FROM ${BASE} AS system
 ARG BASE
 ARG SNAPSHOT=20260915T000000Z
 
@@ -56,11 +58,19 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
       build-essential cmake ninja-build autoconf automake libtool pkg-config bear \
  && rm -rf /var/lib/apt/lists/*
 
+# The 'tools' stage: the system above plus its own manifest. Compile
+# databases are built here, so the bench image records the manifest's pin
+# and container-build-db checks it. Only the two files the manifest needs
+# are copied, so an edit elsewhere in bench/ rebuilds nothing.
+FROM system AS tools
+COPY bench/__init__.py bench/environment.py /opt/aurora-bench/bench/
+RUN cd /opt/aurora-bench && python3 -m bench.environment write-tools /etc/aurora-bench/tools.json
+
 # Frama-C (with the Eva plugin), built by opam into /opt/opam: a stage of
 # its own, so changing it rebuilds nothing else. opam-repository is pinned
 # to one commit, and opam checks every source tarball against the checksum
 # that commit records.
-FROM tools AS framac
+FROM system AS framac
 ARG OPAM_REPOSITORY_COMMIT=e4cd7ede2d55a46570977c0ffaa7e96845190817
 ARG OCAML_VERSION=4.14.2
 ARG FRAMA_C_VERSION=33.0
@@ -79,7 +89,6 @@ ARG RUST_VERSION=1.95.0
 ARG RUST_SHA256=2e0338f18ecbaa4a0f631b9e80e8b8e26bb6fe77dd5454fba8a70cf96c1e84a1
 ARG INFER_VERSION=1.2.0
 ARG INFER_SHA256=21504063fb3a1dbc7919f34dc6e50ca0d35f50b996d91deb7b8bea8243d52d82
-ARG CLANG_TIDY_VERSION=1:21.1.8~++20251221032947+2078da43e25a-1~exp1~20251221153113.67
 ENV CARGO_HOME=/opt/cargo \
     PATH=/opt/rust/bin:/opt/infer/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -94,20 +103,33 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # clang-tidy and the Clang Static Analyzer (scan-build, analyze-build), one
-# LLVM build, pinned to the one the tool comparison is measured against.
-# apt.llvm.org is not snapshotted, so the exact version is named here and
-# recorded in the manifest; the packages are also kept in the maintainers' sha256-keyed artifact cache.
-RUN curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg \
- && echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-21 main" \
-    > /etc/apt/sources.list.d/llvm.list \
+# LLVM build: the one the tool comparison is measured against. apt.llvm.org
+# is not snapshotted and prunes old builds, so the packages are named here
+# by file and sha256, fetched from LLVM_POOL (apt.llvm.org's pool by
+# default; the maintainers' sha256-keyed artifact cache keeps a copy) and
+# installed as local files, their dependencies from the snapshot. No
+# repository or signing key is trusted: each file is checked by its hash.
+ARG LLVM_POOL=https://apt.llvm.org/bookworm/pool/main/l/llvm-toolchain-21
+RUN mkdir /tmp/llvm && cd /tmp/llvm \
+ && printf '%s\n' \
+    "43167d4912316e591f4dc122bd8e9cd0c2db95c31edcc47cde97e89a496c2024  clang-21_21.1.8~++20251221032947+2078da43e25a-1~exp1~20251221153113.67_amd64.deb" \
+    "c3d950ac10216becc29c4b545bd7a8905c005ff344f9b60c167728d7c9886708  clang-tidy-21_21.1.8~++20251221032947+2078da43e25a-1~exp1~20251221153113.67_amd64.deb" \
+    "a08c8d1c53f7ef2c1fa559ac63b3b2e35ae7525ef633225615ab5f47ed6c1ffb  clang-tools-21_21.1.8~++20251221032947+2078da43e25a-1~exp1~20251221153113.67_amd64.deb" \
+    "8b5d26e30f336b0f5727f506b9d3e31890d225efc1a5eb1f73ab4e253ced9da6  libclang-common-21-dev_21.1.8~++20251221032947+2078da43e25a-1~exp1~20251221153113.67_amd64.deb" \
+    "2e04f5de6f6f877f505a7abee85e1210d71b3b07d380ec5ebfaec45efe5a7fea  libclang-cpp21_21.1.8~++20251221032947+2078da43e25a-1~exp1~20251221153113.67_amd64.deb" \
+    "9ba73f312d5e76875363f493287ad6a5ee6754c22bbca3a07061ae07c1129659  libclang1-21_21.1.8~++20251221032947+2078da43e25a-1~exp1~20251221153113.67_amd64.deb" \
+    "06646d519de58f391ca049b8a47bbd678c929540f4cb8a73caac29818c5cf720  libllvm21_21.1.8~++20251221032947+2078da43e25a-1~exp1~20251221153113.67_amd64.deb" \
+    "d7a8b99bf09cfd75f9b2dc9bc016fd2da5bada6b55722485f632615cc972c4c0  llvm-21-linker-tools_21.1.8~++20251221032947+2078da43e25a-1~exp1~20251221153113.67_amd64.deb" \
+    > SHA256SUMS \
+ && for f in $(awk '{print $2}' SHA256SUMS); do curl -fsSLo "$f" "$LLVM_POOL/$f"; done \
+ && sha256sum -c SHA256SUMS \
  && apt-get update \
- && apt-get install -y --no-install-recommends "clang-tidy-21=${CLANG_TIDY_VERSION}" \
-      "clang-21=${CLANG_TIDY_VERSION}" "clang-tools-21=${CLANG_TIDY_VERSION}" \
+ && apt-get install -y --no-install-recommends ./*.deb \
  && ln -s /usr/bin/clang-tidy-21 /usr/local/bin/clang-tidy \
  && ln -s /usr/bin/clang-21 /usr/local/bin/clang \
  && ln -s /usr/bin/scan-build-21 /usr/local/bin/scan-build \
  && ln -s /usr/bin/analyze-build-21 /usr/local/bin/analyze-build \
- && rm -rf /var/lib/apt/lists/*
+ && cd / && rm -rf /tmp/llvm /var/lib/apt/lists/*
 
 # Rust, the version rust-toolchain.toml names, from its sha256-checked
 # standalone installer. aurora-lint is built with it at run time.

@@ -51,6 +51,14 @@ def image_pin(image: str, runtime: str = "podman") -> str:
     return out.stdout.strip().splitlines()[-1]
 
 
+def _read_in_image(image: str, code: str, runtime: str = "podman") -> str:
+    """The stripped output of a line of Python run in `image` with its
+    bench/ importable, or '' if it fails."""
+    out = subprocess.run([runtime, "run", "--rm", "-w", "/opt/aurora-bench", image,
+                          "python3", "-c", code], capture_output=True, text=True)
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
 def _host_dirs(args: list[str]) -> list[Path]:
     dirs = []
     for i, a in enumerate(args):
@@ -140,6 +148,13 @@ def build_db(project: str, image: str = DEFAULT_IMAGE,
         print(f"container-build-db: '{runtime}' is not installed")
         return 2
     pin = image_pin(image, runtime)
+    expected = _read_in_image(image, "import json;print(json.load(open('/etc/aurora-bench/environment.json')).get('tools_stage',''))", runtime)
+    actual = _read_in_image(tools_image, "from bench import environment as e;print(e.pin(e.load(e.TOOLS_MANIFEST_PATH)))", runtime)
+    if not expected or expected != actual:
+        print(f"container-build-db: {tools_image} is not the tools stage of {image} "
+              f"(its manifest {actual[:12] or 'missing'}, {image} records "
+              f"{expected[:12] or 'none'}); rebuild both from one Dockerfile")
+        return 2
     commit = _get_codebase_sha(CODEBASES[project]["path"])
     if not commit:
         print(f"container-build-db: {CODEBASES[project]['path']} is not a git checkout")

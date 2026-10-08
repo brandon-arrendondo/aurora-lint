@@ -778,7 +778,9 @@ def build_id(decl: dict, cache: dict) -> str:
     return f"{decl['corpus']}-{decl['platform']}-{cache['db_sha256'][:8]}"
 
 
-def materialize(decl: dict, corpus_path, cache_dir, bench_root=None) -> tuple[Path, dict]:
+def materialize(decl: dict, corpus_path, cache_dir, bench_root=None,
+                corpus_commit: str | None = None,
+                env_pin: str | None = None) -> tuple[Path, dict]:
     """Write the corpus's compile database for this machine from its build
     cache: the template with ${CORPUS} and ${GEN} replaced, and the
     generated headers copied into BENCH_ROOT/build/<id>/generated/. Refuses
@@ -793,6 +795,9 @@ def materialize(decl: dict, corpus_path, cache_dir, bench_root=None) -> tuple[Pa
     record = json.loads(record_path.read_text())
     if record.get("recipe_sha256") != recipe_sha256(decl):
         raise ValueError(f"{cache_dir}: built from another recipe; rebuild it")
+    for key, want in (("corpus_commit", corpus_commit), ("environment", env_pin)):
+        if want and record.get(key) != want:
+            raise ValueError(f"{cache_dir}: built for {key} {record.get(key)}, not {want}")
     body = (cache_dir / "compile_commands.json").read_bytes()
     got = hashlib.sha256(body).hexdigest()
     if got != record["db_sha256"]:

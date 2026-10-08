@@ -3,6 +3,7 @@ environment manifest and pin, and the podman command a container-run uses.
 No container runtime is needed: the manifest is built from stubs and the
 command is only constructed."""
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -50,6 +51,30 @@ class TestCommand(unittest.TestCase):
         self.assertIn("--platform linux/amd64", joined)
         self.assertTrue(cmd[-1].startswith("cargo build --release --locked"))
         self.assertIn("realworld-run --codebase mosquitto", cmd[-1])
+
+
+class TestToolsStage(unittest.TestCase):
+    def test_a_tools_image_from_another_build_is_refused(self):
+        with mock.patch("shutil.which", return_value="/usr/bin/podman"), \
+             mock.patch.object(container, "image_pin", return_value="p" * 64), \
+             mock.patch.object(container, "_read_in_image",
+                               side_effect=lambda image, code, rt="podman":
+                               "a" * 64 if image == "bench" else "b" * 64), \
+             mock.patch.object(container.subprocess, "run") as run:
+            self.assertEqual(container.build_db("lua", "bench", "tools"), 2)
+        run.assert_not_called()
+
+    def test_the_bench_manifest_records_the_tools_stage(self):
+        with tempfile.TemporaryDirectory() as td:
+            tools = Path(td) / "tools.json"
+            tools.write_text(json.dumps({"base": {}, "packages": {"a": "1"}}))
+            with mock.patch.object(environment, "TOOLS_MANIFEST_PATH", tools), \
+                 mock.patch.object(environment, "packages", return_value={}), \
+                 mock.patch.object(environment, "sets", return_value={}), \
+                 mock.patch.object(environment, "_first_line", return_value="v"):
+                m = environment.collect()
+        self.assertEqual(m["tools_stage"],
+                         environment.pin({"base": {}, "packages": {"a": "1"}}))
 
 
 class TestScoringKeys(unittest.TestCase):

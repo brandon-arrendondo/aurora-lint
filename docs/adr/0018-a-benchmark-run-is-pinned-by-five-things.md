@@ -44,11 +44,13 @@ of them, and a corpus's build run on a host configures against that host.
 
 1. **The benchmark environment is one container image**
    (`container/benchmark.Dockerfile`). It holds:
-   - a Debian base pinned by digest, with every package frozen at one
-     snapshot.debian.org timestamp;
-   - the corpus build tools;
-   - the comparison tools (cppcheck, clang-tidy, Infer, Frama-C) at exact
-     versions;
+   - a Debian 12 (bookworm) base pinned by digest, its `main` suite frozen at
+     one snapshot.debian.org timestamp (the same suite the dependency sets
+     are resolved against, so every pinned version installs as is);
+   - the corpus build tools, in a stage of their own;
+   - the comparison tools at exact versions: cppcheck, clang-tidy and the
+     Clang Static Analyzer (one LLVM build), Flawfinder, gcc's `-fanalyzer`,
+     Infer and Frama-C;
    - the Rust toolchain aurora-lint is built with;
    - every benchmark's dependency set.
 
@@ -59,12 +61,15 @@ of them, and a corpus's build run on a host configures against that host.
 2. **Each benchmark declares its dependency set** in
    `data/benchmark_deps/<benchmark>.json`.
    - **Coverage.** A set is the union of the system headers that every
-     in-scope, in-configuration source file needs, in any configuration
-     Debian can supply. Backend and option files are in scope and scored,
-     and every compilable configuration counts (ADR-0010).
+     in-scope source file needs, in any configuration Debian can supply.
+     Only the files a declaration names as written for another platform
+     (Windows, a BSD, Android, the web) are left out. Backend and option
+     files are in scope and scored, and every compilable configuration counts
+     (ADR-0010).
    - **Exclusions.** A package is excluded only for one of these reasons:
      - it is a multilib variant (`-m32`, x32);
-     - it ships a copy of the corpus's own headers;
+     - it ships a copy of the corpus's own headers, or of a library the corpus
+       bundles and builds itself;
      - it reuses another platform's header name;
      - it serves only an out-of-scope directory.
 
@@ -84,8 +89,10 @@ of them, and a corpus's build run on a host configures against that host.
      packages are installed there.
    - It caches the result per (environment, corpus commit): the database as
      a template plus the headers the build generated.
-   - A scan reads the set's directories as its system directories and the
-     database for project directories and `-D` flags.
+   - A scan reads the database for project directories and `-D` flags, and
+     the set's directories as its system directories. The search order is
+     the corpus's own directories, then the build's generated headers, then
+     the set: no system copy can shadow a corpus header.
    - Nothing derived from a corpus is committed.
 4. **The fifth pin is the environment manifest's hash.** The image's last
    build step writes `/etc/aurora-bench/environment.json`. It lists:
@@ -100,6 +107,10 @@ of them, and a corpus's build run on a host configures against that host.
    computed from the package contents as they are unpacked, so it is the same
    on every host.
 5. **A real-world benchmark run happens in the image, and records its pins.**
+   - The commit declares the environment it expects
+     (`data/benchmark_environment.json`). A run in any other image gets its
+     own run id (`-env<hash>`), so two environments at one commit never
+     share one.
    - The run's sidecar records the environment pin, the set's pin and the
      compile database's hashes, alongside the corpus commit.
    - A run refuses a missing or mismatched set, and a missing or stale build
@@ -119,13 +130,8 @@ of them, and a corpus's build run on a host configures against that host.
    not refuse.
 7. **Windows.** Linux corpora do not cover Windows, so their sets never
    include Windows SDK headers. Windows-only files in them read no Windows
-   headers, as ADR-0010's platform handling expects.
-   - The Win32 corpus's set is the pinned Windows SDK and CRT tree, held in
-     the same image. Fetching it accepts Microsoft's licence, so a build
-     argument gates it.
-   - Its compile database comes from `clang-cl` targeting MSVC, with that tree
-     as its system directories.
-   - Native-MSVC checks need a Windows host.
+   headers, as ADR-0010's platform handling expects. The Win32 corpus is the
+   pending case below.
 
 ## Transition
 
@@ -133,11 +139,18 @@ Until a corpus declares its set and recipe, its runs continue as before,
 under the same run id, and are not covered by the five-pin claim. Each corpus
 moves when its set is declared and its trend break is measured.
 
+Pending: the Win32 corpus (ventoy). Its set will be the pinned Windows SDK
+and CRT tree, held in the same image. Fetching that tree accepts Microsoft's
+licence, so a build argument will gate it. Its compile database will come
+from `clang-cl` targeting MSVC, with that tree as its system directories.
+Native-MSVC checks need a Windows host.
+
 ## Consequences
 
 - **Official numbers still come only from the benchmark machine** (ADR-0004).
-  Any machine holding the five pins reproduces them key for key. A difference
-  between such a machine and the benchmark machine is a defect to explain, not environment noise.
+  Any machine holding the five pins is expected to reproduce them key for key.
+  A difference between such a machine and the benchmark machine is a defect to explain, not
+  environment noise.
 - **Moving the suite into the image is a one-time trend break.** It is
   recorded and re-baselined, and new keys are delta-adjudicated before any
   precision claim. A later change to the image, a set or a recipe is a
