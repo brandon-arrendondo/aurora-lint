@@ -1,4 +1,4 @@
 {
  "_comment": "The benchmark environment this commit expects (docs/adr/0018): the pin (sha256 of the canonical environment manifest) of the image container/benchmark.Dockerfile builds. A real-world run in any other image gets its own run id (-env<hash>). Update it in the same commit as any change to the Dockerfile, a dependency set or the manifest generator, after rebuilding the image: python -m bench container-run prints the pin.",
- "manifest_sha256": "bad861e641c4127e2fdae96dadae445344b6fea99052785143536fdb0ac8932e"
+ "manifest_sha256": "ca82675879684dc09d6a688a0f7a1ecc1983ca230767b8317e361b5a24a788eb"
 }
