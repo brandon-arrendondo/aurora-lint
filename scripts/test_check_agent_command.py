@@ -13,7 +13,9 @@ class AgentCommandTests(unittest.TestCase):
     def test_bypass_commands_are_blocked(self):
         for command in [
             "git commit --no-verify", "git commit -n -m change",
-            "git commit --no-veri", "git -c core.hooksPath=/dev/null commit -m change",
+            "git commit --no-veri", "git commit -u -n -m x",
+            "env -u FOO git commit -n", "nice -n 5 git commit -n",
+            "git --config-env=core.hooksPath=HOOK_DIR commit -m x", "git -c core.hooksPath=/dev/null commit -m change",
             "sudo git commit -n", "time git commit -n", "env -i git commit -n",
             "git commit -m change --no-verify", "git commit -snm change",
             "git -C /tmp/repo commit -s -n", "git -c user.name=Alex commit -n",
@@ -29,7 +31,7 @@ class AgentCommandTests(unittest.TestCase):
             "git commit -s -m change", "git commit -m '--no-verify'",
             "git commit -m '-n'", "git commit -mbanana", "git status -n",
             "git commit -- -n", "echo git commit --no-verify",
-            "git commit -uno", "git commit -u no",
+            "git commit -uno", "git commit -u no", "git commit -Skeyn -m x",
         ]:
             with self.subTest(command=command):
                 self.assertFalse(blocked_command(command))

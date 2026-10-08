@@ -26,6 +26,7 @@ include = [
     "Cargo.toml",
     "README.md",
     "CONTRIBUTORS.md",
+    "AGENTS.md",
     "LICENSE",
     "NOTICE",
     "thirdparty/cert/**",

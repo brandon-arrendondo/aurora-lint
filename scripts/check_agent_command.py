@@ -11,7 +11,7 @@ from pathlib import Path
 
 VALUE_OPTIONS = {
     "-m", "-F", "-t", "-C", "-c", "--message", "--file", "--template",
-    "--reuse-message", "--reedit-message", "--author", "--date", "--trailer", "-u",
+    "--reuse-message", "--reedit-message", "--author", "--date", "--trailer",
 }
 
 
@@ -26,7 +26,7 @@ def bypass_flag(arguments):
             return True
         elif argument.startswith("-") and not argument.startswith("--"):
             for letter in argument[1:]:
-                if letter in "mFtCcu":
+                if letter in "mFtCcuS":
                     break
                 if letter == "n":
                     return True
@@ -42,6 +42,8 @@ def git_arguments(tokens):
             hooks_override |= config.lower().startswith("core.hookspath=")
         elif token.startswith("-c"):
             hooks_override |= token[2:].lower().startswith("core.hookspath=")
+        elif token.startswith("--config-env=core.hooksPath="):
+            hooks_override = True
         elif token in {"-C", "--git-dir", "--work-tree", "--namespace"}:
             next(iterator, None)
         elif not token.startswith("-"):
@@ -54,12 +56,14 @@ def git_arguments(tokens):
 def unwrap_command(tokens):
     while tokens:
         program = Path(tokens[0]).name
-        if "=" in tokens[0] or program in {"env", "command", "time", "sudo"}:
+        if "=" in tokens[0] or program in {"env", "command", "time", "sudo", "nice"}:
             wrapper = program
             tokens = tokens[1:]
             while tokens and tokens[0].startswith("-"):
                 option = tokens.pop(0)
-                if wrapper == "sudo" and option in {"-u", "-g", "-h", "-p"}:
+                if ((wrapper == "sudo" and option in {"-u", "-g", "-h", "-p"})
+                        or (wrapper == "env" and option in {"-u", "--unset"})
+                        or (wrapper == "nice" and option in {"-n", "--adjustment"})):
                     tokens = tokens[1:]
             continue
         break
