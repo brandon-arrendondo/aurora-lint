@@ -144,11 +144,13 @@ assume (ADR-0015):</p>
 <li><p><strong>Policy</strong> says what the rules require of the code, and so which findings
 are reported. <code class="docutils literal notranslate"><span class="pre">default</span></code> credits the assumptions mainstream analyzers make
 (for example, a dominating <code class="docutils literal notranslate"><span class="pre">assert</span></code> is a guard even though <code class="docutils literal notranslate"><span class="pre">NDEBUG</span></code> can
-strip it). <code class="docutils literal notranslate"><span class="pre">strict</span></code> credits none of them: the reading MISRA-style and
-certified code needs. <code class="docutils literal notranslate"><span class="pre">pedantic</span></code> goes beyond a rule’s text where the
-rule has a sound or closed-form reading stricter than the text, and may
-decline a rule that has none; a rule with no pedantic reading is read as
-<code class="docutils literal notranslate"><span class="pre">strict</span></code> reads it.</p></li>
+strip it). <code class="docutils literal notranslate"><span class="pre">strict</span></code> applies each rule as written: it credits only what
+the rule’s text and the C standard credit (a function declared
+<code class="docutils literal notranslate"><span class="pre">_Noreturn</span></code> does not return), not a strippable <code class="docutils literal notranslate"><span class="pre">assert</span></code>: the reading
+MISRA-style and certified code needs. <code class="docutils literal notranslate"><span class="pre">pedantic</span></code> goes beyond a rule’s
+text where the rule has a sound or closed-form reading stricter than the
+text (only a body shown never to return ends a path), and may decline a
+rule that has none.</p></li>
 <li><p><strong>Environment</strong> says what the analyzer may believe about the platform the
 code runs on. <code class="docutils literal notranslate"><span class="pre">hosted</span></code> trusts the ISO C and POSIX library contracts (for
 example, <code class="docutils literal notranslate"><span class="pre">free(NULL)</span></code> does nothing) and <code class="docutils literal notranslate"><span class="pre">main</span></code>’s <code class="docutils literal notranslate"><span class="pre">argv</span></code> guarantees.
@@ -156,13 +158,18 @@ example, <code class="docutils literal notranslate"><span class="pre">free(NULL)
 <code class="docutils literal notranslate"><span class="pre">libc</span></code> model is declared. The environment is always declared, never
 guessed from the machine running the scan.</p></li>
 </ul>
-<p>Two presets set both at once. The <strong>default</strong> preset is the default policy on
-a hosted environment. The <strong>strict</strong> preset is the strict policy on a
-freestanding environment, for teams that trust nothing. The <strong>pedantic</strong>
-preset is the pedantic policy on a freestanding environment. Benchmark
-precision and recall are scored against the strict reading. <code class="docutils literal notranslate"><span class="pre">--policy</span></code>
-changes only the policy axis: <code class="docutils literal notranslate"><span class="pre">--policy</span> <span class="pre">pedantic</span></code> alone keeps the default
-preset’s hosted environment. Any combination can be set explicitly, down to
+<p>Three presets set both at once. The <strong>default</strong> preset is the default policy
+on a hosted environment, and the <strong>strict</strong> preset is the strict policy on a
+hosted environment; both trust the ISO C and POSIX library unless a <code class="docutils literal notranslate"><span class="pre">libc</span></code>
+is declared. The <strong>pedantic</strong> preset is the pedantic policy on a hosted
+environment that trusts only a declared library: small targets often link a
+reduced one, so a full ISO C library is not assumed. With no <code class="docutils literal notranslate"><span class="pre">libc</span></code>
+declared, a pedantic scan trusts no library contract and says so on stderr,
+naming the key to declare and the enabled rules a project could disable
+instead (<code class="docutils literal notranslate"><span class="pre">--check-config</span></code> warns the same way). Benchmark precision and
+recall are scored against the strict reading. <code class="docutils literal notranslate"><span class="pre">--policy</span></code> changes only the
+policy axis: <code class="docutils literal notranslate"><span class="pre">--policy</span> <span class="pre">pedantic</span></code> alone keeps the default preset’s hosted
+environment and its library. Any combination can be set explicitly, down to
 single options:</p>
 <div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="n">profile</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strict&quot;</span><span class="w">          </span><span class="c1"># preset: &quot;default&quot; (the default), &quot;strict&quot; or &quot;pedantic&quot;</span>
 
@@ -176,7 +183,10 @@ single options:</p>
 
 <span class="k">[environment]</span>
 <span class="n">kind</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;freestanding&quot;</span><span class="w">       </span><span class="c1"># &quot;hosted&quot; | &quot;freestanding&quot;; overrides the preset</span>
-<span class="n">libc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;newlib&quot;</span><span class="w">             </span><span class="c1"># iso-posix | glibc | musl | newlib | picolibc | custom</span>
+<span class="n">libc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;newlib&quot;</span><span class="w">             </span><span class="c1"># iso-posix | glibc | musl | newlib | newlib-nano | picolibc | custom</span>
+<span class="n">libc_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;4.4.0&quot;</span><span class="w">      </span><span class="c1"># recorded and hashed; grants no contract</span>
+<span class="n">c_standard</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;c99&quot;</span><span class="w">          </span><span class="c1"># c89 | c99 | c11 | c17 | c23; unknown unless declared</span>
+<span class="n">posix_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;none&quot;</span><span class="w">      </span><span class="c1"># none | 2001 | 2008 | 2017 | 2024; unknown unless declared</span>
 <span class="n">include_names</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;exact&quot;</span><span class="w">     </span><span class="c1"># &quot;exact&quot; | &quot;case-insensitive&quot; (as cl on Windows)</span>
 <span class="n">data_model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;lp64&quot;</span><span class="w">         </span><span class="c1"># &quot;iso&quot; (the default) | &quot;ilp32&quot; | &quot;lp64&quot; | &quot;llp64&quot;</span>
 <span class="c1"># int_bits = 32             # integer facts the data model loads; write one to</span>

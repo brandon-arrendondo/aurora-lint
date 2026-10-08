@@ -182,8 +182,9 @@ Options:
                                    (0 = auto-detect, 1 = sequential; default: 0)
       --profile &lt;PRESET&gt;           Preset for both settings axes: default (default
                                    policy, hosted), strict (strict policy,
-                                   freestanding) or pedantic (pedantic policy,
-                                   freestanding). Overrides the manifest&#39;s `profile`
+                                   hosted) or pedantic (pedantic policy, hosted,
+                                   trusting only a declared --libc). Overrides the
+                                   manifest&#39;s `profile`
       --policy &lt;POLICY&gt;            Policy axis: which findings are reported
                                    [default, strict, pedantic] (overrides the preset)
       --environment &lt;KIND&gt;         Environment axis [hosted, freestanding] (overrides
@@ -191,7 +192,7 @@ Options:
                                    scanning host
       --libc &lt;MODEL&gt;               C library model whose documented contracts are
                                    trusted [iso-posix, glibc, musl, newlib,
-                                   picolibc, custom]
+                                   newlib-nano, picolibc, custom]
       --data-model &lt;MODEL&gt;         Data model: the bundle of integer facts the code is built for
                                    [iso, ilp32, lp64, llp64]. The default, iso,
                                    loads nothing, so only the widths ISO C

@@ -46,11 +46,13 @@ assume (ADR-0015):
 - **Policy** says what the rules require of the code, and so which findings
   are reported. ``default`` credits the assumptions mainstream analyzers make
   (for example, a dominating ``assert`` is a guard even though ``NDEBUG`` can
-  strip it). ``strict`` credits none of them: the reading MISRA-style and
-  certified code needs. ``pedantic`` goes beyond a rule's text where the
-  rule has a sound or closed-form reading stricter than the text, and may
-  decline a rule that has none; a rule with no pedantic reading is read as
-  ``strict`` reads it.
+  strip it). ``strict`` applies each rule as written: it credits only what
+  the rule's text and the C standard credit (a function declared
+  ``_Noreturn`` does not return), not a strippable ``assert``: the reading
+  MISRA-style and certified code needs. ``pedantic`` goes beyond a rule's
+  text where the rule has a sound or closed-form reading stricter than the
+  text (only a body shown never to return ends a path), and may decline a
+  rule that has none.
 - **Environment** says what the analyzer may believe about the platform the
   code runs on. ``hosted`` trusts the ISO C and POSIX library contracts (for
   example, ``free(NULL)`` does nothing) and ``main``'s ``argv`` guarantees.
@@ -58,13 +60,18 @@ assume (ADR-0015):
   ``libc`` model is declared. The environment is always declared, never
   guessed from the machine running the scan.
 
-Two presets set both at once. The **default** preset is the default policy on
-a hosted environment. The **strict** preset is the strict policy on a
-freestanding environment, for teams that trust nothing. The **pedantic**
-preset is the pedantic policy on a freestanding environment. Benchmark
-precision and recall are scored against the strict reading. ``--policy``
-changes only the policy axis: ``--policy pedantic`` alone keeps the default
-preset's hosted environment. Any combination can be set explicitly, down to
+Three presets set both at once. The **default** preset is the default policy
+on a hosted environment, and the **strict** preset is the strict policy on a
+hosted environment; both trust the ISO C and POSIX library unless a ``libc``
+is declared. The **pedantic** preset is the pedantic policy on a hosted
+environment that trusts only a declared library: small targets often link a
+reduced one, so a full ISO C library is not assumed. With no ``libc``
+declared, a pedantic scan trusts no library contract and says so on stderr,
+naming the key to declare and the enabled rules a project could disable
+instead (``--check-config`` warns the same way). Benchmark precision and
+recall are scored against the strict reading. ``--policy`` changes only the
+policy axis: ``--policy pedantic`` alone keeps the default preset's hosted
+environment and its library. Any combination can be set explicitly, down to
 single options:
 
 .. code-block:: toml
@@ -81,7 +88,10 @@ single options:
 
     [environment]
     kind = "freestanding"       # "hosted" | "freestanding"; overrides the preset
-    libc = "newlib"             # iso-posix | glibc | musl | newlib | picolibc | custom
+    libc = "newlib"             # iso-posix | glibc | musl | newlib | newlib-nano | picolibc | custom
+    libc_version = "4.4.0"      # recorded and hashed; grants no contract
+    c_standard = "c99"          # c89 | c99 | c11 | c17 | c23; unknown unless declared
+    posix_version = "none"      # none | 2001 | 2008 | 2017 | 2024; unknown unless declared
     include_names = "exact"     # "exact" | "case-insensitive" (as cl on Windows)
     data_model = "lp64"         # "iso" (the default) | "ilp32" | "lp64" | "llp64"
     # int_bits = 32             # integer facts the data model loads; write one to
