@@ -1,41 +1,29 @@
 #!/usr/bin/env python3
-"""Reject commit messages carrying a git trailer that credits Claude/Anthropic.
+"""Reject parsed Git trailers naming an AI agent or vendor.
 
-CLAUDE.md forbids per-commit AI attribution trailers in this repo. The reason
-is placement, not prohibition: Claude's contribution is acknowledged
-deliberately in README.md's "AI Assistance" section, and repeating it in every
-one of thousands of commits crowds out the message while telling a reader
-nothing the README has not already said once.
-
-Originally this only pattern-matched `Co-Authored-By`, so it accumulated in
-172 commits before anyone noticed -- which is why it is a hook now rather
-than a line of prose. That same failure mode reopened for any OTHER trailer
-name: `Claude-Session:` (a live per-commit attribution convention, not
-hypothetical) passed silently until this was widened, because the hook
-checked one specific trailer key instead of the general shape.
-
-A hand-rolled `^Key: value$` line scan over the whole message then produced
-its own false positive: a conventional-commit subject line like `docs:
-update CLAUDE.md` is itself trailer-shaped (`docs` + `:` + rest of line), so
-mentioning this file's own name in a summary tripped the check. Git already
-has a precise, load-bearing definition of "trailer" -- the contiguous
-key:-value block at the end of the message, not any colon anywhere -- so this
-version shells out to `git interpret-trailers --parse` and only inspects what
-git itself considers a trailer. That also means a subject line or body prose
-mentioning Claude/CLAUDE.md/Anthropic passes, while `Co-Authored-By:` and any
-new trailer key naming Claude/Anthropic still doesn't.
-
-Note sqc_paper deliberately differs and KEEPS these trailers; this hook is
-aurora-lint's and must not be copied there.
+CONTRIBUTING.md's "Git Commit Rules" explains the placement policy: AI use
+is acknowledged once in README.md, rather than repeated in commit trailers.
+Use Git's trailer parser so ordinary subject/body mentions remain allowed.
+Human co-authors pass unless the parsed trailer names a listed AI tool/vendor.
 """
 import re
 import subprocess
 import sys
 
-# Matches a trailer line only when it actually names Claude or Anthropic
-# (in the key or the value), so a human co-author named in the usual way
-# still passes.
-AI_ATTRIBUTION = re.compile(r"\b(?:Claude|Anthropic)\b", re.IGNORECASE)
+# Add future agents here; avoid bare employer names such as Google/Microsoft.
+AI_TOOL_NAMES = [
+    "Claude",
+    "Anthropic",
+    "Codex",
+    "OpenAI",
+    "ChatGPT",
+    "Gemini",
+    "Copilot",
+]
+AI_ATTRIBUTION = re.compile(
+    r"\b(?:" + "|".join(re.escape(name) for name in AI_TOOL_NAMES) + r")\b",
+    re.IGNORECASE,
+)
 
 
 def main() -> int:
@@ -71,19 +59,15 @@ def main() -> int:
         return 0
 
     print("", file=sys.stderr)
-    print("Commit rejected: trailer crediting Claude/Anthropic.", file=sys.stderr)
+    print("Commit rejected: trailer crediting an AI agent or vendor.", file=sys.stderr)
     for line in offenders:
         print(f"    {line}", file=sys.stderr)
     print("", file=sys.stderr)
     print(
-        "CLAUDE.md forbids per-commit AI attribution trailers in aurora-lint\n"
-        "(Co-Authored-By, Claude-Session, or any other trailer naming Claude/\n"
-        "Anthropic). The contribution is acknowledged once, deliberately, in\n"
-        "README.md's \"AI Assistance\" section -- do not remove that section\n"
-        "for consistency, and do not repeat it per commit.\n"
-        "\n"
-        "Remove the trailer and commit again. (sqc_paper deliberately keeps\n"
-        "these trailers; this rule is this repo's.)",
+        "CONTRIBUTING.md forbids per-commit AI attribution trailers in aurora-lint\n"
+        "(Co-Authored-By or any other trailer naming a listed AI tool/vendor).\n"
+        "AI use is acknowledged once in README.md's \"AI Assistance\" section;\n"
+        "keep that section and remove the trailer before committing again.",
         file=sys.stderr,
     )
     print("", file=sys.stderr)

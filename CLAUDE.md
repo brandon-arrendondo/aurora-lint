@@ -383,35 +383,9 @@ hard precedence in either direction is measurably wrong.
 
 ## Git Commit Rules (CRITICAL)
 
-**EXPLICITLY DENIED:**
-- `git commit --no-verify` — never. Pre-commit hooks MUST pass; only humans skip
-  hooks. Same for any other hook-skipping flag (`--no-gpg-sign`, etc.).
-- `Co-Authored-By: Claude` — never add Claude as co-author.
-
-  **The reason is placement, not prohibition.** Claude's contribution is
-  acknowledged deliberately, in README.md's "AI Assistance" section. The trailer
-  would repeat that fact in every one of thousands of commits, crowding out the
-  message and telling a reader nothing the README has not already said clearly
-  once. So do not read this as attribution being a compliance problem, and do
-  not remove the README section for consistency. Acknowledge once, visibly.
-  (`sqc_paper` deliberately differs and keeps the trailer — the PDF is its
-  deliverable and nobody else works in its history.)
-
-  **Enforced by a `commit-msg` hook** (`scripts/check_commit_message.py`), because
-  prose alone did not hold. A human co-author named normally still passes.
-  `commit-msg` is a *second* hook type, so a clone that ran `pre-commit
-  install` before the hook existed has the config and no hook, silently. One
-  manual pass fixes it:
-
-  ```bash
-  pre-commit install --hook-type commit-msg
-  ```
-
-  `default_install_hook_types` in `.pre-commit-config.yaml` covers every fresh
-  install, so this is only for older clones.
-
-**REQUIRED:** hooks pass before a commit succeeds; if they fail, fix the cause;
-standard commit message format without AI attribution.
+Read and follow [CONTRIBUTING.md's Git Commit Rules](CONTRIBUTING.md#git-commit-rules)
+before committing. That section is the canonical policy for every contributor
+and agent; do not duplicate it in agent instruction files.
 
 ---
 

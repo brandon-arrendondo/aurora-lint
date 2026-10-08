@@ -14,7 +14,7 @@
 default_install_hook_types: [pre-commit, commit-msg]
 
 # Every hook below runs at the pre-commit stage unless it says otherwise, and
-# `no-claude-coauthor` says otherwise (`stages: [commit-msg]`). Without this
+# `no-ai-attribution` says otherwise (`stages: [commit-msg]`). Without this
 # line a hook with no `stages:` runs at BOTH installed stages, so one commit
 # prints the file-based hooks twice: once in the pre-commit block where they
 # actually execute, and again in the commit-msg block as
@@ -27,17 +27,13 @@ default_stages: [pre-commit]
 repos:
   - repo: local
     hooks:
-      - id: no-claude-coauthor
-        name: no Co-Authored-By Claude
+      - id: no-ai-attribution
+        name: no AI attribution trailers
         description: >-
-          Reject commit messages carrying a `Co-Authored-By: Claude` trailer.
-          CLAUDE.md forbids it: the contribution is acknowledged once,
-          deliberately, in README.md's "AI Assistance" section, and repeating
-          it per commit crowds out the message. Nothing enforced this, so it
-          reached 172 commits before anyone noticed. A human co-author named
-          normally still passes -- the pattern requires the name Claude.
-          sqc_paper deliberately keeps the trailer; do not copy this hook
-          there.
+          Reject parsed Git trailers naming a listed AI tool or vendor.
+          CONTRIBUTING.md is the canonical policy: AI use is acknowledged
+          once in README.md, rather than repeated per commit. Ordinary body
+          mentions and human co-authors remain allowed.
         entry: python3 scripts/check_commit_message.py
         language: system
         stages: [commit-msg]
