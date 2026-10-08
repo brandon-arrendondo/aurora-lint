@@ -77,8 +77,8 @@ clang-tidy
 clang-tidy 18.1.3 and tops out at 20, while the published comparison in
 ``docs/tool-comparison.rst`` is LLVM 21.1.  Taking the distro package makes a
 freshly-provisioned node measure an *older* competitor than the table it will
-be compared against, and clang-tidy is the tool currently beating aurora-lint on the
-Juliet overlap (99.2% vs 81.7%) — so that regression would flatter aurora-lint by
+be compared against, and clang-tidy is the tool beating aurora-lint on the
+Juliet overlap in that comparison — so that regression would flatter aurora-lint by
 understating a rival.  ``playbooks/install-static-analyzers.yml`` does this
 automatically; by hand:
 
@@ -432,19 +432,11 @@ boundary and measure the change.
 Per-Project Include Paths
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The real-world runner passes these automatically via the ``includes`` field in
-each codebase's config:
-
-===========  ============================================  ============================
-Project      ``-I`` Paths                                  Resolves
-===========  ============================================  ============================
-libcrc       *(none)*                                      Pure C, no external deps
-sqlite       ``/usr/include``                              OpenSSL, zlib, Tcl
-mosquitto    ``/usr/include``, ``/usr/include/cjson``      OpenSSL, cJSON, CUnit, sqlite3
-curl         ``/usr/include``, ``{path}/lib``              OpenSSL, mbedTLS, GnuTLS
-hostap       ``/usr/include``, ``/usr/include/libnl3``,    OpenSSL, wolfSSL, libnl,
-             ``/usr/include/dbus-1.0``                     D-Bus, libgcrypt, libpcap
-===========  ============================================  ============================
+The real-world runner passes each codebase's ``-I`` paths automatically, from
+the ``includes`` field of its entry in ``CODEBASES`` in
+``bench/realworld_runner.py``; that registry is the list. The corpora that
+read ``/usr/include`` are the five named under *Third-Party Library Headers*
+above.
 
 Real-World Project Setup
 ------------------------
@@ -585,8 +577,8 @@ It also flags three contamination cases independent of status:
     This check exists because the failure is silent and did happen. On the
     work node curl, hostap and sqlite had all drifted, while libcrc and lua
     sat on tracking branches matching their pins only by coincidence. A gate
-    run against the drifted trees reported hostap 452 / sqlite 516 findings
-    where the pinned snapshots give 447 / 506 -- close enough to look
+    run against the drifted trees reported slightly more hostap and sqlite
+    findings than the pinned snapshots give -- close enough to look
     plausible, and not comparable to ``ground_truth`` at all. Fix drift with
     the ``git checkout --detach`` command the check prints for each row.
 
@@ -597,58 +589,28 @@ Preferred: run ``playbooks/setup-benchmark-repos.yml`` (see `Benchmark Host
 Layout`_ above) -- it clones, pins, and verifies every pinned checkout in one pass,
 reading the pins from ``data/benchmark_repos.json``.
 
-Manual fallback:
+Manual fallback: clone each repository in ``data/benchmark_repos.json``
+under its ``name`` (the registry key, so pure-ftpd lands in ``pureftpd``),
+detach at its ``version``, and then verify:
 
 .. code-block:: bash
 
     mkdir -p $SQC_BENCH_ROOT   # default: ~/toolchain
     cd $SQC_BENCH_ROOT
+    python3 -c 'import json, sys
+    for r in json.load(open(sys.argv[1]))["repos"]:
+        print(r["repo"], r["name"], r["version"])' \
+      $AURORA_LINT_SRC_ROOT/aurora-lint/data/benchmark_repos.json |
+    while read -r repo name sha; do
+      git clone "$repo" "$name" && git -C "$name" checkout --detach "$sha"
+    done
+    cd $AURORA_LINT_SRC_ROOT/aurora-lint && python -m bench corpus-check
 
-    git clone https://github.com/lammertb/libcrc.git
-    cd libcrc && git checkout 7719e2112a9a960b1bba130d02bebdf58e8701f1 && cd ..
-
-    git clone https://github.com/sqlite/sqlite.git
-    cd sqlite && git checkout b1a73ba34d05b32007315e4065c6468cc638e3af && cd ..
-
-    git clone https://github.com/eclipse-mosquitto/mosquitto.git
-    cd mosquitto && git checkout d3ee5c5ca62c0fa4983308c6fff558ee978e878c && cd ..
-
-    git clone https://github.com/curl/curl.git
-    cd curl && git checkout 3e198f75861cc2e12daf299689e145949dddd19b && cd ..
-
-    git clone https://git.w1.fi/hostap.git
-    cd hostap && git checkout dcee60436390dd34731560657c4257c3b4c839a6 && cd ..
-
-    git clone https://github.com/lua/lua.git
-    cd lua && git checkout 40b76de2d77e66b70a9d4bf989c3f5340919973f && cd ..
-
-    git clone https://github.com/raysan5/raylib.git
-    cd raylib && git checkout 962bbfc6bfbd7a5acd08e21314fcfa161003a589 && cd ..
-
-    # NOTE: checkout dir must be "pureftpd" (no hyphen) -- see the warning above
-    git clone https://github.com/jedisct1/pure-ftpd.git pureftpd
-    cd pureftpd && git checkout cc28bff52ca28e1d122a2142bf37f2dc578f4d3e && cd ..
-
-    # NOTE: checkout dir must be lowercase "sel4" to match the registry key
-    git clone https://github.com/seL4/seL4.git sel4
-    cd sel4 && git checkout 1326364bc9135d9445d936ebc01e38a402c1f4c6 && cd ..
-
-    # The framework submodule is only needed for the compile_commands.json
-    # capture (playbooks/setup-compile-commands.yml); the aurora-lint scan
-    # of library/ does not need it.
-    git clone https://github.com/Mbed-TLS/mbedtls.git
-    cd mbedtls && git checkout 068ff080b369adfac81509f9b57b2afabaf82dc5 && cd ..
-
-    # Do not build inside this checkout: `make` leaves a gitignored
-    # src/release.h that corpus-check will (correctly) refuse.
-    git clone https://github.com/valkey-io/valkey.git
-    cd valkey && git checkout 7f1dffedff6de73058b2c2a389422b6ecd56c8fb && cd ..
-
-    # NOTE: checkout dir must be lowercase "ventoy" to match the registry key.
-    # Only Ventoy2Disk/Ventoy2Disk/ is scanned; the rest of the repo is
-    # Linux/GRUB/firmware code outside a CERT-C scan's interest.
-    git clone https://github.com/ventoy/Ventoy.git ventoy
-    cd ventoy && git checkout 7cbdc5cf69935bcf1f085ae67f40e70ea7e74bae && cd ..
+mbedtls's framework submodule is needed only for the
+``compile_commands.json`` capture (``playbooks/setup-compile-commands.yml``),
+not for the aurora-lint scan of ``library/``. Do not build inside the valkey
+checkout: ``make`` leaves a gitignored ``src/release.h`` that corpus-check
+will (correctly) refuse.
 
 Running Each Tool Manually
 --------------------------
@@ -662,7 +624,7 @@ Running Each Tool Manually
     -- that's the path ``bench/realworld_runner.py`` itself reads.
 
 aurora-lint
-~~~
+~~~~~~~~~~~
 
 .. code-block:: bash
 
@@ -951,50 +913,11 @@ Output Format Reference
       out of bounds read. assert \valid_read(&ptr->field);
     assertion 'Eva,mem_access' got final status invalid.
 
-Distributed Benchmarking with GNU Parallel
--------------------------------------------
+Distributed Benchmarking
+------------------------
 
-For fast re-benchmarking across multiple machines after rule changes. Cppcheck and
-clang-tidy results are stable across aurora-lint changes -- run them once and cache. Only
-aurora-lint needs re-running.
-
-.. code-block:: bash
-
-    # Prerequisites
-    sudo apt install -y parallel
-    parallel --citation <<< "will cite" 2>/dev/null || true
-
-    # SSH key setup
-    ssh-keygen -t ed25519 -f ~/.ssh/id_benchmark -N ""
-    for node in node1 node2 node3 node4; do
-      ssh-copy-id -i ~/.ssh/id_benchmark.pub $node
-    done
-
-Node file (``~/.benchmark_nodes``)::
-
-    user@node1/8
-    user@node2/8
-    user@node3/8
-    user@node4/8
-
-Fast re-benchmark workflow:
-
-.. code-block:: bash
-
-    # 1. Rebuild aurora-lint
-    cd $AURORA_LINT_SRC_ROOT/aurora-lint && cargo build --release
-
-    # 2. Push binary to nodes (if no shared FS)
-    parallel --sshloginfile $NODES_FILE --nonall \
-      "rsync -az $SQC_BIN {}/sqc_bin"
-
-    # 3. Generate CWE list
-    find $JULIET_DIR -maxdepth 1 -type d -name 'CWE*' | sort > /tmp/cwe_dirs.txt
-
-    # 4. Run in parallel across nodes
-    parallel --sshloginfile $NODES_FILE -a /tmp/cwe_dirs.txt \
-      "$SQC_BIN {} -d $JULIET_DIR -d $JULIET_SUPPORT \
-        --export $RESULTS_DIR/aurora-lint/juliet/{/.}.json"
+Multi-host runs belong to the maintainer's ``benchmarking_db`` infrastructure,
+not to this repo.
 
 Exporting competitor results for ingest
 ---------------------------------------
@@ -1033,7 +956,7 @@ respect to the JSON.
 
 .. note::
 
-    The ``hostname`` column is blank for every run recorded before
-    2026-09-04, which is all four April runs.  Wall clock is
-    hardware-dependent, so a blank means "do not compare this run's duration
-    against another host's", not "same host".
+    The run JSONs record no hostname. ``run_hosts.json`` attributes each
+    run, and the CSV carries it as ``hostname`` + ``hostname_source``.
+    Wall clock is hardware-dependent, so compare durations only between runs
+    on the same host.
