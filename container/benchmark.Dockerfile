@@ -39,12 +39,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     AURORA_BENCH_SNAPSHOT=${SNAPSHOT} \
     SQC_BENCH_ROOT=/bench
 
-# Debian, frozen at the snapshot: the same packages on every build.
+# Debian, frozen at the snapshot: the same packages on every build. Only
+# the bookworm main suite, the one index the dependency sets are resolved
+# against (bench/deps.py resolve), so the image and every set see one
+# package universe: a set's pinned version is always installable here
+# without a downgrade (bookworm-security carries a newer linux-libc-dev, for
+# one). Security updates buy a frozen analysis environment nothing.
 RUN rm -f /etc/apt/sources.list.d/debian.sources \
  && printf '%s\n' \
     "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${SNAPSHOT} bookworm main" \
-    "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${SNAPSHOT} bookworm-updates main" \
-    "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/${SNAPSHOT} bookworm-security main" \
     > /etc/apt/sources.list \
  && apt-get update \
  && apt-get -y upgrade \
