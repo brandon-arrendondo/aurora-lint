@@ -13,14 +13,13 @@ version for the detail.
 
 .. note::
 
-   **No figure on this page is typed.** Every number sits between a pair of
-   ``.. BENCH:NAME:START`` / ``.. BENCH:NAME:END`` comments. The host-side
-   refresh fills those blocks from Postgres, through ``benchmarking_db``'s
-   ``bin/refresh_tools_sqc_docs.py`` calling ``bench/render_docs.py``, just as
-   it fills README's highlights table. The ERR33-C composition blocks are the
-   exception: they come from the public label repository, not Postgres. A
-   block that still reads *pending* has not been rendered yet. The prose
-   outside the blocks is hand-written and does not state a figure.
+   **No figure on this page is typed, and none is official yet.** Each
+   figure has a place between a pair of ``.. BENCH:NAME:START`` /
+   ``.. BENCH:NAME:END`` comments, and those blocks are placeholders: no
+   renderer fills them yet (``bench/render_docs.py`` renders only README's
+   highlights table). Until one does, they read *pending*, and no figure on
+   this page is official. The prose outside the blocks is hand-written and
+   does not state a figure.
 
 A precision figure is a property of a triple
 --------------------------------------------
