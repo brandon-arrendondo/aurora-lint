@@ -167,6 +167,32 @@ struct ElementStore {
     other_writes: Vec<usize>,
 }
 
+/// Whether `ident` is declared as an array object (`char *pw[N]`, the name
+/// directly inside an array declarator), not a pointer or a parameter
+/// (which is adjusted to one).
+fn names_an_array_object(ident: &Node, source: &str) -> bool {
+    let name = ast_utils::get_node_text(ident, source);
+    let Some((decl, declarator)) = ast_utils::resolve_identifier_declarator(ident, name, source)
+    else {
+        return false;
+    };
+    if decl.kind() == "parameter_declaration" {
+        return false;
+    }
+    let target = if declarator.kind() == "identifier" {
+        Some(declarator)
+    } else {
+        query::find_first_descendant(declarator, |n| {
+            n.kind() == "identifier" && ast_utils::get_node_text(&n, source) == name
+        })
+    };
+    target.and_then(|t| t.parent()).is_some_and(|p| {
+        p.kind() == "array_declarator"
+            && p.child_by_field_name("declarator")
+                .is_some_and(|d| ast_utils::get_node_text(&d, source) == name)
+    })
+}
+
 /// Whether `ident` names a parameter or a block-scope object with neither
 /// `static` nor `extern`: an object no other function can write while this
 /// one runs, unless its address is handed out (which the callers check).
@@ -209,6 +235,11 @@ fn statement_in_block<'t>(node: &Node<'t>) -> Option<Node<'t>> {
 struct DeclaratorUses<'t> {
     writes: Vec<Node<'t>>,
     address_taken: bool,
+    /// Calls handed `&name` directly as an argument (through casts and
+    /// parentheses): `memset(&pw, 0, sizeof(pw))`. Also counted in
+    /// `address_taken`; a caller that can bound what such a call does (an
+    /// array's elements, never which array it is) reads them here.
+    address_calls: Vec<Node<'t>>,
 }
 
 fn declarator_uses<'t>(
@@ -221,6 +252,7 @@ fn declarator_uses<'t>(
     let mut uses = DeclaratorUses {
         writes: Vec::new(),
         address_taken: false,
+        address_calls: Vec::new(),
     };
     for occurrence in query::find_descendants_of_kind(*func, "identifier") {
         if ast_utils::get_node_text(&occurrence, source) != name
@@ -245,7 +277,21 @@ fn declarator_uses<'t>(
                         .child_by_field_name("operator")
                         .is_some_and(|o| ast_utils::get_node_text(&o, source) == "&") =>
             {
-                uses.address_taken = true
+                uses.address_taken = true;
+                let mut arg = parent;
+                while let Some(up) = arg
+                    .parent()
+                    .filter(|u| matches!(u.kind(), "parenthesized_expression" | "cast_expression"))
+                {
+                    arg = up;
+                }
+                if let Some(call) = arg
+                    .parent()
+                    .filter(|l| l.kind() == "argument_list")
+                    .and_then(|l| l.parent())
+                {
+                    uses.address_calls.push(call);
+                }
             }
             _ => {}
         }
@@ -320,7 +366,20 @@ fn element_store(assign: &Node, left: &Node, source: &str) -> Option<ElementStor
     let func = ast_utils::find_containing_function(assign)?;
     let uses = declarator_uses(&func, &index, index_id, source);
     let array_uses = declarator_uses(&func, &array, array_id, source);
-    if uses.address_taken || array_uses.address_taken {
+    // An array object's address handed to a call (`memset(&pw, 0,
+    // sizeof(pw))`) cannot make `pw` another array: that call writes its
+    // elements at most, and counts as a write of it below. A pointer's
+    // address, or one kept anywhere but a call argument, can.
+    let array_address_ok = array_uses.address_calls.len()
+        == query::find_descendants(func, |n| {
+            n.kind() == "pointer_expression"
+                && n.child_by_field_name("argument").is_some_and(|a| {
+                    a.kind() == "identifier" && declarator_id(&a, source) == Some(array_id)
+                })
+        })
+        .len()
+        && names_an_array_object(&array, source);
+    if uses.address_taken || (array_uses.address_taken && !array_address_ok) {
         return None;
     }
     let stored = ast_utils::get_node_text(left, source);
@@ -440,6 +499,7 @@ fn element_store(assign: &Node, left: &Node, source: &str) -> Option<ElementStor
             .iter()
             .filter(|w| w.id() != increment)
             .chain(array_uses.writes.iter())
+            .chain(array_uses.address_calls.iter())
             .filter(|w| w.start_byte() >= window)
             .map(|w| w.start_byte())
             .collect(),
