@@ -52,7 +52,7 @@ def install(decl: dict) -> None:
     optional library present at build time would switch on an autodetected
     feature the default build does not have."""
     wanted = set(decl["build"].get("packages", [])) | set(BASE_PACKAGES)
-    debs = [d for src in decl["sources"] for d in src["debs"]]
+    debs = deps._debs(decl)
     in_set = {d["package"] for d in debs}
     # A package the set does not carry is one the build needs for something
     # other than headers (a link-only library such as libnl-genl-3-dev, a
