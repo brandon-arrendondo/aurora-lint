@@ -140,7 +140,6 @@ TARGETS = [
 # too, don't just merge the lists back to make a failure go away.
 TRACKED_PATTERNS = [
     r"\((\d{3})\s+tracked[;)]",
-    r"\((\d{3})\s+tracked\)",
     r"(\d{3})\s+tracked rules?",
     r"of the (\d{3}) tracked rules",
     r"\*\*Tracked Rules:\*\*\s+(\d{3})",
@@ -167,6 +166,10 @@ CWE_PATTERNS = [
     r"(\d+)\s+CWE[- ]ruleset rules?",
     r"CWE ruleset(?: of|:)\s+(\d+)\s+rules?",
 ]
+UNIMPLEMENTED_PATTERNS = [
+    r"the (\d+) tracked but not yet implemented",
+]
+
 IMPLEMENTED_PATTERNS = [
     r"\*\*(\d{3})\s+(?:CERT C\s+)?rules?\*\*\s+implemented",
     r"(\d{3})\s+rules? (?:are )?implemented",
@@ -309,6 +312,7 @@ def lint() -> int:
                     (TRACKED_PATTERNS, tracked, "tracked"),
                     (ENABLED_PATTERNS, enabled, "enabled"),
                     (IMPLEMENTED_PATTERNS, enabled, "implemented"),
+                    (UNIMPLEMENTED_PATTERNS, tracked - enabled, "not yet implemented"),
                     (CWE_PATTERNS, cwe_enabled, "CWE-ruleset")):
                 for pat in pats:
                     for m in re.finditer(pat, line, re.M):
