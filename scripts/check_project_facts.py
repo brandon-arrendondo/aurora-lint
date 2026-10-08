@@ -139,6 +139,7 @@ TARGETS = [
 # more testing) -- if that ever happens, split their expected values here
 # too, don't just merge the lists back to make a failure go away.
 TRACKED_PATTERNS = [
+    r"\((\d{3})\s+tracked[;)]",
     r"\((\d{3})\s+tracked\)",
     r"(\d{3})\s+tracked rules?",
     r"of the (\d{3}) tracked rules",
@@ -167,6 +168,7 @@ CWE_PATTERNS = [
     r"CWE ruleset(?: of|:)\s+(\d+)\s+rules?",
 ]
 IMPLEMENTED_PATTERNS = [
+    r"\*\*(\d{3})\s+(?:CERT C\s+)?rules?\*\*\s+implemented",
     r"(\d{3})\s+rules? (?:are )?implemented",
     r"\((\d{3})\s+implemented\)",
     r"implements\s+(\d{3})\s+rules",

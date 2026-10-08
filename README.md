@@ -117,7 +117,7 @@ nonsense on a C++ header it encounters.
 
 ## Key Features
 
-- **307 CERT C rules** implemented and enabled by default (311 tracked; see [Configuration](docs/configuration.rst) for the 4 tracked but not yet implemented) across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
+- **302 CERT C rules** implemented and enabled by default (306 tracked; see [Configuration](docs/configuration.rst) for the 4 tracked but not yet implemented) across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
 - **Optional interactive terminal UI** for browsing and managing violations (build with `--features tui`)
 - **SARIF 2.1.0 export** (plus a plain JSON array); `scripts/sarif_convert.py` turns a report into CSV/XLSX
 - **CI/CD ready**: exit codes, severity thresholds, diff-only mode, SARIF output
