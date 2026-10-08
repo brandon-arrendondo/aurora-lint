@@ -41,8 +41,22 @@ def _run(cmd, **kw):
     return subprocess.run(cmd, check=True, **kw)
 
 
+# Always installed for a build: the C library, compiler and kernel headers.
+BASE_PACKAGES = ("libc6-dev", "libgcc-12-dev", "linux-libc-dev")
+
+
 def install(decl: dict) -> None:
-    pins = [f"{d['package']}={d['version']}" for src in decl["sources"] for d in src["debs"]]
+    """The set's packages the declared default build uses ('packages', plus
+    BASE_PACKAGES), at their pinned versions. Not the whole set: a set is
+    the union over every configuration of the in-scope files, and an
+    optional library present at build time would switch on an autodetected
+    feature the default build does not have."""
+    wanted = set(decl["build"].get("packages", [])) | set(BASE_PACKAGES)
+    debs = [d for src in decl["sources"] for d in src["debs"]]
+    missing = wanted - {d["package"] for d in debs} - set(BASE_PACKAGES)
+    if missing:
+        raise SystemExit(f"build.packages not in the set: {', '.join(sorted(missing))}")
+    pins = [f"{d['package']}={d['version']}" for d in debs if d["package"] in wanted]
     _run(["apt-get", "update", "-q"])
     _run(["apt-get", "install", "-y", "-q", "--no-install-recommends",
           *pins, *decl["build"].get("apt", [])])

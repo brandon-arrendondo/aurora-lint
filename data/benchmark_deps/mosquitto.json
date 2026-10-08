@@ -13,9 +13,14 @@
   "usr/lib/gcc/x86_64-linux-gnu/12/include"
  ],
  "prune": [
-  "usr/include/linux/netfilter",
-  "usr/include/linux/netfilter_ipv4",
-  "usr/include/linux/netfilter_ipv6"
+  "usr/include/linux/netfilter/xt_CONNMARK.h",
+  "usr/include/linux/netfilter/xt_DSCP.h",
+  "usr/include/linux/netfilter/xt_MARK.h",
+  "usr/include/linux/netfilter/xt_RATEEST.h",
+  "usr/include/linux/netfilter/xt_TCPMSS.h",
+  "usr/include/linux/netfilter_ipv4/ipt_ECN.h",
+  "usr/include/linux/netfilter_ipv4/ipt_TTL.h",
+  "usr/include/linux/netfilter_ipv6/ip6t_HL.h"
  ],
  "include_dirs": [
   "usr/lib/gcc/x86_64-linux-gnu/12/include",
@@ -26,18 +31,8 @@
  "exclude": {
   "libc6-dev-i386": "-m32 multilib; not the x86_64 configuration",
   "libc6-dev-x32": "x32 ABI; not the x86_64 configuration",
-  "libmosquitto-dev": "the corpus's own headers, older release",
-  "libwebsockets-dev": "WITH_WEBSOCKETS_BUILTIN defaults ON: libwebsockets is not used",
-  "libc-ares-dev": "WITH_SRV defaults OFF",
-  "libsystemd-dev": "WITH_SYSTEMD defaults OFF",
-  "libwrap0-dev": "USE_LIBWRAP defaults OFF",
-  "libdlt-dev": "WITH_DLT defaults OFF",
-  "default-libmysqlclient-dev": "examples/mysql_log is not built",
-  "libmariadb-dev": "examples/mysql_log is not built",
-  "libmariadb-dev-compat": "examples/mysql_log is not built",
-  "libowfat-dev": "io.h is the Windows CRT header, included only under WIN32",
-  "libreadline-dev": "cmake/FindLineEditing.cmake prefers libedit (WITH_EDITLINE)",
-  "libcunit1-ncurses-dev": "libcunit1-dev provides the same CUnit headers"
+  "libowfat-dev": "its io.h shadows the Windows CRT header of that name, which the corpus includes only under _WIN32",
+  "libmosquitto-dev": "ships a copy of the corpus's own headers (an older release)"
  },
  "build": {
   "steps": [
@@ -45,31 +40,44 @@
    "cmake --build \"$BUILD\" -j\"$(nproc)\""
   ],
   "db": "$BUILD/compile_commands.json",
-  "why": "CMake defaults (the declared default Linux build: TLS, builtin websockets, HTTP API, plugins, ctrl shell), except WITH_DOCS=OFF (the man pages need xsltproc) and WITH_TESTS=OFF (the C++ GTest suite, outside the scan scope)."
+  "packages": [
+   "libssl-dev",
+   "libcjson-dev",
+   "libsqlite3-dev",
+   "libmicrohttpd-dev"
+  ],
+  "why": "CMake defaults (the declared default Linux build: TLS, builtin websockets, HTTP API, plugins, ctrl shell), except WITH_DOCS=OFF (the man pages need xsltproc) and WITH_TESTS=OFF (the C++ GTest suite, outside the scan scope). The build installs only 'packages' from the set (plus the C library, compiler and kernel headers), so an optional library the set carries for other configurations cannot switch on an autodetected feature."
  },
- "manifest_sha256": "b875322909d1e908b1cb9300597de28ff81e323f72cfd23a7242ff5d41d69162",
+ "manifest_sha256": "9585ca5a9f303235f637ce7a72f10f78868e0ea6475d72808956db7ddb8a52a4",
  "why": {
-  "libargon2-dev": "argon2.h",
+  "libc-ares-dev": "ares.h",
   "libc6-dev": "arpa/inet.h",
+  "libcap-dev": "sys/capability.h",
   "libcjson-dev": "cjson/cJSON.h",
-  "libcunit1-dev": "CUnit/Basic.h",
-  "libedit-dev": "editline/readline.h",
-  "libgcc-12-dev": "nmmintrin.h",
+  "libdlt-dev": "dlt/dlt.h",
+  "libgcc-12-dev": "stdarg.h",
+  "libmbedtls-dev": "mbedtls/ssl.h",
   "libmicrohttpd-dev": "microhttpd.h",
   "libsqlite3-dev": "sqlite3.h",
-  "libssl-dev": "openssl/bio.h",
-  "linux-libc-dev": "linux/in6.h"
+  "libssl-dev": "openssl/bn.h",
+  "libsystemd-dev": "systemd/sd-daemon.h",
+  "libuv1-dev": "uv.h",
+  "libwebsockets-dev": "libwebsockets.h",
+  "libwolfssl-dev": "cyassl/ctaocrypt/settings.h",
+  "libwrap0-dev": "tcpd.h",
+  "linux-libc-dev": "linux/in.h",
+  "zlib1g-dev": "zlib.h"
  },
  "sources": [
   {
    "kind": "debs",
    "debs": [
     {
-     "package": "libargon2-dev",
-     "version": "0~20171227-0.3+deb12u1",
-     "file": "libargon2-dev_0~20171227-0.3+deb12u1_amd64.deb",
-     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/a/argon2/libargon2-dev_0~20171227-0.3+deb12u1_amd64.deb",
-     "sha256": "dc84400da5878a974842d272330b06c6691a10b27c488557e3ba9364a56f0670"
+     "package": "libc-ares-dev",
+     "version": "1.18.1-3",
+     "file": "libc-ares-dev_1.18.1-3_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/c/c-ares/libc-ares-dev_1.18.1-3_amd64.deb",
+     "sha256": "fd031e01ade61a16e9d71776e6d235c637c0514f88b241a27b5e51af5aa39dc2"
     },
     {
      "package": "libc6-dev",
@@ -79,6 +87,13 @@
      "sha256": "0218fc2befcd784c1b0c6292c0a137ce89fad054efaa579ad083bee0f2c01aae"
     },
     {
+     "package": "libcap-dev",
+     "version": "1:2.66-4+deb12u3+b1",
+     "file": "libcap-dev_2.66-4+deb12u3+b1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libc/libcap2/libcap-dev_2.66-4+deb12u3+b1_amd64.deb",
+     "sha256": "897ee64c93b04c4c8eb46551df2277673c1ab95584c765d8d07e3528a6a1c689"
+    },
+    {
      "package": "libcjson-dev",
      "version": "1.7.15-1+deb12u4",
      "file": "libcjson-dev_1.7.15-1+deb12u4_amd64.deb",
@@ -86,18 +101,11 @@
      "sha256": "ab6ed982ced3ea0dc29f95819ca3b063f86a904b15dcf7d57bc310758b238e14"
     },
     {
-     "package": "libcunit1-dev",
-     "version": "2.1-3-dfsg-2.6",
-     "file": "libcunit1-dev_2.1-3-dfsg-2.6_amd64.deb",
-     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/c/cunit/libcunit1-dev_2.1-3-dfsg-2.6_amd64.deb",
-     "sha256": "ce4bacda1bee053acde3d36c19be1eded16ee16db33e7e68c58ed300cd71e05d"
-    },
-    {
-     "package": "libedit-dev",
-     "version": "3.1-20221030-2",
-     "file": "libedit-dev_3.1-20221030-2_amd64.deb",
-     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libe/libedit/libedit-dev_3.1-20221030-2_amd64.deb",
-     "sha256": "48bca9c65f1fbad257cdeeef235003b63136804cfe936d85ac311f2abb6c9764"
+     "package": "libdlt-dev",
+     "version": "2.18.8-6",
+     "file": "libdlt-dev_2.18.8-6_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/d/dlt-daemon/libdlt-dev_2.18.8-6_amd64.deb",
+     "sha256": "b9aaec50655b76651b39c465186bd3144f75f7283ef8de251dea4c3e5f27ee3f"
     },
     {
      "package": "libgcc-12-dev",
@@ -105,6 +113,13 @@
      "file": "libgcc-12-dev_12.2.0-14+deb12u1_amd64.deb",
      "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/g/gcc-12/libgcc-12-dev_12.2.0-14+deb12u1_amd64.deb",
      "sha256": "d720259380a84f2ffc6fe516eff5cbe9c8a005138e8d6a5748747ba4b3404a82"
+    },
+    {
+     "package": "libmbedtls-dev",
+     "version": "2.28.3-1",
+     "file": "libmbedtls-dev_2.28.3-1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/m/mbedtls/libmbedtls-dev_2.28.3-1_amd64.deb",
+     "sha256": "78de9cd0ee6b6bb220ba3d59f1753281c459e7b08de374008ea3b970d8577a0e"
     },
     {
      "package": "libmicrohttpd-dev",
@@ -128,11 +143,53 @@
      "sha256": "43ef5c109056b1507a0972631ee8292e727029aeda1516b4672cb041730ae3af"
     },
     {
+     "package": "libsystemd-dev",
+     "version": "252.39-1~deb12u2",
+     "file": "libsystemd-dev_252.39-1~deb12u2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/s/systemd/libsystemd-dev_252.39-1~deb12u2_amd64.deb",
+     "sha256": "2079f2747cc8ffe7f6b810902a71bd80ee0c53e2f01b3e919297aa6c3e75e09e"
+    },
+    {
+     "package": "libuv1-dev",
+     "version": "1.44.2-1+deb12u1",
+     "file": "libuv1-dev_1.44.2-1+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libu/libuv1/libuv1-dev_1.44.2-1+deb12u1_amd64.deb",
+     "sha256": "7cf6e1d98c3a39084bd7f62e4769c36a303f7af53f70811ba94edb3f17526a10"
+    },
+    {
+     "package": "libwebsockets-dev",
+     "version": "4.1.6-3",
+     "file": "libwebsockets-dev_4.1.6-3_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libw/libwebsockets/libwebsockets-dev_4.1.6-3_amd64.deb",
+     "sha256": "575f7b74a5525775c6498d99f060c09f881a4d048a10a6f336389a0bac5398e9"
+    },
+    {
+     "package": "libwolfssl-dev",
+     "version": "5.5.4-2+deb12u2",
+     "file": "libwolfssl-dev_5.5.4-2+deb12u2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/w/wolfssl/libwolfssl-dev_5.5.4-2+deb12u2_amd64.deb",
+     "sha256": "c7f174260f7eaa34c1b659a48c7f35764e778167a1e1b900287414ad0f77fc5c"
+    },
+    {
+     "package": "libwrap0-dev",
+     "version": "7.6.q-32",
+     "file": "libwrap0-dev_7.6.q-32_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/t/tcp-wrappers/libwrap0-dev_7.6.q-32_amd64.deb",
+     "sha256": "e2bf9aa192496ea98ec664702054ef712a16190ff4690e1e955f9fe8f93e1017"
+    },
+    {
      "package": "linux-libc-dev",
      "version": "6.1.176-1",
      "file": "linux-libc-dev_6.1.176-1_amd64.deb",
      "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/l/linux/linux-libc-dev_6.1.176-1_amd64.deb",
      "sha256": "8bb258735b9dffbb111da778ebdd024750878e435ffd9dfcadcb6762ede6b4cf"
+    },
+    {
+     "package": "zlib1g-dev",
+     "version": "1:1.2.13.dfsg-1",
+     "file": "zlib1g-dev_1.2.13.dfsg-1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/z/zlib/zlib1g-dev_1.2.13.dfsg-1_amd64.deb",
+     "sha256": "f9ce531f60cbd5df37996af9370e0171be96902a17ec2bdbd8d62038c354094f"
     }
    ]
   }

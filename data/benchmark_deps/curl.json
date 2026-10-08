@@ -13,9 +13,14 @@
   "usr/lib/gcc/x86_64-linux-gnu/12/include"
  ],
  "prune": [
-  "usr/include/linux/netfilter",
-  "usr/include/linux/netfilter_ipv4",
-  "usr/include/linux/netfilter_ipv6"
+  "usr/include/linux/netfilter/xt_CONNMARK.h",
+  "usr/include/linux/netfilter/xt_DSCP.h",
+  "usr/include/linux/netfilter/xt_MARK.h",
+  "usr/include/linux/netfilter/xt_RATEEST.h",
+  "usr/include/linux/netfilter/xt_TCPMSS.h",
+  "usr/include/linux/netfilter_ipv4/ipt_ECN.h",
+  "usr/include/linux/netfilter_ipv4/ipt_TTL.h",
+  "usr/include/linux/netfilter_ipv6/ip6t_HL.h"
  ],
  "include_dirs": [
   "usr/lib/gcc/x86_64-linux-gnu/12/include",
@@ -25,34 +30,10 @@
  "exclude": {
   "libc6-dev-i386": "-m32 multilib; not the x86_64 configuration",
   "libc6-dev-x32": "x32 ABI; not the x86_64 configuration",
-  "libowfat-dev": "io.h is the Windows CRT header, included only under _WIN32",
-  "libgnutls28-dev": "CURL_USE_GNUTLS defaults OFF (the declared build is OpenSSL)",
-  "libmbedtls-dev": "CURL_USE_MBEDTLS defaults OFF",
-  "libwolfssl-dev": "CURL_USE_WOLFSSL defaults OFF",
-  "libc-ares-dev": "ENABLE_ARES defaults OFF",
-  "libssh-dev": "CURL_USE_LIBSSH defaults OFF (libssh2 is the default SSH backend)",
-  "libngtcp2-dev": "USE_NGTCP2 defaults OFF",
-  "libnghttp3-dev": "USE_NGTCP2 defaults OFF (nghttp3 comes with it)",
-  "libngtcp2-crypto-gnutls-dev": "USE_NGTCP2 defaults OFF",
-  "libkrb5-dev": "CURL_USE_GSSAPI defaults OFF",
-  "heimdal-dev": "CURL_USE_GSSAPI defaults OFF",
-  "heimdal-multidev": "CURL_USE_GSSAPI defaults OFF",
-  "libgsasl-dev": "CURL_USE_GSASL defaults OFF",
-  "libgsasl7-dev": "CURL_USE_GSASL defaults OFF",
-  "librtmp-dev": "USE_LIBRTMP defaults OFF",
-  "libuv1-dev": "CURL_USE_LIBUV defaults OFF (tests only)",
-  "libcurl4-openssl-dev": "the corpus's own headers, older release",
-  "libcurl4-gnutls-dev": "the corpus's own headers, older release",
-  "libcurl4-nss-dev": "the corpus's own headers, older release",
-  "libdmalloc-dev": "dmalloc is a debugging allocator no default build uses",
-  "libev-dev": "docs/examples only (not part of the library or tool build)",
-  "libevent-dev": "docs/examples only (not part of the library or tool build)",
-  "libexpat1-dev": "docs/examples only (not part of the library or tool build)",
-  "libtidy-dev": "docs/examples only (not part of the library or tool build)",
-  "libicu-dev": "lib/idn.c includes it only under USE_APPLE_IDN",
-  "libgss-dev": "lib/urldata.h includes gss.h only with HAVE_GSSAPI (CURL_USE_GSSAPI defaults OFF)",
-  "libssh-gcrypt-dev": "CURL_USE_LIBSSH defaults OFF (libssh2 is the default SSH backend)",
-  "nettle-dev": "lib/curl_ntlm_core.c includes it only under USE_GNUTLS"
+  "libowfat-dev": "its io.h shadows the Windows CRT header of that name, which the corpus includes only under _WIN32",
+  "libcurl4-openssl-dev": "ships a copy of the corpus's own headers (an older release)",
+  "libcurl4-gnutls-dev": "ships a copy of the corpus's own headers (an older release)",
+  "libcurl4-nss-dev": "ships a copy of the corpus's own headers (an older release)"
  },
  "build": {
   "steps": [
@@ -60,21 +41,47 @@
    "cmake --build \"$BUILD\" -j\"$(nproc)\""
   ],
   "db": "$BUILD/compile_commands.json",
-  "why": "CMake defaults: OpenSSL, nghttp2, libidn2, libpsl, libssh2 and LDAP on, every other TLS backend, c-ares, GSSAPI, libssh, HTTP/3, gsasl, rtmp and libuv off. zlib, brotli and zstd are autodetected by default; the recipe turns them on explicitly so a missing package fails the build instead of changing it."
+  "packages": [
+   "libssl-dev",
+   "libnghttp2-dev",
+   "libidn2-dev",
+   "libpsl-dev",
+   "libssh2-1-dev",
+   "libldap-dev",
+   "zlib1g-dev",
+   "libbrotli-dev",
+   "libzstd-dev"
+  ],
+  "why": "CMake defaults: OpenSSL, nghttp2, libidn2, libpsl, libssh2 and LDAP on, every other TLS backend, c-ares, GSSAPI, libssh, HTTP/3, gsasl, rtmp and libuv off. zlib, brotli and zstd are autodetected by default; the recipe turns them on explicitly so a missing package fails the build instead of changing it. The build installs only 'packages' from the set (plus the C library, compiler and kernel headers), so an optional library the set carries for other configurations cannot switch on an autodetected feature."
  },
- "manifest_sha256": "2ed1a74bd1a7e20dde35535b3b13eae2105c6356a94232515b52929015507dfe",
+ "manifest_sha256": "e75d8dec336a0c90775805160404ad9adc7aadd34aa468ff21ad9f16c7811e4f",
  "why": {
   "libbrotli-dev": "brotli/decode.h",
+  "libc-ares-dev": "ares.h",
   "libc6-dev": "arpa/inet.h",
   "libgcc-12-dev": "backtrace.h",
+  "libgnutls28-dev": "gnutls/abstract.h",
+  "libgsasl-dev": "gsasl.h",
+  "libgss-dev": "gss.h",
+  "libicu-dev": "unicode/uidna.h",
   "libidn2-dev": "idn2.h",
+  "libkrb5-dev": "gssapi.h",
   "libldap-dev": "lber.h",
+  "libmbedtls-dev": "mbedtls/ctr_drbg.h",
   "libnghttp2-dev": "nghttp2/nghttp2.h",
+  "libnghttp3-dev": "nghttp3/nghttp3.h",
+  "libngtcp2-crypto-gnutls-dev": "ngtcp2/ngtcp2_crypto.h",
+  "libngtcp2-dev": "ngtcp2/ngtcp2.h",
   "libpsl-dev": "libpsl.h",
+  "librtmp-dev": "librtmp/rtmp.h",
+  "libssh-dev": "libssh/libssh.h",
   "libssh2-1-dev": "libssh2.h",
   "libssl-dev": "openssl/bio.h",
+  "libuv1-dev": "uv.h",
+  "libwolfssl-dev": "wolfssl/error-ssl.h",
   "libzstd-dev": "zstd.h",
   "linux-libc-dev": "linux/tcp.h",
+  "nettle-dev": "nettle/des.h",
   "zlib1g-dev": "zlib.h"
  },
  "sources": [
@@ -87,6 +94,13 @@
      "file": "libbrotli-dev_1.0.9-2+b6_amd64.deb",
      "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/b/brotli/libbrotli-dev_1.0.9-2+b6_amd64.deb",
      "sha256": "932de11d4d9caee3300319b2fdf6ca505ca739706be48737df5e40ee90ccb6ca"
+    },
+    {
+     "package": "libc-ares-dev",
+     "version": "1.18.1-3",
+     "file": "libc-ares-dev_1.18.1-3_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/c/c-ares/libc-ares-dev_1.18.1-3_amd64.deb",
+     "sha256": "fd031e01ade61a16e9d71776e6d235c637c0514f88b241a27b5e51af5aa39dc2"
     },
     {
      "package": "libc6-dev",
@@ -103,11 +117,46 @@
      "sha256": "d720259380a84f2ffc6fe516eff5cbe9c8a005138e8d6a5748747ba4b3404a82"
     },
     {
+     "package": "libgnutls28-dev",
+     "version": "3.7.9-2+deb12u7",
+     "file": "libgnutls28-dev_3.7.9-2+deb12u7_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/g/gnutls28/libgnutls28-dev_3.7.9-2+deb12u7_amd64.deb",
+     "sha256": "9937ecc1f5ac034afae7fce867957626c5af05f7e0dac765c2d156244516787b"
+    },
+    {
+     "package": "libgsasl-dev",
+     "version": "2.2.0-1+deb12u1",
+     "file": "libgsasl-dev_2.2.0-1+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/g/gsasl/libgsasl-dev_2.2.0-1+deb12u1_amd64.deb",
+     "sha256": "98f840f99be43025f0f304d57d77fc74ece510cbb1d000431324caf3f5a4e75a"
+    },
+    {
+     "package": "libgss-dev",
+     "version": "1.0.4-1+deb12u2",
+     "file": "libgss-dev_1.0.4-1+deb12u2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/g/gss/libgss-dev_1.0.4-1+deb12u2_amd64.deb",
+     "sha256": "6408d872baff64528fe2673233b7f4ccfedbe2ba530cf7d8be2d5413853ebab7"
+    },
+    {
+     "package": "libicu-dev",
+     "version": "72.1-3+deb12u1",
+     "file": "libicu-dev_72.1-3+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/i/icu/libicu-dev_72.1-3+deb12u1_amd64.deb",
+     "sha256": "08bd4e3f4bd4fc725cf25e739edf0e7df5ac1826bdac9a7d990eea8f93b2d7a0"
+    },
+    {
      "package": "libidn2-dev",
      "version": "2.3.3-1+b1",
      "file": "libidn2-dev_2.3.3-1+b1_amd64.deb",
      "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libi/libidn2/libidn2-dev_2.3.3-1+b1_amd64.deb",
      "sha256": "e5b3efc4d3b0ce97c7c5e4105685b5541379c8f4e47fe79a1b3ad8137a9914cc"
+    },
+    {
+     "package": "libkrb5-dev",
+     "version": "1.20.1-2+deb12u5",
+     "file": "libkrb5-dev_1.20.1-2+deb12u5_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/k/krb5/libkrb5-dev_1.20.1-2+deb12u5_amd64.deb",
+     "sha256": "98703cfcafb6377414ca5a0de9a309c7b324337e6ecf8c86157a14b85cebcb66"
     },
     {
      "package": "libldap-dev",
@@ -117,6 +166,13 @@
      "sha256": "8ffade80f355bff555db98c39c40a51837a491f358d52a558520bfe02b1ec4f3"
     },
     {
+     "package": "libmbedtls-dev",
+     "version": "2.28.3-1",
+     "file": "libmbedtls-dev_2.28.3-1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/m/mbedtls/libmbedtls-dev_2.28.3-1_amd64.deb",
+     "sha256": "78de9cd0ee6b6bb220ba3d59f1753281c459e7b08de374008ea3b970d8577a0e"
+    },
+    {
      "package": "libnghttp2-dev",
      "version": "1.52.0-1+deb12u3",
      "file": "libnghttp2-dev_1.52.0-1+deb12u3_amd64.deb",
@@ -124,11 +180,46 @@
      "sha256": "6a3271848f92406b002acf57babea070b7b5d15f035f3efd16adb12d25ea648f"
     },
     {
+     "package": "libnghttp3-dev",
+     "version": "0.8.0-2",
+     "file": "libnghttp3-dev_0.8.0-2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/n/nghttp3/libnghttp3-dev_0.8.0-2_amd64.deb",
+     "sha256": "e12b6422b817ded0ce3c9065a4c99e6a4f776a152f806dd640c92a376c027540"
+    },
+    {
+     "package": "libngtcp2-crypto-gnutls-dev",
+     "version": "0.12.1+dfsg-1+deb12u1",
+     "file": "libngtcp2-crypto-gnutls-dev_0.12.1+dfsg-1+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/n/ngtcp2/libngtcp2-crypto-gnutls-dev_0.12.1+dfsg-1+deb12u1_amd64.deb",
+     "sha256": "4827c52362d6682364dd6629e2a07f923efa0644e1193f235bff246f7246e9bf"
+    },
+    {
+     "package": "libngtcp2-dev",
+     "version": "0.12.1+dfsg-1+deb12u1",
+     "file": "libngtcp2-dev_0.12.1+dfsg-1+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/n/ngtcp2/libngtcp2-dev_0.12.1+dfsg-1+deb12u1_amd64.deb",
+     "sha256": "ee67208e23519b665cd94b31f23d231071052e7fbc290febfc3cc896e6da902a"
+    },
+    {
      "package": "libpsl-dev",
      "version": "0.21.2-1",
      "file": "libpsl-dev_0.21.2-1_amd64.deb",
      "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libp/libpsl/libpsl-dev_0.21.2-1_amd64.deb",
      "sha256": "5f71e7668d270ef70d453974dd5ad954c312324fe424d747020ef9e72d38a563"
+    },
+    {
+     "package": "librtmp-dev",
+     "version": "2.4+20151223.gitfa8646d.1-2+b2",
+     "file": "librtmp-dev_2.4+20151223.gitfa8646d.1-2+b2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/r/rtmpdump/librtmp-dev_2.4+20151223.gitfa8646d.1-2+b2_amd64.deb",
+     "sha256": "39e00e93ab4a31e392f290d90f72f057c224e58aed4718cab0ec35ee134a0141"
+    },
+    {
+     "package": "libssh-dev",
+     "version": "0.10.6-0+deb12u2",
+     "file": "libssh-dev_0.10.6-0+deb12u2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libs/libssh/libssh-dev_0.10.6-0+deb12u2_amd64.deb",
+     "sha256": "c5dff9b2b855677e6451e35ab6f7e9a467c4c36a3d76c30526f9f66b0f978df7"
     },
     {
      "package": "libssh2-1-dev",
@@ -145,6 +236,20 @@
      "sha256": "43ef5c109056b1507a0972631ee8292e727029aeda1516b4672cb041730ae3af"
     },
     {
+     "package": "libuv1-dev",
+     "version": "1.44.2-1+deb12u1",
+     "file": "libuv1-dev_1.44.2-1+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libu/libuv1/libuv1-dev_1.44.2-1+deb12u1_amd64.deb",
+     "sha256": "7cf6e1d98c3a39084bd7f62e4769c36a303f7af53f70811ba94edb3f17526a10"
+    },
+    {
+     "package": "libwolfssl-dev",
+     "version": "5.5.4-2+deb12u2",
+     "file": "libwolfssl-dev_5.5.4-2+deb12u2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/w/wolfssl/libwolfssl-dev_5.5.4-2+deb12u2_amd64.deb",
+     "sha256": "c7f174260f7eaa34c1b659a48c7f35764e778167a1e1b900287414ad0f77fc5c"
+    },
+    {
      "package": "libzstd-dev",
      "version": "1.5.4+dfsg2-5",
      "file": "libzstd-dev_1.5.4+dfsg2-5_amd64.deb",
@@ -157,6 +262,13 @@
      "file": "linux-libc-dev_6.1.176-1_amd64.deb",
      "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/l/linux/linux-libc-dev_6.1.176-1_amd64.deb",
      "sha256": "8bb258735b9dffbb111da778ebdd024750878e435ffd9dfcadcb6762ede6b4cf"
+    },
+    {
+     "package": "nettle-dev",
+     "version": "3.8.1-2",
+     "file": "nettle-dev_3.8.1-2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/n/nettle/nettle-dev_3.8.1-2_amd64.deb",
+     "sha256": "aa8e4331a974f00db23a14389c67dfe66bc359b09b6c2dbfe555230942feb6be"
     },
     {
      "package": "zlib1g-dev",

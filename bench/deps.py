@@ -130,6 +130,45 @@ def load(name: str) -> dict:
     return validate(json.loads(path.read_text()))
 
 
+def spellings(project: str, checkout=None) -> list[str]:
+    """The #include spellings a dependency set must resolve for `project`:
+    every <...> and "..." include in the corpus's IN-SCOPE source files
+    (scope_include/scope_exclude, minus primary_build_config.out_of_config:
+    bench/corpus.py) that names no file the checkout itself ships. A set
+    covers every configuration of those files Debian can supply, not only the
+    default build (docs/adr/0018; ADR-0010), so every arm's includes count."""
+    import subprocess
+    from bench import corpus
+    entry = next(e for e in corpus.load_repos() if e["name"] == project)
+    root = Path(checkout) if checkout else BENCH_ROOT / project
+    out_of_config = (entry.get("primary_build_config") or {}).get("out_of_config", [])
+    files = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True,
+                           check=True).stdout.decode().split("\0")
+    files = [f for f in files if f]
+    shipped = set(files)
+    suffixes = {}
+    for f in files:
+        parts = f.split("/")
+        for i in range(len(parts)):
+            suffixes.setdefault("/".join(parts[i:]), True)
+    found = set()
+    for f in files:
+        if not f.endswith((".c", ".h")) or not corpus.in_scope(project, f):
+            continue
+        if any(corpus._match(f, pat) for pat in out_of_config):
+            continue
+        try:
+            text = (root / f).read_bytes()
+        except OSError:
+            continue
+        for _, inc in _INCLUDE.findall(text):
+            name = posixpath.normpath(inc.decode(errors="replace").strip())
+            if name in suffixes or posixpath.normpath(posixpath.join(posixpath.dirname(f), name)) in shipped:
+                continue
+            found.add(name)
+    return sorted(found)
+
+
 def deps_name(project: str):
     """The name of the dependency set `project` declares ('deps' in
     data/benchmark_repos.json), or None if it declares none."""
@@ -547,6 +586,9 @@ def resolve(decl: dict, spellings, bench_root=None, log=print) -> dict:
 #           $BUILD (an empty directory) set, in $SRC, under bash -e
 #   db      where the steps leave compile_commands.json ($SRC/... or
 #           $BUILD/...)
+#   packages  the set's packages the default build uses (the set itself is
+#           the union over every configuration, so installing all of it
+#           would switch on autodetected features the default build lacks)
 #   why     what the recipe chooses and why (the declared configuration)
 #
 # python -m bench container-build-db runs the recipe in a throwaway
@@ -750,12 +792,18 @@ def main(argv=None) -> int:
                                           declaration without a pin prints
                                           the hash to declare;
     `python -m bench.deps id NAME`       print the tree id and decl hash;
+    `python -m bench.deps spellings PROJECT`
+                                          the #include names the corpus's
+                                          in-scope files need from a set;
     `python -m bench.deps resolve NAME SPELLING...`
                                           print the pinned 'debs' that
                                           provide those #include names, with
                                           the closure, as JSON."""
     import sys
     args = sys.argv[1:] if argv is None else argv
+    if len(args) >= 2 and args[0] == "spellings":
+        print("\n".join(spellings(args[1])))
+        return 0
     if len(args) < 2 or args[0] not in ("verify", "fetch", "id", "resolve"):
         print(main.__doc__)
         return 2

@@ -502,3 +502,57 @@ class TestCorpusCheck(_Debs):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSpellings(unittest.TestCase):
+    """What a set must resolve: the includes of the corpus's in-scope,
+    in-configuration files that the checkout does not ship itself."""
+
+    def test_only_in_scope_files_and_only_what_the_checkout_lacks(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            files = {
+                "src/a.c": '#include <zlib.h>\n#include "own.h"\n#include <proj/api.h>\n'
+                           '#ifdef _WIN32\n#include <windows.h>\n#endif\n',
+                "src/own.h": "",
+                "include/proj/api.h": "",
+                "src/os_win.c": "#include <winsock2.h>\n",      # out_of_config
+                "tests/t.c": "#include <cunit.h>\n",            # out of scope
+            }
+            for rel, text in files.items():
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text(text)
+            subprocess.run(["git", "-C", td, "init", "-q"], check=True)
+            subprocess.run(["git", "-C", td, "add", "."], check=True)
+            entry = {"name": "toy", "scope_include": ["src/**", "include/**"],
+                     "primary_build_config": {"out_of_config": ["src/os_win.c"]}}
+            with mock.patch.object(corpus, "load_repos", return_value=[entry]):
+                got = deps.spellings("toy", root)
+        # Every arm counts (windows.h is listed; the resolver reports it
+        # unresolved), the corpus's own headers do not, and out-of-scope or
+        # out-of-configuration files contribute nothing.
+        self.assertEqual(got, ["windows.h", "zlib.h"])
+
+
+class TestBuildInstall(unittest.TestCase):
+    def test_the_build_installs_only_the_default_builds_packages(self):
+        from bench import dbbuild
+        decl = _decl([{"package": n, "version": "1"} for n in
+                      ("libc6-dev", "libssl-dev", "libgnutls28-dev")],
+                     build={"steps": ["make"], "db": "$SRC/compile_commands.json",
+                            "packages": ["libssl-dev"]})
+        calls = []
+        with mock.patch.object(dbbuild, "_run", side_effect=lambda cmd, **kw: calls.append(cmd)):
+            dbbuild.install(decl)
+        installed = [a for a in calls[-1] if "=" in a]
+        self.assertEqual(installed, ["libc6-dev=1", "libssl-dev=1"])
+
+    def test_a_build_package_missing_from_the_set_is_refused(self):
+        from bench import dbbuild
+        decl = _decl([{"package": "libc6-dev", "version": "1"}],
+                     build={"steps": ["make"], "db": "$SRC/compile_commands.json",
+                            "packages": ["libssl-dev"]})
+        with mock.patch.object(dbbuild, "_run"):
+            with self.assertRaises(SystemExit):
+                dbbuild.install(decl)

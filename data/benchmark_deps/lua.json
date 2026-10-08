@@ -13,9 +13,14 @@
   "usr/lib/gcc/x86_64-linux-gnu/12/include"
  ],
  "prune": [
-  "usr/include/linux/netfilter",
-  "usr/include/linux/netfilter_ipv4",
-  "usr/include/linux/netfilter_ipv6"
+  "usr/include/linux/netfilter/xt_CONNMARK.h",
+  "usr/include/linux/netfilter/xt_DSCP.h",
+  "usr/include/linux/netfilter/xt_MARK.h",
+  "usr/include/linux/netfilter/xt_RATEEST.h",
+  "usr/include/linux/netfilter/xt_TCPMSS.h",
+  "usr/include/linux/netfilter_ipv4/ipt_ECN.h",
+  "usr/include/linux/netfilter_ipv4/ipt_TTL.h",
+  "usr/include/linux/netfilter_ipv6/ip6t_HL.h"
  ],
  "include_dirs": [
   "usr/lib/gcc/x86_64-linux-gnu/12/include",
@@ -25,21 +30,21 @@
  "exclude": {
   "libc6-dev-i386": "-m32 multilib; not the x86_64 configuration",
   "libc6-dev-x32": "x32 ABI; not the x86_64 configuration",
-  "libreadline-dev": "make linux defines LUA_USE_LINUX, not LUA_USE_READLINE",
-  "libedit-dev": "make linux defines LUA_USE_LINUX, not LUA_USE_READLINE",
-  "libowfat-dev": "io.h is the Windows CRT header, included only under _WIN32"
+  "libowfat-dev": "its io.h shadows the Windows CRT header of that name, which the corpus includes only under _WIN32"
  },
  "build": {
   "steps": [
    "bear -- make -j\"$(nproc)\""
   ],
   "db": "$SRC/compile_commands.json",
-  "why": "The makefile's own build: -std=c99 -DLUA_USE_LINUX, the declared make linux configuration."
+  "packages": [],
+  "why": "The makefile's own build: -std=c99 -DLUA_USE_LINUX, the declared make linux configuration. The build installs only 'packages' from the set (plus the C library, compiler and kernel headers), so an optional library the set carries for other configurations cannot switch on an autodetected feature."
  },
- "manifest_sha256": "74e7ba14bc7308ee692fc8f4b8e26b5f20b0d4f8c03159157a27403109961668",
+ "manifest_sha256": "04c11ca51015b1a24c659cd6309b86920c743fac3ea661b81b6e380cc66f046e",
  "why": {
   "libc6-dev": "assert.h",
   "libgcc-12-dev": "float.h",
+  "libreadline-dev": "readline/history.h",
   "linux-libc-dev": "linux/errno.h"
  },
  "sources": [
@@ -59,6 +64,13 @@
      "file": "libgcc-12-dev_12.2.0-14+deb12u1_amd64.deb",
      "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/g/gcc-12/libgcc-12-dev_12.2.0-14+deb12u1_amd64.deb",
      "sha256": "d720259380a84f2ffc6fe516eff5cbe9c8a005138e8d6a5748747ba4b3404a82"
+    },
+    {
+     "package": "libreadline-dev",
+     "version": "8.2-1.3",
+     "file": "libreadline-dev_8.2-1.3_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/r/readline/libreadline-dev_8.2-1.3_amd64.deb",
+     "sha256": "23b2f03bc073dcd3ac4638675ddccbda2e8d7348bb83dd648c55dfb8077e8672"
     },
     {
      "package": "linux-libc-dev",
