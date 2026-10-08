@@ -1282,6 +1282,7 @@
     {
       "name": "mosquitto",
       "host_headers": "/usr/include",
+      "deps": "mosquitto",
       "repo": "https://github.com/eclipse-mosquitto/mosquitto.git",
       "version": "d3ee5c5ca62c0fa4983308c6fff558ee978e878c",
       "primary_build_config": {
