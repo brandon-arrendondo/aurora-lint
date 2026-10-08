@@ -49,6 +49,17 @@ pub struct Exp33C {
     /// Names some configuration leaves without a macro definition
     /// (`ProjectContext::conditional_macro_names`).
     conditional_macro_names: RefCell<Arc<HashSet<String>>>,
+    /// The project's settled `#define ALIAS target` renamings, and every
+    /// live target of each (`ProjectContext::macro_aliases`,
+    /// `macro_alias_alternatives`).
+    project_aliases: RefCell<Arc<HashMap<String, String>>>,
+    project_alias_alternatives: RefCell<Arc<HashMap<String, Vec<String>>>>,
+    /// This file's alias map, an allocator in some build mapped to it, and
+    /// its function-like macros (the project's, its own winning): what an
+    /// initializer's callee is classified through.
+    file_macro_aliases: RefCell<Arc<HashMap<String, String>>>,
+    file_function_macros:
+        RefCell<Arc<HashMap<String, crate::analyze::macro_expand::FunctionMacro>>>,
     /// The run's policy and environment settings: whether static storage is
     /// zeroed before `main` (`static_zero_init`), and whether the scan is a
     /// closed program (`closed_program`).
@@ -98,6 +109,10 @@ impl Exp33C {
             macro_output_params: RefCell::new(HashMap::new()),
             macro_untouched_params: RefCell::new(HashMap::new()),
             conditional_macro_names: RefCell::default(),
+            project_aliases: RefCell::default(),
+            project_alias_alternatives: RefCell::default(),
+            file_macro_aliases: RefCell::default(),
+            file_function_macros: RefCell::default(),
             settings: RefCell::default(),
             closure_dependent_constants: RefCell::default(),
         }
@@ -116,6 +131,35 @@ impl Exp33C {
             node, source,
         ));
         macros
+    }
+
+    /// The alias map an initializer's callee resolves through: the settled
+    /// aliases, plus each alias some build makes an allocator, mapped to it.
+    /// An allocation starts an uninitialized-read finding, so one build that
+    /// allocates is enough (ADR-0010 D1), and an uninitializing allocator is
+    /// preferred over a zeroing one where the builds differ.
+    fn allocation_aliases(&self, node: &Node, source: &str) -> HashMap<String, String> {
+        use crate::analyze::const_eval;
+        use crate::settings::AllocatorContract as C;
+        use crate::utility::cert_c::call_roles::allocator_contract;
+        let mut aliases =
+            const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
+        let alternatives = const_eval::merged_macro_alias_alternatives(
+            &self.project_alias_alternatives.borrow(),
+            node,
+            source,
+        );
+        const_eval::with_accusing_alias_targets(&mut aliases, &alternatives, |t| {
+            t == "alloca"
+                || matches!(
+                    allocator_contract(t),
+                    Some(C::Malloc | C::AlignedAlloc | C::Realloc)
+                )
+        });
+        const_eval::with_accusing_alias_targets(&mut aliases, &alternatives, |t| {
+            allocator_contract(t).is_some()
+        });
+        aliases
     }
 
     /// Invoked macros' arguments no build reads at the invocation. A name
@@ -326,6 +370,8 @@ impl CertRule for Exp33C {
         // Function-like macro definitions (for macro output-arg recognition).
         *self.function_macros.borrow_mut() = context.function_macros.clone();
         *self.conditional_macro_names.borrow_mut() = context.conditional_macro_names.clone();
+        *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
+        *self.project_alias_alternatives.borrow_mut() = context.macro_alias_alternatives.clone();
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -377,6 +423,8 @@ impl CertRule for Exp33C {
                 // file). Macros whose body assigns a parameter (e.g. CF_DATA_SAVE)
                 // write that argument — feeds the init-state transfer + read-checker.
                 let macros = self.file_function_macros(node, source);
+                *self.file_macro_aliases.borrow_mut() =
+                    Arc::new(self.allocation_aliases(node, source));
                 // A file with no function-like macros must not keep the
                 // previous file's output arguments.
                 self.macro_output_params.borrow_mut().clear();
@@ -426,6 +474,7 @@ impl CertRule for Exp33C {
 
                 *self.macro_untouched_params.borrow_mut() =
                     self.untouched_macro_params(node, source, &macros);
+                *self.file_function_macros.borrow_mut() = Arc::new(macros);
             }
 
             if node.kind() == "function_definition" {
@@ -465,6 +514,8 @@ impl CertRule for Exp33C {
                         cross_file_conditional_output_params,
                         cross_file_conditional_output_return_correlation,
                         static_storage_not_zeroed: !self.settings.borrow().flag("static_zero_init"),
+                        macro_aliases: Arc::clone(&self.file_macro_aliases.borrow()),
+                        function_macros: Arc::clone(&self.file_function_macros.borrow()),
                     };
                     let analysis = init_state::analyze_init_states_with_statics(
                         cfg, node, source, &statics, &config,

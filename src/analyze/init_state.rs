@@ -7,8 +7,11 @@
 use super::cfg::{BasicBlock, BlockId, CfgEdge, FunctionCfg};
 use super::const_eval;
 use super::dataflow::find_node_at_range;
+use super::macro_expand::FunctionMacro;
 use crate::utility::cert_c::node_children::NodeChildren;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 // ---------------------------------------------------------------------------
@@ -521,6 +524,17 @@ pub struct InitAnalysisConfig {
     /// function in the program may write one, and an intraprocedural
     /// analysis cannot order those writes.
     pub static_storage_not_zeroed: bool,
+    /// `#define ALIAS target` renamings in force for this file
+    /// (`const_eval::merged_macro_aliases`), with an alias that names an
+    /// allocator in some build mapped to it. An initializer's callee is
+    /// classified as the name this resolves it to: valkey calls
+    /// `zrealloc(...)`, `#define zrealloc valkey_realloc`, and it is
+    /// `valkey_realloc` the project declares an allocator.
+    pub macro_aliases: Arc<HashMap<String, String>>,
+    /// Function-like macro definitions in scope for this file. An
+    /// initializer that invokes one is classified as its expansion, so
+    /// `#define my_malloc(n) malloc(n)` allocates as `malloc` does.
+    pub function_macros: Arc<HashMap<String, FunctionMacro>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -645,15 +659,15 @@ fn process_declaration(
                     // write recognition that already existed for
                     // assignment-statement form.
                     process_expression(&value, source, state, tracked_vars, config);
-                    let init_state = classify_initializer(&value, source, config);
+                    let allocation = classify_allocation(&value, source, config);
                     let is_array = is_array_declarator(&child);
-                    let mut info = VarInfo::new(init_state);
+                    let mut info = VarInfo::new(allocation.state);
                     info.is_unsigned_char = is_unsigned_char;
                     info.is_char_type = is_char_type;
                     info.is_array = is_array;
                     info.is_static = is_static;
-                    if matches!(init_state, InitState::MallocUninitialized) {
-                        info.allocation_count = extract_allocation_count(&value, source);
+                    if matches!(allocation.state, InitState::MallocUninitialized) {
+                        info.allocation_count = allocation.count;
                     }
                     state.insert(var_name, info);
                 }
@@ -720,23 +734,65 @@ fn process_declaration(
     }
 }
 
-/// The call an initializer is, seen through parentheses and casts:
-/// `(char *)(malloc(n))` is the `malloc(n)` call. `None` for anything else, so
-/// a string literal or comment that merely spells an allocator is no call.
-fn allocation_call<'t>(value: &Node<'t>) -> Option<Node<'t>> {
-    let mut node = *value;
-    loop {
-        match node.kind() {
-            "parenthesized_expression" => {
-                node = (0..node.named_child_count())
-                    .filter_map(|i| node.named_child(i))
-                    .find(|c| c.kind() != "comment")?;
-            }
-            "cast_expression" => node = node.child_by_field_name("value")?,
-            "call_expression" => return Some(node),
-            _ => return None,
+/// What an initializer or assigned value leaves a pointer pointing at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Allocation {
+    state: InitState,
+    /// Elements allocated, from `N * sizeof(T)`, when the size is that shape
+    /// and the state is `MallocUninitialized`.
+    count: Option<usize>,
+}
+
+impl Allocation {
+    const NONE: Allocation = Allocation {
+        state: InitState::Initialized,
+        count: None,
+    };
+
+    /// The value that some configuration produces, toward the finding
+    /// (ADR-0010 D1): uninitialized memory in one build is a read of it in
+    /// that build. Counts survive only where every uninitialized build
+    /// agrees.
+    fn either_build(self, other: Allocation) -> Allocation {
+        use InitState::*;
+        let rank = |s: InitState| match s {
+            MallocUninitialized => 2,
+            MallocInitialized => 1,
+            _ => 0,
+        };
+        match rank(self.state).cmp(&rank(other.state)) {
+            std::cmp::Ordering::Greater => self,
+            std::cmp::Ordering::Less => other,
+            std::cmp::Ordering::Equal => Allocation {
+                state: self.state,
+                count: if self.count == other.count {
+                    self.count
+                } else {
+                    None
+                },
+            },
         }
     }
+}
+
+/// How deep one initializer's macro expansions are followed.
+const MAX_ALLOCATION_MACRO_DEPTH: usize = 4;
+
+thread_local! {
+    /// One C parser per thread for macro expansions.
+    static EXPANSION_PARSER: RefCell<Option<tree_sitter::Parser>> = const { RefCell::new(None) };
+}
+
+fn parse_expansion(text: &str) -> Option<tree_sitter::Tree> {
+    EXPANSION_PARSER.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            let mut parser = tree_sitter::Parser::new();
+            parser.set_language(&crate::parser::c_language()).ok()?;
+            *slot = Some(parser);
+        }
+        slot.as_mut()?.parse(text, None)
+    })
 }
 
 /// The name a call's callee is written as, when it is a plain identifier
@@ -752,75 +808,203 @@ fn callee_identifier<'s>(call: &Node, source: &'s str) -> Option<&'s str> {
     callee.utf8_text(source.as_bytes()).ok()
 }
 
-/// Classify an initializer expression to determine init state. Only a call
-/// whose callee is an allocator by name (`call_roles::allocator_contract`,
-/// `alloca`, a realloc wrapper the prescan found) allocates; allocator names
-/// inside a string literal or comment never do.
-fn classify_initializer(value: &Node, source: &str, config: &InitAnalysisConfig) -> InitState {
-    let Some(call) = allocation_call(value) else {
-        return InitState::Initialized;
-    };
-    let Some(name) = callee_identifier(&call, source) else {
-        return InitState::Initialized;
-    };
-    match name {
-        "alloca" | "ALLOCA" => return InitState::MallocUninitialized,
-        "zalloc" => return InitState::MallocInitialized,
-        _ => {}
-    }
-    use crate::settings::AllocatorContract as C;
-    match crate::utility::cert_c::call_roles::allocator_contract(name) {
-        Some(C::Calloc) => InitState::MallocInitialized,
-        Some(C::Malloc | C::AlignedAlloc | C::Realloc) => InitState::MallocUninitialized,
-        Some(C::Strdup | C::Strndup) => InitState::Initialized,
-        None if config.realloc_wrapper_fns.contains(name) => InitState::MallocUninitialized,
-        None => InitState::Initialized,
+/// A call's arguments, comments left out.
+fn call_arguments<'t>(call: &Node<'t>) -> Vec<Node<'t>> {
+    call.child_by_field_name("arguments")
+        .map(|args| {
+            (0..args.named_child_count())
+                .filter_map(|i| args.named_child(i))
+                .filter(|a| a.kind() != "comment")
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Classify an initializer or assigned value. Only a call whose callee is
+/// an allocator allocates: a standard one or one declared in
+/// `[environment.allocators]` (`call_roles::allocator_contract`), `alloca`,
+/// or a function this file defines around `realloc`, each reached through
+/// any object-like alias (`config.macro_aliases`). A function-like macro is
+/// classified as its expansion. Parentheses and casts are seen through;
+/// a comma expression is its last operand; a conditional is uninitialized
+/// memory when one arm is and the other is a null pointer constant (a read
+/// through the null arm is a null dereference, not a read of initialized
+/// memory). An allocator name inside a string literal or comment is no call.
+fn classify_allocation(value: &Node, source: &str, config: &InitAnalysisConfig) -> Allocation {
+    classify_allocation_at(value, source, config, 0)
+}
+
+fn classify_allocation_at(
+    value: &Node,
+    source: &str,
+    config: &InitAnalysisConfig,
+    depth: usize,
+) -> Allocation {
+    let mut node = *value;
+    loop {
+        match node.kind() {
+            "parenthesized_expression" => {
+                let Some(inner) = (0..node.named_child_count())
+                    .filter_map(|i| node.named_child(i))
+                    .find(|c| c.kind() != "comment")
+                else {
+                    return Allocation::NONE;
+                };
+                node = inner;
+            }
+            "cast_expression" => match node.child_by_field_name("value") {
+                Some(inner) => node = inner,
+                None => return Allocation::NONE,
+            },
+            "comma_expression" => match node.child_by_field_name("right") {
+                Some(inner) => node = inner,
+                None => return Allocation::NONE,
+            },
+            "conditional_expression" => {
+                let arm = |field| {
+                    node.child_by_field_name(field)
+                        .map(|a| (classify_allocation_at(&a, source, config, depth), a))
+                };
+                let (Some((then, then_node)), Some((other, other_node))) =
+                    (arm("consequence"), arm("alternative"))
+                else {
+                    return Allocation::NONE;
+                };
+                let is_null =
+                    |n: &Node| crate::analyze::side_effects::is_null_pointer_constant(n, source);
+                return match (then.state, other.state) {
+                    (InitState::MallocUninitialized, _) if is_null(&other_node) => then,
+                    (_, InitState::MallocUninitialized) if is_null(&then_node) => other,
+                    _ => Allocation {
+                        state: then.state.join(other.state),
+                        count: None,
+                    },
+                };
+            }
+            "call_expression" => return call_allocation(&node, source, config, depth),
+            _ => return Allocation::NONE,
+        }
     }
 }
 
-/// Extract element count from `malloc(N * sizeof(T))` / `ALLOCA(N * sizeof(T))`.
-/// Returns the number of elements allocated (N), or None if not determinable.
-fn extract_allocation_count(value: &Node, source: &str) -> Option<usize> {
-    let inner = allocation_call(value)?;
+fn call_allocation(
+    call: &Node,
+    source: &str,
+    config: &InitAnalysisConfig,
+    depth: usize,
+) -> Allocation {
+    use crate::settings::AllocatorContract as C;
+    let Some(spelled) = callee_identifier(call, source) else {
+        return Allocation::NONE;
+    };
+    let name = const_eval::resolve_macro_alias(&config.macro_aliases, spelled);
+    // The size argument whose `N * sizeof(T)` gives the element count.
+    // `realloc`'s keeps none: its new memory starts with the old contents,
+    // so a count of uninitialized elements is not what its size says.
+    let (state, size_arg) = match name {
+        "alloca" | "__builtin_alloca" | "ALLOCA" => (InitState::MallocUninitialized, Some(0)),
+        _ => match crate::utility::cert_c::call_roles::allocator_contract(name) {
+            Some(C::Malloc) => (InitState::MallocUninitialized, Some(0)),
+            Some(C::AlignedAlloc) => (InitState::MallocUninitialized, Some(1)),
+            Some(C::Realloc) => (InitState::MallocUninitialized, None),
+            Some(C::Calloc) => (InitState::MallocInitialized, None),
+            Some(C::Strdup | C::Strndup) => return Allocation::NONE,
+            None if config.realloc_wrapper_fns.contains(spelled)
+                || config.realloc_wrapper_fns.contains(name) =>
+            {
+                (InitState::MallocUninitialized, None)
+            }
+            None => return macro_allocation(call, spelled, name, source, config, depth),
+        },
+    };
+    let count = size_arg
+        .and_then(|i| call_arguments(call).get(i).copied())
+        .and_then(|arg| element_count(&arg, source));
+    Allocation { state, count }
+}
 
-    let func = inner.child_by_field_name("function")?;
-    let func_name = func.utf8_text(source.as_bytes()).ok()?;
-    if !matches!(func_name, "malloc" | "alloca" | "ALLOCA" | "realloc") {
+/// What an initializer that invokes a function-like macro allocates: its
+/// expansion under each live definition (`FunctionMacro::alternatives`),
+/// merged toward the finding (ADR-0010 D1). A macro named inside the
+/// expansion is classified in turn, a bounded number of levels deep.
+fn macro_allocation(
+    call: &Node,
+    spelled: &str,
+    resolved: &str,
+    source: &str,
+    config: &InitAnalysisConfig,
+    depth: usize,
+) -> Allocation {
+    if depth >= MAX_ALLOCATION_MACRO_DEPTH {
+        return Allocation::NONE;
+    }
+    let Some((name, m)) = [spelled, resolved]
+        .into_iter()
+        .find_map(|n| config.function_macros.get(n).map(|m| (n, m)))
+    else {
+        return Allocation::NONE;
+    };
+    let args: Vec<String> = call_arguments(call)
+        .iter()
+        .map(|a| a.utf8_text(source.as_bytes()).unwrap_or("").to_string())
+        .collect();
+    let own = [Some(m.clone())];
+    let definitions: &[Option<FunctionMacro>] = if m.alternatives.is_empty() {
+        &own
+    } else {
+        &m.alternatives
+    };
+    let mut result = Allocation::NONE;
+    for definition in definitions.iter().flatten() {
+        // This definition alone, so a macro its body names is left for the
+        // classification of the expansion to resolve under every one of its
+        // own definitions.
+        let table = HashMap::from([(
+            name.to_string(),
+            FunctionMacro {
+                params: definition.params.clone(),
+                body: definition.body.clone(),
+                alternatives: Vec::new(),
+            },
+        )]);
+        let Some(expanded) = crate::analyze::macro_expand::expand_invocation(&table, name, &args)
+        else {
+            continue;
+        };
+        let text = format!("void __sqc_expansion(void) {{ __sqc_value = ({expanded}); }}");
+        let Some(tree) = parse_expansion(&text) else {
+            continue;
+        };
+        let Some(value) = lang_parsing_substrate::query::find_descendants_of_kind(
+            tree.root_node(),
+            "assignment_expression",
+        )
+        .first()
+        .and_then(|a| a.child_by_field_name("right")) else {
+            continue;
+        };
+        result = result.either_build(classify_allocation_at(&value, &text, config, depth + 1));
+    }
+    result
+}
+
+/// The element count `N` of an allocation size written `N * sizeof(T)` or
+/// `sizeof(T) * N`, when `N` folds to a positive constant.
+fn element_count(size: &Node, source: &str) -> Option<usize> {
+    if size.kind() != "binary_expression" || find_operator_text(size, source) != "*" {
         return None;
     }
-
-    let args = inner.child_by_field_name("arguments")?;
-    // Get the first real argument (skip parentheses and commas)
-    let arg = {
-        let mut found = None;
-        for c in args.child_nodes() {
-            if c.kind() != "(" && c.kind() != ")" && c.kind() != "," {
-                found = Some(c);
-                break;
-            }
-        }
-        found?
+    let left = size.child_by_field_name("left")?;
+    let right = size.child_by_field_name("right")?;
+    let n = if left.kind() == "sizeof_expression" {
+        right
+    } else if right.kind() == "sizeof_expression" {
+        left
+    } else {
+        return None;
     };
-
-    // Pattern: N * sizeof(T) — extract N
-    if arg.kind() == "binary_expression" {
-        let op = find_operator_text(&arg, source);
-        if op == "*" {
-            let left = arg.child_by_field_name("left")?;
-            let right = arg.child_by_field_name("right")?;
-            let macros: HashMap<String, i64> = HashMap::new();
-            // If left is sizeof, evaluate right (and vice versa)
-            if left.kind() == "sizeof_expression" {
-                let val = const_eval::try_evaluate_expr(&right, source, &macros)?;
-                return if val > 0 { Some(val as usize) } else { None };
-            }
-            if right.kind() == "sizeof_expression" {
-                let val = const_eval::try_evaluate_expr(&left, source, &macros)?;
-                return if val > 0 { Some(val as usize) } else { None };
-            }
-        }
-    }
-    None
+    let val = const_eval::try_evaluate_expr(&n, source, &HashMap::new())?;
+    (val > 0).then_some(val as usize)
 }
 
 /// Find the operator text in a binary_expression.
@@ -1046,9 +1230,10 @@ fn apply_identifier_assignment_state(
         info.allocation_count = None;
         return;
     };
-    info.state = classify_initializer(&right, source, config);
+    let allocation = classify_allocation(&right, source, config);
+    info.state = allocation.state;
     info.allocation_count = if matches!(info.state, InitState::MallocUninitialized) {
-        extract_allocation_count(&right, source)
+        allocation.count
     } else {
         None
     };

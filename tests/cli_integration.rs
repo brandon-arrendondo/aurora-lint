@@ -3797,6 +3797,28 @@ fn a_declared_deallocator_frees_only_the_argument_it_names() {
 }
 
 #[test]
+fn exp33_classifies_an_aliased_call_by_the_declared_allocator_it_names() {
+    let declared = declared_memory_findings(
+        "aliased_declared_allocator.c",
+        "manifest_exp33_declared_memory.toml",
+        &[],
+    );
+    assert!(
+        has(&declared, "EXP33-C", 10, "uninitialized"),
+        "take is pool_take, a declared malloc: {declared:?}"
+    );
+    assert!(
+        !has(&declared, "EXP33-C", 15, ""),
+        "take_zeroed is pool_take_zeroed, a declared calloc: {declared:?}"
+    );
+    let bare = declared_memory_findings("aliased_declared_allocator.c", "manifest_exp33.toml", &[]);
+    assert!(
+        !bare.iter().any(|(r, _, _)| r == "EXP33-C"),
+        "an undeclared function allocates nothing: {bare:?}"
+    );
+}
+
+#[test]
 fn declared_allocators_allocate_and_a_realloc_like_one_releases_its_old_block() {
     let declared =
         declared_memory_findings("pool_allocators.c", "manifest_declared_memory.toml", &[]);

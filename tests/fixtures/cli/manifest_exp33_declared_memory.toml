@@ -1,0 +1,12 @@
+[metadata]
+name = "CLI Integration Test - EXP33-C with declared allocators"
+version = "1.0.0"
+description = "EXP33-C with a project's declared memory functions"
+cert_version = "2016"
+
+[environment.allocators]
+pool_take = "malloc"
+pool_take_zeroed = "calloc"
+
+[rules.cert_c.EXP33-C]
+enabled = true
