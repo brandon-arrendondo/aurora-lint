@@ -142,8 +142,8 @@
 and configuring real-world codebases for benchmarking.</p>
 <section id="benchmark-host-layout">
 <h2>Benchmark Host Layout<a class="headerlink" href="#benchmark-host-layout" title="Link to this heading"></a></h2>
-<p>Every benchmark node needs one directory – <code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT</span></code> (default
-<code class="docutils literal notranslate"><span class="pre">~/toolchain</span></code>) – holding the Juliet suite and every real-world codebase
+<p>Every machine that runs benchmarks needs one directory –
+<code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT</span></code> (default <code class="docutils literal notranslate"><span class="pre">~/toolchain</span></code>) – holding the Juliet suite and every real-world codebase
 checkout. <code class="docutils literal notranslate"><span class="pre">bench/config.py</span></code> and <code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code> both
 read this from the <code class="docutils literal notranslate"><span class="pre">SQC_BENCH_ROOT</span></code> environment variable, or from a
 <code class="docutils literal notranslate"><span class="pre">.env</span></code> file at the repo root (copy <code class="docutils literal notranslate"><span class="pre">.env.example</span></code> – it’s gitignored, so
@@ -164,10 +164,10 @@ directory that does not exist. <code class="docutils literal notranslate"><span 
 resolved root and says so outright.</p>
 <p>A second, separate root names where the <em>source</em> clones are:
 <code class="docutils literal notranslate"><span class="pre">$AURORA_LINT_SRC_ROOT</span></code> is the parent directory of this checkout
-(<code class="docutils literal notranslate"><span class="pre">$AURORA_LINT_SRC_ROOT/aurora-lint</span></code>), and on a maintainer node of the
-sibling <code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code> and <code class="docutils literal notranslate"><span class="pre">sqc_paper</span></code> clones too. It defaults to the
+(<code class="docutils literal notranslate"><span class="pre">$AURORA_LINT_SRC_ROOT/aurora-lint</span></code>), and, on the maintainer’s machine,
+of the sibling <code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code> and <code class="docutils literal notranslate"><span class="pre">sqc_paper</span></code> clones too. It defaults to the
 checkout’s own parent, so nothing here requires it; the copy-pasteable
-commands below use it so they hold on every node regardless of where the
+commands below use it so they hold on any machine regardless of where the
 clone lives (<code class="docutils literal notranslate"><span class="pre">~/data</span></code> is the conventional value, and the <code class="docutils literal notranslate"><span class="pre">.env.example</span></code>
 default):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">AURORA_LINT_SRC_ROOT</span><span class="o">=</span>~/data<span class="w">   </span><span class="c1"># parent of your aurora-lint clone</span>
@@ -692,8 +692,8 @@ not inside <code class="docutils literal notranslate"><span class="pre">$SQC_BEN
 </div>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
-<p>This check exists because the failure is silent and did happen. On the
-work node curl, hostap and sqlite had all drifted, while libcrc and lua
+<p>This check exists because the failure is silent and did happen. On one
+machine curl, hostap and sqlite had all drifted, while libcrc and lua
 sat on tracking branches matching their pins only by coincidence. A gate
 run against the drifted trees reported slightly more hostap and sqlite
 findings than the pinned snapshots give – close enough to look

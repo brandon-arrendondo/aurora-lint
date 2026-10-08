@@ -7,8 +7,8 @@ and configuring real-world codebases for benchmarking.
 Benchmark Host Layout
 ----------------------
 
-Every benchmark node needs one directory -- ``$SQC_BENCH_ROOT`` (default
-``~/toolchain``) -- holding the Juliet suite and every real-world codebase
+Every machine that runs benchmarks needs one directory --
+``$SQC_BENCH_ROOT`` (default ``~/toolchain``) -- holding the Juliet suite and every real-world codebase
 checkout. ``bench/config.py`` and ``bench/realworld_runner.py`` both
 read this from the ``SQC_BENCH_ROOT`` environment variable, or from a
 ``.env`` file at the repo root (copy ``.env.example`` -- it's gitignored, so
@@ -33,10 +33,10 @@ resolved root and says so outright.
 
 A second, separate root names where the *source* clones are:
 ``$AURORA_LINT_SRC_ROOT`` is the parent directory of this checkout
-(``$AURORA_LINT_SRC_ROOT/aurora-lint``), and on a maintainer node of the
-sibling ``benchmarking_db`` and ``sqc_paper`` clones too. It defaults to the
+(``$AURORA_LINT_SRC_ROOT/aurora-lint``), and, on the maintainer's machine,
+of the sibling ``benchmarking_db`` and ``sqc_paper`` clones too. It defaults to the
 checkout's own parent, so nothing here requires it; the copy-pasteable
-commands below use it so they hold on every node regardless of where the
+commands below use it so they hold on any machine regardless of where the
 clone lives (``~/data`` is the conventional value, and the ``.env.example``
 default):
 
@@ -574,8 +574,8 @@ It also flags three contamination cases independent of status:
 
 .. warning::
 
-    This check exists because the failure is silent and did happen. On the
-    work node curl, hostap and sqlite had all drifted, while libcrc and lua
+    This check exists because the failure is silent and did happen. On one
+    machine curl, hostap and sqlite had all drifted, while libcrc and lua
     sat on tracking branches matching their pins only by coincidence. A gate
     run against the drifted trees reported slightly more hostap and sqlite
     findings than the pinned snapshots give -- close enough to look
