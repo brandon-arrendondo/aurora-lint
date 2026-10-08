@@ -77,6 +77,13 @@ RUN curl -fsSLo /tmp/infer.tar.xz \
  && mkdir /opt/infer && tar -xJf /tmp/infer.tar.xz -C /opt/infer --strip-components=1 \
  && rm /tmp/infer.tar.xz
 
+# aurora-lint's own build dependencies (git2 links libgit2, which needs
+# OpenSSL and zlib headers). They land in the image's /usr/include, which a
+# scan never searches: a benchmark scan reads its dependency set's tree.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libssl-dev zlib1g-dev \
+ && rm -rf /var/lib/apt/lists/*
+
 # Every benchmark's dependency set, each its own tree under /bench/deps
 # (never installed into the image's system directories).
 COPY bench /opt/aurora-bench/bench
