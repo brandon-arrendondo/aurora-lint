@@ -15,6 +15,7 @@
 
 use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{MacroConstantMap, ValueRange, VarRangeMap};
+use crate::analyze::name_writes::NameScope;
 use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::utility::cert_c::ast_utils;
 use std::collections::HashMap;
@@ -88,20 +89,23 @@ pub fn var_ranges_entry_at(
 
 /// The range a parameter entered its function with, read at `ident` (an
 /// occurrence of `name`) where that range still holds: `ident` resolves to the
-/// parameter, and nothing in the body assigns it, steps it or takes its
-/// address -- the writes VRA itself models -- so every point of the body,
-/// reachable under the entry facts or not, sees the parameter as it came in.
+/// parameter, and nothing in the body can write it (`NameScope::may_write`:
+/// no assignment, step or address of it, and no name that could expand to
+/// one), so every point of the body sees the parameter as it came in.
 ///
-/// For a site [`var_ranges_entry_at`] has no ranges for: a block VRA proved
-/// unreachable keeps no state. A closed caller set that always passes one
-/// flag (`set_opt(t, i, YES)`) makes the callee's other arm unreachable, and
-/// an index parameter's caller range is then still the answer there.
-pub fn unwritten_param_entry_range(
+/// For a site where [`var_ranges_entry_at`] gives no range for the variable,
+/// for whatever reason. One is a block VRA proved unreachable, which keeps
+/// no state at all: a closed caller set
+/// that always passes one flag (`set_opt(t, i, YES)`) makes the callee's
+/// other arm unreachable, and an index parameter's caller range is then
+/// still the answer there.
+pub(crate) fn unwritten_param_entry_range(
     function_cfgs: &HashMap<usize, FunctionCfg>,
     vra_results: &HashMap<usize, RangeAnalysisResult>,
     ident: &Node,
     name: &str,
     source: &str,
+    scope: &NameScope,
 ) -> Option<ValueRange> {
     let func = ast_utils::find_containing_function(ident)?;
     let start_byte = func.start_byte();
@@ -114,41 +118,17 @@ pub fn unwritten_param_entry_range(
         return None;
     }
     let body = func.child_by_field_name("body")?;
-    if writes_name(&body, name, source) {
+    // Any occurrence spelled `name` counts, a shadowing local's too, which
+    // only ever withholds a range.
+    let spelled =
+        |n: &Node| n.kind() == "identifier" && ast_utils::get_node_text(n, source) == name;
+    if scope.may_write(&body, source, name, &spelled, false) {
         return None;
     }
     vra.block_entry_ranges
         .get(&cfg.entry)?
         .get(name)
         .map(|typed| typed.range)
-}
-
-/// Whether anything under `node` assigns, steps or takes the address of an
-/// identifier spelled `name`, whatever it resolves to: a shadowing local's
-/// write counts too, which only ever withholds a range.
-fn writes_name(node: &Node, name: &str, source: &str) -> bool {
-    let target = match node.kind() {
-        "assignment_expression" => node.child_by_field_name("left"),
-        "update_expression" => node.child_by_field_name("argument"),
-        "pointer_expression" if node.child(0).is_some_and(|op| op.kind() == "&") => {
-            node.child_by_field_name("argument")
-        }
-        _ => None,
-    };
-    let mut target = target;
-    while let Some(t) = target.filter(|t| t.kind() == "parenthesized_expression") {
-        target = t.named_child(0);
-    }
-    if target
-        .is_some_and(|t| t.kind() == "identifier" && ast_utils::get_node_text(&t, source) == name)
-    {
-        return true;
-    }
-    let mut cursor = node.walk();
-    let found = node
-        .children(&mut cursor)
-        .any(|child| writes_name(&child, name, source));
-    found
 }
 
 /// Whether VRA carries positive evidence that `var_name` can hold a negative

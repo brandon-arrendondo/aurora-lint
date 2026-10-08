@@ -48,6 +48,7 @@ use crate::analyze::const_eval::{self, VarRangeMap};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::{collect_param_names, extract_function_name};
 use crate::analyze::macro_expand::{collect_function_macros, FunctionMacro};
+use crate::analyze::name_writes::{NameScope, ProjectNames};
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
@@ -71,10 +72,21 @@ use crate::utility::cert_c::guard_dominance::{
 };
 use crate::utility::cert_c::node_children::NodeChildren;
 
+/// `ProjectContext::macro_definitions`, `known_functions` and
+/// `global_object_names`.
+type ProjectNameTables = (
+    Arc<HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>>>,
+    Arc<HashSet<String>>,
+    Arc<HashSet<String>>,
+);
+
 pub struct Arr30C {
     /// Macros any scanned file defines as `static`
     /// (`ProjectContext::static_macro_names`).
     project_static_macros: RefCell<Arc<HashSet<String>>>,
+    /// The scan's macro definitions and function names, which classify the
+    /// names a body uses when asking whether it writes a parameter.
+    project_names: RefCell<Option<ProjectNameTables>>,
     /// Those plus the file being scanned's own; set per file.
     static_macros: RefCell<HashSet<String>>,
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
@@ -261,6 +273,11 @@ impl CertRule for Arr30C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_static_macros.borrow_mut() = context.static_macro_names.clone();
+        *self.project_names.borrow_mut() = Some((
+            Arc::clone(&context.macro_definitions),
+            Arc::clone(&context.known_functions),
+            Arc::clone(&context.global_object_names),
+        ));
         *self.macro_constants.borrow_mut() = context.macro_constants.clone();
         *self.project_validated_params.borrow_mut() = context
             .function_summaries
@@ -373,6 +390,7 @@ impl Arr30C {
     pub fn new() -> Self {
         Self {
             project_static_macros: RefCell::new(Arc::new(HashSet::new())),
+            project_names: RefCell::new(None),
             static_macros: RefCell::new(HashSet::new()),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
@@ -3359,12 +3377,29 @@ impl Arr30C {
                 let ident = node
                     .child_by_field_name("index")
                     .filter(|i| i.kind() == "identifier")?;
+                let tables = self.project_names.borrow();
+                let mut root = *node;
+                while let Some(parent) = root.parent() {
+                    root = parent;
+                }
+                let scope = NameScope::of_file(
+                    &root,
+                    source,
+                    tables
+                        .as_ref()
+                        .map(|(macros, functions, objects)| ProjectNames {
+                            macros,
+                            functions,
+                            objects,
+                        }),
+                );
                 vra_access::unwritten_param_entry_range(
                     &self.function_cfgs.borrow(),
                     &self.vra_results.borrow(),
                     &ident,
                     var,
                     source,
+                    &scope,
                 )
             })
             .map(|range| range.min >= 0 && (range.max as usize) < effective_size)

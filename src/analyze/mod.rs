@@ -41,6 +41,7 @@ pub mod label_preproc_guard;
 pub mod macro_expand;
 pub mod macro_gaps;
 pub mod macro_semantics;
+pub mod name_writes;
 /// Noreturn-function detection shared by CFG construction.
 pub mod noreturn;
 pub mod null_state;
@@ -1361,7 +1362,7 @@ pub(crate) fn build_file_analysis(
         source,
         &context.function_summaries,
         &context.macro_constants,
-        &|name| context.has_one_project_value(name),
+        Some(context),
         context.settings.facts,
     );
 
@@ -1386,7 +1387,7 @@ pub(crate) fn compute_vra_if_needed(
     source: &str,
     prescan_summaries: &(impl crate::analyze::context::SummaryLookup + ?Sized),
     project_macros: &const_eval::MacroConstantMap,
-    loop_bound_admits: &dyn Fn(&str) -> bool,
+    project: Option<&context::ProjectContext>,
     data_model: crate::settings::IntFacts,
 ) -> HashMap<usize, value_range::RangeAnalysisResult> {
     if !needs_vra || function_cfgs.is_empty() {
@@ -1444,7 +1445,12 @@ pub(crate) fn compute_vra_if_needed(
             &const_eval::cfg_prunable_constants(root_node, source, data_model),
             &prescan::LoopBounds {
                 constants: &macros,
-                admits: loop_bound_admits,
+                admits: &|name| project.is_some_and(|p| p.has_one_project_value(name)),
+                names: project.map(|p| name_writes::ProjectNames {
+                    macros: &p.macro_definitions,
+                    functions: &p.known_functions,
+                    objects: &p.global_object_names,
+                }),
             },
             &mut callsite_int_args,
         );
@@ -1704,7 +1710,7 @@ mod tests {
             &source,
             &summaries,
             &const_eval::MacroConstantMap::new(),
-            &|_| false,
+            None,
             Default::default(),
         );
         assert!(results.is_empty());
@@ -1723,7 +1729,7 @@ mod tests {
             &source,
             &summaries,
             &const_eval::MacroConstantMap::new(),
-            &|_| false,
+            None,
             Default::default(),
         );
         assert!(results.is_empty());
