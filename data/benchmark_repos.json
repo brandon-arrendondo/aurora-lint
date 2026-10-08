@@ -1305,6 +1305,7 @@
     {
       "name": "curl",
       "host_headers": "/usr/include",
+      "deps": "curl",
       "repo": "https://github.com/curl/curl.git",
       "version": "3e198f75861cc2e12daf299689e145949dddd19b",
       "primary_build_config": {
