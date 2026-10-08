@@ -1,0 +1,102 @@
+{
+ "corpus": "sqlite",
+ "platform": "linux-x86_64",
+ "base": {
+  "archive": "debian",
+  "suite": "bookworm",
+  "arch": "amd64",
+  "snapshot": "20260915T000000Z",
+  "release_sha256": "abcf5882746e0f68171f41adbb4ac01b74b49d62d203379befb9265804311a4f"
+ },
+ "roots": [
+  "usr/include",
+  "usr/lib/gcc/x86_64-linux-gnu/12/include"
+ ],
+ "prune": [
+  "usr/include/linux/netfilter/xt_CONNMARK.h",
+  "usr/include/linux/netfilter/xt_DSCP.h",
+  "usr/include/linux/netfilter/xt_MARK.h",
+  "usr/include/linux/netfilter/xt_RATEEST.h",
+  "usr/include/linux/netfilter/xt_TCPMSS.h",
+  "usr/include/linux/netfilter_ipv4/ipt_ECN.h",
+  "usr/include/linux/netfilter_ipv4/ipt_TTL.h",
+  "usr/include/linux/netfilter_ipv6/ip6t_HL.h"
+ ],
+ "include_dirs": [
+  "usr/lib/gcc/x86_64-linux-gnu/12/include",
+  "usr/include/x86_64-linux-gnu",
+  "usr/include"
+ ],
+ "exclude": {
+  "libc6-dev-i386": "-m32 multilib; not the x86_64 configuration",
+  "libc6-dev-x32": "x32 ABI; not the x86_64 configuration",
+  "libowfat-dev": "its io.h shadows the Windows CRT header of that name, which the corpus includes only under _WIN32",
+  "libsqlite3-dev": "ships a copy of the corpus's own headers (an older release)",
+  "libsqlcipher-dev": "ships a copy of the corpus's own headers (an older release)"
+ },
+ "build": {
+  "steps": [
+   "./configure",
+   "bear -- make USE_AMALGAMATION=0 -j\"$(nproc)\""
+  ],
+  "db": "$SRC/compile_commands.json",
+  "packages": [
+   "zlib1g-dev",
+   "libreadline-dev"
+  ],
+  "apt": [
+   "tcl"
+  ],
+  "why": "The default autosetup build (SQLITE_OS_UNIX, compile-time limits at their defaults), one translation unit per source file (USE_AMALGAMATION=0) so the database has an entry per file. Its generated headers (sqlite_cfg.h, sqlite3.h, parse.h, opcodes.h, keywordhash.h, pragma.h, fts5.h, fts5parse.h) are written into the checkout copy and searched after it. tclsh runs the build's generators."
+ },
+ "manifest_sha256": "0c1b8225ae6e1acad2f8c8a1060dcbb9b126df982602372e9ba85698e39b8b2e",
+ "why": {
+  "libc6-dev": "assert.h",
+  "libgcc-12-dev": "stdarg.h",
+  "libicu-dev": "unicode/ubrk.h",
+  "linux-libc-dev": "linux/mount.h",
+  "zlib1g-dev": "zlib.h"
+ },
+ "sources": [
+  {
+   "kind": "debs",
+   "debs": [
+    {
+     "package": "libc6-dev",
+     "version": "2.36-9+deb12u14",
+     "file": "libc6-dev_2.36-9+deb12u14_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/g/glibc/libc6-dev_2.36-9+deb12u14_amd64.deb",
+     "sha256": "0218fc2befcd784c1b0c6292c0a137ce89fad054efaa579ad083bee0f2c01aae"
+    },
+    {
+     "package": "libgcc-12-dev",
+     "version": "12.2.0-14+deb12u1",
+     "file": "libgcc-12-dev_12.2.0-14+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/g/gcc-12/libgcc-12-dev_12.2.0-14+deb12u1_amd64.deb",
+     "sha256": "d720259380a84f2ffc6fe516eff5cbe9c8a005138e8d6a5748747ba4b3404a82"
+    },
+    {
+     "package": "libicu-dev",
+     "version": "72.1-3+deb12u1",
+     "file": "libicu-dev_72.1-3+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/i/icu/libicu-dev_72.1-3+deb12u1_amd64.deb",
+     "sha256": "08bd4e3f4bd4fc725cf25e739edf0e7df5ac1826bdac9a7d990eea8f93b2d7a0"
+    },
+    {
+     "package": "linux-libc-dev",
+     "version": "6.1.176-1",
+     "file": "linux-libc-dev_6.1.176-1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/l/linux/linux-libc-dev_6.1.176-1_amd64.deb",
+     "sha256": "8bb258735b9dffbb111da778ebdd024750878e435ffd9dfcadcb6762ede6b4cf"
+    },
+    {
+     "package": "zlib1g-dev",
+     "version": "1:1.2.13.dfsg-1",
+     "file": "zlib1g-dev_1.2.13.dfsg-1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/z/zlib/zlib1g-dev_1.2.13.dfsg-1_amd64.deb",
+     "sha256": "f9ce531f60cbd5df37996af9370e0171be96902a17ec2bdbd8d62038c354094f"
+    }
+   ]
+  }
+ ]
+}

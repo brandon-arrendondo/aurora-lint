@@ -548,11 +548,13 @@ class TestBuildInstall(unittest.TestCase):
         installed = [a for a in calls[-1] if "=" in a]
         self.assertEqual(installed, ["libc6-dev=1", "libssl-dev=1"])
 
-    def test_a_build_package_missing_from_the_set_is_refused(self):
+    def test_a_build_package_the_set_lacks_is_installed_from_the_snapshot(self):
+        # A link-only library (libnl-genl-3-dev ships no headers of its own).
         from bench import dbbuild
         decl = _decl([{"package": "libc6-dev", "version": "1"}],
                      build={"steps": ["make"], "db": "$SRC/compile_commands.json",
-                            "packages": ["libssl-dev"]})
-        with mock.patch.object(dbbuild, "_run"):
-            with self.assertRaises(SystemExit):
-                dbbuild.install(decl)
+                            "packages": ["libnl-genl-3-dev"]})
+        calls = []
+        with mock.patch.object(dbbuild, "_run", side_effect=lambda cmd, **kw: calls.append(cmd)):
+            dbbuild.install(decl)
+        self.assertEqual(calls[-1][-2:], ["libc6-dev=1", "libnl-genl-3-dev"])

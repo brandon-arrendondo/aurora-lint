@@ -1249,6 +1249,7 @@
     },
     {
       "name": "sqlite",
+      "deps": "sqlite",
       "host_headers": "/usr/include",
       "repo": "https://github.com/sqlite/sqlite.git",
       "version": "b1a73ba34d05b32007315e4065c6468cc638e3af",
@@ -1335,6 +1336,7 @@
     {
       "name": "hostap",
       "host_headers": "/usr/include",
+      "deps": "hostap",
       "repo": "https://git.w1.fi/hostap.git",
       "version": "dcee60436390dd34731560657c4257c3b4c839a6",
       "primary_build_config": {
@@ -1480,6 +1482,7 @@
     },
     {
       "name": "valkey",
+      "deps": "valkey",
       "host_headers": "/usr/include",
       "repo": "https://github.com/valkey-io/valkey.git",
       "version": "7f1dffedff6de73058b2c2a389422b6ecd56c8fb",

@@ -53,10 +53,12 @@ def install(decl: dict) -> None:
     feature the default build does not have."""
     wanted = set(decl["build"].get("packages", [])) | set(BASE_PACKAGES)
     debs = [d for src in decl["sources"] for d in src["debs"]]
-    missing = wanted - {d["package"] for d in debs} - set(BASE_PACKAGES)
-    if missing:
-        raise SystemExit(f"build.packages not in the set: {', '.join(sorted(missing))}")
+    in_set = {d["package"] for d in debs}
+    # A package the set does not carry is one the build needs for something
+    # other than headers (a link-only library such as libnl-genl-3-dev, a
+    # tool): installed by name, at the version the image's snapshot holds.
     pins = [f"{d['package']}={d['version']}" for d in debs if d["package"] in wanted]
+    pins += sorted(wanted - in_set - set(BASE_PACKAGES))
     _run(["apt-get", "update", "-q"])
     _run(["apt-get", "install", "-y", "-q", "--no-install-recommends",
           *pins, *decl["build"].get("apt", [])])

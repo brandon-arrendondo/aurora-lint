@@ -1,0 +1,277 @@
+{
+ "corpus": "hostap",
+ "platform": "linux-x86_64",
+ "base": {
+  "archive": "debian",
+  "suite": "bookworm",
+  "arch": "amd64",
+  "snapshot": "20260915T000000Z",
+  "release_sha256": "abcf5882746e0f68171f41adbb4ac01b74b49d62d203379befb9265804311a4f"
+ },
+ "roots": [
+  "usr/include",
+  "usr/lib/gcc/x86_64-linux-gnu/12/include",
+  "usr/lib/x86_64-linux-gnu/dbus-1.0/include"
+ ],
+ "prune": [
+  "usr/include/linux/netfilter/xt_CONNMARK.h",
+  "usr/include/linux/netfilter/xt_DSCP.h",
+  "usr/include/linux/netfilter/xt_MARK.h",
+  "usr/include/linux/netfilter/xt_RATEEST.h",
+  "usr/include/linux/netfilter/xt_TCPMSS.h",
+  "usr/include/linux/netfilter_ipv4/ipt_ECN.h",
+  "usr/include/linux/netfilter_ipv4/ipt_TTL.h",
+  "usr/include/linux/netfilter_ipv6/ip6t_HL.h"
+ ],
+ "include_dirs": [
+  "usr/lib/gcc/x86_64-linux-gnu/12/include",
+  "usr/include/x86_64-linux-gnu",
+  "usr/include",
+  "usr/include/libnl3",
+  "usr/include/dbus-1.0",
+  "usr/lib/x86_64-linux-gnu/dbus-1.0/include",
+  "usr/include/libxml2",
+  "usr/include/PCSC"
+ ],
+ "exclude": {
+  "libc6-dev-i386": "-m32 multilib; not the x86_64 configuration",
+  "libc6-dev-x32": "x32 ABI; not the x86_64 configuration",
+  "libowfat-dev": "its io.h shadows the Windows CRT header of that name, which the corpus includes only under _WIN32"
+ },
+ "build": {
+  "steps": [
+   "cp wpa_supplicant/defconfig wpa_supplicant/.config",
+   "cp hostapd/defconfig hostapd/.config",
+   "bear --output \"$BUILD/compile_commands.json\" -- make -C wpa_supplicant -j\"$(nproc)\"",
+   "bear --append --output \"$BUILD/compile_commands.json\" -- make -C hostapd -j\"$(nproc)\""
+  ],
+  "db": "$BUILD/compile_commands.json",
+  "packages": [
+   "libssl-dev",
+   "libnl-3-dev",
+   "libnl-genl-3-dev",
+   "libnl-route-3-dev",
+   "libdbus-1-dev",
+   "pkg-config"
+  ],
+  "why": "wpa_supplicant and hostapd at their shipped defconfigs (the declared configuration: nl80211, wext, wired and MACsec drivers, os_unix, l2_packet_linux, OpenSSL, D-Bus control interface)."
+ },
+ "manifest_sha256": "2faaa02846a0bf3933f36688fc28f4e98527fdd9d503c556b47e0412838391fb",
+ "why": {
+  "binutils-dev": "bfd.h",
+  "libc6-dev": "arpa/inet.h",
+  "libcap-dev": "sys/capability.h",
+  "libcurl4-gnutls-dev": "curl/curl.h",
+  "libdbus-1-dev": "dbus/dbus.h",
+  "libgcc-12-dev": "stdarg.h",
+  "libgcrypt20-dev": "gcrypt.h",
+  "libgmp-dev": "gmp.h",
+  "libgnutls28-dev": "gnutls/gnutls.h",
+  "libgpg-error-dev": "gpg-error.h",
+  "libicu-dev": "unicode/ucnv.h",
+  "libmbedtls-dev": "psa/crypto.h",
+  "libnl-3-dev": "netlink/genl/ctrl.h",
+  "libpcap0.8-dev": "pcap.h",
+  "libpcsclite-dev": "PCSC/winscard.h",
+  "libreadline-dev": "readline/history.h",
+  "libsqlite3-dev": "sqlite3.h",
+  "libssl-dev": "openssl/aes.h",
+  "libtomcrypt-dev": "tomcrypt.h",
+  "libtommath-dev": "tommath.h",
+  "libwolfssl-dev": "wolfssl/error-ssl.h",
+  "libxml2-dev": "libxml/tree.h",
+  "linux-libc-dev": "linux/errqueue.h",
+  "nettle-dev": "nettle/aes.h",
+  "valgrind": "valgrind/memcheck.h",
+  "zlib1g-dev": "zlib.h"
+ },
+ "sources": [
+  {
+   "kind": "debs",
+   "debs": [
+    {
+     "package": "binutils-dev",
+     "version": "2.40-2",
+     "file": "binutils-dev_2.40-2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/b/binutils/binutils-dev_2.40-2_amd64.deb",
+     "sha256": "35066c624bd9d9f3d7fb9fee8f98556482a4fd0bbbf4a00a285fa877da350257"
+    },
+    {
+     "package": "libc6-dev",
+     "version": "2.36-9+deb12u14",
+     "file": "libc6-dev_2.36-9+deb12u14_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/g/glibc/libc6-dev_2.36-9+deb12u14_amd64.deb",
+     "sha256": "0218fc2befcd784c1b0c6292c0a137ce89fad054efaa579ad083bee0f2c01aae"
+    },
+    {
+     "package": "libcap-dev",
+     "version": "1:2.66-4+deb12u3+b1",
+     "file": "libcap-dev_2.66-4+deb12u3+b1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libc/libcap2/libcap-dev_2.66-4+deb12u3+b1_amd64.deb",
+     "sha256": "897ee64c93b04c4c8eb46551df2277673c1ab95584c765d8d07e3528a6a1c689"
+    },
+    {
+     "package": "libcurl4-gnutls-dev",
+     "version": "7.88.1-10+deb12u15",
+     "file": "libcurl4-gnutls-dev_7.88.1-10+deb12u15_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/c/curl/libcurl4-gnutls-dev_7.88.1-10+deb12u15_amd64.deb",
+     "sha256": "941331b75bbd9ca0d473b8d4ccdcbe8e1d2d669ab075cf70c2a380a9acdd4eb2"
+    },
+    {
+     "package": "libdbus-1-dev",
+     "version": "1.14.10-1~deb12u1",
+     "file": "libdbus-1-dev_1.14.10-1~deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/d/dbus/libdbus-1-dev_1.14.10-1~deb12u1_amd64.deb",
+     "sha256": "967a42e91eaa7d1885721b374a28cb0d30a0e63daaccf5e3594180bec6072c76"
+    },
+    {
+     "package": "libgcc-12-dev",
+     "version": "12.2.0-14+deb12u1",
+     "file": "libgcc-12-dev_12.2.0-14+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/g/gcc-12/libgcc-12-dev_12.2.0-14+deb12u1_amd64.deb",
+     "sha256": "d720259380a84f2ffc6fe516eff5cbe9c8a005138e8d6a5748747ba4b3404a82"
+    },
+    {
+     "package": "libgcrypt20-dev",
+     "version": "1.10.1-3+deb12u1",
+     "file": "libgcrypt20-dev_1.10.1-3+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libg/libgcrypt20/libgcrypt20-dev_1.10.1-3+deb12u1_amd64.deb",
+     "sha256": "9e1814184d7a524c3ee4d252dceebc0d22d13a4a3a415e01c2c08a1ecdb28c86"
+    },
+    {
+     "package": "libgmp-dev",
+     "version": "2:6.2.1+dfsg1-1.1",
+     "file": "libgmp-dev_6.2.1+dfsg1-1.1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/g/gmp/libgmp-dev_6.2.1+dfsg1-1.1_amd64.deb",
+     "sha256": "a12b9dd1bf84dd3357c2aee2cb9c10092ebccff0c879648566ae87d27ba7ecc0"
+    },
+    {
+     "package": "libgnutls28-dev",
+     "version": "3.7.9-2+deb12u7",
+     "file": "libgnutls28-dev_3.7.9-2+deb12u7_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/g/gnutls28/libgnutls28-dev_3.7.9-2+deb12u7_amd64.deb",
+     "sha256": "9937ecc1f5ac034afae7fce867957626c5af05f7e0dac765c2d156244516787b"
+    },
+    {
+     "package": "libgpg-error-dev",
+     "version": "1.46-1",
+     "file": "libgpg-error-dev_1.46-1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libg/libgpg-error/libgpg-error-dev_1.46-1_amd64.deb",
+     "sha256": "9203b4cb627cb061042d1e23088db0cc9cb921b3954b1efcd5f58b89cedee13f"
+    },
+    {
+     "package": "libicu-dev",
+     "version": "72.1-3+deb12u1",
+     "file": "libicu-dev_72.1-3+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/i/icu/libicu-dev_72.1-3+deb12u1_amd64.deb",
+     "sha256": "08bd4e3f4bd4fc725cf25e739edf0e7df5ac1826bdac9a7d990eea8f93b2d7a0"
+    },
+    {
+     "package": "libmbedtls-dev",
+     "version": "2.28.3-1",
+     "file": "libmbedtls-dev_2.28.3-1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/m/mbedtls/libmbedtls-dev_2.28.3-1_amd64.deb",
+     "sha256": "78de9cd0ee6b6bb220ba3d59f1753281c459e7b08de374008ea3b970d8577a0e"
+    },
+    {
+     "package": "libnl-3-dev",
+     "version": "3.7.0-0.2+b1",
+     "file": "libnl-3-dev_3.7.0-0.2+b1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libn/libnl3/libnl-3-dev_3.7.0-0.2+b1_amd64.deb",
+     "sha256": "ab12c34743d146474498eef5a5d2754c0163ac068d95add188b94d8e8f0444f7"
+    },
+    {
+     "package": "libpcap0.8-dev",
+     "version": "1.10.3-1",
+     "file": "libpcap0.8-dev_1.10.3-1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libp/libpcap/libpcap0.8-dev_1.10.3-1_amd64.deb",
+     "sha256": "5f66e87262e42cc42a77d6acdb41098e4ff3e6db3bdba1b73189dea5a3afb88c"
+    },
+    {
+     "package": "libpcsclite-dev",
+     "version": "1.9.9-2",
+     "file": "libpcsclite-dev_1.9.9-2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/p/pcsc-lite/libpcsclite-dev_1.9.9-2_amd64.deb",
+     "sha256": "3d577d6cbc8308ecba4df3956faec4600aa47bfd5fe2c0db3b171d51c38906aa"
+    },
+    {
+     "package": "libreadline-dev",
+     "version": "8.2-1.3",
+     "file": "libreadline-dev_8.2-1.3_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/r/readline/libreadline-dev_8.2-1.3_amd64.deb",
+     "sha256": "23b2f03bc073dcd3ac4638675ddccbda2e8d7348bb83dd648c55dfb8077e8672"
+    },
+    {
+     "package": "libsqlite3-dev",
+     "version": "3.40.1-2+deb12u2",
+     "file": "libsqlite3-dev_3.40.1-2+deb12u2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/s/sqlite3/libsqlite3-dev_3.40.1-2+deb12u2_amd64.deb",
+     "sha256": "afb550eb103e717000a2c7adae2e06e3eebd2952bf7d243ae2f1ca8594307563"
+    },
+    {
+     "package": "libssl-dev",
+     "version": "3.0.20-1~deb12u2",
+     "file": "libssl-dev_3.0.20-1~deb12u2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/o/openssl/libssl-dev_3.0.20-1~deb12u2_amd64.deb",
+     "sha256": "43ef5c109056b1507a0972631ee8292e727029aeda1516b4672cb041730ae3af"
+    },
+    {
+     "package": "libtomcrypt-dev",
+     "version": "1.18.2-6",
+     "file": "libtomcrypt-dev_1.18.2-6_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libt/libtomcrypt/libtomcrypt-dev_1.18.2-6_amd64.deb",
+     "sha256": "4366643b8e2279e3bb4c4a3c331fa996c4a4804008311444956a30595f20cd3d"
+    },
+    {
+     "package": "libtommath-dev",
+     "version": "1.2.0-6+deb12u1",
+     "file": "libtommath-dev_1.2.0-6+deb12u1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libt/libtommath/libtommath-dev_1.2.0-6+deb12u1_amd64.deb",
+     "sha256": "49601ab78b2dfbe92df199d20153ce79f3a228200cd8f91e8adf5790c1e800ff"
+    },
+    {
+     "package": "libwolfssl-dev",
+     "version": "5.5.4-2+deb12u2",
+     "file": "libwolfssl-dev_5.5.4-2+deb12u2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/w/wolfssl/libwolfssl-dev_5.5.4-2+deb12u2_amd64.deb",
+     "sha256": "c7f174260f7eaa34c1b659a48c7f35764e778167a1e1b900287414ad0f77fc5c"
+    },
+    {
+     "package": "libxml2-dev",
+     "version": "2.9.14+dfsg-1.3~deb12u6",
+     "file": "libxml2-dev_2.9.14+dfsg-1.3~deb12u6_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/libx/libxml2/libxml2-dev_2.9.14+dfsg-1.3~deb12u6_amd64.deb",
+     "sha256": "e8ceacf656b1720e7a310e1d159439a356bfcb9f5fb0325907f26aa8590e5f70"
+    },
+    {
+     "package": "linux-libc-dev",
+     "version": "6.1.176-1",
+     "file": "linux-libc-dev_6.1.176-1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/l/linux/linux-libc-dev_6.1.176-1_amd64.deb",
+     "sha256": "8bb258735b9dffbb111da778ebdd024750878e435ffd9dfcadcb6762ede6b4cf"
+    },
+    {
+     "package": "nettle-dev",
+     "version": "3.8.1-2",
+     "file": "nettle-dev_3.8.1-2_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/n/nettle/nettle-dev_3.8.1-2_amd64.deb",
+     "sha256": "aa8e4331a974f00db23a14389c67dfe66bc359b09b6c2dbfe555230942feb6be"
+    },
+    {
+     "package": "valgrind",
+     "version": "1:3.19.0-1",
+     "file": "valgrind_3.19.0-1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/v/valgrind/valgrind_3.19.0-1_amd64.deb",
+     "sha256": "324842f2308a1e42abf2d81ff5eb19a9475fc9db95647f4d9da71444eda4087f"
+    },
+    {
+     "package": "zlib1g-dev",
+     "version": "1:1.2.13.dfsg-1",
+     "file": "zlib1g-dev_1.2.13.dfsg-1_amd64.deb",
+     "url": "https://snapshot.debian.org/archive/debian/20260915T000000Z/pool/main/z/zlib/zlib1g-dev_1.2.13.dfsg-1_amd64.deb",
+     "sha256": "f9ce531f60cbd5df37996af9370e0171be96902a17ec2bdbd8d62038c354094f"
+    }
+   ]
+  }
+ ]
+}
