@@ -39,7 +39,8 @@ _HOST_PATH_ARGS = ("--dirs-out",)
 def image_pin(image: str, runtime: str = "podman") -> str:
     """The environment pin of `image` (the hash of its manifest)."""
     out = subprocess.run(
-        [runtime, "run", "--rm", image, "python3", "-m", "bench.environment", "hash",
+        [runtime, "run", "--rm", "-w", "/opt/aurora-bench", image,
+         "python3", "-m", "bench.environment", "hash",
          "/etc/aurora-bench/environment.json"],
         capture_output=True, text=True, check=True, cwd="/",
         env={**os.environ})
