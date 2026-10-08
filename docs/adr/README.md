@@ -68,5 +68,5 @@ outlive any one task.
   use](0016-published-artifacts.md)
 - [0017 — A crash or a runaway costs one rule on one file, is always
   reported, and never passes as clean](0017-graceful-failure.md)
-- [0018 — A real-world benchmark run is pinned by five things, and the system
-  headers it reads are one of them](0018-a-benchmark-run-is-pinned-by-five-things.md)
+- [0018 — A real-world benchmark run is pinned by five things, and the
+  environment it ran in is one of them](0018-a-benchmark-run-is-pinned-by-five-things.md)
