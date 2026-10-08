@@ -784,9 +784,8 @@ def materialize(decl: dict, corpus_path, cache_dir, bench_root=None,
     """Write the corpus's compile database for this machine from its build
     cache: the template with ${CORPUS} and ${GEN} replaced, and the
     generated headers copied into BENCH_ROOT/build/<id>/generated/. Refuses
-    a cache built from another recipe, any file whose sha256 differs from
-    the cache's record, and a template that searches a ${GEN} directory
-    nothing was generated into (the stale database whose config.h is gone).
+    a cache built from another recipe, commit or environment, and any file
+    missing or whose sha256 differs from the cache's record.
     Returns the database's path and the cache record."""
     cache_dir = Path(cache_dir)
     record_path = cache_dir / "cache.json"
@@ -811,15 +810,14 @@ def materialize(decl: dict, corpus_path, cache_dir, bench_root=None,
             raise ValueError(f"{f}: missing or not the recorded generated header")
         gen_files[rel] = data
     entries = json.loads(body)
-    shipped_dirs = {posixpath.dirname(r) for r in gen_files}
-    for e in entries:
-        args = e["arguments"]
-        for flag, val in zip(args, args[1:]):
-            if flag in _DIR_FLAGS and val.startswith("${GEN}"):
-                d = val[len("${GEN}"):].lstrip("/")
-                if not any(s == d or s.startswith(d + "/") for s in shipped_dirs):
-                    raise ValueError(f"{e['file']}: the template searches {val}, "
-                                     "but the build generated nothing there")
+    # Every build-tree directory the template searches, whether or not the
+    # build generated a header into it: a CMake build adds its binary
+    # directories to the search path as a matter of course. The cache holds
+    # exactly what the build that wrote the template produced, every file
+    # checked by its sha256 above, so an empty one is not a stale one.
+    searched = {val[len("${GEN}"):].lstrip("/")
+                for e in entries for flag, val in zip(e["arguments"], e["arguments"][1:])
+                if flag in _DIR_FLAGS and val.startswith("${GEN}")}
     root = (Path(bench_root) if bench_root else BENCH_ROOT) / "build" / build_id(decl, record)
     gen = root / "generated"
     if root.exists():
@@ -829,6 +827,8 @@ def materialize(decl: dict, corpus_path, cache_dir, bench_root=None,
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(data)
     gen.mkdir(parents=True, exist_ok=True)
+    for d in searched:
+        (gen / d).mkdir(parents=True, exist_ok=True)
     corpus_s, gen_s = str(Path(corpus_path)), str(gen)
 
     def sub(v: str) -> str:

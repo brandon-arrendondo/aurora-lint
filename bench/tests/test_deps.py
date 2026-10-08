@@ -483,14 +483,24 @@ class TestBuild(unittest.TestCase):
             self.assertEqual(entry["directory"], str(tmp / "toy"))
             self.assertEqual((gen / "build/config.h").read_bytes(), b"#define HAVE_X 1\n")
 
-    def test_a_template_searching_a_build_dir_nothing_was_generated_into_is_refused(self):
+    def test_a_searched_build_dir_with_nothing_generated_is_created_empty(self):
+        # A CMake build searches its binary directories whether or not it
+        # generated anything there.
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             decl = _decl([], build=self.RECIPE)
             cache = self._cache(tmp, self.TEMPLATE, {}, decl)
-            with self.assertRaises(ValueError) as cm:
+            db, _ = deps.materialize(decl, tmp / "toy", cache, tmp / "bench")
+            self.assertTrue((db.parent / "generated/build").is_dir())
+
+    def test_a_generated_header_missing_from_the_cache_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            decl = _decl([], build=self.RECIPE)
+            cache = self._cache(tmp, self.TEMPLATE, {"build/config.h": b"a\n"}, decl)
+            (cache / "generated/build/config.h").unlink()
+            with self.assertRaises(ValueError):
                 deps.materialize(decl, tmp / "toy", cache, tmp / "bench")
-            self.assertIn("generated nothing there", str(cm.exception))
 
     def test_a_cache_from_another_recipe_or_with_an_edited_file_is_refused(self):
         with tempfile.TemporaryDirectory() as td:
