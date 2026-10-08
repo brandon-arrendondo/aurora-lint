@@ -1,0 +1,47 @@
+{
+ "corpus": "ventoy",
+ "platform": "windows-x86",
+ "base": {
+  "archive": "debian",
+  "suite": "bookworm",
+  "arch": "amd64",
+  "snapshot": "20260915T000000Z",
+  "release_sha256": "abcf5882746e0f68171f41adbb4ac01b74b49d62d203379befb9265804311a4f"
+ },
+ "roots": [
+  "crt/include",
+  "sdk/include"
+ ],
+ "prune": [],
+ "include_dirs": [
+  "crt/include",
+  "sdk/include/ucrt",
+  "sdk/include/um",
+  "sdk/include/shared",
+  "sdk/include/winrt"
+ ],
+ "other_platform": [],
+ "exclude": {},
+ "build": {
+  "steps": [
+   "python3 -m bench.vcxproj_db Ventoy2Disk/Ventoy2Disk/Ventoy2Disk.vcxproj 'Release|Win32' > \"$BUILD/compile_commands.json\""
+  ],
+  "db": "$BUILD/compile_commands.json",
+  "packages": [],
+  "why": "The Visual Studio project's Release|Win32 configuration (the declared windows-x86 build): its preprocessor definitions and include directories, plus UNICODE/_UNICODE for its Unicode character set, read from the .vcxproj as clang-cl entries targeting i686-pc-windows-msvc. There is no Linux build to run; the project file declares what its build compiles."
+ },
+ "manifest_sha256": "c020cfafb2ebeb16fea5bc1337c6273ba541185587b7c5b4950147376a64e3bb",
+ "why": {},
+ "sources": [
+  {
+   "kind": "xwin",
+   "tool_version": "0.10.0",
+   "manifest_version": "17",
+   "channel": "release",
+   "arch": "x86",
+   "variant": "desktop",
+   "sdk_version": "10.0.26100",
+   "crt_version": "14.44.17.14"
+  }
+ ]
+}

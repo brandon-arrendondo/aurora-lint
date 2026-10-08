@@ -98,12 +98,28 @@ def _tree_relative(path: str, what: str) -> str:
     return norm
 
 
+# A set whose source is the Windows SDK and MSVC CRT (kind 'xwin') is fetched
+# from Microsoft's servers under Microsoft's licence terms: fetch refuses it
+# unless this variable is "1" (the image's ACCEPT_MICROSOFT_LICENSE build
+# argument sets it).
+LICENCE_ENV = "AURORA_ACCEPT_MICROSOFT_LICENSE"
+_XWIN_FIELDS = ("tool_version", "manifest_version", "channel", "arch", "variant",
+                "sdk_version", "crt_version")
+
+
+class LicenceNotAccepted(PermissionError):
+    """A licence-gated set was asked for without the licence accepted."""
+
+
+def licence_gated(decl: dict) -> bool:
+    return any(src.get("kind") == "xwin" for src in decl.get("sources", []))
+
+
 def validate(decl: dict) -> dict:
     """`decl` with its tree paths normalized, or ValueError. Every pinned
     package must say why it is in the set (review is how a set stays
-    minimal), and only 'debs' sources are fetched: an SDK tree such as
-    ventoy's (fetched by xwin, bench/header_tree.py) is not a source kind
-    here yet."""
+    minimal). A source is 'debs' (Debian packages) or 'xwin' (the Windows SDK
+    and MSVC CRT at pinned versions, fetched by xwin; alone in its set)."""
     if not isinstance(decl.get("other_platform", []), list):
         raise ValueError(f"{decl.get('corpus')}: other_platform must be a list of globs")
     for key in ("roots", "prune", "include_dirs"):
@@ -116,9 +132,15 @@ def validate(decl: dict) -> dict:
             raise ValueError(f"{decl.get('corpus')}: build.db must start with $SRC/ or $BUILD/")
     why = decl.get("why", {})
     for src in decl.get("sources", []):
+        if src.get("kind") == "xwin":
+            missing = [f for f in _XWIN_FIELDS if not src.get(f)]
+            if missing or len(decl["sources"]) != 1:
+                raise ValueError(f"{decl.get('corpus')}: an xwin source needs "
+                                 f"{', '.join(_XWIN_FIELDS)} and must be the set's only source")
+            continue
         if src.get("kind") != "debs":
             raise ValueError(f"{decl.get('corpus')}: source kind '{src.get('kind')}' "
-                             "is not supported (only 'debs')")
+                             "is not supported ('debs' or 'xwin')")
         unexplained = [d["package"] for d in src.get("debs", []) if d["package"] not in why]
         if unexplained:
             raise ValueError(f"{decl.get('corpus')}: no 'why' entry for "
@@ -344,13 +366,64 @@ def _cached_deb(deb: dict, cache: Path, log) -> Path:
 
 
 def _debs(decl: dict) -> list[dict]:
-    out = []
-    for src in decl["sources"]:
-        if src.get("kind") != "debs":
-            raise ValueError(f"{decl['corpus']}: source kind '{src.get('kind')}' "
-                             "is not fetched here")
-        out.extend(src["debs"])
-    return out
+    return [d for src in decl["sources"] if src.get("kind") == "debs" for d in src["debs"]]
+
+
+def _xwin_splat(src: dict, stage: Path, log) -> None:
+    """Fetch the Windows SDK and MSVC CRT headers into `stage` with xwin at
+    the pinned versions (the licence accepted by the caller), without
+    xwin's lower-case alias links (aurora-lint matches an #include name
+    ignoring case for a cl build, and the aliases cannot exist on a
+    case-insensitive filesystem), and drop the libraries: a scan reads
+    headers only."""
+    import subprocess
+    got = subprocess.run(["xwin", "--version"], capture_output=True, text=True)
+    if got.returncode != 0 or got.stdout.strip() != f"xwin {src['tool_version']}":
+        raise ValueError(f"xwin {src['tool_version']} is required, found "
+                         f"{got.stdout.strip() or 'none'}")
+    log(f"  xwin splat sdk {src['sdk_version']} crt {src['crt_version']} {src['arch']}")
+    subprocess.run(
+        ["xwin", "--accept-license", "--cache-dir", str(stage / ".cache"),
+         "--manifest-version", src["manifest_version"], "--channel", src["channel"],
+         "--arch", src["arch"], "--variant", src["variant"],
+         "--sdk-version", src["sdk_version"], "--crt-version", src["crt_version"],
+         "--http-retry", "3", "splat", "--disable-symlinks", "--output", str(stage / ".splat")],
+        check=True)
+    for sub in ("crt/lib", "sdk/lib"):
+        shutil.rmtree(stage / ".splat" / sub, ignore_errors=True)
+    for entry in (stage / ".splat").iterdir():
+        entry.rename(stage / entry.name)
+    shutil.rmtree(stage / ".splat")
+    shutil.rmtree(stage / ".cache", ignore_errors=True)
+
+
+def _fetch_xwin(decl: dict, bench_root, log) -> dict:
+    if os.environ.get(LICENCE_ENV) != "1":
+        raise LicenceNotAccepted(
+            f"{set_id(decl)}: fetching the Windows SDK and MSVC CRT accepts Microsoft's "
+            f"licence terms; set {LICENCE_ENV}=1 to accept them for this machine")
+    root = deps_root(bench_root)
+    dest = tree_path(decl, bench_root)
+    stage = root / f".{set_id(decl)}.partial"
+    if stage.exists():
+        shutil.rmtree(stage)
+    stage.mkdir(parents=True)
+    try:
+        _xwin_splat(decl["sources"][0], stage, log)
+        actual = manifest_sha256(stage, decl["roots"])
+        expected = decl.get("manifest_sha256")
+        if expected and actual != expected:
+            raise ValueError(f"{set_id(decl)}: fetched tree has manifest hash {actual}, "
+                             f"pinned {expected}")
+        if dest.exists():
+            shutil.rmtree(dest)
+        stage.rename(dest)
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage)
+    res = check(decl, bench_root)
+    res["archive_manifest"] = actual
+    return res
 
 
 def fetch(decl: dict, bench_root=None, log=print) -> dict:
@@ -359,7 +432,11 @@ def fetch(decl: dict, bench_root=None, log=print) -> dict:
     directory while computing the manifest from the members, refuse a
     layout this filesystem cannot hold, compare the manifest with the pin
     and move the tree into place. A declaration without a pin yet is
-    unpacked and reported UNPINNED with the hash to declare."""
+    unpacked and reported UNPINNED with the hash to declare. An 'xwin' set
+    is fetched with xwin instead, and only with Microsoft's licence
+    accepted (LICENCE_ENV)."""
+    if licence_gated(decl):
+        return _fetch_xwin(decl, bench_root, log)
     root = deps_root(bench_root)
     dest = tree_path(decl, bench_root)
     stage = root / f".{set_id(decl)}.partial"
@@ -694,7 +771,11 @@ def normalize_db(entries: list[dict], corpus: str, build: str,
         dir_tok = _norm_path(directory, corpus, build)
         if dir_tok is None:
             raise ValueError(f"entry directory {directory} is outside the checkout and build tree")
-        norm = ["cc"]
+        # The driver keeps its name only when it is cl's: aurora-lint reads
+        # such an entry with cl's syntax and matches #include names ignoring
+        # case, as cl does. Any other driver is spelled cc.
+        driver = posixpath.basename(args[0]).lower().removesuffix(".exe")
+        norm = [driver if driver in ("cl", "clang-cl") else "cc"]
         i = 1
         while i < len(args):
             a = args[i]
@@ -854,7 +935,8 @@ def main(argv=None) -> int:
     `python -m bench.deps fetch NAME`    provision it (download, sha256
                                           check, unpack, verify); a
                                           declaration without a pin prints
-                                          the hash to declare;
+                                          the hash to declare; exit 3 for a
+                                          licence-gated set not accepted;
     `python -m bench.deps id NAME`       print the tree id and decl hash;
     `python -m bench.deps spellings PROJECT`
                                           the #include names the corpus's
@@ -886,7 +968,11 @@ def main(argv=None) -> int:
     if args[0] == "fetch":
         res = check(decl)
         if res["status"] != OK:
-            res = fetch(decl)
+            try:
+                res = fetch(decl)
+            except LicenceNotAccepted as e:
+                print(e)
+                return 3
     else:
         res = check(decl)
     line = f"{args[1]}: {res['status']} {res['path']}"

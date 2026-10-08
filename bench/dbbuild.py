@@ -90,7 +90,10 @@ def build(project: str, corpus_dir: Path, cache_dir: Path, env_pin: str) -> dict
     shutil.rmtree(bld, ignore_errors=True)
     shutil.copytree(corpus_dir, src, symlinks=True)
     bld.mkdir(parents=True)
-    env = {**os.environ, "SRC": str(src), "BUILD": str(bld)}
+    # A recipe step may run this repository's own tools (bench.vcxproj_db),
+    # so bench stays importable from the build's working directory.
+    env = {**os.environ, "SRC": str(src), "BUILD": str(bld),
+           "PYTHONPATH": os.pathsep.join(p for p in (os.getcwd(), os.environ.get("PYTHONPATH")) if p)}
     _run(["git", "-C", str(src), "config", "--global", "--add", "safe.directory", "*"])
     commit = subprocess.run(["git", "-C", str(src), "rev-parse", "HEAD"],
                             capture_output=True, text=True, check=True).stdout.strip()

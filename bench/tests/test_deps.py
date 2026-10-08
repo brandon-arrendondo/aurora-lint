@@ -647,3 +647,102 @@ class TestBuildInstall(unittest.TestCase):
         with mock.patch.object(dbbuild, "_run", side_effect=lambda cmd, **kw: calls.append(cmd)):
             dbbuild.install(decl)
         self.assertEqual(calls[-1][-2:], ["libc6-dev=1", "libnl-genl-3-dev"])
+
+
+class TestXwinSet(unittest.TestCase):
+    """The Win32 corpus's set: the Windows SDK and MSVC CRT, fetched by xwin
+    only with Microsoft's licence accepted."""
+
+    SRC = {"kind": "xwin", "tool_version": "0.10.0", "manifest_version": "17",
+           "channel": "release", "arch": "x86", "variant": "desktop",
+           "sdk_version": "10.0.26100", "crt_version": "14.44.17.14"}
+
+    def decl(self, **kw):
+        return _decl([], platform="windows-x86", sources=[dict(self.SRC)],
+                     roots=["crt/include", "sdk/include"], **kw)
+
+    def test_an_xwin_source_is_validated(self):
+        deps.validate(self.decl())
+        bad = self.decl()
+        del bad["sources"][0]["sdk_version"]
+        with self.assertRaises(ValueError):
+            deps.validate(bad)
+        mixed = self.decl()
+        mixed["sources"].append({"kind": "debs", "debs": []})
+        with self.assertRaises(ValueError):
+            deps.validate(mixed)
+
+    def test_it_is_not_fetched_without_the_licence_accepted(self):
+        with tempfile.TemporaryDirectory() as td, \
+             mock.patch.dict(os.environ, {deps.LICENCE_ENV: "0"}), \
+             mock.patch.object(deps, "_xwin_splat") as splat:
+            with self.assertRaises(deps.LicenceNotAccepted):
+                deps.fetch(self.decl(), td, log=lambda m: None)
+        splat.assert_not_called()
+
+    def test_the_cli_exits_3_for_a_licence_not_accepted(self):
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "win.json"
+            f.write_text(json.dumps(self.decl()))
+            with mock.patch.dict(os.environ, {deps.LICENCE_ENV: "0"}), \
+                 mock.patch.object(deps, "deps_root", return_value=Path(td) / "deps"):
+                self.assertEqual(deps.main(["fetch", str(f)]), 3)
+
+    def test_an_image_without_the_licence_records_the_set_unprovisioned(self):
+        from bench import environment
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "benchmark_deps"
+            d.mkdir()
+            (d / "win.json").write_text(json.dumps(self.decl(manifest_sha256="c" * 64)))
+            with mock.patch.object(deps, "DEPS_DIR", d), \
+                 mock.patch.dict(os.environ, {deps.LICENCE_ENV: "0"}):
+                got = environment.sets(Path(td) / "bench")
+        self.assertEqual(list(got.values()), ["unprovisioned: Microsoft licence not accepted"])
+
+
+class TestVcxprojDatabase(unittest.TestCase):
+    PROJECT = """<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile><PreprocessorDefinitions>WIN32;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <PreprocessorDefinitions>WIN32;NDEBUG;VTBIT=32;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="a.c" />
+    <ClCompile Include="sub\\b.c" />
+    <ClInclude Include="a.h" />
+  </ItemGroup>
+</Project>
+"""
+
+    def test_the_configurations_flags_and_sources_as_clang_cl_entries(self):
+        from bench import vcxproj_db
+        with tempfile.TemporaryDirectory() as td:
+            proj = Path(td) / "p.vcxproj"
+            proj.write_text(self.PROJECT)
+            db = vcxproj_db.database(proj, "Release|Win32")
+            root = str(Path(td).resolve())
+        self.assertEqual([Path(e["file"]).name for e in db], ["a.c", "b.c"])
+        args = db[0]["arguments"]
+        self.assertEqual(args[0], "clang-cl")
+        self.assertIn("--target=i686-pc-windows-msvc", args)
+        for flag in ("-DWIN32", "-DNDEBUG", "-DVTBIT=32", "-DUNICODE", "-D_UNICODE",
+                     f"-I{root}/inc", f"-I{root}"):
+            self.assertIn(flag, args)
+        self.assertNotIn("-D_DEBUG", args)
+
+    def test_a_cl_driver_keeps_its_name_in_the_template(self):
+        db = [{"directory": "/src/w", "file": "/src/w/a.c",
+               "arguments": ["/usr/bin/clang-cl", "-DWIN32", "-I/src/w", "-c", "/src/w/a.c"]},
+              {"directory": "/src/w", "file": "/src/w/b.c",
+               "arguments": ["/usr/bin/gcc", "-c", "/src/w/b.c"]}]
+        out = deps.normalize_db(db, "/src/w", "/build/w")
+        self.assertEqual([e["arguments"][0] for e in out], ["clang-cl", "cc"])

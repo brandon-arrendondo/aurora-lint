@@ -1506,6 +1506,7 @@
     },
     {
       "name": "ventoy",
+      "deps": "ventoy",
       "repo": "https://github.com/ventoy/Ventoy.git",
       "version": "7cbdc5cf69935bcf1f085ae67f40e70ea7e74bae",
       "primary_build_config": {

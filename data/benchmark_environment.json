@@ -1,4 +1,4 @@
 {
- "_comment": "The benchmark environment this commit expects (docs/adr/0018): the pin (sha256 of the canonical environment manifest) of the image container/benchmark.Dockerfile builds. A real-world run in any other image gets its own run id (-env<hash>). Update it in the same commit as any change to the Dockerfile, a dependency set or the manifest generator, after rebuilding the image: python -m bench container-run prints the pin.",
- "manifest_sha256": "ca82675879684dc09d6a688a0f7a1ecc1983ca230767b8317e361b5a24a788eb"
+ "_comment": "The benchmark environment this commit expects (docs/adr/0018): the pin (sha256 of the canonical environment manifest) of the image container/benchmark.Dockerfile builds. A real-world run in any other image gets its own run id (-env<hash>). Update it in the same commit as any change to the Dockerfile, a dependency set or the manifest generator, after rebuilding the image: python -m bench container-run prints the pin. Built with --build-arg ACCEPT_MICROSOFT_LICENSE=true (the Win32 corpus's set provisioned); an image built without it records that set as unprovisioned and has a different pin.",
+ "manifest_sha256": "f17e9f519b02d3e9182a5dd69f372a293fcebeb4b87f074cf2cbb547ea4719fa"
 }

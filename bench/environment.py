@@ -95,6 +95,12 @@ def sets(bench_root=None) -> dict:
     for f in sorted(deps.DEPS_DIR.glob("*.json")):
         decl = deps.load(f.stem)
         res = deps.check(decl, bench_root)
+        if res["status"] == deps.MISSING and deps.licence_gated(decl) \
+                and os.environ.get(deps.LICENCE_ENV) != "1":
+            # An image built without accepting Microsoft's licence lacks the
+            # Win32 corpus's set: a different environment, so say so.
+            out[res["id"]] = "unprovisioned: Microsoft licence not accepted"
+            continue
         if res["status"] != deps.OK:
             raise RuntimeError(f"dependency set {f.stem}: {res['status']} at {res['path']}")
         out[res["id"]] = decl["manifest_sha256"]
