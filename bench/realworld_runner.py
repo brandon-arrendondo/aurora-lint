@@ -1696,16 +1696,18 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
         from bench import header_tree as _ht
         override = os.environ.get(_ht.HOST_TREE_ENV) or None
         has_deps = _deps.deps_name(codebase) is not None
-        if has_deps and compile_db:
-            # A compile database passes its own -I/-isystem flags, the host's
-            # /usr/include among them, so the scan would not read the set.
-            raise ValueError(
-                f"{codebase} declares a dependency set (docs/adr/0018); "
-                "--compile-commands would scan it against the database's own "
-                "system include paths instead. Run it without the database.")
-        if has_deps and override is None:
+        if has_deps and override is None and not compile_db:
+            # The benchmark configuration (docs/adr/0018): the set's system
+            # headers, plus the declared build's compile database
+            # materialized for this machine when the set declares one.
             deps_decl = _verified_deps(codebase)
+            if deps_decl.get("build"):
+                compile_db = str(_deps.materialize(deps_decl, cfg["path"]))
         else:
+            # Anything else on a corpus with a set is a shadow scan, under
+            # its own run id (_header_variant): --header-tree, or
+            # --compile-commands with the checkout's own database, which
+            # was built against this host's headers and passes them.
             header_spec = _verified_header_tree(codebase)
         settings = resolve_settings(
             profile, compile_db=compile_db, manifest=_sqc_manifest(cfg),

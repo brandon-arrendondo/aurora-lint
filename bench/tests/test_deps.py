@@ -352,23 +352,122 @@ class TestRunner(unittest.TestCase):
         self.assertEqual(rr._header_variant(False, None, host), "")
         self.assertEqual(rr._header_variant(False, None, tree), "-hdr-debian12-x")
 
-    def test_a_compile_database_run_is_refused_for_a_corpus_with_a_set(self):
+    def _first_header_step(self, compile_commands, override=None):
+        """Which header path run_one takes for a corpus with a set: stop it
+        at the first one with a sentinel."""
+        class Took(Exception):
+            pass
         with tempfile.TemporaryDirectory() as td:
             cfg = dict(rr.CODEBASES["lua"], path=Path(td))
+            (Path(td) / "compile_commands.json").write_text("[]")
+            env = {header_tree.HOST_TREE_ENV: override} if override else {}
             with mock.patch.dict(rr.CODEBASES, {"lua": cfg}), \
+                 mock.patch.dict(os.environ, env), \
                  mock.patch.object(rr, "_check_tool_available", return_value=True), \
                  mock.patch("bench.config.compile_db_for",
                             return_value=Path(td) / "compile_commands.json"), \
-                 mock.patch.object(deps, "deps_name", return_value="lua"):
-                with self.assertRaises(ValueError) as cm:
-                    rr.run_one("sqc", "lua", compile_commands=True)
-        self.assertIn("dependency set", str(cm.exception))
+                 mock.patch.object(deps, "deps_name", return_value="lua"), \
+                 mock.patch.object(rr, "_verified_deps", side_effect=Took("set")), \
+                 mock.patch.object(rr, "_verified_header_tree", side_effect=Took("shadow")):
+                with self.assertRaises(Took) as cm:
+                    rr.run_one("sqc", "lua", compile_commands=compile_commands)
+        return str(cm.exception)
+
+    def test_the_benchmark_path_reads_the_set_and_anything_else_is_a_shadow_scan(self):
+        self.assertEqual(self._first_header_step(False), "set")
+        # The checkout's own database was built against this host's headers.
+        self.assertEqual(self._first_header_step(True), "shadow")
+        self.assertEqual(self._first_header_step(False, override="host"), "shadow")
 
     def test_provenance_is_the_fifth_pin(self):
         decl = _decl([], manifest_sha256="c" * 64)
         self.assertEqual(deps.provenance(decl), {
             "id": deps.set_id(decl), "platform": "linux-x86_64",
             "decl_sha256": deps.decl_sha256(decl), "manifest_sha256": "c" * 64})
+
+
+class TestBuild(unittest.TestCase):
+    """The declared build configuration: a compile database template and
+    the build's generated headers, materialized identically on any machine."""
+
+    CORPUS, BUILD = "/home/a/toolchain/toy", "/home/a/toolchain/.cc_build/toy"
+
+    def test_a_database_becomes_a_machine_independent_template(self):
+        db = [{"directory": self.BUILD, "file": "../../toy/src/b.c",
+               "command": f"/usr/bin/gcc -DX=1 -I{self.CORPUS}/include -I. "
+                          f"-isystem /usr/include/x86_64-linux-gnu -I /usr/include/libnl3 "
+                          f"-include {self.BUILD}/config.h -c ../../toy/src/b.c"},
+              {"directory": self.CORPUS, "file": "a.c",
+               "arguments": ["cc", "-Iinclude", "-c", "a.c"]}]
+        dropped = set()
+        out = deps.normalize_db(db, self.CORPUS, self.BUILD, dropped)
+        self.assertEqual(dropped, {"/usr/include/x86_64-linux-gnu", "/usr/include/libnl3"})
+        self.assertEqual(out, [
+            {"directory": "${CORPUS}", "file": "${CORPUS}/a.c",
+             "arguments": ["cc", "-I", "${CORPUS}/include", "-c", "a.c"]},
+            {"directory": "${GEN}", "file": "${CORPUS}/src/b.c",
+             "arguments": ["cc", "-DX=1", "-I", "${CORPUS}/include", "-I", "${GEN}",
+                           "-include", "${GEN}/config.h", "-c", "../../toy/src/b.c"]},
+        ])
+
+    def test_a_path_outside_both_trees_is_refused(self):
+        db = [{"directory": self.CORPUS, "file": "a.c",
+               "arguments": ["cc", "-include", "/opt/x/forced.h", "a.c"]}]
+        with self.assertRaises(ValueError):
+            deps.normalize_db(db, self.CORPUS, self.BUILD)
+
+    def _declare(self, tmp: Path, template, generated: dict) -> dict:
+        import hashlib
+        root = tmp / "benchmark_build" / "toy"
+        (root / "generated").mkdir(parents=True)
+        body = json.dumps(template).encode()
+        (root / "compile_commands.json").write_bytes(body)
+        for rel, data in generated.items():
+            (root / "generated" / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / "generated" / rel).write_bytes(data)
+        return _decl([], build={
+            "db": "compile_commands.json", "db_sha256": hashlib.sha256(body).hexdigest(),
+            "generated": {r: hashlib.sha256(d).hexdigest() for r, d in generated.items()}})
+
+    TEMPLATE = [{"directory": "${CORPUS}", "file": "${CORPUS}/a.c",
+                 "arguments": ["cc", "-I", "${GEN}", "-c", "a.c"]}]
+
+    def test_materialize_writes_this_machines_paths_and_the_generated_headers(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            decl = self._declare(tmp, self.TEMPLATE, {"config.h": b"#define HAVE_X 1\n"})
+            with mock.patch.object(deps, "BUILD_DIR", tmp / "benchmark_build"):
+                db = deps.materialize(decl, tmp / "toy", tmp / "bench")
+            entry = json.loads(db.read_text())[0]
+            gen = db.parent / "generated"
+            self.assertEqual(entry["arguments"], ["cc", "-I", str(gen), "-c", "a.c"])
+            self.assertEqual(entry["directory"], str(tmp / "toy"))
+            self.assertEqual((gen / "config.h").read_bytes(), b"#define HAVE_X 1\n")
+
+    def test_a_template_searching_a_build_dir_nothing_is_shipped_to_is_refused(self):
+        # The stale database: it still points at the build tree, whose
+        # generated config.h is gone.
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            decl = self._declare(tmp, self.TEMPLATE, {})
+            with mock.patch.object(deps, "BUILD_DIR", tmp / "benchmark_build"):
+                with self.assertRaises(ValueError) as cm:
+                    deps.materialize(decl, tmp / "toy", tmp / "bench")
+            self.assertIn("ships no generated header", str(cm.exception))
+
+    def test_an_edited_template_or_header_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            decl = self._declare(tmp, self.TEMPLATE, {"config.h": b"a\n"})
+            gen = tmp / "benchmark_build/toy/generated/config.h"
+            gen.write_bytes(b"b\n")
+            with mock.patch.object(deps, "BUILD_DIR", tmp / "benchmark_build"):
+                with self.assertRaises(ValueError):
+                    deps.materialize(decl, tmp / "toy", tmp / "bench")
+                gen.write_bytes(b"a\n")
+                (tmp / "benchmark_build/toy/compile_commands.json").write_text("[]")
+                with self.assertRaises(ValueError):
+                    deps.materialize(decl, tmp / "toy", tmp / "bench")
 
 
 class TestCorpusCheck(_Debs):

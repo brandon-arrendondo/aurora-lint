@@ -103,6 +103,14 @@ def validate(decl: dict) -> dict:
     here yet."""
     for key in ("roots", "prune", "include_dirs"):
         decl[key] = [_tree_relative(p, key) for p in decl.get(key, [])]
+    build = decl.get("build")
+    if build is not None:
+        for key in ("db", "db_sha256"):
+            if not build.get(key):
+                raise ValueError(f"{decl.get('corpus')}: build.{key} is required")
+        build["db"] = _tree_relative(build["db"], "build.db")
+        build["generated"] = {_tree_relative(k, "build.generated"): v
+                              for k, v in build.get("generated", {}).items()}
     why = decl.get("why", {})
     for src in decl.get("sources", []):
         if src.get("kind") != "debs":
@@ -525,6 +533,162 @@ def resolve(decl: dict, spellings, bench_root=None, log=print) -> dict:
             # A pruned path some #include does reach: the prune is wrong.
             "pruned_but_reached": dict(sorted(pruned_reached.items())),
             "ambiguous": dict(sorted(ambiguous.items()))}
+
+
+# -- the build configuration: compile database and generated headers ---------
+#
+# The set supplies the system directories a compiler searches on its own. A
+# corpus's build supplies the rest: its project include directories, its -D
+# flags, and the headers its build generates (a configure-written config.h,
+# a make-generated parse.h). A declaration's optional 'build' section pins
+# those as files in this repository, under data/benchmark_build/<corpus>/:
+#
+#   db          a compile database TEMPLATE: every path inside the checkout
+#               written ${CORPUS}, every path inside the build tree ${GEN},
+#               the system -I/-isystem flags removed (the set supplies
+#               them) and entries sorted by file, so it says nothing about
+#               the machine it was made on
+#   db_sha256   its sha256
+#   generated   {path under generated/: sha256}: the build's generated
+#               headers, at their paths relative to the build tree
+#   recipe      how the template and headers were produced (the configure
+#               or cmake line), for whoever re-pins them
+#
+# Every machine only materializes them: the template with its own paths
+# substituted, the generated headers copied beside it. No compiler, build
+# system or package manager runs, so every host scans identical inputs.
+
+BUILD_DIR = PROJECT_DIR / "data" / "benchmark_build"
+_DIR_FLAGS = ("-I", "-isystem", "-iquote", "-idirafter")
+
+
+def _norm_path(value: str, corpus: str, build: str):
+    """`value` with the checkout written ${CORPUS} and the build tree
+    ${GEN}, or None when it lies outside both (a system directory)."""
+    v = posixpath.normpath(value)
+    for prefix, token in ((build, "${GEN}"), (corpus, "${CORPUS}")):
+        if v == prefix or v.startswith(prefix + "/"):
+            return token + v[len(prefix):]
+    return None
+
+
+def normalize_db(entries: list[dict], corpus: str, build: str,
+                 dropped: set | None = None) -> list[dict]:
+    """A compile database (as written on the machine that ran the build) as
+    a template: paths tokenized, include directories outside the checkout
+    and the build tree dropped, the driver spelled cc, entries sorted.
+    A relative include directory is resolved against its entry's directory
+    first. An argument that names some other absolute path outside both
+    trees is refused, since the template would carry it to every machine.
+    `dropped`, when given, collects the include directories left out, for
+    whoever re-pins to check that each one is a system directory the set
+    supplies and not a build output kept somewhere else."""
+    import shlex
+    corpus, build = posixpath.normpath(corpus), posixpath.normpath(build)
+    out = []
+    for e in entries:
+        args = list(e["arguments"]) if "arguments" in e else shlex.split(e["command"])
+        directory = posixpath.normpath(e["directory"])
+        dir_tok = _norm_path(directory, corpus, build)
+        if dir_tok is None:
+            raise ValueError(f"entry directory {directory} is outside the checkout and build tree")
+        norm = ["cc"]
+        i = 1
+        while i < len(args):
+            a = args[i]
+            flag, val = None, None
+            # None of the four flags is a prefix of another (and -include
+            # does not start with -I), so a prefix match is exact.
+            for f in _DIR_FLAGS:
+                if a == f and i + 1 < len(args):
+                    flag, val, step = f, args[i + 1], 2
+                    break
+                if a.startswith(f) and len(a) > len(f):
+                    flag, val, step = f, a[len(f):].lstrip("="), 1
+                    break
+            if flag:
+                path = val if posixpath.isabs(val) else posixpath.join(directory, val)
+                tok = _norm_path(path, corpus, build)
+                if tok is not None:
+                    norm.extend([flag, tok])
+                elif dropped is not None:
+                    dropped.add(posixpath.normpath(path))
+                i += step
+                continue
+            if posixpath.isabs(a):
+                tok = _norm_path(a, corpus, build)
+                if tok is None:
+                    raise ValueError(f"argument {a!r} names a path outside the "
+                                     "checkout and build tree")
+                a = tok
+            norm.append(a)
+            i += 1
+        file_path = e["file"] if posixpath.isabs(e["file"]) else posixpath.join(directory, e["file"])
+        file_tok = _norm_path(file_path, corpus, build)
+        if file_tok is None:
+            raise ValueError(f"entry file {file_path} is outside the checkout and build tree")
+        out.append({"directory": dir_tok, "file": file_tok, "arguments": norm})
+    return sorted(out, key=lambda x: (x["file"], x["arguments"]))
+
+
+def build_id(decl: dict) -> str:
+    return f"{decl['corpus']}-{decl['platform']}-{decl['build']['db_sha256'][:8]}"
+
+
+def _build_file(decl: dict, rel: str) -> Path:
+    return BUILD_DIR / decl["corpus"] / rel
+
+
+def materialize(decl: dict, corpus_path, bench_root=None) -> Path:
+    """Write the corpus's compile database for this machine: the declared
+    template with ${CORPUS} and ${GEN} replaced, and the generated headers
+    copied into BENCH_ROOT/build/<id>/generated/. Every file is checked
+    against its declared sha256 first, and a template that names a ${GEN}
+    directory the declaration ships nothing under is refused (the stale
+    database whose config.h is gone). Returns the database's path."""
+    b = decl["build"]
+    tmpl = _build_file(decl, b["db"])
+    body = tmpl.read_bytes()
+    got = hashlib.sha256(body).hexdigest()
+    if got != b["db_sha256"]:
+        raise ValueError(f"{tmpl}: sha256 {got}, declared {b['db_sha256']}")
+    gen_files = {}
+    for rel, sha in sorted(b.get("generated", {}).items()):
+        f = _build_file(decl, posixpath.join("generated", rel))
+        data = f.read_bytes() if f.is_file() else None
+        if data is None or hashlib.sha256(data).hexdigest() != sha:
+            raise ValueError(f"{f}: missing or not the declared generated header")
+        gen_files[rel] = data
+    entries = json.loads(body)
+    shipped_dirs = {posixpath.dirname(r) for r in gen_files}
+    for e in entries:
+        args = e["arguments"]
+        for flag, val in zip(args, args[1:]):
+            if flag in _DIR_FLAGS and val.startswith("${GEN}"):
+                d = val[len("${GEN}"):].lstrip("/")
+                # The build tree's root counts as shipped once anything is.
+                if not any(s == d or s.startswith(d + "/") or not d for s in shipped_dirs):
+                    raise ValueError(f"{e['file']}: the template searches {val}, "
+                                     "but the declaration ships no generated header there")
+    root = (Path(bench_root) if bench_root else BENCH_ROOT) / "build" / build_id(decl)
+    gen = root / "generated"
+    if root.exists():
+        shutil.rmtree(root)
+    for rel, data in gen_files.items():
+        out = gen / rel
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(data)
+    gen.mkdir(parents=True, exist_ok=True)
+    corpus_s, gen_s = str(Path(corpus_path)), str(gen)
+
+    def sub(v: str) -> str:
+        return v.replace("${CORPUS}", corpus_s).replace("${GEN}", gen_s)
+
+    db = [{"directory": sub(e["directory"]), "file": sub(e["file"]),
+           "arguments": [sub(a) for a in e["arguments"]]} for e in entries]
+    path = root / "compile_commands.json"
+    path.write_text(json.dumps(db, indent=1))
+    return path
 
 
 def fix_hint(name: str) -> str:
