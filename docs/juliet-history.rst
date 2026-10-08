@@ -42,7 +42,8 @@ reporting new results.
      - TBD
      - ``run_juliet_multi_cwe.sh``, 12-CWE subset only
 
-The parallel runner (``run_juliet_parallel.sh``) defaults to ``JOBS=12``.
+The runner (``python -m bench juliet``) defaults to ``--jobs 12``. The shell
+scripts named in the table above were removed at v0.3.33.
 Higher core counts reduce wall-clock time but don't affect per-CWE results.
 When comparing runtimes across versions, ensure the same machine and job count
 were used.
@@ -1117,9 +1118,10 @@ Performance by CWE Category (Historical Snapshot)
 ----------------------------------------------------
 
 .. note::
-   These tiers reflect an older full-suite run (pre-fast-mode). Get current
-   per-CWE precision via ``python -m bench get-cwe-detail`` / the MCP
-   ``get_cwe_detail`` tool.
+   These tiers reflect an older full-suite run (pre-fast-mode). Current
+   figures are in README.md's Benchmark Highlights table, and
+   ``docs/juliet-coverage.md`` is a generated per-CWE snapshot; compare two
+   runs with ``python -m bench compare BASE TARGET``.
 
 Tier 1: Strong Detection (TP > 50%) — 18 categories
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1277,13 +1279,6 @@ Competitor Comparison
      - No
      - Community
      - Commercial
-   * - Cppcheck
-     - Low
-     - Very low
-     - Data-flow
-     - Indirect
-     - Partial
-     - Free
    * - Coverity
      - Not published
      - Target <20%
@@ -1300,7 +1295,7 @@ Competitor Comparison
      - Commercial
 
 The aurora-lint row above is from the 44.6% full-suite era (v0.2.23); fast-mode TP
-rate was 83.8% as of v0.4.116 (see the fast-mode version table above; it has
+rate was 83.8% as of v0.4.116 (see the fast-mode version table below; it has
 since moved further, see README.md's Benchmark Highlights for the current
 figure) but is not directly comparable since the competitor figures below
 were not re-measured
@@ -1323,20 +1318,8 @@ them on OWASP WebGoat (Java) and OWASP Juice Shop (Node), and reports one
 false positive on WebGoat and none on Juice Shop for either edition. They
 are not comparable with the Juliet C rows.
 
-Key context from literature:
-
-- On real-world vulnerabilities, even the best single C analyzer studied
-  misses between 47% and 80%, depending on the evaluation scenario; the best
-  combination of analyzers still misses 30–69%, while flagging more functions
-  (`ISSTA 2022 <https://dl.acm.org/doi/10.1145/3533767.3534380>`_).
-- 27% of C/C++ vulnerabilities were missed by all three commercial tools
-  tested (Goseva 2015).
-- From a developer survey, Christakis and Bird recommend that analysis
-  designers aim for a false-positive rate no higher than 15–20%; only 24% of
-  respondents accepted 20% (`ASE 2016
-  <https://doi.org/10.1145/2970276.2970347>`_).
-
-See :doc:`bibliography` for full references.
+For how these figures compare with the literature (missed-vulnerability
+rates, developers' tolerance for false positives), see :doc:`bibliography`.
 
 Sources: `ISSTA 2022 <https://dl.acm.org/doi/10.1145/3533767.3534380>`_ |
 `Goseva 2015 <https://community.wvu.edu/~kagoseva/Papers/IST-2015.pdf>`_ |
@@ -1348,8 +1331,9 @@ Version History (v0.2.1 – v0.3.17)
 --------------------------------------
 
 Full-suite runs only (pre-fast-mode). See "Version History (v0.3.20 –
-present, fast mode)" below for fast-mode versions from v0.3.20 onward, or
-query ``data/benchmarks.db``/``sqc_bench`` Postgres directly for every run.
+v0.4.321, fast mode)" below for fast-mode versions from v0.3.20 onward, or
+query ``sqc_bench`` Postgres (canonical; ADR-0004) or this checkout's
+``data/benchmarks.db`` directly for every run.
 
 .. list-table::
    :header-rows: 1
@@ -1503,15 +1487,15 @@ query ``data/benchmarks.db``/``sqc_bench`` Postgres directly for every run.
      - 24-core workstation
      - CWE-78 macro alias + CWE-253 incorrect return check
 
-Version History (v0.3.20 – present, fast mode)
--------------------------------------------------
+Version History (v0.3.20 – v0.4.321, fast mode)
+-----------------------------------------------
 
 Fast mode (per-CWE manifests) is the default from v0.3.20, when the
 ``bench/`` runner replaced the shell script; it was introduced as an opt-in
 ``--fast`` flag at v0.3.19 (see "v0.3.19 — Fast Benchmark Mode" above).
 Migrated here 2026-09-03 from ``JULIET_RESULTS.md``'s "Recent Progress"
 table when that file was retired (it duplicated ``README.md``'s Benchmark Highlights and
-``data/benchmarks.db``/``sqc_bench`` Postgres, same reason
+``sqc_bench`` Postgres, same reason
 ``REALWORLD_RESULTS.md`` went first) -- this table was the one thing in it
 this file didn't already have a place for; the pre-fast-mode table above
 had pointed here for it since before this file existed.
@@ -1572,8 +1556,9 @@ trade rather than a Juliet regression to chase.
 
 Current state (whichever version is latest) is README.md's Benchmark
 Highlights table; ``python -m bench compare BASE TARGET`` inspects any
-specific pair of versions, and ``data/benchmarks.db``/``sqc_bench`` Postgres
-is canonical for every run in between.
+specific pair of versions, and ``sqc_bench`` Postgres is canonical for every
+run in between (ADR-0004); this checkout's ``data/benchmarks.db`` is working
+data.
 
 Scripts and Data Locations
 ------------------------------
@@ -1582,9 +1567,9 @@ Scripts and Data Locations
 
     bench/                                 Python benchmark module (python -m bench juliet)
 
-    ~/data/benchmarks/juliet-test-suite-c/
+    $SQC_BENCH_ROOT/benchmarks/juliet-test-suite-c/   (default ~/toolchain)
       testcases/                           118 CWE categories, 54,484 .c files
       testcasesupport/                     Shared helper functions
 
-    /tmp/juliet_results/                   Per-run output (MCP benchmark server, legacy pre-SQLite)
-    data/benchmarks.db                     Canonical store from v0.3.20 onward (SQLite)
+    /tmp/juliet_results/                   Per-run output (MCP benchmark server; legacy, no longer written)
+    data/benchmarks.db                     This checkout's working store (SQLite); official runs are in sqc_bench Postgres (ADR-0004)
