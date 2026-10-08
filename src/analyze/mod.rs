@@ -199,6 +199,18 @@ pub fn analyze_project(
     report_macro_gaps: bool,
     settings: &crate::settings::AnalysisSettings,
 ) -> Result<AnalysisResults> {
+    // A rule the policy in force declines never runs, whatever the
+    // manifest enables (`settings::DECLINED_RULES`).
+    let withheld;
+    let declines = |id: &str| settings.declines(id);
+    let manifest = if manifest.declined_rules(declines).is_empty() {
+        manifest
+    } else {
+        let mut m = manifest.clone();
+        m.withhold_declined(declines);
+        withheld = m;
+        &withheld
+    };
     let mut violations = Vec::new();
     let mut suppressed = Vec::new();
     let registry = RuleRegistry::new();

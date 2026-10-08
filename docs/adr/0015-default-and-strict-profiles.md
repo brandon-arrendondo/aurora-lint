@@ -1,4 +1,4 @@
-# 0015. Policy and environment are separate settings; `default` and `strict` are presets over them, and `pedantic` is proposed
+# 0015. Policy and environment are separate settings; `default` and `strict` are presets over them, and `pedantic` is a third
 
 ## Status
 

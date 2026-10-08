@@ -62,8 +62,10 @@ Two presets set both at once. The **default** preset is the default policy on
 a hosted environment. The **strict** preset is the strict policy on a
 freestanding environment, for teams that trust nothing. The **pedantic**
 preset is the pedantic policy on a freestanding environment. Benchmark
-precision and recall are scored against the strict reading. Any combination
-can be set explicitly, down to single options:
+precision and recall are scored against the strict reading. ``--policy``
+changes only the policy axis: ``--policy pedantic`` alone keeps the default
+preset's hosted environment. Any combination can be set explicitly, down to
+single options:
 
 .. code-block:: toml
 

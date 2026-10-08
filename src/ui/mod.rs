@@ -1344,7 +1344,10 @@ impl TerminalUI {
                         Span::raw(" Rules"),
                     ])])
                 } else {
-                    let checkbox = if item.config.enabled {
+                    let declined = self.settings.declines(&item.rule_id);
+                    let checkbox = if declined {
+                        "[-] "
+                    } else if item.config.enabled {
                         "[✓] "
                     } else {
                         "[ ] "
@@ -1385,6 +1388,14 @@ impl TerminalUI {
                         Span::styled(&item.rule_id, Style::default().fg(severity_color)),
                         Span::raw(" - "),
                         Span::styled(description, Style::default().fg(Color::Gray)),
+                        Span::styled(
+                            if declined {
+                                format!(" (declined by the {} policy)", self.settings.policy)
+                            } else {
+                                String::new()
+                            },
+                            Style::default().fg(Color::DarkGray),
+                        ),
                     ])])
                 }
             })
@@ -1624,7 +1635,8 @@ impl TerminalUI {
         let visible_items = self.get_visible_config_items();
         if let Some(selected_index) = self.selected_config.selected() {
             if let Some(item) = visible_items.get(selected_index) {
-                if !item.is_category {
+                // A rule the policy in force declines cannot be enabled.
+                if !item.is_category && !self.settings.declines(&item.rule_id) {
                     // Find the actual config item in our list and toggle it
                     for config_item in &mut self.config_items {
                         if config_item.rule_id == item.rule_id {
@@ -2203,9 +2215,11 @@ impl TerminalUI {
             }
         }
         let needs_vra = self.manifest.enabled_rules().any(|(rule_id, _)| {
-            self.registry
-                .get_rule(rule_id)
-                .is_some_and(|r| r.needs_vra())
+            !self.settings.declines(rule_id)
+                && self
+                    .registry
+                    .get_rule(rule_id)
+                    .is_some_and(|r| r.needs_vra())
         });
         let total_files = c_files.len();
         let mut parser = CParser::new()?;
@@ -2296,9 +2310,11 @@ impl TerminalUI {
         suppression_manager.extract_from_source(file_path, source);
 
         // Collect enabled rules to avoid borrow checker issues with terminal.draw
+        // A rule the policy in force declines never runs.
         let enabled_rules: Vec<(String, RuleConfig)> = self
             .manifest
             .enabled_rules()
+            .filter(|(id, _)| !self.settings.declines(id))
             .map(|(id, config)| (id.clone(), config.clone()))
             .collect();
 

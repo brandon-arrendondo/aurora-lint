@@ -452,7 +452,8 @@ pub static OPTIONS: &[OptionSpec] = &[
 /// 3): any of them may take a rule out of play, as `default` does for a rule
 /// too noisy for everyday code or `pedantic` for one with no sound form,
 /// rather than run a weaker form of it. A declined rule does not run, whatever
-/// the manifest enables. A rule that only reads differently under a policy
+/// the manifest enables (`analyze_project` and the interactive scan withhold
+/// it), and the settings name it, so their hash moves with the table. A rule that only reads differently under a policy
 /// stays out of this table and branches on [`AnalysisSettings::policy`].
 pub static DECLINED_RULES: &[(&str, &[Policy])] = &[];
 
@@ -983,6 +984,17 @@ impl AnalysisSettings {
         declined_in(DECLINED_RULES, self.policy, rule_id)
     }
 
+    /// Every rule the policy in force declines, sorted.
+    pub fn declined_rules(&self) -> Vec<&'static str> {
+        let mut ids: Vec<&'static str> = DECLINED_RULES
+            .iter()
+            .filter(|(_, policies)| policies.contains(&self.policy))
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
     /// The preset these settings equal, if any. A preset says nothing about
     /// how `#include` names match, the data model, which functions a
     /// project declares or which files the prescan reads, so those fields
@@ -1082,6 +1094,13 @@ impl AnalysisSettings {
         // Likewise present only when the prescan leaves files out.
         if !self.prescan_scope.is_empty() {
             identity["prescan_scope"] = serde_json::json!(self.prescan_scope);
+        }
+        // Likewise present only when the policy in force declines a rule, so
+        // a row added to DECLINED_RULES moves the hash of the settings it
+        // changes the output of, and a report names what did not run.
+        let declined = self.declined_rules();
+        if !declined.is_empty() {
+            identity["declined_rules"] = serde_json::json!(declined);
         }
         identity
     }

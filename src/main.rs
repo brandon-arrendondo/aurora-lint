@@ -867,7 +867,7 @@ fn run() -> Result<i32> {
     )?;
     let scope = scan_scope(&matches, &manifest);
     analysis_settings.set_prescan_scope(scope.prescan_scope());
-    let declined = manifest.withhold_declined(&analysis_settings);
+    let declined = manifest.declined_rules(|id| analysis_settings.declines(id));
 
     // Handle suppression generation
     if let Some(gen_spec) = generate_suppression {

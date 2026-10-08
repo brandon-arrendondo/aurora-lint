@@ -62,7 +62,7 @@ outlive any one task.
 - [0014 — The oracle is a CERT C oracle, independent of the tool; TP, FP, FN and TN come from
   pairing it with a run](0014-the-oracle-is-independent-of-the-tool.md)
 - [0015 — Policy and environment are separate settings; `default` and
-  `strict` are presets over them, and `pedantic` is proposed](0015-default-and-strict-profiles.md)
+  `strict` are presets over them, and `pedantic` is a third](0015-default-and-strict-profiles.md)
 - [0016 — A published artifact cites its sources, ships as a sanitized
   export, names its accountable reviewer, and discloses AI
   use](0016-published-artifacts.md)

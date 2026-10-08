@@ -488,23 +488,29 @@ impl RuleManifest {
         }
     }
 
-    /// Disables every enabled rule the policy in force declines
-    /// (`settings::DECLINED_RULES`), and returns their IDs, sorted.
-    pub fn withhold_declined(
-        &mut self,
-        settings: &crate::settings::AnalysisSettings,
-    ) -> Vec<String> {
-        let mut declined = Vec::new();
+    /// The IDs of the enabled rules `declines` names, sorted: pass
+    /// `|id| settings.declines(id)` for the policy in force
+    /// (`settings::DECLINED_RULES`).
+    pub fn declined_rules(&self, declines: impl Fn(&str) -> bool) -> Vec<String> {
+        let mut declined: Vec<String> = self
+            .enabled_rules()
+            .filter(|(id, _)| declines(id))
+            .map(|(id, _)| id.clone())
+            .collect();
+        declined.sort();
+        declined
+    }
+
+    /// Disables every rule `declines` names, so a scan never runs one,
+    /// whatever the manifest enables.
+    pub fn withhold_declined(&mut self, declines: impl Fn(&str) -> bool) {
         for (_, rules) in self.rules.families_mut() {
             for (id, config) in rules.iter_mut() {
-                if config.enabled && settings.declines(id) {
+                if declines(id) {
                     config.enabled = false;
-                    declined.push(id.clone());
                 }
             }
         }
-        declined.sort();
-        declined
     }
 }
 
@@ -580,6 +586,23 @@ threshold = "4"
 enabled = true
 category = "Recommendation"
 "#;
+
+    #[test]
+    fn a_declined_rule_is_listed_and_withheld_and_nothing_else_is() {
+        let mut manifest = RuleManifest::from_toml_str(
+            "[metadata]\nname = \"t\"\nversion = \"1\"\ncert_version = \"2016\"\n\n\
+             [rules.cert_c.MEM30-C]\nenabled = true\n\n[rules.cert_c.STR31-C]\nenabled = true\n\n\
+             [rules.cert_c.EXP34-C]\nenabled = false\n",
+        )
+        .unwrap();
+        let declines = |id: &str| id == "MEM30-C" || id == "EXP34-C";
+        // A rule the manifest already disables is not reported as declined.
+        assert_eq!(manifest.declined_rules(declines), ["MEM30-C"]);
+        manifest.withhold_declined(declines);
+        let enabled: Vec<&String> = manifest.enabled_rules().map(|(id, _)| id).collect();
+        assert_eq!(enabled, ["STR31-C"]);
+        assert!(manifest.declined_rules(declines).is_empty());
+    }
 
     #[test]
     fn a_configuration_with_only_cwe_ruleset_rules_loads() {
