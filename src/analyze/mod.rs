@@ -1436,6 +1436,7 @@ pub(crate) fn compute_vra_if_needed(
             }
         }
         let mut callsite_int_args = std::collections::HashMap::new();
+        let name_tables = project.map(name_writes::ProjectNameTables::of);
         // The file's own every-configuration constants, as the prescan
         // folds them: not the project-wide map, where another file's macro
         // of the same name could stand in for this file's.
@@ -1446,11 +1447,7 @@ pub(crate) fn compute_vra_if_needed(
             &prescan::LoopBounds {
                 constants: &macros,
                 admits: &|name| project.is_some_and(|p| p.has_one_project_value(name)),
-                names: project.map(|p| name_writes::ProjectNames {
-                    macros: &p.macro_definitions,
-                    functions: &p.known_functions,
-                    objects: &p.global_object_names,
-                }),
+                names: name_tables.as_ref(),
             },
             &mut callsite_int_args,
         );

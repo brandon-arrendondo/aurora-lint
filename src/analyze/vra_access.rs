@@ -15,7 +15,7 @@
 
 use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{MacroConstantMap, ValueRange, VarRangeMap};
-use crate::analyze::name_writes::NameScope;
+use crate::analyze::name_writes::{NameScope, Scan};
 use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::utility::cert_c::ast_utils;
 use std::collections::HashMap;
@@ -92,6 +92,8 @@ pub fn var_ranges_entry_at(
 /// parameter, and nothing in the body can write it (`NameScope::may_write`:
 /// no assignment, step or address of it, and no name that could expand to
 /// one), so every point of the body sees the parameter as it came in.
+/// `scope` builds the file's [`NameScope`], asked for only once the cheaper
+/// conditions hold.
 ///
 /// For a site where [`var_ranges_entry_at`] gives no range for the variable,
 /// for whatever reason. One is a block VRA proved unreachable, which keeps
@@ -99,13 +101,13 @@ pub fn var_ranges_entry_at(
 /// that always passes one flag (`set_opt(t, i, YES)`) makes the callee's
 /// other arm unreachable, and an index parameter's caller range is then
 /// still the answer there.
-pub(crate) fn unwritten_param_entry_range(
+pub(crate) fn unwritten_param_entry_range<'s>(
     function_cfgs: &HashMap<usize, FunctionCfg>,
     vra_results: &HashMap<usize, RangeAnalysisResult>,
     ident: &Node,
     name: &str,
     source: &str,
-    scope: &NameScope,
+    scope: impl FnOnce() -> NameScope<'s>,
 ) -> Option<ValueRange> {
     let func = ast_utils::find_containing_function(ident)?;
     let start_byte = func.start_byte();
@@ -122,13 +124,19 @@ pub(crate) fn unwritten_param_entry_range(
     // only ever withholds a range.
     let spelled =
         |n: &Node| n.kind() == "identifier" && ast_utils::get_node_text(n, source) == name;
-    if scope.may_write(&body, source, name, &spelled, false) {
-        return None;
-    }
-    vra.block_entry_ranges
-        .get(&cfg.entry)?
-        .get(name)
-        .map(|typed| typed.range)
+    // The entry range first: the scope is built only for a parameter that
+    // has one to keep.
+    let range = vra.block_entry_ranges.get(&cfg.entry)?.get(name)?.range;
+    let writes = scope().may_write(
+        &body,
+        source,
+        name,
+        &spelled,
+        Scan::Writes {
+            entered_from_outside: false,
+        },
+    );
+    (!writes).then_some(range)
 }
 
 /// Whether VRA carries positive evidence that `var_name` can hold a negative

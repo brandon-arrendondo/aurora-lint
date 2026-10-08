@@ -48,7 +48,7 @@ use crate::analyze::const_eval::{self, VarRangeMap};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::{collect_param_names, extract_function_name};
 use crate::analyze::macro_expand::{collect_function_macros, FunctionMacro};
-use crate::analyze::name_writes::{NameScope, ProjectNames};
+use crate::analyze::name_writes::{NameScope, ProjectNameTables};
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
@@ -71,14 +71,6 @@ use crate::utility::cert_c::guard_dominance::{
     self, collect_call_arg_guards, has_dominating_comparison, ComparisonKind,
 };
 use crate::utility::cert_c::node_children::NodeChildren;
-
-/// `ProjectContext::macro_definitions`, `known_functions` and
-/// `global_object_names`.
-type ProjectNameTables = (
-    Arc<HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>>>,
-    Arc<HashSet<String>>,
-    Arc<HashSet<String>>,
-);
 
 pub struct Arr30C {
     /// Macros any scanned file defines as `static`
@@ -273,11 +265,7 @@ impl CertRule for Arr30C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_static_macros.borrow_mut() = context.static_macro_names.clone();
-        *self.project_names.borrow_mut() = Some((
-            Arc::clone(&context.macro_definitions),
-            Arc::clone(&context.known_functions),
-            Arc::clone(&context.global_object_names),
-        ));
+        *self.project_names.borrow_mut() = Some(ProjectNameTables::of(context));
         *self.macro_constants.borrow_mut() = context.macro_constants.clone();
         *self.project_validated_params.borrow_mut() = context
             .function_summaries
@@ -3378,28 +3366,19 @@ impl Arr30C {
                     .child_by_field_name("index")
                     .filter(|i| i.kind() == "identifier")?;
                 let tables = self.project_names.borrow();
-                let mut root = *node;
-                while let Some(parent) = root.parent() {
-                    root = parent;
-                }
-                let scope = NameScope::of_file(
-                    &root,
-                    source,
-                    tables
-                        .as_ref()
-                        .map(|(macros, functions, objects)| ProjectNames {
-                            macros,
-                            functions,
-                            objects,
-                        }),
-                );
                 vra_access::unwritten_param_entry_range(
                     &self.function_cfgs.borrow(),
                     &self.vra_results.borrow(),
                     &ident,
                     var,
                     source,
-                    &scope,
+                    || {
+                        let mut root = *node;
+                        while let Some(parent) = root.parent() {
+                            root = parent;
+                        }
+                        NameScope::of_file(&root, source, tables.as_ref())
+                    },
                 )
             })
             .map(|range| range.min >= 0 && (range.max as usize) < effective_size)

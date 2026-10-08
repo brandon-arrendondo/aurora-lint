@@ -2934,7 +2934,7 @@ pub(crate) struct LoopBounds<'a> {
     pub(crate) admits: &'a dyn Fn(&str) -> bool,
     /// The scan's macros and functions, which classify the names a loop body
     /// uses (`name_writes`); without them only the file's own are known.
-    pub(crate) names: Option<name_writes::ProjectNames<'a>>,
+    pub(crate) names: Option<&'a name_writes::ProjectNameTables>,
 }
 
 impl LoopBounds<'_> {
@@ -3359,11 +3359,26 @@ impl<'t> IntCallWalk<'_, 't> {
         }
 
         let body = for_node.child_by_field_name("body")?;
-        if self
-            .scope
-            .may_write(&body, source, name, &names_counter, true)
-            || takes_address_of(&self.function, &names_counter)
-        {
+        // The body is scanned for every write; the rest of the function for
+        // what a name could expand to and for `&v`, through which the body
+        // could write (`SAVE()` stashing `&i` before the loop, `*p = 300;`
+        // inside it).
+        let function_body = self.function.child_by_field_name("body")?;
+        if self.scope.may_write(
+            &body,
+            source,
+            name,
+            &names_counter,
+            name_writes::Scan::Writes {
+                entered_from_outside: true,
+            },
+        ) || self.scope.may_write(
+            &function_body,
+            source,
+            name,
+            &names_counter,
+            name_writes::Scan::Expansions,
+        ) {
             return None;
         }
         Some(((low, high), decl_id))
@@ -3409,21 +3424,6 @@ impl<'t> IntCallWalk<'_, 't> {
             _ => None,
         }
     }
-}
-
-/// Whether `&v` appears anywhere under `node` for an occurrence `names_counter`
-/// accepts.
-fn takes_address_of(node: &Node, names_counter: &dyn Fn(&Node) -> bool) -> bool {
-    if node.kind() == "pointer_expression"
-        && node.child(0).is_some_and(|op| op.kind() == "&")
-        && node
-            .child_by_field_name("argument")
-            .is_some_and(|a| names_counter(&name_writes::strip_parens(a)))
-    {
-        return true;
-    }
-    node.child_nodes()
-        .any(|child| takes_address_of(&child, names_counter))
 }
 
 /// The text of every identifier under `node`.
@@ -11732,6 +11732,16 @@ void caller(char *other) {
         let (tree, source) = parse_c(code);
         let root = tree.root_node();
         let file = const_eval::cfg_prunable_constants(&root, &source, Default::default());
+        let tables = name_writes::ProjectNameTables {
+            macros: std::sync::Arc::new(macros.clone()),
+            functions: std::sync::Arc::new(functions.clone()),
+            objects: std::sync::Arc::new(HashSet::from(["HDR_ENUM".to_string()])),
+            scalar_typedefs: std::sync::Arc::new(HashMap::from([(
+                "hdr_word".to_string(),
+                "unsigned long".to_string(),
+            )])),
+            ..Default::default()
+        };
         let mut out = CallsiteIntRanges::new();
         collect_callsite_int_args_from_tree(
             &root,
@@ -11740,11 +11750,7 @@ void caller(char *other) {
             &LoopBounds {
                 constants: &file,
                 admits: &|_| false,
-                names: Some(name_writes::ProjectNames {
-                    macros,
-                    functions,
-                    objects: &HashSet::from(["HDR_ENUM".to_string()]),
-                }),
+                names: Some(&tables),
             },
             &mut out,
         );
@@ -11802,6 +11808,46 @@ void caller(char *other) {
         assert_eq!(range_with("log_it(HDR_ENUM);"), vec![vec![Some((0, 39))]]);
     }
 
+    /// The rest of the function is scanned for what a name could expand to,
+    /// and type names are classified like any other.
+    #[test]
+    fn a_name_outside_the_loop_or_in_type_position_must_be_known_too() {
+        let macros = HashMap::new();
+        let functions = HashSet::new();
+        let range_with = |before: &str, inside: &str| {
+            let code = format!(
+                "#define SAVE() (p = &i)\n#define GLUE(a) a ## _x\ntypedef int cnt;\n\
+                 static void sink(int k) {{ (void)k; }}\n\
+                 void f(void) {{ int i; int *p = 0; {before} \
+                 for (i = 0; i < 40; i++) {{ {inside} sink(i); }} }}\n"
+            );
+            sink_arg_ranges_in_project(&code, &macros, &functions)
+        };
+        // A macro outside the loop that stashes `&i`, and an unseen name
+        // there, which could.
+        assert_eq!(range_with("SAVE();", "*p = 300;"), vec![vec![None]]);
+        assert_eq!(range_with("STASH();", ""), vec![vec![None]]);
+        // A plain assignment before the loop is overwritten by its start.
+        assert_eq!(range_with("i = 7;", ""), vec![vec![Some((0, 39))]]);
+        // An unseen name in type position may be a macro.
+        assert_eq!(range_with("", "BUMPDECL z; (void)z;"), vec![vec![None]]);
+        // A typedef of the file's or the scan's, or a `_t` name, is a type.
+        assert_eq!(
+            range_with("", "cnt z = 0; (void)z;"),
+            vec![vec![Some((0, 39))]]
+        );
+        assert_eq!(
+            range_with("", "hdr_word z = 0; (void)z;"),
+            vec![vec![Some((0, 39))]]
+        );
+        assert_eq!(
+            range_with("", "size_t z = 0; (void)z;"),
+            vec![vec![Some((0, 39))]]
+        );
+        // A pasting macro is unreadable.
+        assert_eq!(range_with("", "GLUE(y);"), vec![vec![None]]);
+    }
+
     #[test]
     fn a_global_or_static_counter_has_no_range() {
         for code in [
@@ -11830,6 +11876,17 @@ void caller(char *other) {
         let root = tree.root_node();
         let file = const_eval::MacroConstantMap::new();
         let project: const_eval::MacroConstantMap = [("HDR_N".to_string(), 40)].into();
+        // The scan read the header that defines it, as `has_one_project_value`
+        // needs; the names the loop uses are then classified.
+        let tables = name_writes::ProjectNameTables {
+            macros: std::sync::Arc::new(HashMap::from([(
+                "HDR_N".to_string(),
+                vec![crate::analyze::check_macros::MacroDefinition::Object {
+                    body: "40".to_string(),
+                }],
+            )])),
+            ..Default::default()
+        };
         for (admitted, expected) in [(true, Some((0, 39))), (false, None)] {
             let admits = move |_: &str| admitted;
             let mut out = CallsiteIntRanges::new();
@@ -11840,7 +11897,7 @@ void caller(char *other) {
                 &LoopBounds {
                     constants: &project,
                     admits: &admits,
-                    names: None,
+                    names: Some(&tables),
                 },
                 &mut out,
             );

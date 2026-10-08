@@ -18,29 +18,82 @@
 //!   function), which receives the variable by value;
 //! - an object or enumerator in scope or anywhere in the scan, or a
 //!   standard constant macro;
+//! - a type name (`type_identifier`): a typedef the file or the scan knows,
+//!   or an ISO C/POSIX `_t` name; one that is neither may be a macro in type
+//!   position (`BUMPDECL z;`), so a possible write;
 //! - anything else: unclassifiable, so a possible write.
+//!
+//! A macro whose replacement pastes tokens (`##`) is unreadable: what it
+//! names is decided only when it expands.
 //!
 //! A name a macro's replacement uses that nothing in the scan defines is not
 //! classified again at that depth; only the names the body itself spells are.
 
 use crate::analyze::check_macros::MacroDefinition;
+use crate::analyze::context::ProjectContext;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::library_effects;
 use crate::utility::cert_c::node_children::NodeChildren;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
-/// The names a project's scan knows, for a body in one of its files.
-#[derive(Clone, Copy)]
-pub(crate) struct ProjectNames<'a> {
+/// The names a project's scan knows, for a body in one of its files: shared
+/// handles on `ProjectContext`'s tables, cheap to take and to keep.
+#[derive(Clone, Default)]
+pub(crate) struct ProjectNameTables {
     /// Every `#define` across the scanned files and headers.
-    pub(crate) macros: &'a HashMap<String, Vec<MacroDefinition>>,
+    pub(crate) macros: Arc<HashMap<String, Vec<MacroDefinition>>>,
     /// Every function name the scan found declared or defined.
-    pub(crate) functions: &'a HashSet<String>,
+    pub(crate) functions: Arc<HashSet<String>>,
     /// Every file-scope object and enumeration constant the scan found
-    /// (`ProjectContext::global_object_names`): an enumerator from a header
-    /// is one, and is no macro.
-    pub(crate) objects: &'a HashSet<String>,
+    /// (`global_object_names`): an enumerator from a header is one, and is
+    /// no macro.
+    pub(crate) objects: Arc<HashSet<String>>,
+    /// The typedef names the scan found, by kind: scalar aliases
+    /// (`typedef_types`), struct aliases (`struct_typedef_aliases`), and
+    /// pointer and function-pointer typedefs.
+    pub(crate) scalar_typedefs: Arc<HashMap<String, String>>,
+    pub(crate) struct_typedefs: Arc<HashMap<String, String>>,
+    pub(crate) pointer_typedefs: Arc<HashSet<String>>,
+    pub(crate) function_pointer_typedefs: Arc<HashSet<String>>,
+}
+
+impl ProjectNameTables {
+    pub(crate) fn of(context: &ProjectContext) -> Self {
+        ProjectNameTables {
+            macros: Arc::clone(&context.macro_definitions),
+            functions: Arc::clone(&context.known_functions),
+            objects: Arc::clone(&context.global_object_names),
+            scalar_typedefs: Arc::clone(&context.typedef_types),
+            struct_typedefs: Arc::clone(&context.struct_typedef_aliases),
+            pointer_typedefs: Arc::clone(&context.pointer_typedef_names),
+            function_pointer_typedefs: Arc::clone(&context.function_pointer_typedef_names),
+        }
+    }
+
+    fn names_a_typedef(&self, name: &str) -> bool {
+        self.scalar_typedefs.contains_key(name)
+            || self.struct_typedefs.contains_key(name)
+            || self.pointer_typedefs.contains(name)
+            || self.function_pointer_typedefs.contains(name)
+    }
+}
+
+/// Which writes [`NameScope::may_write`] looks for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scan {
+    /// Every write: an assignment or step of the variable, its address, and
+    /// any a name could expand to. With `entered_from_outside`, the stretch
+    /// is a loop body that must be entered only from its top, so a label, or
+    /// a `case` of a `switch` outside it (Duff's device), counts too.
+    Writes { entered_from_outside: bool },
+    /// Only what a name could expand to, and the variable's address: for the
+    /// rest of a function around a stretch scanned with `Writes`, where a
+    /// macro can stash `&v` for the stretch to write through (`SAVE()`
+    /// before a loop, `POKE()` inside it) though a plain assignment there
+    /// does not matter.
+    Expansions,
 }
 
 /// One macro definition: its parameters (none for an object-like macro) and
@@ -53,17 +106,23 @@ pub(crate) struct NameScope<'a> {
     functions: HashSet<String>,
     macros: HashMap<String, Vec<MacroBody>>,
     enumerators: HashSet<String>,
-    project: Option<ProjectNames<'a>>,
+    typedefs: HashSet<String>,
+    project: Option<&'a ProjectNameTables>,
 }
 
 impl<'a> NameScope<'a> {
     /// The scope of the translation unit `root`, with the project's names
     /// when there are any.
-    pub(crate) fn of_file(root: &Node, source: &str, project: Option<ProjectNames<'a>>) -> Self {
+    pub(crate) fn of_file(
+        root: &Node,
+        source: &str,
+        project: Option<&'a ProjectNameTables>,
+    ) -> Self {
         let mut scope = NameScope {
             functions: HashSet::new(),
             macros: HashMap::new(),
             enumerators: HashSet::new(),
+            typedefs: HashSet::new(),
             project,
         };
         scope.collect(root, source);
@@ -96,12 +155,25 @@ impl<'a> NameScope<'a> {
                             .map(|v| get_node_text(&v, source))
                             .unwrap_or("")
                             .to_string();
+                        // A pasted token is decided at expansion: unreadable.
+                        let def = (!body.contains("##")).then_some((params, body));
                         self.macros
                             .entry(get_node_text(&name, source).to_string())
                             .or_default()
-                            .push(Some((params, body)));
+                            .push(def);
                     }
                     continue;
+                }
+                "type_definition" => {
+                    let mut declarators = child
+                        .children_by_field_name("declarator", &mut child.walk())
+                        .collect::<Vec<_>>();
+                    for declarator in declarators.drain(..) {
+                        if let Some(name) = declared_type_name(&declarator) {
+                            self.typedefs
+                                .insert(get_node_text(&name, source).to_string());
+                        }
+                    }
                 }
                 "enumerator" => {
                     if let Some(name) = child.child_by_field_name("name") {
@@ -167,29 +239,19 @@ impl<'a> NameScope<'a> {
     }
 
     /// Whether anything under `node` can write `var`, an occurrence of which
-    /// `is_var` recognizes: an assignment or increment of it, its address, a
-    /// macro that names it or is handed it, or a name this scope cannot
-    /// classify. With `entered_from_outside`, `node` is a loop body that must
-    /// be entered only from its top, so a label, or a `case` of a `switch`
-    /// outside it (Duff's device), also counts.
+    /// `is_var` recognizes, in the sense `scan` gives: its address, a macro
+    /// that names it or is handed it, a name this scope cannot classify,
+    /// and under [`Scan::Writes`] an assignment or step of it.
     pub(crate) fn may_write(
         &self,
         node: &Node,
         source: &str,
         var: &str,
         is_var: &dyn Fn(&Node) -> bool,
-        entered_from_outside: bool,
+        scan: Scan,
     ) -> bool {
         let mut seen = HashSet::new();
-        self.may_write_under(
-            node,
-            node,
-            source,
-            var,
-            is_var,
-            entered_from_outside,
-            &mut seen,
-        )
+        self.may_write_under(node, node, source, var, is_var, scan, &mut seen)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -200,16 +262,21 @@ impl<'a> NameScope<'a> {
         source: &str,
         var: &str,
         is_var: &dyn Fn(&Node) -> bool,
-        entered_from_outside: bool,
+        scan: Scan,
         classified: &mut HashSet<String>,
     ) -> bool {
+        let writes = matches!(scan, Scan::Writes { .. });
+        let entered_from_outside = scan
+            == Scan::Writes {
+                entered_from_outside: true,
+            };
         let target = match node.kind() {
             "labeled_statement" if entered_from_outside => return true,
             "case_statement" if entered_from_outside && !switch_is_inside(node, top) => {
                 return true;
             }
-            "assignment_expression" => node.child_by_field_name("left"),
-            "update_expression" => node.child_by_field_name("argument"),
+            "assignment_expression" if writes => node.child_by_field_name("left"),
+            "update_expression" if writes => node.child_by_field_name("argument"),
             "pointer_expression" if node.child(0).is_some_and(|op| op.kind() == "&") => {
                 node.child_by_field_name("argument")
             }
@@ -249,22 +316,37 @@ impl<'a> NameScope<'a> {
                 }
                 None
             }
+            "type_identifier" => {
+                let name = get_node_text(node, source);
+                if !classified.contains(name) {
+                    let known = if self.is_macro(name) {
+                        !self.macro_writes(name, var, &mut HashSet::new())
+                    } else {
+                        self.names_a_type(name)
+                    };
+                    if !known {
+                        return true;
+                    }
+                    classified.insert(name.to_string());
+                }
+                None
+            }
             _ => None,
         };
         if target.is_some_and(|t| is_var(&strip_parens(t))) {
             return true;
         }
-        node.child_nodes().any(|child| {
-            self.may_write_under(
-                top,
-                &child,
-                source,
-                var,
-                is_var,
-                entered_from_outside,
-                classified,
-            )
-        })
+        node.child_nodes()
+            .any(|child| self.may_write_under(top, &child, source, var, is_var, scan, classified))
+    }
+
+    /// Whether `name`, in type position and not a macro, names a type: a
+    /// typedef this file or the scan declares, or an ISO C/POSIX `_t` name
+    /// (POSIX reserves the suffix for types).
+    fn names_a_type(&self, name: &str) -> bool {
+        self.typedefs.contains(name)
+            || self.project.is_some_and(|p| p.names_a_typedef(name))
+            || name.ends_with("_t")
     }
 
     /// Whether `name`, not a macro, is a function or a constant wherever it
@@ -323,6 +405,22 @@ pub(crate) fn declared_function_name(declarator: &Node, source: &str) -> Option<
             }
             _ => return None,
         }
+    }
+}
+
+/// The name a typedef declarator introduces: `T` in `T`, `*T`, `T[4]` or
+/// `(*T)(int)`.
+fn declared_type_name<'t>(declarator: &Node<'t>) -> Option<Node<'t>> {
+    let mut d = *declarator;
+    loop {
+        if d.kind() == "type_identifier" {
+            return Some(d);
+        }
+        d = d.child_by_field_name("declarator").or_else(|| {
+            (d.kind() == "parenthesized_declarator")
+                .then(|| d.named_child(0))
+                .flatten()
+        })?;
     }
 }
 
