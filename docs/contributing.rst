@@ -137,7 +137,7 @@ steps above apply, with these differences:
 Build Requirements
 ------------------
 
-- **Rust**: 2021 edition (stable toolchain)
+- **Rust**: 1.95 or later (stable toolchain; ``rust-version`` in Cargo.toml)
 - **C toolchain**: a C compiler and linker for dependencies with native code
   (e.g. ``libgit2-sys``); ``build-essential`` on Debian/Ubuntu
 - **Platform**: Linux, macOS, Windows (cross-platform via crossterm)
