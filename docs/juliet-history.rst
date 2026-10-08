@@ -52,8 +52,7 @@ FP Reduction History (Full Round List)
 ----------------------------------------
 
 Every tracked round from the original baseline through the last full-suite
-run (v0.3.17). ``testing-methodology.rst`` carries a condensed milestone
-version of this table; this is the complete list.
+run (v0.3.17). This is the only copy of the table; other pages link here.
 
 .. list-table::
    :header-rows: 1
