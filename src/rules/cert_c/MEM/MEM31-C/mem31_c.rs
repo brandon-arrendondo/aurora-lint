@@ -160,11 +160,16 @@ struct ElementStore {
     /// Where the store starts: a loop before it frees none of it.
     store_start: usize,
     /// Where every write to `K` other than the counting increment starts,
-    /// and every write to `A` itself (`p = other`, `p++`), from the
-    /// outermost loop around the store (or the store) on. One before the
-    /// freeing loop means `K` no longer counts the stores, or `A` no longer
-    /// holds them.
+    /// from the outermost loop around the store (or the store) on. One
+    /// before the freeing loop means `K` no longer counts the stores.
     other_writes: Vec<usize>,
+    /// Where the outermost loop around the store (or the store) starts.
+    window: usize,
+    /// Where each other change to what `A` holds starts, wherever it is in
+    /// the function: an element written, or the array zeroed through its
+    /// address (see `MemoryLeakAnalyzer::array_events`). One from `window`
+    /// to the end of the freeing loop voids the credit.
+    array_events: Vec<usize>,
 }
 
 /// Whether `ident` is declared as an array object (`char *pw[N]`, the name
@@ -235,11 +240,6 @@ fn statement_in_block<'t>(node: &Node<'t>) -> Option<Node<'t>> {
 struct DeclaratorUses<'t> {
     writes: Vec<Node<'t>>,
     address_taken: bool,
-    /// Calls handed `&name` directly as an argument (through casts and
-    /// parentheses): `memset(&pw, 0, sizeof(pw))`. Also counted in
-    /// `address_taken`; a caller that can bound what such a call does (an
-    /// array's elements, never which array it is) reads them here.
-    address_calls: Vec<Node<'t>>,
 }
 
 fn declarator_uses<'t>(
@@ -252,7 +252,6 @@ fn declarator_uses<'t>(
     let mut uses = DeclaratorUses {
         writes: Vec::new(),
         address_taken: false,
-        address_calls: Vec::new(),
     };
     for occurrence in query::find_descendants_of_kind(*func, "identifier") {
         if ast_utils::get_node_text(&occurrence, source) != name
@@ -277,21 +276,7 @@ fn declarator_uses<'t>(
                         .child_by_field_name("operator")
                         .is_some_and(|o| ast_utils::get_node_text(&o, source) == "&") =>
             {
-                uses.address_taken = true;
-                let mut arg = parent;
-                while let Some(up) = arg
-                    .parent()
-                    .filter(|u| matches!(u.kind(), "parenthesized_expression" | "cast_expression"))
-                {
-                    arg = up;
-                }
-                if let Some(call) = arg
-                    .parent()
-                    .filter(|l| l.kind() == "argument_list")
-                    .and_then(|l| l.parent())
-                {
-                    uses.address_calls.push(call);
-                }
+                uses.address_taken = true
             }
             _ => {}
         }
@@ -365,21 +350,7 @@ fn element_store(assign: &Node, left: &Node, source: &str) -> Option<ElementStor
     }
     let func = ast_utils::find_containing_function(assign)?;
     let uses = declarator_uses(&func, &index, index_id, source);
-    let array_uses = declarator_uses(&func, &array, array_id, source);
-    // An array object's address handed to a call (`memset(&pw, 0,
-    // sizeof(pw))`) cannot make `pw` another array: that call writes its
-    // elements at most, and counts as a write of it below. A pointer's
-    // address, or one kept anywhere but a call argument, can.
-    let array_address_ok = array_uses.address_calls.len()
-        == query::find_descendants(func, |n| {
-            n.kind() == "pointer_expression"
-                && n.child_by_field_name("argument").is_some_and(|a| {
-                    a.kind() == "identifier" && declarator_id(&a, source) == Some(array_id)
-                })
-        })
-        .len()
-        && names_an_array_object(&array, source);
-    if uses.address_taken || (array_uses.address_taken && !array_address_ok) {
+    if uses.address_taken {
         return None;
     }
     let stored = ast_utils::get_node_text(left, source);
@@ -497,12 +468,11 @@ fn element_store(assign: &Node, left: &Node, source: &str) -> Option<ElementStor
         other_writes: uses
             .writes
             .iter()
-            .filter(|w| w.id() != increment)
-            .chain(array_uses.writes.iter())
-            .chain(array_uses.address_calls.iter())
-            .filter(|w| w.start_byte() >= window)
+            .filter(|w| w.id() != increment && w.start_byte() >= window)
             .map(|w| w.start_byte())
             .collect(),
+        window,
+        array_events: Vec::new(),
     })
 }
 
@@ -555,6 +525,9 @@ fn is_plain_assignment(node: &Node, source: &str) -> bool {
 
 pub struct Mem31C {
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
+    /// What each scanned function can write (`ProjectContext::effects`),
+    /// for proving a callee handed an array leaves its elements alone.
+    effects: RefCell<context::EffectView>,
     value_only_globals: RefCell<Arc<HashSet<String>>>,
     struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
     struct_typedef_aliases: RefCell<Arc<HashMap<String, String>>>,
@@ -590,6 +563,7 @@ impl Mem31C {
             struct_typedef_aliases: RefCell::new(Arc::new(HashMap::new())),
             known_functions: RefCell::new(Arc::new(HashSet::new())),
             function_macros: RefCell::new(Arc::new(HashMap::new())),
+            effects: RefCell::new(context::EffectView::default()),
             noreturn_functions: RefCell::default(),
             settings: RefCell::default(),
             project_aliases: RefCell::new(Arc::new(HashMap::new())),
@@ -631,6 +605,7 @@ impl CertRule for Mem31C {
         *self.struct_typedef_aliases.borrow_mut() = context.struct_typedef_aliases.clone();
         *self.known_functions.borrow_mut() = context.known_functions.clone();
         *self.function_macros.borrow_mut() = context.function_macros.clone();
+        *self.effects.borrow_mut() = context.effects();
         *self.noreturn_functions.borrow_mut() = context.noreturn_functions.clone();
         *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
         *self.project_alias_alternatives.borrow_mut() = context.macro_alias_alternatives.clone();
@@ -660,6 +635,7 @@ impl CertRule for Mem31C {
         );
         let known_functions = self.known_functions.borrow();
         let function_macros = self.function_macros.borrow();
+        let effects = self.effects.borrow();
         let mut conditional_macros = HashSet::clone(&self.project_conditional_macros.borrow());
         conditional_macros
             .extend(crate::analyze::check_macros::collect_conditional_macro_names(source));
@@ -753,6 +729,7 @@ impl CertRule for Mem31C {
                 &conditional_macros,
             );
             analyzer.realloc_in_one_build = Some(&realloc_in_one_build);
+            analyzer.effects = Some(&effects);
             analyzer.analyze_function(&func, source, &mut violations);
         }
 
@@ -943,6 +920,8 @@ struct MemoryLeakAnalyzer<'a> {
     // Aliases that are `realloc` in some builds only: a call through one
     // allocates and may release its argument, but does not prove it did.
     realloc_in_one_build: Option<&'a HashSet<String>>,
+    // See `Mem31C::effects`; `None` with no project context.
+    effects: Option<&'a context::EffectView>,
     // Where a call through one of `realloc_in_one_build` released each
     // variable, so a double free it causes says so rather than naming a
     // jump.
@@ -1332,6 +1311,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             macro_aliases,
             conditional_macros,
             realloc_in_one_build: None,
+            effects: None,
             released_in_one_build: HashMap::new(),
             released_by_some_definition: HashMap::new(),
             realloc_in_some_builds: HashSet::new(),
@@ -1689,6 +1669,174 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         .is_some()
     }
 
+    /// Every occurrence of the array the store `assign` (`A[K] = ...`,
+    /// `left` its `A[K]`) writes, read for what else could change what `A`
+    /// holds. `None` refuses the credit outright: some occurrence lets code
+    /// this walk cannot follow reach the elements. Otherwise the positions of
+    /// the changes it can see, which void the credit when they fall between
+    /// the store's window and the end of the freeing loop.
+    ///
+    /// Occurrences are matched by declarator (ADR-0006) and read as:
+    /// - `A[x]` read: nothing.
+    /// - `A[x] = ...`, `A[x]++` other than this store: a change.
+    /// - `&A[x]`: refuses (the element's address can be written through).
+    /// - `sizeof A`: nothing.
+    /// - `&A`, for an array object, as the destination of a zeroing call
+    ///   (`memset`, `bzero`, `explicit_bzero`, or a function-like macro whose
+    ///   every definition forwards straight to one, as hostap's `os_memset`
+    ///   does): a change. Any other `&A` refuses: a callee handed it may keep
+    ///   it (`q = id(&p)`, `stash(&p)`) and write the elements later.
+    /// - `A` itself, decayed: allowed only as a call argument whose callee is
+    ///   proven to leave it alone (it does not store that parameter, and its
+    ///   effects are known and write nothing through it); otherwise refuses.
+    ///   That covers `memset(p, ...)`, `memcpy(p, ...)`, `clear_all(p)`,
+    ///   `p + 0`, `q = p` and a second store spelled `*(p + n)`.
+    fn array_events(&self, assign: &Node, left: &Node, source: &str) -> Option<Vec<usize>> {
+        let array = peel_casts_and_parens(left.child_by_field_name("argument")?);
+        let array_id = declarator_id(&array, source)?;
+        let name = ast_utils::get_node_text(&array, source);
+        let func = ast_utils::find_containing_function(assign)?;
+        let is_array_object = names_an_array_object(&array, source);
+        let (_, declarator) = ast_utils::resolve_identifier_declarator(&array, name, source)?;
+        let declared_at = if declarator.kind() == "identifier" {
+            declarator.start_byte()
+        } else {
+            query::find_first_descendant(declarator, |n| {
+                n.kind() == "identifier" && ast_utils::get_node_text(&n, source) == name
+            })?
+            .start_byte()
+        };
+        fn climb<'t>(mut n: Node<'t>) -> Node<'t> {
+            while let Some(up) = n
+                .parent()
+                .filter(|u| u.kind() == "parenthesized_expression")
+            {
+                n = up;
+            }
+            n
+        }
+        let mut events = Vec::new();
+        for occurrence in query::find_descendants_of_kind(func, "identifier") {
+            if ast_utils::get_node_text(&occurrence, source) != name
+                || declarator_id(&occurrence, source) != Some(array_id)
+            {
+                continue;
+            }
+            // The declaration's own name; `char **q = p;` is a use.
+            if occurrence.start_byte() == declared_at {
+                continue;
+            }
+            let at = climb(occurrence);
+            let up = at.parent()?;
+            let is_field = |node: &Node, field: &str, child: &Node| {
+                node.child_by_field_name(field)
+                    .is_some_and(|c| c.id() == child.id())
+            };
+            if up.kind() == "subscript_expression" && is_field(&up, "argument", &at) {
+                let element = climb(up);
+                let holder = element.parent()?;
+                if holder.kind() == "assignment_expression" && is_field(&holder, "left", &element) {
+                    if holder.id() != assign.id() {
+                        events.push(holder.start_byte());
+                    }
+                } else if holder.kind() == "update_expression" {
+                    events.push(holder.start_byte());
+                } else if holder.kind() == "pointer_expression"
+                    && holder
+                        .child_by_field_name("operator")
+                        .is_some_and(|o| ast_utils::get_node_text(&o, source) == "&")
+                {
+                    return None;
+                }
+                continue;
+            }
+            if up.kind() == "sizeof_expression" {
+                continue;
+            }
+            // `&A` or a decayed `A`: the expression handed on, then the call
+            // it is an argument of, through casts and parentheses.
+            let address = up.kind() == "pointer_expression"
+                && up
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| ast_utils::get_node_text(&o, source) == "&");
+            let mut arg = if address { up } else { at };
+            while let Some(next) = arg
+                .parent()
+                .filter(|u| matches!(u.kind(), "parenthesized_expression" | "cast_expression"))
+            {
+                arg = next;
+            }
+            let call = arg
+                .parent()
+                .filter(|l| l.kind() == "argument_list")
+                .and_then(|l| l.parent())?;
+            let index = Self::call_args(call).position(|a| a.id() == arg.id())?;
+            let function = call.child_by_field_name("function")?;
+            let callee = self.callee_name(&function, source);
+            if address {
+                if !is_array_object || index != 0 || !self.is_zeroing_call(&callee) {
+                    return None;
+                }
+                events.push(call.start_byte());
+            } else if !self.leaves_argument_alone(&callee, index, site_of(&call, source)) {
+                return None;
+            }
+        }
+        Some(events)
+    }
+
+    /// Whether a call to `callee` only zeroes the object its first argument
+    /// points to and keeps no pointer: `memset`, `bzero`, `explicit_bzero`,
+    /// or a function-like macro whose every definition is a call to one of
+    /// them on its own first parameter (`#define os_memset(s, c, n)
+    /// memset(s, c, n)`).
+    fn is_zeroing_call(&self, callee: &str) -> bool {
+        const ZEROING: &[&str] = &["memset", "bzero", "explicit_bzero"];
+        if ZEROING.contains(&callee) {
+            return true;
+        }
+        let Some(mac) = self.function_macros.get(callee) else {
+            return false;
+        };
+        let forwards = |m: &FunctionMacro| {
+            let body: String = m.body.chars().filter(|c| !c.is_whitespace()).collect();
+            let Some(first) = m.params.first() else {
+                return false;
+            };
+            ZEROING.iter().any(|z| {
+                body.strip_prefix(&format!("{z}("))
+                    .and_then(|rest| rest.strip_suffix(')'))
+                    .is_some_and(|args| {
+                        let lead = args.split(',').next().unwrap_or("");
+                        lead == first.as_str() || lead == format!("({first})")
+                    })
+            })
+        };
+        forwards(mac)
+            && mac
+                .alternatives
+                .iter()
+                .all(|alt| alt.as_ref().is_some_and(&forwards))
+    }
+
+    /// Whether `callee`, handed an array as argument `index`, provably leaves
+    /// its elements alone: its summary does not store that parameter, and
+    /// its closed effects are known, not opaque, and write nothing through
+    /// it.
+    fn leaves_argument_alone(&self, callee: &str, index: usize, site: Site) -> bool {
+        let (Some(summary), Some(effects)) = (
+            self.summary_at(callee, site),
+            self.effects.and_then(|e| e.get(callee)),
+        ) else {
+            return false;
+        };
+        !summary.stores_params.contains(&index)
+            && !effects.opaque
+            && !effects
+                .writes
+                .contains(&crate::analyze::side_effects::Loc::ParamPointee(index))
+    }
+
     /// `for (i = 0; i < K; i++) dealloc(A[i]);` releases every element an
     /// earlier `A[K] = alloc(...); K++;` filled: indices 0 through K - 1.
     /// Each counted store this walk recorded (`element_stores`, see
@@ -1815,6 +1963,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
         }
         let loop_start = loop_node.start_byte();
+        let loop_end = loop_node.end_byte();
         freed.retain(|(array_id, _)| !written_arrays.contains(array_id));
         for (array_id, at) in freed {
             let keys: Vec<String> = self
@@ -1825,6 +1974,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         && store.index_id == bound_id
                         && store.store_start < loop_start
                         && !store.other_writes.iter().any(|&w| w < loop_start)
+                        && !store
+                            .array_events
+                            .iter()
+                            .any(|&e| e >= store.window && e < loop_end)
                         && self.allocated_memory.contains_key(*key)
                 })
                 .map(|(key, _)| key.clone())
@@ -3938,7 +4091,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         .unwrap_or_else(|| var_name.clone());
                     let pos = right.start_position();
                     let alloc_type = self.get_allocation_type(&right, source);
-                    let identity = element_store(node, &left, source);
+                    let identity = element_store(node, &left, source).and_then(|mut store| {
+                        store.array_events = self.array_events(node, &left, source)?;
+                        Some(store)
+                    });
                     let tracked = self.track_allocation_guarded(
                         var_name.clone(),
                         guard_name,
