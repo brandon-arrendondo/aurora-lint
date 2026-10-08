@@ -151,6 +151,239 @@ fn counting_loop_from_zero<'t>(loop_node: &Node<'t>, source: &str) -> Option<(No
     steps_by_one.then_some((counter, bound))
 }
 
+/// An allocation stored into `A[K]` that the counter `K` then counts
+/// (`A[K] = alloc(...); ... K++;`), as [`element_store`] found it.
+struct ElementStore {
+    /// The declarators `A` and `K` resolve to.
+    array_id: usize,
+    index_id: usize,
+    /// Where the store starts: a loop before it frees none of it.
+    store_start: usize,
+    /// Where every write to `K` other than the counting increment starts,
+    /// from the outermost loop around the store (or the store) on. One
+    /// before the freeing loop means `K` no longer counts the stores.
+    other_writes: Vec<usize>,
+}
+
+/// What a function does to the object `ident` (declared at `decl_id`)
+/// names: the assignments and `++`/`--` that write it, and whether its
+/// address is taken (after which any write through a pointer may reach it).
+struct DeclaratorUses<'t> {
+    writes: Vec<Node<'t>>,
+    address_taken: bool,
+}
+
+fn declarator_uses<'t>(
+    func: &Node<'t>,
+    ident: &Node,
+    decl_id: usize,
+    source: &str,
+) -> DeclaratorUses<'t> {
+    let name = ast_utils::get_node_text(ident, source);
+    let mut uses = DeclaratorUses {
+        writes: Vec::new(),
+        address_taken: false,
+    };
+    for occurrence in query::find_descendants_of_kind(*func, "identifier") {
+        if ast_utils::get_node_text(&occurrence, source) != name
+            || declarator_id(&occurrence, source) != Some(decl_id)
+        {
+            continue;
+        }
+        let Some(parent) = occurrence.parent() else {
+            continue;
+        };
+        let is = |field: &str| {
+            parent
+                .child_by_field_name(field)
+                .is_some_and(|c| c.id() == occurrence.id())
+        };
+        match parent.kind() {
+            "assignment_expression" if is("left") => uses.writes.push(parent),
+            "update_expression" if is("argument") => uses.writes.push(parent),
+            "pointer_expression"
+                if is("argument")
+                    && parent
+                        .child_by_field_name("operator")
+                        .is_some_and(|o| ast_utils::get_node_text(&o, source) == "&") =>
+            {
+                uses.address_taken = true
+            }
+            _ => {}
+        }
+    }
+    uses
+}
+
+/// Whether `stmt` can leave the code that follows it some other way than
+/// falling through: a `break`, `continue`, `goto` or `return` anywhere in
+/// it, except under an `if` that tests the stored element `stored` for
+/// null (`if (!A[K]) break;`), on which path the store holds nothing.
+fn leaves_except_on_null_store(stmt: &Node, stored: &str, source: &str) -> bool {
+    let squash = |t: &str| t.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let stored = squash(stored);
+    let null_tests = [
+        format!("(!{stored})"),
+        format!("({stored}==NULL)"),
+        format!("(NULL=={stored})"),
+        format!("({stored}==0)"),
+    ];
+    query::find_descendants(*stmt, |n| {
+        matches!(
+            n.kind(),
+            "break_statement" | "continue_statement" | "goto_statement" | "return_statement"
+        )
+    })
+    .into_iter()
+    .any(|exit| {
+        let mut n = exit;
+        while let Some(parent) = n.parent() {
+            if parent.kind() == "if_statement" {
+                let tests_null = parent.child_by_field_name("condition").is_some_and(|c| {
+                    null_tests.contains(&squash(ast_utils::get_node_text(&c, source)))
+                });
+                if tests_null {
+                    return false;
+                }
+            }
+            if parent.id() == stmt.id() {
+                break;
+            }
+            n = parent;
+        }
+        true
+    })
+}
+
+/// The counted store `assign` (`A[K] = alloc(...)`, `left` its `A[K]`)
+/// makes, or `None` when `K` does not count it.
+///
+/// A loop over `i < K` reaches the store only if `K` is one past its index
+/// by then. So this asks for a statement `K++` (or `++K`, `K += 1`) after
+/// the store in its own block or a block around it, short of any loop,
+/// with nothing in between that leaves early (other than a null check of
+/// the stored element) or writes `K`; and that `K`'s address is never
+/// taken. Every other write to `K` from the outermost loop around the
+/// store on is kept, for the freeing loop to check none comes before it.
+fn element_store(assign: &Node, left: &Node, source: &str) -> Option<ElementStore> {
+    let (array_id, index_id) = element_store_identity(left, source)?;
+    let index = peel_casts_and_parens(left.child_by_field_name("index")?);
+    let func = ast_utils::find_containing_function(assign)?;
+    let uses = declarator_uses(&func, &index, index_id, source);
+    if uses.address_taken {
+        return None;
+    }
+    let stored = ast_utils::get_node_text(left, source);
+    let counts = |stmt: &Node| -> Option<usize> {
+        let expr = (stmt.kind() == "expression_statement").then(|| stmt.named_child(0))??;
+        let (target, unit) = match expr.kind() {
+            "update_expression" => (
+                expr.child_by_field_name("argument")?,
+                ast_utils::get_node_text(&expr, source).contains("++"),
+            ),
+            "assignment_expression" => (
+                expr.child_by_field_name("left")?,
+                expr.child_by_field_name("operator")
+                    .is_some_and(|o| ast_utils::get_node_text(&o, source) == "+=")
+                    && expr
+                        .child_by_field_name("right")
+                        .is_some_and(|r| ast_utils::get_node_text(&r, source) == "1"),
+            ),
+            _ => return None,
+        };
+        (unit && declarator_id(&target, source) == Some(index_id)).then_some(expr.id())
+    };
+    let writes_k = |stmt: &Node| {
+        uses.writes
+            .iter()
+            .any(|w| w.start_byte() >= stmt.start_byte() && w.end_byte() <= stmt.end_byte())
+    };
+    // The statement holding the store, then each enclosing one, looking at
+    // what follows it in its block.
+    let mut stmt = *assign;
+    while stmt.parent()?.kind() != "compound_statement" {
+        stmt = stmt.parent()?;
+    }
+    let increment = 'search: loop {
+        let block = stmt.parent()?;
+        let mut after = false;
+        for sibling in block.named_child_nodes() {
+            if sibling.id() == stmt.id() {
+                after = true;
+                continue;
+            }
+            if !after {
+                continue;
+            }
+            if let Some(id) = counts(&sibling) {
+                break 'search id;
+            }
+            if writes_k(&sibling) || leaves_except_on_null_store(&sibling, stored, source) {
+                return None;
+            }
+        }
+        // Out of this block: through an `if` arm or a bare block, never a
+        // loop body, whose increment would not follow every store.
+        let mut up = block.parent()?;
+        while up.kind() == "else_clause" {
+            up = up.parent()?;
+        }
+        // A block right after a call statement is how an iteration macro
+        // parses (`dl_list_for_each(...) { ... }`): a loop body.
+        let macro_loop_body = up.kind() == "compound_statement"
+            && block.prev_named_sibling().is_some_and(|prev| {
+                prev.kind() == "expression_statement"
+                    && prev
+                        .named_child(0)
+                        .is_some_and(|c| c.kind() == "call_expression")
+            });
+        if macro_loop_body {
+            return None;
+        }
+        match up.kind() {
+            "if_statement" | "compound_statement" => {
+                stmt = if up.kind() == "compound_statement" {
+                    block
+                } else {
+                    up
+                };
+                while stmt.parent()?.kind() != "compound_statement" {
+                    stmt = stmt.parent()?;
+                }
+            }
+            _ => return None,
+        }
+    };
+    let window = {
+        let mut outer = assign.start_byte();
+        let mut n = *assign;
+        while let Some(parent) = n.parent() {
+            if parent.id() == func.id() {
+                break;
+            }
+            if matches!(
+                parent.kind(),
+                "for_statement" | "while_statement" | "do_statement"
+            ) {
+                outer = parent.start_byte();
+            }
+            n = parent;
+        }
+        outer
+    };
+    Some(ElementStore {
+        array_id,
+        index_id,
+        store_start: assign.start_byte(),
+        other_writes: uses
+            .writes
+            .iter()
+            .filter(|w| w.id() != increment && w.start_byte() >= window)
+            .map(|w| w.start_byte())
+            .collect(),
+    })
+}
+
 /// The name of the object a call argument hands over for release, as the
 /// walk keys it, and whether it is handed over by address: a variable
 /// (`p`), a field or element by value (`d.handles`, `x->handles`,
@@ -496,10 +729,10 @@ struct MemoryLeakAnalyzer<'a> {
     signal_registered: bool,
     // Track loop allocation/free patterns: array_base -> (alloc_condition, free_condition)
     loop_array_patterns: HashMap<String, LoopArrayEvidence>,
-    // An allocation stored into `A[K]` (both plain identifiers), by its
-    // tracked key: the ids of the declarators `A` and `K` resolve to. What
+    // An allocation stored into `A[K]` and then counted by `K++`, by its
+    // tracked key (see `element_store`). What
     // `credit_covering_element_frees` matches a freeing loop against.
-    element_stores: HashMap<String, (usize, usize)>,
+    element_stores: HashMap<String, ElementStore>,
     // Function summaries from prescan for inter-procedural analysis
     function_summaries: &'a ScopedTable<FunctionSummary>,
     // Names of this function's own parameters (an earlier fix: a struct reached
@@ -1336,25 +1569,26 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
     /// `for (i = 0; i < K; i++) dealloc(A[i]);` releases every element an
     /// earlier `A[K] = alloc(...); K++;` filled: indices 0 through K - 1.
-    /// Each element store this walk recorded (`element_stores`) whose `A`
-    /// and `K` resolve to the same declarators as the loop's array and bound
-    /// is credited as freed at the loop.
+    /// Each counted store this walk recorded (`element_stores`, see
+    /// [`element_store`]) whose `A` and `K` resolve to the same declarators
+    /// as the loop's array and bound, and that comes before the loop with
+    /// no other write to `K` in between, is credited as freed at the loop.
     ///
-    /// Both sides are matched by declaration, never by spelling
-    /// (ADR-0006): a free of another array, or a loop bounded by another
-    /// counter, credits nothing. Narrow on purpose. The loop counts from 0
-    /// by one up to `i < K`, its body can neither leave early (`break`,
-    /// `goto`, `return`) nor write `i` or `K`, and the free is a call that
-    /// releases the argument (`free`, a declared deallocator, a freeing
-    /// macro, or a callee whose summary frees it) handed exactly `A[i]`.
-    /// Anything else, a loop from 1 or to `K - 1` among them, leaves the
-    /// stores unreleased. hostap's `sme.c` fills `hlp[num_hlp]` with
+    /// Matched by declaration, never by spelling (ADR-0006), and narrow on
+    /// purpose. The loop counts from 0 by one up to `i < K`; its body has no
+    /// `break`, `continue`, `goto` or `return`, and writes neither `i` nor
+    /// `K`; neither has its address taken anywhere in the function, so no
+    /// write can reach them unseen; and the free is a statement of the body
+    /// itself, so it runs on every iteration: a call that releases the
+    /// argument (`free`, a declared deallocator, a freeing macro, or a
+    /// callee whose summary frees it) handed exactly `A[i]`. A free under an
+    /// `if`, a loop from 1 or to `K - 1`, another array or another counter
+    /// credits nothing. hostap's `sme.c` fills `hlp[num_hlp]` with
     /// `wpabuf_alloc` and frees with `for (i = 0; i < num_hlp; i++)
     /// wpabuf_free(hlp[i]);`.
     ///
     /// Run after the loop's exits are merged, which keeps only what holds
-    /// on every path out (the body may run zero times). Zero iterations
-    /// means `K` is 0, so no store was made and there is nothing to free.
+    /// on every path out.
     fn credit_covering_element_frees(&mut self, loop_node: &Node, source: &str) {
         if self.element_stores.is_empty() {
             return;
@@ -1362,35 +1596,51 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         let Some((counter, bound)) = counting_loop_from_zero(loop_node, source) else {
             return;
         };
-        let Some(body) = loop_node.child_by_field_name("body") else {
+        let (Some(body), Some(func)) = (
+            loop_node.child_by_field_name("body"),
+            ast_utils::find_containing_function(loop_node),
+        ) else {
             return;
         };
-        let counter_name = ast_utils::get_node_text(&counter, source);
-        let bound_name = ast_utils::get_node_text(&bound, source);
-        let leaves_or_writes = query::find_first_descendant(body, |n| match n.kind() {
-            "break_statement" | "goto_statement" | "return_statement" => true,
-            "assignment_expression" | "update_expression" => {
-                let target = n
-                    .child_by_field_name("left")
-                    .or_else(|| n.child_by_field_name("argument"));
-                target.is_some_and(|t| {
-                    let t = ast_utils::get_node_text(&t, source);
-                    t == counter_name || t == bound_name
-                })
-            }
-            _ => false,
-        });
-        if leaves_or_writes.is_some() {
-            return;
-        }
         let (Some(counter_id), Some(bound_id)) = (
             declarator_id(&counter, source),
             declarator_id(&bound, source),
         ) else {
             return;
         };
+        let leaves = query::find_first_descendant(body, |n| {
+            matches!(
+                n.kind(),
+                "break_statement" | "continue_statement" | "goto_statement" | "return_statement"
+            )
+        });
+        if leaves.is_some() {
+            return;
+        }
+        let in_body =
+            |n: &Node| n.start_byte() >= body.start_byte() && n.end_byte() <= body.end_byte();
+        for (id, ident) in [(counter_id, &counter), (bound_id, &bound)] {
+            let uses = declarator_uses(&func, ident, id, source);
+            if uses.address_taken || uses.writes.iter().any(in_body) {
+                return;
+            }
+        }
+        let statements: Vec<Node> = if body.kind() == "compound_statement" {
+            body.named_child_nodes().collect()
+        } else {
+            vec![body]
+        };
         let mut freed: Vec<(usize, (usize, usize))> = Vec::new();
-        for call in query::find_descendants_of_kind(body, "call_expression") {
+        for statement in statements {
+            if statement.kind() != "expression_statement" {
+                continue;
+            }
+            let Some(call) = statement
+                .named_child(0)
+                .filter(|c| c.kind() == "call_expression")
+            else {
+                continue;
+            };
             let Some(function) = call.child_by_field_name("function") else {
                 continue;
             };
@@ -1419,12 +1669,17 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 }
             }
         }
+        let loop_start = loop_node.start_byte();
         for (array_id, at) in freed {
             let keys: Vec<String> = self
                 .element_stores
                 .iter()
-                .filter(|(key, &(a, k))| {
-                    a == array_id && k == bound_id && self.allocated_memory.contains_key(*key)
+                .filter(|(key, store)| {
+                    store.array_id == array_id
+                        && store.index_id == bound_id
+                        && store.store_start < loop_start
+                        && !store.other_writes.iter().any(|&w| w < loop_start)
+                        && self.allocated_memory.contains_key(*key)
                 })
                 .map(|(key, _)| key.clone())
                 .collect();
@@ -3530,7 +3785,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         .unwrap_or_else(|| var_name.clone());
                     let pos = right.start_position();
                     let alloc_type = self.get_allocation_type(&right, source);
-                    let identity = element_store_identity(&left, source);
+                    let identity = element_store(node, &left, source);
                     let tracked = self.track_allocation_guarded(
                         var_name.clone(),
                         guard_name,
@@ -3541,8 +3796,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         },
                     );
                     match identity {
-                        Some(ids) if tracked => {
-                            self.element_stores.insert(var_name, ids);
+                        Some(store) if tracked => {
+                            self.element_stores.insert(var_name, store);
                         }
                         _ => {
                             self.element_stores.remove(&var_name);
