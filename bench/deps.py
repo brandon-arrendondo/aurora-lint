@@ -105,12 +105,10 @@ def validate(decl: dict) -> dict:
         decl[key] = [_tree_relative(p, key) for p in decl.get(key, [])]
     build = decl.get("build")
     if build is not None:
-        for key in ("db", "db_sha256"):
-            if not build.get(key):
-                raise ValueError(f"{decl.get('corpus')}: build.{key} is required")
-        build["db"] = _tree_relative(build["db"], "build.db")
-        build["generated"] = {_tree_relative(k, "build.generated"): v
-                              for k, v in build.get("generated", {}).items()}
+        if not build.get("steps") or not build.get("db"):
+            raise ValueError(f"{decl.get('corpus')}: build needs 'steps' and 'db'")
+        if not build["db"].startswith(("$SRC/", "$BUILD/")):
+            raise ValueError(f"{decl.get('corpus')}: build.db must start with $SRC/ or $BUILD/")
     why = decl.get("why", {})
     for src in decl.get("sources", []):
         if src.get("kind") != "debs":
@@ -540,33 +538,53 @@ def resolve(decl: dict, spellings, bench_root=None, log=print) -> dict:
 # The set supplies the system directories a compiler searches on its own. A
 # corpus's build supplies the rest: its project include directories, its -D
 # flags, and the headers its build generates (a configure-written config.h,
-# a make-generated parse.h). A declaration's optional 'build' section pins
-# those as files in this repository, under data/benchmark_build/<corpus>/:
+# a make-generated parse.h). A declaration's optional 'build' section is the
+# RECIPE for that build, never its output:
 #
-#   db          a compile database TEMPLATE: every path inside the checkout
-#               written ${CORPUS}, every path inside the build tree ${GEN},
-#               the system -I/-isystem flags removed (the set supplies
-#               them) and entries sorted by file, so it says nothing about
-#               the machine it was made on
-#   db_sha256   its sha256
-#   generated   {path under generated/: sha256}: the build's generated
-#               headers, at their paths relative to the build tree
-#   recipe      how the template and headers were produced (the configure
-#               or cmake line), for whoever re-pins them
+#   apt     build tools the recipe needs beyond the image's 'tools' stage
+#           (tclsh, xsltproc), installed from the same snapshot
+#   steps   shell commands run with $SRC (a copy of the checkout) and
+#           $BUILD (an empty directory) set, in $SRC, under bash -e
+#   db      where the steps leave compile_commands.json ($SRC/... or
+#           $BUILD/...)
+#   why     what the recipe chooses and why (the declared configuration)
 #
-# Every machine only materializes them: the template with its own paths
-# substituted, the generated headers copied beside it. No compiler, build
-# system or package manager runs, so every host scans identical inputs.
+# python -m bench container-build-db runs the recipe in a throwaway
+# container from the image's 'tools' stage, with exactly this corpus's set
+# installed (bench/dbbuild.py), and caches what it produced under
+# BENCH_ROOT/.build-cache/<corpus>-<corpus sha>-<environment pin>/:
+#
+#   compile_commands.json  a TEMPLATE: checkout paths written ${CORPUS},
+#                          build-tree paths ${GEN}/build, system include
+#                          directories removed (the set supplies them),
+#                          entries sorted
+#   generated/             headers the build produced: build/<path> from
+#                          the build tree, src/<path> for files an in-tree
+#                          build wrote into its copy of the checkout (each
+#                          -I ${CORPUS}/X is followed by -I ${GEN}/src/X)
+#   cache.json             the template's and every header's sha256, the
+#                          recipe's hash, the corpus commit and environment
+#
+# A scan materializes the cache for its machine (materialize). Nothing
+# derived from a corpus is committed to this repository.
 
-BUILD_DIR = PROJECT_DIR / "data" / "benchmark_build"
 _DIR_FLAGS = ("-I", "-isystem", "-iquote", "-idirafter")
+
+
+def recipe_sha256(decl: dict) -> str:
+    return hashlib.sha256(_canonical(decl["build"])).hexdigest()
+
+
+def build_cache_dir(decl: dict, corpus_commit: str, env_pin: str, bench_root=None) -> Path:
+    root = (Path(bench_root) if bench_root else BENCH_ROOT) / ".build-cache"
+    return root / f"{decl['corpus']}-{corpus_commit[:12]}-{env_pin[:12]}"
 
 
 def _norm_path(value: str, corpus: str, build: str):
     """`value` with the checkout written ${CORPUS} and the build tree
-    ${GEN}, or None when it lies outside both (a system directory)."""
+    ${GEN}/build, or None when it lies outside both (a system directory)."""
     v = posixpath.normpath(value)
-    for prefix, token in ((build, "${GEN}"), (corpus, "${CORPUS}")):
+    for prefix, token in ((build, "${GEN}/build"), (corpus, "${CORPUS}")):
         if v == prefix or v.startswith(prefix + "/"):
             return token + v[len(prefix):]
     return None
@@ -581,8 +599,7 @@ def normalize_db(entries: list[dict], corpus: str, build: str,
     first. An argument that names some other absolute path outside both
     trees is refused, since the template would carry it to every machine.
     `dropped`, when given, collects the include directories left out, for
-    whoever re-pins to check that each one is a system directory the set
-    supplies and not a build output kept somewhere else."""
+    a reviewer to check that each is a system directory the set supplies."""
     import shlex
     corpus, build = posixpath.normpath(corpus), posixpath.normpath(build)
     out = []
@@ -596,7 +613,7 @@ def normalize_db(entries: list[dict], corpus: str, build: str,
         i = 1
         while i < len(args):
             a = args[i]
-            flag, val = None, None
+            flag, val, step = None, None, 1
             # None of the four flags is a prefix of another (and -include
             # does not start with -I), so a prefix match is exact.
             for f in _DIR_FLAGS:
@@ -631,33 +648,61 @@ def normalize_db(entries: list[dict], corpus: str, build: str,
     return sorted(out, key=lambda x: (x["file"], x["arguments"]))
 
 
-def build_id(decl: dict) -> str:
-    return f"{decl['corpus']}-{decl['platform']}-{decl['build']['db_sha256'][:8]}"
+def overlay_source_dirs(template: list[dict], overlay: set[str]) -> list[dict]:
+    """After each -I ${CORPUS}/X, add -I ${GEN}/src/X when the build wrote a
+    header under X of its copy of the checkout (`overlay`: paths relative
+    to the checkout). A scan reads the pristine checkout, so that is where
+    the header has to be found instead."""
+    dirs = {posixpath.dirname(p) for p in overlay}
+    out = []
+    for e in template:
+        args, norm, i = e["arguments"], [], 0
+        while i < len(args):
+            norm.append(args[i])
+            if args[i] in _DIR_FLAGS and i + 1 < len(args):
+                val = args[i + 1]
+                norm.append(val)
+                if val == "${CORPUS}" or val.startswith("${CORPUS}/"):
+                    sub = val[len("${CORPUS}"):].lstrip("/")
+                    if sub in dirs:
+                        norm.extend([args[i], "${GEN}/src" + (f"/{sub}" if sub else "")])
+                i += 2
+                continue
+            i += 1
+        out.append(dict(e, arguments=norm))
+    return out
 
 
-def _build_file(decl: dict, rel: str) -> Path:
-    return BUILD_DIR / decl["corpus"] / rel
+def build_id(decl: dict, cache: dict) -> str:
+    return f"{decl['corpus']}-{decl['platform']}-{cache['db_sha256'][:8]}"
 
 
-def materialize(decl: dict, corpus_path, bench_root=None) -> Path:
-    """Write the corpus's compile database for this machine: the declared
-    template with ${CORPUS} and ${GEN} replaced, and the generated headers
-    copied into BENCH_ROOT/build/<id>/generated/. Every file is checked
-    against its declared sha256 first, and a template that names a ${GEN}
-    directory the declaration ships nothing under is refused (the stale
-    database whose config.h is gone). Returns the database's path."""
-    b = decl["build"]
-    tmpl = _build_file(decl, b["db"])
-    body = tmpl.read_bytes()
+def materialize(decl: dict, corpus_path, cache_dir, bench_root=None) -> tuple[Path, dict]:
+    """Write the corpus's compile database for this machine from its build
+    cache: the template with ${CORPUS} and ${GEN} replaced, and the
+    generated headers copied into BENCH_ROOT/build/<id>/generated/. Refuses
+    a cache built from another recipe, any file whose sha256 differs from
+    the cache's record, and a template that searches a ${GEN} directory
+    nothing was generated into (the stale database whose config.h is gone).
+    Returns the database's path and the cache record."""
+    cache_dir = Path(cache_dir)
+    record_path = cache_dir / "cache.json"
+    if not record_path.is_file():
+        raise FileNotFoundError(f"no build cache at {cache_dir}")
+    record = json.loads(record_path.read_text())
+    if record.get("recipe_sha256") != recipe_sha256(decl):
+        raise ValueError(f"{cache_dir}: built from another recipe; rebuild it")
+    body = (cache_dir / "compile_commands.json").read_bytes()
     got = hashlib.sha256(body).hexdigest()
-    if got != b["db_sha256"]:
-        raise ValueError(f"{tmpl}: sha256 {got}, declared {b['db_sha256']}")
+    if got != record["db_sha256"]:
+        raise ValueError(f"{cache_dir}/compile_commands.json: sha256 {got}, "
+                         f"recorded {record['db_sha256']}")
     gen_files = {}
-    for rel, sha in sorted(b.get("generated", {}).items()):
-        f = _build_file(decl, posixpath.join("generated", rel))
+    for rel, sha in sorted(record.get("generated", {}).items()):
+        f = cache_dir / "generated" / rel
         data = f.read_bytes() if f.is_file() else None
         if data is None or hashlib.sha256(data).hexdigest() != sha:
-            raise ValueError(f"{f}: missing or not the declared generated header")
+            raise ValueError(f"{f}: missing or not the recorded generated header")
         gen_files[rel] = data
     entries = json.loads(body)
     shipped_dirs = {posixpath.dirname(r) for r in gen_files}
@@ -666,11 +711,10 @@ def materialize(decl: dict, corpus_path, bench_root=None) -> Path:
         for flag, val in zip(args, args[1:]):
             if flag in _DIR_FLAGS and val.startswith("${GEN}"):
                 d = val[len("${GEN}"):].lstrip("/")
-                # The build tree's root counts as shipped once anything is.
-                if not any(s == d or s.startswith(d + "/") or not d for s in shipped_dirs):
+                if not any(s == d or s.startswith(d + "/") for s in shipped_dirs):
                     raise ValueError(f"{e['file']}: the template searches {val}, "
-                                     "but the declaration ships no generated header there")
-    root = (Path(bench_root) if bench_root else BENCH_ROOT) / "build" / build_id(decl)
+                                     "but the build generated nothing there")
+    root = (Path(bench_root) if bench_root else BENCH_ROOT) / "build" / build_id(decl, record)
     gen = root / "generated"
     if root.exists():
         shutil.rmtree(root)
@@ -688,7 +732,7 @@ def materialize(decl: dict, corpus_path, bench_root=None) -> Path:
            "arguments": [sub(a) for a in e["arguments"]]} for e in entries]
     path = root / "compile_commands.json"
     path.write_text(json.dumps(db, indent=1))
-    return path
+    return path, record
 
 
 def fix_hint(name: str) -> str:

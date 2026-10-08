@@ -865,15 +865,19 @@ def _verified_deps(codebase: str):
     return decl
 
 
-def _header_variant(has_deps: bool, deps_decl, header_spec) -> str:
+def _header_variant(has_deps: bool, deps_decl, header_spec,
+                    in_environment: bool = True) -> str:
     """The run-id suffix for the headers a scan read. A corpus scanned
-    against its dependency set adds nothing: the aurora-lint commit pins the
-    declaration. One that declares a set but was scanned against something
-    else (--header-tree, the host's headers included) is not a benchmark
-    run, so it never lands under the benchmark run's id: -hdr-<tree id>,
-    -hdr-host, or -hdr-none when it read no system headers at all."""
+    against its dependency set inside the benchmark image adds nothing: the
+    aurora-lint commit pins the declaration and the sidecar records the
+    environment. The same scan outside the image (the host's tools, no
+    compile database) is -hostenv. One that declares a set but was scanned
+    against something else (--header-tree, the host's headers included) is
+    not a benchmark run either, so it never lands under the benchmark run's
+    id: -hdr-<tree id>, -hdr-host, or -hdr-none when it read no system
+    headers at all."""
     if deps_decl is not None:
-        return ""
+        return "" if in_environment else "-hostenv"
     if has_deps:
         return f"-hdr-{header_spec['id'] if header_spec else 'none'}"
     return _header_tree_suffix(header_spec)
@@ -1691,18 +1695,31 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
     settings = None
     header_spec = None
     deps_decl = None
+    build_record = None
+    env_manifest = None
     if tool == "sqc":
         from bench import deps as _deps
         from bench import header_tree as _ht
         override = os.environ.get(_ht.HOST_TREE_ENV) or None
+        from bench import environment as _env
+        env_manifest = _env.load()
         has_deps = _deps.deps_name(codebase) is not None
         if has_deps and override is None and not compile_db:
             # The benchmark configuration (docs/adr/0018): the set's system
-            # headers, plus the declared build's compile database
-            # materialized for this machine when the set declares one.
+            # headers and, inside the benchmark image, the compile database
+            # its build recipe produced there (python -m bench
+            # container-build-db), materialized for this run.
             deps_decl = _verified_deps(codebase)
-            if deps_decl.get("build"):
-                compile_db = str(_deps.materialize(deps_decl, cfg["path"]))
+            if deps_decl.get("build") and env_manifest is not None:
+                cache_dir = _deps.build_cache_dir(
+                    deps_decl, _get_codebase_sha(cfg["path"]) or "", _env.pin(env_manifest))
+                if not (cache_dir / "cache.json").is_file():
+                    raise FileNotFoundError(
+                        f"no compile database built for {codebase} in this environment "
+                        f"({cache_dir}); build it with: python -m bench container-build-db "
+                        f"--codebase {codebase}")
+                db_path, build_record = _deps.materialize(deps_decl, cfg["path"], cache_dir)
+                compile_db = str(db_path)
         else:
             # Anything else on a corpus with a set is a shadow scan, under
             # its own run id (_header_variant): --header-tree, or
@@ -1714,7 +1731,8 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
             extra_args=_expand(cfg["sqc"].get("extra_args", []), str(cfg["path"])))
         suffix = settings_run_suffix(settings).lstrip("-")
         variant = f"{variant}-{suffix}" if variant else suffix
-        variant += _header_variant(has_deps, deps_decl, header_spec)
+        variant += _header_variant(has_deps, deps_decl, header_spec,
+                                   in_environment=env_manifest is not None)
 
     version = _get_tool_version(tool)
     sha = _get_git_sha()
@@ -1789,6 +1807,11 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
         "scanned_basis": "sqc_scan_path+sqc_excludes",
     }
     from bench import environment
+    if build_record is not None:
+        # The compile database the scan read: its cache's record.
+        meta["build"] = {k: build_record[k] for k in
+                         ("db_sha256", "recipe_sha256", "corpus_commit", "entries")}
+        meta["build"]["generated"] = len(build_record.get("generated", {}))
     env_manifest = environment.load()
     if env_manifest is not None:
         # Run inside the benchmark container image: the environment it ran

@@ -342,8 +342,10 @@ class TestRunner(unittest.TestCase):
         decl = _decl([], manifest_sha256="c" * 64)
         tree = {"id": "debian12-x", "replaces": "/usr/include"}
         host = header_tree.host_spec("/usr/include")
-        # Scanned against its set: the benchmark run, under the bare id.
+        # Scanned against its set in the benchmark image: the benchmark run,
+        # under the bare id; the same outside the image is -hostenv.
         self.assertEqual(rr._header_variant(True, decl, None), "")
+        self.assertEqual(rr._header_variant(True, decl, None, in_environment=False), "-hostenv")
         # Declares a set but scanned against something else: never the bare id.
         self.assertEqual(rr._header_variant(True, None, tree), "-hdr-debian12-x")
         self.assertEqual(rr._header_variant(True, None, host), "-hdr-host")
@@ -387,16 +389,18 @@ class TestRunner(unittest.TestCase):
 
 
 class TestBuild(unittest.TestCase):
-    """The declared build configuration: a compile database template and
-    the build's generated headers, materialized identically on any machine."""
+    """The declared build: a recipe whose output (a compile database
+    template and the generated headers) is cached per environment and
+    materialized identically on any machine."""
 
-    CORPUS, BUILD = "/home/a/toolchain/toy", "/home/a/toolchain/.cc_build/toy"
+    CORPUS, BUILD = "/src/toy", "/build/toy"
+    RECIPE = {"steps": ["cmake -S $SRC -B $BUILD"], "db": "$BUILD/compile_commands.json"}
 
     def test_a_database_becomes_a_machine_independent_template(self):
-        db = [{"directory": self.BUILD, "file": "../../toy/src/b.c",
+        db = [{"directory": self.BUILD, "file": "/src/toy/src/b.c",
                "command": f"/usr/bin/gcc -DX=1 -I{self.CORPUS}/include -I. "
                           f"-isystem /usr/include/x86_64-linux-gnu -I /usr/include/libnl3 "
-                          f"-include {self.BUILD}/config.h -c ../../toy/src/b.c"},
+                          f"-include {self.BUILD}/config.h -c /src/toy/src/b.c"},
               {"directory": self.CORPUS, "file": "a.c",
                "arguments": ["cc", "-Iinclude", "-c", "a.c"]}]
         dropped = set()
@@ -405,9 +409,9 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(out, [
             {"directory": "${CORPUS}", "file": "${CORPUS}/a.c",
              "arguments": ["cc", "-I", "${CORPUS}/include", "-c", "a.c"]},
-            {"directory": "${GEN}", "file": "${CORPUS}/src/b.c",
-             "arguments": ["cc", "-DX=1", "-I", "${CORPUS}/include", "-I", "${GEN}",
-                           "-include", "${GEN}/config.h", "-c", "../../toy/src/b.c"]},
+            {"directory": "${GEN}/build", "file": "${CORPUS}/src/b.c",
+             "arguments": ["cc", "-DX=1", "-I", "${CORPUS}/include", "-I", "${GEN}/build",
+                           "-include", "${GEN}/build/config.h", "-c", "${CORPUS}/src/b.c"]},
         ])
 
     def test_a_path_outside_both_trees_is_refused(self):
@@ -416,58 +420,69 @@ class TestBuild(unittest.TestCase):
         with self.assertRaises(ValueError):
             deps.normalize_db(db, self.CORPUS, self.BUILD)
 
-    def _declare(self, tmp: Path, template, generated: dict) -> dict:
+    def test_a_header_written_into_the_source_copy_is_searched_after_its_dir(self):
+        t = [{"directory": "${CORPUS}", "file": "${CORPUS}/a.c",
+              "arguments": ["cc", "-I", "${CORPUS}", "-I", "${CORPUS}/lib", "-c", "a.c"]}]
+        out = deps.overlay_source_dirs(t, {"config.h"})
+        self.assertEqual(out[0]["arguments"],
+                         ["cc", "-I", "${CORPUS}", "-I", "${GEN}/src", "-I", "${CORPUS}/lib",
+                          "-c", "a.c"])
+
+    def _cache(self, tmp: Path, template, generated: dict, decl: dict) -> Path:
         import hashlib
-        root = tmp / "benchmark_build" / "toy"
-        (root / "generated").mkdir(parents=True)
+        cache = tmp / "cache"
+        (cache / "generated").mkdir(parents=True)
         body = json.dumps(template).encode()
-        (root / "compile_commands.json").write_bytes(body)
+        (cache / "compile_commands.json").write_bytes(body)
         for rel, data in generated.items():
-            (root / "generated" / rel).parent.mkdir(parents=True, exist_ok=True)
-            (root / "generated" / rel).write_bytes(data)
-        return _decl([], build={
-            "db": "compile_commands.json", "db_sha256": hashlib.sha256(body).hexdigest(),
-            "generated": {r: hashlib.sha256(d).hexdigest() for r, d in generated.items()}})
+            (cache / "generated" / rel).parent.mkdir(parents=True, exist_ok=True)
+            (cache / "generated" / rel).write_bytes(data)
+        (cache / "cache.json").write_text(json.dumps({
+            "recipe_sha256": deps.recipe_sha256(decl),
+            "db_sha256": hashlib.sha256(body).hexdigest(),
+            "generated": {r: hashlib.sha256(d).hexdigest() for r, d in generated.items()}}))
+        return cache
 
     TEMPLATE = [{"directory": "${CORPUS}", "file": "${CORPUS}/a.c",
-                 "arguments": ["cc", "-I", "${GEN}", "-c", "a.c"]}]
+                 "arguments": ["cc", "-I", "${GEN}/build", "-c", "a.c"]}]
 
     def test_materialize_writes_this_machines_paths_and_the_generated_headers(self):
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            decl = self._declare(tmp, self.TEMPLATE, {"config.h": b"#define HAVE_X 1\n"})
-            with mock.patch.object(deps, "BUILD_DIR", tmp / "benchmark_build"):
-                db = deps.materialize(decl, tmp / "toy", tmp / "bench")
+            decl = _decl([], build=self.RECIPE)
+            cache = self._cache(tmp, self.TEMPLATE, {"build/config.h": b"#define HAVE_X 1\n"}, decl)
+            db, record = deps.materialize(decl, tmp / "toy", cache, tmp / "bench")
             entry = json.loads(db.read_text())[0]
             gen = db.parent / "generated"
-            self.assertEqual(entry["arguments"], ["cc", "-I", str(gen), "-c", "a.c"])
+            self.assertEqual(entry["arguments"], ["cc", "-I", f"{gen}/build", "-c", "a.c"])
             self.assertEqual(entry["directory"], str(tmp / "toy"))
-            self.assertEqual((gen / "config.h").read_bytes(), b"#define HAVE_X 1\n")
+            self.assertEqual((gen / "build/config.h").read_bytes(), b"#define HAVE_X 1\n")
 
-    def test_a_template_searching_a_build_dir_nothing_is_shipped_to_is_refused(self):
-        # The stale database: it still points at the build tree, whose
-        # generated config.h is gone.
+    def test_a_template_searching_a_build_dir_nothing_was_generated_into_is_refused(self):
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            decl = self._declare(tmp, self.TEMPLATE, {})
-            with mock.patch.object(deps, "BUILD_DIR", tmp / "benchmark_build"):
-                with self.assertRaises(ValueError) as cm:
-                    deps.materialize(decl, tmp / "toy", tmp / "bench")
-            self.assertIn("ships no generated header", str(cm.exception))
+            decl = _decl([], build=self.RECIPE)
+            cache = self._cache(tmp, self.TEMPLATE, {}, decl)
+            with self.assertRaises(ValueError) as cm:
+                deps.materialize(decl, tmp / "toy", cache, tmp / "bench")
+            self.assertIn("generated nothing there", str(cm.exception))
 
-    def test_an_edited_template_or_header_is_refused(self):
+    def test_a_cache_from_another_recipe_or_with_an_edited_file_is_refused(self):
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            decl = self._declare(tmp, self.TEMPLATE, {"config.h": b"a\n"})
-            gen = tmp / "benchmark_build/toy/generated/config.h"
-            gen.write_bytes(b"b\n")
-            with mock.patch.object(deps, "BUILD_DIR", tmp / "benchmark_build"):
-                with self.assertRaises(ValueError):
-                    deps.materialize(decl, tmp / "toy", tmp / "bench")
-                gen.write_bytes(b"a\n")
-                (tmp / "benchmark_build/toy/compile_commands.json").write_text("[]")
-                with self.assertRaises(ValueError):
-                    deps.materialize(decl, tmp / "toy", tmp / "bench")
+            decl = _decl([], build=self.RECIPE)
+            cache = self._cache(tmp, self.TEMPLATE, {"build/config.h": b"a\n"}, decl)
+            other = _decl([], build=dict(self.RECIPE, steps=["make"]))
+            with self.assertRaises(ValueError):
+                deps.materialize(other, tmp / "toy", cache, tmp / "bench")
+            (cache / "generated/build/config.h").write_bytes(b"b\n")
+            with self.assertRaises(ValueError):
+                deps.materialize(decl, tmp / "toy", cache, tmp / "bench")
+
+    def test_the_cache_is_keyed_by_corpus_commit_and_environment(self):
+        decl = _decl([], build=self.RECIPE)
+        d = deps.build_cache_dir(decl, "a" * 40, "b" * 64, "/x")
+        self.assertEqual(str(d), "/x/.build-cache/toy-aaaaaaaaaaaa-bbbbbbbbbbbb")
 
 
 class TestCorpusCheck(_Debs):

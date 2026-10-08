@@ -29,6 +29,13 @@
   "libedit-dev": "make linux defines LUA_USE_LINUX, not LUA_USE_READLINE",
   "libowfat-dev": "io.h is the Windows CRT header, included only under _WIN32"
  },
+ "build": {
+  "steps": [
+   "bear -- make -j\"$(nproc)\""
+  ],
+  "db": "$SRC/compile_commands.json",
+  "why": "The makefile's own build: -std=c99 -DLUA_USE_LINUX, the declared make linux configuration."
+ },
  "manifest_sha256": "74e7ba14bc7308ee692fc8f4b8e26b5f20b0d4f8c03159157a27403109961668",
  "why": {
   "libc6-dev": "assert.h",

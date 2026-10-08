@@ -29,6 +29,10 @@ from pathlib import Path
 from bench.config import BENCH_ROOT, PROJECT_DIR
 
 DEFAULT_IMAGE = os.environ.get("AURORA_BENCH_IMAGE", "localhost/aurora-bench:dev")
+# The image's 'tools' stage (podman build --target tools), where each
+# corpus's compile database is built (bench/dbbuild.py).
+DEFAULT_TOOLS_IMAGE = os.environ.get("AURORA_BENCH_TOOLS_IMAGE",
+                                     "localhost/aurora-bench-tools:dev")
 WORK = "/work"
 IN_BENCH_ROOT = "/bench"
 # Arguments of realworld-run that name a file on the host; their directory
@@ -82,6 +86,9 @@ def command(run_args: list[str], image: str, pin: str, runtime: str = "podman",
     trees = bench_root / "header-trees"
     if trees.is_dir():
         cmd += ["-v", f"{trees}:{IN_BENCH_ROOT}/header-trees:ro"]
+    cache = bench_root / ".build-cache"
+    if cache.is_dir():
+        cmd += ["-v", f"{cache}:{IN_BENCH_ROOT}/.build-cache:ro"]
     for d in sorted(set(_host_dirs(run_args))):
         cmd += ["-v", f"{d}:{d}"]
     if os.environ.get("BENCH_DB"):
@@ -99,3 +106,43 @@ def run(run_args: list[str], image: str = DEFAULT_IMAGE, runtime: str = "podman"
     pin = image_pin(image, runtime)
     print(f"environment {pin} ({image})")
     return subprocess.run(command(run_args, image, pin, runtime)).returncode
+
+
+def build_db_command(project: str, tools_image: str, pin: str, corpus_commit: str,
+                     runtime: str = "podman", bench_root=None, project_dir=None) -> list[str]:
+    """The `podman run` line that builds `project`'s compile database in a
+    throwaway container from the tools stage (bench/dbbuild.py). The
+    checkout and this repository are mounted read-only; only the cache
+    directory is writable."""
+    from bench import deps
+    from bench.realworld_runner import CODEBASES
+    bench_root = Path(bench_root) if bench_root else BENCH_ROOT
+    project_dir = Path(project_dir) if project_dir else PROJECT_DIR
+    decl = deps.declared_for(project)
+    host = bench_root / Path(CODEBASES[project]["path"]).name
+    cache = deps.build_cache_dir(decl, corpus_commit, pin, bench_root)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    return [runtime, "run", "--rm", "--platform", "linux/amd64",
+            "-v", f"{project_dir}:{WORK}:ro",
+            "-v", f"{host}:{IN_BENCH_ROOT}/{project}:ro",
+            "-v", f"{cache.parent}:/cache-root",
+            "-w", WORK, tools_image,
+            "python3", "-m", "bench.dbbuild", project, f"{IN_BENCH_ROOT}/{project}",
+            f"/cache-root/{cache.name}", pin]
+
+
+def build_db(project: str, image: str = DEFAULT_IMAGE,
+             tools_image: str = DEFAULT_TOOLS_IMAGE, runtime: str = "podman") -> int:
+    """Build and cache `project`'s compile database for the environment of
+    `image` (the bench stage: its pin keys the cache)."""
+    from bench.realworld_runner import CODEBASES, _get_codebase_sha
+    if shutil.which(runtime) is None:
+        print(f"container-build-db: '{runtime}' is not installed")
+        return 2
+    pin = image_pin(image, runtime)
+    commit = _get_codebase_sha(CODEBASES[project]["path"])
+    if not commit:
+        print(f"container-build-db: {CODEBASES[project]['path']} is not a git checkout")
+        return 2
+    print(f"environment {pin} ({image}); {project} @ {commit[:12]}")
+    return subprocess.run(build_db_command(project, tools_image, pin, commit, runtime)).returncode

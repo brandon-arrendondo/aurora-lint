@@ -18,22 +18,26 @@
 # not share one) but the hash of /etc/aurora-bench/environment.json, written
 # by the last step (bench/environment.py).
 
+# Two stages. 'tools' is the snapshot system plus the corpus build tools and
+# no -dev package beyond libc's: python -m bench container-build-db starts a
+# throwaway container from it per corpus, installs exactly that corpus's
+# dependency set into it, and builds the corpus there to capture its compile
+# database, so no other corpus's packages can shadow its headers or change
+# its configure results. 'bench' adds the analysis tools, aurora-lint's own
+# build dependencies and the dependency-set trees, and is what scans run in.
+#
+#   podman build --platform linux/amd64 --target tools \
+#     -f container/benchmark.Dockerfile -t aurora-bench-tools .
+
 ARG BASE=docker.io/library/debian@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867
-FROM ${BASE}
+FROM ${BASE} AS tools
 ARG BASE
 ARG SNAPSHOT=20260915T000000Z
-ARG RUST_VERSION=1.95.0
-ARG RUST_SHA256=2e0338f18ecbaa4a0f631b9e80e8b8e26bb6fe77dd5454fba8a70cf96c1e84a1
-ARG INFER_VERSION=1.2.0
-ARG INFER_SHA256=21504063fb3a1dbc7919f34dc6e50ca0d35f50b996d91deb7b8bea8243d52d82
-ARG CLANG_TIDY_VERSION=1:21.1.8~++20251221032947+2078da43e25a-1~exp1~20251221153113.67
 
 ENV DEBIAN_FRONTEND=noninteractive \
     AURORA_BENCH_BASE=${BASE} \
     AURORA_BENCH_SNAPSHOT=${SNAPSHOT} \
-    SQC_BENCH_ROOT=/bench \
-    CARGO_HOME=/opt/cargo \
-    PATH=/opt/rust/bin:/opt/infer/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    SQC_BENCH_ROOT=/bench
 
 # Debian, frozen at the snapshot: the same packages on every build.
 RUN rm -f /etc/apt/sources.list.d/debian.sources \
@@ -47,7 +51,19 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl xz-utils gnupg git python3 \
       build-essential cmake ninja-build autoconf automake libtool pkg-config bear \
-      cppcheck libtinfo5 \
+ && rm -rf /var/lib/apt/lists/*
+
+FROM tools AS bench
+ARG RUST_VERSION=1.95.0
+ARG RUST_SHA256=2e0338f18ecbaa4a0f631b9e80e8b8e26bb6fe77dd5454fba8a70cf96c1e84a1
+ARG INFER_VERSION=1.2.0
+ARG INFER_SHA256=21504063fb3a1dbc7919f34dc6e50ca0d35f50b996d91deb7b8bea8243d52d82
+ARG CLANG_TIDY_VERSION=1:21.1.8~++20251221032947+2078da43e25a-1~exp1~20251221153113.67
+ENV CARGO_HOME=/opt/cargo \
+    PATH=/opt/rust/bin:/opt/infer/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends cppcheck libtinfo5 \
  && rm -rf /var/lib/apt/lists/*
 
 # clang-tidy, pinned to the build the tool comparison is measured against.

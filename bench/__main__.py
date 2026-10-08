@@ -58,6 +58,16 @@ def cmd_juliet(args):
         sys.exit(2)
 
 
+def cmd_container_build_db(args):
+    from bench import container
+    rc = 0
+    for cb in [c.strip().lower() for c in args.codebase.split(",") if c.strip()]:
+        rc = container.build_db(cb, args.image or container.DEFAULT_IMAGE,
+                                args.tools_image or container.DEFAULT_TOOLS_IMAGE,
+                                args.runtime) or rc
+    raise SystemExit(rc)
+
+
 def cmd_container_run(args):
     from bench import container
     run_args = args.run_args[1:] if args.run_args[:1] == ["--"] else args.run_args
@@ -1255,6 +1265,15 @@ def main():
     p_ctr.add_argument("run_args", nargs=argparse.REMAINDER,
                        help="arguments for realworld-run, after --")
     p_ctr.set_defaults(func=cmd_container_run)
+
+    p_cdb = sub.add_parser(
+        "container-build-db",
+        help="Build a corpus's compile database in the benchmark image's tools stage (docs/adr/0018)")
+    p_cdb.add_argument("--codebase", required=True, help="comma-separated corpora")
+    p_cdb.add_argument("--image", default=None, help="the bench-stage image whose environment keys the cache")
+    p_cdb.add_argument("--tools-image", default=None, help="the tools-stage image to build in")
+    p_cdb.add_argument("--runtime", default="podman")
+    p_cdb.set_defaults(func=cmd_container_build_db)
 
     # competitor-export
     p_ce = sub.add_parser(

@@ -39,6 +39,14 @@
   "libreadline-dev": "cmake/FindLineEditing.cmake prefers libedit (WITH_EDITLINE)",
   "libcunit1-ncurses-dev": "libcunit1-dev provides the same CUnit headers"
  },
+ "build": {
+  "steps": [
+   "cmake -S \"$SRC\" -B \"$BUILD\" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DWITH_DOCS=OFF -DWITH_TESTS=OFF",
+   "cmake --build \"$BUILD\" -j\"$(nproc)\""
+  ],
+  "db": "$BUILD/compile_commands.json",
+  "why": "CMake defaults (the declared default Linux build: TLS, builtin websockets, HTTP API, plugins, ctrl shell), except WITH_DOCS=OFF (the man pages need xsltproc) and WITH_TESTS=OFF (the C++ GTest suite, outside the scan scope)."
+ },
  "manifest_sha256": "b875322909d1e908b1cb9300597de28ff81e323f72cfd23a7242ff5d41d69162",
  "why": {
   "libargon2-dev": "argon2.h",
