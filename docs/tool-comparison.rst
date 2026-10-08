@@ -5,9 +5,8 @@ Comparison To Other Tools
 .. note::
 
    **Historical snapshot, not a current project figure.** The aurora-lint Juliet
-   figures are from v0.4.321 (run ``sqc-0.4.321-daff4cf0``,
-   2026-09-02), and the competitors were measured on 2026-09-04. The
-   ``render-docs`` refresh does not maintain this page, so its tables are
+   figures are from v0.4.321 (2026-09-02), and the competitors were
+   measured on 2026-09-04. The ``render-docs`` refresh does not maintain this page, so its tables are
    not updated as aurora-lint changes.
 
 Where aurora-lint sits against the other static analysers you would consider for C.
@@ -150,8 +149,7 @@ Juliet, On The Overlap
 
 Juliet is the only benchmark where every tool can be scored the same way: the
 suite labels its own planted defects, so TP/FP needs no adjudication. This is
-aurora-lint v0.4.321 (run ``sqc-0.4.321-daff4cf0``) against each competitor on the
-CWEs that competitor covers — precision, so higher is better.
+aurora-lint v0.4.321 against each competitor on the CWEs that competitor covers — precision, so higher is better.
 
 .. list-table::
    :header-rows: 1

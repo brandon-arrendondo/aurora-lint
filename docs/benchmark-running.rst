@@ -63,8 +63,8 @@ Benchmark Workflow Protocol
 
     1. **Commit BEFORE benchmark, do not bump the version**: rebuild
        (``cargo build --release``) and commit before starting. The run_id is
-       ``sqc-{version}-{sha}[-full][-cdb]-{label}-{hash12}`` (see *Policy and
-       Environment Settings*), and the **SHA** is what discriminates runs;
+       ``sqc-{version}-{sha}[-full][-cdb]-{preset}-{hash12}[-cwe...]``
+       (see *Policy and Environment Settings*), and the **SHA** is what discriminates runs;
        the version string is a release artifact, bumped only when a release
        is cut (see ``CLAUDE.md``).
 
@@ -580,7 +580,7 @@ Running
 Timing
 ~~~~~~
 
-Dated wall-clock figures for all four tools, with the host they ran on, are in
+Dated wall-clock figures for all four tools, measured on one host, dated, are in
 :doc:`tool-comparison` (*Speed*).
 
 Infer uses incremental capture (``infer capture --continue``) per file then a
