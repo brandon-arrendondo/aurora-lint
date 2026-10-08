@@ -67,7 +67,9 @@ MISRA tooling your certification process requires.
 Two rules from NASA JPL's coding rules are also implemented alongside CERT C:
 `BRULE-060` (no dynamic allocation after initialization, Power of Ten rule 3)
 and `BRULE-065` (no more than two levels of pointer indirection in a
-declaration, JPL D-60411 Rule 26). See
+declaration, JPL D-60411 Rule 26). They are off by default; enable one
+with `enabled = true` under `[rules.brules.BRULE-060]` or
+`[rules.brules.BRULE-065]` in a manifest. See
 [`docs/future-rulesets.rst`](docs/future-rulesets.rst) for other open
 standards that could be added and why they were not needed first.
 
@@ -100,10 +102,10 @@ false-positive work in this repo is as substantial as the rule work.
 
 **Imperfect on purpose, and measured about it.** aurora-lint reports every rule
 violation as written rather than guessing which ones you meant, so it produces
-false positives — the precision and recall above are measured against an
-adjudicated ground-truth oracle, not asserted (most of its labels were
-written by a language model reading the whole file, the rest by hand; the
-paper documents the protocol). What makes that workable is that the
+false positives — the precision and recall [below](#how-well-does-it-work) are
+measured against an adjudicated ground-truth oracle, not asserted (most of
+its labels were written by a language model reading the whole file, the rest
+by hand; the paper documents the protocol). What makes that workable is that the
 noise judgment is yours: per-project rule manifests
 ([configuration](docs/configuration.rst)), inline and file-scoped
 [suppression](docs/suppression.rst), and severity thresholds, so you tune it
@@ -258,7 +260,7 @@ cd aurora-lint
 cargo build --release
 ```
 
-The binary is at `target/release/aurora-lint`. Requires Rust 2021 edition (stable toolchain) and a C compiler and linker, which some dependencies (e.g. `libgit2-sys`) build with. On a bare Debian/Ubuntu image, install `build-essential`.
+The binary is at `target/release/aurora-lint`. Requires Rust 1.95 or later (stable toolchain) and a C compiler and linker, which some dependencies (e.g. `libgit2-sys`) build with. On a bare Debian/Ubuntu image, install `build-essential`.
 
 > **Formerly `sqc`.** This tool was published on crates.io as `sqc` up to
 > 0.4.123. That crate is abandoned and will not be updated — crates.io names
