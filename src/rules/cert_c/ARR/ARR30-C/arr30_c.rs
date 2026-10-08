@@ -3349,10 +3349,24 @@ impl Arr30C {
         macro_constants: &HashMap<String, i64>,
         buffer_name: &str,
     ) -> bool {
-        // VRA suppression: if VRA proves index in [0, size-1], safe.
+        // VRA suppression: if VRA proves index in [0, size-1], safe. Where VRA
+        // keeps no state (a block unreachable under the entry facts), an
+        // index parameter the body never writes still has its entry range.
         let vra_safe = self
             .vra_var_ranges_at(node)
             .and_then(|ranges| ranges.get(var).copied())
+            .or_else(|| {
+                let ident = node
+                    .child_by_field_name("index")
+                    .filter(|i| i.kind() == "identifier")?;
+                vra_access::unwritten_param_entry_range(
+                    &self.function_cfgs.borrow(),
+                    &self.vra_results.borrow(),
+                    &ident,
+                    var,
+                    source,
+                )
+            })
             .map(|range| range.min >= 0 && (range.max as usize) < effective_size)
             .unwrap_or(false);
         if vra_safe {
