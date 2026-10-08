@@ -13,6 +13,8 @@ class AgentCommandTests(unittest.TestCase):
     def test_bypass_commands_are_blocked(self):
         for command in [
             "git commit --no-verify", "git commit -n -m change",
+            "git commit --no-veri", "git -c core.hooksPath=/dev/null commit -m change",
+            "sudo git commit -n", "time git commit -n", "env -i git commit -n",
             "git commit -m change --no-verify", "git commit -snm change",
             "git -C /tmp/repo commit -s -n", "git -c user.name=Alex commit -n",
             "cd /tmp/repo && git commit --no-verify",
@@ -27,6 +29,7 @@ class AgentCommandTests(unittest.TestCase):
             "git commit -s -m change", "git commit -m '--no-verify'",
             "git commit -m '-n'", "git commit -mbanana", "git status -n",
             "git commit -- -n", "echo git commit --no-verify",
+            "git commit -uno", "git commit -u no",
         ]:
             with self.subTest(command=command):
                 self.assertFalse(blocked_command(command))
@@ -41,6 +44,15 @@ class AgentCommandTests(unittest.TestCase):
         output = json.loads(result.stdout)["hookSpecificOutput"]
         self.assertEqual(output["hookEventName"], "PreToolUse")
         self.assertEqual(output["permissionDecision"], "deny")
+    def test_legitimate_heredoc_with_apostrophe_falls_through(self):
+        script = Path(__file__).with_name("check_agent_command.py")
+        command = "git commit -F - <<'EOF'\nFix the maintainer's docs\nEOF\n"
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            input=json.dumps({"tool_input": {"command": command}}),
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(result.stdout, "")
 
 
 if __name__ == "__main__":

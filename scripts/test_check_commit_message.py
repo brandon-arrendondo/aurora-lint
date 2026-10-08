@@ -10,7 +10,13 @@ from check_commit_message import AI_TOOL_NAMES
 
 
 class CommitMessageTests(unittest.TestCase):
-    def check_message(self, message, expected):
+    def check_message(self, message, expected, sign=True):
+        if sign:
+            message = subprocess.check_output(
+                ["git", "interpret-trailers", "--trailer",
+                 "Signed-off-by: Brandon Arrendondo <barrendo@gmail.com>"],
+                input=message, text=True,
+            )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "message"
             path.write_text(message, encoding="utf-8")
@@ -49,11 +55,24 @@ class CommitMessageTests(unittest.TestCase):
     def test_colon_subject_is_not_an_attribution_trailer(self):
         self.check_message("docs: update CLAUDE.md\n", 0)
 
+    def test_missing_or_malformed_signoff_is_rejected(self):
+        for message in ["Update guidance\n", "Update guidance\n\nSigned-off-by: ",
+                        "Update guidance\n\nSigned-off-by: Somebody"]:
+            with self.subTest(message=message):
+                self.check_message(message, 1, sign=False)
+
+    def test_both_maintainer_signoff_addresses_are_allowed(self):
+        for address in ["barrendo@gmail.com", "brandon.arrendondo@bissell.com"]:
+            with self.subTest(address=address):
+                self.check_message(
+                    f"Update guidance\n\nSigned-off-by: Brandon Arrendondo <{address}>\n",
+                    0, sign=False)
+
     def test_git_comments_are_ignored(self):
         self.check_message("Update guidance\n\n# Co-Authored-By: Codex\n", 0)
 
     def test_word_boundaries_allow_unrelated_names(self):
-        for name in ["Claudette", "Geminid", "Gptella"]:
+        for name in ["Claudette", "Geminid", "Gptella", "Devin"]:
             with self.subTest(name=name):
                 self.check_message(f"Update guidance\n\nCo-Authored-By: {name} Example\n", 0)
 

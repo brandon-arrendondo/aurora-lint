@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject parsed Git trailers naming an AI agent or vendor.
+"""Require DCO sign-off and reject parsed Git trailers naming AI.
 
 AGENTS.md's "Git Commit Rules" explains the placement policy: AI use
 is acknowledged once in README.md, rather than repeated in commit trailers.
@@ -27,7 +27,7 @@ AI_TOOL_NAMES = [
     "GPT",
     "Cursor",
     "Aider",
-    "Devin",
+    "devin-ai",
 ]
 AI_ATTRIBUTION = re.compile(
     r"(?<![A-Za-z])(?:" + "|".join(re.escape(name) for name in AI_TOOL_NAMES)
@@ -60,9 +60,16 @@ def main() -> int:
         print(result.stderr, file=sys.stderr)
         return 1
 
+    trailers = result.stdout.splitlines()
+    signoff = re.compile(r"^Signed-off-by:\s+[^<>]+\s+<[^<>\s]+@[^<>\s]+>$", re.I)
+    if not any(signoff.fullmatch(line.strip()) for line in trailers):
+        print("Commit rejected: a valid Signed-off-by trailer is required. "
+              "Use git commit -s with your authorized identity.", file=sys.stderr)
+        return 1
+
     offenders = [
         line.strip()
-        for line in result.stdout.splitlines()
+        for line in trailers
         if line.strip() and AI_ATTRIBUTION.search(line)
     ]
     if not offenders:

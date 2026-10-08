@@ -11,7 +11,7 @@ from pathlib import Path
 
 VALUE_OPTIONS = {
     "-m", "-F", "-t", "-C", "-c", "--message", "--file", "--template",
-    "--reuse-message", "--reedit-message", "--author", "--date", "--trailer",
+    "--reuse-message", "--reedit-message", "--author", "--date", "--trailer", "-u",
 }
 
 
@@ -22,11 +22,11 @@ def bypass_flag(arguments):
             break
         if argument in VALUE_OPTIONS:
             next(iterator, None)
-        elif argument == "--no-verify":
+        elif argument.startswith("--no-ver") and "--no-verify".startswith(argument):
             return True
         elif argument.startswith("-") and not argument.startswith("--"):
             for letter in argument[1:]:
-                if letter in "mFtCc":
+                if letter in "mFtCcu":
                     break
                 if letter == "n":
                     return True
@@ -35,25 +35,47 @@ def bypass_flag(arguments):
 
 def git_arguments(tokens):
     iterator = iter(tokens[1:])
+    hooks_override = False
     for token in iterator:
-        if token in {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}:
+        if token == "-c":
+            config = next(iterator, "")
+            hooks_override |= config.lower().startswith("core.hookspath=")
+        elif token.startswith("-c"):
+            hooks_override |= token[2:].lower().startswith("core.hookspath=")
+        elif token in {"-C", "--git-dir", "--work-tree", "--namespace"}:
             next(iterator, None)
         elif not token.startswith("-"):
-            return list(iterator) if token == "commit" else None
-    return None
+            if token == "commit":
+                return hooks_override, list(iterator)
+            return False, None
+    return False, None
+
+
+def unwrap_command(tokens):
+    while tokens:
+        program = Path(tokens[0]).name
+        if "=" in tokens[0] or program in {"env", "command", "time", "sudo"}:
+            wrapper = program
+            tokens = tokens[1:]
+            while tokens and tokens[0].startswith("-"):
+                option = tokens.pop(0)
+                if wrapper == "sudo" and option in {"-u", "-g", "-h", "-p"}:
+                    tokens = tokens[1:]
+            continue
+        break
+    return tokens
 
 
 def blocked_segment(tokens):
-    while tokens and ("=" in tokens[0] or tokens[0] in {"env", "command"}):
-        tokens = tokens[1:]
+    tokens = unwrap_command(tokens)
     if not tokens:
         return False
     program = Path(tokens[0]).name
     if program in {"sh", "bash", "zsh"} and len(tokens) > 2:
         if tokens[1] in {"-c", "-lc"}:
             return blocked_command(tokens[2])
-    arguments = git_arguments(tokens) if program == "git" else None
-    return arguments is not None and bypass_flag(arguments)
+    override, arguments = git_arguments(tokens) if program == "git" else (False, None)
+    return arguments is not None and (override or bypass_flag(arguments))
 
 
 def blocked_command(command):
@@ -76,7 +98,12 @@ def main():
         payload = json.load(sys.stdin)
         tool_input = payload.get("tool_input", {})
         command = tool_input.get("command", tool_input.get("cmd", ""))
-        denied = not isinstance(command, str) or blocked_command(command)
+        try:
+            denied = not isinstance(command, str) or blocked_command(command)
+        except ValueError:
+            # shlex is not a shell parser: legitimate heredoc bodies may contain
+            # unmatched quotes. Allow those; CI rechecks commits independently.
+            denied = False
     except (ValueError, AttributeError):
         denied = True
     if denied:

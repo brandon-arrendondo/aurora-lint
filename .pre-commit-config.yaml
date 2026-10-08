@@ -28,9 +28,10 @@ repos:
   - repo: local
     hooks:
       - id: no-ai-attribution
-        name: no AI attribution trailers
+        name: DCO sign-off and no AI attribution trailers
         description: >-
-          Reject parsed Git trailers naming a listed AI tool or vendor.
+          Require a valid Signed-off-by trailer and reject parsed Git
+          trailers naming a listed AI tool or vendor.
           AGENTS.md is the canonical policy: AI use is acknowledged
           once in README.md, rather than repeated per commit. Ordinary body
           mentions and human co-authors remain allowed.

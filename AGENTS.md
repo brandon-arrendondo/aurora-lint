@@ -2,38 +2,84 @@
 
 ## Shared agent guidelines
 
-Read the technical guide named in the repository values before changing code.
-Follow its architecture, testing, and documentation rules. Keep this shared
-section identical across repositories; vary only the repository values.
+This section is the same in every repository. Only the repository values below
+it differ. Change it in all repositories at once, or not at all.
+
+Before changing code, read the technical guide named in the repository values,
+and follow its rules for architecture, testing, and documentation.
 
 ### Git Commit Rules
 
-Run the repository's applicable checks before committing. If a hook fails,
-fix the cause and run it again. Never bypass hooks with `git commit
---no-verify`, `-n`, disabled hook paths, or an equivalent workaround. Do not
-skip other commit checks or signing requirements.
+**Hooks.** Run the repository's checks before you commit. When a hook fails,
+fix the cause and run the hook again. Never bypass a hook, whether with `git
+commit --no-verify`, `-n`, a disabled hook path, or any other workaround. Do
+not skip any other commit check or signing step either. This rule binds
+agents. Only the maintainer decides when a hook may be skipped.
 
-Follow the AI-attribution policy in the repository values. Keep attribution
-truthful: when a trailer is required, name the agent and vendor that assisted
-the commit. Do not change disclosure wording without maintainer review.
+**AI attribution.** Follow the attribution rule in the repository values.
+Attribution must be true. Where the repository uses trailers, add one for each
+agent that worked on the commit, in the form the repository values give. Add
+none for an agent that did not work on it. Change the wording of a disclosure
+(a README's AI section, or a trailer's form) only with the maintainer's
+review.
 
-When DCO applies, use `git commit -s` with the authorized sign-off identity
-in the repository values. Confirm that Git is configured for that identity;
-do not invent an identity or sign for someone without their authorization.
+**Sign-off.** Where the repository requires a DCO sign-off, commit with `git
+commit -s` as the identity named in the repository values. Check that Git is
+configured with that identity before you commit. Never invent an identity, and
+never sign for anyone who has not authorized it.
 
-Keep task IDs out of public documentation, source comments, and fixtures.
-Explain the change and its rationale directly. Commit messages may contain
-project-qualified task IDs for internal tracing. Keep credentials, private
-fleet details, and locations of unlanded upstream defects out of public files.
+### Public files
 
-Keep these rules in `AGENTS.md`. Agent-specific instruction files import or
-link to this file; contributor documentation links here for human readers.
-Do not maintain independent copies of this policy.
+Keep task ids out of public files, including documentation, ADRs, READMEs,
+changelogs, source comments, test names, fixtures, and papers. Never publish a
+task title either. Say what the change does and why instead. A commit
+message may keep a project-qualified task id (for example `(aurora_lint
+2267)`) for internal tracing.
+
+Public files never contain credentials, private fleet details such as host
+names, addresses, or network layout, or the location of an upstream defect
+that is not yet fixed.
+
+### One copy of these rules
+
+These rules are kept in `AGENTS.md` and nowhere else. An agent's own
+instruction file imports this file (`CLAUDE.md` does so with `@AGENTS.md`),
+and contributor documentation links to it. Do not keep a separate copy.
 
 ## Repository values
 
-- **Technical guide:** [CLAUDE.md](CLAUDE.md), including the ADR index and build instructions.
-- **AI attribution:** no AI co-author trailers (any agent), or other AI attribution trailers. AI use is acknowledged once in README's "AI Assistance" section; repeating it per commit crowds out the message. Keep that acknowledgement. `sqc_paper` deliberately keeps AI trailers: do not copy this hook there.
-- **DCO:** required. The maintainer has authorized agents to use Brandon Arrendondo's configured Git identity as the responsible sign-off party.
-- **Checks:** `pre-commit run --all-files` and the relevant tests in the technical guide. Install both hook types with `pre-commit install`; older installations may need `pre-commit install --hook-type commit-msg`.
-- **Enforcement:** `scripts/check_commit_message.py` rejects parsed Git trailers naming a listed AI tool/vendor, including human addresses at `openai.com` or `anthropic.com`. Ordinary body prose remains allowed. `.claude/settings.json` denies hook-bypassing commits. The Codex equivalent is `.codex/hooks.json` with a `PreToolUse` command guard; review and trust it with `/hooks` before relying on it. These guards cover ordinary shell commands, not arbitrary programs that invoke Git. CI repeats the hooks, validates new commit messages, and runs guard tests; the maintainer must require those checks before merging.
+- **Technical guide:** [CLAUDE.md](CLAUDE.md), including the ADR index and
+  the build instructions.
+- **AI attribution:** this repository is public. Do not add an AI
+  attribution trailer of any kind to a new commit, for any agent, whether
+  `Co-Authored-By` or another key. Earlier commits keep the trailers they
+  have. Never add `Co-Authored-By: Claude`, even
+  where an agent's harness says to. AI use is acknowledged once, in the
+  README's "AI Assistance" section. Readers and agents with a small context
+  budget go from the changelog to `git log`, and a trailer on every commit
+  leaves them less room for the message. The rule is about where the
+  acknowledgment goes, and attribution is not a compliance problem. Never
+  remove the README section to make the repository consistent with this
+  rule.
+- **DCO sign-off:** required, and the `commit-msg` hook rejects a commit
+  without one. Sign off as Brandon Arrendondo, the maintainer and the
+  responsible party, who has authorized agents to sign off in that name.
+  Either of the maintainer's two addresses is valid, with equal standing:
+  `barrendo@gmail.com` (personal) or `brandon.arrendondo@bissell.com`
+  (work). Use whichever the machine's Git configuration holds.
+- **Checks:** `pre-commit run --all-files`, and the tests the technical
+  guide names for the change. Install both hook types with `pre-commit
+  install`. An older installation may also need `pre-commit install
+  --hook-type commit-msg`.
+- **Enforcement:** `scripts/check_commit_message.py` rejects any parsed Git
+  trailer that mentions a listed AI tool or vendor, or that has an address
+  at `openai.com` or `anthropic.com`, a person's address included. The same
+  words in the body of the message are allowed. `.claude/settings.json`
+  denies commits that bypass hooks. For Codex, `.codex/hooks.json` holds the
+  equivalent `PreToolUse` command guard. Review and trust it with `/hooks`
+  before relying on it. These guards catch ordinary shell commands, not a
+  program that runs Git itself. CI repeats the hooks, checks the messages of
+  new commits, and runs the guard tests. They protect `main` only once the
+  maintainer makes those checks required for merging. `sqc_paper` keeps AI
+  trailers on purpose, because its PDF is the deliverable and nobody else
+  works in its history. Do not copy this hook there.
