@@ -83,7 +83,7 @@ Concretely, for v0.5.0:
      - ``0.4.336`` (the ``Cargo.toml`` value at ``f48effe3``)
    * - real-world run id
      - ``sqc-0.4.336-f48effe3``; the maintainers' run number for it is
-       ``#265``, which is what the README highlights cite
+       ``#265``, which the README highlights cited for v0.5.0
 
 Run ids are ``sqc-{version}-{sha}`` and the tool id inside the benchmark
 tooling is ``sqc`` (``--tool sqc``, ``results/realworld/sqc-…``). The crate
@@ -249,23 +249,19 @@ and then, **before every run**, verify they are still at their pins:
 
    python -m bench corpus-check      # exit 0 and every row OK, or stop here
 
-Provisioning pins a checkout once and nothing holds it there: a ``git pull``
-on a tracking branch moves it, and the runner records whatever commit it
-finds rather than asserting the pin. Findings from a drifted tree land at
-``(file, line)`` pairs the labels never saw and fall silently out of both
-precision and recall. ``corpus-check`` also flags **untracked and gitignored
-``*.c``/``*.h`` files**: aurora-lint dispatches on file extension and never
-consults git, so a build run inside a checkout contaminates every later
-scan while ``git status`` stays clean -- sqlite's generated ``sqlite3.c``
-amalgamation is the standing example, worth a quarter of a million lines.
-Keep the checkouts pristine and build nothing inside ``$SQC_BENCH_ROOT``.
+The runner records whatever commit it finds rather than asserting the pin.
+Why a drifted or contaminated checkout silently corrupts the figures, and
+what ``corpus-check`` flags, is in *Verifying the Pins* in
+:doc:`benchmark-setup`. Keep the checkouts pristine and build nothing inside
+``$SQC_BENCH_ROOT``.
 
 Juliet
 ~~~~~~
 
 The synthetic corpus is the NIST SARD `Juliet Test Suite for C/C++ v1.3
 <https://samate.nist.gov/SARD/test-suites/112>`_ (SARD suite 112),
-obtained manually because SARD has no stable download URL, and placed at
+downloaded from the SARD suite page (see :doc:`benchmark-setup`; NIST does
+not promise the URL stays put), and placed at
 ``$SQC_BENCH_ROOT/benchmarks/juliet-test-suite-c`` (:doc:`benchmark-setup`).
 It is versioned by NIST, not pinned by this repo; v1.3 is the only version
 these numbers have ever been run on.
@@ -301,7 +297,7 @@ Real-world half
    and the next step scores against them.
 
 3. Score the exports with the reference scorer, naming the label SHA and the
-   scope file from step 0:
+   scope file saved in *Input 3* above:
 
    .. code-block:: bash
 
@@ -337,8 +333,10 @@ to pin -- the analyzer commit and the suite version are the whole triple:
    python -m bench juliet                # fast mode: per-CWE manifests, CWE-matched rules
    python -m bench status latest         # precision, per-CWE detail, run id
 
-Published Juliet figures are fast-mode figures. The run id is
-``sqc-<version>-<sha>``; ``status`` and ``compare`` accept a SHA.
+Published Juliet figures are fast-mode figures. The run id starts
+``sqc-<version>-<sha>``; runs recorded since settings existed add a settings
+suffix (see :doc:`benchmark-running`). ``status`` and ``compare`` accept a
+SHA.
 
 Hardware, time and memory
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -470,9 +468,6 @@ reproducer will not guess:
    key-identical over the labeled set (libcrc, lua, mbedtls, mosquitto,
    pure-ftpd, raylib, seL4, valkey, Ventoy); not one differing key names a
    multiply-defined function, macro, typedef or struct. Cause 2 is gone.
-
-   Both re-measurements, ``v0.5.2`` above and ``v0.6.0`` here, concern
-   cause 1: from ``4ac5710f`` on, cause 2 no longer applies.
 
    **Re-measured at** ``v0.6.0`` (``b13bc40c``), default profile, no
    Windows headers on either machine: the benchmark node's run against a
