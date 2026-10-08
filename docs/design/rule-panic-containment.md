@@ -158,7 +158,7 @@ not an option.
 ### Release note and docs (when it lands)
 
 A new exit code changes what existing output means, so it goes under
-**Changed** (ADR-0009), with the `docs/cli-usage.rst` Exit Codes table and
+**Changed** (ADR-0009), with the `docs/error-handling.rst` exit-code table and
 README's exit-code line updated in the same commit. A draft note: "A rule
 that hits an internal error on one file no longer stops the whole scan. Its
 findings for that file are omitted, the error is reported, and the scan

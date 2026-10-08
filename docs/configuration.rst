@@ -37,8 +37,9 @@ Custom Manifest Format
     severity = "Medium"
     description = "Guarantee that storage for strings has sufficient space"
 
-A misspelled table or key is refused, except under ``[metadata]`` and in a
-rule's block, where an unknown key is ignored. In a rule's block,
+A misspelled table or key is refused, except under ``[metadata]``, in a
+rule's block, and under an unknown ``[rules.*]`` family (for example
+``[rules.certc.ARR30-C]``), where it is ignored. In a rule's block,
 ``category``, ``cert_id`` and ``parameters`` (removed keys that never had an
 effect) load with a warning.
 
