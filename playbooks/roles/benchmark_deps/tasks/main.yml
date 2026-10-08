@@ -1,0 +1,54 @@
+---
+# Install one real-world benchmark's dependency set: the pinned system
+# headers it is scanned against, into a tree of its own under
+# BENCH_ROOT/deps/, never into the system (docs/adr/0018).
+#
+# The set is declared in data/benchmark_deps/<name>.json; this role does not
+# restate it. The work is bench/deps.py's: download each pinned package
+# (cached by sha256), unpack its headers with the Python standard library
+# (no dpkg, so a macOS, FreeBSD or Windows host installs the same bytes as a
+# Debian one), refuse a layout the filesystem cannot hold, and verify the
+# manifest hash. The runner refuses to scan a benchmark whose set is missing
+# or different, so a failure here is a failure to provision, not a warning.
+
+- name: "{{ benchmark_deps_name }}: a benchmark is named"
+  assert:
+    that: benchmark_deps_name | length > 0
+    fail_msg: "set benchmark_deps_name to a file in data/benchmark_deps/ (without .json)"
+
+- name: "{{ benchmark_deps_name }}: the set is declared"
+  stat:
+    path: "{{ role_path }}/../../../data/benchmark_deps/{{ benchmark_deps_name }}.json"
+  register: benchmark_deps_decl
+  delegate_to: localhost
+
+- name: "{{ benchmark_deps_name }}: fail without a declaration"
+  fail:
+    msg: >-
+      No data/benchmark_deps/{{ benchmark_deps_name }}.json. Every real-world
+      benchmark declares its dependency set there (bench/deps.py).
+  when: not benchmark_deps_decl.stat.exists
+
+- name: "{{ benchmark_deps_name }}: is the tree already present with the pinned hash?"
+  command: python3 -m bench.deps verify {{ benchmark_deps_name }}
+  args:
+    chdir: "{{ role_path }}/../../.."
+  environment:
+    SQC_BENCH_ROOT: "{{ benchmark_deps_bench_root }}"
+  register: benchmark_deps_verify
+  changed_when: false
+  failed_when: false
+
+- name: "{{ benchmark_deps_name }}: fetch, unpack and verify the set"
+  command: python3 -m bench.deps fetch {{ benchmark_deps_name }}
+  args:
+    chdir: "{{ role_path }}/../../.."
+  environment:
+    SQC_BENCH_ROOT: "{{ benchmark_deps_bench_root }}"
+  register: benchmark_deps_fetch
+  when: benchmark_deps_verify.rc != 0
+  changed_when: true
+
+- name: "{{ benchmark_deps_name }}: the pin"
+  debug:
+    msg: "{{ (benchmark_deps_fetch.stdout if benchmark_deps_fetch is changed else benchmark_deps_verify.stdout) | trim }}"

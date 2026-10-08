@@ -1,0 +1,36 @@
+---
+# Install the dependency set of each real-world benchmark that declares one
+# (data/benchmark_repos.json 'deps'; docs/adr/0018): the pinned system
+# headers a benchmark run is scanned against, each into its own tree under
+# BENCH_ROOT/deps/. The same on Linux, macOS and FreeBSD: nothing here uses
+# the host's package manager.
+#
+# Usage:
+#   ansible-playbook playbooks/setup-benchmark-deps.yml -i "localhost," -c local
+#   ansible-playbook playbooks/setup-benchmark-deps.yml -i "localhost," -c local \
+#     -e benchmarks=mosquitto,lua
+#
+# Then `python -m bench corpus-check` reports each set OK, MISSING or
+# MISMATCH alongside the corpus pins.
+
+- name: Install the dependency sets of the real-world benchmarks
+  hosts: all
+  vars:
+    declared: >-
+      {{ (lookup('file', playbook_dir + '/../data/benchmark_repos.json') | from_json)['repos']
+         | selectattr('deps', 'defined') | map(attribute='deps') | list }}
+    wanted: >-
+      {{ (benchmarks.split(',') | map('trim') | select | list)
+         if (benchmarks | default('')) else declared }}
+  tasks:
+    - name: Nothing declares a dependency set yet
+      debug:
+        msg: "No benchmark in data/benchmark_repos.json declares 'deps'."
+      when: wanted | length == 0
+
+    - name: Install each set
+      include_role:
+        name: benchmark_deps
+      vars:
+        benchmark_deps_name: "{{ item }}"
+      loop: "{{ wanted }}"

@@ -758,23 +758,45 @@ def _sqc_manifest(cfg: dict) -> Path:
     return manifest
 
 
+def _without_host_includes(includes: list[str], path: str) -> list[str]:
+    """`includes` minus every -I that names a directory outside the
+    checkout (/usr/include and its subdirectories): a corpus scanned against
+    its dependency set reads its system headers from the set alone."""
+    out, i = [], 0
+    while i < len(includes):
+        if includes[i] == "-I" and i + 1 < len(includes):
+            val = includes[i + 1]
+            if not (val == path or val.startswith(path + "/")):
+                i += 2
+                continue
+        out.append(includes[i])
+        i += 1
+    return out
+
+
 def _build_sqc_cmd(cfg: dict, results_dir: Path, run_id: str,
                    compile_db: str | None = None,
                    profile: str = DEFAULT_PROFILE,
                    header_includes: list[str] | None = None,
-                   header_spec: dict | None = None) -> list[str]:
+                   header_spec: dict | None = None,
+                   deps_includes: list[str] | None = None) -> list[str]:
     """The aurora-lint command line for one corpus. `header_includes` are
     appended -I flags (a tree that adds headers the host lacks, ventoy's
     Windows SDK); `header_spec` is a tree that 'replaces' a host prefix, and
     rewrites the corpus's own -I /usr/include... flags to point into it
-    (bench/header_tree.py: substitute_includes)."""
+    (bench/header_tree.py: substitute_includes). `deps_includes` are the -I
+    flags of the corpus's dependency set (bench/deps.py): they replace every
+    -I outside the checkout and go after the corpus's own, in a compiler's
+    order (project directories, then system ones)."""
     path = str(cfg["path"])
     scan_path = cfg["sqc"].get("scan_path")
     scan_path = _expand([scan_path], path)[0] if scan_path else path
     output_file = results_dir / f"{run_id}.json"
     extra = _expand(cfg["sqc"].get("extra_args", []), path)
     includes = _expand(cfg["sqc"].get("includes", []), path)
-    if header_spec and header_spec.get("replaces"):
+    if deps_includes is not None:
+        includes = _without_host_includes(includes, path) + deps_includes
+    elif header_spec and header_spec.get("replaces"):
         from bench.header_tree import substitute_includes
         includes = substitute_includes(header_spec, includes)
 
@@ -817,6 +839,29 @@ def _verified_header_tree(codebase: str):
             f"{codebase} is scanned against pinned system headers; "
             + header_tree.fix_hint(codebase))
     return spec
+
+
+def _verified_deps(codebase: str):
+    """The dependency set `codebase` declares (bench/deps.py), verified, or
+    None if it declares none. Raises if the set's tree is missing, unpinned
+    or different: a real-world benchmark scan without it would record
+    findings against headers nothing pins (docs/adr/0018)."""
+    from bench import deps
+    decl = deps.declared_for(codebase)
+    if decl is None:
+        return None
+    res = deps.check(decl)
+    if res["status"] != deps.OK:
+        detail = {deps.MISSING: "is missing",
+                  deps.UNPINNED: "has no manifest_sha256 declared"}.get(
+            res["status"],
+            f"has manifest hash {(res['actual'] or '')[:12]}, expected "
+            f"{(res['expected'] or '')[:12]}")
+        raise FileNotFoundError(
+            f"dependency set {res['path']} {detail}.\n"
+            f"{codebase} is scanned against its pinned system headers; "
+            + deps.fix_hint(decl["corpus"]))
+    return decl
 
 
 def _header_tree_suffix(spec) -> str:
@@ -1630,14 +1675,28 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
 
     settings = None
     header_spec = None
+    deps_decl = None
     if tool == "sqc":
-        header_spec = _verified_header_tree(codebase)
+        from bench import header_tree as _ht
+        override = os.environ.get(_ht.HOST_TREE_ENV) or None
+        from bench import deps as _deps
+        if _deps.declared_for(codebase) is not None and override is None:
+            deps_decl = _verified_deps(codebase)
+        else:
+            header_spec = _verified_header_tree(codebase)
         settings = resolve_settings(
             profile, compile_db=compile_db, manifest=_sqc_manifest(cfg),
             extra_args=_expand(cfg["sqc"].get("extra_args", []), str(cfg["path"])))
         suffix = settings_run_suffix(settings).lstrip("-")
         variant = f"{variant}-{suffix}" if variant else suffix
-        variant += _header_tree_suffix(header_spec)
+        if deps_decl is None and override is not None and \
+                _deps.declared_for(codebase) is not None:
+            # A corpus with a dependency set, scanned against something else
+            # (the host's headers included): not a benchmark run, so never
+            # under the benchmark run's id.
+            variant += f"-hdr-{header_spec['id'] if header_spec else 'none'}"
+        else:
+            variant += _header_tree_suffix(header_spec)
 
     version = _get_tool_version(tool)
     sha = _get_git_sha()
@@ -1664,10 +1723,12 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
         if tool == "sqc":
             from bench.header_tree import include_args
             replaces = bool(header_spec and header_spec.get("replaces"))
+            from bench.deps import include_args as deps_include_args
             cmd = _build_sqc_cmd(
                 cfg, version_dir, run_id, compile_db, profile,
                 include_args(header_spec) if header_spec and not replaces else None,
-                header_spec if replaces else None)
+                header_spec if replaces else None,
+                deps_include_args(deps_decl) if deps_decl else None)
             result_file = version_dir / f"{run_id}.json"
             proc = subprocess.run(cmd, stdout=log_fh, stderr=subprocess.STDOUT)
         elif tool == "cppcheck":
@@ -1709,7 +1770,13 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
         "scanned_loc": scanned_loc,
         "scanned_basis": "sqc_scan_path+sqc_excludes",
     }
-    if header_spec:
+    if deps_decl:
+        # The fifth pin (docs/adr/0018). 'header_tree' carries the same
+        # record for the shared database's existing column.
+        from bench.deps import provenance as deps_provenance
+        meta["deps"] = deps_provenance(deps_decl)
+        meta["header_tree"] = meta["deps"]
+    elif header_spec:
         # The system headers this scan resolved against. Like the commit,
         # true only at scan time, so the sidecar carries it.
         from bench.header_tree import provenance

@@ -322,9 +322,17 @@ def _prepare_parent(dest_real: Path, out: Path) -> None:
         raise ValueError(f"path leaves the tree through a symlink: {out}")
 
 
-def extract_headers(deb_bytes: bytes, dest, prefix: str = "usr/include") -> int:
+def extract_headers(deb_bytes: bytes, dest, prefix="usr/include",
+                    manifest: dict | None = None, skip=()) -> int:
     """Unpack the members of a .deb's data tarball that lie under `prefix`
-    into `dest`. Returns the number of files and links written.
+    (one path, or a sequence of them) into `dest`. Returns the number of
+    files and links written.
+
+    `manifest`, when given, is filled with the manifest line (module doc)
+    of every file and link under the prefixes, keyed by path and computed
+    from the archive members rather than read back from disk: the pin of
+    a tree whose layout a host cannot reproduce exactly is still the same
+    on every host. Members under a path in `skip` are left out entirely.
 
     Every member name is normalized before it is tested against `prefix`,
     so `usr/include/../../x` is judged as `x`. Refused: a member that would
@@ -345,6 +353,7 @@ def extract_headers(deb_bytes: bytes, dest, prefix: str = "usr/include") -> int:
             break
     if payload is None:
         raise ValueError("no data.tar member in .deb")
+    prefixes = (prefix,) if isinstance(prefix, str) else tuple(prefix)
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     dest_real = dest.resolve()
@@ -355,7 +364,9 @@ def extract_headers(deb_bytes: bytes, dest, prefix: str = "usr/include") -> int:
             if os.path.isabs(raw) or not _within(raw):
                 raise ValueError(f"member escapes the tree: {m.name}")
             rel = os.path.normpath(raw)
-            if not (rel == prefix or rel.startswith(prefix + "/")):
+            if not any(rel == p or rel.startswith(p + "/") for p in prefixes):
+                continue
+            if any(rel == p or rel.startswith(p + "/") for p in skip):
                 continue
             out = dest / rel
             if m.isdir():
@@ -367,6 +378,8 @@ def extract_headers(deb_bytes: bytes, dest, prefix: str = "usr/include") -> int:
                 target = os.path.join(os.path.dirname(rel), m.linkname)
                 if os.path.isabs(m.linkname) or not _within(target):
                     raise ValueError(f"symlink leaves the tree: {m.name} -> {m.linkname}")
+                if manifest is not None:
+                    manifest[rel] = f"L {rel} {m.linkname}"
                 _prepare_parent(dest_real, out)
                 if out.is_symlink() or out.exists():
                     if out.is_symlink() and os.readlink(out) == m.linkname:
@@ -383,6 +396,8 @@ def extract_headers(deb_bytes: bytes, dest, prefix: str = "usr/include") -> int:
                 else:
                     src = tar.extractfile(m)
                 body = src.read()
+                if manifest is not None:
+                    manifest[rel] = f"F {rel} {hashlib.sha256(body).hexdigest()}"
                 _prepare_parent(dest_real, out)
                 if out.is_symlink():
                     raise ValueError(f"two packages provide {rel} differently")

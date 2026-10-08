@@ -221,7 +221,14 @@ def check_repo(entry, bench_root=None):
         "gitignored_scanned_but_excluded": 0,
         "header_tree": None,
     }
-    if entry.get("header_tree"):
+    if entry.get("deps"):
+        # A dependency set (bench/deps.py, docs/adr/0018) is the corpus's
+        # system headers for a benchmark run, required like the commit pin.
+        # It is reported under the same key as a pinned header tree.
+        from bench import deps
+        res["header_tree"] = dict(deps.check(deps.load(entry["deps"]), bench_root),
+                                  deps=entry["deps"])
+    elif entry.get("header_tree"):
         from bench.header_tree import check, resolve
         # Only a declared tree is required. The opt-in trees a host-header
         # corpus can scan against (realworld-run --header-tree) are not.
@@ -361,14 +368,16 @@ def report(bench_root=None, as_json=False):
         for r in bad:
             print(f"  {r['name']:<11} {r['status']:<11} {_fix_hint(r)}")
     if bad_trees:
+        from bench import deps
         from bench.header_tree import fix_hint
         print(f"\n{len(bad_trees)} pinned header tree(s) missing or different:")
         for r in bad_trees:
             t = r["header_tree"]
-            got = f"manifest {t['actual'][:12]}, expected {t['expected'][:12]}" \
-                if t["actual"] else "not present"
+            got = (f"manifest {t['actual'][:12]}, expected {(t['expected'] or 'none')[:12]}"
+                   if t["actual"] else "not present")
+            hint = deps.fix_hint(t["deps"]) if t.get("deps") else fix_hint(r["name"])
             print(f"  {r['name']:<11} {t['status']:<11} {t['path']} ({got})\n"
-                  f"  {'':<11} {fix_hint(r['name'])}")
+                  f"  {'':<11} {hint}")
     if contaminated:
         print(f"\n{len(contaminated)} checkout(s) with modified or scannable "
               f"untracked files -- scanned source differs from the pin:")

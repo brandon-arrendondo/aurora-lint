@@ -1,0 +1,6 @@
+---
+# The benchmark whose dependency set to install: the name of a file in
+# data/benchmark_deps/ (without .json). Required.
+benchmark_deps_name: ""
+# Where trees go: BENCH_ROOT/deps/<id>/ (bench/deps.py).
+benchmark_deps_bench_root: "{{ lookup('env', 'SQC_BENCH_ROOT') | default(ansible_env.HOME + '/toolchain', true) }}"
