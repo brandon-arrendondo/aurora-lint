@@ -738,6 +738,13 @@ def recipe_sha256(decl: dict) -> str:
     return hashlib.sha256(_canonical(decl["build"])).hexdigest()
 
 
+# The layout of a build cache (bench/dbbuild.py). A cache written in any
+# other layout is rebuilt, never read. 2: the build's generated translation
+# units are kept too, under UNITS_DIR and in cache.json's generated_units.
+BUILD_CACHE_FORMAT = 2
+UNITS_DIR = "units"
+
+
 def build_cache_dir(decl: dict, corpus_commit: str, env_pin: str, bench_root=None) -> Path:
     root = (Path(bench_root) if bench_root else BENCH_ROOT) / ".build-cache"
     return root / f"{decl['corpus']}-{corpus_commit[:12]}-{env_pin[:12]}"
@@ -776,8 +783,9 @@ def check_cache(decl: dict, cache_dir, corpus_commit: str | None = None,
                 env_pin: str | None = None) -> tuple[dict, dict, bytes]:
     """The build cache's record, its generated headers' bytes and its
     compile_commands.json bytes, exactly the bytes hashed, after
-    checking that it was built from this recipe, for this corpus commit and
-    environment, and that every file hashes to what cache.json records.
+    checking that it is in this layout (BUILD_CACHE_FORMAT) and was built
+    from this recipe, for this corpus commit and environment, and that
+    every file, generated units included, hashes to what cache.json records.
     Raises FileNotFoundError when there is no cache, ValueError when it is
     not this one or is damaged."""
     cache_dir = Path(cache_dir)
@@ -785,6 +793,9 @@ def check_cache(decl: dict, cache_dir, corpus_commit: str | None = None,
     if not record_path.is_file():
         raise FileNotFoundError(f"no build cache at {cache_dir}")
     record = json.loads(record_path.read_text())
+    if record.get("format") != BUILD_CACHE_FORMAT:
+        raise ValueError(f"{cache_dir}: cache format {record.get('format', 1)}, not "
+                         f"{BUILD_CACHE_FORMAT}; rebuild it")
     if record.get("recipe_sha256") != recipe_sha256(decl):
         raise ValueError(f"{cache_dir}: built from another recipe; rebuild it")
     for key, want in (("corpus_commit", corpus_commit), ("environment", env_pin)):
@@ -802,6 +813,10 @@ def check_cache(decl: dict, cache_dir, corpus_commit: str | None = None,
         if data is None or hashlib.sha256(data).hexdigest() != sha:
             raise ValueError(f"{f}: missing or not the recorded generated header")
         gen_files[rel] = data
+    for rel, sha in sorted(record.get("generated_units", {}).items()):
+        f = cache_dir / UNITS_DIR / rel
+        if not f.is_file() or hashlib.sha256(f.read_bytes()).hexdigest() != sha:
+            raise ValueError(f"{f}: missing or not the recorded generated unit")
     return record, gen_files, body
 
 

@@ -17,8 +17,12 @@ packages system-wide, which is the point of a throwaway container.
 2. Copy the checkout to $SRC and run the recipe's steps with $SRC and
    $BUILD set.
 3. Collect the headers the build generated: everything under $BUILD, and
-   whatever the build wrote into $SRC that git does not track.
-4. Write the database as a template plus those headers, and cache.json.
+   whatever the build wrote into $SRC that git does not track. Collect
+   too the generated translation units the database compiles (a file it
+   names under $BUILD, or one in $SRC that git does not track), such as
+   sel4's kernel_all.c, whose #line markers say which sources it joins.
+4. Write the database as a template plus those headers and units, and
+   cache.json.
 """
 
 import hashlib
@@ -80,6 +84,33 @@ def generated_files(src: Path, build: Path) -> dict[str, Path]:
     return out
 
 
+def generated_units(template: list[dict], src: Path, build: Path) -> tuple[dict[str, Path], list[str]]:
+    """The generated translation units the database compiles, as
+    ({'build/<rel>' or 'src/<rel>': path}, [names it lists that the build
+    did not leave behind]): an entry's file under ${GEN}/build, or under
+    ${CORPUS} where git does not track it. Kept so a later step can read
+    what such a unit joins (its #line markers); scans do not read them."""
+    untracked = set(subprocess.run(
+        ["git", "-C", str(src), "ls-files", "--others", "-z"],
+        capture_output=True, check=True).stdout.decode().split("\0")) - {""}
+    units, gone = {}, set()
+    for e in template:
+        f = e["file"]
+        if f.startswith("${GEN}/build/"):
+            rel = f[len("${GEN}/build/"):]
+            key, path = f"build/{rel}", build / rel
+        elif f.startswith("${CORPUS}/") and f[len("${CORPUS}/"):] in untracked:
+            rel = f[len("${CORPUS}/"):]
+            key, path = f"src/{rel}", src / rel
+        else:
+            continue
+        if path.is_file():
+            units[key] = path
+        else:
+            gone.add(key)
+    return dict(sorted(units.items())), sorted(gone)
+
+
 def build(project: str, corpus_dir: Path, cache_dir: Path, env_pin: str) -> dict:
     decl = deps.declared_for(project)
     if decl is None or not decl.get("build"):
@@ -105,6 +136,7 @@ def build(project: str, corpus_dir: Path, cache_dir: Path, env_pin: str) -> dict
     gen = generated_files(src, bld)
     overlay = {k[len("src/"):] for k in gen if k.startswith("src/")}
     template = deps.overlay_source_dirs(template, overlay)
+    units, units_gone = generated_units(template, src, bld)
 
     # A fresh directory only: `bench container-build-db` names a temporary
     # one and swaps it in, so a cache a scan may be reading is never
@@ -114,17 +146,23 @@ def build(project: str, corpus_dir: Path, cache_dir: Path, env_pin: str) -> dict
     (cache_dir / "generated").mkdir(parents=True)
     body = json.dumps(template, indent=1, sort_keys=True).encode()
     (cache_dir / "compile_commands.json").write_bytes(body)
-    hashes = {}
-    for rel, p in gen.items():
-        out = cache_dir / "generated" / rel
-        out.parent.mkdir(parents=True, exist_ok=True)
-        data = p.read_bytes()
-        out.write_bytes(data)
-        hashes[rel] = hashlib.sha256(data).hexdigest()
-    record = {"corpus": project, "corpus_commit": commit, "environment": env_pin,
+
+    def keep(files: dict[str, Path], under: str) -> dict[str, str]:
+        hashes = {}
+        for rel, p in files.items():
+            out = cache_dir / under / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            data = p.read_bytes()
+            out.write_bytes(data)
+            hashes[rel] = hashlib.sha256(data).hexdigest()
+        return hashes
+    record = {"format": deps.BUILD_CACHE_FORMAT,
+              "corpus": project, "corpus_commit": commit, "environment": env_pin,
               "recipe_sha256": deps.recipe_sha256(decl),
               "db_sha256": hashlib.sha256(body).hexdigest(),
-              "entries": len(template), "generated": hashes,
+              "entries": len(template), "generated": keep(gen, "generated"),
+              "generated_units": keep(units, deps.UNITS_DIR),
+              "generated_units_not_kept": units_gone,
               "dropped_include_dirs": sorted(dropped)}
     (cache_dir / "cache.json").write_text(json.dumps(record, indent=1, sort_keys=True) + "\n")
     return record

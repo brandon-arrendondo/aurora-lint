@@ -27,6 +27,7 @@ def write_cache(cache: Path, decl: dict, header: bytes = b"#define X 1\n") -> No
     (cache / "generated" / "build" / "config.h").write_bytes(header)
     (cache / "cache.json").write_text(json.dumps({
         "corpus": decl["corpus"], "corpus_commit": COMMIT, "environment": PIN,
+        "format": deps.BUILD_CACHE_FORMAT,
         "recipe_sha256": deps.recipe_sha256(decl), "entries": 1,
         "db_sha256": hashlib.sha256(body).hexdigest(),
         "generated": {"build/config.h": hashlib.sha256(header).hexdigest()}}))
@@ -165,6 +166,56 @@ class BuildCacheTest(unittest.TestCase):
         self.assertEqual(self.build(rebuild=True), 0)
         reader.join()
         self.assertEqual(seen, [1] * 20)
+
+
+class GeneratedUnitsTest(unittest.TestCase):
+    """bench/dbbuild.py keeps the generated translation units the database
+    compiles, and check_cache covers them."""
+
+    def test_the_units_kept_are_the_generated_files_the_database_compiles(self):
+        import subprocess
+        from bench import dbbuild
+        with tempfile.TemporaryDirectory() as td:
+            src, bld = Path(td) / "src", Path(td) / "build"
+            src.mkdir()
+            bld.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=src, check=True)
+            (src / "a.c").write_text("int a;\n")
+            subprocess.run(["git", "add", "a.c"], cwd=src, check=True)
+            (src / "gen.c").write_text("int g;\n")          # written by the build
+            (bld / "kernel_all.c").write_text('#line 1 "x.c"\n')
+            template = [{"directory": "${CORPUS}", "file": f, "arguments": ["cc", "-c", f]}
+                        for f in ("${CORPUS}/a.c", "${CORPUS}/gen.c",
+                                  "${GEN}/build/kernel_all.c", "${GEN}/build/gone.c")]
+            units, gone = dbbuild.generated_units(template, src, bld)
+        self.assertEqual(sorted(units), ["build/kernel_all.c", "src/gen.c"])
+        self.assertEqual(gone, ["build/gone.c"])
+
+    def _cache_with_unit(self, td):
+        cache = Path(td) / "c"
+        write_cache(cache, DECL)
+        rec = json.loads((cache / "cache.json").read_text())
+        (cache / deps.UNITS_DIR / "build").mkdir(parents=True)
+        (cache / deps.UNITS_DIR / "build" / "kernel_all.c").write_bytes(b"#line 1\n")
+        rec["generated_units"] = {"build/kernel_all.c": hashlib.sha256(b"#line 1\n").hexdigest()}
+        (cache / "cache.json").write_text(json.dumps(rec))
+        return cache, rec
+
+    def test_a_tampered_unit_fails_the_check(self):
+        with tempfile.TemporaryDirectory() as td:
+            cache, _ = self._cache_with_unit(td)
+            deps.check_cache(DECL, cache, COMMIT, PIN)
+            (cache / deps.UNITS_DIR / "build" / "kernel_all.c").write_bytes(b"changed\n")
+            with self.assertRaisesRegex(ValueError, "generated unit"):
+                deps.check_cache(DECL, cache, COMMIT, PIN)
+
+    def test_a_cache_in_the_older_layout_is_rebuilt_not_read(self):
+        with tempfile.TemporaryDirectory() as td:
+            cache, rec = self._cache_with_unit(td)
+            del rec["format"]
+            (cache / "cache.json").write_text(json.dumps(rec))
+            with self.assertRaisesRegex(ValueError, "cache format 1"):
+                deps.check_cache(DECL, cache, COMMIT, PIN)
 
 
 if __name__ == "__main__":

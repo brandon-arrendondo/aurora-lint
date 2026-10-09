@@ -463,6 +463,7 @@ class TestBuild(unittest.TestCase):
             (cache / "generated" / rel).parent.mkdir(parents=True, exist_ok=True)
             (cache / "generated" / rel).write_bytes(data)
         (cache / "cache.json").write_text(json.dumps({
+            "format": deps.BUILD_CACHE_FORMAT,
             "recipe_sha256": deps.recipe_sha256(decl),
             "db_sha256": hashlib.sha256(body).hexdigest(),
             "generated": {r: hashlib.sha256(d).hexdigest() for r, d in generated.items()}}))
