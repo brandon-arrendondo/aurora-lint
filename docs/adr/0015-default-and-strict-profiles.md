@@ -514,7 +514,8 @@ its build.
    stays the ISO C and POSIX model, so no library's extensions enter
    published figures (Brandon, 2026-10-09). ADR-0018 (still proposed) does
    not yet say that a benchmark declares these facts; it needs a follow-up
-   amendment to do so.
+   amendment to do so. (Answered by ADR-0018's 2026-10-09 amendment, which
+   says where a benchmark declares them.)
 
 ### The points the 2026-10-07 amendment left open
 
