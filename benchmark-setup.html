@@ -799,12 +799,17 @@ python3<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;i
 <span class="k">while</span><span class="w"> </span><span class="nb">read</span><span class="w"> </span>-r<span class="w"> </span>repo<span class="w"> </span>name<span class="w"> </span>sha<span class="p">;</span><span class="w"> </span><span class="k">do</span>
 <span class="w">  </span>git<span class="w"> </span>clone<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$repo</span><span class="s2">&quot;</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$name</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>-C<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$name</span><span class="s2">&quot;</span><span class="w"> </span>checkout<span class="w"> </span>--detach<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$sha</span><span class="s2">&quot;</span>
 <span class="k">done</span>
+git<span class="w"> </span>-C<span class="w"> </span>mbedtls<span class="w"> </span>submodule<span class="w"> </span>update<span class="w"> </span>--init<span class="w"> </span>--<span class="w"> </span>framework
 <span class="nb">cd</span><span class="w"> </span><span class="nv">$AURORA_LINT_SRC_ROOT</span>/aurora-lint<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>corpus-check
 </pre></div>
 </div>
-<p>mbedtls’s framework submodule is needed only for the
-<code class="docutils literal notranslate"><span class="pre">compile_commands.json</span></code> capture (<code class="docutils literal notranslate"><span class="pre">playbooks/setup-compile-commands.yml</span></code>),
-not for the aurora-lint scan of <code class="docutils literal notranslate"><span class="pre">library/</span></code>. Do not build inside the valkey
+<p>A corpus with git submodules lists them under <code class="docutils literal notranslate"><span class="pre">submodules</span></code> (today only
+mbedtls’s <code class="docutils literal notranslate"><span class="pre">framework</span></code>), and each is checked out at the commit the pinned
+superproject records. The aurora-lint scan of <code class="docutils literal notranslate"><span class="pre">library/</span></code> never reads
+<code class="docutils literal notranslate"><span class="pre">framework/</span></code>, but the library build does, so the compile database cannot be
+built without it. <code class="docutils literal notranslate"><span class="pre">corpus-check</span></code> fails a declared submodule that is missing,
+at another commit or modified, and a submodule in a pinned tree that is not
+declared. Do not build inside the valkey
 checkout: <code class="docutils literal notranslate"><span class="pre">make</span></code> leaves a gitignored <code class="docutils literal notranslate"><span class="pre">src/release.h</span></code> that corpus-check
 will (correctly) refuse.</p>
 </section>

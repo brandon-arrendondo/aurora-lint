@@ -693,11 +693,16 @@ detach at its ``version``, and then verify:
     while read -r repo name sha; do
       git clone "$repo" "$name" && git -C "$name" checkout --detach "$sha"
     done
+    git -C mbedtls submodule update --init -- framework
     cd $AURORA_LINT_SRC_ROOT/aurora-lint && python -m bench corpus-check
 
-mbedtls's framework submodule is needed only for the
-``compile_commands.json`` capture (``playbooks/setup-compile-commands.yml``),
-not for the aurora-lint scan of ``library/``. Do not build inside the valkey
+A corpus with git submodules lists them under ``submodules`` (today only
+mbedtls's ``framework``), and each is checked out at the commit the pinned
+superproject records. The aurora-lint scan of ``library/`` never reads
+``framework/``, but the library build does, so the compile database cannot be
+built without it. ``corpus-check`` fails a declared submodule that is missing,
+at another commit or modified, and a submodule in a pinned tree that is not
+declared. Do not build inside the valkey
 checkout: ``make`` leaves a gitignored ``src/release.h`` that corpus-check
 will (correctly) refuse.
 
