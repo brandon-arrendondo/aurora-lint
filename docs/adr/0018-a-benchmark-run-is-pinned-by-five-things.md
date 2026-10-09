@@ -106,7 +106,9 @@ of them, and a corpus's build run on a host configures against that host.
    was measured by rebuilding without cache. A set's manifest hash is
    computed from the package contents as they are unpacked, so it is the same
    on every host.
-5. **A real-world benchmark run happens in the image, and records its pins.**
+5. **A benchmark run, real-world or Juliet, happens in the image, and records
+   its pins.** Juliet's set is the C library, compiler and kernel headers;
+   its test cases for Windows are another platform's.
    - The commit declares the environment it expects
      (`data/benchmark_environment.json`). A run in any other image gets its
      own run id (`-env<hash>`), so two environments at one commit never
