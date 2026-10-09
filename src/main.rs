@@ -951,6 +951,10 @@ fn run() -> Result<i32> {
         None if diff_only => println!("Mode: diff-only (analyzing uncommitted and untracked files)"),
         None => {}
     }
+    // Otherwise "Found 0 violations" reads the same as a clean scan.
+    if diff_only && project_source.get_modified_c_files()?.is_empty() {
+        println!("diff-only: no changed C files to analyze");
+    }
 
     // Create progress reporter for CLI
     let progress_reporter = CLIProgressReporter::new(verbosity);

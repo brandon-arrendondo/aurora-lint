@@ -49,8 +49,8 @@ fn run_aurora_lint(args: &[&str]) -> (i32, String, String) {
 /// `git add` run with `current_dir(temp_repo)` would still mutate the *outer*
 /// repo's commit index instead of the temp repo's — leaving a stray `clean.c`
 /// entry that points at a blob in the temp object store and corrupting the
-/// outer commit ("invalid object … Error building trees"). Scrub these so temp
-/// repos are fully isolated.
+/// outer commit ("invalid object … Error building trees"). Scrub these, and
+/// shut out global and system git config, so temp repos are fully isolated.
 fn scrub_git_env(cmd: &mut Command) -> &mut Command {
     for var in [
         "GIT_DIR",
@@ -64,7 +64,11 @@ fn scrub_git_env(cmd: &mut Command) -> &mut Command {
     ] {
         cmd.env_remove(var);
     }
-    cmd
+    // Nor may the user's or the system's git config reach them: a global
+    // hooksPath or commit.gpgsign would fail every commit a test makes.
+    let no_config = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    cmd.env("GIT_CONFIG_GLOBAL", no_config)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
 }
 
 /// Run a `git` subcommand scoped to `repo_dir` with the inherited git
@@ -1749,9 +1753,10 @@ fn diff_base_on_a_clean_tree_scans_the_files_the_branch_changed() {
 
     // --diff alone sees no uncommitted change, so nothing is scanned: the
     // reason a pull-request job needs a base ref.
-    let (code, _, stderr, files) = run_diff_scan(elsewhere.path(), &repo, &["--diff"]);
+    let (code, stdout, stderr, files) = run_diff_scan(elsewhere.path(), &repo, &["--diff"]);
     assert_eq!(code, 0, "stderr: {stderr}");
     assert!(files.is_empty(), "{files:?}");
+    assert!(stdout.contains("diff-only: no changed C files"), "{stdout}");
 
     // From a directory outside the repository too: the added file and the
     // renamed one under its new name; the deleted file is no error.
@@ -1759,6 +1764,12 @@ fn diff_base_on_a_clean_tree_scans_the_files_the_branch_changed() {
         run_diff_scan(elsewhere.path(), &repo, &["--diff-base", "main"]);
     assert_eq!(code, 0, "stderr: {stderr}");
     assert!(stdout.contains("merge base with main"), "{stdout}");
+    assert_eq!(files, ["renamed.c", "src/added.c"]);
+
+    // A CI checkout of a pull request is often a detached HEAD.
+    git_in(&repo, &["checkout", "-q", "--detach"]);
+    let (code, _, stderr, files) = run_diff_scan(elsewhere.path(), &repo, &["--diff-base", "main"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
     assert_eq!(files, ["renamed.c", "src/added.c"]);
 }
 
@@ -1804,6 +1815,13 @@ fn diff_refuses_a_path_that_is_not_the_repository_root() {
         let (code, _, stderr, files) = run_diff_scan(&repo, &repo.join("src"), flags);
         assert_eq!(code, 2, "{flags:?} stderr: {stderr}");
         assert!(stderr.contains("root of the git repository"), "{stderr}");
+        assert!(stderr.contains("--report-exclude"), "{stderr}");
+        let named = if flags.len() == 1 {
+            "--diff needs"
+        } else {
+            "--diff/--diff-base needs"
+        };
+        assert!(stderr.contains(named), "{stderr}");
         assert!(files.is_empty());
     }
 
@@ -1829,7 +1847,8 @@ fn diff_base_names_a_missing_ref_and_a_shallow_history() {
         "{stderr}"
     );
 
-    // A depth-1 clone holds both branch tips but not the commit joining them.
+    // A depth-1 single-branch clone, as actions/checkout makes by default,
+    // holds only the branch being built.
     git_in(&repo, &["checkout", "-q", "main"]);
     std::fs::write(repo.join("later.c"), "int later;\n").unwrap();
     git_in(&repo, &["add", "later.c"]);
@@ -1838,21 +1857,35 @@ fn diff_base_names_a_missing_ref_and_a_shallow_history() {
     let url = format!("file://{}", repo.display());
     git_in(
         dir.path(),
-        &[
-            "clone",
-            "-q",
-            "--depth",
-            "1",
-            "--no-single-branch",
-            &url,
-            "shallow",
-        ],
+        &["clone", "-q", "--depth", "1", &url, "shallow"],
     );
     let shallow = dir.path().join("shallow");
     let (code, _, stderr, _) = run_diff_scan(&shallow, &shallow, &["--diff-base", "origin/main"]);
     assert_eq!(code, 2, "stderr: {stderr}");
     assert!(
-        stderr.contains("shallow clone") && stderr.contains("fetch-depth: 0"),
+        stderr.contains("'origin/main' does not name a commit")
+            && stderr.contains("shallow clone")
+            && stderr.contains("fetch-depth: 0"),
+        "{stderr}"
+    );
+
+    // Fetching the base at depth 1 too brings its tip but not the commit
+    // joining the two.
+    git_in(
+        &shallow,
+        &[
+            "fetch",
+            "-q",
+            "--depth",
+            "1",
+            "origin",
+            "main:refs/remotes/origin/main",
+        ],
+    );
+    let (code, _, stderr, _) = run_diff_scan(&shallow, &shallow, &["--diff-base", "origin/main"]);
+    assert_eq!(code, 2, "stderr: {stderr}");
+    assert!(
+        stderr.contains("found no merge base") && stderr.contains("fetch-depth: 0"),
         "{stderr}"
     );
 }

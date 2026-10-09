@@ -58,22 +58,31 @@ impl ProjectSource {
                 }
                 Ok(ProjectSource::Git(git_repo))
             }
-            ProjectSource::Directory(_) => match git2::Repository::discover(path) {
-                Ok(repo) => {
-                    let root = repo
-                        .workdir()
-                        .map_or_else(|| repo.path().display(), |w| w.display())
-                        .to_string();
-                    anyhow::bail!(
-                        "--diff needs PATH to be the root of the git repository: '{path}' is \
+            ProjectSource::Directory(_) => {
+                let flag = if diff_base.is_some() {
+                    "--diff/--diff-base"
+                } else {
+                    "--diff"
+                };
+                match git2::Repository::discover(path) {
+                    Ok(repo) => {
+                        let root = repo
+                            .workdir()
+                            .map_or_else(|| repo.path().display(), |w| w.display())
+                            .to_string();
+                        anyhow::bail!(
+                            "{flag} needs PATH to be the root of the git repository: '{path}' is \
                          inside the repository at '{root}'. Pass the root, and leave parts out \
-                         with --exclude or toolchain.toml's [ignore] paths."
-                    )
+                         with --report-exclude, --exclude-all or toolchain.toml's [ignore] paths."
+                        )
+                    }
+                    Err(_) => {
+                        anyhow::bail!(
+                            "{flag} needs a git repository, and '{path}' is not inside one"
+                        )
+                    }
                 }
-                Err(_) => {
-                    anyhow::bail!("--diff needs a git repository, and '{path}' is not inside one")
-                }
-            },
+            }
         }
     }
 
