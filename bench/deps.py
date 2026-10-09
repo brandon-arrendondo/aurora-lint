@@ -921,14 +921,18 @@ def overlay_source_dirs(template: list[dict], overlay: set[str]) -> list[dict]:
     return out
 
 
-# A line marker in a generated unit: `#line N "path"`, or GNU's `# N "path"`.
-_LINE_MARKER = re.compile(r'^([ \t]*#[ \t]*(?:line[ \t]+)?\d+[ \t]+")([^"\n]*)(")', re.M)
+# A directive in a generated unit that names a file: a line marker
+# (`#line N "path"`, or GNU's `# N "path"`), or an include, which is how a
+# CMake unity unit joins its sources (`#include "/abs/path.c"`).
+_LINE_MARKER = re.compile(
+    r'^([ \t]*#[ \t]*(?:(?:line[ \t]+)?\d+|include)[ \t]+")([^"\n]*)(")', re.M)
 
 
 def tokenize_line_markers(text: str, corpus: str, build: str,
                           generated_src: set[str] = frozenset()) -> str:
-    """A generated unit's line markers with the paths of the machine that
-    built it written as tokens, as normalize_db writes the database's: a
+    """A generated unit's line markers and quoted includes with the paths of
+    the machine that built it written as tokens, as normalize_db writes the
+    database's: a
     file in the build tree ${GEN}/build/..., a file the build generated into
     its copy of the checkout (`generated_src`, relative paths) ${GEN}/src/...,
     and any other file of the checkout ${CORPUS}/.... A path outside both

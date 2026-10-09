@@ -207,6 +207,8 @@ class GeneratedUnitsTest(unittest.TestCase):
             '#line 3 "/src/sel4/src/gen_config.h"\n'
             '  #  line 2 "/usr/include/stdint.h"\n'
             '#line 4 "relative.c"\n'
+            '#include "/src/sel4/lib/altsvc.c"\n'          # a CMake unity unit's member
+            '#include <stdio.h>\n'
             'char *s = "#line 9 \\"/src/sel4/not_a_marker.c\\"";\n')
 
     def test_line_markers_are_tokenized_like_the_database(self):
@@ -219,6 +221,8 @@ class GeneratedUnitsTest(unittest.TestCase):
             '#line 3 "${GEN}/src/src/gen_config.h"',
             '  #  line 2 "/usr/include/stdint.h"',      # a system header: as written
             '#line 4 "relative.c"',
+            '#include "${CORPUS}/lib/altsvc.c"',
+            '#include <stdio.h>',
             'char *s = "#line 9 \\"/src/sel4/not_a_marker.c\\"";',   # not a directive
         ])
 
