@@ -101,6 +101,12 @@ jobs:
       - name: cargo test (default features)
         run: cargo test
 
+      # The pre-commit hook skips docs/test-summary.md because it is not
+      # tracked; the cargo test above has just regenerated it, so this is
+      # where a generator that miscounts the rules fails.
+      - name: Generated test summary states the manifest's rule counts
+        run: python3 scripts/check_project_facts.py --generated
+
       - name: cargo test (tui feature)
         run: cargo test --features tui
 
