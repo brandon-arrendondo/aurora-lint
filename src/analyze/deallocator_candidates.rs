@@ -34,6 +34,20 @@ static ROWS: Mutex<Vec<Sighting>> = Mutex::new(Vec::new());
 
 thread_local! {
     static PENDING: RefCell<Vec<(String, usize, usize)>> = const { RefCell::new(Vec::new()) };
+    /// Set while a pass whose rows must not count runs on this thread.
+    static HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with nothing it records reaching the report: a second analysis
+/// pass over a file already analysed (a member file's excluded arms, read
+/// without generated headers) would count its candidates twice.
+pub fn discarding<R>(f: impl FnOnce() -> R) -> R {
+    let rollback = pending_len();
+    HELD.with(|h| h.set(true));
+    let out = f();
+    HELD.with(|h| h.set(false));
+    truncate_pending(rollback);
+    out
 }
 
 /// One call to a candidate: the callee, the 1-based position of the
@@ -82,7 +96,7 @@ pub fn truncate_pending(len: usize) {
 
 /// Attach `file` to everything recorded on this thread since the last flush.
 pub fn flush_file(file: &str) {
-    if !enabled() {
+    if !enabled() || HELD.with(|h| h.get()) {
         return;
     }
     let pending = PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()));

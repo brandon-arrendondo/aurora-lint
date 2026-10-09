@@ -13,6 +13,9 @@ pub mod check_macros;
 /// paths and `-D` macro state into the existing prescan/expansion pipeline.
 pub mod compile_commands;
 pub mod concurrency_roots;
+/// Which lines of a file the build configuration compiles, under its macro
+/// state: the arms that see build-generated facts.
+pub mod configuration_arms;
 pub mod const_eval;
 pub mod containment;
 /// Cross-file project context ([`context::ProjectContext`]) gathered by the
@@ -307,6 +310,17 @@ pub fn analyze_project(
         Some(outside) if !std::ptr::eq(context_for(file_path), &context) => outside,
         _ => &repair_macros,
     };
+    // A member file whose excluded arms could read generated facts is
+    // analysed against both contexts: its compiled lines keep the full
+    // context's findings, every other line takes the second's (§4.2, M2).
+    let split_for = |file_path: &str| {
+        let compiled = membership
+            .as_ref()?
+            .arms_of(std::path::Path::new(file_path))?;
+        let outside = context.outside_configuration.as_deref()?;
+        let repair = outside_repair_macros.as_ref()?;
+        Some((Arc::clone(compiled), outside, repair))
+    };
 
     warn_unimplemented_rules(manifest, &registry);
 
@@ -330,10 +344,12 @@ pub fn analyze_project(
         eprintln!(
             "Note: {} build-generated header(s) recognised; {} of {} scanned .c files are \
              not compiled by the build configuration that generated them, and are analysed \
-             as if those headers were missing.",
+             as if those headers were missing; {} more hold arms it does not compile, \
+             which are.",
             generated.files.len(),
             sources(&outside),
             sources(&c_files),
+            membership.as_ref().map_or(0, |m| m.arms_len()),
         );
     }
     if let Some(outside_context) = context.outside_configuration.as_deref() {
@@ -422,63 +438,57 @@ pub fn analyze_project(
             .build()?;
         let file_counter = AtomicUsize::new(0);
 
+        // A member file split by arm has its second pass as a work item of
+        // its own, next to its first, so a large one does not run both in
+        // one worker; the two are merged below.
+        let items: Vec<(&String, bool)> = c_files
+            .iter()
+            .flat_map(|f| {
+                let second = split_for(f).is_some();
+                std::iter::once((f, false)).chain(second.then_some((f, true)))
+            })
+            .collect();
         let results: Vec<_> = pool.install(|| {
-            c_files
+            items
                 .iter()
                 .par_bridge()
-                .map(|file_path| {
-                    if let Some(reporter) = progress {
-                        if reporter.is_cancelled() {
-                            return (Vec::new(), Vec::new(), Vec::new());
-                        }
+                .map(|&(file_path, second_pass)| {
+                    if second_pass {
+                        let result = split_for(file_path).map_or_else(
+                            || (Vec::new(), Vec::new(), Vec::new()),
+                            |(_, outside, repair)| {
+                                second_pass_item(
+                                    file_path,
+                                    repair,
+                                    manifest,
+                                    outside,
+                                    needs_vra,
+                                    &suppression_manager,
+                                    &escalation,
+                                    total_files,
+                                )
+                            },
+                        );
+                        return (file_path, true, result);
                     }
-
-                    // Not source text, or too large: skipped and reported,
-                    // never parsed (ADR-0017).
-                    if let Err(refusal) = input_guard::admit(std::path::Path::new(file_path)) {
-                        let failure = containment::ScanFailure::refused(file_path, &refusal);
-                        return (Vec::new(), Vec::new(), vec![failure]);
-                    }
-                    let _permit = input_guard::large_file_permit(std::path::Path::new(file_path));
-                    let mut parser = match CParser::new() {
-                        Ok(p) => p,
-                        Err(_) => return (Vec::new(), Vec::new(), Vec::new()),
-                    };
-                    parser.set_repair_macros(std::sync::Arc::clone(repair_macros_for(file_path)));
-                    let file_registry = RuleRegistry::new();
-                    // The context this file may use, which is the shared one
-                    // unless the file defines a name some other file also
-                    // defines `static`.
-                    let base = context_for(file_path);
-                    let local = base.as_seen_from(std::path::Path::new(file_path));
-                    let file_context = local.as_ref().unwrap_or(base);
-                    set_project_context_for_enabled(&file_registry, manifest, file_context);
-                    let mut file_supp = suppression_manager.clone();
-
-                    let result = analyze_one_file_contained(
+                    let result = first_pass_item(
                         file_path,
-                        &mut parser,
-                        &file_registry,
+                        progress,
+                        repair_macros_for(file_path),
+                        context_for(file_path),
                         manifest,
-                        file_context,
                         needs_vra,
-                        &mut file_supp,
+                        &suppression_manager,
                         &escalation,
-                        None,
-                        0,
                         total_files,
-                        false,
+                        &file_counter,
                     );
-
-                    let completed = file_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                    if let Some(reporter) = progress {
-                        reporter.report_file(completed, total_files, file_path, "");
-                    }
-
-                    result
+                    (file_path, false, result)
                 })
                 .collect()
         });
+
+        let results = pair_passes(results, &|f| split_for(f).map(|(compiled, _, _)| compiled));
 
         for (v, s, f) in results {
             violations.extend(v);
@@ -545,7 +555,7 @@ pub fn analyze_project(
             parser.set_repair_macros(std::sync::Arc::clone(repair_macros_for(file_path)));
         }
 
-        let (file_violations, file_suppressed, file_failures) = analyze_one_file_contained(
+        let result = analyze_one_file_contained(
             file_path,
             &mut parser,
             &file_registry,
@@ -559,6 +569,23 @@ pub fn analyze_project(
             total_files,
             true,
         );
+        let (file_violations, file_suppressed, file_failures) = match split_for(file_path) {
+            Some((compiled, outside, repair)) => {
+                parser.set_repair_macros(Arc::clone(repair));
+                let other = analyze_outside_arms(
+                    file_path,
+                    &mut parser,
+                    manifest,
+                    outside,
+                    needs_vra,
+                    &suppression_manager,
+                    &escalation,
+                    total_files,
+                );
+                merge_by_arms(file_path, result, other, &compiled)
+            }
+            None => result,
+        };
         violations.extend(file_violations);
         suppressed.extend(file_suppressed);
         if file_failures
@@ -938,11 +965,18 @@ fn load_project_context(
         )?;
         // Only a file the configuration does not compile reads the second
         // context; when every scanned source is compiled, there is none.
-        if generated.is_some() {
-            let membership = membership_of(compile_db, &context);
-            let needed = c_files
-                .iter()
-                .any(|f| f.ends_with(".c") && !membership.contains(std::path::Path::new(f)));
+        if let Some(gen) = generated {
+            let membership = membership_of(compile_db, &context).with_arms(
+                compile_db,
+                gen,
+                &context.include_edges,
+                &context.include_report.outside_headers,
+                &c_files,
+            );
+            let needed = membership.has_arms()
+                || c_files
+                    .iter()
+                    .any(|f| f.ends_with(".c") && !membership.contains(std::path::Path::new(f)));
             members = Some(membership);
             if !needed {
                 outside = None;
@@ -1410,6 +1444,203 @@ fn analyze_one_file(
     }
 
     (file_violations, file_suppressed, file_failures)
+}
+
+/// The findings `file_path` would have against `outside`, the context
+/// without generated headers, for the lines of a member file its
+/// configuration does not compile. A second pass over the same file: its
+/// suppression bookkeeping and deallocator candidates are discarded, since
+/// the first pass already recorded the file.
+#[allow(clippy::too_many_arguments)]
+fn analyze_outside_arms(
+    file_path: &str,
+    parser: &mut CParser,
+    manifest: &RuleManifest,
+    outside: &context::ProjectContext,
+    needs_vra: bool,
+    suppression_manager: &SuppressionManager,
+    escalation: &containment::Escalation,
+    total_files: usize,
+) -> (
+    Vec<RuleViolation>,
+    Vec<SuppressedViolation>,
+    Vec<containment::ScanFailure>,
+) {
+    let registry = RuleRegistry::new();
+    let local = outside.as_seen_from(std::path::Path::new(file_path));
+    let file_context = local.as_ref().unwrap_or(outside);
+    set_project_context_for_enabled(&registry, manifest, file_context);
+    let mut supp = suppression_manager.clone();
+    deallocator_candidates::discarding(|| {
+        analyze_one_file_contained(
+            file_path,
+            parser,
+            &registry,
+            manifest,
+            file_context,
+            needs_vra,
+            &mut supp,
+            escalation,
+            None,
+            0,
+            total_files,
+            false,
+        )
+    })
+}
+
+/// One file's (first) pass in a parallel scan: refused input reported, a
+/// parser and rule registry of its own, analysed against `base` (narrowed to
+/// what the file can see), progress reported.
+#[allow(clippy::too_many_arguments)]
+fn first_pass_item(
+    file_path: &str,
+    progress: Option<&dyn ProgressReporter>,
+    repair: &Arc<unknown_identifier_recovery::RepairMacros>,
+    base: &context::ProjectContext,
+    manifest: &RuleManifest,
+    needs_vra: bool,
+    suppression_manager: &SuppressionManager,
+    escalation: &containment::Escalation,
+    total_files: usize,
+    file_counter: &AtomicUsize,
+) -> FileResult {
+    if progress.is_some_and(|r| r.is_cancelled()) {
+        return (Vec::new(), Vec::new(), Vec::new());
+    }
+    // Not source text, or too large: skipped and reported, never parsed
+    // (ADR-0017).
+    if let Err(refusal) = input_guard::admit(std::path::Path::new(file_path)) {
+        let failure = containment::ScanFailure::refused(file_path, &refusal);
+        return (Vec::new(), Vec::new(), vec![failure]);
+    }
+    let _permit = input_guard::large_file_permit(std::path::Path::new(file_path));
+    let Ok(mut parser) = CParser::new() else {
+        return (Vec::new(), Vec::new(), Vec::new());
+    };
+    parser.set_repair_macros(Arc::clone(repair));
+    let file_registry = RuleRegistry::new();
+    // The context this file may use, which is the shared one unless the file
+    // defines a name some other file also defines `static`.
+    let local = base.as_seen_from(std::path::Path::new(file_path));
+    let file_context = local.as_ref().unwrap_or(base);
+    set_project_context_for_enabled(&file_registry, manifest, file_context);
+    let mut file_supp = suppression_manager.clone();
+    let result = analyze_one_file_contained(
+        file_path,
+        &mut parser,
+        &file_registry,
+        manifest,
+        file_context,
+        needs_vra,
+        &mut file_supp,
+        escalation,
+        None,
+        0,
+        total_files,
+        false,
+    );
+    let completed = file_counter.fetch_add(1, Ordering::Relaxed) + 1;
+    if let Some(reporter) = progress {
+        reporter.report_file(completed, total_files, file_path, "");
+    }
+    result
+}
+
+/// A member file's second pass as a work item of its own: a parser of its
+/// own with the second context's repair macros.
+#[allow(clippy::too_many_arguments)]
+fn second_pass_item(
+    file_path: &str,
+    repair: &Arc<unknown_identifier_recovery::RepairMacros>,
+    manifest: &RuleManifest,
+    outside: &context::ProjectContext,
+    needs_vra: bool,
+    suppression_manager: &SuppressionManager,
+    escalation: &containment::Escalation,
+    total_files: usize,
+) -> FileResult {
+    let Ok(mut parser) = CParser::new() else {
+        return (Vec::new(), Vec::new(), Vec::new());
+    };
+    parser.set_repair_macros(Arc::clone(repair));
+    analyze_outside_arms(
+        file_path,
+        &mut parser,
+        manifest,
+        outside,
+        needs_vra,
+        suppression_manager,
+        escalation,
+        total_files,
+    )
+}
+
+/// One file's findings, suppressed findings and failures.
+type FileResult = (
+    Vec<RuleViolation>,
+    Vec<SuppressedViolation>,
+    Vec<containment::ScanFailure>,
+);
+
+/// The per-file results of a parallel scan, with each split file's two
+/// passes paired and merged by line (`compiled_of` gives its compiled
+/// lines); `(file, second_pass, result)` in, one result per file out.
+fn pair_passes(
+    results: Vec<(&String, bool, FileResult)>,
+    compiled_of: &dyn Fn(&str) -> Option<Arc<Vec<bool>>>,
+) -> Vec<FileResult> {
+    let mut seconds: HashMap<String, FileResult> = HashMap::new();
+    let mut firsts = Vec::with_capacity(results.len());
+    for (file_path, second_pass, result) in results {
+        if second_pass {
+            seconds.insert(file_path.clone(), result);
+        } else {
+            firsts.push((file_path, result));
+        }
+    }
+    firsts
+        .into_iter()
+        .map(|(file_path, result)| {
+            match (compiled_of(file_path), seconds.remove(file_path.as_str())) {
+                (Some(compiled), Some(other)) => merge_by_arms(file_path, result, other, &compiled),
+                _ => result,
+            }
+        })
+        .collect()
+}
+
+/// One file's findings from its two passes: `inside`'s on the lines its
+/// configuration compiles (`compiled`, indexed from 1), `outside`'s on the
+/// rest. A finding located in another file keeps the first pass's.
+fn merge_by_arms(
+    file_path: &str,
+    inside: (
+        Vec<RuleViolation>,
+        Vec<SuppressedViolation>,
+        Vec<containment::ScanFailure>,
+    ),
+    outside: (
+        Vec<RuleViolation>,
+        Vec<SuppressedViolation>,
+        Vec<containment::ScanFailure>,
+    ),
+    compiled: &[bool],
+) -> (
+    Vec<RuleViolation>,
+    Vec<SuppressedViolation>,
+    Vec<containment::ScanFailure>,
+) {
+    let compiled_at = |v: &RuleViolation| {
+        v.file_path != file_path || compiled.get(v.line).copied().unwrap_or(true)
+    };
+    let (mut violations, mut suppressed, mut failures) = inside;
+    violations.retain(|v| compiled_at(v));
+    suppressed.retain(|s| compiled_at(&s.violation));
+    violations.extend(outside.0.into_iter().filter(|v| !compiled_at(v)));
+    suppressed.extend(outside.1.into_iter().filter(|s| !compiled_at(&s.violation)));
+    failures.extend(outside.2);
+    (violations, suppressed, failures)
 }
 
 /// [`analyze_one_file`], with a panic outside any one rule's check (reading,

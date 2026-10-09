@@ -2945,6 +2945,56 @@ fn reports_name_what_is_missing_for_the_files_outside_the_configuration() {
 }
 
 #[test]
+fn arms_the_configuration_leaves_off_read_no_generated_facts() {
+    // member.c is compiled, but its FEATURE_X arm and its MAX_NODES > 1 arm
+    // are not: there, the accessor's declaration and the array size the
+    // generated headers supply belong to another configuration.
+    let (_dir, project, build) = generated_headers_project(false);
+    std::fs::write(
+        project.join("src/member.c"),
+        "#include <obj/structs_gen.h>\n#include <config_gen.h>\n\
+         int member_nodes[MAX_NODES];\n\
+         int member_use(const struct widget *w)\n{\n\
+         \x20   widget_count();\n\
+         \x20   member_missing();\n\
+         #ifdef FEATURE_X\n\
+         \x20   feature_accessor(w);\n\
+         #endif\n\
+         #if MAX_NODES > 1\n\
+         \x20   return member_nodes[cpu()];\n\
+         #else\n\
+         \x20   return member_nodes[cpu()] + widget_get_size(w);\n\
+         #endif\n}\n",
+    )
+    .unwrap();
+    let db = build.join("compile_commands.json");
+    let (code, stderr, keys) =
+        generated_headers_scan(&project, &["--compile-commands", db.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+    let member: Vec<&String> = keys.iter().filter(|k| k.starts_with("member.c")).collect();
+    // Compiled lines keep the generated facts: the real undeclared call and
+    // the size-1 array in the #else arm the configuration takes.
+    assert!(
+        keys.contains(&"member.c:7:DCL31-C".to_string()),
+        "{member:?}\n{stderr}"
+    );
+    assert!(
+        keys.contains(&"member.c:14:ARR30-C".to_string()),
+        "{member:?}"
+    );
+    // Excluded arms read the context without them: no undeclared accessor
+    // (the declaration list is incomplete there), no size-1 array.
+    assert!(
+        !keys.contains(&"member.c:9:DCL31-C".to_string()),
+        "{member:?}"
+    );
+    assert!(
+        !keys.contains(&"member.c:12:ARR30-C".to_string()),
+        "{member:?}"
+    );
+}
+
+#[test]
 fn a_generated_include_inside_the_scanned_tree_is_refused() {
     let (_dir, project, _build) = generated_headers_project(false);
     let inside = project.join("include");

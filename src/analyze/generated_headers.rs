@@ -213,10 +213,15 @@ fn copies_of_project_files(
         .collect()
 }
 
-/// The `.c` files the database's configuration compiles, by real path.
+/// The `.c` files the database's configuration compiles, by real path, and
+/// for those holding arms it does not compile, which lines it does.
 #[derive(Debug, Clone, Default)]
 pub struct Membership {
     members: HashSet<String>,
+    /// A member file whose excluded or undecided arms hold code naming
+    /// something a generated header defines -> its lines, `true` where the
+    /// configuration compiles them (`configuration_arms::compiled_lines`).
+    arms: std::collections::HashMap<String, Arc<Vec<bool>>>,
 }
 
 impl Membership {
@@ -245,12 +250,91 @@ impl Membership {
                 }
             }
         }
-        Self { members }
+        Self {
+            members,
+            arms: Default::default(),
+        }
     }
 
     /// Whether the configuration compiles `path`.
     pub fn contains(&self, path: &Path) -> bool {
         self.members.contains(&real_path(path))
+    }
+
+    /// For a member file with arms the configuration does not compile that
+    /// could read generated facts, its compiled lines (indexed from 1).
+    pub fn arms_of(&self, path: &Path) -> Option<&Arc<Vec<bool>>> {
+        self.arms.get(&real_path(path))
+    }
+
+    /// Whether any member file is split by arm.
+    pub fn has_arms(&self) -> bool {
+        !self.arms.is_empty()
+    }
+
+    /// How many member files are split by arm.
+    pub fn arms_len(&self) -> usize {
+        self.arms.len()
+    }
+
+    /// Decide, for each scanned member file, which of its lines the
+    /// configuration compiles (§4.2, M2), keeping the files whose excluded
+    /// lines name something `generated` defines. The configuration's macro
+    /// state is read from the database, the generated headers and the
+    /// project headers the member files reach (`include_edges`).
+    pub fn with_arms(
+        mut self,
+        db: Option<&CompileDb>,
+        generated: &GeneratedHeaders,
+        include_edges: &std::collections::HashMap<String, Vec<String>>,
+        outside_headers: &[String],
+        scanned: &[String],
+    ) -> Self {
+        // System headers are read for their declarations, not for the
+        // configuration: a name only they define is left to the closed world.
+        let outside_headers: HashSet<&str> = outside_headers.iter().map(String::as_str).collect();
+        let mut generated_names: HashSet<String> = HashSet::new();
+        for f in generated.files.iter() {
+            if let Ok(text) = std::fs::read_to_string(f) {
+                generated_names.extend(super::configuration_arms::names_defined_in(&text));
+            }
+        }
+        let mut headers: HashSet<String> = HashSet::new();
+        let mut stack: Vec<String> = self.members.iter().cloned().collect();
+        let mut seen: HashSet<String> = stack.iter().cloned().collect();
+        while let Some(file) = stack.pop() {
+            for next in include_edges.get(&file).into_iter().flatten() {
+                if seen.insert(next.clone()) {
+                    if !next.ends_with(".c")
+                        && !generated.files.contains(Path::new(next))
+                        && !outside_headers.contains(next.as_str())
+                    {
+                        headers.insert(next.clone());
+                    }
+                    stack.push(next.clone());
+                }
+            }
+        }
+        let state = super::configuration_arms::ConfigState::build(
+            db,
+            generated.files.iter().map(PathBuf::as_path),
+            headers.iter().map(Path::new),
+        );
+        for file in scanned.iter().filter(|f| f.ends_with(".c")) {
+            let key = real_path(Path::new(file));
+            if !self.members.contains(&key) {
+                continue;
+            }
+            let Ok(source) = std::fs::read_to_string(file) else {
+                continue;
+            };
+            let compiled = super::configuration_arms::compiled_lines(&source, &state);
+            if super::configuration_arms::excludes_code_naming(&source, &compiled, &generated_names)
+            {
+                self.arms.insert(key, Arc::new(compiled));
+            }
+        }
+        self
     }
 }
 
