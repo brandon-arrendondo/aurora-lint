@@ -1,6 +1,8 @@
 # Cross-rule overlap: policy and decision
 
-**Status:** DECIDED (2026-08-27). Rollout DONE (2026-08-30).
+**Status:** DECIDED (2026-08-27). Rollout DONE (2026-08-30). Amended
+(2026-10-09): an exception needs complete coverage in every declared
+environment and every preset, not only on the labelled instances.
 
 ## Rollout
 
@@ -52,9 +54,15 @@ and each updated comment says so.
 **Default: rules are allowed to overlap. Two rules independently firing on the
 same defect is not a bug and does not need fixing.**
 
+Several rules firing on one line for the same reason is normal. It is how
+CERT C is built (a rule and the broader recommendations around it often
+describe one defect from different sides), and it is not a defect to
+resolve or a finding to dedupe.
+
 Suppressing one rule in favor of another is the exception, and requires a
 written, evidence-backed case that the suppressed rule adds **zero**
-information in **every** instance — not just most of them. Absent that case,
+information in **every** instance — not just most of them — and in every
+declared environment and preset (bar #2 below). Absent that case,
 both findings are reported, optionally tagged as related so a downstream
 consumer (a report, the paper's aggregate counts, a human triager) can choose
 to collapse them, but aurora-lint itself never hides one on the other's say-so.
@@ -130,18 +138,52 @@ B)` needs all of:
 1. **A stated defect concept** both rules target — not just frequent
    co-location. ("Both flag the same string-copy call" is not a concept;
    "both are the codebase's only two mechanisms for catching X" is.)
-2. **Empirical evidence of total subsumption**: every ground-truth-labeled
-   instance where `A` fires, `B` also fires with the same verdict, across
-   every project sampled — not a majority, not "the cases we happened to
-   check." If even one instance shows `A` catching something `B` misses (or
-   vice versa), it's not subsumption, it's overlap, and the default applies.
+2. **Complete coverage in every context.** Two parts, both required:
+   - *Labelled-instance subsumption (necessary):* every
+     ground-truth-labeled instance where `A` fires, `B` also fires with the
+     same verdict, across every project sampled — not a majority, not "the
+     cases we happened to check." If even one instance shows `A` catching
+     something `B` misses (or vice versa), it's not subsumption, it's
+     overlap, and the default applies.
+   - *Every context (also necessary; the labelled sample alone is not
+     sufficient):* `B` covers `A` completely under every combination of
+     declared environment and settings (C library, `c_standard`, POSIX
+     declared or not, data model, Windows target, rule options) and under
+     every preset (default, strict, pedantic). A rule's form changes with
+     these facts, so coverage measured in one configuration says nothing
+     about another, and a labelled corpus usually exercises only a few
+     configurations. Examples of the kind of variance meant:
+     - *Edition.* A rule that recognises `at_quick_exit` handlers only from
+       C11 on, or treats the C23 `__VA_OPT__(,)` comma as an exception only
+       under C23, has forms that never appear in C99 or C11 code. Agreement
+       measured there does not carry to a C23 project.
+     - *POSIX.* A rule whose string sinks, thread-exit calls or
+       file-descriptor remedies count only when POSIX is declared behaves
+       differently on an ISO-only configuration and a POSIX one. Agreement
+       measured on one does not carry to the other.
+     - *Data model.* A check that matters only where `char` is as wide as
+       `int` (for example an `EOF` test that also needs `feof` and `ferror`)
+       never fires under LP64. There it can look covered by a neighbouring
+       rule, and still report something that rule has no counterpart for
+       on a target where `char` is as wide as `int`.
+     - *Preset.* A rule's default form may be narrowed (for example an
+       option limiting integer-overflow findings to tainted operands)
+       while its strict form is not, so coverage under default does not
+       imply coverage under strict, or under pedantic.
+
+   Co-firing on the same lines is therefore never enough on its own: the
+   case for an exception names each context it was checked in.
 3. **A rationale for the direction** (why does `B` dominate `A` and not the
    reverse?) written down next to the exception, not left to be inferred
    from which rule happened to be authored second.
 4. **A re-check trigger**: subsumption argued today can stop holding once
-   either rule's detection logic changes. The exception's rationale should
-   name what would invalidate it (e.g. "if `STR31-C` ever fires without a
-   proof of safety, or `MSC24-C`'s ban list changes, re-verify").
+   either rule's detection logic changes, or once the contexts it was
+   checked in change: a newly supported `c_standard`, POSIX edition, C
+   library, data model or rule option, or a change to what a preset
+   enables. The exception's rationale should name what would invalidate it
+   (e.g. "if `STR31-C` ever fires without a proof of safety, or `MSC24-C`'s
+   ban list changes, or either rule gains a C23-only or POSIX-only form,
+   re-verify").
 
 Re: the five pre-existing ad-hoc deference comments (this pass's inventory) —
 only two have any ground-truth-labeled co-located data at all
