@@ -11,10 +11,14 @@ volume named after the image's environment pin, so a binary built by one
 environment is never reused by another.
 
   python -m bench container-run [--image IMAGE] [--runtime podman] \
-      -- [realworld-run arguments]
+      -- [realworld-run | juliet] [its arguments]
 
 e.g.
-  python -m bench container-run -- --tool sqc --codebase mosquitto
+  python -m bench container-run -- realworld-run --tool sqc --codebase mosquitto
+  python -m bench container-run -- juliet --run-id-out /tmp/juliet.run-id
+
+(no subcommand means realworld-run). The Juliet tree is mounted read-only
+too, when this machine has it.
 
 Every scan run this way records the environment manifest's pin in its
 sidecar (bench/environment.py), next to the dependency set's.
@@ -37,7 +41,10 @@ WORK = "/work"
 IN_BENCH_ROOT = "/bench"
 # Arguments of realworld-run that name a file on the host; their directory
 # is mounted at the same path so the run can write there.
-_HOST_PATH_ARGS = ("--dirs-out",)
+_HOST_PATH_ARGS = ("--dirs-out", "--run-id-out")
+# The bench subcommands container-run runs; a run whose first argument is
+# none of these is a realworld-run.
+SUBCOMMANDS = ("realworld-run", "juliet")
 
 
 def image_pin(image: str, runtime: str = "podman") -> str:
@@ -101,8 +108,13 @@ def command(run_args: list[str], image: str, pin: str, runtime: str = "podman",
         cmd += ["-v", f"{d}:{d}"]
     if os.environ.get("BENCH_DB"):
         cmd += ["-e", f"BENCH_DB={Path(os.environ['BENCH_DB']).resolve()}"]
-    inner = ("cargo build --release --locked --quiet && python3 -m bench realworld-run "
-             + " ".join(shlex.quote(a) for a in run_args))
+    juliet = bench_root / "benchmarks" / "juliet-test-suite-c"
+    if juliet.is_dir():
+        cmd += ["-v", f"{juliet}:{IN_BENCH_ROOT}/benchmarks/juliet-test-suite-c:ro"]
+    sub, rest = (run_args[0], run_args[1:]) if run_args[:1] and run_args[0] in SUBCOMMANDS \
+        else ("realworld-run", run_args)
+    inner = (f"cargo build --release --locked --quiet && python3 -m bench {sub} "
+             + " ".join(shlex.quote(a) for a in rest))
     cmd += [image, "sh", "-c", inner]
     return cmd
 

@@ -50,12 +50,17 @@ def cmd_juliet(args):
     from bench.runner import run_benchmark
     cwes = [c for c in args.cwe.split(",") if c.strip()] if args.cwe else None
     try:
-        run_benchmark(fast=not args.full, jobs=args.jobs, keep_reports=args.keep_reports,
-                      compile_commands=args.compile_commands, cwes=cwes,
-                      profile=args.profile)
+        run_id = run_benchmark(fast=not args.full, jobs=args.jobs,
+                               keep_reports=args.keep_reports,
+                               compile_commands=args.compile_commands, cwes=cwes,
+                               profile=args.profile)
     except ValueError as e:
         print(e)
         sys.exit(2)
+    if args.run_id_out:
+        # The run id this invocation recorded, for a caller that must find the
+        # run afterwards without rebuilding its name (the shared queue).
+        args.run_id_out.write_text(run_id + "\n")
 
 
 def cmd_container_build_db(args):
@@ -1195,6 +1200,8 @@ def main():
     p_juliet.add_argument("--profile", choices=PROFILES, default=DEFAULT_PROFILE,
                           help="aurora-lint policy/environment preset to scan under, "
                                "recorded in the run's settings (default: default)")
+    p_juliet.add_argument("--run-id-out", type=Path, default=None, metavar="PATH",
+                          help="write the run id this run recorded to PATH")
     p_juliet.set_defaults(func=cmd_juliet)
 
     # status

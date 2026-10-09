@@ -98,7 +98,12 @@ CREATE TABLE IF NOT EXISTS runs (
     -- The policy/environment settings the run scanned under, per ADR-0015:
     -- canonical JSON from `aurora-lint --list-options json`. NULL for a run
     -- recorded before settings existed.
-    settings        TEXT
+    settings        TEXT,
+    -- The benchmark environment the run scanned in (docs/adr/0018):
+    -- canonical JSON {"manifest_sha256", "base", "set"}, the environment
+    -- manifest's pin (NULL outside the benchmark image) and the dependency
+    -- set's provenance. NULL for a run recorded before environments existed.
+    environment     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS cwe_scans (
@@ -206,6 +211,10 @@ CREATE TABLE IF NOT EXISTS realworld_results (
     -- a complete one's, which is the whole hazard -- so it is
     -- recorded next to the count rather than left in the results directory.
     coverage        TEXT,
+    -- The benchmark environment this result was scanned in, from the scan's
+    -- sidecar: canonical JSON as for runs.environment. NULL when the sidecar
+    -- records none (another tool, or a run before environments existed).
+    environment     TEXT,
     UNIQUE(run_id, project, tool)
 );
 
@@ -399,6 +408,33 @@ class BenchDB:
             conn.close()
         self._migrate_realworld_run_identity()
         self._migrate_settings_columns()
+        self._migrate_environment_columns()
+
+    def _migrate_environment_columns(self):
+        """runs and realworld_results gained `environment` (docs/adr/0018)."""
+        conn = self._connect()
+        try:
+            for table in ("runs", "realworld_results"):
+                if "environment" not in self._table_columns(conn, table):
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN environment TEXT")
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def environment_json(meta: dict | None) -> str | None:
+        """runs.environment / realworld_results.environment from a scan's
+        sidecar (or a Juliet run's own record): the environment manifest's
+        pin and base, and the dependency set's provenance, as canonical
+        JSON. None when the record has neither."""
+        if not meta:
+            return None
+        env = meta.get("environment") or {}
+        record = {"manifest_sha256": env.get("manifest_sha256"),
+                  "base": env.get("base"), "set": meta.get("deps")}
+        if not any(record.values()):
+            return None
+        return json.dumps(record, sort_keys=True, separators=(",", ":"))
 
     def _migrate_settings_columns(self):
         """Both run tables gained `settings`: the policy/environment settings
@@ -581,19 +617,20 @@ class BenchDB:
     def create_run(self, run_id: str, sqc_version: str, commit_sha: str,
                    mode: str, started_at: str, pid: int, jobs: int,
                    total_cwes: int, machine: dict,
-                   settings: str | None = None) -> None:
+                   settings: str | None = None,
+                   environment: str | None = None) -> None:
         with self._cursor() as cur:
             cur.execute("""
                 INSERT INTO runs (run_id, sqc_version, commit_sha, mode, status,
                                   started_at, pid, jobs, total_cwes,
                                   hostname, cpu_model, cpu_cores, ram_gb, os_version,
-                                  settings)
-                VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  settings, environment)
+                VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (run_id, sqc_version, commit_sha, mode, started_at,
                   pid, jobs, total_cwes,
                   machine.get("hostname"), machine.get("cpu_model"),
                   machine.get("cpu_cores"), machine.get("ram_gb"),
-                  machine.get("os_version"), settings))
+                  machine.get("os_version"), settings, environment))
 
     def finish_run(self, run_id: str, status: str, finished_at: str) -> None:
         with self._cursor() as cur:
@@ -1537,11 +1574,14 @@ class BenchDB:
             # cannot match labels" and leaves the run unscored, so the run is
             # visibly unscoreable rather than confidently mis-scored.
             codebase_commit = None
+            environment = None
             meta_file = json_file.with_name(json_file.stem + ".meta.json")
             if meta_file.exists():
                 try:
                     with open(meta_file) as fh:
-                        codebase_commit = json.load(fh).get("codebase_commit")
+                        meta = json.load(fh)
+                    codebase_commit = meta.get("codebase_commit")
+                    environment = self.environment_json(meta)
                 except (OSError, json.JSONDecodeError):
                     pass
 
@@ -1561,17 +1601,18 @@ class BenchDB:
                 cur.execute("""
                     INSERT INTO realworld_results
                         (run_id, project, tool, c_files, loc, violation_count,
-                         duration_s, codebase_commit)
-                    VALUES (?, ?, 'sqc', ?, ?, ?, ?, ?)
+                         duration_s, codebase_commit, environment)
+                    VALUES (?, ?, 'sqc', ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (run_id, project, tool) DO UPDATE SET
                         c_files = excluded.c_files,
                         loc = excluded.loc,
                         violation_count = excluded.violation_count,
                         duration_s = excluded.duration_s,
-                        codebase_commit = excluded.codebase_commit
+                        codebase_commit = excluded.codebase_commit,
+                        environment = excluded.environment
                     RETURNING id
                 """, (run_id, project, c_files, loc, violation_count, duration,
-                      codebase_commit))
+                      codebase_commit, environment))
                 result_id = cur.fetchone()["id"]
 
                 # Insert per-violation detail in the SAME transaction as the

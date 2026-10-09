@@ -153,17 +153,50 @@ def _cwe_shard_dirs(cwe_dir: Path) -> list[Path] | None:
 # would race on the same `cwe_scans` row (UNIQUE(run_id, cwe_dir_name)), so
 # writing is deferred to the parent process after `merge_shards`.
 
-def _prescan_args(cwe_dir_str: str, compile_db: str | None) -> list[str]:
+def _prescan_args(cwe_dir_str: str, compile_db: str | None,
+                  deps_includes: tuple = ()) -> list[str]:
     """The cross-file context arguments every scan of a CWE shares: the whole
-    CWE dir plus Juliet's support library, and the compile database if the
-    run has one."""
+    CWE dir plus Juliet's support library, the system headers of Juliet's
+    dependency set (bench/deps.py, docs/adr/0018), and the compile database
+    if the run has one."""
     args = [
         "-d", cwe_dir_str,
         "-d", str(JULIET_BASE.parent / "testcasesupport"),
+        *deps_includes,
     ]
     if compile_db:
         args.extend(["--compile-commands", compile_db])
     return args
+
+
+JULIET_DEPS = "juliet"
+
+
+def _juliet_environment() -> tuple[tuple, str | None, str]:
+    """What a Juliet run scans against (docs/adr/0018): the -I flags of
+    Juliet's dependency set, the run's `environment` record and its run-id
+    suffix. The set must be present with its pinned hash: a run without it
+    would record findings against headers nothing pins. The suffix follows
+    real-world runs: none in the declared benchmark environment, -env<hash>
+    in another image, -hostenv outside any image."""
+    from bench import deps, environment
+    from bench.db import BenchDB
+    from bench.realworld_runner import _environment_suffix
+    if not (deps.DEPS_DIR / f"{JULIET_DEPS}.json").is_file():
+        return (), None, ""
+    decl = deps.load(JULIET_DEPS)
+    res = deps.check(decl)
+    if res["status"] != deps.OK:
+        raise FileNotFoundError(
+            f"Juliet's dependency set {res['path']} is {res['status']}; "
+            + deps.fix_hint(JULIET_DEPS))
+    manifest = environment.load()
+    pin = environment.pin(manifest) if manifest is not None else None
+    record = BenchDB.environment_json(
+        {"environment": {"manifest_sha256": pin, "base": manifest.get("base")} if manifest else None,
+         "deps": deps.provenance(decl)})
+    suffix = _environment_suffix(pin) if pin else "-hostenv"
+    return tuple(deps.include_args(decl)), record, suffix
 
 
 def _settings_args(profile: str) -> list[str]:
@@ -177,7 +210,7 @@ def _settings_args(profile: str) -> list[str]:
 
 def _warm_prescan(cwe_dir_name: str, cwe_dir_str: str, manifest: str,
                   cache_path: str, compile_db: str | None = None,
-                  profile: str = DEFAULT_PROFILE) -> dict:
+                  profile: str = DEFAULT_PROFILE, deps_includes: tuple = ()) -> dict:
     """Build a sharded CWE's cross-file context once and save it for its
     shards to load (`--save-prescan`).
 
@@ -197,7 +230,7 @@ def _warm_prescan(cwe_dir_name: str, cwe_dir_str: str, manifest: str,
             str(SQC_BIN), empty_dir,
             "-m", manifest,
             *_settings_args(profile),
-            *_prescan_args(cwe_dir_str, compile_db),
+            *_prescan_args(cwe_dir_str, compile_db, deps_includes),
             "--save-prescan", cache_path,
             # A throwaway report: the warm pass exists for its prescan
             # cache, and the export needs a real extension to pick a format.
@@ -241,7 +274,7 @@ def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
                     shard_dir_str: str, manifest: str, scan_id: int,
                     keep_reports: bool = False, compile_db: str | None = None,
                     prescan_cache: str | None = None,
-                    profile: str = DEFAULT_PROFILE) -> dict:
+                    profile: str = DEFAULT_PROFILE, deps_includes: tuple = ()) -> dict:
     """Scan one shard: run sqc, parse its own JSON report into a raw ShardPartial.
 
     Runs in a worker process. A shard of a split CWE loads the context its
@@ -269,9 +302,11 @@ def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
             *_settings_args(profile),
         ]
         if prescan_cache:
-            cmd.extend(["--load-prescan", prescan_cache])
+            # The cache holds the prescan; include resolution still searches
+            # the set, so its -I goes along.
+            cmd.extend(["--load-prescan", prescan_cache, *deps_includes])
         else:
-            cmd.extend(_prescan_args(str(cwe_dir), compile_db))
+            cmd.extend(_prescan_args(str(cwe_dir), compile_db, deps_includes))
         cmd.extend(["-e", report_path, "-j", "1"])
         proc = subprocess.run(cmd, capture_output=True, timeout=3600)
         duration_s = round(time.monotonic() - start_time, 1)
@@ -428,7 +463,8 @@ def _run_submissions(db: BenchDB, run_id: str, scan_map: dict, work_items: list[
                      submissions: list[dict], shard_counts: dict, jobs: int,
                      keep_reports: bool, compile_db: str | None,
                      already_done: int, total_cwes: int,
-                     profile: str = DEFAULT_PROFILE) -> tuple[int, int]:
+                     profile: str = DEFAULT_PROFILE,
+                     deps_includes: tuple = ()) -> tuple[int, int]:
     """Drive the worker pool until every submission has landed and every
     CWE's rows are written. Returns (completed, failed) CWE counts."""
     # A split CWE's shards load one shared prescan cache, built by a warm
@@ -486,14 +522,14 @@ def _run_submissions(db: BenchDB, run_id: str, scan_map: dict, work_items: list[
                 _scan_one_shard, sub["cwe_dir_name"], sub["cwe_id"],
                 str(sub["cwe_dir"]), str(sub["shard_dir"]), sub["manifest"],
                 scan_id, keep_reports, compile_db,
-                prescan_caches.get(sub["cwe_dir_name"]), profile,
+                prescan_caches.get(sub["cwe_dir_name"]), profile, deps_includes,
             )
             futures[future] = ("shard", sub["cwe_dir_name"])
 
         for cwe_dir_name, cwe_dir, manifest in warm_items:
             future = executor.submit(
                 _warm_prescan, cwe_dir_name, str(cwe_dir), manifest,
-                prescan_caches[cwe_dir_name], compile_db, profile,
+                prescan_caches[cwe_dir_name], compile_db, profile, deps_includes,
             )
             futures[future] = ("warm", cwe_dir_name)
         for sub in submissions:
@@ -613,8 +649,9 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     # that did would need passing here, or its run would hash apart from
     # what the scan used (config.resolve_settings).
     settings = juliet_settings(profile, compile_db)
+    deps_includes, environment_record, env_suffix = _juliet_environment()
     run_id = juliet_run_id(version, sha, fast=fast, compile_commands=compile_commands,
-                           cwes=cwe_ids, settings=settings)
+                           cwes=cwe_ids, settings=settings) + env_suffix
     mode = "fast" if fast else "full"
     if compile_commands:
         mode += " +compile-db"
@@ -659,7 +696,8 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     if not existing:
         db.create_run(run_id, version, sha, mode, started_at,
                       os.getpid(), jobs, total_cwes, machine,
-                      settings=settings_column(settings))
+                      settings=settings_column(settings),
+                      environment=environment_record)
     else:
         db.update_run_status(run_id, "running")
 
@@ -679,7 +717,7 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     completed, failed, trace = _run_submissions(
         db, run_id, scan_map, work_items, submissions, shard_counts,
         jobs, keep_reports, compile_db, len(completed_cwes), total_cwes,
-        profile,
+        profile, deps_includes,
     )
 
     # Finalize
