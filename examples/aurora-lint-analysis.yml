@@ -1,13 +1,14 @@
 # aurora-lint Static Analysis - GitHub Actions Example Workflow
 #
 # This workflow runs aurora-lint CERT C analysis on your C/C++ codebase.
-# - On PRs: analyzes only changed files (--diff mode)
+# - On PRs: reports only on the C files the PR changes (--diff-base mode)
 # - On push to main: full repository scan
 # - Uploads SARIF results to GitHub Code Scanning
 #
 # Prerequisites:
 #   - aurora-lint must be built or available as a binary
-#   - A aurora-lint-rules.toml manifest (or use built-in defaults)
+#   - A rules manifest passed with -m (or the built-in default, which enables
+#     every implemented rule)
 
 name: aurora-lint CERT C Analysis
 
@@ -58,7 +59,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history for --diff mode
+          # --diff-base needs the base branch and the history back to the merge
+          # base; fetch-depth: 0 fetches every branch and the full history.
+          fetch-depth: 0
 
       - name: Download aurora-lint binary
         uses: actions/download-artifact@v4
@@ -68,9 +71,11 @@ jobs:
       - name: Make aurora-lint executable
         run: chmod +x aurora-lint
 
+      # PATH must be the repository root. A checkout has no uncommitted
+      # changes, so plain --diff would scan nothing here.
       - name: Run aurora-lint (diff mode)
         run: |
-          ./aurora-lint . --diff \
+          ./aurora-lint . --diff-base origin/${{ github.base_ref }} \
             --min-severity Medium \
             --fail-on-severity High \
             --export results.sarif

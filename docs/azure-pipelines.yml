@@ -1,13 +1,14 @@
 # aurora-lint Static Analysis - Azure DevOps Example Pipeline
 #
 # This pipeline runs aurora-lint CERT C analysis on your C/C++ codebase.
-# - On PRs: analyzes only changed files (--diff mode)
+# - On PRs: reports only on the C files the PR changes (--diff-base mode)
 # - On push to main: full repository scan
 # - Publishes SARIF results as a build artifact
 #
 # Prerequisites:
 #   - Rust toolchain installed on the agent (or use a Rust container)
-#   - A aurora-lint-rules.toml manifest (or use built-in defaults)
+#   - A rules manifest passed with -m (or the built-in default, which enables
+#     every implemented rule)
 
 trigger:
   branches:
@@ -59,7 +60,9 @@ stages:
         condition: eq(variables['Build.Reason'], 'PullRequest')
         steps:
           - checkout: self
-            fetchDepth: 0  # Full history for --diff mode
+            # --diff-base needs the base branch and the history back to the
+            # merge base; fetchDepth: 0 fetches every branch and the full history.
+            fetchDepth: 0
 
           - task: DownloadPipelineArtifact@2
             inputs:
@@ -67,9 +70,12 @@ stages:
               targetPath: $(Build.SourcesDirectory)
             displayName: Download aurora-lint binary
 
+          # PATH must be the repository root. A checkout has no uncommitted
+          # changes, so plain --diff would scan nothing here. origin/main is
+          # the branch the pr trigger above targets: change them together.
           - script: |
               chmod +x aurora-lint
-              ./aurora-lint . --diff \
+              ./aurora-lint . --diff-base origin/main \
                 --min-severity Medium \
                 --fail-on-severity High \
                 --export results.sarif

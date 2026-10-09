@@ -518,16 +518,24 @@ Restrict analysis to specific rules:
 Diff Mode
 ---------
 
-Analyze only files modified in the current git working tree (staged + unstaged
-changes vs HEAD):
+Analyze only the C files a change touches. ``PATH`` must be the root of a git
+repository; any other ``PATH``, or one outside a repository, exits with code
+``2``.
 
 ::
 
-    # Only analyze changed C files
+    # C files with uncommitted changes, staged or not, and untracked ones
     aurora-lint /path/to/repo --diff
 
-This is particularly useful in CI pipelines to provide fast feedback on pull
-requests without scanning the entire codebase.
+    # Also the C files changed since the merge base with origin/main
+    aurora-lint /path/to/repo --diff-base origin/main
+
+``--diff`` is for a working tree. A CI checkout has no uncommitted changes, so
+a pull-request job uses ``--diff-base`` with the target branch, which implies
+``--diff``. The checkout needs that branch and the history back to the merge
+base. The pre-scan still reads every file under ``PATH``, so cross-file
+context is kept. When no C file changed, the run prints
+``diff-only: no changed C files to analyze``. See :doc:`cicd-integration`.
 
 
 Project-Relevance Detection

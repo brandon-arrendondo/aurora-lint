@@ -35,7 +35,8 @@ against the CERT C standard. It is not a C++ checker.
 .PP
 If \fIPATH\fR is omitted, the current directory is analyzed.
 \fIPATH\fR may be a single C source file, a directory (analyzed recursively),
-or a git repository (with \fB\-\-diff\fR to analyze only changed files).
+or a git repository (with \fB\-\-diff\fR or \fB\-\-diff\-base\fR to analyze
+only changed files).
 .SH OPTIONS
 .SS "Input & Configuration"
 .TP
@@ -147,9 +148,19 @@ and inline code preview. Conflicts with \fB\-\-generate\-suppression\fR;
 \fB\-\-features tui\fR (disabled by default).
 .TP
 \fB\-\-diff\fR
-Only analyze C files that are modified or new according to
-.BR git\-diff (1).
-Requires the target path to be inside a git repository.
+Only analyze C files with uncommitted changes, staged or not, and untracked
+ones (git status). \fIPATH\fR must be the root of a git repository; any other
+\fIPATH\fR exits with status 2. A CI checkout has no uncommitted changes: use
+\fB\-\-diff\-base\fR there. If no C file changed, prints
+"diff-only: no changed C files to analyze". The pre-scan still reads every
+file under \fIPATH\fR.
+.TP
+\fB\-\-diff\-base\fR \fIREF\fR
+Only analyze C files changed between the merge base of \fIREF\fR and HEAD,
+plus those \fB\-\-diff\fR alone finds; implies \fB\-\-diff\fR. For a
+pull-request job, e.g. \fB\-\-diff\-base origin/main\fR. The checkout needs
+\fIREF\fR and the history back to the merge base (a shallow clone needs
+fetch-depth: 0).
 .TP
 \fB\-\-generate\-suppression\fR \fIFILE\fR:\fILINE\fR:\fIRULE\fR
 Generate a suppression comment for the specified violation. Output is printed
@@ -369,7 +380,9 @@ Violations found and \fB\-\-fail\-on\-violation\fR or \fB\-\-fail\-on\-severity\
 was set.
 .TP
 .B 2
-The scan could not run (invalid path, bad manifest, invalid suppression file).
+The scan could not run (invalid path, bad manifest, invalid suppression file,
+a \fB\-\-diff\fR \fIPATH\fR that is not a git repository root, a
+\fB\-\-diff\-base\fR \fIREF\fR the checkout does not hold).
 .TP
 .B 3
 The scan completed but is incomplete: a rule, a file or a file's prescan
@@ -468,7 +481,7 @@ Export results as SARIF for CI integration:
 .PP
 .RS
 .nf
-aurora-lint --diff --min-severity Medium \\
+aurora-lint --diff-base origin/main --min-severity Medium \\
     --fail-on-severity High \\
     --export results.sarif .
 .fi

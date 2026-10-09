@@ -316,8 +316,14 @@ aurora-lint /path/to/project --fail-on-severity High
 ### Diff mode (only changed files)
 
 ```bash
+# C files with uncommitted changes, staged or not, and untracked ones
 aurora-lint /path/to/repo --diff
+
+# A pull request: also the C files changed since the merge base with origin/main
+aurora-lint /path/to/repo --diff-base origin/main
 ```
+
+PATH must be the root of the git repository.
 
 ### Exclude files from a scan
 
@@ -375,11 +381,11 @@ generated [option list](docs/options.rst).
 ## Quick CI Example
 
 ```bash
-# CI pipeline: diff-only, Medium+ reporting, fail on High, SARIF export
-aurora-lint . --diff --min-severity Medium --fail-on-severity High --export results.sarif
+# CI pipeline: the PR's changed files, Medium+ reporting, fail on High, SARIF export
+aurora-lint . --diff-base origin/main --min-severity Medium --fail-on-severity High --export results.sarif
 ```
 
-Exit codes: `0` = success, `1` = violations found (with `--fail-on-*`), `2` = the scan could not run, `3` = the scan is incomplete (a rule crashed or ran out of budget; reported on stderr and in SARIF). See [Error handling and exit codes](docs/error-handling.rst).
+Exit codes: `0` = success, `1` = violations found (with `--fail-on-*`), `2` = the scan could not run (including a `--diff` PATH that is not a repository root), `3` = the scan is incomplete (a rule crashed or ran out of budget; reported on stderr and in SARIF). See [Error handling and exit codes](docs/error-handling.rst).
 
 Ready-to-use workflow examples for [GitHub Actions and Azure DevOps](docs/cicd-integration.rst) are in the Developer Guide.
 
