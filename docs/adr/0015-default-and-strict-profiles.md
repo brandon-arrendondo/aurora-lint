@@ -428,7 +428,8 @@ verdict differs.
 
 ## Amendment (2026-10-08, Brandon): the reading and the environment are separate, and POSIX and the editions are declared facts
 
-**Status:** ruled; not yet implemented. Today `--strict` with no library
+**Status:** ruled (Brandon, 2026-10-08, with the follow-up rulings of
+2026-10-09 marked below); not yet implemented. Today `--strict` with no library
 declared still trusts the ISO C and POSIX contracts, as the 2026-10-07
 settled item 1 says, and a compile database supplies include paths and `-D`
 macros but no facts. The code change that implements this amendment follows
@@ -457,6 +458,14 @@ its build.
    - **`default`** assumes the typical case: a hosted ISO C library, POSIX,
      and a library that honors both contract sets. A project whose target
      differs declares the facts that differ.
+     - That library is the ISO C and POSIX contract table
+       (`libc = "iso-posix"`), the model Decision 5 publishes with, and not
+       the `glibc` model and its extensions (Brandon, 2026-10-09).
+     - `default` assumes POSIX but no edition of it: `posix_version` stays
+       unknown until declared, and a function that an edition added or
+       removed is read as unknown, the same way E4 of the 2026-10-07 rulings
+       in `docs/design/rule-disposition.md` reads `c_standard` (Brandon,
+       2026-10-09).
    - **`strict`** assumes what the rules' text presupposes: a hosted ISO C
      library. POSIX and the editions are facts (item 3). When a fact is
      unknown, no exemption that depends on it applies.
@@ -470,8 +479,11 @@ its build.
    a declaration that a fact does not hold.
 3. **Facts are declared, in one of two places.**
    - The facts are the C library and the editions (`libc`, `libc_version`,
-     `c_standard`, `posix_version`; 2026-10-07 settled item 3) and the
-     target facts of Decision 4's 2026-10-03 amendment.
+     `c_standard`, `posix_version`; 2026-10-07 settled item 3). The target
+     facts of Decision 4's 2026-10-03 amendment are declared the same way,
+     including from a compile database (for example `-m32`), and they too
+     never come from the host (Brandon, 2026-10-09, extending the
+     2026-10-08 ruling).
    - A fact comes from the project's configuration (a configuration file or
      `--set`), or from a compile database the project passes
      (`--compile-commands`). A compile database is a declaration: a project
@@ -498,8 +510,11 @@ its build.
    sets and build recipes (ADR-0018), or through the compile database a
    recipe produces. Strict scoring then never depends on the host, and the
    oracle's POSIX-dependent labels on the Linux corpora keep their meaning.
-   ADR-0018 (still proposed) does not yet say that a benchmark declares
-   these facts; it needs a follow-up amendment to do so.
+   A benchmark declares `posix_version` and `c_standard`, and its library
+   stays the ISO C and POSIX model, so no library's extensions enter
+   published figures (Brandon, 2026-10-09). ADR-0018 (still proposed) does
+   not yet say that a benchmark declares these facts; it needs a follow-up
+   amendment to do so.
 
 ### The points the 2026-10-07 amendment left open
 
@@ -536,9 +551,12 @@ under "For Brandon's ruling" below.
    - The 2026-10-07 settled section already reads the fixture clause with
      three presets: a fixture runs under `default` and `strict`, and under
      `pedantic` where its expectation names it.
-   - With no fact declared, a rule takes the reading the preset in force
-     gives under its stance (Decision 1 above) and no credit beyond it.
-     That is what "its strict reading" means here.
+   - "Its strict reading" means the reading the preset in force gives
+     under its stance (Decision 1 above), with no fact declared, and no
+     credit beyond it (Brandon, 2026-10-09). `default`'s assuming POSIX
+     with nothing declared is its documented relaxation. For `strict` and
+     `pedantic`, Decision 3's "no credit the source alone can't prove"
+     still binds.
    - Each fact gets fixtures with it undeclared, declared in the
      configuration, declared by a compile database, and with the two in
      conflict.
@@ -577,21 +595,6 @@ under "For Brandon's ruling" below.
 
 ### For Brandon's ruling
 
-- **`default`'s library.** The ruling says `default` assumes "a glibc-like
-  library". The tool's model today is the ISO C and POSIX contract table
-  (`libc = "iso-posix"`), which is also the model Decision 5 publishes
-  with. Proposed: "glibc-like" means that table, not the `glibc` model and
-  its extensions.
-- **A benchmark's `libc`.** Decision 5 publishes figures with the ISO C and
-  POSIX model, never one library's extensions. A benchmark that declared
-  `libc = "glibc"` would bring glibc's contracts into published figures.
-  Proposed: benchmarks declare `posix_version` and `c_standard`, and their
-  library stays the ISO C and POSIX model unless ruled otherwise.
-- **`default`'s POSIX edition.** `default` assumes POSIX is present.
-  Proposed: it assumes no edition, so `posix_version` stays unknown and a
-  function an edition added or removed is read as unknown until the edition
-  is declared, as E4 of the 2026-10-07 rulings in
-  `docs/design/rule-disposition.md` reads `c_standard`.
 - **The remaining per-rule assert readings** (point 3).
 - **Whether `pedantic` figures are published** (point 6).
 - **The ADR-0013 reconciliation** (point 8).
