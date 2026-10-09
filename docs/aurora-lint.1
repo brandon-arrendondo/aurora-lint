@@ -168,16 +168,21 @@ to stdout. Conflicts with \fB\-\-interactive\fR and \fB\-\-export\fR.
 .SS "Project-Relevance Detection"
 .TP
 \fB\-\-detect\-relevance\fR
-Scan \fIPATH\fR and any \fB\-d\fR directories for evidence of threading
-(\fBpthread\fR, \fI<threads.h>\fR, \fB_Atomic\fR) and Windows API usage, then
-generate a rules manifest with the categorically-inapplicable rule classes
-disabled (\fBCON\fR* if no threading evidence is found, \fBWIN\fR* if no
-Windows API evidence is found). Does not run an analysis; pair with
-\fB\-\-write\-manifest\fR to save the result. Detection is conservative: a
-rule class is disabled only when no evidence of it is found anywhere in the
-scanned corpus, including resolved \fB\-I\fR/\fB\-d\fR includes. An
-unresolved include path leaves the affected rules enabled with an
-\fB# unresolved: ...\fR comment rather than guessing.
+Scan \fIPATH\fR and any \fB\-d\fR directories for evidence of thread or
+atomic APIs (\fBpthread\fR, \fI<threads.h>\fR, \fB_Atomic\fR) and Windows
+API usage, then generate a rules manifest with the categorically-inapplicable
+\fBWIN\fR* rule class disabled when no Windows API evidence is found. The
+\fBCON\fR* rules are never disabled: finding no thread or atomic API does not
+mean there is no concurrency, because interrupt or signal handlers are not
+looked for, and they are what share state on bare-metal firmware. The output
+reports the threading finding and says so, and the generated \fBCON\fR*
+entries carry an \fB# info:\fR comment when none was found. Does not run an
+analysis; pair with \fB\-\-write\-manifest\fR to save the result. Detection
+is conservative: the \fBWIN\fR* class is disabled only when no evidence of it
+is found anywhere in the scanned corpus, including resolved
+\fB\-I\fR/\fB\-d\fR includes. An unresolved include path leaves the
+affected rules enabled with an \fB# unresolved: ...\fR comment rather than
+guessing.
 .TP
 \fB\-\-write\-manifest\fR \fIFILE\fR
 With \fB\-\-detect\-relevance\fR, write the generated manifest to \fIFILE\fR.

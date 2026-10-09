@@ -16,7 +16,7 @@ signals for the remaining 8 genuinely-tangled rules. **CON\* is no longer gated:
 APIs, never for interrupt or signal handlers, so finding none does not show
 the rules inapplicable (bare-metal firmware shares state between its main loop
 and an interrupt handler with no such API). Only WIN\* is auto-disabled now;
-CON\* entries carry an `# info:` comment. The §1 and §3 text on CON\* below is
+CON\* entries carry an `# info:` comment. The §1, §3 and §5 text on CON\* below is
 the original proposal.
 **Check the current
 task status rather than trusting this header.**
@@ -158,7 +158,7 @@ already exists rather than adding a second, invisible gating mechanism next to
 it, and it matches how `conf/realworld/*-rules.toml` documents rationale in
 `[metadata].description` — the generated file should populate that same field
 with the detected signal per disabled rule (e.g. `enabled = false  # auto:
-no pthread/threads.h/atomic usage detected in corpus`), so a human reviewing
+no Win32 API usage detected in corpus`), so a human reviewing
 the generated manifest sees the *evidence*, not just the verdict. This also
 gives a natural CLI shape:
 
