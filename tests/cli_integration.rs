@@ -1659,6 +1659,204 @@ fn diff_mode_only_analyzes_modified_files() {
     // Should NOT have analyzed clean.c (it's committed and unmodified)
 }
 
+/// A repository whose `main` holds a clean file plus one with a violation
+/// (`old.c`) and one more (`gone.c`), and whose checked-out `feature` branch
+/// commits a new violating file, renames `old.c` to `renamed.c` and deletes
+/// `gone.c`. The working tree is clean, as in a CI checkout of a PR.
+fn branch_repo(repo_dir: &std::path::Path) {
+    const VIOLATION: &str = "void infinite(void) {\n    infinite();\n}\n";
+    git_in(repo_dir, &["init", "-b", "main"]);
+    git_in(repo_dir, &["config", "user.email", "test@test.com"]);
+    git_in(repo_dir, &["config", "user.name", "Test"]);
+    std::fs::write(
+        repo_dir.join("clean.c"),
+        "int add(int a, int b) { return a + b; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo_dir.join("old.c"),
+        VIOLATION.replace("infinite", "loop1"),
+    )
+    .unwrap();
+    std::fs::write(
+        repo_dir.join("gone.c"),
+        VIOLATION.replace("infinite", "loop2"),
+    )
+    .unwrap();
+    std::fs::copy(manifest_msc04(), repo_dir.join("manifest.toml")).unwrap();
+    git_in(repo_dir, &["add", "."]);
+    git_in(repo_dir, &["commit", "-m", "initial"]);
+    git_in(repo_dir, &["checkout", "-b", "feature"]);
+    std::fs::create_dir(repo_dir.join("src")).unwrap();
+    std::fs::write(repo_dir.join("src/added.c"), VIOLATION).unwrap();
+    git_in(repo_dir, &["add", "src/added.c"]);
+    git_in(repo_dir, &["mv", "old.c", "renamed.c"]);
+    git_in(repo_dir, &["rm", "-q", "gone.c"]);
+    git_in(repo_dir, &["commit", "-m", "feature"]);
+}
+
+/// Run aurora-lint on `path` from `cwd` with a JSON export, git environment
+/// scrubbed. Returns (exit code, stdout, stderr, the files with findings).
+fn run_diff_scan(
+    cwd: &std::path::Path,
+    path: &std::path::Path,
+    extra: &[&str],
+) -> (i32, String, String, Vec<String>) {
+    let out_dir = tempfile::tempdir().unwrap();
+    let out = out_dir.path().join("out.json");
+    let manifest = fixtures().join("manifest_msc04.toml");
+    let output = scrub_git_env(&mut Command::new(aurora_lint_bin()))
+        .arg(path)
+        .args([
+            "-m",
+            manifest.to_str().unwrap(),
+            "-e",
+            out.to_str().unwrap(),
+        ])
+        .args(extra)
+        .current_dir(cwd)
+        .output()
+        .expect("failed to execute aurora-lint");
+    let code = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let mut files: Vec<String> = std::fs::read_to_string(&out)
+        .ok()
+        .map(|c| {
+            let v: Vec<serde_json::Value> = serde_json::from_str(&c).unwrap();
+            v.iter()
+                .map(|f| {
+                    let file = f["file"].as_str().unwrap().replace('\\', "/");
+                    file.rsplit_once(path.file_name().unwrap().to_str().unwrap())
+                        .map_or(file.clone(), |(_, rest)| {
+                            rest.trim_start_matches('/').to_string()
+                        })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    (code, stdout, stderr, files)
+}
+
+#[test]
+fn diff_base_on_a_clean_tree_scans_the_files_the_branch_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    branch_repo(&repo);
+    let elsewhere = tempfile::tempdir().unwrap();
+
+    // --diff alone sees no uncommitted change, so nothing is scanned: the
+    // reason a pull-request job needs a base ref.
+    let (code, _, stderr, files) = run_diff_scan(elsewhere.path(), &repo, &["--diff"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(files.is_empty(), "{files:?}");
+
+    // From a directory outside the repository too: the added file and the
+    // renamed one under its new name; the deleted file is no error.
+    let (code, stdout, stderr, files) =
+        run_diff_scan(elsewhere.path(), &repo, &["--diff-base", "main"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("merge base with main"), "{stdout}");
+    assert_eq!(files, ["renamed.c", "src/added.c"]);
+}
+
+#[test]
+fn diff_base_also_scans_uncommitted_and_untracked_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    branch_repo(&repo);
+    // An untracked file in an untracked directory, and an uncommitted edit.
+    std::fs::create_dir(repo.join("new_dir")).unwrap();
+    std::fs::write(
+        repo.join("new_dir/untracked.c"),
+        "void spin(void) {\n    spin();\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("clean.c"),
+        "int add(int a, int b) { return a + b; }\nvoid again(void) {\n    again();\n}\n",
+    )
+    .unwrap();
+
+    let (code, _, stderr, files) = run_diff_scan(&repo, &repo, &["--diff"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(files, ["clean.c", "new_dir/untracked.c"]);
+
+    let (code, _, stderr, files) = run_diff_scan(&repo, &repo, &["--diff-base", "main"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(
+        files,
+        ["clean.c", "new_dir/untracked.c", "renamed.c", "src/added.c"]
+    );
+}
+
+#[test]
+fn diff_refuses_a_path_that_is_not_the_repository_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    branch_repo(&repo);
+
+    for flags in [&["--diff"][..], &["--diff-base", "main"][..]] {
+        let (code, _, stderr, files) = run_diff_scan(&repo, &repo.join("src"), flags);
+        assert_eq!(code, 2, "{flags:?} stderr: {stderr}");
+        assert!(stderr.contains("root of the git repository"), "{stderr}");
+        assert!(files.is_empty());
+    }
+
+    // Outside any repository there is nothing to diff against either.
+    let plain = tempfile::tempdir().unwrap();
+    std::fs::write(plain.path().join("a.c"), "int x;\n").unwrap();
+    let (code, _, stderr, _) = run_diff_scan(plain.path(), plain.path(), &["--diff"]);
+    assert_eq!(code, 2, "stderr: {stderr}");
+    assert!(stderr.contains("not inside one"), "{stderr}");
+}
+
+#[test]
+fn diff_base_names_a_missing_ref_and_a_shallow_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    branch_repo(&repo);
+
+    let (code, _, stderr, _) = run_diff_scan(&repo, &repo, &["--diff-base", "origin/main"]);
+    assert_eq!(code, 2, "stderr: {stderr}");
+    assert!(
+        stderr.contains("'origin/main' does not name a commit") && stderr.contains("git fetch"),
+        "{stderr}"
+    );
+
+    // A depth-1 clone holds both branch tips but not the commit joining them.
+    git_in(&repo, &["checkout", "-q", "main"]);
+    std::fs::write(repo.join("later.c"), "int later;\n").unwrap();
+    git_in(&repo, &["add", "later.c"]);
+    git_in(&repo, &["commit", "-m", "main moves on"]);
+    git_in(&repo, &["checkout", "-q", "feature"]);
+    let url = format!("file://{}", repo.display());
+    git_in(
+        dir.path(),
+        &[
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            "--no-single-branch",
+            &url,
+            "shallow",
+        ],
+    );
+    let shallow = dir.path().join("shallow");
+    let (code, _, stderr, _) = run_diff_scan(&shallow, &shallow, &["--diff-base", "origin/main"]);
+    assert_eq!(code, 2, "stderr: {stderr}");
+    assert!(
+        stderr.contains("shallow clone") && stderr.contains("fetch-depth: 0"),
+        "{stderr}"
+    );
+}
+
 // ─── SARIF suppression output ────────────────────────────────────────────────
 
 #[test]

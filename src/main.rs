@@ -385,8 +385,14 @@ fn run() -> Result<i32> {
         .arg(
             Arg::new("diff")
                 .long("diff")
-                .help("Only analyze modified/new C files (git diff)")
+                .help("Only analyze C files with uncommitted changes, staged or not, and untracked ones (git status). PATH must be the root of a git repository. A CI checkout has no uncommitted changes: use --diff-base there")
                 .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("diff_base")
+                .long("diff-base")
+                .help("Only analyze C files changed between the merge base of REF and HEAD, plus those --diff alone finds; implies --diff. For a pull-request job, e.g. --diff-base origin/main. The checkout needs REF and the history back to the merge base (a shallow clone needs fetch-depth: 0)")
+                .value_name("REF"),
         )
         .arg(
             Arg::new("suppress_file")
@@ -703,7 +709,8 @@ fn run() -> Result<i32> {
     let rule_filter: Option<HashSet<String>> = matches
         .get_one::<String>("rules")
         .map(|s| s.split(',').map(|r| r.trim().to_string()).collect());
-    let diff_only = matches.get_flag("diff");
+    let diff_base = matches.get_one::<String>("diff_base");
+    let diff_only = matches.get_flag("diff") || diff_base.is_some();
     let suppress_file = matches.get_one::<String>("suppress_file");
     let verbosity = matches.get_count("verbose");
     let save_prescan = matches.get_one::<String>("save_prescan");
@@ -857,7 +864,11 @@ fn run() -> Result<i32> {
     }
 
     // Verify the path and determine source type
-    let project_source = ProjectSource::open(path)?;
+    let project_source = if diff_only {
+        ProjectSource::open_for_diff(path, diff_base.map(String::as_str))?
+    } else {
+        ProjectSource::open(path)?
+    };
     println!("Detected {} at: {}", project_source.source_type(), path);
 
     let mut manifest = load_manifest(manifest_path)?;
@@ -933,8 +944,12 @@ fn run() -> Result<i32> {
         );
     }
 
-    if diff_only {
-        println!("Mode: diff-only (analyzing modified files)");
+    match diff_base {
+        Some(base) => println!(
+            "Mode: diff-only (analyzing files changed since the merge base with {base}, and uncommitted ones)"
+        ),
+        None if diff_only => println!("Mode: diff-only (analyzing uncommitted and untracked files)"),
+        None => {}
     }
 
     // Create progress reporter for CLI

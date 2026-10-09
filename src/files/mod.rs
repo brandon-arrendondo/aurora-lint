@@ -43,6 +43,40 @@ impl ProjectSource {
         }
     }
 
+    /// Open `path` for a diff-only scan, counting the files changed since
+    /// the merge base of `diff_base` and HEAD when one is given.
+    ///
+    /// Refuses a `path` that is not the root of a git repository. The
+    /// changed files come from the whole repository, so from anywhere else
+    /// the only fallback is scanning every file, and in a CI job that passes
+    /// unnoticed; an error fails the job the first time it runs instead.
+    pub fn open_for_diff(path: &str, diff_base: Option<&str>) -> Result<Self> {
+        match Self::open(path)? {
+            ProjectSource::Git(mut git_repo) => {
+                if let Some(base) = diff_base {
+                    git_repo.set_diff_base(base)?;
+                }
+                Ok(ProjectSource::Git(git_repo))
+            }
+            ProjectSource::Directory(_) => match git2::Repository::discover(path) {
+                Ok(repo) => {
+                    let root = repo
+                        .workdir()
+                        .map_or_else(|| repo.path().display(), |w| w.display())
+                        .to_string();
+                    anyhow::bail!(
+                        "--diff needs PATH to be the root of the git repository: '{path}' is \
+                         inside the repository at '{root}'. Pass the root, and leave parts out \
+                         with --exclude or toolchain.toml's [ignore] paths."
+                    )
+                }
+                Err(_) => {
+                    anyhow::bail!("--diff needs a git repository, and '{path}' is not inside one")
+                }
+            },
+        }
+    }
+
     /// Every C file in this source.
     pub fn get_c_files(&self) -> Result<Vec<String>> {
         match self {
