@@ -1129,7 +1129,9 @@ def cmd_corpus_check(args):
     try:
         code = report(bench_root=args.bench_root, as_json=args.json,
                       mode=args.mode, image=args.image, runtime=args.runtime)
-    except ValueError as e:  # an AURORA_BENCH_MODE that is not a mode
+    except ValueError as e:
+        # An AURORA_BENCH_MODE that is not a mode, or (--mode container) a
+        # malformed data/benchmark_environment.json from environment.declared().
         print(f"corpus-check: {e}")
         code = 2
     sys.exit(code)
