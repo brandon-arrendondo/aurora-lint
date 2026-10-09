@@ -324,6 +324,15 @@ fetch <name>`` (``data/benchmark_deps/<name>.json``; it needs Python 3 and
 the network, not ``dpkg``), or all of them with
 ``playbooks/setup-benchmark-deps.yml``.
 
+``python -m bench corpus-check`` checks the sets where this machine's runs
+read them, which it is told with ``--mode`` (or ``AURORA_BENCH_MODE`` in
+``.env``; the default is ``host``). In ``host`` mode a set missing from
+``$SQC_BENCH_ROOT/deps`` fails the check. On a machine that runs benchmarks
+only through ``container-run``, use ``--mode container``. The host sets are
+then reported as not needed, and the check instead requires the benchmark
+image (``--image``, default ``container-run``'s) to be present with the
+declared ``manifest_sha256``.
+
 The sections below describe scanning against the host's own headers: local
 and shadow scans, which are never benchmark runs.
 

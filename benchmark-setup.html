@@ -425,6 +425,14 @@ differs from its pin. On the host, fetch a set with <code class="docutils litera
 <span class="pre">fetch</span> <span class="pre">&lt;name&gt;</span></code> (<code class="docutils literal notranslate"><span class="pre">data/benchmark_deps/&lt;name&gt;.json</span></code>; it needs Python 3 and
 the network, not <code class="docutils literal notranslate"><span class="pre">dpkg</span></code>), or all of them with
 <code class="docutils literal notranslate"><span class="pre">playbooks/setup-benchmark-deps.yml</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">corpus-check</span></code> checks the sets where this machine’s runs
+read them, which it is told with <code class="docutils literal notranslate"><span class="pre">--mode</span></code> (or <code class="docutils literal notranslate"><span class="pre">AURORA_BENCH_MODE</span></code> in
+<code class="docutils literal notranslate"><span class="pre">.env</span></code>; the default is <code class="docutils literal notranslate"><span class="pre">host</span></code>). In <code class="docutils literal notranslate"><span class="pre">host</span></code> mode a set missing from
+<code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT/deps</span></code> fails the check. On a machine that runs benchmarks
+only through <code class="docutils literal notranslate"><span class="pre">container-run</span></code>, use <code class="docutils literal notranslate"><span class="pre">--mode</span> <span class="pre">container</span></code>. The host sets are
+then reported as not needed, and the check instead requires the benchmark
+image (<code class="docutils literal notranslate"><span class="pre">--image</span></code>, default <code class="docutils literal notranslate"><span class="pre">container-run</span></code>’s) to be present with the
+declared <code class="docutils literal notranslate"><span class="pre">manifest_sha256</span></code>.</p>
 <p>The sections below describe scanning against the host’s own headers: local
 and shadow scans, which are never benchmark runs.</p>
 </section>
