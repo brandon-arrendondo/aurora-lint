@@ -569,7 +569,11 @@ run resolved: the base manifest's with any ``--profile``, ``--policy``,
 ``--set``, ``--allocator`` or ``--deallocator`` given alongside
 ``--detect-relevance`` layered over them, so ``-m gated-rules.toml`` scans
 under the same settings without repeating the flags. A comment at the top
-names the flags the values came from.
+names the flags the values came from. Settings that combine invalidly are
+refused when the manifest is written, as a scan would refuse them. What a
+compile database implies (such as case-insensitive ``#include`` matching for
+one written for cl) is not written; pass ``--compile-commands`` again on the
+scan.
 
 Detection is conservative by design: a rule class is disabled only when no
 evidence of it was found anywhere in the scanned corpus (including

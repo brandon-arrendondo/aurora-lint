@@ -6416,3 +6416,23 @@ fn detect_relevance_carries_a_cli_environment_into_the_generated_manifest() {
     );
     assert!(scan.contains("environment=freestanding"), "{scan}");
 }
+
+#[test]
+fn detect_relevance_refuses_settings_a_scan_would_refuse() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("bad.toml");
+    let src = fixtures().join("relevance_pthread_worker");
+    let (code, _, stderr) = run_aurora_lint(&[
+        src.to_str().unwrap(),
+        "--detect-relevance",
+        "--write-manifest",
+        manifest.to_str().unwrap(),
+        "--policy",
+        "strict",
+        "--set",
+        "char_bits=7",
+    ]);
+    assert_ne!(code, 0, "an invalid manifest was written: {stderr}");
+    assert!(stderr.contains("char_bits"), "{stderr}");
+    assert!(!manifest.exists(), "no manifest should be written");
+}
