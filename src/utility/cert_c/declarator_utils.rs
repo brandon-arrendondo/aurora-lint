@@ -89,6 +89,26 @@ pub fn is_function_declarator(node: &Node) -> bool {
 // Typedef declarator chains
 // ============================================================================
 
+/// Whether a declarator declares a function (`f(void)`, `*f(void)`) rather
+/// than an object, a function pointer (`(*fp)(void)`) included.
+pub fn declares_function(declarator: &Node) -> bool {
+    let mut d = *declarator;
+    loop {
+        match d.kind() {
+            "function_declarator" => {
+                return d
+                    .child_by_field_name("declarator")
+                    .is_some_and(|inner| inner.kind() == "identifier");
+            }
+            "pointer_declarator" => match d.child_by_field_name("declarator") {
+                Some(inner) => d = inner,
+                None => return false,
+            },
+            _ => return false,
+        }
+    }
+}
+
 /// The declarator one level inside `n`. Pointer, array and function
 /// declarators name it as the `declarator` field; a parenthesized declarator
 /// has no field for it (`( declarator )`, possibly with an `ms_call_modifier`

@@ -18,6 +18,7 @@
 
 use crate::analyze::macro_expand::{self, MacroArm};
 use crate::utility::cert_c::ast_utils::{self, get_node_text, IdentifierBinding};
+use crate::utility::cert_c::declarator_utils::declares_function;
 use std::collections::{BTreeSet, HashMap};
 use tree_sitter::Node;
 
@@ -1156,26 +1157,6 @@ fn in_other_arm(decl: &Node, usage: &Node) -> bool {
         node = ancestor.parent();
     }
     false
-}
-
-/// Whether a declarator declares a function (`f(void)`, `*f(void)`) rather
-/// than an object, a function pointer (`(*fp)(void)`) included.
-fn declares_function(declarator: &Node) -> bool {
-    let mut d = *declarator;
-    loop {
-        match d.kind() {
-            "function_declarator" => {
-                return d
-                    .child_by_field_name("declarator")
-                    .is_some_and(|inner| inner.kind() == "identifier");
-            }
-            "pointer_declarator" => match d.child_by_field_name("declarator") {
-                Some(inner) => d = inner,
-                None => return false,
-            },
-            _ => return false,
-        }
-    }
 }
 
 /// Whether `decl` (a block-scope declaration binding `ident`) declares an

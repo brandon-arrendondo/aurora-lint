@@ -82,11 +82,30 @@ use crate::analyze::cfg;
 use crate::analyze::concurrency_roots;
 use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{
+    declaration_has_storage_class, get_node_text, resolve_identifier_binding_in, IdentifierBinding,
+};
+use crate::utility::cert_c::declarator_utils::declares_function;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
+
+/// One object CON03-C may report, with the declaration it is reported at.
+struct SharedVar<'a> {
+    name: String,
+    decl: Node<'a>,
+    /// Declared at file scope. Every file-scope declaration of a name in one
+    /// translation unit denotes the same object (C11 6.2.2), so a use that
+    /// binds to no local and no parameter is a use of this one. A block-scope
+    /// `static` is used only where a use resolves to its own declaration.
+    file_scope: bool,
+    /// The reported declaration has an initializer, so it is the object's
+    /// definition rather than a tentative one.
+    initialized: bool,
+    is_volatile: bool,
+    is_atomic: bool,
+}
 
 #[derive(Debug, Default)]
 pub struct Con03C {
@@ -131,14 +150,12 @@ impl CertRule for Con03C {
             .borrow_mut()
             .extend(concurrency_roots::reachable_within_file(node, source));
 
-        // Collect all potentially shared variables (global/static)
-        // HashMap: var_name -> (line, column, is_volatile, is_atomic)
-        let mut shared_vars: HashMap<String, (usize, usize, bool, bool)> = HashMap::new();
-        self.collect_shared_variables(node, source, &mut shared_vars);
+        let shared_vars = self.collect_shared_variables(node, source);
+        let uses = Self::identifier_uses_by_function(node, source);
 
         // Check each shared variable for proper synchronization
-        for (var_name, (line, column, is_volatile, is_atomic)) in shared_vars {
-            if !is_volatile && !is_atomic {
+        for var in &shared_vars {
+            if !var.is_volatile && !var.is_atomic {
                 // CON03-C reports at the variable's *declaration* site, not
                 // an access site, so reachability has to be checked at the
                 // function(s) that actually touch the variable -- a
@@ -146,15 +163,21 @@ impl CertRule for Con03C {
                 // (rather than always flag) when no accessing function is
                 // reachable from a concurrent root: the value can't race if
                 // nothing that reads/writes it ever runs concurrently.
-                // An earlier fix / docs/design/con03-con07-isr-thread-reachability.md.
-                let accessors = self.collect_accessing_functions(node, &var_name, source);
+                // See docs/design/con03-con07-isr-thread-reachability.md.
                 let reachable = self.concurrency_reachable.borrow();
-                let is_reachable = accessors.iter().any(|f| reachable.contains(f.as_str()));
+                let is_reachable = uses.get(var.name.as_str()).is_some_and(|sites| {
+                    sites.iter().any(|(func, id)| {
+                        reachable.contains(func.as_str()) && Self::is_use_of(node, id, var, source)
+                    })
+                });
                 drop(reachable);
                 if !is_reachable {
                     continue;
                 }
 
+                let line = var.decl.start_position().row + 1;
+                let column = var.decl.start_position().column + 1;
+                let var_name = &var.name;
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: Severity::Medium,
@@ -182,41 +205,62 @@ impl Con03C {
         Self::default()
     }
 
-    /// Every function whose body contains at least one reference to
-    /// `var_name` (identifier text match — same precision level as the
-    /// rest of this rule, no scope/shadowing analysis). CON03-C reports at
-    /// the variable's declaration site, which is itself never a call-graph
-    /// node, so this is how reachability gets checked instead.
-    fn collect_accessing_functions(
-        &self,
-        root: &Node,
-        var_name: &str,
-        source: &str,
-    ) -> HashSet<String> {
-        let mut out = HashSet::new();
+    /// The identifiers in each function body, grouped by spelling, with the
+    /// name of the function they occur in. CON03-C reports at a variable's
+    /// declaration, which is never a call-graph node, so reachability is
+    /// judged at the functions that use the variable; [`Self::is_use_of`]
+    /// decides which of these occurrences actually refer to it.
+    fn identifier_uses_by_function<'a>(
+        root: &Node<'a>,
+        source: &'a str,
+    ) -> HashMap<&'a str, Vec<(String, Node<'a>)>> {
+        let mut uses: HashMap<&'a str, Vec<(String, Node<'a>)>> = HashMap::new();
         for func in query::find_descendants_of_kind(*root, "function_definition") {
             let Some(body) = func.child_by_field_name("body") else {
                 continue;
             };
-            let touches = query::find_descendants_of_kind(body, "identifier")
-                .into_iter()
-                .any(|id| get_node_text(&id, source) == var_name);
-            if touches {
-                if let Some(name) = cfg::get_function_name(&func, source) {
-                    out.insert(name.to_string());
-                }
+            let Some(name) = cfg::get_function_name(&func, source) else {
+                continue;
+            };
+            for id in query::find_descendants_of_kind(body, "identifier") {
+                uses.entry(get_node_text(&id, source))
+                    .or_default()
+                    .push((name.to_string(), id));
             }
         }
-        out
+        uses
     }
 
-    /// Collect all global and static variables that could be shared across threads
-    fn collect_shared_variables(
-        &self,
-        node: &Node,
-        source: &str,
-        shared_vars: &mut HashMap<String, (usize, usize, bool, bool)>,
-    ) {
+    /// Whether `id`, an identifier spelled like `var`, refers to it. The
+    /// occurrence is resolved by scope (ADR-0006): a local or a parameter of
+    /// the same name shadows a file-scope variable, and a block-scope
+    /// `static` is reached only through its own declaration. An occurrence
+    /// that binds to nothing in this file (its file-scope declaration sits
+    /// in an `#if` arm, say) still names the file-scope object: there is no
+    /// inner declaration for it to name instead.
+    fn is_use_of(root: &Node, id: &Node, var: &SharedVar, source: &str) -> bool {
+        match resolve_identifier_binding_in(root, id, &var.name, source) {
+            Some(IdentifierBinding::Local(decl)) => {
+                if var.file_scope {
+                    // `extern int x;` inside a block redeclares the file-scope `x`.
+                    declaration_has_storage_class(&decl, "extern", source)
+                } else {
+                    decl.id() == var.decl.id()
+                }
+            }
+            Some(IdentifierBinding::Parameter(_)) => false,
+            Some(IdentifierBinding::Global(_)) | None => var.file_scope,
+        }
+    }
+
+    /// Collect all global and static variables that could be shared across
+    /// threads: every declarator of every such declaration, with or without
+    /// an initializer, so `static int a, b;` yields both `a` and `b`.
+    fn collect_shared_variables<'a>(&self, node: &Node<'a>, source: &str) -> Vec<SharedVar<'a>> {
+        let mut shared_vars: Vec<SharedVar<'a>> = Vec::new();
+        // File-scope name -> index in `shared_vars`: one object per name.
+        let mut file_scope_index: HashMap<String, usize> = HashMap::new();
+
         for decl_node in query::find_descendants_of_kind(*node, "declaration") {
             // Check if this is a global or static declaration
             let is_static = self.has_storage_class(&decl_node, source, "static");
@@ -239,35 +283,73 @@ impl Con03C {
 
             let is_volatile = self.has_type_qualifier(&decl_node, source, "volatile");
             let is_atomic = self.has_atomic_type(&decl_node, source);
+            let is_extern = self.has_storage_class(&decl_node, source, "extern");
+            let file_scope = !Self::is_block_scope(&decl_node);
 
-            let line = decl_node.start_position().row + 1;
-            let column = decl_node.start_position().column + 1;
-
-            // Extract variable names from this declaration
-            if let Some(declarator_list) = self.find_child_by_kind(&decl_node, "init_declarator") {
-                if let Some(declarator) = declarator_list.child_by_field_name("declarator") {
-                    let var_name = self.extract_variable_name(&declarator, source);
-                    if !var_name.is_empty() {
-                        shared_vars.insert(var_name, (line, column, is_volatile, is_atomic));
+            let mut cursor = decl_node.walk();
+            for child in decl_node.children_by_field_name("declarator", &mut cursor) {
+                let (declarator, initialized) = if child.kind() == "init_declarator" {
+                    match child.child_by_field_name("declarator") {
+                        Some(d) => (d, true),
+                        None => continue,
                     }
+                } else {
+                    (child, false)
+                };
+                // A prototype declares a function, not an object.
+                if declares_function(&declarator) {
+                    continue;
                 }
-            } else {
-                // Try direct declarator
-                for i in 0..decl_node.child_count() {
-                    if let Some(child) = decl_node.child(i) {
-                        if child.kind() == "init_declarator" {
-                            if let Some(declarator) = child.child_by_field_name("declarator") {
-                                let var_name = self.extract_variable_name(&declarator, source);
-                                if !var_name.is_empty() {
-                                    shared_vars
-                                        .insert(var_name, (line, column, is_volatile, is_atomic));
-                                }
-                            }
+                // `extern int x;` defines nothing: the object is reported at
+                // its definition, in this file or another.
+                if is_extern && !initialized {
+                    continue;
+                }
+                let name = self.extract_variable_name(&declarator, source);
+                if name.is_empty() {
+                    continue;
+                }
+                let var = SharedVar {
+                    name,
+                    decl: decl_node,
+                    file_scope,
+                    initialized,
+                    is_volatile,
+                    is_atomic,
+                };
+                if !file_scope {
+                    shared_vars.push(var);
+                    continue;
+                }
+                // A tentative definition (`int x;`) and the definition
+                // (`int x = 0;`) are one object; report it once, at the
+                // definition when there is one.
+                match file_scope_index.get(&var.name) {
+                    Some(&i) => {
+                        if var.initialized && !shared_vars[i].initialized {
+                            shared_vars[i] = var;
                         }
+                    }
+                    None => {
+                        file_scope_index.insert(var.name.clone(), shared_vars.len());
+                        shared_vars.push(var);
                     }
                 }
             }
         }
+        shared_vars
+    }
+
+    /// Whether `node` lies inside a function (a block-scope declaration).
+    fn is_block_scope(node: &Node) -> bool {
+        let mut cur = node.parent();
+        while let Some(p) = cur {
+            if matches!(p.kind(), "compound_statement" | "function_definition") {
+                return true;
+            }
+            cur = p.parent();
+        }
+        false
     }
 
     fn has_storage_class(&self, node: &Node, source: &str, class: &str) -> bool {
@@ -343,17 +425,6 @@ impl Con03C {
         } else {
             false
         }
-    }
-
-    fn find_child_by_kind<'a>(&self, node: &'a Node, kind: &str) -> Option<Node<'a>> {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == kind {
-                    return Some(child);
-                }
-            }
-        }
-        None
     }
 
     fn extract_variable_name(&self, declarator: &Node, source: &str) -> String {
