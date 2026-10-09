@@ -80,6 +80,14 @@ class TrackedOnlyTests(unittest.TestCase):
         self._write_summary(TRACKED, ENABLED)
         self.assertEqual(self._lint(include_generated=True)[0], 0)
 
+    def test_generated_fails_when_the_summary_was_not_generated(self):
+        code, out = self._lint(include_generated=True)
+        self.assertEqual(code, 1)
+        self.assertIn("docs/test-summary.md: not generated", out)
+
+    def test_without_generated_an_absent_summary_is_fine(self):
+        self.assertEqual(self._lint()[0], 0)
+
     def test_a_tracked_doc_is_still_checked(self):
         (self.root / "docs" / "index.rst").write_text(f"There are {TRACKED + 1} tracked rules.\n")
         code, out = self._lint()

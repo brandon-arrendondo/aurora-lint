@@ -330,6 +330,16 @@ def lint(include_generated: bool = False) -> int:
     bad = []
     checked = 0
     skip = untracked(TARGETS)
+    if include_generated:
+        # --generated runs straight after the build that writes these, so an
+        # absent one means that build did not write it -- skipping it would
+        # pass without checking anything.
+        absent = [rel for rel in GENERATED if rel in TARGETS and not (ROOT / rel).is_file()]
+        if absent:
+            for rel in absent:
+                print(f"{rel}: not generated; --generated expects it, written by "
+                      f"`{GENERATED[rel]}`")
+            return 1
     for rel in TARGETS:
         path = ROOT / rel
         if not path.is_file():
