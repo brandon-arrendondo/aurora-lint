@@ -232,6 +232,16 @@ The Linux corpora do not: where one uses `sizeof(wchar_t)` it is no longer a
 constant, and nothing is proven or reported through a guessed size. Declaring moves each corpus's settings
 hash, so runs from before and after the declaration carry different run ids.
 
+The same `[environment]` sections declare the rest of each configuration of
+record's target facts (ADR-0018, 2026-10-09 amendment): `libc = "iso-posix"`
+(the ISO C and POSIX model, never a library's extensions), `c_standard` (the
+`-std` the build passes, or GCC 12's default `gnu17` where it passes none),
+`posix_version` (2008 where glibc's default feature macros apply, 2001 for
+lua, whose `lprefix.h` selects `_XOPEN_SOURCE 600`) and `char_signed`
+(x86-64 System V; false for libcrc, which builds with `-funsigned-char`). Each
+carries its basis in a comment. ventoy and sel4 declare no `posix_version`
+(a Win32 program, and a stand-alone kernel), and ventoy no `c_standard`.
+
 
 ## sqlite
 

@@ -9,6 +9,15 @@ cert_version = "2016"
 # The configuration of record is a Linux x86_64 build, LP64: int 32 bits, long
 # and pointers 64. See docs/design/realworld-corpus-scope.md.
 data_model = "lp64"
+# libc stays the ISO C and POSIX model even though the toolchain is glibc: no library's
+# extensions enter the figures (ADR-0015 Decision 5; ADR-0018).
+libc = "iso-posix"
+# The makefile builds with -std=c99 -DLUA_USE_LINUX.
+c_standard = "c99"
+# lprefix.h defines _XOPEN_SOURCE 600 (POSIX.1-2001) for the Linux build.
+posix_version = "2001"
+# x86-64 System V psABI: plain char is signed.
+char_signed = true
 
 [rules.cert_c.API00-C]
 enabled = true

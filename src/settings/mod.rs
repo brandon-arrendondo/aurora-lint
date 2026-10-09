@@ -1040,7 +1040,8 @@ impl SettingsConfig {
     }
 
     /// Record a `NAME=VALUE` override, routed to the axis `NAME` belongs to.
-    /// `data_model=MODEL` declares the environment's data model, and
+    /// `libc=MODEL` declares the C library, `data_model=MODEL` the environment's
+    /// data model, and
     /// `int_bits=16`, `char_signed=true` and the other integer facts override
     /// what it loads.
     pub fn set(&mut self, assignment: &str) -> Result<()> {
@@ -1058,6 +1059,13 @@ impl SettingsConfig {
             return Ok(());
         }
         match name {
+            "libc" => {
+                let v = value
+                    .parse()
+                    .map_err(|e: String| anyhow::anyhow!("libc: {e}"))?;
+                self.environment.get_or_insert_with(Default::default).libc = Some(v);
+                return Ok(());
+            }
             "libc_version" => {
                 self.environment
                     .get_or_insert_with(Default::default)
@@ -3034,5 +3042,15 @@ mod tests {
             text,
             render_config_settings(&AnalysisSettings::preset(Preset::Default))
         );
+    }
+
+    #[test]
+    fn set_declares_the_library_like_the_libc_flag() {
+        let mut config = SettingsConfig::default();
+        config.set("libc=iso-posix").unwrap();
+        assert!(config.set("libc=bionic").is_err());
+        let s = AnalysisSettings::resolve(&config).unwrap();
+        assert_eq!(s.libc, Some(Libc::IsoPosix));
+        assert!(s.libc_declared);
     }
 }

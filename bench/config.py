@@ -224,7 +224,20 @@ PROFILES = ("default", "strict")
 # data model is LP64 (`data_model`; ADR-0011 credits integer widths only
 # where they are declared). Real-world scans declare their data model in
 # their own manifests (conf/realworld/*-rules.toml).
-JULIET_SETTING_OVERRIDES = ("closed_program=true", "data_model=lp64")
+#
+# It declares the same target facts the real-world manifests do (ADR-0018,
+# 2026-10-09 amendment): the ISO C and POSIX library model, C17 (the
+# testcases' CMakeLists.txt sets no -std, so GCC 12's default dialect
+# gnu17 applies), POSIX.1-2008 (glibc 2.36 defines _POSIX_C_SOURCE
+# 200809L by default), and x86-64 System V's signed plain char.
+JULIET_SETTING_OVERRIDES = (
+    "closed_program=true",
+    "data_model=lp64",
+    "libc=iso-posix",
+    "c_standard=c17",
+    "posix_version=2008",
+    "char_signed=true",
+)
 # How a run_id names that declaration after its preset (ADR-0015 Decision 8).
 JULIET_RUN_LABEL_SUFFIX = "+closed"
 

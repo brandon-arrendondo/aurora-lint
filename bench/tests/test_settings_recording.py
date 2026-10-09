@@ -61,8 +61,13 @@ class TestJulietSettings(unittest.TestCase):
         with mock.patch.object(config, "resolve_settings", return_value=resolved) as r:
             s = config.juliet_settings("strict")
         r.assert_called_once_with(
-            "strict", ("closed_program=true", "data_model=lp64"), compile_db=None
+            "strict", config.JULIET_SETTING_OVERRIDES, compile_db=None
         )
+        # The target facts of Juliet's configuration of record (ADR-0018).
+        for declared in ("closed_program=true", "data_model=lp64",
+                         "libc=iso-posix", "c_standard=c17",
+                         "posix_version=2008", "char_signed=true"):
+            self.assertIn(declared, config.JULIET_SETTING_OVERRIDES)
         self.assertEqual(s["run_label"], "strict+closed")
         self.assertEqual(settings_run_suffix(s), "-strict+closed-cccccccccccc")
 
@@ -71,6 +76,22 @@ class TestManifestDeclarations(unittest.TestCase):
     """A corpus manifest's declared allocators and deallocators outlive
     `--profile` in the scan, so the settings a run records and hashes are
     resolved with that manifest."""
+
+    def test_every_corpus_declares_its_library_and_target_facts(self):
+        """ADR-0018 (2026-10-09 amendment): the ISO C and POSIX library, the
+        C and POSIX editions and the signedness of char, except where the
+        configuration of record has none (ventoy: no POSIX, no one C
+        edition; sel4: no POSIX)."""
+        import tomllib
+        root = Path(__file__).resolve().parents[2] / "conf" / "realworld"
+        no_posix = {"ventoy", "sel4"}
+        for path in sorted(root.glob("*-rules.toml")):
+            corpus = path.name.removesuffix("-rules.toml")
+            env = tomllib.loads(path.read_text())["environment"]
+            self.assertEqual(env.get("libc"), "iso-posix", corpus)
+            self.assertEqual("posix_version" in env, corpus not in no_posix, corpus)
+            self.assertEqual("c_standard" in env, corpus != "ventoy", corpus)
+            self.assertEqual("char_signed" in env, corpus != "ventoy", corpus)
 
     def test_settings_are_resolved_with_the_scans_manifest(self):
         from unittest import mock

@@ -11,6 +11,15 @@ data_model = "ilp32"
 # MSVC's wchar_t is 16 bits. The ilp32 data model says nothing about wchar_t (it
 # is a Linux and a Windows model alike), so ventoy's own build declares it.
 wchar_t_bits = 16
+# libc stays the ISO C and POSIX model: no library's extensions enter the figures
+# (ADR-0015 Decision 5; ADR-0018). This is the model's ISO C half only, since
+# Ventoy2Disk is not a POSIX program.
+libc = "iso-posix"
+# No posix_version: the configuration of record is a Win32 program built by MSVC
+# (primary_build_config), which is not a POSIX system.
+# No c_standard: the Visual Studio project sets no /std, and the compile database
+# the recipe derives from it names clang-cl entries, so no one edition of ISO C
+# describes the MSVC build of record.
 
 [rules.cert_c.API00-C]
 enabled = true

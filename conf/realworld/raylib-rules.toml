@@ -9,6 +9,15 @@ cert_version = "2016"
 # The configuration of record is a Linux x86_64 build, LP64: int 32 bits, long
 # and pointers 64. See docs/design/realworld-corpus-scope.md.
 data_model = "lp64"
+# libc stays the ISO C and POSIX model even though the toolchain is glibc: no library's
+# extensions enter the figures (ADR-0015 Decision 5; ADR-0018).
+libc = "iso-posix"
+# cmake/CompilerFlags.cmake sets -std=gnu99 where the compiler accepts it, else CMAKE_C_STANDARD 99; the build defines _DEFAULT_SOURCE (cmake/LibraryConfigurations.cmake).
+c_standard = "c99"
+# glibc 2.36 (the bookworm header set) defines _POSIX_C_SOURCE 200809L by default, so the configuration of record is POSIX.1-2008.
+posix_version = "2008"
+# x86-64 System V psABI: plain char is signed.
+char_signed = true
 
 [rules.cert_c.API00-C]
 enabled = true

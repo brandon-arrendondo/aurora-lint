@@ -182,9 +182,13 @@ moves when its set is declared and its trend break is measured.
 
 ## Amendment (2026-10-09, Brandon): a benchmark declares its target facts
 
-**Status:** ruled (Brandon, 2026-10-08 and 2026-10-09); not yet
-implemented. The real-world manifests declare only their data model today,
-and Juliet only its data model and that it is a closed program.
+**Status:** ruled (Brandon, 2026-10-08 and 2026-10-09); implemented in the
+same change as the decoupling code. Each real-world manifest declares the
+library, the editions and the target facts of its configuration of record,
+and Juliet declares the same through `JULIET_SETTING_OVERRIDES`.
+A corpus with no POSIX configuration of record (Ventoy2Disk, and the seL4
+kernel, which carries its own standard library) declares no
+`posix_version`, and Ventoy2Disk declares no `c_standard` either.
 
 ### Context
 
