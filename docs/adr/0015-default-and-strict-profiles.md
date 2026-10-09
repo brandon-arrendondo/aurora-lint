@@ -58,7 +58,8 @@ safety-critical user unprotected.
    a guard.
 3. **Environment is declared, never inferred.**
    - `hosted` (the default) trusts the ISO C and POSIX library contracts,
-     such as `free(NULL)` doing nothing (ADR-0011 basis 1).
+     such as `free(NULL)` doing nothing (ADR-0011 basis 1). (Revised by the
+     2026-10-08 amendment, Decision 4.)
    - `freestanding` trusts no library semantics beyond the language (C11
      freestanding implementations guarantee only a few headers).
    - A `libc` model (for example glibc, musl, newlib, picolibc, or custom)
@@ -372,8 +373,7 @@ settled the environment points above and several rule readings.
    `environment = freestanding` for the strict preset, and the oracle
    (Decision 5) records the strict, hosted truth. A team that trusts no
    library still declares `freestanding` or `libc = "custom"`. (Revised
-   by the 2026-10-08 amendment: `--strict` trusts the ISO C hosted
-   contracts, and the POSIX contracts only when POSIX is declared.)
+   by the 2026-10-08 amendment, Decision 4.)
 2. **`--pedantic` trusts only a declared C library.** Small targets often
    link a reduced library ("embedded micros typically use tiny or micro
    variants"), so the pedantic preset is `policy = pedantic` with a
@@ -498,6 +498,8 @@ its build.
    sets and build recipes (ADR-0018), or through the compile database a
    recipe produces. Strict scoring then never depends on the host, and the
    oracle's POSIX-dependent labels on the Linux corpora keep their meaning.
+   ADR-0018 (still proposed) does not yet say that a benchmark declares
+   these facts; it needs a follow-up amendment to do so.
 
 ### The points the 2026-10-07 amendment left open
 
@@ -588,7 +590,8 @@ under "For Brandon's ruling" below.
 - **`default`'s POSIX edition.** `default` assumes POSIX is present.
   Proposed: it assumes no edition, so `posix_version` stays unknown and a
   function an edition added or removed is read as unknown until the edition
-  is declared, as E4 of the rule-disposition rulings reads `c_standard`.
+  is declared, as E4 of the 2026-10-07 rulings in
+  `docs/design/rule-disposition.md` reads `c_standard`.
 - **The remaining per-rule assert readings** (point 3).
 - **Whether `pedantic` figures are published** (point 6).
 - **The ADR-0013 reconciliation** (point 8).
