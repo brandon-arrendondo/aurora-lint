@@ -1,0 +1,8 @@
+# Build context for container/benchmark.Dockerfile (docker reads this file;
+# podman reads .containerignore, which must stay identical): only what the image
+# copies. Everything else (target/, results/, data/benchmarks.db) stays out.
+*
+!bench
+!data/benchmark_deps
+!data/benchmark_repos.json
+bench/**/__pycache__

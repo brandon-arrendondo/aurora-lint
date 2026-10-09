@@ -650,6 +650,13 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     # what the scan used (config.resolve_settings).
     settings = juliet_settings(profile, compile_db)
     deps_includes, environment_record, env_suffix = _juliet_environment()
+    if compile_db and environment_record and json.loads(environment_record).get("manifest_sha256"):
+        # In the benchmark image the synthesized database's paths are this
+        # host's, not the container's, so its entries would match nothing
+        # while the run still carried the environment's id.
+        raise ValueError("--compile-commands is not available for a Juliet run in the "
+                         "benchmark image: the synthesized compile database names host "
+                         "paths. Run it without --compile-commands.")
     run_id = juliet_run_id(version, sha, fast=fast, compile_commands=compile_commands,
                            cwes=cwe_ids, settings=settings) + env_suffix
     mode = "fast" if fast else "full"

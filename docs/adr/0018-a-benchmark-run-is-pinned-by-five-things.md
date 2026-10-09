@@ -1,4 +1,4 @@
-# 0018. A real-world benchmark run is pinned by five things, and the environment it ran in is one of them
+# 0018. A benchmark run is pinned by five things, and the environment it ran in is one of them
 
 ## Status
 
@@ -36,9 +36,9 @@ supplies an older `sqlite3.h` than the one sqlite's tree generates, and a
 host's `libmbedtls-dev` supplies `everest/` headers in place of mbed TLS's
 bundled ones.
 
-The hosts aurora-lint is developed on differ: Linux distributions,
-macOS, Windows, FreeBSD. No host-wide header set installs the same way on all
-of them, and a corpus's build run on a host configures against that host.
+The hosts aurora-lint is developed on differ: Linux distributions, macOS,
+Windows, FreeBSD. No host-wide header set installs the same way on all of
+them, and a corpus's build run on a host configures against that host.
 
 ## Decision
 
@@ -155,8 +155,8 @@ moves when its set is declared and its trend break is measured.
 
 - **Official numbers still come only from the benchmark machine** (ADR-0004).
   Any machine holding the five pins is expected to reproduce them key for key.
-  A difference between such a machine and the benchmark machine is a defect to explain, not
-  environment noise.
+  A difference between such a machine and the benchmark machine is a defect
+  to explain, not environment noise.
 - **Moving the suite into the image is a one-time trend break.** It is
   recorded and re-baselined, and new keys are delta-adjudicated before any
   precision claim. A later change to the image, a set or a recipe is a
@@ -168,9 +168,10 @@ moves when its set is declared and its trend break is measured.
 - **Pins rot.** Snapshot timestamps and sha256-pinned downloads keep their
   meaning, but their sources can disappear: a dated base-image tag, a
   release tarball, a non-snapshotted package repository. Every such artifact
-  is kept by the maintainers in a sha256-keyed artifact cache, refreshed whenever the Dockerfile changes. The shared image is distributed privately from that
-  private registry by digest (`data/benchmark_environment.json` names it).
-  It is never published, because it contains other projects' headers.
+  is kept by the maintainers in a sha256-keyed artifact cache, refreshed
+  whenever the Dockerfile changes, and the shared image is distributed
+  privately by digest (`data/benchmark_environment.json` names it). The
+  image is never published, because it contains other projects' headers.
   Strangers build it from the Dockerfile instead. Microsoft's SDK is in
   neither: each machine fetches its own.
 - **This repository stays Postgres-blind** (ADR-0004). Recording the pins

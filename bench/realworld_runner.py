@@ -1789,6 +1789,15 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
          compile_db, variant) = (env.settings, env.header_spec, env.deps_decl,
                                  env.build_record, env.env_manifest,
                                  env.compile_db, env.variant)
+    else:
+        # Another tool run in the benchmark image is named by that image too,
+        # so two environments' runs of one build never share an id.
+        from bench import environment as _env
+        image = _env.load()
+        if image is not None:
+            suffix = _environment_suffix(_env.pin(image)).lstrip("-")
+            if suffix:
+                variant = f"{variant}-{suffix}" if variant else suffix
 
     version = _get_tool_version(tool)
     sha = _get_git_sha()

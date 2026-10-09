@@ -54,7 +54,8 @@ def cmd_juliet(args):
                                keep_reports=args.keep_reports,
                                compile_commands=args.compile_commands, cwes=cwes,
                                profile=args.profile)
-    except ValueError as e:
+    except (ValueError, FileNotFoundError) as e:
+        # A missing or different dependency set, or an unusable option.
         print(e)
         sys.exit(2)
     if args.run_id_out:

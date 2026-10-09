@@ -105,3 +105,51 @@ class TestContainerJuliet(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReviewGuards(unittest.TestCase):
+    def test_a_juliet_compile_database_is_refused_in_the_image(self):
+        record = json.dumps({"manifest_sha256": "p", "base": None, "set": None})
+        with mock.patch.object(runner, "SQC_BIN", Path(__file__)), \
+             mock.patch.object(runner, "JULIET_BASE", Path(__file__).parent), \
+             mock.patch.object(runner, "JULIET_COMPILE_DB", Path(__file__)), \
+             mock.patch.object(runner, "_enumerate_cwes", return_value=["CWE1_x"]), \
+             mock.patch.object(runner, "_ensure_rule_cwe_map"), \
+             mock.patch.object(runner, "_get_sqc_version", return_value="0"), \
+             mock.patch.object(runner, "_get_git_sha", return_value="a"), \
+             mock.patch.object(runner, "juliet_settings", return_value=None), \
+             mock.patch.object(runner, "_juliet_environment", return_value=((), record, "")):
+            with self.assertRaises(ValueError) as cm:
+                runner.run_benchmark(compile_commands=True)
+        self.assertIn("--compile-commands", str(cm.exception))
+
+    def test_a_missing_set_exits_2_not_with_a_traceback(self):
+        import argparse
+        from bench import __main__ as cli
+        args = argparse.Namespace(cwe=None, full=False, jobs=1, keep_reports=False,
+                                  compile_commands=False, profile="default", run_id_out=None)
+        with mock.patch("bench.runner.run_benchmark",
+                        side_effect=FileNotFoundError("Juliet's dependency set is MISSING")):
+            with self.assertRaises(SystemExit) as cm:
+                cli.cmd_juliet(args)
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_other_tools_in_the_image_are_named_by_it(self):
+        manifest = {"base": {}, "packages": {}, "tools": {}, "sets": {}}
+        with tempfile.TemporaryDirectory() as td:
+            cfg = dict(rr.CODEBASES["lua"], path=Path(td))
+            seen = {}
+
+            def stop(tool, version, sha, variant):
+                seen["variant"] = variant
+                raise RuntimeError("stop")
+            with mock.patch.dict(rr.CODEBASES, {"lua": cfg}), \
+                 mock.patch.object(rr, "_check_tool_available", return_value=True), \
+                 mock.patch.object(environment, "load", return_value=manifest), \
+                 mock.patch.object(rr, "_environment_suffix", return_value="-envdeadbeef"), \
+                 mock.patch.object(rr, "_get_tool_version", return_value="1"), \
+                 mock.patch.object(rr, "_get_git_sha", return_value="a"), \
+                 mock.patch.object(rr, "_make_version_dir_name", side_effect=stop):
+                with self.assertRaises(RuntimeError):
+                    rr.run_one("cppcheck", "lua")
+        self.assertEqual(seen["variant"], "envdeadbeef")
