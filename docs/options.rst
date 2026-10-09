@@ -200,7 +200,8 @@ Toolchain
    the project's own declaration: the configuration, or a compile database
    passed with ``--compile-commands`` (``-std=``, ``-D_POSIX_C_SOURCE=``,
    ``-D_XOPEN_SOURCE=``, ``-m32`` and ``-m64``). A compile database's facts
-   may differ by translation unit; the configuration holds for the whole
+   is recorded per translation unit, but the rules read one project-wide
+   answer (see :doc:`configuration`); the configuration holds for the whole
    project and wins a disagreement, which the scan reports. Each declared
    fact's source (``cli``, ``config`` or ``compile database``) is part of
    the settings hash. When a fact is unknown, no exemption that depends on it

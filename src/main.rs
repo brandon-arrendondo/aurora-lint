@@ -784,8 +784,8 @@ fn run() -> Result<i32> {
             if let Some(notice) = settings.posix_notice(|r| rule_enabled(&manifest, r)) {
                 eprintln!("warning: {notice}");
             }
-            for conflict in &settings.edition_conflicts {
-                eprintln!("warning: {conflict}");
+            for warning in settings.edition_warnings() {
+                eprintln!("warning: {warning}");
             }
             Ok(())
         });
@@ -939,8 +939,8 @@ fn run() -> Result<i32> {
     if let Some(notice) = analysis_settings.posix_notice(|r| rule_enabled(&manifest, r)) {
         eprintln!("warning: {notice}");
     }
-    for conflict in &analysis_settings.edition_conflicts {
-        eprintln!("warning: {conflict}");
+    for warning in analysis_settings.edition_warnings() {
+        eprintln!("warning: {warning}");
     }
 
     // Handle suppression generation

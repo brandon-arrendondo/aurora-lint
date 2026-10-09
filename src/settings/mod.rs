@@ -162,6 +162,11 @@ pub enum PosixVersion {
     /// Not a POSIX system.
     #[serde(rename = "none")]
     None,
+    /// POSIX of an edition older than POSIX.1-2001 (POSIX.1-1990 or -1996,
+    /// XPG4 or SUSv2): declared, but no edition-specific reading is credited.
+    /// What `-D_POSIX_C_SOURCE=1`, `=199506L` or `-D_XOPEN_SOURCE=500` says.
+    #[serde(rename = "pre2001")]
+    Pre2001,
     /// POSIX.1-2001.
     #[serde(rename = "2001")]
     Posix2001,
@@ -237,6 +242,9 @@ pub struct CompileFacts {
     pub per_tu: BTreeMap<String, TuFacts>,
     /// How many units the database compiles.
     pub unit_count: usize,
+    /// The edition declarations the database makes that name no edition the
+    /// tool knows (`unit: flag`): none is read as a fact.
+    pub unrecognized: Vec<String>,
 }
 
 impl CompileFacts {
@@ -252,9 +260,13 @@ impl CompileFacts {
             && self.per_tu.values().all(pick)
     }
 
-    /// The data model every unit that states one agrees on, when no unit
-    /// states another.
+    /// The data model every compiled unit states, when they all state the
+    /// same one. A unit that states none makes the model unknown for the
+    /// project: it is not inferred from the units that do.
     fn unanimous_data_model(&self) -> Option<DataModel> {
+        if !self.covers_every_unit(|t| t.data_model.is_some()) {
+            return None;
+        }
         let mut models = self.per_tu.values().filter_map(|f| f.data_model);
         let first = models.next()?;
         models.all(|m| m == first).then_some(first)
@@ -1472,6 +1484,37 @@ impl AnalysisSettings {
         Some(text)
     }
 
+    /// The warnings a scan prints about the editions it was given: edition
+    /// declarations in a compile database that name no known edition, and
+    /// each conflict the configuration won, summarized past the first few so
+    /// a large database does not flood stderr.
+    pub fn edition_warnings(&self) -> Vec<String> {
+        const SHOWN: usize = 3;
+        let mut out = Vec::new();
+        let u = &self.compile_facts.unrecognized;
+        if !u.is_empty() {
+            out.push(format!(
+                "{} edition declaration(s) in the compile database name no edition known to \
+                 aurora-lint and are treated as undeclared (first: {})",
+                u.len(),
+                u.iter().take(SHOWN).cloned().collect::<Vec<_>>().join("; ")
+            ));
+        }
+        out.extend(
+            self.edition_conflicts
+                .iter()
+                .take(SHOWN)
+                .map(|c| c.to_string()),
+        );
+        if self.edition_conflicts.len() > SHOWN {
+            out.push(format!(
+                "and {} more units where the configuration wins over the compile database",
+                self.edition_conflicts.len() - SHOWN
+            ));
+        }
+        out
+    }
+
     /// Whether POSIX holds for the translation unit at `file`, or for the
     /// project when `file` is `None`, and why. The configuration's
     /// `posix_version` holds for the whole project and wins over a compile
@@ -1933,7 +1976,7 @@ pub fn render_config_settings(current: &AnalysisSettings) -> String {
         "unknown unless declared",
     );
     out.push_str(
-        "# The edition of POSIX the code is built against: none, 2001, 2008, 2017 or 2024.\n",
+        "# The edition of POSIX the code is built against: none, pre2001, 2001, 2008, 2017 or 2024.\n",
     );
     config_entry(
         &mut out,
@@ -2337,7 +2380,8 @@ pub fn render_rst() -> String {
          the project's own declaration: the configuration, or a compile database\n   \
          passed with ``--compile-commands`` (``-std=``, ``-D_POSIX_C_SOURCE=``,\n   \
          ``-D_XOPEN_SOURCE=``, ``-m32`` and ``-m64``). A compile database's facts\n   \
-         may differ by translation unit; the configuration holds for the whole\n   \
+         is recorded per translation unit, but the rules read one project-wide\n   \
+         answer (see :doc:`configuration`); the configuration holds for the whole\n   \
          project and wins a disagreement, which the scan reports. Each declared\n   \
          fact's source (``cli``, ``config`` or ``compile database``) is part of\n   \
          the settings hash. When a fact is unknown, no exemption that depends on it\n   \
@@ -2785,6 +2829,7 @@ mod tests {
             root: "/proj".into(),
             per_tu: units.iter().map(|(f, t)| (f.to_string(), *t)).collect(),
             unit_count,
+            ..Default::default()
         }
     }
 
@@ -3002,6 +3047,7 @@ mod tests {
                     .into_iter()
                     .collect(),
                 unit_count: 1,
+                ..Default::default()
             });
             AnalysisSettings::resolve(&config).unwrap().settings_hash()
         };
@@ -3052,5 +3098,42 @@ mod tests {
         let s = AnalysisSettings::resolve(&config).unwrap();
         assert_eq!(s.libc, Some(Libc::IsoPosix));
         assert!(s.libc_declared);
+    }
+
+    #[test]
+    fn many_conflicts_are_summarized_and_unrecognized_declarations_reported() {
+        let units: Vec<(String, TuFacts)> = (0..10)
+            .map(|i| (format!("/proj/u{i}.c"), posix(PosixVersion::None)))
+            .collect();
+        let refs: Vec<(&str, TuFacts)> = units.iter().map(|(f, t)| (f.as_str(), *t)).collect();
+        let mut config = config_with(Preset::Strict, &["posix_version=2008"]);
+        let mut facts = compile_facts(&refs, 10);
+        facts.unrecognized = vec!["/proj/u1.c: -std=c2y".into()];
+        config.compile_facts = Some(facts);
+        let s = AnalysisSettings::resolve(&config).unwrap();
+        assert_eq!(s.edition_conflicts.len(), 10);
+        let warnings = s.edition_warnings();
+        assert_eq!(warnings.len(), 1 + 3 + 1, "{warnings:?}");
+        assert!(warnings[0].contains("-std=c2y"), "{warnings:?}");
+        assert!(warnings[4].contains("and 7 more units"), "{warnings:?}");
+    }
+
+    #[test]
+    fn pre2001_posix_is_declared_posix() {
+        let mut config = config_with(Preset::Strict, &[]);
+        config.compile_facts = Some(compile_facts(
+            &[("/proj/a.c", posix(PosixVersion::Pre2001))],
+            1,
+        ));
+        let s = AnalysisSettings::resolve(&config).unwrap();
+        assert!(s.posix_holds("/proj/a.c"));
+        assert!(s.posix_holds_project());
+        assert_eq!(
+            config_with(Preset::Strict, &["posix_version=pre2001"])
+                .environment
+                .unwrap()
+                .posix_version,
+            Some(PosixVersion::Pre2001)
+        );
     }
 }

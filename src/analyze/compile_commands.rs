@@ -141,12 +141,23 @@ impl CommandLineDefine {
     }
 }
 
-/// The ISO C edition a `-std=` value names, GNU dialects included.
-fn std_flag_edition(value: &str) -> Option<CStandard> {
+/// How a flag that looks like an edition declaration reads.
+enum Reading<T> {
+    /// It names an edition the tool knows.
+    Edition(T),
+    /// It is a declaration, but names no edition the tool knows.
+    Unrecognized,
+}
+
+/// The ISO C edition a `-std=` value names, GNU dialects included. A value in
+/// the `cNN` or `gnuNN` family the tool has no edition for (`c2y`) is a
+/// declaration it cannot read, not a different edition: it is never rounded
+/// to a nearby one. Anything else (`c++17`) is not an ISO C declaration.
+fn std_flag_edition(value: &str) -> Option<Reading<CStandard>> {
     let v = value
         .strip_prefix("gnu")
         .or_else(|| value.strip_prefix('c'));
-    match (value, v) {
+    let edition = match (value, v) {
         ("iso9899:1990" | "iso9899:199409", _) => Some(CStandard::C89),
         ("iso9899:1999", _) => Some(CStandard::C99),
         ("iso9899:2011", _) => Some(CStandard::C11),
@@ -156,35 +167,77 @@ fn std_flag_edition(value: &str) -> Option<CStandard> {
         (_, Some("99" | "9x")) => Some(CStandard::C99),
         (_, Some("11" | "1x")) => Some(CStandard::C11),
         (_, Some("17" | "18")) => Some(CStandard::C17),
-        (_, Some("23" | "2x" | "2y")) => Some(CStandard::C23),
+        (_, Some("23" | "2x")) => Some(CStandard::C23),
+        _ => None,
+    };
+    match (edition, v) {
+        (Some(e), _) => Some(Reading::Edition(e)),
+        (None, Some(rest)) if rest.starts_with(|c: char| c.is_ascii_digit()) => {
+            Some(Reading::Unrecognized)
+        }
         _ => None,
     }
 }
 
-/// The POSIX edition a feature-test macro's value names. `_POSIX_C_SOURCE`
-/// 200809L is POSIX.1-2008, which POSIX.1-2017 reissues without changing the
-/// value, so it reads as 2008.
-fn posix_macro_edition(name: &str, body: &str) -> Option<PosixVersion> {
-    let digits: String = body.chars().take_while(|c| c.is_ascii_digit()).collect();
-    let n: u32 = digits.parse().ok()?;
-    match (name, n) {
-        ("_POSIX_C_SOURCE", 200112) | ("_XOPEN_SOURCE", 600) => Some(PosixVersion::Posix2001),
-        ("_POSIX_C_SOURCE", 200809) | ("_XOPEN_SOURCE", 700) => Some(PosixVersion::Posix2008),
-        ("_POSIX_C_SOURCE", 202405) | ("_XOPEN_SOURCE", 800) => Some(PosixVersion::Posix2024),
+/// The POSIX edition a feature-test macro's value names, by the thresholds
+/// glibc's `<features.h>` applies. `_POSIX_C_SOURCE` 200809L is POSIX.1-2008,
+/// which POSIX.1-2017 reissues without changing the value, so it reads as
+/// 2008. A value below POSIX.1-2001's (`1`, `2`, `199309L`, `199506L`, and
+/// `_XOPEN_SOURCE` `500` or bare) declares POSIX of an edition older than
+/// that, which [`PosixVersion::Pre2001`] says. A value that is no number
+/// declares POSIX in a way this reading cannot interpret.
+fn posix_macro_edition(name: &str, body: &str) -> Reading<PosixVersion> {
+    let n: Option<u32> = body.trim_end_matches(['L', 'l', 'U', 'u']).parse().ok();
+    let edition = match (name, n) {
+        ("_POSIX_C_SOURCE", Some(1..=200111)) | ("_XOPEN_SOURCE", Some(1..=599)) => {
+            Some(PosixVersion::Pre2001)
+        }
+        ("_POSIX_C_SOURCE", Some(200112..=200808)) | ("_XOPEN_SOURCE", Some(600..=699)) => {
+            Some(PosixVersion::Posix2001)
+        }
+        ("_POSIX_C_SOURCE", Some(200809..=202404)) | ("_XOPEN_SOURCE", Some(700..=799)) => {
+            Some(PosixVersion::Posix2008)
+        }
+        ("_POSIX_C_SOURCE", Some(202405..)) | ("_XOPEN_SOURCE", Some(800..)) => {
+            Some(PosixVersion::Posix2024)
+        }
         _ => None,
+    };
+    match edition {
+        Some(e) => Reading::Edition(e),
+        None => Reading::Unrecognized,
     }
 }
 
-/// The facts one command line states. A later flag replaces an earlier one,
-/// and a `-U` of a feature-test macro withdraws what it declared.
-fn tu_facts_of(argv: &[String], flags: &[Flag], msvc: bool) -> TuFacts {
+/// Whether a command line targets MinGW: through the driver's name, or
+/// through clang's `--target=` / `-target`.
+fn targets_mingw(argv: &[String]) -> bool {
+    let named = |s: &str| s.contains("mingw") || s.ends_with("windows-gnu");
+    argv.first().is_some_and(|c| named(c))
+        || argv.iter().enumerate().any(|(i, a)| {
+            a.strip_prefix("--target=").is_some_and(named)
+                || (a == "-target" || a == "--target") && argv.get(i + 1).is_some_and(|t| named(t))
+        })
+}
+
+/// The facts one command line states, and the declarations it makes that
+/// they cannot read. A later flag replaces an earlier one, and a `-U` of a
+/// feature-test macro withdraws what it declared.
+fn tu_facts_of(argv: &[String], flags: &[Flag], msvc: bool) -> (TuFacts, Vec<String>) {
     let mut facts = TuFacts::default();
+    let mut unrecognized = Vec::new();
     for flag in flags {
         match flag {
-            Flag::Define(spelling, body) => {
-                let body = if body.is_empty() { "1" } else { body };
-                if let Some(v) = posix_macro_edition(spelling, body) {
-                    facts.posix_version = Some(v);
+            Flag::Define(spelling, body)
+                if spelling == "_POSIX_C_SOURCE" || spelling == "_XOPEN_SOURCE" =>
+            {
+                let shown = if body.is_empty() { "1" } else { body };
+                match posix_macro_edition(spelling, shown) {
+                    Reading::Edition(v) => facts.posix_version = Some(v),
+                    Reading::Unrecognized => {
+                        facts.posix_version = None;
+                        unrecognized.push(format!("-D{spelling}={shown}"));
+                    }
                 }
             }
             Flag::Undefine(name) if name == "_POSIX_C_SOURCE" || name == "_XOPEN_SOURCE" => {
@@ -196,14 +249,19 @@ fn tu_facts_of(argv: &[String], flags: &[Flag], msvc: bool) -> TuFacts {
     if !msvc {
         for arg in argv {
             if let Some(value) = arg.strip_prefix("-std=") {
-                facts.c_standard = std_flag_edition(value).or(facts.c_standard);
+                match std_flag_edition(value) {
+                    Some(Reading::Edition(e)) => facts.c_standard = Some(e),
+                    Some(Reading::Unrecognized) => {
+                        facts.c_standard = None;
+                        unrecognized.push(arg.clone());
+                    }
+                    None => {}
+                }
             } else if arg == "-m32" {
                 facts.data_model = Some(DataModel::Ilp32);
             } else if arg == "-m64" {
-                // A MinGW driver's 64-bit target is LLP64; any other
-                // driver's is LP64.
-                let mingw = argv.first().is_some_and(|c| c.contains("mingw"));
-                facts.data_model = Some(if mingw {
+                // A MinGW target's 64-bit model is LLP64; any other's is LP64.
+                facts.data_model = Some(if targets_mingw(argv) {
                     DataModel::Llp64
                 } else {
                     DataModel::Lp64
@@ -211,7 +269,7 @@ fn tu_facts_of(argv: &[String], flags: &[Flag], msvc: bool) -> TuFacts {
             }
         }
     }
-    facts
+    (facts, unrecognized)
 }
 
 /// Include search paths and command-line macro state distilled from a
@@ -223,6 +281,11 @@ pub struct CompileDb {
     /// states none has no entry. Facts may differ by unit; a later entry for
     /// the same unit replaces an earlier one.
     pub tu_facts: BTreeMap<String, TuFacts>,
+    /// The edition declarations (`-D_POSIX_C_SOURCE=`, `-std=`) a command
+    /// makes that name no edition the tool knows, as `file: flag`. Never
+    /// read as a fact, and reported so a declaration is not mistaken for
+    /// silence.
+    pub unrecognized_declarations: Vec<String>,
     /// Absolute include search paths, first-seen order preserved so the search
     /// order of the original build is approximated.
     pub include_paths: Vec<String>,
@@ -351,8 +414,10 @@ impl CompileDb {
             }
             let flags = parse_flags(&argv, msvc);
             if let Some(file) = &entry.file {
-                let facts = tu_facts_of(&argv, &flags, msvc);
+                let (facts, unrecognized) = tu_facts_of(&argv, &flags, msvc);
                 let key = real_path(&absolutize(base, file));
+                db.unrecognized_declarations
+                    .extend(unrecognized.into_iter().map(|f| format!("{key}: {f}")));
                 if facts.is_empty() {
                     db.tu_facts.remove(&key);
                 } else {
@@ -424,6 +489,7 @@ impl CompileDb {
                 .unwrap_or_default(),
             per_tu: self.tu_facts.clone(),
             unit_count: self.configured_sources.len(),
+            unrecognized: self.unrecognized_declarations.clone(),
         }
     }
 
@@ -2109,12 +2175,76 @@ mod tests {
     }
 
     #[test]
-    fn an_unrecognized_value_declares_nothing() {
+    fn a_value_that_is_not_an_edition_declares_nothing_and_is_reported() {
         let db = CompileDb::from_entries(&[unit(
             "a.c",
-            &["cc", "-std=c++17", "-D_POSIX_C_SOURCE=1", "-D_GNU_SOURCE"],
+            &[
+                "cc",
+                "-std=c2y",
+                "-D_POSIX_C_SOURCE=FOO",
+                "-D_GNU_SOURCE",
+                "-std=c++17",
+            ],
         )]);
         assert_eq!(db.facts().of("/proj/a.c"), None);
+        assert_eq!(
+            db.unrecognized_declarations.len(),
+            2,
+            "{:?}",
+            db.unrecognized_declarations
+        );
+        assert!(db
+            .unrecognized_declarations
+            .iter()
+            .any(|d| d.ends_with("-std=c2y")));
+        assert!(db
+            .unrecognized_declarations
+            .iter()
+            .any(|d| d.ends_with("-D_POSIX_C_SOURCE=FOO")));
+        assert_eq!(db.facts().unrecognized, db.unrecognized_declarations);
+    }
+
+    #[test]
+    fn older_posix_declarations_declare_posix_of_an_older_edition() {
+        for flags in [
+            &["cc", "-D_POSIX_C_SOURCE=1"][..],
+            &["cc", "-D_POSIX_C_SOURCE=2"],
+            &["cc", "-D_POSIX_C_SOURCE=199309L"],
+            &["cc", "-D_POSIX_C_SOURCE=199506L"],
+            &["cc", "-D_POSIX_C_SOURCE"],
+            &["cc", "-D_XOPEN_SOURCE=500"],
+            &["cc", "-D_XOPEN_SOURCE"],
+        ] {
+            let db = CompileDb::from_entries(&[unit("a.c", flags)]);
+            assert_eq!(
+                db.facts().of("/proj/a.c").and_then(|t| t.posix_version),
+                Some(PosixVersion::Pre2001),
+                "{flags:?}"
+            );
+            assert!(db.unrecognized_declarations.is_empty(), "{flags:?}");
+        }
+    }
+
+    #[test]
+    fn m64_is_llp64_for_a_clang_mingw_target_too() {
+        let db = CompileDb::from_entries(&[
+            unit("a.c", &["clang", "--target=x86_64-w64-mingw32", "-m64"]),
+            unit(
+                "b.c",
+                &["clang", "-target", "x86_64-pc-windows-gnu", "-m64"],
+            ),
+            unit("c.c", &["clang", "--target=x86_64-linux-gnu", "-m64"]),
+        ]);
+        let f = db.facts();
+        assert_eq!(
+            f.of("/proj/a.c").unwrap().data_model,
+            Some(DataModel::Llp64)
+        );
+        assert_eq!(
+            f.of("/proj/b.c").unwrap().data_model,
+            Some(DataModel::Llp64)
+        );
+        assert_eq!(f.of("/proj/c.c").unwrap().data_model, Some(DataModel::Lp64));
     }
 
     #[test]

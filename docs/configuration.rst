@@ -104,7 +104,7 @@ single options:
     libc = "newlib"             # iso-posix | glibc | musl | newlib | newlib-nano | picolibc | custom
     libc_version = "4.4.0"      # recorded and hashed; grants no contract
     c_standard = "c99"          # c89 | c99 | c11 | c17 | c23; unknown unless declared
-    posix_version = "none"      # none | 2001 | 2008 | 2017 | 2024; unknown unless declared
+    posix_version = "none"      # none | pre2001 | 2001 | 2008 | 2017 | 2024; unknown unless declared
     include_names = "exact"     # "exact" | "case-insensitive" (as cl on Windows)
     data_model = "lp64"         # "iso" (the default) | "ilp32" | "lp64" | "llp64"
     # int_bits = 32             # integer facts the data model loads; write one to
@@ -152,15 +152,35 @@ settings that never mention it keep the hash they always had.
 the machine running it. A fact comes from the configuration (a file, or
 ``--set posix_version=2008``) or from a compile database passed with
 ``--compile-commands``, which is a declaration of its own: ``-std=`` names the C
-edition, ``-D_POSIX_C_SOURCE=`` or ``-D_XOPEN_SOURCE=`` the POSIX edition, and
-``-m32`` or ``-m64`` the data model. The configuration holds for the whole
-project; a compile database's facts are read per translation unit, so one
-database may mix POSIX and non-POSIX units. Where they disagree for a unit the
-configuration wins and the scan reports the conflict on stderr
-(``--check-config`` too). The settings record where each declared fact came
-from (``cli``, ``config`` or ``compile database``), and that source is part of
-the settings hash; a scan with no declaration and no compile database hashes
-as it always did.
+edition, ``-D_POSIX_C_SOURCE=`` or ``-D_XOPEN_SOURCE=`` the POSIX edition (a
+value older than POSIX.1-2001, such as ``-D_POSIX_C_SOURCE=199506L`` or
+``-D_XOPEN_SOURCE=500``, declares ``pre2001``), and ``-m32`` or ``-m64`` the
+data model (``-m64`` is LP64, or LLP64 for a MinGW target). A flag that looks
+like an edition declaration but names none the tool knows (``-std=c2y``,
+``-D_POSIX_C_SOURCE=FOO``) is reported and treated as undeclared; it is never
+rounded to a nearby edition.
+
+The configuration holds for the whole project and wins a disagreement, which
+the scan reports on stderr (``--check-config`` too; a large database gets the
+first few conflicts and a count). A compile database's facts are *recorded* per
+translation unit, so a settings report shows which units declared what, but
+the rules today read one project-wide answer:
+
+- ``posix_version`` from the configuration holds for every scanned file.
+- From a compile database alone, a contract that is not read per unit (the
+  POSIX entries of ``stdlib_noreturn`` and ``stdlib_call_effects``) holds only
+  when *every* unit of the database declares POSIX, and then it holds for every
+  scanned file, including a ``.c`` file the database does not compile. A
+  database in which some unit declares nothing grants none.
+- The data model comes from a compile database only when every unit states the
+  same one. A unit that states none leaves it unknown; it is never inferred
+  from the units that do.
+- A compile database's ``c_standard`` is recorded per unit but no rule reads it
+  yet, which is why ``--pedantic`` names only the missing ``posix_version``.
+
+The settings record where each declared fact came from (``cli``, ``config`` or
+``compile database``), and that source is part of the settings hash; a scan
+with no declaration and no compile database hashes as it always did.
 
 When a fact is unknown, no exemption that depends on it applies. The default
 preset is the one exception: it assumes POSIX, with no edition, because most
@@ -168,9 +188,7 @@ code runs on a POSIX system. ``strict`` and ``pedantic`` do not, so a
 ``--strict`` scan of POSIX code that declares nothing reports the findings the
 POSIX exemptions would have withheld. Declare ``posix_version``, or pass a
 compile database that defines ``_POSIX_C_SOURCE`` for every unit, to restore
-them. Contracts that are not read per unit (the POSIX entries of
-``stdlib_noreturn`` and ``stdlib_call_effects``) hold project-wide only when the
-configuration declares POSIX or every unit of the compile database does.
+them.
 
 Integer widths are implementation-defined, so the scan credits only what it is
 told. Each width is a plain key under ``[environment]``, and ``data_model`` is a

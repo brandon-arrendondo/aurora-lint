@@ -91,8 +91,11 @@ cross-cutting rulings decided once and applied to many:
   the scan reports. The default preset assumes POSIX with no edition; strict and
   pedantic apply a POSIX exemption only when it is declared, and say which
   enabled rules wait on it. A rule whose hazard vanishes under POSIX is kept and
-  gated on that fact, not cut. The gate is `AnalysisSettings::posix_for`
-  (per unit) and `posix_holds_project`. Today it governs the POSIX-only entries
+  gated on that fact, not cut. The gate is `AnalysisSettings::posix_for` (recorded per unit) and
+  `posix_holds_project`, which is what the rules read today: the configuration's
+  answer for every file, or a compile database's only when every unit of it
+  declares POSIX. Per-unit `c_standard` is recorded but no rule reads it yet.
+  Today the gate governs the POSIX-only entries
   of the `stdlib_noreturn` and `stdlib_call_effects` contracts; the rules below
   that name the POSIX fact in their rows (FIO08-C, FIO14-C, FIO19-C, FIO24-C,
   MSC05-C, CON37-C, SIG30-C) do not read it yet, so their rows describe the
