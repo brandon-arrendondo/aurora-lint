@@ -277,6 +277,31 @@ pin. ``data/benchmark_environment.json`` declares the pin this commit
 expects, so you can check your own build against it: ``python -m bench
 container-run`` prints the pin of the image it runs.
 
+``data/benchmark_environment.json`` also names the shared, licence-free
+image (``shared_image``) and its ``tools`` stage (``tools_image``) by digest,
+with each one's pin. Where they are pulled from is up to your deployment;
+``python -m bench.environment declared tools_image`` prints a field and
+checks the file.
+
+When the image changes
+~~~~~~~~~~~~~~~~~~~~~~
+
+Any change to the Dockerfiles, a dependency set or the manifest generator
+is a new environment. In the same commit as the change:
+
+1. Rebuild the shared image and its ``tools`` stage
+   (``podman build --target tools``), and the licence layer on top.
+2. Record each pin: ``python3 -m bench.environment hash
+   /etc/aurora-bench/environment.json`` in the licensed image
+   (``manifest_sha256``) and in the shared one (``shared_manifest_sha256``),
+   and the ``tools_stage`` the shared manifest records.
+3. Push the shared image and the tools image wherever your machines pull
+   from, and record each digest the push reports (``--digestfile``) as
+   ``shared_image`` and ``tools_image``.
+4. Check the file with ``python -m bench.environment declared
+   manifest_sha256``, and A/B the suite before and after, as for any
+   change to the environment.
+
 Then build each corpus's compile database (its declared default build, run
 inside a throwaway container from the ``tools`` stage) and run the
 benchmarks in the image:

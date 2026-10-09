@@ -67,7 +67,10 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#juliet-test-suite-setup">Juliet Test Suite Setup</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#the-benchmark-environment">The Benchmark Environment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#the-benchmark-environment">The Benchmark Environment</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#when-the-image-changes">When the image changes</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#third-party-library-headers">Third-Party Library Headers</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#windows-sdk-and-crt-headers-ventoy">Windows SDK and CRT Headers (ventoy)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#debian-system-headers-curl-hostap-mosquitto-sqlite-valkey">Debian System Headers (curl, hostap, mosquitto, sqlite, valkey)</a></li>
@@ -381,6 +384,29 @@ copied to another one:</p>
 pin. <code class="docutils literal notranslate"><span class="pre">data/benchmark_environment.json</span></code> declares the pin this commit
 expects, so you can check your own build against it: <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span>
 <span class="pre">container-run</span></code> prints the pin of the image it runs.</p>
+<p><code class="docutils literal notranslate"><span class="pre">data/benchmark_environment.json</span></code> also names the shared, licence-free
+image (<code class="docutils literal notranslate"><span class="pre">shared_image</span></code>) and its <code class="docutils literal notranslate"><span class="pre">tools</span></code> stage (<code class="docutils literal notranslate"><span class="pre">tools_image</span></code>) by digest,
+with each one’s pin. Where they are pulled from is up to your deployment;
+<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench.environment</span> <span class="pre">declared</span> <span class="pre">tools_image</span></code> prints a field and
+checks the file.</p>
+<section id="when-the-image-changes">
+<h3>When the image changes<a class="headerlink" href="#when-the-image-changes" title="Link to this heading"></a></h3>
+<p>Any change to the Dockerfiles, a dependency set or the manifest generator
+is a new environment. In the same commit as the change:</p>
+<ol class="arabic simple">
+<li><p>Rebuild the shared image and its <code class="docutils literal notranslate"><span class="pre">tools</span></code> stage
+(<code class="docutils literal notranslate"><span class="pre">podman</span> <span class="pre">build</span> <span class="pre">--target</span> <span class="pre">tools</span></code>), and the licence layer on top.</p></li>
+<li><p>Record each pin: <code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">-m</span> <span class="pre">bench.environment</span> <span class="pre">hash</span>
+<span class="pre">/etc/aurora-bench/environment.json</span></code> in the licensed image
+(<code class="docutils literal notranslate"><span class="pre">manifest_sha256</span></code>) and in the shared one (<code class="docutils literal notranslate"><span class="pre">shared_manifest_sha256</span></code>),
+and the <code class="docutils literal notranslate"><span class="pre">tools_stage</span></code> the shared manifest records.</p></li>
+<li><p>Push the shared image and the tools image wherever your machines pull
+from, and record each digest the push reports (<code class="docutils literal notranslate"><span class="pre">--digestfile</span></code>) as
+<code class="docutils literal notranslate"><span class="pre">shared_image</span></code> and <code class="docutils literal notranslate"><span class="pre">tools_image</span></code>.</p></li>
+<li><p>Check the file with <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench.environment</span> <span class="pre">declared</span>
+<span class="pre">manifest_sha256</span></code>, and A/B the suite before and after, as for any
+change to the environment.</p></li>
+</ol>
 <p>Then build each corpus’s compile database (its declared default build, run
 inside a throwaway container from the <code class="docutils literal notranslate"><span class="pre">tools</span></code> stage) and run the
 benchmarks in the image:</p>
@@ -401,6 +427,7 @@ the network, not <code class="docutils literal notranslate"><span class="pre">dp
 <code class="docutils literal notranslate"><span class="pre">playbooks/setup-benchmark-deps.yml</span></code>.</p>
 <p>The sections below describe scanning against the host’s own headers: local
 and shadow scans, which are never benchmark runs.</p>
+</section>
 </section>
 <section id="third-party-library-headers">
 <h2>Third-Party Library Headers<a class="headerlink" href="#third-party-library-headers" title="Link to this heading"></a></h2>
