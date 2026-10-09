@@ -70,7 +70,8 @@ def cmd_container_build_db(args):
     for cb in [c.strip().lower() for c in args.codebase.split(",") if c.strip()]:
         rc = container.build_db(cb, args.image or container.DEFAULT_IMAGE,
                                 args.tools_image or container.DEFAULT_TOOLS_IMAGE,
-                                args.runtime, rebuild=args.rebuild) or rc
+                                args.runtime, rebuild=args.rebuild, jobs=args.jobs,
+                                pids_limit=args.pids_limit, timeout_s=args.timeout) or rc
     raise SystemExit(rc)
 
 
@@ -1301,6 +1302,12 @@ def main():
     p_cdb.add_argument("--runtime", default="podman")
     p_cdb.add_argument("--rebuild", action="store_true",
                        help="build even when an intact cache for this commit and environment exists")
+    p_cdb.add_argument("--jobs", type=int, default=None,
+                       help="build parallelism (default $AURORA_BENCH_BUILD_JOBS or min(CPUs, 8))")
+    p_cdb.add_argument("--pids-limit", type=int, default=None,
+                       help="the build container's pids limit (default $AURORA_BENCH_BUILD_PIDS_LIMIT or 32768)")
+    p_cdb.add_argument("--timeout", type=int, default=None,
+                       help="seconds before a build is stopped and fails (default $AURORA_BENCH_BUILD_TIMEOUT or 1800)")
     p_cdb.set_defaults(func=cmd_container_build_db)
 
     # competitor-export

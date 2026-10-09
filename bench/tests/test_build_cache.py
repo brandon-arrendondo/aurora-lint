@@ -141,6 +141,28 @@ class BuildCacheTest(unittest.TestCase):
                                                        self.decl, {})
         lock.assert_called_once_with(self.cache, exclusive=False)
 
+    def test_a_build_that_times_out_is_removed_and_leaves_the_cache_alone(self):
+        import subprocess
+        write_cache(self.cache, self.decl, header=b"old\n")
+        (self.cache / "cache.json").write_text("{}")  # damaged: forces a build
+        calls = []
+
+        def hang(cmd, **kw):
+            calls.append((cmd, kw))
+            if cmd[0] == "build":
+                (self.cache.parent / cmd[1]).mkdir()   # half-written output
+                raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+            return mock.Mock(returncode=0)
+        with mock.patch.object(container.subprocess, "run", side_effect=hang), \
+             mock.patch("builtins.print") as out:
+            self.assertEqual(self.build(timeout_s=5), 1)
+        self.assertEqual(calls[0][1]["timeout"], 5)
+        self.assertEqual(calls[1][0][:3], ["podman", "rm", "-f"])
+        self.assertEqual(calls[1][0][-1], container.build_container_name("toy"))
+        self.assertTrue(any("did not finish in 5s" in str(c) for c in out.call_args_list))
+        self.assertEqual((self.cache / "generated" / "build" / "config.h").read_bytes(), b"old\n")
+        self.assertFalse(any(".tmp-" in p.name for p in self.cache.parent.iterdir()))
+
     def test_concurrent_builders_build_once(self):
         results = []
         threads = [threading.Thread(target=lambda: results.append(self.build()))
@@ -307,6 +329,33 @@ class GeneratedUnitsTest(unittest.TestCase):
             (cache / "cache.json").write_text(json.dumps(rec))
             with self.assertRaisesRegex(ValueError, "cache format 1"):
                 deps.check_cache(DECL, cache, COMMIT, PIN)
+
+
+class BuildContainerLimitsTest(unittest.TestCase):
+    """The build container's pids limit, parallelism cap and name (bear's
+    per-exec gRPC threads exhausted podman's default pids limit of 2048)."""
+
+    def _cmd(self, **kw):
+        with tempfile.TemporaryDirectory() as td, \
+             mock.patch.object(deps, "declared_for", return_value=DECL), \
+             mock.patch.dict(realworld_runner.CODEBASES, {"toy": {"path": Path(td) / "toy"}}):
+            return container.build_db_command("toy", "tools", PIN, COMMIT,
+                                              bench_root=Path(td), project_dir=Path("/repo"),
+                                              **kw)
+
+    def test_defaults_raise_the_pids_limit_and_cap_parallelism(self):
+        cmd = self._cmd()
+        self.assertIn(f"--pids-limit={container.BUILD_PIDS_LIMIT}", cmd)
+        self.assertGreater(container.BUILD_PIDS_LIMIT, 2048)
+        self.assertIn(f"OMP_NUM_THREADS={container.BUILD_JOBS}", cmd)
+        self.assertLessEqual(container.BUILD_JOBS, 8)
+        self.assertEqual(cmd[cmd.index("--name") + 1], container.build_container_name("toy"))
+        self.assertLess(cmd.index("--name"), cmd.index("tools"))
+
+    def test_overrides_reach_the_command(self):
+        cmd = self._cmd(jobs=2, pids_limit=64)
+        self.assertIn("--pids-limit=64", cmd)
+        self.assertIn("OMP_NUM_THREADS=2", cmd)
 
 
 if __name__ == "__main__":

@@ -139,9 +139,29 @@ def run(run_args: list[str], image: str = DEFAULT_IMAGE, runtime: str = "podman"
     return subprocess.run(command(run_args, image, pin, runtime, commit=commit)).returncode
 
 
+# Limits on a compile-database build container. podman's default pids
+# limit (2048) counts threads, and bear starts a gRPC client with its own
+# thread pool for every command it wraps: under make -j on a many-core
+# machine that exhausts the limit, process creation fails with EAGAIN, and
+# the gRPC threads hang instead of exiting (seen on hostap, pureftpd and
+# valkey). So the build gets a much larger pids limit, its parallelism is
+# capped (the recipes run make -j"$(nproc)", and nproc honours
+# OMP_NUM_THREADS), and a build that still does not finish fails after a
+# timeout instead of holding the cache's lock for ever.
+BUILD_PIDS_LIMIT = int(os.environ.get("AURORA_BENCH_BUILD_PIDS_LIMIT", "32768"))
+BUILD_JOBS = int(os.environ.get("AURORA_BENCH_BUILD_JOBS", str(min(os.cpu_count() or 1, 8))))
+BUILD_TIMEOUT_S = int(os.environ.get("AURORA_BENCH_BUILD_TIMEOUT", "1800"))
+
+
+def build_container_name(project: str) -> str:
+    """The build container's name, so a timed-out build can be removed."""
+    return f"aurora-bench-build-{project}-{os.getpid()}"
+
+
 def build_db_command(project: str, tools_image: str, pin: str, corpus_commit: str,
                      runtime: str = "podman", bench_root=None, project_dir=None,
-                     out_name: str | None = None) -> list[str]:
+                     out_name: str | None = None, jobs: int | None = None,
+                     pids_limit: int | None = None) -> list[str]:
     """The `podman run` line that builds `project`'s compile database in a
     throwaway container from the tools stage (bench/dbbuild.py). The
     checkout and this repository are mounted read-only; only the cache
@@ -157,6 +177,9 @@ def build_db_command(project: str, tools_image: str, pin: str, corpus_commit: st
     cache = deps.build_cache_dir(decl, corpus_commit, pin, bench_root)
     cache.parent.mkdir(parents=True, exist_ok=True)
     return [runtime, "run", "--rm", "--platform", "linux/amd64",
+            "--name", build_container_name(project),
+            f"--pids-limit={pids_limit if pids_limit is not None else BUILD_PIDS_LIMIT}",
+            "-e", f"OMP_NUM_THREADS={jobs or BUILD_JOBS}",
             "-v", f"{project_dir}:{WORK}:ro",
             "-v", f"{host}:{IN_BENCH_ROOT}/{project}:ro",
             "-v", f"{cache.parent}:/cache-root",
@@ -167,7 +190,8 @@ def build_db_command(project: str, tools_image: str, pin: str, corpus_commit: st
 
 def build_db(project: str, image: str = DEFAULT_IMAGE,
              tools_image: str = DEFAULT_TOOLS_IMAGE, runtime: str = "podman",
-             rebuild: bool = False, bench_root=None) -> int:
+             rebuild: bool = False, bench_root=None, jobs: int | None = None,
+             pids_limit: int | None = None, timeout_s: int | None = None) -> int:
     """Build and cache `project`'s compile database for the environment of
     `image` (the bench stage: its pin keys the cache), unless the cache is
     already there and intact: built from this recipe, for this corpus commit
@@ -182,7 +206,10 @@ def build_db(project: str, image: str = DEFAULT_IMAGE,
     cache mid-swap; a scan that starts while a rebuild holds the lock waits
     for it. BENCH_ROOT/.build-cache must be on a local filesystem: flock
     does not hold across machines sharing it over NFS. `rebuild` builds even
-    over an intact cache."""
+    over an intact cache. The build runs with BUILD_PIDS_LIMIT, BUILD_JOBS
+    and BUILD_TIMEOUT_S unless `pids_limit`, `jobs` or `timeout_s` say
+    otherwise; a build that times out is removed and its output discarded,
+    and the cache is left as it was."""
     from bench import deps
     from bench.realworld_runner import CODEBASES, _get_codebase_sha
     if shutil.which(runtime) is None:
@@ -234,9 +261,22 @@ def build_db(project: str, image: str = DEFAULT_IMAGE,
                 return 0
         tmp = cache.with_name(f"{cache.name}.tmp-{os.getpid()}")
         shutil.rmtree(tmp, ignore_errors=True)
-        rc = subprocess.run(build_db_command(project, tools_image, pin, commit, runtime,
-                                             bench_root=bench_root,
-                                             out_name=tmp.name)).returncode
+        cmd = build_db_command(project, tools_image, pin, commit, runtime,
+                               bench_root=bench_root, out_name=tmp.name, jobs=jobs,
+                               pids_limit=pids_limit)
+        timeout = timeout_s or BUILD_TIMEOUT_S
+        try:
+            rc = subprocess.run(cmd, timeout=timeout).returncode
+        except subprocess.TimeoutExpired:
+            # The runtime's client is killed, not the container: remove it
+            # by name, so nothing goes on writing the temporary directory.
+            subprocess.run([runtime, "rm", "-f", "-t", "0", build_container_name(project)],
+                           capture_output=True)
+            print(f"container-build-db: {project}'s build did not finish in {timeout}s "
+                  f"and was stopped; the cache at {cache} is unchanged. Raise "
+                  f"--timeout or AURORA_BENCH_BUILD_TIMEOUT if the build is just slow.")
+            shutil.rmtree(tmp, ignore_errors=True)
+            return 1
         try:
             if rc == 0:
                 deps.check_cache(decl, tmp, commit, pin)
