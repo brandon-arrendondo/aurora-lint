@@ -426,6 +426,14 @@ read with three presets: a fixture runs under `default` and `strict`, and
 under `pedantic` when its expectation names it, which it does where the
 verdict differs.
 
+### Coverage between rules (2026-10-09, Brandon)
+
+Coverage claims are per preset and per declared environment. A cut or
+deferral between rules needs complete coverage in every context: every
+preset and every combination of declared facts (C library, `c_standard`,
+POSIX, data model, target, rule options). See
+`docs/design/cross-rule-overlap.md`, bar #2.
+
 ## Amendment (2026-10-08, Brandon): the reading and the environment are separate, and POSIX and the editions are declared facts
 
 **Status:** ruled (Brandon, 2026-10-08, with the follow-up rulings of
