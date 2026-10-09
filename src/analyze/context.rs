@@ -1030,6 +1030,12 @@ pub struct ProjectContext {
     /// an earlier fix's shared typedef-chain resolver).
     #[serde(default)]
     pub function_pointer_typedef_names: Arc<HashSet<String>>,
+    /// Names of typedefs that name a function type itself, not a pointer to
+    /// one (curl's `typedef CURLcode (Curl_recv)(...)`): an object
+    /// declaration through one declares a function. A subset of
+    /// `function_pointer_typedef_names`.
+    #[serde(default)]
+    pub function_typedef_names: Arc<HashSet<String>>,
     /// Names of typedefs that hide a pointer in DCL05-C's sense -- a pointer
     /// in the declarator chain, not a function pointer, not a pointer to
     /// const (`declarator_utils::pointer_typedef_names_in`). The typedef is

@@ -71,6 +71,7 @@ struct FilePrescanResult {
     struct_typedef_aliases: HashMap<String, String>,
     typedef_types: HashMap<String, String>,
     function_pointer_typedef_names: HashSet<String>,
+    function_typedef_names: HashSet<String>,
     pointer_typedef_names: HashSet<String>,
     packed_structs: HashSet<String>,
     /// Signal handlers this file registers without defining them.
@@ -178,6 +179,7 @@ impl FilePrescanResult {
             struct_typedef_aliases: HashMap::new(),
             typedef_types: HashMap::new(),
             function_pointer_typedef_names: HashSet::new(),
+            function_typedef_names: HashSet::new(),
             pointer_typedef_names: HashSet::new(),
             packed_structs: HashSet::new(),
             signal_handlers_defined_elsewhere: HashSet::new(),
@@ -339,6 +341,7 @@ fn process_file(file_path: &Path, is_header: bool, model: IntFacts) -> FilePresc
             &source,
             &mut result.function_pointer_typedef_names,
         );
+        collect_function_typedef_names(&root, &source, &mut result.function_typedef_names);
         collect_pointer_typedef_names(&root, &source, &mut result.pointer_typedef_names);
         collect_packed_structs(
             &root,
@@ -759,6 +762,7 @@ fn prescan_file_list(
     let mut struct_typedef_aliases: HashMap<String, String> = HashMap::new();
     let mut typedef_types: HashMap<String, String> = HashMap::new();
     let mut function_pointer_typedef_names: HashSet<String> = HashSet::new();
+    let mut function_typedef_names: HashSet<String> = HashSet::new();
     let mut pointer_typedef_names: HashSet<String> = HashSet::new();
     let mut packed_structs: HashSet<String> = HashSet::new();
     let mut signal_handlers_registered_elsewhere: HashSet<String> = HashSet::new();
@@ -1046,6 +1050,7 @@ fn prescan_file_list(
         struct_typedef_aliases.extend(r.struct_typedef_aliases);
         typedef_types.extend(r.typedef_types);
         function_pointer_typedef_names.extend(r.function_pointer_typedef_names);
+        function_typedef_names.extend(r.function_typedef_names);
         pointer_typedef_names.extend(r.pointer_typedef_names);
         packed_structs.extend(r.packed_structs);
         signal_handlers_registered_elsewhere.extend(r.signal_handlers_defined_elsewhere);
@@ -1618,6 +1623,7 @@ fn prescan_file_list(
         struct_typedef_aliases: Arc::new(struct_typedef_aliases),
         typedef_types: Arc::new(typedef_types),
         function_pointer_typedef_names: Arc::new(function_pointer_typedef_names),
+        function_typedef_names: Arc::new(function_typedef_names),
         pointer_typedef_names: Arc::new(pointer_typedef_names),
         packed_structs: Arc::new(packed_structs),
         signal_handlers_registered_elsewhere: Arc::new(signal_handlers_registered_elsewhere),
@@ -6927,6 +6933,37 @@ fn collect_function_pointer_typedef_names(node: &Node, source: &str, names: &mut
             | "preproc_elif"
             | "linkage_specification" => {
                 collect_function_pointer_typedef_names(&child, source, names);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Names of typedefs that name a function type itself rather than a pointer
+/// to one: curl's `typedef CURLcode (Curl_recv)(struct Curl_easy *, ...);`.
+/// A declaration through one, `static Curl_recv scp_recv;`, declares a
+/// function, which nothing in the declaration's own syntax shows. A subset
+/// of `collect_function_pointer_typedef_names`' names, classified by
+/// `declarator_utils::declares_function`.
+fn collect_function_typedef_names(node: &Node, source: &str, names: &mut HashSet<String>) {
+    for child in node.child_nodes() {
+        match child.kind() {
+            "type_definition" => {
+                let mut cursor = child.walk();
+                for declarator in child.children_by_field_name("declarator", &mut cursor) {
+                    if crate::utility::cert_c::declarator_utils::declares_function(&declarator) {
+                        if let Some(name) = find_type_or_ident_in_declarator(&declarator, source) {
+                            names.insert(name);
+                        }
+                    }
+                }
+            }
+            "preproc_ifdef"
+            | "preproc_if"
+            | "preproc_else"
+            | "preproc_elif"
+            | "linkage_specification" => {
+                collect_function_typedef_names(&child, source, names);
             }
             _ => {}
         }

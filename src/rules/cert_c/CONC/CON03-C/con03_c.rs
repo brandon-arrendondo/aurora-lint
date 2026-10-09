@@ -86,7 +86,7 @@ use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
     declaration_has_storage_class, get_node_text, resolve_identifier_binding_in, IdentifierBinding,
 };
-use crate::utility::cert_c::declarator_utils::declares_function;
+use crate::utility::cert_c::declarator_utils::{declares_function, inner_declarator};
 use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -130,6 +130,9 @@ pub struct Con03C {
     /// The prescan's typedef aliases, for the same question asked of a
     /// typedef name.
     typedef_types: RefCell<Arc<HashMap<String, String>>>,
+    /// Typedef names that name a function type (`typedef int (cb_t)(void);`):
+    /// `static cb_t handler;` declares a function, not a variable.
+    function_typedef_names: RefCell<Arc<HashSet<String>>>,
 }
 
 impl CertRule for Con03C {
@@ -155,6 +158,7 @@ impl CertRule for Con03C {
             .extend(context.concurrency_reachable.iter().cloned());
         *self.macro_definitions.borrow_mut() = Arc::clone(&context.macro_definitions);
         *self.typedef_types.borrow_mut() = Arc::clone(&context.typedef_types);
+        *self.function_typedef_names.borrow_mut() = Arc::clone(&context.function_typedef_names);
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -331,8 +335,11 @@ impl Con03C {
                 } else {
                     (child, false)
                 };
-                // A prototype declares a function, not an object.
-                if declares_function(&declarator) {
+                // A prototype declares a function, not an object, and so does
+                // a bare name declared through a function-type typedef.
+                if declares_function(&declarator)
+                    || self.declares_function_through_typedef(&decl_node, &declarator, source)
+                {
                     continue;
                 }
                 // `extern int x;` defines nothing: the object is reported at
@@ -387,6 +394,37 @@ impl Con03C {
             cur = p.parent();
         }
         None
+    }
+
+    /// Whether `declarator` declares a function because the declaration's
+    /// type is a typedef for a function type and the name is bare:
+    /// `static handler_fn on_read;` declares a function, while
+    /// `static handler_fn *on_read;` declares a pointer to one, an object.
+    fn declares_function_through_typedef(
+        &self,
+        decl: &Node,
+        declarator: &Node,
+        source: &str,
+    ) -> bool {
+        let Some(ty) = decl.child_by_field_name("type") else {
+            return false;
+        };
+        if ty.kind() != "type_identifier"
+            || !self
+                .function_typedef_names
+                .borrow()
+                .contains(get_node_text(&ty, source))
+        {
+            return false;
+        }
+        let mut d = *declarator;
+        while d.kind() == "parenthesized_declarator" {
+            match inner_declarator(&d) {
+                Some(inner) => d = inner,
+                None => return false,
+            }
+        }
+        d.kind() == "identifier"
     }
 
     /// Whether the declaration gives its objects thread storage duration

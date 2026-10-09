@@ -93,20 +93,31 @@ pub fn is_function_declarator(node: &Node) -> bool {
 /// than an object, a function pointer (`(*fp)(void)`) included. The
 /// derivation applied to the name itself decides: a function returning a
 /// function pointer, `(*f(int))(void)`, is a function, and a pointer to a
-/// function, `(*fp)(void)`, is an object.
+/// function, `(*fp)(void)`, is an object. In a `typedef` the name is a
+/// `type_identifier`, so the same test says whether the typedef names a
+/// function type (`typedef int (handler)(void);`) or a pointer to one.
 pub fn declares_function(declarator: &Node) -> bool {
     let mut d = *declarator;
     let mut nearest_name: Option<&str> = None;
     loop {
         match d.kind() {
-            "identifier" => return nearest_name == Some("function_declarator"),
+            "identifier" | "type_identifier" => return nearest_name == Some("function_declarator"),
             "pointer_declarator" | "function_declarator" | "array_declarator" => {
                 nearest_name = Some(d.kind())
             }
             "parenthesized_declarator" | "attributed_declarator" => {}
             _ => return false,
         }
-        match inner_declarator(&d) {
+        // `inner_declarator` does not step into a parenthesized typedef
+        // name, `typedef int (handler)(void);`.
+        let next = inner_declarator(&d).or_else(|| {
+            let mut cursor = d.walk();
+            let name = d
+                .named_children(&mut cursor)
+                .find(|c| c.kind() == "type_identifier");
+            name
+        });
+        match next {
             Some(inner) if inner.id() != d.id() => d = inner,
             _ => return false,
         }
