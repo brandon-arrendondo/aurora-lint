@@ -6811,3 +6811,168 @@ fn detect_relevance_refuses_settings_a_scan_would_refuse() {
     assert!(stderr.contains("char_bits"), "{stderr}");
     assert!(!manifest.exists(), "no manifest should be written");
 }
+
+fn edition_db(dir: &std::path::Path, flags: &str) -> String {
+    let db = dir.join("compile_commands.json");
+    let unit = dir.join("a.c");
+    let entry = serde_json::json!([{
+        "directory": dir.to_str().unwrap(),
+        "file": unit.to_str().unwrap(),
+        "command": format!("cc {flags} -c a.c"),
+    }]);
+    std::fs::write(&db, entry.to_string()).unwrap();
+    db.to_str().unwrap().to_string()
+}
+
+#[test]
+fn strict_names_the_undeclared_posix_fact_and_a_compile_database_declares_it() {
+    let manifest = fixtures().join("manifest_msc37.toml");
+    let m = manifest.to_str().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+
+    // No build inputs: strict credits no POSIX, and says which key and which
+    // enabled rules that leaves waiting. Default assumes it and stays quiet.
+    let (code, _out, stderr) = run_aurora_lint(&["--check-config", "-m", m, "--profile", "strict"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stderr.contains("warning: POSIX is not declared") && stderr.contains("posix_version"),
+        "{stderr}"
+    );
+    let (_c, _o, stderr) = run_aurora_lint(&["--check-config", "-m", m, "--profile", "default"]);
+    assert!(!stderr.contains("POSIX is not declared"), "{stderr}");
+
+    // A compile database that defines the feature-test macro declares it.
+    let db = edition_db(dir.path(), "-std=c11 -D_POSIX_C_SOURCE=200809L");
+    let (code, _o, stderr) = run_aurora_lint(&[
+        "--check-config",
+        "-m",
+        m,
+        "--profile",
+        "strict",
+        "--compile-commands",
+        &db,
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(!stderr.contains("POSIX is not declared"), "{stderr}");
+    assert!(
+        !stderr.contains("compile database; the configuration wins"),
+        "{stderr}"
+    );
+
+    // The configuration wins a disagreement, and the scan reports it.
+    let (code, _o, stderr) = run_aurora_lint(&[
+        "--check-config",
+        "-m",
+        m,
+        "--profile",
+        "strict",
+        "--set",
+        "posix_version=2001",
+        "--compile-commands",
+        &db,
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stderr.contains("posix_version is 2001 in the configuration and 2008 in the compile database; the configuration wins"),
+        "{stderr}"
+    );
+}
+
+/// MSC37-C's findings on `posix_exit_noreturn.c`, whose non-void function
+/// ends in POSIX `_exit()`, under `args`.
+fn posix_exit_findings(args: &[&str]) -> usize {
+    let mut argv = vec![
+        fixtures()
+            .join("posix_exit_noreturn.c")
+            .to_str()
+            .unwrap()
+            .to_string(),
+        "-m".to_string(),
+        fixtures()
+            .join("manifest_msc37.toml")
+            .to_str()
+            .unwrap()
+            .to_string(),
+    ];
+    argv.extend(args.iter().map(|a| a.to_string()));
+    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (code, stdout, stderr) = run_aurora_lint(&refs);
+    assert!(code == 0 || code == 1, "{args:?}: {stderr}");
+    stdout.matches("MSC37-C:").count()
+}
+
+#[test]
+fn posix_exit_ends_a_path_only_where_posix_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    // The default preset assumes POSIX; strict and pedantic need it declared.
+    assert_eq!(posix_exit_findings(&["--profile", "default"]), 0);
+    assert_eq!(posix_exit_findings(&["--profile", "strict"]), 1);
+    assert_eq!(
+        posix_exit_findings(&["--profile", "pedantic", "--libc", "iso-posix"]),
+        1
+    );
+    // Declared in the configuration, POSIX holds for every preset, and
+    // declared absent it holds for none.
+    for preset in ["default", "strict", "pedantic"] {
+        assert_eq!(
+            posix_exit_findings(&[
+                "--profile",
+                preset,
+                "--libc",
+                "iso-posix",
+                "--set",
+                "posix_version=2008"
+            ]),
+            0,
+            "{preset}"
+        );
+        assert_eq!(
+            posix_exit_findings(&[
+                "--profile",
+                preset,
+                "--libc",
+                "iso-posix",
+                "--set",
+                "posix_version=none"
+            ]),
+            1,
+            "{preset}"
+        );
+    }
+    // Declared by a compile database, for the unit it compiles.
+    let unit = fixtures().join("posix_exit_noreturn.c");
+    let db = dir.path().join("compile_commands.json");
+    let write_db = |flags: &str| {
+        let entry = serde_json::json!([{
+            "directory": fixtures().to_str().unwrap(),
+            "file": unit.to_str().unwrap(),
+            "command": format!("cc {flags} -c posix_exit_noreturn.c"),
+        }]);
+        std::fs::write(&db, entry.to_string()).unwrap();
+    };
+    write_db("-D_POSIX_C_SOURCE=200809L");
+    let db_arg = db.to_str().unwrap().to_string();
+    assert_eq!(
+        posix_exit_findings(&["--profile", "strict", "--compile-commands", &db_arg]),
+        0
+    );
+    // A compile database that declares nothing about POSIX leaves strict where it was.
+    write_db("-std=c11");
+    assert_eq!(
+        posix_exit_findings(&["--profile", "strict", "--compile-commands", &db_arg]),
+        1
+    );
+    // The configuration wins a conflict: it declares POSIX absent.
+    write_db("-D_POSIX_C_SOURCE=200809L");
+    assert_eq!(
+        posix_exit_findings(&[
+            "--profile",
+            "strict",
+            "--set",
+            "posix_version=none",
+            "--compile-commands",
+            &db_arg
+        ]),
+        1
+    );
+}

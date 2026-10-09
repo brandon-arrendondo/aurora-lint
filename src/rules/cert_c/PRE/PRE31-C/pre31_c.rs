@@ -582,7 +582,10 @@ impl<'a> Ctx<'a> {
         if names_a_type(name, typedefs) {
             return Effect::None;
         }
-        let stdlib_contract = self.settings.flag("stdlib_call_effects");
+        // A POSIX-only function's contract holds only where POSIX does.
+        let stdlib_contract = self.settings.flag("stdlib_call_effects")
+            && (!crate::utility::cert_c::std_functions::is_posix_only_function(name)
+                || self.settings.posix_holds_project());
         if stdlib_contract {
             match library_call_effect(name) {
                 // Listed free of side effects: pure only where the policy

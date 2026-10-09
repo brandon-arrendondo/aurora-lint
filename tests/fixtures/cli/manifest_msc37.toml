@@ -1,0 +1,8 @@
+[metadata]
+name = "CLI Integration Test - MSC37-C only"
+version = "1.0.0"
+description = "Minimal manifest for CLI integration tests"
+cert_version = "2016"
+
+[rules.cert_c.MSC37-C]
+enabled = true

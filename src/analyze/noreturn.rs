@@ -121,7 +121,9 @@ impl NoreturnNames {
 /// Standard library functions that never return to their caller: the ISO C
 /// set, plus POSIX `_exit` (POSIX.1-2024 `_exit()`), which the hosted
 /// ISO C + POSIX library model covers. Trusted only under the
-/// `stdlib_noreturn` contract.
+/// `stdlib_noreturn` contract, and `_exit` only where POSIX holds
+/// ([`is_stdlib_noreturn_name`]). Known limitation: the cross-file
+/// summaries built from this list credit `_exit` whatever the settings say.
 ///
 /// `siglongjmp` is deliberately absent, so it never ends a path: it is
 /// POSIX-only and, like `longjmp`, resumes the program elsewhere rather than
@@ -143,7 +145,15 @@ const STDLIB_NORETURN_FUNCTIONS: &[&str] = &[
 /// contract (freestanding, or the pedantic preset with no C library declared)
 /// credits none of them.
 pub fn is_stdlib_noreturn_name(name: &str, settings: &AnalysisSettings) -> bool {
-    settings.flag("stdlib_noreturn") && is_stdlib_noreturn_function(name)
+    settings.flag("stdlib_noreturn")
+        && is_stdlib_noreturn_function(name)
+        && (!is_posix_only_noreturn_function(name) || settings.posix_holds_project())
+}
+
+/// True when `name` is a standard noreturn function only POSIX specifies
+/// (`_exit`), which a scan trusts only where POSIX holds.
+pub fn is_posix_only_noreturn_function(name: &str) -> bool {
+    name.trim() == "_exit"
 }
 
 /// True when `name` is one of the standard library's noreturn functions,

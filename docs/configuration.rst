@@ -60,16 +60,23 @@ assume (ADR-0015):
   text (only a body shown never to return ends a path), and may decline a
   rule that has none.
 - **Environment** says what the analyzer may believe about the platform the
-  code runs on. ``hosted`` trusts the ISO C and POSIX library contracts (for
+  code runs on. ``hosted`` trusts the ISO C library contracts (for
   example, ``free(NULL)`` does nothing) and ``main``'s ``argv`` guarantees.
+  The POSIX contracts hold where POSIX is a declared fact (``posix_version``,
+  below), and the default preset assumes it.
   ``freestanding`` trusts no library semantics beyond the language unless a
   ``libc`` model is declared. The environment is always declared, never
   guessed from the machine running the scan.
 
 Three presets set both at once. The **default** preset is the default policy
-on a hosted environment, and the **strict** preset is the strict policy on a
-hosted environment; both trust the ISO C and POSIX library unless a ``libc``
-is declared. The **pedantic** preset is the pedantic policy on a hosted
+on a hosted environment that assumes POSIX (with no edition of it), and the
+**strict** preset is the strict policy on a hosted environment that assumes
+only ISO C: both trust the ISO C library unless a ``libc`` is declared, but
+strict applies a POSIX contract or exemption only when ``posix_version`` is
+declared, in the configuration or by a compile database passed with
+``--compile-commands`` (see *Declaring the platform* below). A strict scan with
+neither names the missing fact and the enabled rules whose exemption waits on
+it. The **pedantic** preset is the pedantic policy on a hosted
 environment that trusts only a declared library: small targets often link a
 reduced one, so a full ISO C library is not assumed. With no ``libc``
 declared, a pedantic scan trusts no library contract and says so on stderr,
@@ -139,6 +146,31 @@ neither preset sets it. Left unset, it is ``case-insensitive`` when
 ``exact`` otherwise. The file system of the machine running the scan never
 decides it. It enters the settings hash only when ``case-insensitive``, so
 settings that never mention it keep the hash they always had.
+
+**Declaring the platform.** ``c_standard``, ``posix_version`` and the target
+(``data_model``) are facts the project declares, never ones the scan finds on
+the machine running it. A fact comes from the configuration (a file, or
+``--set posix_version=2008``) or from a compile database passed with
+``--compile-commands``, which is a declaration of its own: ``-std=`` names the C
+edition, ``-D_POSIX_C_SOURCE=`` or ``-D_XOPEN_SOURCE=`` the POSIX edition, and
+``-m32`` or ``-m64`` the data model. The configuration holds for the whole
+project; a compile database's facts are read per translation unit, so one
+database may mix POSIX and non-POSIX units. Where they disagree for a unit the
+configuration wins and the scan reports the conflict on stderr
+(``--check-config`` too). The settings record where each declared fact came
+from (``cli``, ``config`` or ``compile database``), and that source is part of
+the settings hash; a scan with no declaration and no compile database hashes
+as it always did.
+
+When a fact is unknown, no exemption that depends on it applies. The default
+preset is the one exception: it assumes POSIX, with no edition, because most
+code runs on a POSIX system. ``strict`` and ``pedantic`` do not, so a
+``--strict`` scan of POSIX code that declares nothing reports the findings the
+POSIX exemptions would have withheld. Declare ``posix_version``, or pass a
+compile database that defines ``_POSIX_C_SOURCE`` for every unit, to restore
+them. Contracts that are not read per unit (the POSIX entries of
+``stdlib_noreturn`` and ``stdlib_call_effects``) hold project-wide only when the
+configuration declares POSIX or every unit of the compile database does.
 
 Integer widths are implementation-defined, so the scan credits only what it is
 told. Each width is a plain key under ``[environment]``, and ``data_model`` is a

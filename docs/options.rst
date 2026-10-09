@@ -11,9 +11,11 @@ what the default preset relaxes. See :doc:`configuration` for how to set
 them.
 
 - The **default** preset is ``policy = default`` with a ``hosted``
-  environment and the ISO C + POSIX library model.
+  environment, the ISO C + POSIX library model, and POSIX assumed with no
+  edition declared.
 - The **strict** preset is ``policy = strict`` with a ``hosted``
-  environment and the ISO C + POSIX library model.
+  environment and the ISO C library model. POSIX contracts and exemptions
+  apply only where POSIX is declared (``posix_version``).
 - The **pedantic** preset is ``policy = pedantic`` with a ``hosted``
   environment and only the library model a project declares (``libc``);
   with none declared, no library contract below holds. It reads a rule
@@ -115,20 +117,20 @@ Environment contracts
    - Basis: C11 7.22.3.5p3.
 
 ``stdlib_noreturn``
-   abort, exit, _Exit, quick_exit, longjmp, thrd_exit and POSIX _exit never return to their caller.
+   abort, exit, _Exit, quick_exit, longjmp and thrd_exit never return to their caller, and so does POSIX _exit where POSIX holds (posix_version).
 
    - Default preset: ``true``; strict preset: ``true``; pedantic preset: ``false``
    - Scope: contract
    - Oracle tag: ``contract:stdlib_noreturn``
-   - Basis: C11 7.22.4.1, 7.22.4.4, 7.22.4.5, 7.22.4.7, 7.13.2.1 and 7.26.5.5; POSIX.1-2024 _exit(). A freestanding implementation need not provide <stdlib.h>, <setjmp.h> or <threads.h> at all. Known limitation: three cross-file summaries built by the prescan (a parameter's null state after `if (!p) exit(1);`, whether a function never returns, and what a function leaves in an out-parameter) still credit these calls whatever this option says.
+   - Basis: C11 7.22.4.1, 7.22.4.4, 7.22.4.5, 7.22.4.7, 7.13.2.1 and 7.26.5.5; POSIX.1-2024 _exit(). A freestanding implementation need not provide <stdlib.h>, <setjmp.h> or <threads.h> at all. Known limitation: three cross-file summaries built by the prescan (a parameter's null state after `if (!p) exit(1);`, whether a function never returns, and what a function leaves in an out-parameter) still credit these calls, _exit included, whatever this option and posix_version say.
 
 ``stdlib_call_effects``
-   Every ISO C or POSIX function the tool knows to have a side effect has one (it sets errno, touches a stream, allocates, or keeps hidden state), and the ones it lists as free of side effects (strlen, memcmp, isdigit, fabs, ntohs, ...) modify no object; whether that makes a call pure is the policy's pre31_listed_library_calls_pure. Withdrawn, a library call is a call to an unknown function.
+   Every ISO C function, and every POSIX function where POSIX holds (posix_version), the tool knows to have a side effect has one (it sets errno, touches a stream, allocates, or keeps hidden state), and the ones it lists as free of side effects (strlen, memcmp, isdigit, fabs, ntohs, ...) modify no object; whether that makes a call pure is the policy's pre31_listed_library_calls_pure. Withdrawn, a library call is a call to an unknown function.
 
    - Default preset: ``true``; strict preset: ``true``; pedantic preset: ``false``
    - Scope: contract
    - Oracle tag: ``contract:stdlib_call_effects``
-   - Basis: C11 7.24 and 7.4: memcmp, strcmp, strncmp, memchr, strchr, strcspn, strpbrk, strrchr, strspn, strstr, strlen and the character classification and case mapping functions modify no object; 7.22.1.4p8 and 7.12.1 (strtol and math functions report errors through errno); CERT PRE31-C-EX1: "even changing errno is a side effect".
+   - Basis: C11 7.24 and 7.4: memcmp, strcmp, strncmp, memchr, strchr, strcspn, strpbrk, strrchr, strspn, strstr, strlen and the character classification and case mapping functions modify no object; 7.22.1.4p8 and 7.12.1 (strtol and math functions report errors through errno); CERT PRE31-C-EX1: "even changing errno is a side effect". Known limitation: the cross-file effect summaries of scanned callees still credit a POSIX callee whatever posix_version says.
 
 ``library_macros_evaluate_once``
    A C library function the implementation's headers define as a macro (glibc's tolower) evaluates each argument exactly once, whatever its replacement list looks like, including when a project macro hands it an argument. "The implementation's headers" are any defining the name outside the scanned project, so a third-party library on the search path that redefines a standard name is trusted too (a redefinition C11 7.1.3 already makes undefined). Withdrawn, such a macro is judged by its definition like any other.
@@ -192,11 +194,23 @@ Toolchain
    so a ``--profile`` keeps them. ``libc`` selects which library contracts
    above hold (``custom`` trusts none until an override states it); the
    other three grant nothing and are recorded for rules whose reading depends
-   on an edition. None is inferred, each is unknown unless declared, and each
-   enters the settings hash only when declared.
+   on an edition. None is inferred from the machine running the scan, each is
+   unknown unless declared, and each enters the settings hash only when
+   declared. ``c_standard``, ``posix_version`` and the data model are facts of
+   the project's own declaration: the configuration, or a compile database
+   passed with ``--compile-commands`` (``-std=``, ``-D_POSIX_C_SOURCE=``,
+   ``-D_XOPEN_SOURCE=``, ``-m32`` and ``-m64``). A compile database's facts
+   may differ by translation unit; the configuration holds for the whole
+   project and wins a disagreement, which the scan reports. Each declared
+   fact's source (``cli``, ``config`` or ``compile database``) is part of
+   the settings hash. When a fact is unknown, no exemption that depends on it
+   applies, except that the default preset assumes POSIX with no edition.
+   Under ``strict`` and ``pedantic`` the scan names the missing
+   ``posix_version`` and the enabled rules whose exemption waits on it
+   (``--check-config`` warns the same way).
 
    - Set with ``[environment]`` keys, ``--libc``, or ``--set c_standard=c99``
-     (also ``posix_version``, ``libc_version``)
+     (also ``posix_version``, ``libc_version``), or with a compile database
    - ``newlib-nano``: newlib with nano-malloc, whose ``free(NULL)`` returns at
      once and whose ``realloc(NULL, n)`` calls ``malloc`` (newlib's
      ``nano-mallocr.c``)

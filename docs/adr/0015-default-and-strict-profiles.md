@@ -437,11 +437,14 @@ POSIX, data model, target, rule options). See
 ## Amendment (2026-10-08, Brandon): the reading and the environment are separate, and POSIX and the editions are declared facts
 
 **Status:** ruled (Brandon, 2026-10-08, with the follow-up rulings of
-2026-10-09 marked below); not yet implemented. Today `--strict` with no library
-declared still trusts the ISO C and POSIX contracts, as the 2026-10-07
-settled item 1 says, and a compile database supplies include paths and `-D`
-macros but no facts. The code change that implements this amendment follows
-it.
+2026-10-09 marked below); implemented for the gate, the compile-database
+facts and the recorded sources. `--strict` with no POSIX declared no longer
+trusts the POSIX contracts, a compile database supplies `c_standard`,
+`posix_version` and a data model per translation unit, and the settings record
+and hash each fact's source. The rules that name the POSIX fact in their
+`rule-disposition.md` rows (FIO08-C, FIO14-C, FIO19-C, FIO24-C, MSC05-C, CON37-C
+and SIG30-C) do not read it yet; the POSIX-only entries of the
+`stdlib_noreturn` and `stdlib_call_effects` contracts do.
 
 ### Context
 

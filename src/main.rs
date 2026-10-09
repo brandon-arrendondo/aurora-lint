@@ -231,12 +231,13 @@ fn settings_flags_given(matches: &clap::ArgMatches) -> Vec<String> {
 fn resolve_settings(
     manifest: &RuleManifest,
     cli: &SettingsConfig,
-    msvc_db: bool,
+    compile_db: Option<&analyze::compile_commands::CompileDb>,
 ) -> Result<AnalysisSettings> {
     let mut config = layered_settings(manifest, cli);
-    if msvc_db {
+    if compile_db.is_some_and(|db| db.msvc) {
         config.default_include_names(settings::IncludeNames::CaseInsensitive);
     }
+    config.compile_facts = compile_db.map(|db| db.facts());
     AnalysisSettings::resolve(&config).context("invalid policy/environment settings")
 }
 
@@ -775,14 +776,16 @@ fn run() -> Result<i32> {
         // ones that parsed, so each problem is named once.
         let (settings_cli, mut problems) = parse_settings_from_cli(&matches);
         let checked = load_manifest(manifest_path).and_then(|manifest| {
-            let settings = resolve_settings(
-                &manifest,
-                &settings_cli,
-                compile_db.as_ref().is_some_and(|db| db.msvc),
-            )?;
+            let settings = resolve_settings(&manifest, &settings_cli, compile_db.as_ref())?;
             // Valid, but the scan would trust no library: say so, and pass.
             if let Some(notice) = settings.libc_notice(|r| rule_enabled(&manifest, r)) {
                 eprintln!("warning: {notice}");
+            }
+            if let Some(notice) = settings.posix_notice(|r| rule_enabled(&manifest, r)) {
+                eprintln!("warning: {notice}");
+            }
+            for conflict in &settings.edition_conflicts {
+                eprintln!("warning: {conflict}");
             }
             Ok(())
         });
@@ -815,11 +818,7 @@ fn run() -> Result<i32> {
 
     if let Some(target) = matches.get_one::<String>("write_config") {
         let manifest = load_manifest(manifest_path)?;
-        let settings = resolve_settings(
-            &manifest,
-            &settings_cli,
-            compile_db.as_ref().is_some_and(|db| db.msvc),
-        )?;
+        let settings = resolve_settings(&manifest, &settings_cli, compile_db.as_ref())?;
         let text = manifest.render_config(&settings);
         if target == "-" {
             print!("{text}");
@@ -867,7 +866,7 @@ fn run() -> Result<i32> {
         let settings = resolve_settings(
             &load_manifest(manifest_path)?,
             &settings_cli,
-            compile_db.as_ref().is_some_and(|db| db.msvc),
+            compile_db.as_ref(),
         )?;
         match format.as_str() {
             "json" => println!(
@@ -888,11 +887,7 @@ fn run() -> Result<i32> {
         // The settings are only written out, never run, so an invalid
         // combination would otherwise surface in the later scan that reads
         // the manifest. Refuse it here, as that scan would.
-        resolve_settings(
-            &base_manifest,
-            &settings_cli,
-            compile_db.as_ref().is_some_and(|db| db.msvc),
-        )?;
+        resolve_settings(&base_manifest, &settings_cli, compile_db.as_ref())?;
         println!(
             "Detected: threading={} (thread or atomic APIs only; interrupt or signal handlers \
              are not detected), windows={}, max_c_standard={:?}",
@@ -934,16 +929,18 @@ fn run() -> Result<i32> {
         }
         manifest.restrict_to(rules);
     }
-    let mut analysis_settings = resolve_settings(
-        &manifest,
-        &settings_cli,
-        compile_db.as_ref().is_some_and(|db| db.msvc),
-    )?;
+    let mut analysis_settings = resolve_settings(&manifest, &settings_cli, compile_db.as_ref())?;
     let scope = scan_scope(&matches, &manifest);
     analysis_settings.set_prescan_scope(scope.prescan_scope());
     let declined = manifest.declined_rules(|id| analysis_settings.declines(id));
     if let Some(notice) = analysis_settings.libc_notice(|r| rule_enabled(&manifest, r)) {
         eprintln!("warning: {notice}");
+    }
+    if let Some(notice) = analysis_settings.posix_notice(|r| rule_enabled(&manifest, r)) {
+        eprintln!("warning: {notice}");
+    }
+    for conflict in &analysis_settings.edition_conflicts {
+        eprintln!("warning: {conflict}");
     }
 
     // Handle suppression generation

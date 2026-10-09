@@ -15,6 +15,12 @@ pub fn is_iso_c_or_posix_function(name: &str) -> bool {
     is_iso_c_name(name) || is_posix_subset_function(name)
 }
 
+/// Whether `name` is a POSIX function the tool knows that C11 does not
+/// specify: a contract that holds only where POSIX does.
+pub fn is_posix_only_function(name: &str) -> bool {
+    !is_iso_c_name(name) && is_posix_subset_function(name)
+}
+
 /// Whether `name` is a C11 library function: one C11 7.1.4 binds, so that
 /// an implementation of it as a macro evaluates each argument exactly once.
 /// The facilities the standard specifies only as macros are not functions

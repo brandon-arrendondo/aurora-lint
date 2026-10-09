@@ -83,12 +83,13 @@
 use anyhow::{Context, Result};
 use lang_parsing_substrate::PlatformAssumptions;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::context::ProjectContext;
 use crate::parser::CParser;
+use crate::settings::{CStandard, DataModel, PosixVersion, TuFacts};
 
 /// One raw entry of a `compile_commands.json` array, per the LLVM JSON
 /// Compilation Database spec. `file` is read only to record which translation
@@ -140,10 +141,88 @@ impl CommandLineDefine {
     }
 }
 
+/// The ISO C edition a `-std=` value names, GNU dialects included.
+fn std_flag_edition(value: &str) -> Option<CStandard> {
+    let v = value
+        .strip_prefix("gnu")
+        .or_else(|| value.strip_prefix('c'));
+    match (value, v) {
+        ("iso9899:1990" | "iso9899:199409", _) => Some(CStandard::C89),
+        ("iso9899:1999", _) => Some(CStandard::C99),
+        ("iso9899:2011", _) => Some(CStandard::C11),
+        ("iso9899:2017" | "iso9899:2018", _) => Some(CStandard::C17),
+        ("iso9899:2024", _) => Some(CStandard::C23),
+        (_, Some("89" | "90")) => Some(CStandard::C89),
+        (_, Some("99" | "9x")) => Some(CStandard::C99),
+        (_, Some("11" | "1x")) => Some(CStandard::C11),
+        (_, Some("17" | "18")) => Some(CStandard::C17),
+        (_, Some("23" | "2x" | "2y")) => Some(CStandard::C23),
+        _ => None,
+    }
+}
+
+/// The POSIX edition a feature-test macro's value names. `_POSIX_C_SOURCE`
+/// 200809L is POSIX.1-2008, which POSIX.1-2017 reissues without changing the
+/// value, so it reads as 2008.
+fn posix_macro_edition(name: &str, body: &str) -> Option<PosixVersion> {
+    let digits: String = body.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let n: u32 = digits.parse().ok()?;
+    match (name, n) {
+        ("_POSIX_C_SOURCE", 200112) | ("_XOPEN_SOURCE", 600) => Some(PosixVersion::Posix2001),
+        ("_POSIX_C_SOURCE", 200809) | ("_XOPEN_SOURCE", 700) => Some(PosixVersion::Posix2008),
+        ("_POSIX_C_SOURCE", 202405) | ("_XOPEN_SOURCE", 800) => Some(PosixVersion::Posix2024),
+        _ => None,
+    }
+}
+
+/// The facts one command line states. A later flag replaces an earlier one,
+/// and a `-U` of a feature-test macro withdraws what it declared.
+fn tu_facts_of(argv: &[String], flags: &[Flag], msvc: bool) -> TuFacts {
+    let mut facts = TuFacts::default();
+    for flag in flags {
+        match flag {
+            Flag::Define(spelling, body) => {
+                let body = if body.is_empty() { "1" } else { body };
+                if let Some(v) = posix_macro_edition(spelling, body) {
+                    facts.posix_version = Some(v);
+                }
+            }
+            Flag::Undefine(name) if name == "_POSIX_C_SOURCE" || name == "_XOPEN_SOURCE" => {
+                facts.posix_version = None;
+            }
+            _ => {}
+        }
+    }
+    if !msvc {
+        for arg in argv {
+            if let Some(value) = arg.strip_prefix("-std=") {
+                facts.c_standard = std_flag_edition(value).or(facts.c_standard);
+            } else if arg == "-m32" {
+                facts.data_model = Some(DataModel::Ilp32);
+            } else if arg == "-m64" {
+                // A MinGW driver's 64-bit target is LLP64; any other
+                // driver's is LP64.
+                let mingw = argv.first().is_some_and(|c| c.contains("mingw"));
+                facts.data_model = Some(if mingw {
+                    DataModel::Llp64
+                } else {
+                    DataModel::Lp64
+                });
+            }
+        }
+    }
+    facts
+}
+
 /// Include search paths and command-line macro state distilled from a
 /// `compile_commands.json`.
 #[derive(Debug, Clone, Default)]
 pub struct CompileDb {
+    /// The facts each translation unit's command states, keyed by the same
+    /// absolute path as [`Self::configured_sources`]. A unit whose command
+    /// states none has no entry. Facts may differ by unit; a later entry for
+    /// the same unit replaces an earlier one.
+    pub tu_facts: BTreeMap<String, TuFacts>,
     /// Absolute include search paths, first-seen order preserved so the search
     /// order of the original build is approximated.
     pub include_paths: Vec<String>,
@@ -270,7 +349,17 @@ impl CompileDb {
                 db.configured_sources
                     .insert(real_path(&absolutize(base, file)));
             }
-            for flag in parse_flags(&argv, msvc) {
+            let flags = parse_flags(&argv, msvc);
+            if let Some(file) = &entry.file {
+                let facts = tu_facts_of(&argv, &flags, msvc);
+                let key = real_path(&absolutize(base, file));
+                if facts.is_empty() {
+                    db.tu_facts.remove(&key);
+                } else {
+                    db.tu_facts.insert(key, facts);
+                }
+            }
+            for flag in flags {
                 match flag {
                     Flag::Include(dir) => {
                         let abs = absolutize(base, &dir);
@@ -308,6 +397,34 @@ impl CompileDb {
             db.defines.retain(|d| !undefined.contains(d.name()));
         }
         db
+    }
+
+    /// The edition and target facts the database declares, per translation
+    /// unit.
+    pub fn facts(&self) -> crate::settings::CompileFacts {
+        let mut root: Option<PathBuf> = None;
+        for src in &self.configured_sources {
+            let dir = Path::new(src)
+                .parent()
+                .unwrap_or(Path::new(""))
+                .to_path_buf();
+            root = Some(match root {
+                None => dir,
+                Some(r) => r
+                    .components()
+                    .zip(dir.components())
+                    .take_while(|(a, b)| a == b)
+                    .map(|(a, _)| a)
+                    .collect(),
+            });
+        }
+        crate::settings::CompileFacts {
+            root: root
+                .map(|r| r.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            per_tu: self.tu_facts.clone(),
+            unit_count: self.configured_sources.len(),
+        }
     }
 
     /// Include search paths that do not exist on this filesystem.
@@ -1910,6 +2027,110 @@ mod tests {
         assert_eq!(
             split_command_windows("cl /DA\u{a0}B\t/DC\u{b}D\r\n/DE"),
             argv(&["cl", "/DA\u{a0}B", "/DC\u{b}D", "/DE"])
+        );
+    }
+
+    // ---- Edition and target facts ------------------------------------------
+
+    fn unit(file: &str, args: &[&str]) -> RawEntry {
+        RawEntry {
+            directory: "/proj".into(),
+            file: Some(file.into()),
+            command: None,
+            arguments: Some(argv(args)),
+        }
+    }
+
+    #[test]
+    fn a_command_declares_only_the_editions_its_flags_name() {
+        let db = CompileDb::from_entries(&[
+            unit(
+                "a.c",
+                &[
+                    "cc",
+                    "-std=gnu11",
+                    "-D_POSIX_C_SOURCE=200809L",
+                    "-m32",
+                    "-c",
+                    "a.c",
+                ],
+            ),
+            unit(
+                "b.c",
+                &["cc", "-std=c99", "-D_XOPEN_SOURCE=600", "-c", "b.c"],
+            ),
+            unit("c.c", &["cc", "-DFOO", "-c", "c.c"]),
+        ]);
+        let facts = db.facts();
+        assert_eq!(facts.unit_count, 3);
+        assert_eq!(
+            facts.of("/proj/a.c"),
+            Some(&TuFacts {
+                c_standard: Some(CStandard::C11),
+                posix_version: Some(PosixVersion::Posix2008),
+                data_model: Some(DataModel::Ilp32),
+            })
+        );
+        assert_eq!(
+            facts.of("/proj/b.c"),
+            Some(&TuFacts {
+                c_standard: Some(CStandard::C99),
+                posix_version: Some(PosixVersion::Posix2001),
+                data_model: None,
+            })
+        );
+        // Nothing is inferred for a unit that states nothing.
+        assert_eq!(facts.of("/proj/c.c"), None);
+    }
+
+    #[test]
+    fn a_later_flag_replaces_an_earlier_one_and_u_withdraws_a_feature_macro() {
+        let db = CompileDb::from_entries(&[
+            unit(
+                "a.c",
+                &[
+                    "cc",
+                    "-std=c99",
+                    "-std=c17",
+                    "-D_POSIX_C_SOURCE=200112L",
+                    "-D_POSIX_C_SOURCE=200809L",
+                ],
+            ),
+            unit(
+                "b.c",
+                &["cc", "-D_POSIX_C_SOURCE=200809L", "-U_POSIX_C_SOURCE"],
+            ),
+        ]);
+        let facts = db.facts();
+        let a = facts.of("/proj/a.c").unwrap();
+        assert_eq!(a.c_standard, Some(CStandard::C17));
+        assert_eq!(a.posix_version, Some(PosixVersion::Posix2008));
+        assert_eq!(facts.of("/proj/b.c"), None);
+    }
+
+    #[test]
+    fn an_unrecognized_value_declares_nothing() {
+        let db = CompileDb::from_entries(&[unit(
+            "a.c",
+            &["cc", "-std=c++17", "-D_POSIX_C_SOURCE=1", "-D_GNU_SOURCE"],
+        )]);
+        assert_eq!(db.facts().of("/proj/a.c"), None);
+    }
+
+    #[test]
+    fn m64_is_lp64_except_for_a_mingw_driver() {
+        let db = CompileDb::from_entries(&[
+            unit("a.c", &["cc", "-m64"]),
+            unit("b.c", &["x86_64-w64-mingw32-gcc", "-m64"]),
+        ]);
+        let facts = db.facts();
+        assert_eq!(
+            facts.of("/proj/a.c").unwrap().data_model,
+            Some(DataModel::Lp64)
+        );
+        assert_eq!(
+            facts.of("/proj/b.c").unwrap().data_model,
+            Some(DataModel::Llp64)
         );
     }
 }

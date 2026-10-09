@@ -32,7 +32,7 @@ pub enum Preset {
     /// Default policy, hosted environment: the average codebase.
     Default,
     /// Strict policy, hosted environment: each rule as written, trusting the
-    /// ISO C and POSIX library unless a `libc` is declared.
+    /// ISO C library, and the POSIX contracts only where POSIX is declared.
     Strict,
     /// Pedantic policy, hosted environment: a sound or closed-form reading
     /// beyond each rule's text (ADR-0015, 2026-10-07 amendment). No library
@@ -175,6 +175,153 @@ pub enum PosixVersion {
     #[serde(rename = "2024")]
     Posix2024,
 }
+
+/// Where a declared edition fact came from. Facts come from the project's
+/// configuration or from a compile database it passes, never from the host
+/// that runs the scan (ADR-0015, 2026-10-08 amendment, Decision 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum EditionSource {
+    /// `--set` or a dedicated flag.
+    Cli,
+    /// The project's `[environment]`.
+    Config,
+    /// A compile database's command for the translation unit.
+    CompileDb,
+}
+
+impl EditionSource {
+    /// The word a report shows.
+    pub fn label(self) -> &'static str {
+        match self {
+            EditionSource::Cli => "cli",
+            EditionSource::Config => "config",
+            EditionSource::CompileDb => "compile database",
+        }
+    }
+}
+
+/// The edition and target facts one compile command states. A compile
+/// database is a declaration, so each field is a declared fact, and only a
+/// flag that says so sets one: nothing is inferred from the compiler's
+/// defaults or from the host.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct TuFacts {
+    /// The edition of ISO C a `-std=` flag names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub c_standard: Option<CStandard>,
+    /// The edition of POSIX a `-D_POSIX_C_SOURCE=` or `-D_XOPEN_SOURCE=` flag
+    /// names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub posix_version: Option<PosixVersion>,
+    /// The data model `-m32` or `-m64` selects.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_model: Option<DataModel>,
+}
+
+impl TuFacts {
+    /// Whether the command states no fact.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// The facts a compile database declares, per translation unit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CompileFacts {
+    /// The directory the database's units share, which the settings hash
+    /// strips from each unit's path so equal declarations on two machines
+    /// hash alike. Empty when the database compiles no unit.
+    pub root: String,
+    /// The facts each unit's command states, by absolute path. A unit that
+    /// states none is absent.
+    pub per_tu: BTreeMap<String, TuFacts>,
+    /// How many units the database compiles.
+    pub unit_count: usize,
+}
+
+impl CompileFacts {
+    /// The facts of the file at `path`, if its command states any.
+    pub fn of(&self, path: &str) -> Option<&TuFacts> {
+        self.per_tu.get(path)
+    }
+
+    /// Whether every compiled unit's command states `pick`'s fact.
+    fn covers_every_unit(&self, pick: impl Fn(&TuFacts) -> bool) -> bool {
+        self.unit_count > 0
+            && self.per_tu.len() == self.unit_count
+            && self.per_tu.values().all(pick)
+    }
+
+    /// The data model every unit that states one agrees on, when no unit
+    /// states another.
+    fn unanimous_data_model(&self) -> Option<DataModel> {
+        let mut models = self.per_tu.values().filter_map(|f| f.data_model);
+        let first = models.next()?;
+        models.all(|m| m == first).then_some(first)
+    }
+
+    fn relative<'a>(&self, path: &'a str) -> &'a str {
+        path.strip_prefix(&self.root)
+            .map(|p| p.trim_start_matches('/'))
+            .unwrap_or(path)
+    }
+}
+
+/// Whether POSIX holds, and where that came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PosixState {
+    /// A project declared an edition of POSIX, or `none`.
+    Declared(PosixVersion, EditionSource),
+    /// Nothing is declared and the preset assumes POSIX with no edition.
+    Assumed,
+    /// Nothing is declared and the preset assumes none.
+    Unknown,
+}
+
+impl PosixState {
+    /// Whether the POSIX contracts and exemptions apply.
+    pub fn holds(self) -> bool {
+        match self {
+            PosixState::Declared(v, _) => v != PosixVersion::None,
+            PosixState::Assumed => true,
+            PosixState::Unknown => false,
+        }
+    }
+}
+
+/// A fact the configuration and a compile database state differently for one
+/// translation unit. The configuration wins.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditionConflict {
+    /// The unit's path.
+    pub file: String,
+    /// The fact's key.
+    pub fact: &'static str,
+    /// What the configuration declares, and which layer wrote it.
+    pub config: String,
+    /// What the compile database declares for the unit.
+    pub compile_db: String,
+}
+
+impl fmt::Display for EditionConflict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}: {} is {} in the configuration and {} in the compile database; the configuration wins",
+            self.file, self.fact, self.config, self.compile_db
+        )
+    }
+}
+
+/// The rules whose findings depend on POSIX being declared: under `strict`
+/// or `pedantic` with `posix_version` unknown, none of them credits it. The
+/// first three read a POSIX-only entry of a library contract today (`_exit`
+/// ends a path; a POSIX call's side effects); the others are ruled to
+/// exempt a construct under POSIX and do not read the fact yet.
+pub static POSIX_DEPENDENT_RULES: &[&str] = &[
+    "API00-C", "CON37-C", "FIO08-C", "FIO14-C", "FIO19-C", "FIO24-C", "MSC05-C", "MSC37-C",
+    "PRE31-C", "SIG30-C",
+];
 
 /// Which axis an option belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -493,15 +640,15 @@ pub static OPTIONS: &[OptionSpec] = &[
         scope: Scope::Contract,
         source: Source::Library(CONFORMING_LIBCS),
         oracle_tag: "contract:stdlib_noreturn",
-        summary: "abort, exit, _Exit, quick_exit, longjmp, thrd_exit and POSIX _exit never \
-                  return to their caller.",
+        summary: "abort, exit, _Exit, quick_exit, longjmp and thrd_exit never return to their \
+                  caller, and so does POSIX _exit where POSIX holds (posix_version).",
         basis: "C11 7.22.4.1, 7.22.4.4, 7.22.4.5, 7.22.4.7, 7.13.2.1 and 7.26.5.5; \
                 POSIX.1-2024 _exit(). A freestanding implementation need not provide \
                 <stdlib.h>, <setjmp.h> or <threads.h> at all. Known limitation: three \
                 cross-file summaries built by the prescan (a parameter's null state after \
                 `if (!p) exit(1);`, whether a function never returns, and what a function \
-                leaves in an out-parameter) still credit these calls whatever this option \
-                says.",
+                leaves in an out-parameter) still credit these calls, _exit included, \
+                whatever this option and posix_version say.",
     },
     OptionSpec {
         name: "stdlib_call_effects",
@@ -509,7 +656,8 @@ pub static OPTIONS: &[OptionSpec] = &[
         scope: Scope::Contract,
         source: Source::Library(CONFORMING_LIBCS),
         oracle_tag: "contract:stdlib_call_effects",
-        summary: "Every ISO C or POSIX function the tool knows to have a side effect has one \
+        summary: "Every ISO C function, and every POSIX function where POSIX holds \
+                  (posix_version), the tool knows to have a side effect has one \
                   (it sets errno, touches a stream, allocates, or keeps hidden state), and the \
                   ones it lists as free of side effects (strlen, memcmp, isdigit, fabs, ntohs, \
                   ...) modify no object; whether that makes a call pure is the policy's \
@@ -519,7 +667,8 @@ pub static OPTIONS: &[OptionSpec] = &[
                 strcspn, strpbrk, strrchr, strspn, strstr, strlen and the character \
                 classification and case mapping functions modify no object; 7.22.1.4p8 and 7.12.1 (strtol and math functions report \
                 errors through errno); CERT PRE31-C-EX1: \"even changing errno is a side \
-                effect\".",
+                effect\". Known limitation: the cross-file effect summaries of scanned \
+                callees still credit a POSIX callee whatever posix_version says.",
     },
     OptionSpec {
         name: "library_macros_evaluate_once",
@@ -622,6 +771,10 @@ pub struct SettingsConfig {
     /// The environment axis.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<EnvironmentConfig>,
+    /// The facts a compile database passed with `--compile-commands`
+    /// declares. Not part of a manifest.
+    #[serde(skip)]
+    pub compile_facts: Option<CompileFacts>,
 }
 
 /// The `[policy]` table.
@@ -851,9 +1004,11 @@ impl SettingsConfig {
             }
             if e.c_standard.is_some() {
                 mine.c_standard = e.c_standard;
+                mine.cli.insert("c_standard".to_string());
             }
             if e.posix_version.is_some() {
                 mine.posix_version = e.posix_version;
+                mine.cli.insert("posix_version".to_string());
             }
             if e.include_names.is_some() {
                 mine.include_names = e.include_names;
@@ -1004,6 +1159,22 @@ pub struct AnalysisSettings {
     pub c_standard: Option<CStandard>,
     /// The declared edition of POSIX, if any.
     pub posix_version: Option<PosixVersion>,
+    /// Which layer declared `c_standard`, when the project-wide fact is
+    /// declared.
+    pub c_standard_source: Option<EditionSource>,
+    /// Which layer declared `posix_version`, when the project-wide fact is
+    /// declared.
+    pub posix_version_source: Option<EditionSource>,
+    /// Whether the preset assumes POSIX when `posix_version` is undeclared:
+    /// only `default` does (ADR-0015, 2026-10-08 amendment, Decision 1).
+    pub posix_assumed_by_preset: bool,
+    /// The facts a compile database declares, per translation unit.
+    pub compile_facts: CompileFacts,
+    /// Where the compile database's data model supplied the project's.
+    pub data_model_from_compile_db: bool,
+    /// Each fact the configuration and the compile database state
+    /// differently, which the configuration wins.
+    pub edition_conflicts: Vec<EditionConflict>,
     /// How `#include` names match files.
     pub include_names: IncludeNames,
     /// The data model selected (`DataModel::Iso` unless declared).
@@ -1051,6 +1222,8 @@ impl AnalysisSettings {
         let mut data_model = DataModel::default();
         let mut facts_config: Option<&EnvironmentConfig> = None;
         let mut memory = MemoryDeclarations::default();
+        let mut c_standard_source = None;
+        let mut posix_version_source = None;
         if let Some(p) = &config.policy {
             policy = p.level.unwrap_or(policy);
         }
@@ -1060,6 +1233,15 @@ impl AnalysisSettings {
             libc_version = e.libc_version.clone();
             c_standard = e.c_standard;
             posix_version = e.posix_version;
+            let layer = |key: &str| {
+                if e.cli.contains(key) {
+                    EditionSource::Cli
+                } else {
+                    EditionSource::Config
+                }
+            };
+            c_standard_source = c_standard.map(|_| layer("c_standard"));
+            posix_version_source = posix_version.map(|_| layer("posix_version"));
             include_names = e.include_names.unwrap_or_default();
             data_model = e.data_model.unwrap_or_default();
             facts_config = Some(e);
@@ -1126,6 +1308,51 @@ impl AnalysisSettings {
         // the bundle of the data model its own file names says nothing the
         // model does not: when the command line names another model, that
         // model's bundle replaces the whole of it, the repeated lines too.
+        // A compile database that compiles for one data model declares it,
+        // unless the project does: the configuration wins.
+        let compile_facts = config.compile_facts.clone().unwrap_or_default();
+        let mut data_model_from_compile_db = false;
+        if facts_config.is_none_or(|e| e.data_model.is_none()) {
+            if let Some(m) = compile_facts.unanimous_data_model() {
+                data_model = m;
+                data_model_from_compile_db = true;
+            }
+        }
+        let mut edition_conflicts = Vec::new();
+        for (file, tu) in &compile_facts.per_tu {
+            let file = compile_facts.relative(file).to_string();
+            if let (Some(cfg), Some(db)) = (c_standard, tu.c_standard) {
+                if cfg != db {
+                    edition_conflicts.push(EditionConflict {
+                        file: file.clone(),
+                        fact: "c_standard",
+                        config: cfg.to_string(),
+                        compile_db: db.to_string(),
+                    });
+                }
+            }
+            if let (Some(cfg), Some(db)) = (posix_version, tu.posix_version) {
+                if cfg != db {
+                    edition_conflicts.push(EditionConflict {
+                        file: file.clone(),
+                        fact: "posix_version",
+                        config: cfg.to_string(),
+                        compile_db: db.to_string(),
+                    });
+                }
+            }
+            if let (Some(cfg), Some(db)) = (facts_config.and_then(|e| e.data_model), tu.data_model)
+            {
+                if cfg != db {
+                    edition_conflicts.push(EditionConflict {
+                        file,
+                        fact: "data_model",
+                        config: cfg.to_string(),
+                        compile_db: db.to_string(),
+                    });
+                }
+            }
+        }
         let mut facts = IntFacts::from_model(data_model);
         if let Some(e) = facts_config {
             let file_model = if e.cli.contains("data_model") {
@@ -1165,6 +1392,12 @@ impl AnalysisSettings {
             libc_version,
             c_standard,
             posix_version,
+            c_standard_source,
+            posix_version_source,
+            posix_assumed_by_preset: preset == Preset::Default,
+            compile_facts,
+            data_model_from_compile_db,
+            edition_conflicts,
             include_names,
             data_model,
             facts,
@@ -1231,6 +1464,78 @@ impl AnalysisSettings {
         Some(text)
     }
 
+    /// Whether POSIX holds for the translation unit at `file`, or for the
+    /// project when `file` is `None`, and why. The configuration's
+    /// `posix_version` holds for the whole project and wins over a compile
+    /// database; a compile database's fact may differ by unit; with neither,
+    /// only a preset that assumes POSIX (`default`) credits it, and a unit
+    /// whose fact is unknown gets no exemption that depends on it.
+    pub fn posix_for(&self, file: Option<&str>) -> PosixState {
+        if let (Some(v), Some(src)) = (self.posix_version, self.posix_version_source) {
+            return PosixState::Declared(v, src);
+        }
+        if let Some(v) = file
+            .and_then(|f| self.compile_facts.of(f))
+            .and_then(|t| t.posix_version)
+        {
+            return PosixState::Declared(v, EditionSource::CompileDb);
+        }
+        if self.posix_assumed_by_preset {
+            PosixState::Assumed
+        } else {
+            PosixState::Unknown
+        }
+    }
+
+    /// Whether POSIX holds for the unit at `file` (see [`posix_for`](Self::posix_for)).
+    pub fn posix_holds(&self, file: &str) -> bool {
+        self.posix_for(Some(file)).holds()
+    }
+
+    /// Whether POSIX holds for the whole project: what a contract that is
+    /// not read per unit credits. With no project-wide declaration it holds
+    /// only when the preset assumes it, or every unit the compile database
+    /// compiles declares an edition of POSIX.
+    pub fn posix_holds_project(&self) -> bool {
+        match self.posix_for(None) {
+            PosixState::Unknown => self
+                .compile_facts
+                .covers_every_unit(|t| t.posix_version.is_some_and(|v| v != PosixVersion::None)),
+            state => state.holds(),
+        }
+    }
+
+    /// When the preset assumes no POSIX and the project declares none (not
+    /// in the configuration, nor in a compile database that states it for
+    /// every unit): the notice a scan prints, naming the `posix_version` key
+    /// and the enabled rules (those `enabled` accepts) whose exemption waits
+    /// on it. Silent when none is enabled.
+    pub fn posix_notice(&self, enabled: impl Fn(&str) -> bool) -> Option<String> {
+        if self.environment != EnvironmentKind::Hosted
+            || self.posix_assumed_by_preset
+            || self.posix_version.is_some()
+            || self.posix_holds_project()
+        {
+            return None;
+        }
+        let rules: Vec<&str> = POSIX_DEPENDENT_RULES
+            .iter()
+            .copied()
+            .filter(|r| enabled(r))
+            .collect();
+        // With none of them enabled nothing waits on the fact.
+        if rules.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "POSIX is not declared, so no exemption that depends on it applies; declare it with \
+             [environment] posix_version = \"2008\" (or 2001, 2017, 2024, none), --set \
+             posix_version=2008, or a compile database that defines _POSIX_C_SOURCE for every \
+             unit. Rules that depend on it: {}.",
+            rules.join(", ")
+        ))
+    }
+
     /// Every rule the policy in force declines, sorted.
     pub fn declined_rules(&self) -> Vec<&'static str> {
         let mut ids: Vec<&'static str> = DECLINED_RULES
@@ -1270,6 +1575,11 @@ impl AnalysisSettings {
                     libc_version: self.libc_version.clone(),
                     c_standard: self.c_standard,
                     posix_version: self.posix_version,
+                    c_standard_source: self.c_standard_source,
+                    posix_version_source: self.posix_version_source,
+                    compile_facts: self.compile_facts.clone(),
+                    data_model_from_compile_db: self.data_model_from_compile_db,
+                    edition_conflicts: self.edition_conflicts.clone(),
                     ..base
                 }
         })
@@ -1342,6 +1652,37 @@ impl AnalysisSettings {
         }
         if let Some(v) = self.posix_version {
             identity["posix_version"] = serde_json::json!(v);
+        }
+        // Where each declared edition fact came from, so two runs that agree
+        // on a value but not on who declared it are not the same settings.
+        let mut sources = serde_json::Map::new();
+        if let Some(src) = self.c_standard_source {
+            sources.insert("c_standard".into(), src.label().into());
+        }
+        if let Some(src) = self.posix_version_source {
+            sources.insert("posix_version".into(), src.label().into());
+        }
+        if self.data_model_from_compile_db {
+            sources.insert("data_model".into(), EditionSource::CompileDb.label().into());
+        }
+        if !sources.is_empty() {
+            identity["fact_sources"] = serde_json::Value::Object(sources);
+        }
+        // The compile database's per-unit facts, by path under the units'
+        // common directory.
+        if !self.compile_facts.per_tu.is_empty() {
+            let per_tu: serde_json::Map<String, serde_json::Value> = self
+                .compile_facts
+                .per_tu
+                .iter()
+                .map(|(file, facts)| {
+                    (
+                        self.compile_facts.relative(file).to_string(),
+                        serde_json::json!(facts),
+                    )
+                })
+                .collect();
+            identity["compile_db_facts"] = serde_json::Value::Object(per_tu);
         }
         // Present only when the preset needed a library declaration and got
         // none, so a report says its library contracts were withheld.
@@ -1494,6 +1835,23 @@ fn example_fact_value(fact: Fact) -> String {
 /// and validation ([`OPTIONS`], [`Fact::ALL`], [`DataModel::bundle`]), so it
 /// cannot drift from them, and it resolves to exactly `current`.
 pub fn render_config_settings(current: &AnalysisSettings) -> String {
+    // A data model a compile database supplied is that database's declaration,
+    // not the project's: it is not written, so the file does not turn one
+    // source's fact into another's. Pass `--compile-commands` again.
+    let without_compile_db_model;
+    let current = if current.data_model_from_compile_db {
+        let mut c = current.clone();
+        c.data_model = DataModel::Iso;
+        c.facts = IntFacts::from_model(DataModel::Iso);
+        for (fact, value) in current.facts.declared() {
+            c.facts.set(fact, value, current.facts.source(fact));
+        }
+        c.data_model_from_compile_db = false;
+        without_compile_db_model = c;
+        &without_compile_db_model
+    } else {
+        current
+    };
     let profile = Preset::of_policy(current.policy);
     let (base_policy, base_environment) = profile.axes();
     let mut out = String::new();
@@ -1736,10 +2094,21 @@ pub fn render_text(current: &AnalysisSettings) -> String {
     );
     for (key, value) in [
         ("libc_version", current.libc_version.clone()),
-        ("c_standard", current.c_standard.map(|v| v.to_string())),
+        (
+            "c_standard",
+            current.c_standard.map(|v| {
+                let src = current.c_standard_source.map_or("", EditionSource::label);
+                format!("{v} ({src})")
+            }),
+        ),
         (
             "posix_version",
-            current.posix_version.map(|v| v.to_string()),
+            current.posix_version.map(|v| {
+                let src = current
+                    .posix_version_source
+                    .map_or("", EditionSource::label);
+                format!("{v} ({src})")
+            }),
         ),
     ] {
         if let Some(value) = value {
@@ -1747,6 +2116,28 @@ pub fn render_text(current: &AnalysisSettings) -> String {
             out.pop();
             out.push_str(&format!(", {key}={value}\n\n"));
         }
+    }
+    // What POSIX rests on when no edition is declared project-wide, and any
+    // fact a compile database declares for some units only.
+    if current.posix_version.is_none() {
+        let line = match current.posix_for(None) {
+            PosixState::Assumed => "POSIX: assumed by the default preset, no edition declared",
+            _ => "POSIX: not declared, so no exemption that depends on it applies",
+        };
+        out.pop();
+        out.push_str(&format!("{line}\n\n"));
+    }
+    if !current.compile_facts.per_tu.is_empty() {
+        out.pop();
+        out.push_str(&format!(
+            "Compile database facts: {} of {} units declare an edition or target fact\n\n",
+            current.compile_facts.per_tu.len(),
+            current.compile_facts.unit_count
+        ));
+    }
+    for conflict in &current.edition_conflicts {
+        out.pop();
+        out.push_str(&format!("Conflict: {conflict}\n\n"));
     }
     // Each integer fact the project or the command line declared on top of
     // the preset, so the line names everything that is not a default.
@@ -1865,9 +2256,11 @@ pub fn render_rst() -> String {
          what the default preset relaxes. See :doc:`configuration` for how to set\n\
          them.\n\n\
          - The **default** preset is ``policy = default`` with a ``hosted``\n  \
-         environment and the ISO C + POSIX library model.\n\
+         environment, the ISO C + POSIX library model, and POSIX assumed with no\n  \
+         edition declared.\n\
          - The **strict** preset is ``policy = strict`` with a ``hosted``\n  \
-         environment and the ISO C + POSIX library model.\n\
+         environment and the ISO C library model. POSIX contracts and exemptions\n  \
+         apply only where POSIX is declared (``posix_version``).\n\
          - The **pedantic** preset is ``policy = pedantic`` with a ``hosted``\n  \
          environment and only the library model a project declares (``libc``);\n  \
          with none declared, no library contract below holds. It reads a rule\n  \
@@ -1930,10 +2323,22 @@ pub fn render_rst() -> String {
          so a ``--profile`` keeps them. ``libc`` selects which library contracts\n   \
          above hold (``custom`` trusts none until an override states it); the\n   \
          other three grant nothing and are recorded for rules whose reading depends\n   \
-         on an edition. None is inferred, each is unknown unless declared, and each\n   \
-         enters the settings hash only when declared.\n\n   \
+         on an edition. None is inferred from the machine running the scan, each is\n   \
+         unknown unless declared, and each enters the settings hash only when\n   \
+         declared. ``c_standard``, ``posix_version`` and the data model are facts of\n   \
+         the project's own declaration: the configuration, or a compile database\n   \
+         passed with ``--compile-commands`` (``-std=``, ``-D_POSIX_C_SOURCE=``,\n   \
+         ``-D_XOPEN_SOURCE=``, ``-m32`` and ``-m64``). A compile database's facts\n   \
+         may differ by translation unit; the configuration holds for the whole\n   \
+         project and wins a disagreement, which the scan reports. Each declared\n   \
+         fact's source (``cli``, ``config`` or ``compile database``) is part of\n   \
+         the settings hash. When a fact is unknown, no exemption that depends on it\n   \
+         applies, except that the default preset assumes POSIX with no edition.\n   \
+         Under ``strict`` and ``pedantic`` the scan names the missing\n   \
+         ``posix_version`` and the enabled rules whose exemption waits on it\n   \
+         (``--check-config`` warns the same way).\n\n   \
          - Set with ``[environment]`` keys, ``--libc``, or ``--set c_standard=c99``\n     \
-         (also ``posix_version``, ``libc_version``)\n   \
+         (also ``posix_version``, ``libc_version``), or with a compile database\n   \
          - ``newlib-nano``: newlib with nano-malloc, whose ``free(NULL)`` returns at\n     \
          once and whose ``realloc(NULL, n)`` calls ``malloc`` (newlib's\n     \
          ``nano-mallocr.c``)\n",
@@ -2348,5 +2753,286 @@ mod tests {
         assert!(set.set("data_model=ilp64").is_err());
         assert!("ilp32".parse::<DataModel>().is_ok());
         assert!("ilp64".parse::<DataModel>().is_err());
+    }
+
+    // ---- POSIX and the editions are declared facts -------------------------
+
+    /// `profile` with each `key=value` written as `--set` writes it: in the
+    /// command line's layer.
+    fn config_with(profile: Preset, set: &[&str]) -> SettingsConfig {
+        let mut cli = SettingsConfig::default();
+        for kv in set {
+            cli.set(kv).unwrap();
+        }
+        let mut config = SettingsConfig {
+            profile: Some(profile),
+            ..Default::default()
+        };
+        config.overlay(&cli);
+        config
+    }
+
+    fn compile_facts(units: &[(&str, TuFacts)], unit_count: usize) -> CompileFacts {
+        CompileFacts {
+            root: "/proj".into(),
+            per_tu: units.iter().map(|(f, t)| (f.to_string(), *t)).collect(),
+            unit_count,
+        }
+    }
+
+    fn posix(v: PosixVersion) -> TuFacts {
+        TuFacts {
+            posix_version: Some(v),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn only_default_assumes_posix_with_nothing_declared() {
+        for (preset, holds) in [
+            (Preset::Default, true),
+            (Preset::Strict, false),
+            (Preset::Pedantic, false),
+        ] {
+            let s = AnalysisSettings::preset(preset);
+            assert_eq!(s.posix_for(None).holds(), holds, "{preset}");
+            assert_eq!(s.posix_holds_project(), holds, "{preset}");
+            assert_eq!(s.posix_holds("/proj/a.c"), holds, "{preset}");
+        }
+        // Default assumes POSIX but no edition of it.
+        assert_eq!(
+            AnalysisSettings::preset(Preset::Default).posix_version,
+            None
+        );
+    }
+
+    #[test]
+    fn a_config_declaration_holds_for_every_preset_and_none_withdraws_it() {
+        for preset in Preset::ALL {
+            let s =
+                AnalysisSettings::resolve(&config_with(preset, &["posix_version=2008"])).unwrap();
+            assert!(s.posix_holds_project(), "{preset}");
+            assert_eq!(
+                s.posix_for(None),
+                PosixState::Declared(PosixVersion::Posix2008, EditionSource::Cli)
+            );
+            let none =
+                AnalysisSettings::resolve(&config_with(preset, &["posix_version=none"])).unwrap();
+            assert!(!none.posix_holds_project(), "{preset}");
+        }
+    }
+
+    #[test]
+    fn a_compile_database_declares_posix_per_unit() {
+        let mut config = config_with(Preset::Strict, &[]);
+        config.compile_facts = Some(compile_facts(
+            &[
+                ("/proj/a.c", posix(PosixVersion::Posix2008)),
+                ("/proj/b.c", posix(PosixVersion::None)),
+            ],
+            3,
+        ));
+        let s = AnalysisSettings::resolve(&config).unwrap();
+        assert!(s.posix_holds("/proj/a.c"));
+        assert!(!s.posix_holds("/proj/b.c"));
+        // c.c states nothing, so strict credits nothing.
+        assert!(!s.posix_holds("/proj/c.c"));
+        assert_eq!(
+            s.posix_for(Some("/proj/a.c")),
+            PosixState::Declared(PosixVersion::Posix2008, EditionSource::CompileDb)
+        );
+        // Not every unit declares it, so a project-wide contract is withheld.
+        assert!(!s.posix_holds_project());
+        assert!(s.edition_conflicts.is_empty());
+    }
+
+    #[test]
+    fn a_compile_database_declaring_every_unit_holds_for_the_project() {
+        let mut config = config_with(Preset::Pedantic, &[]);
+        config.compile_facts = Some(compile_facts(
+            &[
+                ("/proj/a.c", posix(PosixVersion::Posix2008)),
+                ("/proj/b.c", posix(PosixVersion::Posix2001)),
+            ],
+            2,
+        ));
+        let s = AnalysisSettings::resolve(&config).unwrap();
+        assert!(s.posix_holds_project());
+        assert!(s.posix_notice(|_| true).is_none());
+    }
+
+    #[test]
+    fn the_config_wins_a_conflict_and_the_scan_reports_it() {
+        let mut config = config_with(Preset::Strict, &["posix_version=2008", "c_standard=c11"]);
+        config.compile_facts = Some(compile_facts(
+            &[
+                (
+                    "/proj/src/a.c",
+                    TuFacts {
+                        c_standard: Some(CStandard::C99),
+                        posix_version: Some(PosixVersion::None),
+                        data_model: None,
+                    },
+                ),
+                ("/proj/src/b.c", posix(PosixVersion::Posix2008)),
+            ],
+            2,
+        ));
+        let s = AnalysisSettings::resolve(&config).unwrap();
+        assert!(s.posix_holds("/proj/src/a.c"));
+        let conflicts: Vec<String> = s.edition_conflicts.iter().map(|c| c.to_string()).collect();
+        assert_eq!(conflicts.len(), 2, "{conflicts:?}");
+        assert!(conflicts
+            .iter()
+            .any(|c| c.contains("src/a.c: c_standard is c11 in the configuration and c99")));
+        assert!(conflicts
+            .iter()
+            .any(|c| c.contains("posix_version is 2008 in the configuration and none")));
+    }
+
+    #[test]
+    fn a_data_model_comes_from_the_compile_database_unless_the_config_declares_one() {
+        let ilp32 = TuFacts {
+            data_model: Some(DataModel::Ilp32),
+            ..Default::default()
+        };
+        let mut config = config_with(Preset::Default, &[]);
+        config.compile_facts = Some(compile_facts(
+            &[("/proj/a.c", ilp32), ("/proj/b.c", ilp32)],
+            2,
+        ));
+        let s = AnalysisSettings::resolve(&config).unwrap();
+        assert_eq!(s.data_model, DataModel::Ilp32);
+        assert!(s.data_model_from_compile_db);
+
+        let mut config = config_with(Preset::Default, &["data_model=lp64"]);
+        config.compile_facts = Some(compile_facts(&[("/proj/a.c", ilp32)], 1));
+        let s = AnalysisSettings::resolve(&config).unwrap();
+        assert_eq!(s.data_model, DataModel::Lp64);
+        assert_eq!(s.edition_conflicts.len(), 1);
+
+        // Units that disagree declare no project-wide model.
+        let lp64 = TuFacts {
+            data_model: Some(DataModel::Lp64),
+            ..Default::default()
+        };
+        let mut config = config_with(Preset::Default, &[]);
+        config.compile_facts = Some(compile_facts(
+            &[("/proj/a.c", ilp32), ("/proj/b.c", lp64)],
+            2,
+        ));
+        assert_eq!(
+            AnalysisSettings::resolve(&config).unwrap().data_model,
+            DataModel::Iso
+        );
+    }
+
+    #[test]
+    fn no_build_inputs_keep_every_presets_settings_hash() {
+        // A scan that declares nothing and passes no compile database hashes
+        // as it did before the facts carried a source.
+        for preset in Preset::ALL {
+            let s = AnalysisSettings::preset(preset);
+            let json = s.to_json();
+            assert!(json.get("fact_sources").is_none(), "{preset}");
+            assert!(json.get("compile_db_facts").is_none(), "{preset}");
+            assert!(json.get("posix_version").is_none(), "{preset}");
+        }
+        // An empty compile database changes nothing either.
+        let mut config = config_with(Preset::Strict, &[]);
+        config.compile_facts = Some(compile_facts(&[], 4));
+        assert_eq!(
+            AnalysisSettings::resolve(&config).unwrap().settings_hash(),
+            AnalysisSettings::preset(Preset::Strict).settings_hash()
+        );
+    }
+
+    #[test]
+    fn each_fact_source_enters_the_settings_hash() {
+        let from_cli =
+            AnalysisSettings::resolve(&config_with(Preset::Strict, &["posix_version=2008"]))
+                .unwrap();
+        let mut file_config = SettingsConfig {
+            profile: Some(Preset::Strict),
+            environment: Some(EnvironmentConfig {
+                posix_version: Some(PosixVersion::Posix2008),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let from_file = AnalysisSettings::resolve(&file_config).unwrap();
+        assert_eq!(from_cli.to_json()["fact_sources"]["posix_version"], "cli");
+        assert_eq!(
+            from_file.to_json()["fact_sources"]["posix_version"],
+            "config"
+        );
+        assert_ne!(from_cli.settings_hash(), from_file.settings_hash());
+
+        file_config.environment = None;
+        file_config.compile_facts = Some(compile_facts(
+            &[("/proj/a.c", posix(PosixVersion::Posix2008))],
+            1,
+        ));
+        let from_db = AnalysisSettings::resolve(&file_config).unwrap();
+        assert_eq!(
+            from_db.to_json()["compile_db_facts"]["a.c"]["posix_version"],
+            "2008"
+        );
+        assert_ne!(
+            from_db.settings_hash(),
+            AnalysisSettings::preset(Preset::Strict).settings_hash()
+        );
+    }
+
+    #[test]
+    fn the_same_declarations_on_two_machines_hash_alike() {
+        let at = |root: &str| {
+            let mut config = config_with(Preset::Strict, &[]);
+            config.compile_facts = Some(CompileFacts {
+                root: root.into(),
+                per_tu: [(format!("{root}/a.c"), posix(PosixVersion::Posix2008))]
+                    .into_iter()
+                    .collect(),
+                unit_count: 1,
+            });
+            AnalysisSettings::resolve(&config).unwrap().settings_hash()
+        };
+        assert_eq!(at("/home/x/proj"), at("/srv/y/proj"));
+    }
+
+    #[test]
+    fn the_notice_names_the_key_and_the_rules_that_wait_on_it() {
+        assert!(AnalysisSettings::preset(Preset::Default)
+            .posix_notice(|_| true)
+            .is_none());
+        let strict = AnalysisSettings::preset(Preset::Strict);
+        let text = strict
+            .posix_notice(|r| r == "FIO19-C" || r == "MSC05-C")
+            .unwrap();
+        assert!(text.contains("posix_version"), "{text}");
+        assert!(text.contains("FIO19-C, MSC05-C"), "{text}");
+        assert!(!text.contains("CON37-C"), "{text}");
+        let declared =
+            AnalysisSettings::resolve(&config_with(Preset::Pedantic, &["posix_version=2017"]))
+                .unwrap();
+        assert!(declared.posix_notice(|_| true).is_none());
+    }
+
+    #[test]
+    fn write_config_does_not_turn_a_compile_database_model_into_the_projects() {
+        let ilp32 = TuFacts {
+            data_model: Some(DataModel::Ilp32),
+            ..Default::default()
+        };
+        let mut config = config_with(Preset::Default, &[]);
+        config.compile_facts = Some(compile_facts(&[("/proj/a.c", ilp32)], 1));
+        let s = AnalysisSettings::resolve(&config).unwrap();
+        assert_eq!(s.data_model, DataModel::Ilp32);
+        let text = render_config_settings(&s);
+        assert!(!text.contains("\ndata_model ="), "{text}");
+        assert_eq!(
+            text,
+            render_config_settings(&AnalysisSettings::preset(Preset::Default))
+        );
     }
 }

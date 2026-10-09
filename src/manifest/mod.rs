@@ -365,6 +365,7 @@ impl RuleManifest {
             profile: self.profile,
             policy: self.policy.clone(),
             environment: self.environment.clone(),
+            compile_facts: None,
         }
     }
 
