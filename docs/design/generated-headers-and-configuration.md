@@ -406,6 +406,21 @@ project:
    the directive) is a separate fix, diagnosed under ADR-0008, and not part
    of this design.
 
+8. **Copies are project headers.** A file in a generated directory that is
+   byte-identical to a tracked project file counts as an ordinary project
+   header (§6.2).
+9. **Two contexts from one prescan.** The per-membership view is built as two
+   project contexts sharing one prescan:
+   - one resolves every include, and serves the files the configuration
+     compiles;
+   - the other withholds the generated headers, and serves every other file.
+
+   Files reach theirs through the existing per-file context hook. This makes
+   "exactly as if the header were missing" hold by construction across every
+   shared table at once. The first context keeps the second for arm-level
+   lookups. The A/B reports the extra wall time and peak memory on the corpora
+   with generated directories.
+
 ### Implementation order
 
 Each step is separate and measured on its own:
