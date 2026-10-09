@@ -1126,7 +1126,13 @@ def cmd_corpus_check(args):
     from bench.corpus import report
     # Exits nonzero on drift so this can gate a benchmark run or CI step;
     # `args.func`'s return value is discarded, hence the explicit exit.
-    sys.exit(report(bench_root=args.bench_root, as_json=args.json))
+    try:
+        code = report(bench_root=args.bench_root, as_json=args.json,
+                      mode=args.mode, image=args.image, runtime=args.runtime)
+    except ValueError as e:  # an AURORA_BENCH_MODE that is not a mode
+        print(f"corpus-check: {e}")
+        code = 2
+    sys.exit(code)
 
 
 def cmd_render_docs(args):
@@ -1509,6 +1515,16 @@ def main():
     p_cchk.add_argument("--bench-root", default=None,
                         help="Override BENCH_ROOT for this check")
     p_cchk.add_argument("--json", action="store_true", help="Emit JSON")
+    p_cchk.add_argument("--mode", choices=("host", "container"), default=None,
+                        help="How this machine runs benchmarks: 'host' needs "
+                             "each dependency set under BENCH_ROOT/deps; "
+                             "'container' needs the declared benchmark image "
+                             "instead (default: AURORA_BENCH_MODE, else host)")
+    p_cchk.add_argument("--image", default=None,
+                        help="Benchmark image --mode container checks "
+                             "(default: container-run's, AURORA_BENCH_IMAGE)")
+    p_cchk.add_argument("--runtime", default="podman",
+                        help="Container runtime for --mode container")
     p_cchk.set_defaults(func=cmd_corpus_check)
 
     p_rd = sub.add_parser(

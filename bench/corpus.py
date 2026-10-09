@@ -62,6 +62,22 @@ out, at the recorded commit, and unmodified:
   NOT_IN_PIN     declared, but the pin has no gitlink at that path
 A submodule's own submodules are not checked; none of the corpora has any.
 
+Where the dependency sets have to be depends on how this machine runs
+benchmarks, which corpus-check cannot tell from the checkouts, so it is told:
+--mode, defaulting to AURORA_BENCH_MODE (set it in the machine's .env), else
+'host'.
+  host       `bench realworld-run` on this machine reads each set from
+             BENCH_ROOT/deps/, so a missing or different set fails.
+  container  every run goes through `bench container-run`, whose image
+             carries every set. The host sets are not needed and are reported
+             as such; instead the image must be present and its environment
+             pin must be the manifest_sha256 data/benchmark_environment.json
+             declares, or the check fails. A machine that has a matching image
+             but scans on the host still needs host mode: the image is not
+             what such a scan reads. A pinned header tree that is not a
+             dependency set is mounted into the container from the host, so
+             it is checked in both modes.
+
 Both untracked and gitignored counts are run through the SAME --exclude-all
 globs `bench/realworld_runner.py`'s CODEBASES[...]["sqc"]["extra_args"] passes
 to the real scan: a stray .c/.h sitting under a tree the scan leaves out of
@@ -78,7 +94,9 @@ untracked file get scanned" actually depends on.
 """
 
 import json
+import os
 import re
+import shutil
 import subprocess
 from functools import lru_cache
 from pathlib import Path
@@ -372,8 +390,70 @@ def _submodule_fix_hint(repo_path, s):
 
 
 def header_tree_bad(r):
-    """True if `r` declares a header tree that is not present and matching."""
-    return bool(r["header_tree"]) and r["header_tree"]["status"] != "OK"
+    """True if `r` declares a header tree that is needed and not present
+    and matching."""
+    t = r["header_tree"]
+    return bool(t) and t.get("needed", True) and t["status"] != "OK"
+
+
+MODES = ("host", "container")
+MODE_ENV = "AURORA_BENCH_MODE"
+
+
+def default_mode():
+    """AURORA_BENCH_MODE, or 'host'. A value that is neither mode is refused
+    rather than read as 'host', which would fail every set on a container
+    machine for a typo."""
+    mode = os.environ.get(MODE_ENV, "host")
+    if mode not in MODES:
+        raise ValueError(f"{MODE_ENV}={mode!r}: expected one of {', '.join(MODES)}")
+    return mode
+
+
+def check_image(image, runtime="podman"):
+    """Is `image` present, and is its environment pin the declared one?
+    'status' is NO_RUNTIME, ABSENT, UNREADABLE, NO_LICENCE_LAYER (the shared
+    image alone, without the Win32 corpus's set the licence layer adds),
+    MISMATCH or OK."""
+    from bench import container, environment
+    declared = environment.declared()
+    res = {"image": image, "runtime": runtime,
+           "expected": declared["manifest_sha256"],
+           "actual": None, "status": None}
+    if shutil.which(runtime) is None:
+        res["status"] = "NO_RUNTIME"
+        return res
+    exists = subprocess.run([runtime, "image", "exists", image], capture_output=True)
+    if exists.returncode != 0:
+        res["status"] = "ABSENT"
+        return res
+    try:
+        res["actual"] = container.image_pin(image, runtime)
+    except (subprocess.CalledProcessError, IndexError):
+        res["status"] = "UNREADABLE"
+        return res
+    if res["actual"] == res["expected"]:
+        res["status"] = "OK"
+    elif res["actual"] == declared["shared_manifest_sha256"]:
+        res["status"] = "NO_LICENCE_LAYER"
+    else:
+        res["status"] = "MISMATCH"
+    return res
+
+
+def _image_fix_hint(img):
+    if img["status"] == "NO_RUNTIME":
+        return f"install {img['runtime']} (see docs/benchmark-setup.rst)"
+    if img["status"] == "NO_LICENCE_LAYER":
+        return ("build container/licence.Dockerfile on top of it (it accepts "
+                "Microsoft's licence terms for this machine; "
+                "docs/benchmark-setup.rst), or pass --image")
+    if img["status"] == "MISMATCH":
+        return ("runs there get their own -env<hash> run id; pull or build the "
+                "declared image (docs/benchmark-setup.rst, \"When the image "
+                "changes\"), or pass --image")
+    return ("pull or build the declared image (docs/benchmark-setup.rst), "
+            "or pass --image")
 
 
 def check_all(bench_root=None):
@@ -395,22 +475,38 @@ def _fix_hint(r):
     return ""
 
 
-def report(bench_root=None, as_json=False):
-    """Print a corpus report. Returns an exit code: 0 clean, 1 problems found."""
+def report(bench_root=None, as_json=False, mode=None, image=None,
+           runtime="podman"):
+    """Print a corpus report. Returns an exit code: 0 clean, 1 problems found.
+    `mode` is 'host' or 'container' (default_mode() when None); `image` is
+    the benchmark image container mode checks (bench container-run's
+    default when None)."""
     root = Path(bench_root) if bench_root else BENCH_ROOT
+    mode = mode or default_mode()
     results = check_all(bench_root)
+    img = None
+    if mode == "container":
+        from bench.container import DEFAULT_IMAGE
+        img = check_image(image or DEFAULT_IMAGE, runtime)
+        for r in results:
+            if r["header_tree"] and r["header_tree"].get("deps"):
+                r["header_tree"]["needed"] = False
     bad = [r for r in results if r["status"] != "OK"]
     bad_trees = [r for r in results if header_tree_bad(r)]
     contaminated = [r for r in results
                     if r["dirty"] or r["untracked_scanned"]
                     or r["gitignored_scanned"]]
     bad_subs = [r for r in results if submodules_bad(r)]
-    clean = not bad and not bad_trees and not contaminated and not bad_subs
+    bad_image = bool(img) and img["status"] != "OK"
+    clean = (not bad and not bad_trees and not contaminated and not bad_subs
+             and not bad_image)
 
     if as_json:
         print(json.dumps({
             "bench_root": str(root),
             "bench_root_exists": root.is_dir(),
+            "mode": mode,
+            "image": img,
             "clean": clean,
             "repos": results,
         }, indent=2))
@@ -418,6 +514,8 @@ def report(bench_root=None, as_json=False):
 
     print(f"BENCH_ROOT: {root}"
           f"{'' if root.is_dir() else '   *** DOES NOT EXIST ***'}")
+    print(f"mode: {mode}"
+          + (f"   image {img['image']}: {img['status']}" if img else ""))
     if not root.is_dir():
         print("  Set SQC_BENCH_ROOT (see .env.example) to the directory "
               f"holding the {len(results)} checkouts, or provision it with\n"
@@ -439,7 +537,10 @@ def report(bench_root=None, as_json=False):
         if r["untracked_scanned_but_excluded"]:
             notes.append(f"{r['untracked_scanned_but_excluded']} untracked "
                          "under a scan --exclude-all (harmless)")
-        if r["header_tree"]:
+        if r["header_tree"] and not r["header_tree"].get("needed", True):
+            notes.append("dependency set not needed (container runs use the "
+                         "image's sets)")
+        elif r["header_tree"]:
             notes.append(f"header tree {r['header_tree']['status']}")
         for sm in r["submodules"]:
             notes.append(f"submodule {sm['path']} {sm['status']}")
@@ -465,6 +566,15 @@ def report(bench_root=None, as_json=False):
             hint = deps.fix_hint(t["deps"]) if t.get("deps") else fix_hint(r["name"])
             print(f"  {r['name']:<11} {t['status']:<11} {t['path']} ({got})\n"
                   f"  {'':<11} {hint}")
+        if mode == "host" and any(r["header_tree"].get("deps") for r in bad_trees):
+            print("  A machine that runs benchmarks only through `bench "
+                  "container-run` uses the\n  image's sets instead: pass --mode "
+                  f"container, or set {MODE_ENV}=container in its .env.")
+    if bad_image:
+        print(f"\nBenchmark image {img['image']} {img['status']}"
+              + (f": environment {img['actual'][:12]}, declared "
+                 f"{img['expected'][:12]}" if img["actual"] else "")
+              + f"\n  {_image_fix_hint(img)}")
     if bad_subs:
         print(f"\n{len(bad_subs)} checkout(s) with a submodule missing or "
               "not at the commit the pin records:")

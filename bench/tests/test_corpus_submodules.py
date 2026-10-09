@@ -89,7 +89,7 @@ class TestSubmodules(unittest.TestCase):
         out = io.StringIO()
         with mock.patch.object(corpus, "load_repos", return_value=[entry or self.entry]), \
                 contextlib.redirect_stdout(out):
-            code = corpus.report(bench_root=self.bench)
+            code = corpus.report(bench_root=self.bench, mode="host")
         return code, out.getvalue()
 
     def test_initialised_at_the_gitlink_is_ok(self):

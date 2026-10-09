@@ -98,7 +98,7 @@ Juliet Benchmark
     python -m bench status [RUN_ID]
     python -m bench compare BASE TARGET
     python -m bench runs
-    python -m bench corpus-check [--json]   # real-world checkouts still pinned?
+    python -m bench corpus-check [--json] [--mode host|container]   # real-world checkouts still pinned?
 
 Run identifiers accepted by ``status``/``compare``:
 
