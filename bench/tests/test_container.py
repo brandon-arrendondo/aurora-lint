@@ -127,6 +127,34 @@ class TestDeclared(unittest.TestCase):
                 environment.declared(self._write(
                     td, tools_image="registry.example:5000/aurora-bench-tools@sha256:" + "a" * 64))
 
+    def test_a_bad_declared_file_exits_2_without_a_traceback(self):
+        with tempfile.TemporaryDirectory() as td:
+            bad = Path(td) / "e.json"
+            bad.write_text("{not json")
+            with mock.patch.object(environment, "DECLARED_PATH", bad), \
+                 mock.patch("builtins.print"):
+                self.assertEqual(environment.main(["declared", "tools_image"]), 2)
+            with mock.patch.object(environment, "declared",
+                                   side_effect=ValueError("tools_image must be")), \
+                 mock.patch("shutil.which", return_value="/usr/bin/podman"), \
+                 mock.patch.object(container, "image_pin", return_value="p" * 64), \
+                 mock.patch.object(container, "_read_in_image", return_value="a" * 64), \
+                 mock.patch.object(container.subprocess, "run") as run, \
+                 mock.patch("builtins.print"):
+                self.assertEqual(container.build_db("lua", "bench", "tools"), 2)
+            run.assert_not_called()
+
+    def test_a_tools_image_other_than_the_declared_one_is_noted(self):
+        from bench import realworld_runner
+        with mock.patch("shutil.which", return_value="/usr/bin/podman"), \
+             mock.patch.object(container, "image_pin", return_value="p" * 64), \
+             mock.patch.object(container, "_read_in_image", return_value="a" * 64), \
+             mock.patch.object(realworld_runner, "_get_codebase_sha", return_value=""), \
+             mock.patch("builtins.print") as out:
+            container.build_db("lua", "bench", "tools")
+        self.assertTrue(any("note:" in str(c) and "not the declared" in str(c)
+                            for c in out.call_args_list))
+
     def test_the_cli_prints_a_field(self):
         with mock.patch("builtins.print") as out:
             self.assertEqual(environment.main(["declared", "tools_image"]), 0)

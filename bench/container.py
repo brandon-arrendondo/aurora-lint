@@ -197,7 +197,11 @@ def build_db(project: str, image: str = DEFAULT_IMAGE,
               f"{expected[:12] or 'none'}); rebuild both from one Dockerfile")
         return 2
     from bench import environment
-    declared = environment.declared().get("tools_stage")
+    try:
+        declared = environment.declared()["tools_stage"]
+    except (OSError, ValueError) as e:
+        print(f"container-build-db: {e}")
+        return 2
     if actual != declared:
         # Not an error: a rebuilt image is a different environment, and its
         # runs already carry -env<hash>. But a pulled tools image should be

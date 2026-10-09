@@ -151,12 +151,13 @@ def load(path=MANIFEST_PATH) -> dict | None:
     return json.loads(p.read_text()) if p.is_file() else None
 
 
-def declared(path=DECLARED_PATH) -> dict:
+def declared(path=None) -> dict:
     """The environment this commit declares, every field checked: each pin
     64 hex digits, each image `name@sha256:<64 hex>` with no registry host.
     Raises ValueError naming the first field that is missing or malformed,
     so a bump that forgets one fails here, not at a pull."""
-    d = json.loads(Path(path).read_text())
+    path = Path(path) if path else DECLARED_PATH
+    d = json.loads(path.read_text())
     for key in DECLARED_PINS:
         if not _HEX64.fullmatch(str(d.get(key, ""))):
             raise ValueError(f"{path}: {key} must be a sha256 (64 hex digits), "
@@ -174,7 +175,11 @@ def main(argv=None) -> int:
         print(__doc__)
         return 2
     if args[0] == "declared":
-        d = declared()
+        try:
+            d = declared()
+        except (OSError, ValueError) as e:
+            print(f"declared: {e}", file=sys.stderr)
+            return 2
         if args[1] not in DECLARED_PINS + DECLARED_IMAGES:
             print(f"declared: one of {', '.join(DECLARED_PINS + DECLARED_IMAGES)}")
             return 2
