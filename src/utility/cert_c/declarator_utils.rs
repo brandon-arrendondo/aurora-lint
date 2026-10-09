@@ -90,20 +90,24 @@ pub fn is_function_declarator(node: &Node) -> bool {
 // ============================================================================
 
 /// Whether a declarator declares a function (`f(void)`, `*f(void)`) rather
-/// than an object, a function pointer (`(*fp)(void)`) included.
+/// than an object, a function pointer (`(*fp)(void)`) included. The
+/// derivation applied to the name itself decides: a function returning a
+/// function pointer, `(*f(int))(void)`, is a function, and a pointer to a
+/// function, `(*fp)(void)`, is an object.
 pub fn declares_function(declarator: &Node) -> bool {
     let mut d = *declarator;
+    let mut nearest_name: Option<&str> = None;
     loop {
         match d.kind() {
-            "function_declarator" => {
-                return d
-                    .child_by_field_name("declarator")
-                    .is_some_and(|inner| inner.kind() == "identifier");
+            "identifier" => return nearest_name == Some("function_declarator"),
+            "pointer_declarator" | "function_declarator" | "array_declarator" => {
+                nearest_name = Some(d.kind())
             }
-            "pointer_declarator" => match d.child_by_field_name("declarator") {
-                Some(inner) => d = inner,
-                None => return false,
-            },
+            "parenthesized_declarator" | "attributed_declarator" => {}
+            _ => return false,
+        }
+        match inner_declarator(&d) {
+            Some(inner) if inner.id() != d.id() => d = inner,
             _ => return false,
         }
     }

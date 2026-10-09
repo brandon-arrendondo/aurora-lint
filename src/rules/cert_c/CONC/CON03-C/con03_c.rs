@@ -79,6 +79,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg;
+use crate::analyze::check_macros::MacroDefinition;
 use crate::analyze::concurrency_roots;
 use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
@@ -86,9 +87,11 @@ use crate::utility::cert_c::ast_utils::{
     declaration_has_storage_class, get_node_text, resolve_identifier_binding_in, IdentifierBinding,
 };
 use crate::utility::cert_c::declarator_utils::declares_function;
+use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// One object CON03-C may report, with the declaration it is reported at.
@@ -98,8 +101,12 @@ struct SharedVar<'a> {
     /// Declared at file scope. Every file-scope declaration of a name in one
     /// translation unit denotes the same object (C11 6.2.2), so a use that
     /// binds to no local and no parameter is a use of this one. A block-scope
-    /// `static` is used only where a use resolves to its own declaration.
+    /// `static` is used only where a use resolves to a declaration of it.
     file_scope: bool,
+    /// The block a block-scope `static` is declared in (`enclosing_block`);
+    /// a use that resolves to any declaration of the name in that block is a
+    /// use of it, whichever `#if` arm's declaration it found.
+    block: Option<usize>,
     /// The reported declaration has an initializer, so it is the object's
     /// definition rather than a tentative one.
     initialized: bool,
@@ -116,6 +123,13 @@ pub struct Con03C {
     /// `check()` ORs it with a same-file-only fallback so the rule still
     /// works (reduced recall) on a single-file run.
     concurrency_reachable: RefCell<HashSet<String>>,
+    /// Every `#define` the prescan saw, so a lock type spelled through an
+    /// object-like macro (`#define my_mutex_t pthread_mutex_t`) is still
+    /// recognised as a lock.
+    macro_definitions: RefCell<Arc<HashMap<String, Vec<MacroDefinition>>>>,
+    /// The prescan's typedef aliases, for the same question asked of a
+    /// typedef name.
+    typedef_types: RefCell<Arc<HashMap<String, String>>>,
 }
 
 impl CertRule for Con03C {
@@ -139,6 +153,8 @@ impl CertRule for Con03C {
         self.concurrency_reachable
             .borrow_mut()
             .extend(context.concurrency_reachable.iter().cloned());
+        *self.macro_definitions.borrow_mut() = Arc::clone(&context.macro_definitions);
+        *self.typedef_types.borrow_mut() = Arc::clone(&context.typedef_types);
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -234,7 +250,7 @@ impl Con03C {
     /// Whether `id`, an identifier spelled like `var`, refers to it. The
     /// occurrence is resolved by scope (ADR-0006): a local or a parameter of
     /// the same name shadows a file-scope variable, and a block-scope
-    /// `static` is reached only through its own declaration. An occurrence
+    /// `static` is reached only through a declaration in its own block. An occurrence
     /// that binds to nothing in this file (its file-scope declaration sits
     /// in an `#if` arm, say) still names the file-scope object: there is no
     /// inner declaration for it to name instead.
@@ -245,7 +261,7 @@ impl Con03C {
                     // `extern int x;` inside a block redeclares the file-scope `x`.
                     declaration_has_storage_class(&decl, "extern", source)
                 } else {
-                    decl.id() == var.decl.id()
+                    Self::enclosing_block(&decl) == var.block
                 }
             }
             Some(IdentifierBinding::Parameter(_)) => false,
@@ -258,8 +274,9 @@ impl Con03C {
     /// an initializer, so `static int a, b;` yields both `a` and `b`.
     fn collect_shared_variables<'a>(&self, node: &Node<'a>, source: &str) -> Vec<SharedVar<'a>> {
         let mut shared_vars: Vec<SharedVar<'a>> = Vec::new();
-        // File-scope name -> index in `shared_vars`: one object per name.
-        let mut file_scope_index: HashMap<String, usize> = HashMap::new();
+        // (scope, name) -> index in `shared_vars`: one object per name per
+        // scope. The scope is `None` at file scope, else the block's id.
+        let mut index: HashMap<(Option<usize>, String), usize> = HashMap::new();
 
         for decl_node in query::find_descendants_of_kind(*node, "declaration") {
             // Check if this is a global or static declaration
@@ -277,14 +294,32 @@ impl Con03C {
 
             // Synchronization primitives ARE the synchronization — don't flag them
             let decl_text = get_node_text(&decl_node, source);
-            if self.is_synchronization_type(&decl_text) {
+            if self.is_synchronization_type(&decl_text) || self.declares_lock(&decl_node, source) {
+                continue;
+            }
+
+            // Thread-local storage gives each thread its own object: nothing
+            // is shared.
+            if Self::is_thread_local(&decl_node, source) {
+                continue;
+            }
+
+            // A `;` the parser had to invent means this is not a declaration
+            // in the source: a macro attribute ahead of a function definition
+            // (`BOOT_CODE` on its own line, then `static word_t f(...)`) reads
+            // as `BOOT_CODE static word_t;`, whose "declarator" is a type name.
+            if decl_node
+                .child(decl_node.child_count().saturating_sub(1))
+                .is_some_and(|last| last.is_missing())
+            {
                 continue;
             }
 
             let is_volatile = self.has_type_qualifier(&decl_node, source, "volatile");
             let is_atomic = self.has_atomic_type(&decl_node, source);
             let is_extern = self.has_storage_class(&decl_node, source, "extern");
-            let file_scope = !Self::is_block_scope(&decl_node);
+            let block = Self::enclosing_block(&decl_node);
+            let file_scope = block.is_none();
 
             let mut cursor = decl_node.walk();
             for child in decl_node.children_by_field_name("declarator", &mut cursor) {
@@ -313,25 +348,24 @@ impl Con03C {
                     name,
                     decl: decl_node,
                     file_scope,
+                    block,
                     initialized,
                     is_volatile,
                     is_atomic,
                 };
-                if !file_scope {
-                    shared_vars.push(var);
-                    continue;
-                }
-                // A tentative definition (`int x;`) and the definition
-                // (`int x = 0;`) are one object; report it once, at the
-                // definition when there is one.
-                match file_scope_index.get(&var.name) {
+                // Two declarations of one name in one scope are one object:
+                // a tentative definition (`int x;`) and the definition, or the
+                // alternatives of an `#if`/`#else` that each declare it. Report
+                // it once, at the last definition, so a tentative definition
+                // never displaces one with an initializer.
+                match index.get(&(block, var.name.clone())) {
                     Some(&i) => {
-                        if var.initialized && !shared_vars[i].initialized {
+                        if var.initialized || !shared_vars[i].initialized {
                             shared_vars[i] = var;
                         }
                     }
                     None => {
-                        file_scope_index.insert(var.name.clone(), shared_vars.len());
+                        index.insert((block, var.name.clone()), shared_vars.len());
                         shared_vars.push(var);
                     }
                 }
@@ -340,16 +374,84 @@ impl Con03C {
         shared_vars
     }
 
-    /// Whether `node` lies inside a function (a block-scope declaration).
-    fn is_block_scope(node: &Node) -> bool {
+    /// The block a block-scope declaration belongs to, as its node id; `None`
+    /// at file scope.
+    fn enclosing_block(node: &Node) -> Option<usize> {
         let mut cur = node.parent();
         while let Some(p) = cur {
-            if matches!(p.kind(), "compound_statement" | "function_definition") {
-                return true;
+            match p.kind() {
+                "compound_statement" => return Some(p.id()),
+                "function_definition" => return Some(p.id()),
+                _ => {}
             }
             cur = p.parent();
         }
-        false
+        None
+    }
+
+    /// Whether the declaration gives its objects thread storage duration
+    /// (`_Thread_local`, `thread_local`, `__thread`, `__declspec(thread)`).
+    /// The grammar does not know `_Thread_local` in every position and may
+    /// read it as a type name, so a type identifier spelled that way counts.
+    fn is_thread_local(decl: &Node, source: &str) -> bool {
+        let mut cursor = decl.walk();
+        let found = decl.children(&mut cursor).any(|c| {
+            let text = get_node_text(&c, source);
+            match c.kind() {
+                "storage_class_specifier" | "type_identifier" => {
+                    matches!(text, "_Thread_local" | "thread_local" | "__thread")
+                }
+                "ms_declspec_modifier" => text.contains("thread"),
+                _ => false,
+            }
+        });
+        found
+    }
+
+    /// Whether the declaration's type names a lock through an object-like
+    /// macro or a typedef the prescan saw: every definition of it, in every
+    /// `#if` arm, resolves to a synchronization or atomic type. One arm that
+    /// does not keeps the declaration, since which arm is compiled is unknown.
+    fn declares_lock(&self, decl: &Node, source: &str) -> bool {
+        let Some(ty) = decl.child_by_field_name("type") else {
+            return false;
+        };
+        if ty.kind() != "type_identifier" {
+            return false;
+        }
+        let macros = self.macro_definitions.borrow();
+        let typedefs = self.typedef_types.borrow();
+        let mut pending = vec![get_node_text(&ty, source).to_string()];
+        let mut seen = HashSet::new();
+        let mut resolved_any = false;
+        while let Some(name) = pending.pop() {
+            if !seen.insert(name.clone()) || seen.len() > 32 {
+                continue;
+            }
+            if let Some(defs) = macros.get(&name) {
+                for def in defs {
+                    match def {
+                        MacroDefinition::Object { body } => pending.push(body.trim().to_string()),
+                        _ => return false,
+                    }
+                }
+                resolved_any = true;
+                continue;
+            }
+            let terminal = resolve_typedef_chain(&name, &typedefs);
+            if terminal != name {
+                resolved_any = true;
+                pending.push(terminal);
+                continue;
+            }
+            let is_lock = self.is_synchronization_type(&name)
+                || name.contains("atomic_")
+                || name.contains("_Atomic");
+            if !is_lock {
+                return false;
+            }
+        }
+        resolved_any
     }
 
     fn has_storage_class(&self, node: &Node, source: &str, class: &str) -> bool {
@@ -406,6 +508,10 @@ impl Con03C {
             "mtx_t",
             "cnd_t",
             "sem_t",
+            // Windows' locks, which a portability layer often reaches through
+            // its own macro or typedef (`declares_lock` resolves those).
+            "CRITICAL_SECTION",
+            "SRWLOCK",
             // Zephyr RTOS declares its primitives as bare structs, never
             // through a typedef; matching `struct k_mutex` rather than
             // `k_mutex` keeps a field named `mask_sem` or a `k_mutex_lock`
