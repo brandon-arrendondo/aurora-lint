@@ -238,6 +238,70 @@ committed, so that directory is nearly empty in a fresh clone.
 ``python -m bench juliet`` runs the script for you before every run, which
 also refreshes ``data/rule_cwe_map.json``.
 
+The Benchmark Environment
+-------------------------
+
+A benchmark run, real-world or Juliet, is pinned by five things: the corpus
+commit, the aurora-lint commit, the oracle commit, the settings hash and the
+environment it ran in (``docs/adr/0018``). The environment is a container
+image, ``container/benchmark.Dockerfile``, holding a Debian 12 (bookworm)
+snapshot, every benchmark's dependency set (the system headers it is scanned
+against, each in its own tree), the corpus build tools and the comparison
+tools at exact versions. The corpus checkouts and this repository are
+mounted into it at run time, and aurora-lint is built inside it.
+
+Build the image with `podman <https://podman.io/>`_ (rootless is fine). The
+build is amd64 on every host, an arm64 Mac included:
+
+.. code-block:: bash
+
+    podman build --platform linux/amd64 --target tools \
+      -f container/benchmark.Dockerfile -t aurora-bench-tools:dev .
+    podman build --platform linux/amd64 \
+      -f container/benchmark.Dockerfile -t aurora-bench:shared .
+
+That image leaves out the Win32 corpus's set, the Windows SDK and MSVC CRT
+headers, which are Microsoft's: building the layer that adds them accepts
+Microsoft's licence terms for your machine, and the result must never be
+copied to another one:
+
+.. code-block:: bash
+
+    podman build --platform linux/amd64 -f container/licence.Dockerfile \
+      --build-arg BENCH_IMAGE=aurora-bench:shared \
+      --build-arg ACCEPT_MICROSOFT_LICENSE=true -t aurora-bench:dev .
+
+The image records its environment manifest in
+``/etc/aurora-bench/environment.json``; the SHA-256 of that manifest is the
+pin. ``data/benchmark_environment.json`` declares the pin this commit
+expects, so you can check your own build against it: ``python -m bench
+container-run`` prints the pin of the image it runs.
+
+Then build each corpus's compile database (its declared default build, run
+inside a throwaway container from the ``tools`` stage) and run the
+benchmarks in the image:
+
+.. code-block:: bash
+
+    python -m bench container-build-db --codebase curl,lua
+    python -m bench container-run -- realworld-run --tool sqc --codebase curl,lua
+    python -m bench container-run -- juliet
+
+A run in the declared environment gets the plain run id. The same run in
+another image is suffixed ``-env<hash>``; outside any image (``bench
+realworld-run`` or ``bench juliet`` on the host) ``-hostenv``; against
+another header tree ``-hdr-<id>``, or ``-hdr-host`` for the host's own
+headers. Only the plain id is a benchmark run.
+
+Both runners refuse to scan a benchmark whose dependency set is missing or
+differs from its pin. On the host, fetch a set with ``python -m bench.deps
+fetch <name>`` (``data/benchmark_deps/<name>.json``; it needs Python 3 and
+the network, not ``dpkg``), or all of them with
+``playbooks/setup-benchmark-deps.yml``.
+
+The sections below describe scanning against the host's own headers: local
+and shadow scans, which are never benchmark runs.
+
 Third-Party Library Headers
 ---------------------------
 
