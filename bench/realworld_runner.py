@@ -1735,6 +1735,10 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
     settings' name and hash (`config.settings_run_suffix`)."""
     tool = tool.strip().lower()
     codebase = codebase.strip().lower()
+    # Before any other check or work: the run id names aurora-lint's commit.
+    from bench.config import require_known_commit
+    sha = _get_git_sha()
+    require_known_commit(sha, f"{tool} {codebase}")
     if tool not in VALID_TOOLS:
         raise ValueError(f"Unknown tool '{tool}'. Must be one of: {', '.join(VALID_TOOLS)}")
     if codebase not in CODEBASES:
@@ -1796,9 +1800,6 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
                 variant = f"{variant}-{suffix}" if variant else suffix
 
     version = _get_tool_version(tool)
-    sha = _get_git_sha()
-    from bench.config import require_known_commit
-    require_known_commit(sha, f"{tool} {codebase}")
     dir_name = _make_version_dir_name(tool, version, sha, variant)
     version_dir = RESULTS_BASE / dir_name
     version_dir.mkdir(parents=True, exist_ok=True)

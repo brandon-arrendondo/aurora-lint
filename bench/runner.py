@@ -610,7 +610,8 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
         The run_id for the completed benchmark.
     """
     # First, before any work: the run id names aurora-lint's commit.
-    require_known_commit(_get_git_sha(), "bench juliet")
+    sha = _get_git_sha()
+    require_known_commit(sha, "bench juliet")
     if not SQC_BIN.exists():
         raise FileNotFoundError(f"aurora-lint binary not found at {SQC_BIN}. Run 'cargo build --release' first.")
     if not JULIET_BASE.is_dir():
@@ -638,7 +639,6 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     _ensure_rule_cwe_map()
 
     version = _get_sqc_version()
-    sha = _get_git_sha()
     # No manifest: none of Juliet's declares allocators or deallocators. One
     # that did would need passing here, or its run would hash apart from
     # what the scan used (config.resolve_settings).

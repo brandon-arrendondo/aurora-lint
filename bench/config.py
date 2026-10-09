@@ -55,18 +55,27 @@ def host_commit(project_dir: Path = PROJECT_DIR) -> tuple[str, str] | None:
 
 
 def aurora_lint_commit(project_dir: Path = PROJECT_DIR) -> str:
-    """The short SHA a run records: the one `bench container-run` passed in
-    when there is one, otherwise git's in `project_dir`, otherwise
-    UNKNOWN_COMMIT. A passed-in short SHA that is not a prefix of the full
-    one is refused rather than recorded."""
-    short, full = os.environ.get(COMMIT_SHORT_ENV), os.environ.get(COMMIT_ENV, "")
-    if short:
-        if not full.startswith(short):
-            raise ValueError(f"{COMMIT_SHORT_ENV}={short} is not a prefix of "
-                             f"{COMMIT_ENV}={full or '(unset)'}")
-        return short
+    """The short SHA a run records. Git's answer in `project_dir` whenever
+    git can give one; a passed-in AURORA_BENCH_COMMIT that disagrees with it
+    is refused, so a stale value (a leftover export, a .env line) can never
+    relabel a run. Only when git cannot resolve HEAD (inside the benchmark
+    container, a worktree checkout or another uid's tree) is the commit
+    `bench container-run` passed in used, and failing that UNKNOWN_COMMIT.
+    A passed-in short SHA that is not a prefix of the full one is refused."""
+    short, full = os.environ.get(COMMIT_SHORT_ENV, ""), os.environ.get(COMMIT_ENV, "")
+    if short and not full.startswith(short):
+        raise ValueError(f"{COMMIT_SHORT_ENV}={short} is not a prefix of "
+                         f"{COMMIT_ENV}={full or '(unset)'}")
     resolved = host_commit(project_dir)
-    return resolved[1] if resolved else UNKNOWN_COMMIT
+    if resolved is not None:
+        if full and full != resolved[0]:
+            raise ValueError(f"{COMMIT_ENV}={full} disagrees with git, which resolves "
+                             f"{project_dir} to {resolved[0]}; unset it (it is set only "
+                             f"inside a `bench container-run`)")
+        # Agreeing, the host's abbreviation is the one to record: its length
+        # is git's choice per repository.
+        return short or resolved[1]
+    return short or UNKNOWN_COMMIT
 
 
 def require_known_commit(sha: str, what: str) -> None:

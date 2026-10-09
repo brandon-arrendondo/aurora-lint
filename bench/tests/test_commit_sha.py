@@ -62,12 +62,30 @@ class TestWorktreeMountedAlone(unittest.TestCase):
 
 
 class TestPassedInCommit(unittest.TestCase):
-    def test_both_runners_prefer_it_over_git(self):
-        env = {COMMIT_ENV: "abcdef0123" + "0" * 30, COMMIT_SHORT_ENV: "abcdef012"}
-        with mock.patch.dict(os.environ, env), \
-             mock.patch.object(config, "host_commit", side_effect=AssertionError("git asked")):
-            self.assertEqual(realworld_runner._get_git_sha(), "abcdef012")
-            self.assertEqual(runner._get_git_sha(), "abcdef012")
+    FULL, SHORT = "abcdef0123" + "0" * 30, "abcdef012"
+
+    def test_both_runners_use_it_when_git_cannot_resolve(self):
+        with mock.patch.dict(os.environ, {COMMIT_ENV: self.FULL, COMMIT_SHORT_ENV: self.SHORT}), \
+             mock.patch.object(config, "host_commit", return_value=None):
+            self.assertEqual(realworld_runner._get_git_sha(), self.SHORT)
+            self.assertEqual(runner._get_git_sha(), self.SHORT)
+
+    def test_git_wins_and_an_agreeing_value_keeps_the_hosts_abbreviation(self):
+        with mock.patch.dict(os.environ, {COMMIT_ENV: self.FULL, COMMIT_SHORT_ENV: self.SHORT}), \
+             mock.patch.object(config, "host_commit", return_value=(self.FULL, self.SHORT[:8])):
+            self.assertEqual(realworld_runner._get_git_sha(), self.SHORT)
+        with mock.patch.dict(os.environ, _NO_COMMIT_ENV), \
+             mock.patch.object(config, "host_commit", return_value=(self.FULL, self.SHORT[:8])):
+            self.assertEqual(runner._get_git_sha(), self.SHORT[:8])
+
+    def test_a_value_that_disagrees_with_git_is_refused(self):
+        # A stale export or .env line on a host must not relabel its runs.
+        with mock.patch.dict(os.environ, {COMMIT_ENV: "deadbeefcafe" + "0" * 28,
+                                          COMMIT_SHORT_ENV: "deadbeef"}), \
+             mock.patch.object(config, "host_commit", return_value=(self.FULL, self.SHORT)):
+            for get in (realworld_runner._get_git_sha, runner._get_git_sha):
+                with self.assertRaisesRegex(ValueError, "disagrees with git"):
+                    get()
 
     def test_a_short_sha_that_is_not_a_prefix_of_the_full_one_is_refused(self):
         with mock.patch.dict(os.environ, {COMMIT_ENV: "1" * 40, COMMIT_SHORT_ENV: "abcdef012"}):
@@ -94,8 +112,11 @@ class TestPassedInCommit(unittest.TestCase):
 
 class TestUnknownIsRefused(unittest.TestCase):
     def test_a_real_world_scan(self):
+        # Before the codebase and tool preflight, so it holds on a machine
+        # with neither.
         with mock.patch.object(realworld_runner, "_get_git_sha", return_value=UNKNOWN_COMMIT), \
-             mock.patch.object(realworld_runner, "_get_tool_version", return_value="0.6.0"):
+             mock.patch.object(realworld_runner, "_check_tool_available",
+                               side_effect=AssertionError("preflight ran")):
             with self.assertRaisesRegex(ValueError, "commit is unknown"):
                 realworld_runner.run_one("sqc", "libcrc")
 
