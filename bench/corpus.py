@@ -44,6 +44,24 @@ BENCH_ROOT/header-trees/, with the declared manifest hash. A missing or
 different tree fails the check like a drifted commit, since the runner
 refuses to scan the corpus without it.
 
+Git submodules are checked the same way. The pinned superproject commit
+records each submodule's commit as a gitlink, so a pin implies its
+submodules -- but only if they are checked out. A clone that skipped
+`git submodule update --init` is on the right superproject commit with the
+submodule directory empty, and nothing above notices. mbedtls's `framework`
+is the one case: outside the scanned tree, but its build scripts generate
+part of library/, so a compile-database build fails without it. Every
+gitlink in the pinned tree has to be declared under 'submodules' in
+data/benchmark_repos.json (provisioning initialises exactly those), checked
+out, at the recorded commit, and unmodified:
+  UNINITIALIZED  declared, but the directory holds no checkout
+  DRIFTED        checked out at a commit other than the gitlink
+  MODIFIED       at the gitlink, with local changes or untracked files
+  UNDECLARED     a gitlink in the pin that 'submodules' does not name, so
+                 provisioning never initialises it
+  NOT_IN_PIN     declared, but the pin has no gitlink at that path
+A submodule's own submodules are not checked; none of the corpora has any.
+
 Both untracked and gitignored counts are run through the SAME --exclude-all
 globs `bench/realworld_runner.py`'s CODEBASES[...]["sqc"]["extra_args"] passes
 to the real scan: a stray .c/.h sitting under a tree the scan leaves out of
@@ -219,7 +237,7 @@ def check_repo(entry, bench_root=None):
         "dirty": 0, "untracked_scanned": 0, "untracked_ignored": 0,
         "gitignored_scanned": 0, "untracked_scanned_but_excluded": 0,
         "gitignored_scanned_but_excluded": 0,
-        "header_tree": None,
+        "header_tree": None, "submodules": [],
     }
     if entry.get("deps"):
         # A dependency set (bench/deps.py, docs/adr/0018) is the corpus's
@@ -257,12 +275,18 @@ def check_repo(entry, bench_root=None):
     else:
         res["status"] = "OK"
 
+    if res["status"] != "PIN_ABSENT":
+        res["submodules"] = check_submodules(path, pin, entry.get("submodules", []))
+
     excludes = _scan_excludes(name)
 
+    sub_paths = {s["path"] for s in res["submodules"]}
     porcelain = _git(path, "status", "--porcelain") or ""
     for line in porcelain.splitlines():
         code, _, rel = line.partition(" ")
         rel = (rel or line[3:]).strip()
+        if rel in sub_paths:
+            continue  # reported per submodule, not as a modified file
         if line.startswith("??"):
             if not rel.endswith(SCANNED_SUFFIXES):
                 res["untracked_ignored"] += 1
@@ -286,6 +310,65 @@ def check_repo(entry, bench_root=None):
         else:
             res["gitignored_scanned"] += 1
     return res
+
+
+def _gitlinks(path, commit):
+    """{path: commit} for every submodule recorded in `commit`'s tree."""
+    out = _git(path, "ls-tree", "-r", "-z", commit) or ""
+    links = {}
+    for rec in out.split("\0"):
+        meta, _, rel = rec.partition("\t")
+        mode, _, rest = meta.partition(" ")
+        if mode == "160000":
+            links[rel] = rest.split()[-1]
+    return links
+
+
+def check_submodules(path, pin, declared):
+    """One result per submodule, declared or recorded in `pin`'s tree."""
+    links = _gitlinks(path, pin)
+    out = []
+    for rel in sorted(set(links) | set(declared)):
+        sub = Path(path) / rel
+        r = {"path": rel, "expected": links.get(rel), "head": None, "status": None}
+        out.append(r)
+        if rel not in links:
+            r["status"] = "NOT_IN_PIN"
+            continue
+        # An uninitialised submodule is an empty directory, and `git -C` there
+        # would answer for the superproject, so look for its own .git first.
+        if (sub / ".git").exists():
+            r["head"] = _git(sub, "rev-parse", "HEAD")
+        if rel not in declared:
+            r["status"] = "UNDECLARED"
+        elif r["head"] is None:
+            r["status"] = "UNINITIALIZED"
+        elif r["head"] != links[rel]:
+            r["status"] = "DRIFTED"
+        elif _git(sub, "status", "--porcelain"):
+            r["status"] = "MODIFIED"
+        else:
+            r["status"] = "OK"
+    return out
+
+
+def submodules_bad(r):
+    """The submodules of `r` that are not checked out clean at their gitlink."""
+    return [s for s in r["submodules"] if s["status"] != "OK"]
+
+
+def _submodule_fix_hint(repo_path, s):
+    init = f"git -C {repo_path} submodule update --init -- {s['path']}"
+    if s["status"] in ("UNINITIALIZED", "DRIFTED"):
+        return init
+    if s["status"] == "MODIFIED":
+        sub = f"{repo_path}/{s['path']}"
+        return (f"inspect with git -C {sub} status, then "
+                f"git -C {sub} checkout -- . && git -C {sub} clean -fd")
+    if s["status"] == "UNDECLARED":
+        return ("declare it under 'submodules' in data/benchmark_repos.json, "
+                f"then {init}")
+    return "remove it from 'submodules' in data/benchmark_repos.json"
 
 
 def header_tree_bad(r):
@@ -321,15 +404,17 @@ def report(bench_root=None, as_json=False):
     contaminated = [r for r in results
                     if r["dirty"] or r["untracked_scanned"]
                     or r["gitignored_scanned"]]
+    bad_subs = [r for r in results if submodules_bad(r)]
+    clean = not bad and not bad_trees and not contaminated and not bad_subs
 
     if as_json:
         print(json.dumps({
             "bench_root": str(root),
             "bench_root_exists": root.is_dir(),
-            "clean": not bad and not bad_trees and not contaminated,
+            "clean": clean,
             "repos": results,
         }, indent=2))
-        return 0 if not bad and not bad_trees and not contaminated else 1
+        return 0 if clean else 1
 
     print(f"BENCH_ROOT: {root}"
           f"{'' if root.is_dir() else '   *** DOES NOT EXIST ***'}")
@@ -356,6 +441,8 @@ def report(bench_root=None, as_json=False):
                          "under a scan --exclude-all (harmless)")
         if r["header_tree"]:
             notes.append(f"header tree {r['header_tree']['status']}")
+        for sm in r["submodules"]:
+            notes.append(f"submodule {sm['path']} {sm['status']}")
         if r["gitignored_scanned_but_excluded"]:
             notes.append(f"{r['gitignored_scanned_but_excluded']} gitignored "
                          "under a scan --exclude-all (harmless)")
@@ -378,6 +465,15 @@ def report(bench_root=None, as_json=False):
             hint = deps.fix_hint(t["deps"]) if t.get("deps") else fix_hint(r["name"])
             print(f"  {r['name']:<11} {t['status']:<11} {t['path']} ({got})\n"
                   f"  {'':<11} {hint}")
+    if bad_subs:
+        print(f"\n{len(bad_subs)} checkout(s) with a submodule missing or "
+              "not at the commit the pin records:")
+        for r in bad_subs:
+            for sm in submodules_bad(r):
+                print(f"  {r['name']:<11} {sm['status']:<13} {sm['path']} "
+                      f"(head {(sm['head'] or '-')[:12]}, gitlink "
+                      f"{(sm['expected'] or '-')[:12]})\n"
+                      f"  {'':<11} {_submodule_fix_hint(r['path'], sm)}")
     if contaminated:
         print(f"\n{len(contaminated)} checkout(s) with modified or scannable "
               f"untracked files -- scanned source differs from the pin:")
@@ -385,10 +481,10 @@ def report(bench_root=None, as_json=False):
             print(f"  {r['name']:<11} dirty={r['dirty']} "
                   f"untracked_scanned={r['untracked_scanned']} "
                   f"gitignored_scanned={r['gitignored_scanned']}")
-    if not bad and not bad_trees and not contaminated:
+    if clean:
         print(f"\nAll {len(results)} checkouts detached at their pinned "
-              "commits, working trees clean.")
+              "commits, submodules checked out, working trees clean.")
     else:
         print("\nFindings taken off a non-OK checkout are NOT comparable to "
               "ground_truth,\nwhich is keyed on project+commit+file+line+rule.")
-    return 0 if not bad and not bad_trees and not contaminated else 1
+    return 0 if clean else 1

@@ -1023,8 +1023,12 @@ that brought in pureftpd for CWE-89. The other draw is `mbedtls_calloc` /
 [Mbed-TLS/mbedtls](https://github.com/Mbed-TLS/mbedtls) `v3.6.7` →
 `068ff080b369adfac81509f9b57b2afabaf82dc5` (tag resolved locally to the same
 SHA; Apache-2.0 OR GPL-2.0-or-later). Checkout directory `mbedtls`, lowercase,
-matching the registry key. The `framework/` submodule is deliberately left
-uninitialised — it is test tooling and outside scope. No build step is needed:
+matching the registry key. The `framework/` submodule is test tooling and
+outside scope, and the scan never reads it. It is still initialised at the
+commit the pin records (`"submodules": ["framework"]`), because the library
+build regenerates part of `library/` from its scripts, so the compile database
+cannot be built without it; corpus-check fails a checkout that lacks it. No
+build step is needed for the scan itself:
 `mbedtls_config.h` and `build_info.h` are static checked-in headers, and
 `git ls-files --others --ignored` finds no `.c`/`.h`, so there is nothing for
 `corpus-check` to flag as contamination.

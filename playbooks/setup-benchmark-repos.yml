@@ -52,6 +52,9 @@
         dest: "{{ bench_root }}/{{ item.name }}"
         version: "{{ item.version }}"
         force: false
+        # Submodules are the declared ones, initialised below, not whatever
+        # the module's recursive default happens to do on an existing clone.
+        recursive: false
       loop: "{{ repos }}"
       loop_control:
         label: "{{ item.name }}@{{ item.version[:12] }}"
@@ -71,6 +74,43 @@
           {{ item.item.version }}
       when: item.stdout != item.item.version
       loop: "{{ checkout_heads.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    # A pinned commit records each submodule's commit, but a clone leaves the
+    # submodule directory empty until it is initialised. mbedtls's build
+    # scripts live in its `framework` submodule, so its compile database
+    # cannot be built without it. Only the paths a corpus declares under
+    # 'submodules' are initialised; corpus-check fails a gitlink that is
+    # not declared, so a new corpus cannot skip one silently.
+    - name: Initialise each declared submodule at the commit its pin records
+      command: >-
+        git -C "{{ bench_root }}/{{ item.name }}" submodule update --init
+        -- {{ item.submodules | map('quote') | join(' ') }}
+      register: submodule_init
+      changed_when: submodule_init.stdout | length > 0
+      loop: "{{ repos | selectattr('submodules', 'defined') | list }}"
+      loop_control:
+        label: "{{ item.name }}: {{ item.submodules | join(', ') }}"
+
+    # `git submodule status` prefixes a line with '-' when the submodule is
+    # not initialised, '+' when it is not at the recorded commit, and 'U'
+    # on a merge conflict; a clean one starts with a space.
+    - name: Read each declared submodule's state
+      command: >-
+        git -C "{{ bench_root }}/{{ item.name }}" submodule status
+        -- {{ item.submodules | map('quote') | join(' ') }}
+      register: submodule_states
+      changed_when: false
+      loop: "{{ repos | selectattr('submodules', 'defined') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Fail if any declared submodule is not at the commit its pin records
+      fail:
+        msg: "{{ item.item.name }}: {{ item.stdout }}"
+      when: item.stdout_lines | reject('match', '^ ') | list | length > 0
+      loop: "{{ submodule_states.results }}"
       loop_control:
         label: "{{ item.item.name }}"
 
