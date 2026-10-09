@@ -2579,6 +2579,243 @@ fn a_missing_generated_project_header_switches_dcl31_off_and_says_so() {
     assert!(warning.contains("object/structures_gen.h"), "{warning}");
 }
 
+// ─── Build-generated headers reach only the code their configuration compiles ─
+
+/// A project whose build tree generated a declaration list with an inline
+/// accessor (`obj/structs_gen.h`) and a configuration value (`MAX_NODES`), and
+/// two sources that use them alike: `member.c`, which the database compiles,
+/// and `other.c`, which it does not. Returns (tempdir, project, build).
+fn generated_headers_project(entry_dir_is_project: bool) -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    let build = dir.path().join("build");
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    std::fs::create_dir_all(project.join("include/obj")).unwrap();
+    std::fs::create_dir_all(build.join("gen/obj")).unwrap();
+    std::fs::write(
+        project.join("include/obj/types.h"),
+        "struct widget { int size; };\nint cpu(void);\n",
+    )
+    .unwrap();
+    std::fs::write(
+        build.join("gen/obj/structs_gen.h"),
+        "#include <obj/types.h>\n\
+         static inline int widget_get_size(const struct widget *w) { return w->size; }\n\
+         int widget_count(void);\n",
+    )
+    .unwrap();
+    std::fs::write(build.join("gen/config_gen.h"), "#define MAX_NODES 1\n").unwrap();
+    for f in ["member", "other"] {
+        std::fs::write(
+            project.join(format!("src/{f}.c")),
+            format!(
+                "#include <obj/structs_gen.h>\n#include <config_gen.h>\n\
+                 #define LOG(x) ((void)0)\n\
+                 int {f}_nodes[MAX_NODES];\n\
+                 int {f}_use(const struct widget *w)\n{{\n\
+                 \x20   LOG(widget_get_size(w));\n\
+                 \x20   widget_count();\n\
+                 \x20   {f}_only_accessor(w);\n\
+                 \x20   return {f}_nodes[cpu()];\n}}\n"
+            ),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        project.join("manifest.toml"),
+        "[metadata]\nname = \"generated headers\"\nversion = \"1.0.0\"\n\
+         description = \"t\"\ncert_version = \"2016\"\n\n\
+         [rules.cert_c.DCL31-C]\nenabled = true\n\n\
+         [rules.cert_c.PRE31-C]\nenabled = true\n\n\
+         [rules.cert_c.ARR30-C]\nenabled = true\n",
+    )
+    .unwrap();
+    let entry_dir = if entry_dir_is_project {
+        &project
+    } else {
+        &build
+    };
+    let db = serde_json::json!([{
+        "directory": entry_dir,
+        "file": project.join("src/member.c"),
+        "arguments": ["cc", "-I", project.join("include"), "-I", build.join("gen"),
+                      "-c", project.join("src/member.c")],
+    }]);
+    std::fs::write(build.join("compile_commands.json"), db.to_string()).unwrap();
+    (dir, project, build)
+}
+
+/// Scan `project` under the strict policy; (exit code, stderr, sorted
+/// "file:line:rule" keys).
+fn generated_headers_scan(project: &std::path::Path, extra: &[&str]) -> (i32, String, Vec<String>) {
+    let out = project.join("out.json");
+    let manifest = project.join("manifest.toml");
+    let mut args = vec![
+        project.to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "--profile",
+        "strict",
+        "-e",
+        out.to_str().unwrap(),
+    ];
+    args.extend_from_slice(extra);
+    let (code, _, stderr) = run_aurora_lint(&args);
+    let mut keys: Vec<String> = std::fs::read_to_string(&out)
+        .map(|c| {
+            serde_json::from_str::<Vec<serde_json::Value>>(&c)
+                .unwrap()
+                .iter()
+                .map(|v| {
+                    let file = v["file"].as_str().unwrap().replace('\\', "/");
+                    let name = file.rsplit('/').next().unwrap().to_string();
+                    format!("{name}:{}:{}", v["line"], v["rule_id"].as_str().unwrap())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    keys.sort();
+    (code, stderr, keys)
+}
+
+/// What a file the configuration compiles keeps, from the generated headers:
+/// a pure callee body (no strict PRE31-C), the real size (ARR30-C), and its
+/// own undeclared call (DCL31-C).
+const MEMBER_FINDINGS: [&str; 2] = ["member.c:10:ARR30-C", "member.c:9:DCL31-C"];
+
+#[test]
+fn generated_headers_reach_only_the_files_their_configuration_compiles() {
+    let (_dir, project, build) = generated_headers_project(false);
+    let db = build.join("compile_commands.json");
+    let (code, stderr, keys) =
+        generated_headers_scan(&project, &["--compile-commands", db.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+    // other.c is analysed as if the generated headers were missing: DCL31-C
+    // stands down (and says so), ARR30-C has no size, and the accessor's body
+    // is unknown, so strict PRE31-C reports the skipped argument.
+    let mut want: Vec<String> = MEMBER_FINDINGS.iter().map(|s| s.to_string()).collect();
+    want.push("other.c:7:PRE31-C".into());
+    want.sort();
+    assert_eq!(keys, want, "{stderr}");
+    assert!(
+        stderr.contains("2 build-generated header(s) recognised; 1 of 2 scanned .c files"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("undeclared-function check off in 1 of 2 files")
+            && stderr.contains("other.c"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn an_in_source_build_needs_its_generated_tree_declared() {
+    // The database's working directory is the project, so nothing in it marks
+    // build/gen as the build's own: every file reads the generated headers.
+    let (_dir, project, build) = generated_headers_project(true);
+    let db = build.join("compile_commands.json");
+    let (_, stderr, keys) =
+        generated_headers_scan(&project, &["--compile-commands", db.to_str().unwrap()]);
+    assert!(
+        keys.contains(&"other.c:10:ARR30-C".to_string()),
+        "{keys:?}\n{stderr}"
+    );
+    assert!(!stderr.contains("build-generated header"), "{stderr}");
+
+    let gen = build.join("gen");
+    let (code, stderr, keys) = generated_headers_scan(
+        &project,
+        &[
+            "--compile-commands",
+            db.to_str().unwrap(),
+            "--generated-include",
+            gen.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        !keys.contains(&"other.c:10:ARR30-C".to_string()),
+        "{keys:?}"
+    );
+    assert!(keys.contains(&"other.c:7:PRE31-C".to_string()), "{keys:?}");
+}
+
+#[test]
+fn a_generated_unit_names_the_sources_it_compiles_with_line_directives() {
+    // A build that concatenates its sources into one generated unit lists
+    // only that unit in its database; its #line markers name the members.
+    let (_dir, project, build) = generated_headers_project(false);
+    let unit = build.join("all.c");
+    std::fs::write(
+        &unit,
+        format!(
+            "#line 1 \"{}\"\nint member_use_placeholder;\n",
+            project.join("src/member.c").display()
+        ),
+    )
+    .unwrap();
+    let db = serde_json::json!([{
+        "directory": build,
+        "file": unit,
+        "arguments": ["cc", "-I", project.join("include"), "-I", build.join("gen"), "-c", unit],
+    }]);
+    let db_path = build.join("compile_commands.json");
+    std::fs::write(&db_path, db.to_string()).unwrap();
+    let (code, stderr, keys) =
+        generated_headers_scan(&project, &["--compile-commands", db_path.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        keys.contains(&"member.c:10:ARR30-C".to_string()),
+        "{keys:?}\n{stderr}"
+    );
+    assert!(
+        !keys.contains(&"member.c:7:PRE31-C".to_string()),
+        "{keys:?}"
+    );
+    assert!(keys.contains(&"other.c:7:PRE31-C".to_string()), "{keys:?}");
+}
+
+#[test]
+fn a_saved_prescan_keeps_the_context_without_generated_headers() {
+    let (dir, project, build) = generated_headers_project(false);
+    let db = build.join("compile_commands.json");
+    let cache = dir.path().join("prescan.bin");
+    let (_, _, live) = generated_headers_scan(
+        &project,
+        &[
+            "--compile-commands",
+            db.to_str().unwrap(),
+            "--save-prescan",
+            cache.to_str().unwrap(),
+        ],
+    );
+    let (code, stderr, loaded) = generated_headers_scan(
+        &project,
+        &[
+            "--compile-commands",
+            db.to_str().unwrap(),
+            "--load-prescan",
+            cache.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(loaded, live);
+    // A run that recognises no generated headers refuses the split cache.
+    let (code, stderr, _) =
+        generated_headers_scan(&project, &["--load-prescan", cache.to_str().unwrap()]);
+    assert_ne!(code, 0, "{stderr}");
+}
+
+#[test]
+fn a_generated_include_inside_the_scanned_tree_is_refused() {
+    let (_dir, project, _build) = generated_headers_project(false);
+    let inside = project.join("include");
+    let (code, stderr, _) =
+        generated_headers_scan(&project, &["--generated-include", inside.to_str().unwrap()]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("inside the scanned tree"), "{stderr}");
+}
+
 // ─── Cross-file header-declared functions (DCL15-C) ─────────────────────────
 
 fn manifest_dcl15() -> PathBuf {

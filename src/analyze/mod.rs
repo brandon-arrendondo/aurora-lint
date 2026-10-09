@@ -31,6 +31,9 @@ pub mod deallocator_candidates;
 pub mod embedded_js_blank;
 pub mod empty_macro_blank;
 pub mod function_summary;
+/// Build-generated headers, and which `.c` files their configuration
+/// compiles: the two inputs that split a scan's context around them.
+pub mod generated_headers;
 pub mod has_include_angle;
 pub mod include_names;
 pub mod init_state;
@@ -86,6 +89,7 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 /// A violation that was suppressed by an inline AURORA-SUPPRESS comment.
 pub struct SuppressedViolation {
@@ -199,6 +203,7 @@ pub fn analyze_project(
     jobs: usize,
     report_macro_gaps: bool,
     settings: &crate::settings::AnalysisSettings,
+    generated_includes: &[String],
 ) -> Result<AnalysisResults> {
     // A rule the policy in force declines never runs, whatever the
     // manifest enables (`settings::DECLINED_RULES`).
@@ -238,6 +243,18 @@ pub fn analyze_project(
     // A fresh count of analyses that stop short (`containment::not_converged`).
     let _ = containment::take_not_converged();
 
+    // Build-generated headers, recognised from what the user and the
+    // database declare (`generated_headers`). Their facts reach only the
+    // files the configuration compiles.
+    let project_roots: Vec<String> = std::iter::once(project_source.get_root_path().to_string())
+        .chain(directories.iter().cloned())
+        .collect();
+    let generated = generated_headers::GeneratedHeaders::recognise(
+        generated_includes,
+        compile_db,
+        &project_roots,
+    )?;
+
     // Load or compute cross-file context (prescan, includes, optional cache save)
     let mut context = load_project_context(
         project_source,
@@ -252,8 +269,31 @@ pub fn analyze_project(
         &header_lookup,
         scope,
         settings.facts,
+        generated.as_ref(),
     )?;
     context.settings = std::sync::Arc::new(settings.clone());
+    if let Some(outside) = context.outside_configuration.as_mut() {
+        Arc::make_mut(outside).settings = Arc::clone(&context.settings);
+    }
+    // Which files the configuration compiles; with no database, none, so
+    // every file reads the context without generated headers.
+    let membership = generated.as_ref().map(|_| {
+        compile_db.map_or_else(generated_headers::Membership::default, |db| {
+            generated_headers::Membership::of(db, &context.include_edges)
+        })
+    });
+    // The context a file is analysed against: the full one for a file the
+    // configuration compiles, the one without generated headers otherwise.
+    let context_for = |file_path: &str| -> &context::ProjectContext {
+        match (&membership, &context.outside_configuration) {
+            (Some(members), Some(outside))
+                if !members.contains(std::path::Path::new(file_path)) =>
+            {
+                outside
+            }
+            _ => &context,
+        }
+    };
 
     set_project_context_for_enabled(&registry, manifest, &context);
 
@@ -269,13 +309,39 @@ pub fn analyze_project(
 
     let c_files = collect_c_files(project_source, diff_only, &scope.report_globs())?;
     let total_files = c_files.len();
+    // A rule that stands down says so per context: a file outside the
+    // configuration is judged against the context it is analysed with.
+    let (inside, outside): (Vec<String>, Vec<String>) = c_files
+        .iter()
+        .cloned()
+        .partition(|f| std::ptr::eq(context_for(f), &context));
     warn_stand_downs(
         &registry,
         manifest,
         &context,
         project_source.get_root_path(),
-        &c_files,
+        &inside,
     );
+    if let (Some(generated), Some(outside_context)) =
+        (&generated, context.outside_configuration.as_deref())
+    {
+        let sources = |files: &[String]| files.iter().filter(|f| f.ends_with(".c")).count();
+        eprintln!(
+            "Note: {} build-generated header(s) recognised; {} of {} scanned .c files are \
+             not compiled by the build configuration that generated them, and are analysed \
+             as if those headers were missing.",
+            generated.files.len(),
+            sources(&outside),
+            sources(&c_files),
+        );
+        warn_stand_downs(
+            &registry,
+            manifest,
+            outside_context,
+            project_source.get_root_path(),
+            &outside,
+        );
+    }
 
     // What did not complete (`containment`, ADR-0017): the prescan's failures
     // first, then the per-file ones. One escalation record per scan, shared
@@ -361,8 +427,9 @@ pub fn analyze_project(
                     // The context this file may use, which is the shared one
                     // unless the file defines a name some other file also
                     // defines `static`.
-                    let local = context.as_seen_from(std::path::Path::new(file_path));
-                    let file_context = local.as_ref().unwrap_or(&context);
+                    let base = context_for(file_path);
+                    let local = base.as_seen_from(std::path::Path::new(file_path));
+                    let file_context = local.as_ref().unwrap_or(base);
                     set_project_context_for_enabled(&file_registry, manifest, file_context);
                     let mut file_supp = suppression_manager.clone();
 
@@ -442,8 +509,9 @@ pub fn analyze_project(
 
         // Create fresh rule instances per file (matches parallel mode behavior)
         let file_registry = RuleRegistry::new();
-        let local = context.as_seen_from(std::path::Path::new(file_path));
-        let file_context = local.as_ref().unwrap_or(&context);
+        let base = context_for(file_path);
+        let local = base.as_seen_from(std::path::Path::new(file_path));
+        let file_context = local.as_ref().unwrap_or(base);
         set_project_context_for_enabled(&file_registry, manifest, file_context);
 
         let (file_violations, file_suppressed, file_failures) = analyze_one_file_contained(
@@ -580,6 +648,7 @@ fn load_project_context(
     header_lookup: &include_names::HeaderLookup,
     scope: &ScanScope,
     data_model: crate::settings::IntFacts,
+    generated: Option<&generated_headers::GeneratedHeaders>,
 ) -> Result<context::ProjectContext> {
     // The globs the prescan leaves out, as a cache records them, and the
     // ignore built from exactly those: a context built without them holds
@@ -632,6 +701,12 @@ fn load_project_context(
         (
             "closed_program".to_string(),
             crate::settings::closure::declared().to_string(),
+        ),
+        // A context split around one set of generated headers is not the
+        // context for another, nor for none.
+        (
+            "generated_headers".to_string(),
+            generated.map_or_else(String::new, |g| g.fingerprint()),
         ),
     ]);
 
@@ -694,6 +769,25 @@ fn load_project_context(
         context.built_under = built_under;
     }
 
+    // With build-generated headers, the same prescan yields two contexts: this
+    // one, which resolves every header, for the files the build configuration
+    // compiles, and one with the generated headers withheld for every other
+    // file -- the context it would have had if they were missing
+    // (`generated_headers`). A cache saved split carries both.
+    let mut outside = match generated {
+        None => None,
+        Some(_) if load_prescan.is_none() => Some(context.clone()),
+        Some(_) => match context.outside_configuration.take() {
+            Some(saved) => Some(Arc::unwrap_or_clone(saved)),
+            None => anyhow::bail!(
+                "prescan cache {} holds no context for files outside the build \
+                 configuration; re-create it with --save-prescan",
+                load_prescan.unwrap_or_default()
+            ),
+        },
+    };
+    let withholding = generated.map(|g| header_lookup.withholding(Arc::clone(&g.files)));
+
     // Resolve #include directives against include search paths, and the
     // build's forced includes, which need resolving even with no search path.
     let forced_includes: &[String] = compile_db.map_or(&[], |db| &db.forced_includes);
@@ -725,6 +819,20 @@ fn load_project_context(
             header_lookup,
             &scoped_out,
         )?;
+        if let (Some(outside), Some(lookup)) = (outside.as_mut(), withholding.as_ref()) {
+            prescan::resolve_includes_scoped(
+                &c_files,
+                forced_includes,
+                include_paths,
+                &project_roots,
+                outside,
+                None,
+                needs_vra,
+                data_model,
+                lookup,
+                &scoped_out,
+            )?;
+        }
     }
 
     // Fold in the build's `-D` macro state last, so that any macro the real
@@ -733,11 +841,18 @@ fn load_project_context(
     // save so a saved prescan carries the same context a live run would build.
     if let Some(db) = compile_db {
         db.merge_defines_into(&mut context, data_model)?;
+        if let Some(outside) = outside.as_mut() {
+            db.merge_defines_into(outside, data_model)?;
+        }
     }
 
     // Every alias is known now: keep only the call counts that can rule one
     // out (`ProjectContext::as_seen_from`).
     context.retain_alias_call_arities();
+    if let Some(mut outside) = outside {
+        outside.retain_alias_call_arities();
+        context.outside_configuration = Some(Arc::new(outside));
+    }
 
     // Save prescan cache if requested (after prescan + include resolution).
     // Not when the prescan is incomplete: a later scan loading the cache

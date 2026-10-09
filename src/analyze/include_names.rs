@@ -24,7 +24,7 @@
 //! choice is the same on every host and never silent.
 
 use crate::settings::IncludeNames;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -85,6 +85,12 @@ pub struct HeaderLookup {
     mode: IncludeNames,
     /// Directory → its index, or `None` when it cannot be listed.
     dirs: Mutex<HashMap<PathBuf, Option<Arc<DirIndex>>>>,
+    /// Files this lookup treats as absent, by canonical path: the
+    /// build-generated headers withheld from code their configuration does
+    /// not compile (`generated_headers`). A withheld match is no match, so
+    /// the search goes on to the next directory, as a compiler's would if
+    /// the file were not there.
+    withheld: Option<Arc<HashSet<PathBuf>>>,
 }
 
 impl HeaderLookup {
@@ -93,6 +99,31 @@ impl HeaderLookup {
         Self {
             mode,
             dirs: Mutex::new(HashMap::new()),
+            withheld: None,
+        }
+    }
+
+    /// A lookup under the same rule that finds none of `withheld`.
+    pub fn withholding(&self, withheld: Arc<HashSet<PathBuf>>) -> Self {
+        Self {
+            mode: self.mode,
+            dirs: Mutex::new(HashMap::new()),
+            withheld: Some(withheld),
+        }
+    }
+
+    /// `found`, unless it is a file this lookup withholds.
+    fn unless_withheld(&self, found: Option<HeaderMatch>) -> Option<HeaderMatch> {
+        let Some(withheld) = self.withheld.as_ref() else {
+            return found;
+        };
+        match found {
+            Some(m)
+                if withheld.contains(&m.path.canonicalize().unwrap_or_else(|_| m.path.clone())) =>
+            {
+                None
+            }
+            other => other,
         }
     }
 
@@ -127,7 +158,7 @@ impl HeaderLookup {
     /// wrong case is found too, since cl would find it; that spelling is the
     /// command line's, not the `#include`'s, so it is not a mismatch.
     pub fn find_in(&self, dir: &Path, include_path: &str) -> Option<HeaderMatch> {
-        match self.mode {
+        let found = match self.mode {
             IncludeNames::Exact => {
                 let candidate = dir.join(include_path);
                 candidate.is_file().then(|| HeaderMatch {
@@ -140,7 +171,8 @@ impl HeaderLookup {
                 let dir = self.search_dir(dir)?;
                 self.walk_folded(&dir, include_path, Want::File)
             }
-        }
+        };
+        self.unless_withheld(found)
     }
 
     /// Whether `rel` names a directory under `root` under this rule.
@@ -160,7 +192,7 @@ impl HeaderLookup {
     /// case-insensitive one (macOS, drvfs) would accept a wrong spelling
     /// without saying so.
     pub fn find_absolute(&self, include_path: &Path) -> Option<HeaderMatch> {
-        match self.mode {
+        let found = match self.mode {
             IncludeNames::Exact => include_path.is_file().then(|| HeaderMatch {
                 path: include_path.to_path_buf(),
                 case_differs: false,
@@ -170,7 +202,8 @@ impl HeaderLookup {
                 let (root, rest) = split_root(include_path);
                 self.walk_folded(&root, &rest, Want::File)
             }
-        }
+        };
+        self.unless_withheld(found)
     }
 
     /// `dir` as spelled on disk. An absolute path is walked through the

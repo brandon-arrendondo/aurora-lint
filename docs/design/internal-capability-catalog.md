@@ -318,12 +318,25 @@ syntax. `docs/cli-usage.rst` describes the user-facing behaviour.
 
 | Item | Signature | Description |
 |---|---|---|
-| `CompileDb::load` | `(path: &Path) -> Result<CompileDb>` | The distilled database: `include_paths`, `defines`, `undefines`, `forced_includes` (cl's `/FI`), `compilers`, `configured_sources`, and `msvc` (any entry built by cl), which makes `#include` matching case-insensitive unless the settings say otherwise. Flags are unioned across entries, not scoped per TU. |
+| `CompileDb::load` | `(path: &Path) -> Result<CompileDb>` | The distilled database: `include_paths`, `defines`, `undefines`, `forced_includes` (cl's `/FI`), `compilers`, `configured_sources`, `entry_directories` (where the build ran), and `msvc` (any entry built by cl), which makes `#include` matching case-insensitive unless the settings say otherwise. Flags are unioned across entries, not scoped per TU. |
 | `split_command` | `(cmd: &str) -> Vec<String>` | POSIX-shell-ish argv split: single and double quotes, backslash escapes. |
 | `split_command_windows` | `(cmd: &str) -> Vec<String>` | The MSVC C runtime's argv split: backslashes are literal except before `"` (`2n` then `"` gives `n` and toggles quoting, `2n+1` gives `n` and a literal quote), `""` inside quotes is a literal quote, and only space, tab and line breaks separate. Use it for any Windows-written command line or response file. The POSIX split turns `C:\src\inc` into `C:srcinc`. |
 | `split_command_for_host` | `(cmd: &str) -> Vec<String>` | Picks one of the two splits by the driver word (looking past a compiler launcher): a Windows path or an `.exe` means the Windows split. |
 | `is_msvc_driver` | `(argv: &[String]) -> bool` | Whether an entry's driver is `cl`/`clang-cl` (behind a `ccache`/`sccache`/… launcher too) or is given `--driver-mode=cl`. This gates every `/`-spelled flag, so a POSIX path such as `/Users/x` is never read as `/U`. |
 | `expand_response_files` | `(argv, base: &Path, msvc: bool) -> Vec<String>` | Splices `@file` arguments in place, resolved against the entry directory. It decodes UTF-8, UTF-16LE (with or without a BOM) and UTF-16BE, cuts cycles, bounds nesting, and drops an unreadable file. |
+
+### `src/analyze/generated_headers.rs`
+**Problem solved:** a build's generated headers describe one configuration,
+and their facts must not reach code that configuration does not compile
+(`docs/design/generated-headers-and-configuration.md`). The scan builds two
+contexts from one prescan, the second (`ProjectContext::outside_configuration`)
+with these headers withheld, and analyses each file against the one its
+membership picks.
+
+| Item | Signature | Description |
+|---|---|---|
+| `GeneratedHeaders::recognise` | `(declared: &[String], db: Option<&CompileDb>, project_roots: &[String]) -> Result<Option<GeneratedHeaders>>` | The files under `--generated-include` directories and under database include directories inside an entry's `directory` and outside every project root, less byte-identical copies of project files. `None` when there are none. Refuses a declared directory inside a root. |
+| `Membership::of` | `(db: &CompileDb, include_edges) -> Membership` | The `.c` files the configuration compiles: the database's units, files they name in `#line`, and `.c` files they include. `contains(path)` answers per file. |
 
 ### `src/analyze/include_names.rs`
 **Problem solved:** finding the file an `#include` name refers to under the
@@ -338,6 +351,7 @@ Windows project scanned on Linux reaches the headers its build reaches.
 | `HeaderLookup::find_absolute` | `(&self, path: &Path) -> Option<HeaderMatch>` | The same for an absolute name, such as a forced include. |
 | `HeaderLookup::dir_exists` | `(&self, root: &Path, rel: &Path) -> bool` | Whether `rel` names a directory under `root`, under the same rule. |
 | `HeaderLookup::same_name` | `(&self, a: &str, b: &str) -> bool` | Whether two single file names match under the rule. |
+| `HeaderLookup::withholding` | `(&self, withheld: Arc<HashSet<PathBuf>>) -> HeaderLookup` | The same rule, finding none of `withheld` (canonical paths): a withheld match is no match and the search goes on. Builds the context of files outside a build configuration (`generated_headers`). |
 
 `prescan::find_header` applies a lookup over the include search order (the
 includer's directory, then each search path). `macro_gaps::include_case_gaps`

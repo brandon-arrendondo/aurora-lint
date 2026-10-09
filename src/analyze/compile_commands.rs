@@ -171,6 +171,10 @@ pub struct CompileDb {
     /// source files that *are* the declared configuration. A database lists
     /// compiled TUs only, so this never contains a header.
     pub configured_sources: HashSet<String>,
+    /// Each entry's working directory, absolute, first-seen order: where the
+    /// build ran. An include directory inside one of these and outside the
+    /// scanned tree is the build's own output (`generated_headers`).
+    pub entry_directories: Vec<String>,
     /// Whether any entry was built by cl or clang-cl. Such a build looks
     /// `#include` names up the way Windows does, ignoring case, so unless the
     /// settings say otherwise the scan does too.
@@ -211,9 +215,13 @@ impl CompileDb {
         let mut undefined: HashSet<String> = HashSet::new();
         let mut seen_defines: HashSet<String> = HashSet::new();
         let mut seen_forced: HashSet<String> = HashSet::new();
+        let mut seen_dirs: HashSet<String> = HashSet::new();
 
         for entry in entries {
             let base = Path::new(&entry.directory);
+            if seen_dirs.insert(entry.directory.clone()) {
+                db.entry_directories.push(entry.directory.clone());
+            }
             let argv = match (&entry.arguments, &entry.command) {
                 (Some(args), _) => args.clone(),
                 (None, Some(cmd)) => split_command_for_host(cmd),

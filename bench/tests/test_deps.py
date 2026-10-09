@@ -535,6 +535,15 @@ class TestBuild(unittest.TestCase):
         self.assertLess(tail.index("/g/build"), tail.index("/set/usr/include"))
         self.assertLess(tail.index("/c/include"), tail.index("/set/usr/include"))
 
+    def test_the_generated_tree_is_declared_to_the_scan(self):
+        cfg = {"path": Path("/c"), "sqc": {"manifest": rr.CODEBASES["lua"]["sqc"]["manifest"]}}
+        cmd = rr._build_sqc_cmd(cfg, Path("/out"), "rid", compile_db="/b/compile_commands.json",
+                                generated_root="/b/generated")
+        i = cmd.index("--generated-include")
+        self.assertEqual(cmd[i + 1], "/b/generated")
+        self.assertNotIn("--generated-include",
+                         rr._build_sqc_cmd(cfg, Path("/out"), "rid"))
+
     def test_a_cache_built_for_another_commit_or_environment_is_refused(self):
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)

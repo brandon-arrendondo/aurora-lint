@@ -321,6 +321,13 @@ fn run() -> Result<i32> {
                 .action(clap::ArgAction::Append),
         )
         .arg(
+            Arg::new("generated_includes")
+                .long("generated-include")
+                .help("Declare DIR a build tree whose headers the build generated for one configuration (repeatable). Their declarations, macro values and function bodies are applied only to the .c files that configuration compiles, as the compile database names them; every other file is analysed as if those headers were missing. Headers are still found through -I or the database; a database's own build-tree include directories outside the scanned tree are recognised without this flag")
+                .value_name("DIR")
+                .action(clap::ArgAction::Append),
+        )
+        .arg(
             Arg::new("compile_commands")
                 .long("compile-commands")
                 .help("Read include search paths, -D macros and the build's declared macro state from a compile_commands.json (optional; improves cross-file macro/header coverage, and resolves a name defined in several #if arms to the one this build compiles). Never suppresses findings by configuration")
@@ -626,6 +633,10 @@ fn run() -> Result<i32> {
         .unwrap_or_default();
     let mut include_paths: Vec<String> = matches
         .get_many::<String>("include_paths")
+        .map(|vals| vals.cloned().collect())
+        .unwrap_or_default();
+    let generated_includes: Vec<String> = matches
+        .get_many::<String>("generated_includes")
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
     // A compile database contributes its build's search paths *after* any
@@ -1019,6 +1030,7 @@ fn run() -> Result<i32> {
         jobs,
         report_macro_gaps.is_some(),
         &analysis_settings,
+        &generated_includes,
     )?;
 
     if std::env::var_os("AURORA_LINT_STEP_STATS").is_some() {

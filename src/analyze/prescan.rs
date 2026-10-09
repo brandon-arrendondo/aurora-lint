@@ -1647,6 +1647,7 @@ fn prescan_file_list(
         macro_operand_params: Arc::new(macro_operand_params),
         function_macro_arms: Arc::new(function_macro_arms),
         include_edges: Arc::new(HashMap::new()),
+        outside_configuration: None,
         include_edges_beyond_search_path: Arc::new(HashMap::new()),
         unused_attribute_macros: Arc::new(unused_attribute_macros),
         global_constants,

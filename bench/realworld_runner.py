@@ -775,7 +775,8 @@ def _build_sqc_cmd(cfg: dict, results_dir: Path, run_id: str,
                    profile: str = DEFAULT_PROFILE,
                    header_includes: list[str] | None = None,
                    header_spec: dict | None = None,
-                   deps_includes: list[str] | None = None) -> list[str]:
+                   deps_includes: list[str] | None = None,
+                   generated_root: str | None = None) -> list[str]:
     """The aurora-lint command line for one corpus. `header_includes` are
     appended -I flags (a tree that adds headers the host lacks, ventoy's
     Windows SDK); `header_spec` is a tree that 'replaces' a host prefix, and
@@ -783,7 +784,12 @@ def _build_sqc_cmd(cfg: dict, results_dir: Path, run_id: str,
     (bench/header_tree.py: substitute_includes). `deps_includes` are the -I
     flags of the corpus's dependency set (bench/deps.py): they replace every
     -I outside the checkout and go after the corpus's own, in a compiler's
-    order (project directories, then system ones)."""
+    order (project directories, then system ones). `generated_root` is the
+    materialized build cache's generated tree, declared to aurora-lint with
+    --generated-include: its headers then reach only the files the recipe's
+    build compiles (docs/design/generated-headers-and-configuration.md),
+    which an in-source build's relocated headers need, since nothing in the
+    database marks them as the build's."""
     path = str(cfg["path"])
     scan_path = cfg["sqc"].get("scan_path")
     scan_path = _expand([scan_path], path)[0] if scan_path else path
@@ -809,6 +815,8 @@ def _build_sqc_cmd(cfg: dict, results_dir: Path, run_id: str,
         cmd.extend(["-d", path])
     if compile_db:
         cmd.extend(["--compile-commands", compile_db])
+    if generated_root:
+        cmd.extend(["--generated-include", generated_root])
     cmd.extend(extra)
     cmd.extend(includes)
     cmd.extend(header_includes or [])
@@ -1832,7 +1840,10 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
                 include_args(header_spec) if header_spec and not replaces else None,
                 header_spec if replaces else None,
                 (_db_first_includes(compile_db) + deps_include_args(deps_decl))
-                if deps_decl else None)
+                if deps_decl else None,
+                # A database materialized from the build cache sits beside the
+                # headers that build generated (bench/deps.py materialize).
+                str(Path(compile_db).parent / "generated") if build_record else None)
             result_file = version_dir / f"{run_id}.json"
             proc = subprocess.run(cmd, stdout=log_fh, stderr=subprocess.STDOUT)
         elif tool == "cppcheck":

@@ -141,6 +141,34 @@ names in ``#include "x.c"`` that decide which ``.c`` files are compiled into
 another. A ``--save-prescan`` cache records the rule it was built under, and
 ``--load-prescan`` refuses it under the other one.
 
+Headers the Build Generated
+---------------------------
+
+A build generates some headers for the one configuration it was run in:
+declaration lists, inline accessors, configuration values. A ``.c`` file that
+configuration does not compile (another architecture's, an optional feature
+left off) was never meant to be read against them. aurora-lint applies a
+generated header's declarations, macro values and function bodies only to the
+``.c`` files the database's configuration compiles: its translation units,
+files one of them names in a ``#line`` directive, and ``.c`` files one of them
+``#include``\ s. Every other file is analysed as if the generated headers were
+missing, and the scan says how many::
+
+    Note: 21 build-generated header(s) recognised; 106 of 183 scanned .c files are
+    not compiled by the build configuration that generated them, and are analysed
+    as if those headers were missing.
+
+The headers are recognised without a flag when the database's include
+directories lie in its build tree (an entry's ``directory``) outside the
+scanned tree, as an out-of-source CMake build's do. An in-source build, or a
+generated tree the database does not mark, is declared with
+``--generated-include DIR`` (repeatable; the directory must be outside the
+scanned tree). A file there with the same bytes as a project file is a copy,
+and is treated as that project header. With no database there is no
+configuration to compile anything, so a declared tree is withheld from every
+file; with neither, nothing changes. The design and its reasons are in
+``docs/design/generated-headers-and-configuration.md``.
+
 Reaching the Compiler's Own Headers
 -----------------------------------
 

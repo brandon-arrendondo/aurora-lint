@@ -842,6 +842,13 @@ pub struct ProjectContext {
     /// behind [`UNRESOLVED_INCLUDE`]. [`IncludeClosure::of`] walks it.
     #[serde(default)]
     pub include_edges: Arc<HashMap<String, Vec<String>>>,
+    /// The context of a file the build configuration does not compile: built
+    /// from the same prescan with the build-generated headers withheld, so it
+    /// is exactly the context the scan would have had if they were missing
+    /// (`generated_headers`). `None` when the scan recognised none, and in
+    /// itself.
+    #[serde(default)]
+    pub outside_configuration: Option<Arc<ProjectContext>>,
     /// Edges `include_edges` leaves out: an include this run's search path
     /// can't resolve, to the project files whose path ends in its spelling
     /// (seL4's `<arch/machine.h>` without `-I include/arch/x86`), and onward
@@ -1398,11 +1405,13 @@ impl ProjectContext {
 /// macro constants are resolved with (`int_facts`) have no implicit value: a
 /// cache from before they were recorded took them from a data model alone.
 /// Before `closed_program` was recorded no caller set was closed by
-/// declaration.
+/// declaration. Before `generated_headers` was recorded no context was split
+/// around build-generated headers.
 pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
     ("include_names", "exact"),
     ("prescan_scope", ""),
     ("closed_program", "false"),
+    ("generated_headers", ""),
 ];
 
 /// Version of the prescan cache's serialized layout. Bump it with any change
