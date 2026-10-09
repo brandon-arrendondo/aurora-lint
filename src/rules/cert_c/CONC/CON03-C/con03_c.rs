@@ -337,8 +337,10 @@ impl Con03C {
                 };
                 // A prototype declares a function, not an object, and so does
                 // a bare name declared through a function-type typedef.
+                // A function cannot be initialized, so `= NULL` settles it.
                 if declares_function(&declarator)
-                    || self.declares_function_through_typedef(&decl_node, &declarator, source)
+                    || (!initialized
+                        && self.declares_function_through_typedef(&decl_node, &declarator, source))
                 {
                     continue;
                 }

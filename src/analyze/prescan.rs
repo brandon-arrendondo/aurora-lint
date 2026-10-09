@@ -6945,6 +6945,13 @@ fn collect_function_pointer_typedef_names(node: &Node, source: &str, names: &mut
 /// function, which nothing in the declaration's own syntax shows. A subset
 /// of `collect_function_pointer_typedef_names`' names, classified by
 /// `declarator_utils::declares_function`.
+///
+/// A `*` that only a macro supplies is invisible here: in
+/// `typedef void (GL_APIENTRYP PFNGLFOOPROC)(...)` the parse repair blanks
+/// the unknown `GL_APIENTRYP` (length-preserving), and the name reads as a
+/// function type. A consumer that sees an initializer knows it has an
+/// object, since a function cannot be initialized; without one, which the
+/// name declares is unknown (ADR-0006).
 fn collect_function_typedef_names(node: &Node, source: &str, names: &mut HashSet<String>) {
     for child in node.child_nodes() {
         match child.kind() {
