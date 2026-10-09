@@ -19,13 +19,14 @@
 //!
 //! - **Which headers are generated.** Every file under a directory given with
 //!   `--generated-include` (R1), and under each compile-database include
-//!   directory that lies inside an entry's working directory -- the build
-//!   tree -- and outside every project root (R2), except a byte-identical
+//!   directory that lies inside the working directory of an entry compiling
+//!   a file outside it, or compiling a unit there that names sources outside
+//!   it -- an out-of-source build tree -- and outside every project root (R2), except a byte-identical
 //!   copy of a project file, which is that project header.
 //! - **Which `.c` files the configuration compiles.** The database's
 //!   translation units, files one of them names in a `#line` directive (a
 //!   build that concatenates its sources into one generated unit), and `.c`
-//!   files one of them `#include`s.
+//!   files one of them `#include`s (a unity build).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -82,10 +83,21 @@ impl GeneratedHeaders {
             dirs.push(dir.clone());
         }
         if let Some(db) = db {
+            // A directory is a build tree when an entry run there compiles a
+            // file elsewhere, or compiles a unit it generated that names
+            // sources elsewhere (a concatenated or unity build).
+            let generated_unit_dirs = db.in_place_units.iter().filter_map(|(dir, file)| {
+                let dir = canonical(Path::new(dir));
+                unit_named_sources(Path::new(file))
+                    .iter()
+                    .any(|named| !Path::new(named).starts_with(&dir))
+                    .then_some(dir)
+            });
             let build_trees: Vec<PathBuf> = db
-                .entry_directories
+                .build_trees
                 .iter()
                 .map(|d| canonical(Path::new(d)))
+                .chain(generated_unit_dirs)
                 .filter(|d| !under_a_root(d))
                 .collect();
             for inc in &db.include_paths {
@@ -194,7 +206,7 @@ impl Membership {
     ) -> Self {
         let mut members: HashSet<String> = db.configured_sources.clone();
         for tu in &db.configured_sources {
-            for named in line_directive_files(Path::new(tu)) {
+            for named in unit_named_sources(Path::new(tu)) {
                 members.insert(named);
             }
         }
@@ -219,45 +231,56 @@ impl Membership {
     }
 }
 
-/// The files a source names in `#line N "file"` directives, by real path,
-/// relative names read against the source's own directory. A build that
-/// concatenates its sources into one generated unit marks each with one.
-fn line_directive_files(tu: &Path) -> Vec<String> {
+/// The files a translation unit names in `#line N "file"` directives, and
+/// the `.c` files it names in a quoted `#include`, by real path; relative
+/// names are read against the unit's own directory. A build that
+/// concatenates its sources into one generated unit marks each with a
+/// `#line`, and a unity build joins them by `#include`. Read from the unit
+/// itself because a generated unit lies outside the scanned tree, so the
+/// scan never parses it for include edges.
+fn unit_named_sources(tu: &Path) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(tu) else {
         return Vec::new();
     };
     let dir = tu.parent().unwrap_or(Path::new("."));
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let Some(rest) = line.trim_start().strip_prefix('#') else {
-            continue;
-        };
-        let Some(rest) = rest.trim_start().strip_prefix("line") else {
-            continue;
-        };
-        let mut parts = rest.trim_start().splitn(2, char::is_whitespace);
-        if !parts
-            .next()
-            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-        {
-            continue;
-        }
-        let Some(name) = parts
-            .next()
-            .map(str::trim)
-            .and_then(|r| r.strip_prefix('"'))
-            .and_then(|r| r.split('"').next())
-        else {
-            continue;
-        };
+    let resolve = |name: &str| {
         let path = Path::new(name);
         let path = if path.is_absolute() {
             path.to_path_buf()
         } else {
             dir.join(path)
         };
-        if path.is_file() {
-            out.push(real_path(&path));
+        path.is_file().then(|| real_path(&path))
+    };
+    let quoted = |rest: &str| {
+        rest.trim()
+            .strip_prefix('"')
+            .and_then(|r| r.split('"').next())
+            .map(str::to_string)
+    };
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Some(rest) = line.trim_start().strip_prefix('#') else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        if let Some(rest) = rest.strip_prefix("line") {
+            let mut parts = rest.trim_start().splitn(2, char::is_whitespace);
+            if !parts
+                .next()
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            {
+                continue;
+            }
+            if let Some(found) = parts.next().and_then(quoted).and_then(|n| resolve(&n)) {
+                out.push(found);
+            }
+        } else if let Some(rest) = rest.strip_prefix("include") {
+            if let Some(name) = quoted(rest).filter(|n| n.ends_with(".c")) {
+                if let Some(found) = resolve(&name) {
+                    out.push(found);
+                }
+            }
         }
     }
     out
@@ -285,7 +308,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let mut found = line_directive_files(&tu);
+        let mut found = unit_named_sources(&tu);
         found.sort();
         let mut want = vec![
             real_path(&dir.path().join("a.c")),
@@ -293,6 +316,26 @@ mod tests {
         ];
         want.sort();
         assert_eq!(found, want);
+    }
+
+    #[test]
+    fn a_unity_unit_names_the_sources_it_includes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.c"), "int a;\n").unwrap();
+        std::fs::write(dir.path().join("a.h"), "int h;\n").unwrap();
+        let tu = dir.path().join("unity.c");
+        std::fs::write(
+            &tu,
+            format!(
+                "/* generated */\n#include \"{}\"\n#include \"a.h\"\n#include <b.c>\n",
+                dir.path().join("a.c").display()
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            unit_named_sources(&tu),
+            vec![real_path(&dir.path().join("a.c"))]
+        );
     }
 
     #[test]
@@ -311,7 +354,7 @@ mod tests {
                     .into_owned(),
                 build.path().join("gen").to_string_lossy().into_owned(),
             ],
-            entry_directories: vec![build.path().to_string_lossy().into_owned()],
+            build_trees: vec![build.path().to_string_lossy().into_owned()],
             ..Default::default()
         };
         let roots = vec![project.path().to_string_lossy().into_owned()];
@@ -346,8 +389,8 @@ mod tests {
 
     #[test]
     fn an_in_source_build_declares_nothing_by_itself() {
-        // The entry directory is the project: its include directories are the
-        // project's own, never generated by R2.
+        // An entry compiling a file inside its own directory declares no
+        // build tree: its include directories are never generated by R2.
         let project = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(project.path().join("include")).unwrap();
         std::fs::write(project.path().join("include/x.h"), "int x;\n").unwrap();
@@ -357,7 +400,7 @@ mod tests {
                 .join("include")
                 .to_string_lossy()
                 .into_owned()],
-            entry_directories: vec![project.path().to_string_lossy().into_owned()],
+            build_trees: vec![],
             ..Default::default()
         };
         let roots = vec![project.path().to_string_lossy().into_owned()];

@@ -159,8 +159,9 @@ missing, and the scan says how many::
     as if those headers were missing.
 
 The headers are recognised without a flag when the database's include
-directories lie in its build tree (an entry's ``directory``) outside the
-scanned tree, as an out-of-source CMake build's do. An in-source build, or a
+directories lie in its build tree outside the scanned tree, as an
+out-of-source CMake build's do: a ``directory`` whose entry compiles a file
+located elsewhere. An in-source build, or a
 generated tree the database does not mark, is declared with
 ``--generated-include DIR`` (repeatable; the directory must be outside the
 scanned tree). A file there with the same bytes as a project file is a copy,

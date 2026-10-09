@@ -171,10 +171,18 @@ pub struct CompileDb {
     /// source files that *are* the declared configuration. A database lists
     /// compiled TUs only, so this never contains a header.
     pub configured_sources: HashSet<String>,
-    /// Each entry's working directory, absolute, first-seen order: where the
-    /// build ran. An include directory inside one of these and outside the
-    /// scanned tree is the build's own output (`generated_headers`).
-    pub entry_directories: Vec<String>,
+    /// The working directories of entries that compile a file outside them,
+    /// first-seen order: an out-of-source build's build trees. An entry run
+    /// in the directory holding its source (an in-source build, a vendored
+    /// library built where it lies) declares no build tree. An include
+    /// directory inside one of these and outside the scanned tree is the
+    /// build's own output (`generated_headers`).
+    pub build_trees: Vec<String>,
+    /// (directory, file) of each entry compiling a file inside its own
+    /// directory, both absolute: an in-source build's units, and a generated
+    /// unit compiled in its build tree. `generated_headers` reads the latter
+    /// for the sources it names elsewhere.
+    pub in_place_units: Vec<(String, String)>,
     /// Whether any entry was built by cl or clang-cl. Such a build looks
     /// `#include` names up the way Windows does, ignoring case, so unless the
     /// settings say otherwise the scan does too.
@@ -219,8 +227,18 @@ impl CompileDb {
 
         for entry in entries {
             let base = Path::new(&entry.directory);
-            if seen_dirs.insert(entry.directory.clone()) {
-                db.entry_directories.push(entry.directory.clone());
+            let builds_elsewhere = entry
+                .file
+                .as_ref()
+                .is_some_and(|f| !absolutize(base, f).starts_with(base));
+            if builds_elsewhere && seen_dirs.insert(entry.directory.clone()) {
+                db.build_trees.push(entry.directory.clone());
+            }
+            if let Some(file) = entry.file.as_ref().filter(|_| !builds_elsewhere) {
+                db.in_place_units.push((
+                    entry.directory.clone(),
+                    absolutize(base, file).to_string_lossy().into_owned(),
+                ));
             }
             let argv = match (&entry.arguments, &entry.command) {
                 (Some(args), _) => args.clone(),

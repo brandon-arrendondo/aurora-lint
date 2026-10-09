@@ -318,7 +318,7 @@ syntax. `docs/cli-usage.rst` describes the user-facing behaviour.
 
 | Item | Signature | Description |
 |---|---|---|
-| `CompileDb::load` | `(path: &Path) -> Result<CompileDb>` | The distilled database: `include_paths`, `defines`, `undefines`, `forced_includes` (cl's `/FI`), `compilers`, `configured_sources`, `entry_directories` (where the build ran), and `msvc` (any entry built by cl), which makes `#include` matching case-insensitive unless the settings say otherwise. Flags are unioned across entries, not scoped per TU. |
+| `CompileDb::load` | `(path: &Path) -> Result<CompileDb>` | The distilled database: `include_paths`, `defines`, `undefines`, `forced_includes` (cl's `/FI`), `compilers`, `configured_sources`, `build_trees` (directories of entries that compile a file outside them), and `msvc` (any entry built by cl), which makes `#include` matching case-insensitive unless the settings say otherwise. Flags are unioned across entries, not scoped per TU. |
 | `split_command` | `(cmd: &str) -> Vec<String>` | POSIX-shell-ish argv split: single and double quotes, backslash escapes. |
 | `split_command_windows` | `(cmd: &str) -> Vec<String>` | The MSVC C runtime's argv split: backslashes are literal except before `"` (`2n` then `"` gives `n` and toggles quoting, `2n+1` gives `n` and a literal quote), `""` inside quotes is a literal quote, and only space, tab and line breaks separate. Use it for any Windows-written command line or response file. The POSIX split turns `C:\src\inc` into `C:srcinc`. |
 | `split_command_for_host` | `(cmd: &str) -> Vec<String>` | Picks one of the two splits by the driver word (looking past a compiler launcher): a Windows path or an `.exe` means the Windows split. |
@@ -335,7 +335,7 @@ membership picks.
 
 | Item | Signature | Description |
 |---|---|---|
-| `GeneratedHeaders::recognise` | `(declared: &[String], db: Option<&CompileDb>, project_roots: &[String]) -> Result<Option<GeneratedHeaders>>` | The files under `--generated-include` directories and under database include directories inside an entry's `directory` and outside every project root, less byte-identical copies of project files. `None` when there are none. Refuses a declared directory inside a root. |
+| `GeneratedHeaders::recognise` | `(declared: &[String], db: Option<&CompileDb>, project_roots: &[String]) -> Result<Option<GeneratedHeaders>>` | The files under `--generated-include` directories and under database include directories inside an out-of-source build tree (`build_trees`) and outside every project root, less byte-identical copies of project files. `None` when there are none. Refuses a declared directory inside a root. |
 | `Membership::of` | `(db: &CompileDb, include_edges) -> Membership` | The `.c` files the configuration compiles: the database's units, files they name in `#line`, and `.c` files they include. `contains(path)` answers per file. |
 
 ### `src/analyze/include_names.rs`

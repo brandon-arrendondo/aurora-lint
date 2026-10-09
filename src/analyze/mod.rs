@@ -322,9 +322,7 @@ pub fn analyze_project(
         project_source.get_root_path(),
         &inside,
     );
-    if let (Some(generated), Some(outside_context)) =
-        (&generated, context.outside_configuration.as_deref())
-    {
+    if let Some(generated) = &generated {
         let sources = |files: &[String]| files.iter().filter(|f| f.ends_with(".c")).count();
         eprintln!(
             "Note: {} build-generated header(s) recognised; {} of {} scanned .c files are \
@@ -334,6 +332,8 @@ pub fn analyze_project(
             sources(&outside),
             sources(&c_files),
         );
+    }
+    if let Some(outside_context) = context.outside_configuration.as_deref() {
         warn_stand_downs(
             &registry,
             manifest,
@@ -774,17 +774,15 @@ fn load_project_context(
     // compiles, and one with the generated headers withheld for every other
     // file -- the context it would have had if they were missing
     // (`generated_headers`). A cache saved split carries both.
+    // The copy is cheap (the tables are shared until written); the second
+    // resolution below runs only if some scanned file needs it.
     let mut outside = match generated {
         None => None,
         Some(_) if load_prescan.is_none() => Some(context.clone()),
-        Some(_) => match context.outside_configuration.take() {
-            Some(saved) => Some(Arc::unwrap_or_clone(saved)),
-            None => anyhow::bail!(
-                "prescan cache {} holds no context for files outside the build \
-                 configuration; re-create it with --save-prescan",
-                load_prescan.unwrap_or_default()
-            ),
-        },
+        Some(_) => context
+            .outside_configuration
+            .take()
+            .map(Arc::unwrap_or_clone),
     };
     let withholding = generated.map(|g| header_lookup.withholding(Arc::clone(&g.files)));
 
@@ -819,6 +817,25 @@ fn load_project_context(
             header_lookup,
             &scoped_out,
         )?;
+        // Only a file the configuration does not compile reads the second
+        // context; when every scanned source is compiled, there is none.
+        if generated.is_some() {
+            let membership = compile_db.map_or_else(generated_headers::Membership::default, |db| {
+                generated_headers::Membership::of(db, &context.include_edges)
+            });
+            let needed = c_files
+                .iter()
+                .any(|f| f.ends_with(".c") && !membership.contains(std::path::Path::new(f)));
+            if !needed {
+                outside = None;
+            } else if outside.is_none() {
+                anyhow::bail!(
+                    "prescan cache {} holds no context for files outside the build \
+                     configuration; re-create it with --save-prescan",
+                    load_prescan.unwrap_or_default()
+                );
+            }
+        }
         if let (Some(outside), Some(lookup)) = (outside.as_mut(), withholding.as_ref()) {
             prescan::resolve_includes_scoped(
                 &c_files,
