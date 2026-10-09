@@ -928,6 +928,33 @@ _LINE_MARKER = re.compile(
     r'^([ \t]*#[ \t]*(?:(?:line[ \t]+)?\d+|include)[ \t]+")([^"\n]*)(")', re.M)
 
 
+# A directive split over lines with a backslash continuation is not matched,
+# and keeps the path it was written with; build systems do not write them.
+
+
+def directive_paths(text: str) -> list[str]:
+    """Every path a unit's line markers and quoted includes name, in order."""
+    return [m.group(2) for m in _LINE_MARKER.finditer(text)]
+
+
+def resolve_unit_path(token: str, corpus: str, root: Path, units: set[str]) -> str:
+    """A tokenized path as this machine's file: a kept generated unit
+    (`units`: its 'build/<rel>' or 'src/<rel>' keys) at root/units/...,
+    any other build-tree file at root/generated/build/..., a header the
+    build generated into its checkout copy at root/generated/src/..., and
+    the checkout's own files under `corpus`. Anything else as written."""
+    for prefix, key in (("${GEN}/build/", "build/"), ("${GEN}/src/", "src/"),
+                        ("${CORPUS}/", "src/")):
+        if token.startswith(prefix):
+            rel = token[len(prefix):]
+            if key + rel in units:
+                return str(root / UNITS_DIR / key / rel)
+            if prefix == "${CORPUS}/":
+                return f"{corpus}/{rel}"
+            return str(root / "generated" / key / rel)
+    return token
+
+
 def tokenize_line_markers(text: str, corpus: str, build: str,
                           generated_src: set[str] = frozenset()) -> str:
     """A generated unit's line markers and quoted includes with the paths of
@@ -1014,15 +1041,24 @@ def materialize(decl: dict, corpus_path, cache_dir, bench_root=None,
     def sub(v: str) -> str:
         return v.replace("${CORPUS}", corpus_s).replace("${GEN}", gen_s)
 
-    db = [{"directory": sub(e["directory"]), "file": sub(e["file"]),
+    units = set(unit_files)
+
+    def resolve(token: str) -> str:
+        return resolve_unit_path(token, corpus_s, root, units)
+
+    # An entry compiling a kept generated unit names it where it is written
+    # below, so every entry's file exists here.
+    db = [{"directory": sub(e["directory"]), "file": resolve(e["file"]),
            "arguments": [sub(a) for a in e["arguments"]]} for e in entries]
-    # Generated units, their line markers naming this machine's files. Not
-    # under any directory the database searches: scans do not read them.
+    # Generated units, the paths their directives name resolved to this
+    # machine's files; nothing else in their text is touched. Not under any
+    # directory the database searches: scans do not read them.
     for rel, data in unit_files.items():
         out = root / UNITS_DIR / rel
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(sub(data.decode("utf-8", "surrogateescape")),
-                       encoding="utf-8", errors="surrogateescape")
+        text = _LINE_MARKER.sub(lambda m: m.group(1) + resolve(m.group(2)) + m.group(3),
+                                data.decode("utf-8", "surrogateescape"))
+        out.write_text(text, encoding="utf-8", errors="surrogateescape")
     path = root / "compile_commands.json"
     path.write_text(json.dumps(db, indent=1))
     return path, record

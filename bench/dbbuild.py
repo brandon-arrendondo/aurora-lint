@@ -68,31 +68,38 @@ def install(decl: dict) -> None:
           *pins, *decl["build"].get("apt", [])])
 
 
-def generated_files(src: Path, build: Path) -> dict[str, Path]:
+def untracked_files(src: Path) -> set[str]:
+    """Files in the build's checkout copy that git does not track: what the
+    build wrote there."""
+    return set(subprocess.run(
+        ["git", "-C", str(src), "ls-files", "--others", "-z"],
+        capture_output=True, check=True).stdout.decode().split("\0")) - {""}
+
+
+def generated_files(src: Path, build: Path, untracked: set[str] | None = None) -> dict[str, Path]:
     """{'build/<rel>' or 'src/<rel>': path} for each header the build made."""
     out = {}
     for p in sorted(build.rglob("*")):
         if p.is_file() and p.suffix in HEADER_SUFFIXES:
             out[f"build/{p.relative_to(build).as_posix()}"] = p
-    untracked = subprocess.run(
-        ["git", "-C", str(src), "ls-files", "--others", "-z"],
-        capture_output=True, check=True).stdout.decode().split("\0")
-    for rel in sorted(r for r in untracked if r):
+    if untracked is None:
+        untracked = untracked_files(src)
+    for rel in sorted(untracked):
         p = src / rel
         if p.is_file() and p.suffix in HEADER_SUFFIXES:
             out[f"src/{rel}"] = p
     return out
 
 
-def generated_units(template: list[dict], src: Path, build: Path) -> tuple[dict[str, Path], list[str]]:
+def generated_units(template: list[dict], src: Path, build: Path,
+                    untracked: set[str] | None = None) -> tuple[dict[str, Path], list[str]]:
     """The generated translation units the database compiles, as
     ({'build/<rel>' or 'src/<rel>': path}, [names it lists that the build
     did not leave behind]): an entry's file under ${GEN}/build, or under
     ${CORPUS} where git does not track it. Kept so a later step can read
     what such a unit joins (its #line markers); scans do not read them."""
-    untracked = set(subprocess.run(
-        ["git", "-C", str(src), "ls-files", "--others", "-z"],
-        capture_output=True, check=True).stdout.decode().split("\0")) - {""}
+    if untracked is None:
+        untracked = untracked_files(src)
     units, gone = {}, set()
     for e in template:
         f = e["file"]
@@ -109,6 +116,34 @@ def generated_units(template: list[dict], src: Path, build: Path) -> tuple[dict[
         else:
             gone.add(key)
     return dict(sorted(units.items())), sorted(gone)
+
+
+def unresolved_unit_paths(units_dir: Path, headers: set[str], units: set[str],
+                          untracked: set[str]) -> dict[str, list[str]]:
+    """{unit: [paths]} for each path a kept unit's directives name that the
+    cache cannot supply on another machine: a build-tree file that is
+    neither a kept header nor a kept unit, or a file the build wrote into
+    its checkout copy that is neither. Recorded so a step mapping units to
+    the sources they join knows what it cannot see, instead of losing it."""
+    out = {}
+    for rel in sorted(units):
+        missing = set()
+        for token in deps.directive_paths((units_dir / rel).read_text(errors="surrogateescape")):
+            if token.startswith("${GEN}/build/"):
+                key = "build/" + token[len("${GEN}/build/"):]
+                ok = key in headers or key in units
+            elif token.startswith("${GEN}/src/"):
+                ok = "src/" + token[len("${GEN}/src/"):] in headers
+            elif token.startswith("${CORPUS}/"):
+                r = token[len("${CORPUS}/"):]
+                ok = r not in untracked or f"src/{r}" in units or f"src/{r}" in headers
+            else:
+                ok = True
+            if not ok:
+                missing.add(token)
+        if missing:
+            out[rel] = sorted(missing)
+    return out
 
 
 def build(project: str, corpus_dir: Path, cache_dir: Path, env_pin: str) -> dict:
@@ -133,10 +168,11 @@ def build(project: str, corpus_dir: Path, cache_dir: Path, env_pin: str) -> dict
     db_path = Path(decl["build"]["db"].replace("$SRC", str(src)).replace("$BUILD", str(bld)))
     dropped: set = set()
     template = deps.normalize_db(json.loads(db_path.read_text()), str(src), str(bld), dropped)
-    gen = generated_files(src, bld)
+    untracked = untracked_files(src)
+    gen = generated_files(src, bld, untracked)
     overlay = {k[len("src/"):] for k in gen if k.startswith("src/")}
     template = deps.overlay_source_dirs(template, overlay)
-    units, units_gone = generated_units(template, src, bld)
+    units, units_gone = generated_units(template, src, bld, untracked)
 
     # A fresh directory only: `bench container-build-db` names a temporary
     # one and swaps it in, so a cache a scan may be reading is never
@@ -172,6 +208,8 @@ def build(project: str, corpus_dir: Path, cache_dir: Path, env_pin: str) -> dict
               "entries": len(template), "generated": keep(gen, "generated"),
               "generated_units": keep(units, deps.UNITS_DIR, tokenize),
               "generated_units_not_kept": units_gone,
+              "generated_units_unresolved": unresolved_unit_paths(
+                  cache_dir / deps.UNITS_DIR, set(gen), set(units), untracked),
               "dropped_include_dirs": sorted(dropped)}
     (cache_dir / "cache.json").write_text(json.dumps(record, indent=1, sort_keys=True) + "\n")
     return record

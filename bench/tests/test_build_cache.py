@@ -244,6 +244,54 @@ class GeneratedUnitsTest(unittest.TestCase):
             # Outside every directory the database searches.
             self.assertNotIn(str(root / deps.UNITS_DIR), db.read_text())
 
+    def test_every_database_entry_names_an_existing_file_after_materialize(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            corpus = td / "corpus"
+            (corpus / "src").mkdir(parents=True)
+            (corpus / "src" / "a.c").write_text("int a;\n")
+            cache = td / "c"
+            (cache / "generated").mkdir(parents=True)
+            entries = [{"directory": "${CORPUS}", "file": f, "arguments": ["cc", "-c", f]}
+                       for f in ("${CORPUS}/src/a.c", "${GEN}/build/kernel_all.c",
+                                 "${CORPUS}/parse.c")]
+            units = {"build/kernel_all.c": ('#line 1 "${GEN}/build/kernel_all.c"\n'
+                                            '#include "${CORPUS}/parse.c"\n'
+                                            '#line 9 "${CORPUS}/src/a.c"\n'
+                                            'const char *k = "${GEN} stays";\n').encode(),
+                     "src/parse.c": b"int parse;\n"}
+            body = json.dumps(entries).encode()
+            (cache / "compile_commands.json").write_bytes(body)
+            for rel, data in units.items():
+                (cache / deps.UNITS_DIR / rel).parent.mkdir(parents=True, exist_ok=True)
+                (cache / deps.UNITS_DIR / rel).write_bytes(data)
+            (cache / "cache.json").write_text(json.dumps({
+                "format": deps.BUILD_CACHE_FORMAT, "recipe_sha256": deps.recipe_sha256(DECL),
+                "db_sha256": hashlib.sha256(body).hexdigest(), "generated": {},
+                "generated_units": {r: hashlib.sha256(d).hexdigest() for r, d in units.items()}}))
+            db, _ = deps.materialize(DECL, corpus, cache, td / "bench")
+            root = db.parent
+            for e in json.loads(db.read_text()):
+                self.assertTrue(Path(e["file"]).is_file(), e["file"])
+            text = (root / deps.UNITS_DIR / "build" / "kernel_all.c").read_text()
+            self.assertIn(f'#line 1 "{root / deps.UNITS_DIR}/build/kernel_all.c"', text)
+            self.assertIn(f'#include "{root / deps.UNITS_DIR}/src/parse.c"', text)
+            self.assertIn(f'#line 9 "{corpus}/src/a.c"', text)
+            self.assertIn('"${GEN} stays"', text)   # only directives are rewritten
+
+    def test_paths_the_cache_cannot_supply_are_recorded_as_unresolved(self):
+        from bench import dbbuild
+        with tempfile.TemporaryDirectory() as td:
+            units_dir = Path(td)
+            (units_dir / "build").mkdir()
+            (units_dir / "build" / "u.c").write_text(
+                '#line 1 "${GEN}/build/kept.h"\n#line 2 "${GEN}/build/lost.c"\n'
+                '#line 3 "${CORPUS}/tracked.c"\n#line 4 "${CORPUS}/written.c"\n'
+                '#line 5 "/usr/include/stdio.h"\n')
+            out = dbbuild.unresolved_unit_paths(units_dir, {"build/kept.h"}, {"build/u.c"},
+                                                {"written.c"})
+        self.assertEqual(out, {"build/u.c": ["${CORPUS}/written.c", "${GEN}/build/lost.c"]})
+
     def test_a_tampered_unit_fails_the_check(self):
         with tempfile.TemporaryDirectory() as td:
             cache, _ = self._cache_with_unit(td)
