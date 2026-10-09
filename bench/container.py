@@ -212,6 +212,11 @@ def build_db(project: str, image: str = DEFAULT_IMAGE,
     and the cache is left as it was."""
     from bench import deps
     from bench.realworld_runner import CODEBASES, _get_codebase_sha
+    for name, value in (("--jobs", jobs), ("--pids-limit", pids_limit), ("--timeout", timeout_s)):
+        if value is not None and value < 1:
+            # nproc ignores a non-positive OMP_NUM_THREADS and runs uncapped.
+            print(f"container-build-db: {name} must be at least 1, not {value}")
+            return 2
     if shutil.which(runtime) is None:
         print(f"container-build-db: '{runtime}' is not installed")
         return 2
@@ -265,18 +270,28 @@ def build_db(project: str, image: str = DEFAULT_IMAGE,
                                bench_root=bench_root, out_name=tmp.name, jobs=jobs,
                                pids_limit=pids_limit)
         timeout = timeout_s or BUILD_TIMEOUT_S
+        finished = False
         try:
             rc = subprocess.run(cmd, timeout=timeout).returncode
+            finished = True
         except subprocess.TimeoutExpired:
-            # The runtime's client is killed, not the container: remove it
-            # by name, so nothing goes on writing the temporary directory.
-            subprocess.run([runtime, "rm", "-f", "-t", "0", build_container_name(project)],
-                           capture_output=True)
             print(f"container-build-db: {project}'s build did not finish in {timeout}s "
                   f"and was stopped; the cache at {cache} is unchanged. Raise "
                   f"--timeout or AURORA_BENCH_BUILD_TIMEOUT if the build is just slow.")
-            shutil.rmtree(tmp, ignore_errors=True)
             return 1
+        finally:
+            if not finished:
+                # Timed out or interrupted: the runtime's client is gone, not
+                # the container. Remove it by name, so nothing goes on
+                # writing the temporary directory, then discard that.
+                rm = subprocess.run([runtime, "rm", "-f", "-t", "0",
+                                     build_container_name(project)],
+                                    capture_output=True, text=True)
+                if rm.returncode != 0:
+                    print(f"container-build-db: could not remove container "
+                          f"{build_container_name(project)} (exit {rm.returncode}): "
+                          f"{rm.stderr.strip()}")
+                shutil.rmtree(tmp, ignore_errors=True)
         try:
             if rc == 0:
                 deps.check_cache(decl, tmp, commit, pin)

@@ -163,6 +163,29 @@ class BuildCacheTest(unittest.TestCase):
         self.assertEqual((self.cache / "generated" / "build" / "config.h").read_bytes(), b"old\n")
         self.assertFalse(any(".tmp-" in p.name for p in self.cache.parent.iterdir()))
 
+    def test_an_interrupted_build_removes_its_container_too(self):
+        calls = []
+
+        def interrupted(cmd, **kw):
+            calls.append(cmd)
+            if cmd[0] == "build":
+                (self.cache.parent / cmd[1]).mkdir()
+                raise KeyboardInterrupt
+            return mock.Mock(returncode=1, stderr="no such container")
+        with mock.patch.object(container.subprocess, "run", side_effect=interrupted), \
+             mock.patch("builtins.print") as out:
+            with self.assertRaises(KeyboardInterrupt):
+                self.build()
+        self.assertEqual(calls[1][:3], ["podman", "rm", "-f"])
+        self.assertTrue(any("could not remove container" in str(c) for c in out.call_args_list))
+        self.assertFalse(any(".tmp-" in p.name for p in self.cache.parent.iterdir()))
+
+    def test_limits_below_one_are_refused(self):
+        for kw in ({"jobs": 0}, {"jobs": -4}, {"pids_limit": 0}, {"timeout_s": -1}):
+            with mock.patch("builtins.print"):
+                self.assertEqual(self.build(**kw), 2, kw)
+        self.assertEqual(self.builds, [])
+
     def test_concurrent_builders_build_once(self):
         results = []
         threads = [threading.Thread(target=lambda: results.append(self.build()))
