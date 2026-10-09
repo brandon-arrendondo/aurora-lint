@@ -620,10 +620,15 @@ context is kept. When no C file changed, the run prints
 <section id="project-relevance-detection">
 <h2>Project-Relevance Detection<a class="headerlink" href="#project-relevance-detection" title="Link to this heading"></a></h2>
 <p>For a codebase with no tailored manifest, <code class="docutils literal notranslate"><span class="pre">--detect-relevance</span></code> scans PATH
-(and any <code class="docutils literal notranslate"><span class="pre">-d</span></code> directories) for evidence of threading (<code class="docutils literal notranslate"><span class="pre">pthread</span></code>,
-<code class="docutils literal notranslate"><span class="pre">&lt;threads.h&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">_Atomic</span></code>) and Windows API usage, then generates a
-manifest with the categorically-inapplicable rule classes disabled
-(<code class="docutils literal notranslate"><span class="pre">CON*</span></code> if no threading evidence, <code class="docutils literal notranslate"><span class="pre">WIN*</span></code> if no Windows API evidence).
+(and any <code class="docutils literal notranslate"><span class="pre">-d</span></code> directories) for evidence of thread or atomic APIs
+(<code class="docutils literal notranslate"><span class="pre">pthread</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;threads.h&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">_Atomic</span></code>) and Windows API usage, then
+generates a manifest with the categorically-inapplicable <code class="docutils literal notranslate"><span class="pre">WIN*</span></code> rule class
+disabled when there is no Windows API evidence. The <code class="docutils literal notranslate"><span class="pre">CON*</span></code> rules are never
+disabled: no thread or atomic API does not mean no concurrency, since
+interrupt or signal handlers are not looked for and are what share state on
+bare-metal firmware. The output reports the threading finding and says so,
+and the generated <code class="docutils literal notranslate"><span class="pre">CON*</span></code> entries carry an <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">info:</span></code> comment when none was
+found.
 It never runs an analysis itself — pair it with <code class="docutils literal notranslate"><span class="pre">--write-manifest</span></code> to
 save the generated manifest, then pass that manifest to a normal scan via
 <code class="docutils literal notranslate"><span class="pre">-m</span></code>:</p>

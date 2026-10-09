@@ -542,10 +542,15 @@ Project-Relevance Detection
 ----------------------------
 
 For a codebase with no tailored manifest, ``--detect-relevance`` scans PATH
-(and any ``-d`` directories) for evidence of threading (``pthread``,
-``<threads.h>``, ``_Atomic``) and Windows API usage, then generates a
-manifest with the categorically-inapplicable rule classes disabled
-(``CON*`` if no threading evidence, ``WIN*`` if no Windows API evidence).
+(and any ``-d`` directories) for evidence of thread or atomic APIs
+(``pthread``, ``<threads.h>``, ``_Atomic``) and Windows API usage, then
+generates a manifest with the categorically-inapplicable ``WIN*`` rule class
+disabled when there is no Windows API evidence. The ``CON*`` rules are never
+disabled: no thread or atomic API does not mean no concurrency, since
+interrupt or signal handlers are not looked for and are what share state on
+bare-metal firmware. The output reports the threading finding and says so,
+and the generated ``CON*`` entries carry an ``# info:`` comment when none was
+found.
 It never runs an analysis itself — pair it with ``--write-manifest`` to
 save the generated manifest, then pass that manifest to a normal scan via
 ``-m``:
