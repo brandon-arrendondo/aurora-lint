@@ -121,6 +121,15 @@ def cmd_realworld_run(args):
         print(f"--dirs-out: {args.dirs_out.parent} is not a directory")
         raise SystemExit(2)
 
+    # Refused before any scan: every tool's run id names aurora-lint's commit.
+    from bench.config import require_known_commit
+    from bench.realworld_runner import _get_git_sha
+    try:
+        require_known_commit(_get_git_sha(), "bench realworld-run")
+    except ValueError as e:
+        print(e)
+        raise SystemExit(2)
+
     print(f"Running {'+'.join(tools)} against {len(codebases)} codebase(s): "
           f"{', '.join(codebases)}\n")
     summary = run_and_ingest(tools, codebases, compile_commands=args.compile_commands,

@@ -22,8 +22,8 @@ from bench.analyzer import analyze_shard, merge_shards
 from bench.config import (
     DEFAULT_JOBS, DEFAULT_PROFILE, GENERATE_MAP_SCRIPT, JULIET_BASE,
     MANIFEST_JULIET_FULL, MANIFEST_CWE_DIR, PROJECT_DIR, RULE_CWE_MAP, SQC_BIN,
-    JULIET_COMPILE_DB, JULIET_SETTING_OVERRIDES, juliet_run_id, juliet_settings,
-    settings_column,
+    JULIET_COMPILE_DB, JULIET_SETTING_OVERRIDES, aurora_lint_commit, juliet_run_id,
+    juliet_settings, require_known_commit, settings_column,
 )
 from bench.db import BenchDB
 from bench.machine import get_machine_metadata
@@ -51,17 +51,9 @@ def _get_sqc_version() -> str:
 
 
 def _get_git_sha() -> str:
-    """Get short git commit SHA."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True,
-            cwd=Path(__file__).resolve().parent.parent,
-            timeout=5,
-        )
-        return result.stdout.strip() if result.returncode == 0 else "unknown"
-    except Exception:
-        return "unknown"
+    """Short SHA of aurora-lint's commit (config.aurora_lint_commit): the
+    host's when `bench container-run` passed it in."""
+    return aurora_lint_commit(Path(__file__).resolve().parent.parent)
 
 
 def _ensure_rule_cwe_map() -> None:
@@ -617,6 +609,8 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     Returns:
         The run_id for the completed benchmark.
     """
+    # First, before any work: the run id names aurora-lint's commit.
+    require_known_commit(_get_git_sha(), "bench juliet")
     if not SQC_BIN.exists():
         raise FileNotFoundError(f"aurora-lint binary not found at {SQC_BIN}. Run 'cargo build --release' first.")
     if not JULIET_BASE.is_dir():

@@ -641,14 +641,10 @@ def _get_sqc_version() -> str:
 
 
 def _get_git_sha() -> str:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, cwd=PROJECT_DIR, timeout=5,
-        )
-        return result.stdout.strip() if result.returncode == 0 else "unknown"
-    except Exception:
-        return "unknown"
+    """Short SHA of aurora-lint's commit (config.aurora_lint_commit): the
+    host's when `bench container-run` passed it in."""
+    from bench.config import aurora_lint_commit
+    return aurora_lint_commit(PROJECT_DIR)
 
 
 def _get_codebase_sha(path: Path) -> str | None:
@@ -1801,6 +1797,8 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False,
 
     version = _get_tool_version(tool)
     sha = _get_git_sha()
+    from bench.config import require_known_commit
+    require_known_commit(sha, f"{tool} {codebase}")
     dir_name = _make_version_dir_name(tool, version, sha, variant)
     version_dir = RESULTS_BASE / dir_name
     version_dir.mkdir(parents=True, exist_ok=True)

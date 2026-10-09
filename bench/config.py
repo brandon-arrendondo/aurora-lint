@@ -29,6 +29,58 @@ MANIFEST_CWE_DIR = PROJECT_DIR / "rules_templates" / "cwe"
 RULE_CWE_MAP = PROJECT_DIR / "data" / "rule_cwe_map.json"
 GENERATE_MAP_SCRIPT = PROJECT_DIR / "scripts" / "generate_rule_cwe_map.py"
 
+# ── The aurora-lint commit a run records ─────────────────────────────────────
+# A run id names aurora-lint's commit (`sqc-{version}-{sha}`). Inside the
+# benchmark container git often cannot answer: a worktree checkout's .git
+# points at a directory on the host that is not mounted, and a tree owned by
+# another uid is "dubious ownership". So `bench container-run` resolves the
+# commit on the host and passes it in; these names carry it.
+COMMIT_ENV = "AURORA_BENCH_COMMIT"              # the full SHA
+COMMIT_SHORT_ENV = "AURORA_BENCH_COMMIT_SHORT"  # `git rev-parse --short` on the host
+UNKNOWN_COMMIT = "unknown"
+
+
+def host_commit(project_dir: Path = PROJECT_DIR) -> tuple[str, str] | None:
+    """(full, short) SHA of the checkout at `project_dir`, as git there
+    resolves it, or None when git cannot."""
+    try:
+        out = [subprocess.run(["git", "rev-parse", *args, "HEAD"], capture_output=True,
+                              text=True, cwd=project_dir, timeout=5)
+               for args in ([], ["--short"])]
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if any(r.returncode != 0 or not r.stdout.strip() for r in out):
+        return None
+    return out[0].stdout.strip(), out[1].stdout.strip()
+
+
+def aurora_lint_commit(project_dir: Path = PROJECT_DIR) -> str:
+    """The short SHA a run records: the one `bench container-run` passed in
+    when there is one, otherwise git's in `project_dir`, otherwise
+    UNKNOWN_COMMIT. A passed-in short SHA that is not a prefix of the full
+    one is refused rather than recorded."""
+    short, full = os.environ.get(COMMIT_SHORT_ENV), os.environ.get(COMMIT_ENV, "")
+    if short:
+        if not full.startswith(short):
+            raise ValueError(f"{COMMIT_SHORT_ENV}={short} is not a prefix of "
+                             f"{COMMIT_ENV}={full or '(unset)'}")
+        return short
+    resolved = host_commit(project_dir)
+    return resolved[1] if resolved else UNKNOWN_COMMIT
+
+
+def require_known_commit(sha: str, what: str) -> None:
+    """Refuse to run or ingest a benchmark whose aurora-lint commit is
+    unknown: every such run would share one run id, so two refs would
+    overwrite each other's results."""
+    if not sha or sha == UNKNOWN_COMMIT:
+        raise ValueError(
+            f"{what}: aurora-lint's commit is unknown (git cannot resolve HEAD in "
+            f"{PROJECT_DIR}), and a run recorded as '{UNKNOWN_COMMIT}' would share its "
+            f"run id with every other such run. Run from a git checkout, or inside "
+            f"the benchmark image through `bench container-run`, which passes the "
+            f"host's commit in ({COMMIT_ENV}, {COMMIT_SHORT_ENV}).")
+
 
 def _load_dotenv(path: Path) -> None:
     """Populate os.environ from a plain KEY=VALUE .env file (a machine-local,

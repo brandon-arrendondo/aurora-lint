@@ -30,7 +30,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from bench.config import BENCH_ROOT, PROJECT_DIR
+from bench.config import (BENCH_ROOT, COMMIT_ENV, COMMIT_SHORT_ENV, PROJECT_DIR,
+                          host_commit)
 
 DEFAULT_IMAGE = os.environ.get("AURORA_BENCH_IMAGE", "localhost/aurora-bench:dev")
 # The image's 'tools' stage (podman build --target tools), where each
@@ -80,8 +81,11 @@ def _host_dirs(args: list[str]) -> list[Path]:
 
 
 def command(run_args: list[str], image: str, pin: str, runtime: str = "podman",
-            bench_root=None, project_dir=None) -> list[str]:
-    """The `podman run` line for one container-run."""
+            bench_root=None, project_dir=None, commit=None) -> list[str]:
+    """The `podman run` line for one container-run. `commit` is the
+    checkout's (full, short) SHA as the host resolves it: only the checkout
+    is mounted, so git inside cannot always answer (a worktree's .git names
+    a host directory; another uid's tree is "dubious ownership")."""
     from bench.realworld_runner import CODEBASES
     bench_root = Path(bench_root) if bench_root else BENCH_ROOT
     project_dir = Path(project_dir) if project_dir else PROJECT_DIR
@@ -91,6 +95,8 @@ def command(run_args: list[str], image: str, pin: str, runtime: str = "podman",
            "-v", "aurora-bench-cargo-registry:/opt/cargo/registry",
            "-e", f"SQC_BENCH_ROOT={IN_BENCH_ROOT}",
            "-w", WORK]
+    if commit:
+        cmd += ["-e", f"{COMMIT_ENV}={commit[0]}", "-e", f"{COMMIT_SHORT_ENV}={commit[1]}"]
     for name in sorted(CODEBASES):
         # Mounted under the project's own name: scoring keys strip a path up
         # to its first /<project>/ (BenchDB.project_relpath), so the
@@ -123,9 +129,14 @@ def run(run_args: list[str], image: str = DEFAULT_IMAGE, runtime: str = "podman"
     if shutil.which(runtime) is None:
         print(f"container-run: '{runtime}' is not installed (see docs/benchmark-setup.rst)")
         return 2
+    commit = host_commit(PROJECT_DIR)
+    if commit is None:
+        print(f"container-run: git cannot resolve HEAD in {PROJECT_DIR}, so the run "
+              "could not record which aurora-lint commit it measured")
+        return 2
     pin = image_pin(image, runtime)
-    print(f"environment {pin} ({image})")
-    return subprocess.run(command(run_args, image, pin, runtime)).returncode
+    print(f"environment {pin} ({image}); aurora-lint {commit[1]}")
+    return subprocess.run(command(run_args, image, pin, runtime, commit=commit)).returncode
 
 
 def build_db_command(project: str, tools_image: str, pin: str, corpus_commit: str,

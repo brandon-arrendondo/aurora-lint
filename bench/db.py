@@ -1488,6 +1488,8 @@ class BenchDB:
         variant = None
         if commit and "-" in commit:
             commit, variant = commit.split("-", 1)
+        from bench.config import require_known_commit
+        require_known_commit(commit, f"ingest of {version_dir}")
 
         machine = machine or {}
         durations = durations or {}
