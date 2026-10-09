@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (Brandon, 2026-10-09).
 
 ## Context
 
@@ -212,7 +212,10 @@ that this ADR needs an amendment to say so.
    the same under all three presets: `--pedantic` trusts only a declared
    library.
 3. **Where the facts live.** They are aurora-lint settings, so they live
-   where each benchmark's settings already do:
+   where each benchmark's settings already do. Brandon's ruling put them in
+   "the benchmark environment manifest", which he reads as each
+   benchmark's own settings, not the image's `environment.json` (Brandon,
+   2026-10-09):
    - a real-world corpus: the `[environment]` section of its rules
      manifest, `conf/realworld/<corpus>-rules.toml`, which already declares
      its `data_model`;
@@ -242,8 +245,8 @@ these facts. Until it lands, the binary accepts `c_standard` and
 `posix_version` and hashes them, but no rule reads them. Declaring them
 earlier would change every benchmark's settings hash, and so its run id,
 with no change in findings, and then the code would change them again.
-They are therefore declared in the same change as that code, so a
-benchmark's hash changes once, with its trend break measured by that
+They are therefore declared in the same change as that code (Brandon,
+2026-10-09), so a benchmark's hash changes once, with its trend break measured by that
 change's A/B under `default` and `strict`. That change also decides how
 `iso-posix` relates to `posix_version` once the POSIX contracts move behind
 the fact. If it splits the model, a benchmark declares the ISO C model plus
