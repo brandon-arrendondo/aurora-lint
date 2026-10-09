@@ -225,12 +225,7 @@ impl FilePrescanResult {
     }
 }
 
-fn process_file(
-    file_path: &Path,
-    is_header: bool,
-    needs_vra: bool,
-    model: IntFacts,
-) -> FilePrescanResult {
+fn process_file(file_path: &Path, is_header: bool, model: IntFacts) -> FilePrescanResult {
     let mut result = FilePrescanResult::empty();
     result.display_path = file_path.to_string_lossy().to_string();
 
@@ -319,7 +314,7 @@ fn process_file(
             &root,
             &source,
             &file_macros,
-            needs_vra,
+            PRESCAN_RETURN_RANGES,
             &file_taint_aliases,
             &file_string_macros,
             &result.function_macros,
@@ -513,7 +508,6 @@ fn process_file(
 pub fn prescan_directories(
     dirs: &[String],
     progress: Option<&dyn ProgressReporter>,
-    needs_vra: bool,
     scoped_out: &dyn Fn(&Path, &str) -> bool,
     model: IntFacts,
 ) -> Result<ProjectContext> {
@@ -551,12 +545,7 @@ pub fn prescan_directories(
         }
     }
 
-    prescan_file_list(
-        all_files,
-        dirs.len(),
-        progress,
-        Collect { needs_vra, model },
-    )
+    prescan_file_list(all_files, dirs.len(), progress, model)
 }
 
 /// Whether `ignore` leaves `path` out of the prescan. The globs are relative
@@ -607,12 +596,8 @@ fn names_a_written_static(
 /// shipped analysis is clean on that input, rather than a test-only
 /// reimplementation of it being clean (this repo).
 #[cfg(test)]
-pub fn prescan_single_file(
-    path: &Path,
-    needs_vra: bool,
-    model: IntFacts,
-) -> Result<ProjectContext> {
-    prescan_files(vec![path.to_path_buf()], None, needs_vra, model)
+pub fn prescan_single_file(path: &Path, model: IntFacts) -> Result<ProjectContext> {
+    prescan_files(vec![path.to_path_buf()], None, model)
 }
 
 /// Build a [`ProjectContext`] from an explicit list of `.c`/`.h` files,
@@ -628,7 +613,6 @@ pub fn prescan_single_file(
 pub fn prescan_files(
     files: Vec<PathBuf>,
     progress: Option<&dyn ProgressReporter>,
-    needs_vra: bool,
     model: IntFacts,
 ) -> Result<ProjectContext> {
     // A `.h` target names itself twice (once as the scan set, once among its
@@ -644,20 +628,16 @@ pub fn prescan_files(
             (p, is_header)
         })
         .collect();
-    prescan_file_list(all_files, 1, progress, Collect { needs_vra, model })
+    prescan_file_list(all_files, 1, progress, model)
 }
 
-/// What a prescan collects under, for [`prescan_file_list`].
-#[derive(Clone, Copy)]
-struct Collect {
-    /// Whether some enabled rule reads value ranges, which the function
-    /// summaries then compute.
-    needs_vra: bool,
-    /// The data model the macro constants are resolved under, so a project
-    /// `#define` written in terms of `INT_MAX` or `sizeof(long)` has the
-    /// value the scan's settings give it.
-    model: IntFacts,
-}
+/// Whether the prescan's function summaries carry return-value ranges. Always:
+/// the prescan is the same whichever rules a scan enables, so a cache saved
+/// under one rule set serves a scan under any other exactly as a fresh
+/// prescan would. Gating the ranges on whether an enabled rule reads them
+/// made a cache saved without such a rule silently drop every callee's range
+/// for the scan that loaded it.
+const PRESCAN_RETURN_RANGES: bool = true;
 
 /// Shared by [`prescan_directories`] and [`prescan_single_file`] so that a
 /// single-file context can never drift from a directory one.
@@ -665,13 +645,15 @@ struct Collect {
 ///
 /// - `all_files`: each file to read, and whether it is a header.
 /// - `unit_count`: what the progress report counts (directories or files).
+/// - `model`: the data model the macro constants are resolved under, so a
+///   project `#define` written in terms of `INT_MAX` or `sizeof(long)` has
+///   the value the scan's settings give it.
 fn prescan_file_list(
     all_files: Vec<(PathBuf, bool)>,
     unit_count: usize,
     progress: Option<&dyn ProgressReporter>,
-    collect: Collect,
+    model: IntFacts,
 ) -> Result<ProjectContext> {
-    let Collect { needs_vra, model } = collect;
     if let Some(reporter) = progress {
         reporter.report_prescan_start(unit_count);
     }
@@ -694,7 +676,7 @@ fn prescan_file_list(
                 let label = format!("prescan of {}", path.display());
                 match containment::contain(&label, || {
                     super::test_failure_hook("prescan");
-                    process_file(path, *is_header, needs_vra, model)
+                    process_file(path, *is_header, model)
                 }) {
                     Ok(result) => (result, None),
                     Err(failure) => (
@@ -7301,7 +7283,6 @@ fn harvest_header_macros(
     root: &tree_sitter::Node,
     hsource: &str,
     header_path: &str,
-    needs_vra: bool,
     model: IntFacts,
     origins: &mut MacroOrigins,
     outside_project: bool,
@@ -7331,7 +7312,7 @@ fn harvest_header_macros(
         root,
         hsource,
         &header_macros,
-        needs_vra,
+        PRESCAN_RETURN_RANGES,
         &header_taint_aliases,
         &header_string_macros,
         &header_function_macros,
@@ -7552,7 +7533,6 @@ pub fn resolve_includes(
     project_roots: &[String],
     context: &mut super::context::ProjectContext,
     progress: Option<&dyn ProgressReporter>,
-    needs_vra: bool,
     model: IntFacts,
     lookup: &HeaderLookup,
 ) -> Result<()> {
@@ -7563,7 +7543,6 @@ pub fn resolve_includes(
         project_roots,
         context,
         progress,
-        needs_vra,
         model,
         lookup,
         &|_, _| false,
@@ -7581,7 +7560,6 @@ pub fn resolve_includes_scoped(
     project_roots: &[String],
     context: &mut super::context::ProjectContext,
     progress: Option<&dyn ProgressReporter>,
-    needs_vra: bool,
     model: IntFacts,
     lookup: &HeaderLookup,
     scoped_out: &dyn Fn(&Path, &str) -> bool,
@@ -7721,7 +7699,6 @@ pub fn resolve_includes_scoped(
                     &root,
                     &hsource,
                     &header_path,
-                    needs_vra,
                     model,
                     &mut origins,
                     outside_project,
@@ -8584,7 +8561,6 @@ mod tests {
         let ctx = prescan_directories(
             &[dir.to_string_lossy().to_string()],
             None,
-            false,
             &|_, _| false,
             Default::default(),
         )
@@ -8639,7 +8615,6 @@ mod tests {
         let ctx = prescan_directories(
             &[dir.to_string_lossy().to_string()],
             None,
-            false,
             &|_, _| false,
             Default::default(),
         )
@@ -8691,7 +8666,6 @@ mod tests {
         let ctx = prescan_directories(
             &[dir.to_string_lossy().to_string()],
             None,
-            false,
             &|_, _| false,
             Default::default(),
         )
@@ -9772,7 +9746,6 @@ no_mem:
                 &[root.path().to_string_lossy().to_string()],
                 &mut ctx,
                 None,
-                false,
                 Default::default(),
                 &HeaderLookup::new(mode),
             )
@@ -10191,8 +10164,7 @@ void caller(char *other) {
         std::fs::write(dir.path().join("a.c"), "void func_a(void) { func_b(); }").unwrap();
         std::fs::write(dir.path().join("b.c"), "void func_b(void) {}").unwrap();
         let dirs = vec![dir.path().to_string_lossy().to_string()];
-        let ctx =
-            prescan_directories(&dirs, None, false, &|_, _| false, Default::default()).unwrap();
+        let ctx = prescan_directories(&dirs, None, &|_, _| false, Default::default()).unwrap();
         assert!(ctx.known_functions.contains("func_a"));
         assert!(ctx.known_functions.contains("func_b"));
         assert!(ctx.call_graph.get("func_a").unwrap().contains("func_b"));
@@ -10215,8 +10187,7 @@ void caller(char *other) {
         )
         .unwrap();
         let dirs = vec![dir.path().to_string_lossy().to_string()];
-        let ctx =
-            prescan_directories(&dirs, None, false, &|_, _| false, Default::default()).unwrap();
+        let ctx = prescan_directories(&dirs, None, &|_, _| false, Default::default()).unwrap();
         assert!(ctx.ambiguous_call_targets.contains("timer_cb"));
         // The edge recording that run_a calls (some) timer_cb is untouched --
         // consumers that must not chase it filter on ambiguous_call_targets.
@@ -10243,8 +10214,7 @@ void caller(char *other) {
         )
         .unwrap();
         let dirs = vec![dir.path().to_string_lossy().to_string()];
-        let ctx =
-            prescan_directories(&dirs, None, false, &|_, _| false, Default::default()).unwrap();
+        let ctx = prescan_directories(&dirs, None, &|_, _| false, Default::default()).unwrap();
         assert!(ctx.known_functions.contains("public_api"));
         assert!(ctx.header_declared_functions.contains("public_api"));
     }
@@ -10258,8 +10228,7 @@ void caller(char *other) {
         )
         .unwrap();
         let dirs = vec![dir.path().to_string_lossy().to_string()];
-        let ctx =
-            prescan_directories(&dirs, None, false, &|_, _| false, Default::default()).unwrap();
+        let ctx = prescan_directories(&dirs, None, &|_, _| false, Default::default()).unwrap();
         assert!(ctx
             .struct_field_types
             .get("Config")
@@ -10280,8 +10249,7 @@ void caller(char *other) {
         )
         .unwrap();
         let dirs = vec![dir.path().to_string_lossy().to_string()];
-        let ctx =
-            prescan_directories(&dirs, None, false, &|_, _| false, Default::default()).unwrap();
+        let ctx = prescan_directories(&dirs, None, &|_, _| false, Default::default()).unwrap();
         assert!(
             ctx.global_writers.contains_key("g_clean"),
             "g_clean should be tracked as a file-scope global: {:?}",
@@ -10407,7 +10375,6 @@ void caller(char *other) {
                 &[tmp.path().to_string_lossy().to_string()],
                 &mut ctx,
                 None,
-                false,
                 Default::default(),
                 &HeaderLookup::default(),
             )
@@ -10453,7 +10420,6 @@ void caller(char *other) {
             &[proj.to_string_lossy().to_string()],
             &mut ctx,
             None,
-            false,
             Default::default(),
             &HeaderLookup::default(),
         )
@@ -10639,7 +10605,6 @@ void caller(char *other) {
             &[tmp.path().to_string_lossy().to_string()],
             &mut ctx,
             None,
-            false,
             Default::default(),
             &HeaderLookup::default(),
         )
@@ -10702,7 +10667,6 @@ void caller(char *other) {
                 &[tmp.path().to_string_lossy().to_string()],
                 &mut ctx,
                 None,
-                false,
                 Default::default(),
                 &HeaderLookup::default(),
             )
@@ -10922,7 +10886,6 @@ void caller(char *other) {
             let ctx = prescan_directories(
                 &[dir.to_string_lossy().to_string()],
                 None,
-                false,
                 &|_, _| false,
                 Default::default(),
             )
@@ -10962,7 +10925,6 @@ void caller(char *other) {
         let ctx = prescan_directories(
             &[dir.to_string_lossy().to_string()],
             None,
-            false,
             &|_, _| false,
             Default::default(),
         )
@@ -11018,7 +10980,6 @@ void caller(char *other) {
         let ctx = prescan_directories(
             &[dir.to_string_lossy().to_string()],
             None,
-            false,
             &|_, _| false,
             Default::default(),
         )
@@ -11077,7 +11038,6 @@ void caller(char *other) {
         let ctx = prescan_directories(
             &[dir.to_string_lossy().to_string()],
             None,
-            false,
             &|_, _| false,
             Default::default(),
         )
@@ -11111,7 +11071,6 @@ void caller(char *other) {
         let ctx = prescan_directories(
             &[dir.to_string_lossy().to_string()],
             None,
-            false,
             &|_, _| false,
             Default::default(),
         )
@@ -11150,7 +11109,6 @@ void caller(char *other) {
         let ctx = prescan_directories(
             &[dir.to_string_lossy().to_string()],
             None,
-            false,
             &|_, _| false,
             Default::default(),
         )
@@ -11217,7 +11175,6 @@ void caller(char *other) {
         let ctx = prescan_directories(
             &[dir.to_string_lossy().to_string()],
             None,
-            false,
             &|_, _| false,
             Default::default(),
         )
@@ -11289,7 +11246,6 @@ void caller(char *other) {
         let ctx = prescan_directories(
             &[dir.to_string_lossy().to_string()],
             None,
-            false,
             &|_, _| false,
             Default::default(),
         )
@@ -11429,7 +11385,6 @@ void caller(char *other) {
         let ctx = prescan_directories(
             &[dir.to_string_lossy().to_string()],
             None,
-            false,
             &|_, _| false,
             Default::default(),
         )
@@ -11480,7 +11435,6 @@ void caller(char *other) {
         let ctx = prescan_directories(
             &[dir.to_string_lossy().to_string()],
             None,
-            false,
             &|_, _| false,
             Default::default(),
         )
@@ -11524,7 +11478,6 @@ void caller(char *other) {
         let ctx = prescan_directories(
             &[dir.to_string_lossy().to_string()],
             None,
-            false,
             &|_, _| false,
             Default::default(),
         )
@@ -11564,7 +11517,6 @@ void caller(char *other) {
         let ctx = prescan_directories(
             &[dir.to_string_lossy().to_string()],
             None,
-            false,
             &|_, _| false,
             Default::default(),
         )
@@ -11590,7 +11542,6 @@ void caller(char *other) {
         let ctx = prescan_directories(
             &[dir.to_string_lossy().to_string()],
             None,
-            false,
             &|_, _| false,
             Default::default(),
         )

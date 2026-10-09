@@ -85,13 +85,7 @@ fn main() {
     let repair_macros = if prescan_dirs.is_empty() {
         RepairMacros::default()
     } else {
-        match prescan::prescan_directories(
-            &prescan_dirs,
-            None,
-            false,
-            &|_, _| false,
-            Default::default(),
-        ) {
+        match prescan::prescan_directories(&prescan_dirs, None, &|_, _| false, Default::default()) {
             Ok(context) => RepairMacros::from_context(&context),
             Err(err) => {
                 eprintln!("prescan failed: {err:#}");

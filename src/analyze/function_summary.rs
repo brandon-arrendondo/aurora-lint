@@ -1215,7 +1215,8 @@ fn walk_for_relative_command_write(
 ///
 /// When `compute_return_ranges` is true, also computes return value ranges
 /// for integer-returning functions (needed for VRA inter-procedural analysis).
-/// Pass false during prescan when no VRA-consuming rules are enabled.
+/// The prescan always asks for them, so that what it collects, and a cache
+/// saved from it, is the same whichever rules a scan enables.
 pub fn compute_summaries(
     root: &Node,
     source: &str,

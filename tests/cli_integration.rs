@@ -928,6 +928,71 @@ fn prescan_cache_is_refused_under_other_include_names() {
     );
 }
 
+/// The prescan is the same whichever rules a scan enables, so a cache saved
+/// under one rule set serves a scan under another exactly as a fresh prescan
+/// would. Callee return ranges are the fact that once differed: computed only
+/// when an enabled rule read value ranges, they were missing from a cache
+/// saved under DCL15-C, and INT32-C loading it saw neither the callee that
+/// returns near `INT_MAX` nor the one that returns 3.
+#[test]
+fn a_prescan_cache_saved_under_other_rules_scans_as_a_fresh_prescan() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = dir.path().join("lib");
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(
+        lib.join("counts.c"),
+        "int small_count(void) { return 3; }\n\
+         int wide_count(void) { return 2147483640; }\n",
+    )
+    .unwrap();
+    let main_c = dir.path().join("main.c");
+    std::fs::write(
+        &main_c,
+        "int small_count(void);\n\
+         int wide_count(void);\n\
+         int near_max(void) { int n = wide_count(); return n + 1; }\n\
+         int bounded(int a) { int n = small_count(); if (a > 100 || a < 0) return 0; return a + n; }\n",
+    )
+    .unwrap();
+    let main_c = main_c.to_str().unwrap();
+    let lib = lib.to_str().unwrap();
+    let int32_lines = |args: &[&str]| {
+        let out = dir.path().join("out.json");
+        let mut all = vec![main_c, "--rules", "INT32-C", "-e", out.to_str().unwrap()];
+        all.extend_from_slice(args);
+        let (code, _, stderr) = run_aurora_lint(&all);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        let found: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        let mut lines: Vec<u64> = found.iter().map(|v| v["line"].as_u64().unwrap()).collect();
+        lines.sort_unstable();
+        lines
+    };
+
+    let fresh = int32_lines(&["-d", lib]);
+    assert_eq!(fresh, vec![3], "only the near-INT_MAX sum overflows");
+
+    for saved_under in ["DCL15-C", "INT32-C"] {
+        let cache = dir.path().join(format!("{saved_under}.bin"));
+        let cache = cache.to_str().unwrap();
+        let (code, _, stderr) = run_aurora_lint(&[
+            main_c,
+            "-d",
+            lib,
+            "--rules",
+            saved_under,
+            "--save-prescan",
+            cache,
+        ]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert_eq!(
+            int32_lines(&["--load-prescan", cache]),
+            fresh,
+            "a cache saved under {saved_under} differs from a fresh prescan"
+        );
+    }
+}
+
 /// Regression (Phase 2c-i): a function-like macro invocation
 /// (`xfree(p)`, defined in a header reached via -d) must not be flagged by
 /// DCL31-C as an undeclared function. This is the curl `curlx_free`/`curlx_calloc`

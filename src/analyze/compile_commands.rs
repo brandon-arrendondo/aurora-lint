@@ -1244,7 +1244,6 @@ mod tests {
             &[root.to_string_lossy().to_string()],
             &mut ctx,
             None,
-            false,
             Default::default(),
             &super::super::include_names::HeaderLookup::default(),
         )
@@ -1721,7 +1720,6 @@ mod tests {
             &[root.to_string_lossy().to_string()],
             &mut ctx,
             None,
-            false,
             Default::default(),
             &super::super::include_names::HeaderLookup::default(),
         )
@@ -1754,7 +1752,6 @@ mod tests {
             &[root.to_string_lossy().to_string()],
             &mut ctx,
             None,
-            false,
             Default::default(),
             &super::super::include_names::HeaderLookup::default(),
         )

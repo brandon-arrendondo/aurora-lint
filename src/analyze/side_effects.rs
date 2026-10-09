@@ -2434,7 +2434,6 @@ mod tests {
         crate::analyze::prescan::prescan_directories(
             &[dir.to_string_lossy().to_string()],
             None,
-            false,
             &|_, _| false,
             Default::default(),
         )

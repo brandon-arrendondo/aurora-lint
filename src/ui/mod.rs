@@ -2177,7 +2177,6 @@ impl TerminalUI {
             prescan::prescan_directories(
                 &self.directories,
                 None,
-                true,
                 &|_, _| false,
                 self.settings.facts,
             )?
@@ -2199,7 +2198,6 @@ impl TerminalUI {
                 &project_roots,
                 &mut context,
                 None,
-                true,
                 self.settings.facts,
                 &crate::analyze::include_names::HeaderLookup::new(self.settings.include_names),
             );

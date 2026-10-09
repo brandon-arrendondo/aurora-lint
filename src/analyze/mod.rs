@@ -265,7 +265,6 @@ pub fn analyze_project(
         save_prescan,
         load_prescan,
         compile_db,
-        needs_vra,
         &header_lookup,
         scope,
         settings.facts,
@@ -762,7 +761,6 @@ fn load_project_context(
     save_prescan: Option<&str>,
     load_prescan: Option<&str>,
     compile_db: Option<&compile_commands::CompileDb>,
-    needs_vra: bool,
     header_lookup: &include_names::HeaderLookup,
     scope: &ScanScope,
     data_model: crate::settings::IntFacts,
@@ -878,9 +876,9 @@ fn load_project_context(
             files.extend(prescan::sibling_headers(&dir));
         }
         files.retain(|f| !scoped_out(f, &root));
-        prescan::prescan_files(files, progress, needs_vra, data_model)?
+        prescan::prescan_files(files, progress, data_model)?
     } else {
-        prescan::prescan_directories(directories, progress, needs_vra, &scoped_out, data_model)?
+        prescan::prescan_directories(directories, progress, &scoped_out, data_model)?
     };
 
     // Stamp only a context built here. A loaded one keeps the record it was
@@ -934,7 +932,6 @@ fn load_project_context(
             &project_roots,
             &mut context,
             progress,
-            needs_vra,
             data_model,
             header_lookup,
             &scoped_out,
@@ -965,7 +962,6 @@ fn load_project_context(
                 &project_roots,
                 outside,
                 None,
-                needs_vra,
                 data_model,
                 lookup,
                 &scoped_out,
