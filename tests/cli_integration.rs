@@ -6329,3 +6329,67 @@ fn crossfile_wrapper_macro_declared_array_plus_integer_is_not_an_unsigned_sum() 
         "label follows non-ASCII text and is an array: {lines:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// --detect-relevance and the CON* rules
+// ---------------------------------------------------------------------------
+
+/// Generate a relevance manifest for `fixture` with `extra` flags, scan the
+/// fixture with it, and return (generated manifest, scan stdout).
+fn relevance_scan(fixture: &str, extra: &[&str]) -> (String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("gated.toml");
+    let src = fixtures().join(fixture);
+    let src = src.to_str().unwrap();
+    let mut args = vec![src, "--detect-relevance", "--write-manifest"];
+    args.push(manifest.to_str().unwrap());
+    args.extend_from_slice(extra);
+    let (code, _, stderr) = run_aurora_lint(&args);
+    assert_eq!(code, 0, "detect-relevance failed: {stderr}");
+    let (_, stdout, _) = run_aurora_lint(&[
+        src,
+        "-m",
+        manifest.to_str().unwrap(),
+        "--rules",
+        "CON03-C,CON07-C",
+    ]);
+    (std::fs::read_to_string(&manifest).unwrap(), stdout)
+}
+
+#[test]
+fn detect_relevance_keeps_con_rules_on_freestanding_interrupt_code() {
+    let (manifest, scan) = relevance_scan(
+        "relevance_interrupt_firmware",
+        &["--environment", "freestanding"],
+    );
+    assert!(manifest.contains("[rules.cert_c.CON03-C]\nenabled = true"));
+    assert!(manifest.contains("[rules.cert_c.CON07-C]\nenabled = true"));
+    assert!(scan.contains("CON03-C"), "{scan}");
+    assert!(scan.contains("CON07-C"), "{scan}");
+}
+
+#[test]
+fn detect_relevance_still_gates_con_rules_on_hosted_code_without_threads() {
+    let (manifest, scan) = relevance_scan("relevance_interrupt_firmware", &[]);
+    assert!(manifest.contains("[rules.cert_c.CON03-C]\nenabled = false"));
+    assert!(manifest.contains("not interrupt or signal handlers"));
+    assert!(!scan.contains("CON03-C"), "{scan}");
+}
+
+#[test]
+fn detect_relevance_output_says_only_threads_were_looked_for() {
+    let src = fixtures().join("relevance_interrupt_firmware");
+    let (code, stdout, _) = run_aurora_lint(&[src.to_str().unwrap(), "--detect-relevance"]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("thread libraries only; interrupt handlers are not detected"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn detect_relevance_leaves_con_rules_on_for_pthread_code() {
+    let (manifest, scan) = relevance_scan("relevance_pthread_worker", &[]);
+    assert!(manifest.contains("[rules.cert_c.CON03-C]\nenabled = true"));
+    assert!(scan.contains("CON03-C"), "{scan}");
+}

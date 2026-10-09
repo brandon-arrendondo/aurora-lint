@@ -23,7 +23,9 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 /// CON0x/CON3x concurrency rules: inapplicable with no threading API in the
-/// scanned corpus.
+/// scanned corpus of a hosted program. Never gated off for a freestanding
+/// one, where interrupt handlers are the concurrency and no thread library
+/// is expected (see [`gate_rule`]).
 pub const CON_RULE_IDS: &[&str] = &[
     "CON01-C", "CON02-C", "CON03-C", "CON04-C", "CON05-C", "CON06-C", "CON07-C", "CON08-C",
     "CON09-C", "CON30-C", "CON31-C", "CON32-C", "CON33-C", "CON34-C", "CON35-C", "CON36-C",
@@ -111,6 +113,13 @@ pub struct ProjectProfile {
     /// (a real risk: `_s` is a common "safe"/"string" suffix convention in
     /// non-Annex-K code).
     pub has_annex_k: bool,
+    /// The scan runs under a freestanding implementation (resolved from the
+    /// manifest and `--environment`, not detected from source). Set by the
+    /// caller. Detection only ever looks for thread *libraries*, never for
+    /// interrupt handlers, and on freestanding code (bare-metal firmware)
+    /// the concurrency that matters is a main loop sharing state with an
+    /// interrupt handler, which uses no thread library at all.
+    pub freestanding: bool,
 }
 
 const THREADING_INCLUDE_MARKERS: &[&str] = &["pthread.h", "threads.h"];
@@ -314,7 +323,8 @@ pub fn generate_manifest_toml(base: &RuleManifest, profile: &ProjectProfile) -> 
     out.push_str(&format!("name = {:?}\n", base.metadata.name));
     out.push_str(&format!("version = {:?}\n", base.metadata.version));
     let description = format!(
-        "{} (relevance-gated by aurora-lint --detect-relevance: threading={}, windows={})",
+        "{} (relevance-gated by aurora-lint --detect-relevance: threading={} (thread libraries only; \
+         interrupt handlers are not detected), windows={})",
         base.metadata
             .description
             .clone()
@@ -367,9 +377,26 @@ fn gate_rule(
     profile: &ProjectProfile,
 ) -> (bool, Option<String>) {
     if base_enabled && CON_RULE_IDS.contains(&rule_id) && !profile.has_threading {
+        // No thread library is not no concurrency: the search never looks for
+        // interrupt handlers, and a freestanding program is where those are
+        // the only concurrency there is. Only a hosted corpus is gated off.
+        if profile.freestanding {
+            return (
+                true,
+                Some(
+                    "kept: freestanding environment; only thread libraries \
+                     (pthread/threads.h/atomic) were looked for, not interrupt handlers"
+                        .to_string(),
+                ),
+            );
+        }
         return (
             false,
-            Some("auto: no pthread/threads.h/atomic usage detected in corpus".to_string()),
+            Some(
+                "auto: no pthread/threads.h/atomic usage detected in a hosted corpus \
+                 (only thread libraries were looked for, not interrupt or signal handlers)"
+                    .to_string(),
+            ),
         );
     }
 
@@ -562,6 +589,7 @@ mod tests {
             has_windows: true,
             max_c_standard: None,
             has_annex_k: false,
+            freestanding: false,
         };
         let toml = generate_manifest_toml(&manifest, &profile);
         let reparsed = RuleManifest::from_toml_str(&toml).unwrap();
@@ -576,6 +604,7 @@ mod tests {
             has_windows: false,
             max_c_standard: None,
             has_annex_k: false,
+            freestanding: false,
         };
         let toml = generate_manifest_toml(&manifest, &profile);
         for id in CON_RULE_IDS {
@@ -602,6 +631,7 @@ mod tests {
             has_windows: true,
             max_c_standard: None,
             has_annex_k: false,
+            freestanding: false,
         };
         let toml = generate_manifest_toml(&manifest, &profile);
         for id in CON_RULE_IDS {
@@ -624,9 +654,36 @@ mod tests {
             has_windows: false,
             max_c_standard: None,
             has_annex_k: false,
+            freestanding: false,
         };
         let toml = generate_manifest_toml(&manifest, &profile);
         assert!(toml.contains("[rules.cert_c.CON01-C]\nenabled = false\n"));
         assert!(!toml.contains("CON01-C]\nenabled = false  # auto"));
+    }
+
+    #[test]
+    fn generate_keeps_con_on_freestanding_corpus_without_thread_library() {
+        let manifest = base_manifest();
+        let profile = ProjectProfile {
+            freestanding: true,
+            ..Default::default()
+        };
+        let toml = generate_manifest_toml(&manifest, &profile);
+        for id in CON_RULE_IDS {
+            assert!(
+                toml.contains(&format!("[rules.cert_c.{id}]\nenabled = true")),
+                "expected {id} kept:\n{toml}"
+            );
+        }
+        assert!(toml.contains("only thread libraries"));
+        // WIN* gating is unaffected by the environment.
+        assert!(toml.contains("[rules.cert_c.WIN00-C]\nenabled = false"));
+    }
+
+    #[test]
+    fn disabled_con_comment_says_only_threads_were_looked_for() {
+        let toml = generate_manifest_toml(&base_manifest(), &ProjectProfile::default());
+        assert!(toml.contains("not interrupt or signal handlers"));
+        assert!(toml.contains("interrupt handlers are not detected"));
     }
 }

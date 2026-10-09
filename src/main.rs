@@ -844,13 +844,19 @@ fn run() -> Result<i32> {
     if detect_relevance {
         let mut corpus = vec![path.clone()];
         corpus.extend(directories.iter().cloned());
-        let profile = analyze::relevance::detect(&corpus)?;
+        let mut profile = analyze::relevance::detect(&corpus)?;
+        let base_manifest = load_manifest(manifest_path)?;
+        profile.freestanding = resolve_settings(&base_manifest, &settings_cli, false)?.environment
+            == settings::EnvironmentKind::Freestanding;
         println!(
-            "Detected: threading={}, windows={}, max_c_standard={:?}",
-            profile.has_threading, profile.has_windows, profile.max_c_standard
+            "Detected: threading={} (thread libraries only; interrupt handlers are not detected), \
+             windows={}, max_c_standard={:?}, freestanding={}",
+            profile.has_threading,
+            profile.has_windows,
+            profile.max_c_standard,
+            profile.freestanding
         );
 
-        let base_manifest = load_manifest(manifest_path)?;
         let generated = analyze::relevance::generate_manifest_toml(&base_manifest, &profile);
 
         match write_manifest {

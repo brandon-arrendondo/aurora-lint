@@ -546,6 +546,12 @@ For a codebase with no tailored manifest, ``--detect-relevance`` scans PATH
 ``<threads.h>``, ``_Atomic``) and Windows API usage, then generates a
 manifest with the categorically-inapplicable rule classes disabled
 (``CON*`` if no threading evidence, ``WIN*`` if no Windows API evidence).
+Only thread *libraries* are looked for; interrupt and signal handlers are
+not, and the output says so. Because bare-metal firmware shares state
+between its main loop and interrupt handlers without any thread library,
+``CON*`` is never disabled when the resolved environment is freestanding
+(``--environment freestanding``, or ``[environment] kind`` in the base
+manifest); those rules stay on with a ``# kept:`` comment.
 It never runs an analysis itself — pair it with ``--write-manifest`` to
 save the generated manifest, then pass that manifest to a normal scan via
 ``-m``:
