@@ -1,9 +1,9 @@
 # Build-generated headers describe one configuration
 
-**Status:** design note for review (2026-10-09), against `5fe0fa57`. **No
-engine, rule or CLI code has changed.** Nothing here is a commitment until
-the open questions in §8 are ruled on. Adjudication is not involved: every
-count below is a local diagnostic measurement, not a project figure.
+**Status:** design ruled on (2026-10-09), against `5fe0fa57`; §8 records
+the decisions and the implementation order. **No engine, rule or CLI code
+has changed yet.** Adjudication is not involved: every count below is a
+local diagnostic measurement, not a project figure.
 
 **tl;dr.** A build generates some of its headers, and they describe the one
 configuration it was run in: declaration lists (seL4's
@@ -202,11 +202,12 @@ valkey's), whose generated headers `bench.dbbuild` already relocates into
 directories is *generated*; a header found first in a source directory is
 not, whatever its name.
 
-A side effect to decide (§8 Q6): today a resolved generated header outside
-the project roots is classed as *outside the project*, like a system header
-(`MacroOrigins::is_outside`). PRE31-C's library-contract test and
+A side effect, left as is in this change (§8, decision 6): today a
+resolved generated header outside the project roots is classed as *outside
+the project*, like a system header (`MacroOrigins::is_outside`). PRE31-C's library-contract test and
 `harvested_from` read that class. A recognised generated header is the
-project's own code and arguably belongs on the project side.
+project's own code and arguably belongs on the project side; that is
+decided separately.
 
 ### 4.2 Which code the configuration compiles
 
@@ -220,7 +221,7 @@ project's own code and arguably belongs on the project side.
   All three are statements the build wrote. Headers inherit membership from
   their includer, per use site, as they do today. A scan with no database
   has no generated facts and is unaffected.
-- **M2, arms (optional, §8 Q3).** Within a member file, a use site is in the
+- **M2, arms (adopted, §8 decision 3).** Within a member file, a use site is in the
   configuration when its enclosing arms compile under the configuration's
   macro state. That state is the database's `-D`/`-U`, plus the definitions in
   recognised generated headers, plus their absences.
@@ -278,8 +279,7 @@ generated header contributes.
   condition only at a use site the configuration compiles. Elsewhere the name
   is unresolved and stays `Symbolic`, as before.
   - This is placed at the shared table, not in ARR30-C, so INT3x-C, FLP03-C
-    and MEM30-C get the same rule. §8 Q5 asks whether to start
-    narrower.
+    and MEM30-C get the same rule (§8 decision 5).
   - The in-configuration case (a known size, live code) keeps its finding.
 
 **Where the origin must be recorded:** at harvest time, against the header's
@@ -370,36 +370,49 @@ project:
 6. **Negative control:** a project whose database has no generated
    directories gives byte-identical output with and without the change.
 
-## 8. Open questions
+## 8. Decisions (2026-10-09)
 
-1. **Recognition.** R1 plus R2, or R1 only (one explicit flag, nothing
-   inferred from the database's `directory`)?
-2. **Membership sources.** M1's three (database translation units, `#line`
-   in a generated translation unit, `#include` from one) are the proposal.
-   This needs the `bench.dbbuild` change to keep generated translation units.
-3. **M2.**
-   - Adopt arm-level membership, or stop at files? M1 alone leaves 12 DCL31-C
-     and 1 ARR30-C misfires on seL4.
-   - If adopted, an arm the substrate can't evaluate (`#elif`, arithmetic
-     `#if`): the proposal is that generated facts don't apply there. That is
-     the conservative choice, matching the missing-header behaviour.
-4. **Notice form.** A scan-level stand-down line for DCL31-C (existing hook)
-   and nothing per finding, or also a per-finding marker on strict PRE31-C
-   findings that are unproven only because a generated body was withheld (by
-   analogy with `missing_headers`)?
-5. **Breadth.**
-   - Apply origin scoping at the shared tables, so every consumer is covered,
-     which is the recommendation?
-   - Or first to the three rules named here, with the other
-     `merged_macro_constants` and effect-table readers to follow after their
-     own A/B?
-6. **Project or outside.** Should a recognised generated header count as
-   project code for `MacroOrigins` (PRE31-C's library-contract test,
-   `harvested_from`) instead of "outside" as now?
-7. **The syntactic `#if`-ancestor check in DCL31-C** misses arms whose braces
-   straddle the directive. M2 subsumes it for generated facts; whether to fix
-   it on its own is a separate question (ADR-0008 asks for the misread to be
-   diagnosed, not gated on).
+1. **Recognition: R1 and R2.** An explicit `--generated-include DIR`, and
+   compile-database include directories inside an entry's build tree and
+   outside every project root. The database counts as a declaration.
+2. **Membership: all three M1 sources.** Database translation units, files
+   a generated translation unit names in `#line`, and files one `#include`s.
+   `bench.dbbuild` keeps generated translation units in the build cache so
+   the second source exists for the benchmark corpora.
+3. **M2 is adopted.** Arm-level membership applies inside member files. An
+   arm the substrate cannot evaluate (`#elif`, arithmetic `#if`) receives no
+   generated facts.
+4. **Notice: scan-level only, for now.** The stand-down line through the
+   existing hook; no per-finding marker.
+5. **Breadth: engine-wide.** Origin scoping is applied at the shared tables
+   (macro constants, function summaries and the effect table, header
+   declarations), so every consumer is covered, not only the three rules
+   named here.
+6. **Project or outside: unchanged here.** Recognised generated headers stay
+   classed as outside the project in this change; whether they should count
+   as project code is a separate decision.
+7. **DCL31-C's syntactic `#if`-ancestor check** (arms whose braces straddle
+   the directive) is a separate fix, diagnosed under ADR-0008, and not part
+   of this design.
+
+### Implementation order
+
+Each step is separate and measured on its own:
+
+1. **Build cache keeps generated translation units** (`bench.dbbuild`), so
+   `#line` membership is available for the benchmark corpora.
+2. **Origin tagging and M1, engine-wide:**
+   - recognition (decision 1);
+   - origin recorded at harvest time;
+   - a per-membership view of the shared tables;
+   - the DCL31-C stand-down notice;
+   - the fixtures in §7 (1, 2, 3 without the M2 cases, 4, 5, 6);
+   - a twelve-corpus A/B.
+3. **M2:** arm-level membership with the configuration's macro state, the M2
+   fixture cases, and its own twelve-corpus A/B.
+
+The design is complete when steps 2 and 3 have landed and a seL4 A/B
+confirms §6.1's targets.
 
 ## 9. Relation to other documents
 
