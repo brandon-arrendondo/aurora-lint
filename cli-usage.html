@@ -48,6 +48,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#command-reference">Command Reference</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#cross-file-analysis">Cross-File Analysis</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#using-a-compile-database">Using a Compile Database</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#headers-the-build-generated">Headers the Build Generated</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#reaching-the-compiler-s-own-headers">Reaching the Compiler’s Own Headers</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#headers-the-scan-could-not-find">Headers the Scan Could Not Find</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#seeing-where-the-engine-is-blind">Seeing Where the Engine Is Blind</a></li>
@@ -232,6 +233,43 @@ up beside the database entry only when it is spelled as on disk, and the file
 names in <code class="docutils literal notranslate"><span class="pre">#include</span> <span class="pre">&quot;x.c&quot;</span></code> that decide which <code class="docutils literal notranslate"><span class="pre">.c</span></code> files are compiled into
 another. A <code class="docutils literal notranslate"><span class="pre">--save-prescan</span></code> cache records the rule it was built under, and
 <code class="docutils literal notranslate"><span class="pre">--load-prescan</span></code> refuses it under the other one.</p>
+</section>
+<section id="headers-the-build-generated">
+<h2>Headers the Build Generated<a class="headerlink" href="#headers-the-build-generated" title="Link to this heading"></a></h2>
+<p>A build generates some headers for the one configuration it was run in:
+declaration lists, inline accessors, configuration values. A <code class="docutils literal notranslate"><span class="pre">.c</span></code> file that
+configuration does not compile (another architecture’s, an optional feature
+left off) was never meant to be read against them. aurora-lint applies a
+generated header’s declarations, macro values and function bodies only to the
+<code class="docutils literal notranslate"><span class="pre">.c</span></code> files the database’s configuration compiles: its translation units,
+files one of them names in a <code class="docutils literal notranslate"><span class="pre">#line</span></code> directive, and <code class="docutils literal notranslate"><span class="pre">.c</span></code> files one of them
+<code class="docutils literal notranslate"><span class="pre">#include</span></code>s. Every other file is analysed as if the generated headers were
+missing, and the scan says how many:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Note</span><span class="p">:</span> <span class="mi">21</span> <span class="n">build</span><span class="o">-</span><span class="n">generated</span> <span class="n">header</span><span class="p">(</span><span class="n">s</span><span class="p">)</span> <span class="n">recognised</span><span class="p">;</span> <span class="mi">106</span> <span class="n">of</span> <span class="mi">183</span> <span class="n">scanned</span> <span class="o">.</span><span class="n">c</span> <span class="n">files</span> <span class="n">are</span>
+<span class="ow">not</span> <span class="n">compiled</span> <span class="n">by</span> <span class="n">the</span> <span class="n">build</span> <span class="n">configuration</span> <span class="n">that</span> <span class="n">generated</span> <span class="n">them</span><span class="p">,</span> <span class="ow">and</span> <span class="n">are</span> <span class="n">analysed</span>
+<span class="k">as</span> <span class="k">if</span> <span class="n">those</span> <span class="n">headers</span> <span class="n">were</span> <span class="n">missing</span><span class="o">.</span>
+</pre></div>
+</div>
+<p>The headers are recognised without a flag when the database’s include
+directories lie in its build tree outside the scanned tree, as an
+out-of-source CMake build’s do: a <code class="docutils literal notranslate"><span class="pre">directory</span></code> whose entry compiles a file
+located elsewhere. An in-source build, or a
+generated tree the database does not mark, is declared with
+<code class="docutils literal notranslate"><span class="pre">--generated-include</span> <span class="pre">DIR</span></code> (repeatable; the directory must be outside the
+scanned tree). A file there with the same bytes as a project file is a copy,
+and is treated as that project header. With no database there is no
+configuration to compile anything, so a declared tree is withheld from every
+file; with neither, nothing changes.</p>
+<p>Recognition errs toward withholding: a database whose entries compile files
+outside their working directory marks that directory a build tree, so a
+hand-written header in it (an out-of-tree kernel module built with
+<code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">-C</span></code>, a library that compiles a sibling directory’s source) is
+withheld from the files outside the configuration too. Those files are then
+analysed as if it were missing, never against the wrong configuration. A
+generated unit names its sources by <code class="docutils literal notranslate"><span class="pre">#line</span></code> only when the generator
+writes a path; one that writes a bare file name (<code class="docutils literal notranslate"><span class="pre">#line</span> <span class="pre">1</span> <span class="pre">&quot;x.c&quot;</span></code>) names
+nothing the scan can find, and those sources count as outside. The design and its reasons are in
+<code class="docutils literal notranslate"><span class="pre">docs/design/generated-headers-and-configuration.md</span></code>.</p>
 </section>
 <section id="reaching-the-compiler-s-own-headers">
 <h2>Reaching the Compiler’s Own Headers<a class="headerlink" href="#reaching-the-compiler-s-own-headers" title="Link to this heading"></a></h2>
