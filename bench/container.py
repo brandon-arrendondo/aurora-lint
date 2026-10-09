@@ -140,11 +140,14 @@ def run(run_args: list[str], image: str = DEFAULT_IMAGE, runtime: str = "podman"
 
 
 def build_db_command(project: str, tools_image: str, pin: str, corpus_commit: str,
-                     runtime: str = "podman", bench_root=None, project_dir=None) -> list[str]:
+                     runtime: str = "podman", bench_root=None, project_dir=None,
+                     out_name: str | None = None) -> list[str]:
     """The `podman run` line that builds `project`'s compile database in a
     throwaway container from the tools stage (bench/dbbuild.py). The
     checkout and this repository are mounted read-only; only the cache
-    directory is writable."""
+    root is writable. The build writes `out_name` there (default: the cache
+    directory's own name); build_db passes a fresh temporary name and swaps
+    it in."""
     from bench import deps
     from bench.realworld_runner import CODEBASES
     bench_root = Path(bench_root) if bench_root else BENCH_ROOT
@@ -159,13 +162,25 @@ def build_db_command(project: str, tools_image: str, pin: str, corpus_commit: st
             "-v", f"{cache.parent}:/cache-root",
             "-w", WORK, tools_image,
             "python3", "-m", "bench.dbbuild", project, f"{IN_BENCH_ROOT}/{project}",
-            f"/cache-root/{cache.name}", pin]
+            f"/cache-root/{out_name or cache.name}", pin]
 
 
 def build_db(project: str, image: str = DEFAULT_IMAGE,
-             tools_image: str = DEFAULT_TOOLS_IMAGE, runtime: str = "podman") -> int:
+             tools_image: str = DEFAULT_TOOLS_IMAGE, runtime: str = "podman",
+             rebuild: bool = False, bench_root=None) -> int:
     """Build and cache `project`'s compile database for the environment of
-    `image` (the bench stage: its pin keys the cache)."""
+    `image` (the bench stage: its pin keys the cache), unless the cache is
+    already there and intact: built from this recipe, for this corpus commit
+    and environment, every file matching the hash cache.json records. Then
+    it is reused ("cache hit") and no container starts.
+
+    Otherwise the build writes a temporary directory beside the cache, which
+    is checked the same way and then renamed into place ("rebuilt"); a live
+    cache is never deleted while it is being read. All of it runs under the
+    cache's exclusive lock (deps.cache_lock), which a scan's materialize
+    shares, so concurrent builders build once and a scan never reads a
+    cache mid-swap. `rebuild` builds even over an intact cache."""
+    from bench import deps
     from bench.realworld_runner import CODEBASES, _get_codebase_sha
     if shutil.which(runtime) is None:
         print(f"container-build-db: '{runtime}' is not installed")
@@ -183,4 +198,41 @@ def build_db(project: str, image: str = DEFAULT_IMAGE,
         print(f"container-build-db: {CODEBASES[project]['path']} is not a git checkout")
         return 2
     print(f"environment {pin} ({image}); {project} @ {commit[:12]}")
-    return subprocess.run(build_db_command(project, tools_image, pin, commit, runtime)).returncode
+    decl = deps.declared_for(project)
+    cache = deps.build_cache_dir(decl, commit, pin, bench_root)
+    with deps.cache_lock(cache, exclusive=True):
+        if rebuild:
+            reason = "--rebuild"
+        else:
+            try:
+                record, _ = deps.check_cache(decl, cache, commit, pin)
+            except (FileNotFoundError, ValueError) as e:
+                reason = str(e)
+            else:
+                print(f"cache hit: {cache} ({record['entries']} entries, "
+                      f"{len(record.get('generated', {}))} generated)")
+                return 0
+        tmp = cache.with_name(f"{cache.name}.tmp-{os.getpid()}")
+        shutil.rmtree(tmp, ignore_errors=True)
+        rc = subprocess.run(build_db_command(project, tools_image, pin, commit, runtime,
+                                             bench_root=bench_root,
+                                             out_name=tmp.name)).returncode
+        try:
+            if rc == 0:
+                deps.check_cache(decl, tmp, commit, pin)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"container-build-db: the build's output does not check out: {e}")
+            rc = 1
+        if rc != 0:
+            shutil.rmtree(tmp, ignore_errors=True)
+            return rc
+        old = None
+        if cache.exists():
+            old = cache.with_name(f"{cache.name}.old-{os.getpid()}")
+            cache.rename(old)
+        tmp.rename(cache)
+        if old is not None:
+            # No reader holds the shared lock while this one is exclusive.
+            shutil.rmtree(old, ignore_errors=True)
+        print(f"rebuilt: {cache} ({reason})")
+        return 0

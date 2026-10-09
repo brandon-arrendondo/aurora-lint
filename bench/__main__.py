@@ -70,7 +70,7 @@ def cmd_container_build_db(args):
     for cb in [c.strip().lower() for c in args.codebase.split(",") if c.strip()]:
         rc = container.build_db(cb, args.image or container.DEFAULT_IMAGE,
                                 args.tools_image or container.DEFAULT_TOOLS_IMAGE,
-                                args.runtime) or rc
+                                args.runtime, rebuild=args.rebuild) or rc
     raise SystemExit(rc)
 
 
@@ -1290,6 +1290,8 @@ def main():
     p_cdb.add_argument("--image", default=None, help="the bench-stage image whose environment keys the cache")
     p_cdb.add_argument("--tools-image", default=None, help="the tools-stage image to build in")
     p_cdb.add_argument("--runtime", default="podman")
+    p_cdb.add_argument("--rebuild", action="store_true",
+                       help="build even when an intact cache for this commit and environment exists")
     p_cdb.set_defaults(func=cmd_container_build_db)
 
     # competitor-export

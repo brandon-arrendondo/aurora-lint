@@ -106,8 +106,11 @@ def build(project: str, corpus_dir: Path, cache_dir: Path, env_pin: str) -> dict
     overlay = {k[len("src/"):] for k in gen if k.startswith("src/")}
     template = deps.overlay_source_dirs(template, overlay)
 
+    # A fresh directory only: `bench container-build-db` names a temporary
+    # one and swaps it in, so a cache a scan may be reading is never
+    # rewritten in place.
     if cache_dir.exists():
-        shutil.rmtree(cache_dir)
+        raise SystemExit(f"{cache_dir} exists; the build writes a fresh directory")
     (cache_dir / "generated").mkdir(parents=True)
     body = json.dumps(template, indent=1, sort_keys=True).encode()
     (cache_dir / "compile_commands.json").write_bytes(body)

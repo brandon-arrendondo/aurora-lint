@@ -59,6 +59,7 @@ The runner verifies the tree before a real-world scan, refuses a missing or
 different one, and records `provenance` in the scan's .meta.json sidecar.
 """
 
+import contextlib
 import gzip
 import hashlib
 import json
@@ -742,6 +743,63 @@ def build_cache_dir(decl: dict, corpus_commit: str, env_pin: str, bench_root=Non
     return root / f"{decl['corpus']}-{corpus_commit[:12]}-{env_pin[:12]}"
 
 
+@contextlib.contextmanager
+def cache_lock(cache_dir, exclusive: bool):
+    """Hold the build cache's lock (`<cache>.lock` beside it): exclusive to
+    build or replace it, shared to read it. A builder swaps a rebuilt cache
+    in under the exclusive lock, so a reader holding the shared one never
+    sees half of one cache and half of another. A reader whose lock file
+    does not exist (no builder has run here yet; the cache directory may be
+    mounted read-only) reads unlocked."""
+    import fcntl
+    path = Path(cache_dir).with_name(Path(cache_dir).name + ".lock")
+    if exclusive:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(path, "a")
+    elif path.is_file():
+        fh = open(path, "r")
+    else:
+        yield
+        return
+    with fh:
+        fcntl.flock(fh, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def check_cache(decl: dict, cache_dir, corpus_commit: str | None = None,
+                env_pin: str | None = None) -> tuple[dict, dict]:
+    """The build cache's record and its generated headers' bytes, after
+    checking that it was built from this recipe, for this corpus commit and
+    environment, and that every file hashes to what cache.json records.
+    Raises FileNotFoundError when there is no cache, ValueError when it is
+    not this one or is damaged."""
+    cache_dir = Path(cache_dir)
+    record_path = cache_dir / "cache.json"
+    if not record_path.is_file():
+        raise FileNotFoundError(f"no build cache at {cache_dir}")
+    record = json.loads(record_path.read_text())
+    if record.get("recipe_sha256") != recipe_sha256(decl):
+        raise ValueError(f"{cache_dir}: built from another recipe; rebuild it")
+    for key, want in (("corpus_commit", corpus_commit), ("environment", env_pin)):
+        if want and record.get(key) != want:
+            raise ValueError(f"{cache_dir}: built for {key} {record.get(key)}, not {want}")
+    db = cache_dir / "compile_commands.json"
+    got = hashlib.sha256(db.read_bytes()).hexdigest() if db.is_file() else "missing"
+    if got != record.get("db_sha256"):
+        raise ValueError(f"{db}: sha256 {got}, recorded {record.get('db_sha256')}")
+    gen_files = {}
+    for rel, sha in sorted(record.get("generated", {}).items()):
+        f = cache_dir / "generated" / rel
+        data = f.read_bytes() if f.is_file() else None
+        if data is None or hashlib.sha256(data).hexdigest() != sha:
+            raise ValueError(f"{f}: missing or not the recorded generated header")
+        gen_files[rel] = data
+    return record, gen_files
+
+
 def _norm_path(value: str, corpus: str, build: str):
     """`value` with the checkout written ${CORPUS} and the build tree
     ${GEN}/build, or None when it lies outside both (a system directory)."""
@@ -869,27 +927,9 @@ def materialize(decl: dict, corpus_path, cache_dir, bench_root=None,
     missing or whose sha256 differs from the cache's record.
     Returns the database's path and the cache record."""
     cache_dir = Path(cache_dir)
-    record_path = cache_dir / "cache.json"
-    if not record_path.is_file():
-        raise FileNotFoundError(f"no build cache at {cache_dir}")
-    record = json.loads(record_path.read_text())
-    if record.get("recipe_sha256") != recipe_sha256(decl):
-        raise ValueError(f"{cache_dir}: built from another recipe; rebuild it")
-    for key, want in (("corpus_commit", corpus_commit), ("environment", env_pin)):
-        if want and record.get(key) != want:
-            raise ValueError(f"{cache_dir}: built for {key} {record.get(key)}, not {want}")
-    body = (cache_dir / "compile_commands.json").read_bytes()
-    got = hashlib.sha256(body).hexdigest()
-    if got != record["db_sha256"]:
-        raise ValueError(f"{cache_dir}/compile_commands.json: sha256 {got}, "
-                         f"recorded {record['db_sha256']}")
-    gen_files = {}
-    for rel, sha in sorted(record.get("generated", {}).items()):
-        f = cache_dir / "generated" / rel
-        data = f.read_bytes() if f.is_file() else None
-        if data is None or hashlib.sha256(data).hexdigest() != sha:
-            raise ValueError(f"{f}: missing or not the recorded generated header")
-        gen_files[rel] = data
+    with cache_lock(cache_dir, exclusive=False):
+        record, gen_files = check_cache(decl, cache_dir, corpus_commit, env_pin)
+        body = (cache_dir / "compile_commands.json").read_bytes()
     entries = json.loads(body)
     # Every build-tree directory the template searches, whether or not the
     # build generated a header into it: a CMake build adds its binary
