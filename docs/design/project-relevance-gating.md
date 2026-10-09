@@ -12,7 +12,13 @@ not detection logic — see `C11_TANGLED_RULE_IDS`'s doc comment in
 `src/analyze/relevance.rs` for the full per-rule breakdown).
 `detect_min_c_standard`'s coverage gaps flagged below (header-only C11
 evidence, Annex-K call detection) WERE closed as reporting
-signals for the remaining 8 genuinely-tangled rules. **Check the current
+signals for the remaining 8 genuinely-tangled rules. **CON\* is no longer gated:** the detector looks only for thread or atomic
+APIs, never for interrupt or signal handlers, so finding none does not show
+the rules inapplicable (bare-metal firmware shares state between its main loop
+and an interrupt handler with no such API). Only WIN\* is auto-disabled now;
+CON\* entries carry an `# info:` comment. The §1 and §3 text on CON\* below is
+the original proposal.
+**Check the current
 task status rather than trusting this header.**
 User-facing docs: `docs/cli-usage.rst` ("Project-Relevance Detection").
 **Driver:** An earlier scoping pass established that per-project rule applicability is

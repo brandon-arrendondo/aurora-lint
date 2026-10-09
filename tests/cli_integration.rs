@@ -6357,32 +6357,34 @@ fn relevance_scan(fixture: &str, extra: &[&str]) -> (String, String) {
 }
 
 #[test]
-fn detect_relevance_keeps_con_rules_on_freestanding_interrupt_code() {
-    let (manifest, scan) = relevance_scan(
-        "relevance_interrupt_firmware",
-        &["--environment", "freestanding"],
-    );
-    assert!(manifest.contains("[rules.cert_c.CON03-C]\nenabled = true"));
-    assert!(manifest.contains("[rules.cert_c.CON07-C]\nenabled = true"));
-    assert!(scan.contains("CON03-C"), "{scan}");
-    assert!(scan.contains("CON07-C"), "{scan}");
+fn detect_relevance_keeps_con_rules_on_interrupt_code_hosted_and_freestanding() {
+    // The handler is `static` and never called, so the interrupt attribute is
+    // what makes it a concurrency root; neither environment may lose the
+    // findings to the generated manifest.
+    for extra in [&[][..], &["--environment", "freestanding"][..]] {
+        let (manifest, scan) = relevance_scan("relevance_interrupt_firmware", extra);
+        assert!(manifest.contains("[rules.cert_c.CON03-C]\nenabled = true"));
+        assert!(manifest.contains("[rules.cert_c.CON07-C]\nenabled = true"));
+        assert!(!manifest.contains("kept:"), "{manifest}");
+        assert!(scan.contains("CON03-C"), "{extra:?}: {scan}");
+        assert!(scan.contains("CON07-C"), "{extra:?}: {scan}");
+    }
 }
 
 #[test]
-fn detect_relevance_still_gates_con_rules_on_hosted_code_without_threads() {
-    let (manifest, scan) = relevance_scan("relevance_interrupt_firmware", &[]);
-    assert!(manifest.contains("[rules.cert_c.CON03-C]\nenabled = false"));
-    assert!(manifest.contains("not interrupt or signal handlers"));
-    assert!(!scan.contains("CON03-C"), "{scan}");
+fn detect_relevance_con_comment_says_handlers_were_not_looked_for() {
+    let (manifest, _) = relevance_scan("relevance_interrupt_firmware", &[]);
+    assert!(manifest.contains("interrupt or signal handlers are not looked for"));
 }
 
 #[test]
-fn detect_relevance_output_says_only_threads_were_looked_for() {
+fn detect_relevance_output_says_only_thread_or_atomic_apis_were_looked_for() {
     let src = fixtures().join("relevance_interrupt_firmware");
     let (code, stdout, _) = run_aurora_lint(&[src.to_str().unwrap(), "--detect-relevance"]);
     assert_eq!(code, 0);
     assert!(
-        stdout.contains("thread libraries only; interrupt handlers are not detected"),
+        stdout
+            .contains("thread or atomic APIs only; interrupt or signal handlers are not detected"),
         "{stdout}"
     );
 }

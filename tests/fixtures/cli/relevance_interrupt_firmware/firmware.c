@@ -4,7 +4,7 @@
 static unsigned int tick_count = 0;
 static int data_ready = 0;
 
-__attribute__((interrupt)) void TIMER_IRQHandler(void)
+static void __attribute__((interrupt)) TIMER_IRQHandler(void)
 {
     tick_count++;
     data_ready = 1;
