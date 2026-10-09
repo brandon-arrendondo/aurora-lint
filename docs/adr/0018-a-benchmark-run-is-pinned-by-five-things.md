@@ -179,3 +179,82 @@ moves when its set is declared and its trend break is measured.
 - **aurora-lint itself is unchanged.** Its behaviour with and without include
   paths or a compile database is what it was. Only the benchmark harness
   demands an environment.
+
+## Amendment (2026-10-09, Brandon): a benchmark declares its target facts
+
+**Status:** ruled (Brandon, 2026-10-08 and 2026-10-09); not yet
+implemented. The real-world manifests declare only their data model today,
+and Juliet only its data model and that it is a closed program.
+
+### Context
+
+ADR-0015's 2026-10-08 amendment separates a preset's reading from its
+environment stance. `--strict` assumes a hosted ISO C library, and POSIX and
+the language editions are facts that hold only when declared (its Decisions
+1 and 4). A benchmark scored under `--strict` would therefore apply no POSIX
+exemption on a corpus built for Linux unless the benchmark declares POSIX.
+That amendment's Decision 5 says each benchmark declares its facts, and
+that this ADR needs an amendment to say so.
+
+### Decision
+
+1. **Each benchmark declares `posix_version` and `c_standard`, and its
+   target facts** (ADR-0015 Decision 4's 2026-10-03 amendment: the data
+   model, type widths and the like). Each value describes the corpus's
+   configuration of record (its `primary_build_config`; ADR-0010 Decision 6),
+   not the host. Each carries a comment stating its basis, as the declared
+   data models already do. A corpus whose configuration of record is not
+   POSIX declares no `posix_version`.
+2. **Its library stays the ISO C and POSIX model** (`libc = "iso-posix"`),
+   even where the configuration of record names glibc as its toolchain. No
+   library's extensions enter published figures (ADR-0015 Decision 5;
+   Brandon, 2026-10-09). The library is declared explicitly, so that it is
+   the same under all three presets: `--pedantic` trusts only a declared
+   library.
+3. **Where the facts live.** They are aurora-lint settings, so they live
+   where each benchmark's settings already do:
+   - a real-world corpus: the `[environment]` section of its rules
+     manifest, `conf/realworld/<corpus>-rules.toml`, which already declares
+     its `data_model`;
+   - Juliet: the settings every Juliet scan passes
+     (`JULIET_SETTING_OVERRIDES` in `bench/config.py`), which already
+     declare `data_model` and `closed_program`.
+
+   They do not go in `data/benchmark_environment.json`, which pins the
+   image for every benchmark at once. Nor do they go in
+   `data/benchmark_deps/<corpus>.json` or `data/benchmark_repos.json`,
+   which describe the header set, the build recipe and the corpus. A
+   `--profile` keeps a manifest's declared facts, so every preset a
+   benchmark runs under scans with them.
+4. **How they are pinned.** A declared fact enters the settings hash, the
+   fourth pin, which the run id carries. It does not enter the environment
+   pin, which is unchanged. The facts a corpus's compile database states
+   per translation unit (`-std`, `-D_POSIX_C_SOURCE`, `-m32`) are
+   declarations too (ADR-0015, 2026-10-08 amendment, Decision 3). The run
+   already pins that database by its hashes in the sidecar (Decision 5),
+   and the decoupling code records each fact's source in the settings as
+   ADR-0015 requires. Nothing is read from the host.
+
+### Interaction with the decoupling code
+
+The code that implements ADR-0015's 2026-10-08 amendment is what reads
+these facts. Until it lands, the binary accepts `c_standard` and
+`posix_version` and hashes them, but no rule reads them. Declaring them
+earlier would change every benchmark's settings hash, and so its run id,
+with no change in findings, and then the code would change them again.
+They are therefore declared in the same change as that code, so a
+benchmark's hash changes once, with its trend break measured by that
+change's A/B under `default` and `strict`. That change also decides how
+`iso-posix` relates to `posix_version` once the POSIX contracts move behind
+the fact. If it splits the model, a benchmark declares the ISO C model plus
+`posix_version`, which is the same contracts under a new name.
+
+### Consequences
+
+- "aurora-lint itself is unchanged" (Consequences, above) no longer holds
+  for compile databases. Once the decoupling code lands, a compile database
+  supplies facts as well as include paths and `-D` macros. A benchmark's
+  declarations are made in its manifest, so a conflict between a manifest
+  fact and the database is reported by the scan, and the manifest wins.
+- A `--strict` benchmark figure no longer depends on what the strict preset
+  assumes about POSIX, only on what the benchmark declares.
