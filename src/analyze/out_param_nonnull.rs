@@ -310,6 +310,13 @@ impl Walk<'_> {
                 None
             }
             // `exit(1);` ends the path: nothing is returned or left behind.
+            //
+            // Known limitation: this walk feeds `FunctionSummary`, which the
+            // prescan builds once for every setting, so it credits the
+            // standard list whatever the run's `stdlib_noreturn` contract
+            // says. The same holds for `prescan::ends_in_stdlib_noreturn_call`.
+            // Honoring the contract at either site would need the summaries
+            // kept per setting.
             "expression_statement"
                 if crate::analyze::noreturn::is_stdlib_noreturn_call_statement(
                     stmt,
