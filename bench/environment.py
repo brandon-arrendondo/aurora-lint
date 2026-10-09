@@ -28,11 +28,15 @@ image digest.
   python3 -m bench.environment write-tools PATH
                                             the 'tools' stage's manifest
   python3 -m bench.environment hash PATH    print the pin of a manifest
+  python3 -m bench.environment declared FIELD
+                                            print one field of the environment
+                                            this commit declares, validated
 """
 
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -44,6 +48,17 @@ MANIFEST_PATH = Path("/etc/aurora-bench/environment.json")
 # bench image's manifest records this one's pin, and container-build-db
 # refuses a tools image whose manifest differs.
 TOOLS_MANIFEST_PATH = Path("/etc/aurora-bench/tools.json")
+
+# The environment this aurora-lint commit expects
+# (data/benchmark_environment.json): the full pin, the shared licence-free
+# image and its 'tools' stage, each image by digest. A digest is a bare
+# repository name and sha256, never a registry address: where an image is
+# pulled from is the deployment's business.
+DECLARED_PATH = Path(__file__).resolve().parent.parent / "data" / "benchmark_environment.json"
+DECLARED_PINS = ("manifest_sha256", "shared_manifest_sha256", "tools_stage")
+DECLARED_IMAGES = ("shared_image", "tools_image")
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+_DIGEST = re.compile(r"[a-z0-9][a-z0-9._-]*@sha256:[0-9a-f]{64}")
 
 TOOLS = {
     "rustc": ["rustc", "--version"],
@@ -136,11 +151,35 @@ def load(path=MANIFEST_PATH) -> dict | None:
     return json.loads(p.read_text()) if p.is_file() else None
 
 
+def declared(path=DECLARED_PATH) -> dict:
+    """The environment this commit declares, every field checked: each pin
+    64 hex digits, each image `name@sha256:<64 hex>` with no registry host.
+    Raises ValueError naming the first field that is missing or malformed,
+    so a bump that forgets one fails here, not at a pull."""
+    d = json.loads(Path(path).read_text())
+    for key in DECLARED_PINS:
+        if not _HEX64.fullmatch(str(d.get(key, ""))):
+            raise ValueError(f"{path}: {key} must be a sha256 (64 hex digits), "
+                             f"not {d.get(key)!r}")
+    for key in DECLARED_IMAGES:
+        if not _DIGEST.fullmatch(str(d.get(key, ""))):
+            raise ValueError(f"{path}: {key} must be name@sha256:<64 hex> with no "
+                             f"registry host, not {d.get(key)!r}")
+    return d
+
+
 def main(argv=None) -> int:
     args = sys.argv[1:] if argv is None else argv
-    if len(args) != 2 or args[0] not in ("write", "write-tools", "hash"):
+    if len(args) != 2 or args[0] not in ("write", "write-tools", "hash", "declared"):
         print(__doc__)
         return 2
+    if args[0] == "declared":
+        d = declared()
+        if args[1] not in DECLARED_PINS + DECLARED_IMAGES:
+            print(f"declared: one of {', '.join(DECLARED_PINS + DECLARED_IMAGES)}")
+            return 2
+        print(d[args[1]])
+        return 0
     if args[0] in ("write", "write-tools"):
         manifest = collect() if args[0] == "write" else collect_tools()
         Path(args[1]).parent.mkdir(parents=True, exist_ok=True)

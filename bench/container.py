@@ -196,6 +196,14 @@ def build_db(project: str, image: str = DEFAULT_IMAGE,
               f"(its manifest {actual[:12] or 'missing'}, {image} records "
               f"{expected[:12] or 'none'}); rebuild both from one Dockerfile")
         return 2
+    from bench import environment
+    declared = environment.declared().get("tools_stage")
+    if actual != declared:
+        # Not an error: a rebuilt image is a different environment, and its
+        # runs already carry -env<hash>. But a pulled tools image should be
+        # the declared one (tools_image), and this says when it is not.
+        print(f"container-build-db: note: {tools_image} is tools stage {actual[:12]}, not "
+              f"the declared {declared[:12]} (data/benchmark_environment.json tools_image)")
     commit = _get_codebase_sha(CODEBASES[project]["path"])
     if not commit:
         print(f"container-build-db: {CODEBASES[project]['path']} is not a git checkout")

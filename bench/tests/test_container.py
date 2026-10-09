@@ -97,5 +97,42 @@ class TestScoringKeys(unittest.TestCase):
             self.assertEqual(ctr, rel)
 
 
+class TestDeclared(unittest.TestCase):
+    """data/benchmark_environment.json: both images by digest and every
+    pin, read through one validated reader."""
+
+    def _write(self, td, **over):
+        d = json.loads(environment.DECLARED_PATH.read_text())
+        d.update(over)
+        p = Path(td) / "e.json"
+        p.write_text(json.dumps(d))
+        return p
+
+    def test_the_committed_file_declares_both_images_and_every_pin(self):
+        d = environment.declared()
+        for key in environment.DECLARED_PINS + environment.DECLARED_IMAGES:
+            self.assertIn(key, d)
+        self.assertTrue(d["tools_image"].startswith("aurora-bench-tools@sha256:"))
+
+    def test_a_missing_or_malformed_field_is_refused_by_name(self):
+        with tempfile.TemporaryDirectory() as td:
+            for key, bad in (("tools_image", None), ("tools_stage", "cfcaf98f"),
+                             ("shared_image", "aurora-bench:dev")):
+                with self.assertRaisesRegex(ValueError, key):
+                    environment.declared(self._write(td, **{key: bad}))
+
+    def test_an_image_with_a_registry_host_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaisesRegex(ValueError, "registry host"):
+                environment.declared(self._write(
+                    td, tools_image="registry.example:5000/aurora-bench-tools@sha256:" + "a" * 64))
+
+    def test_the_cli_prints_a_field(self):
+        with mock.patch("builtins.print") as out:
+            self.assertEqual(environment.main(["declared", "tools_image"]), 0)
+        out.assert_called_once_with(environment.declared()["tools_image"])
+        self.assertEqual(environment.main(["declared", "nope"]), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
