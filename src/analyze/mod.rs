@@ -256,7 +256,7 @@ pub fn analyze_project(
     )?;
 
     // Load or compute cross-file context (prescan, includes, optional cache save)
-    let mut context = load_project_context(
+    let (mut context, membership) = load_project_context(
         project_source,
         progress,
         directories,
@@ -275,13 +275,6 @@ pub fn analyze_project(
     if let Some(outside) = context.outside_configuration.as_mut() {
         Arc::make_mut(outside).settings = Arc::clone(&context.settings);
     }
-    // Which files the configuration compiles; with no database, none, so
-    // every file reads the context without generated headers.
-    let membership = generated.as_ref().map(|_| {
-        compile_db.map_or_else(generated_headers::Membership::default, |db| {
-            generated_headers::Membership::of(db, &context.include_edges)
-        })
-    });
     // The context a file is analysed against: the full one for a file the
     // configuration compiles, the one without generated headers otherwise.
     let context_for = |file_path: &str| -> &context::ProjectContext {
@@ -304,6 +297,17 @@ pub fn analyze_project(
     let repair_macros = std::sync::Arc::new(
         unknown_identifier_recovery::RepairMacros::from_context(&context),
     );
+    // A file outside the configuration is repaired with the macro names it
+    // can see: those of its own context.
+    let outside_repair_macros = context.outside_configuration.as_deref().map(|outside| {
+        std::sync::Arc::new(unknown_identifier_recovery::RepairMacros::from_context(
+            outside,
+        ))
+    });
+    let repair_macros_for = |file_path: &str| match &outside_repair_macros {
+        Some(outside) if !std::ptr::eq(context_for(file_path), &context) => outside,
+        _ => &repair_macros,
+    };
 
     warn_unimplemented_rules(manifest, &registry);
 
@@ -422,7 +426,7 @@ pub fn analyze_project(
                         Ok(p) => p,
                         Err(_) => return (Vec::new(), Vec::new(), Vec::new()),
                     };
-                    parser.set_repair_macros(std::sync::Arc::clone(&repair_macros));
+                    parser.set_repair_macros(std::sync::Arc::clone(repair_macros_for(file_path)));
                     let file_registry = RuleRegistry::new();
                     // The context this file may use, which is the shared one
                     // unless the file defines a name some other file also
@@ -474,8 +478,14 @@ pub fn analyze_project(
             reporter.report_complete(violations.len());
         }
 
-        let header_dependence =
-            header_dependence(&registry, manifest, &context, &violations, &suppressed);
+        let header_dependence = header_dependence_split(
+            &registry,
+            manifest,
+            &context,
+            &context_for,
+            &violations,
+            &suppressed,
+        );
         return Ok(AnalysisResults {
             violations,
             suppressed,
@@ -483,7 +493,7 @@ pub fn analyze_project(
             failures,
             abandoned_rules,
             not_converged: containment::take_not_converged(),
-            include_report: std::sync::Arc::clone(&context.include_report),
+            include_report: include_report_split(&context, &context_for, &c_files),
             header_dependence,
         });
     }
@@ -513,6 +523,9 @@ pub fn analyze_project(
         let local = base.as_seen_from(std::path::Path::new(file_path));
         let file_context = local.as_ref().unwrap_or(base);
         set_project_context_for_enabled(&file_registry, manifest, file_context);
+        if outside_repair_macros.is_some() {
+            parser.set_repair_macros(std::sync::Arc::clone(repair_macros_for(file_path)));
+        }
 
         let (file_violations, file_suppressed, file_failures) = analyze_one_file_contained(
             file_path,
@@ -552,8 +565,14 @@ pub fn analyze_project(
         reporter.report_complete(violations.len());
     }
 
-    let header_dependence =
-        header_dependence(&registry, manifest, &context, &violations, &suppressed);
+    let header_dependence = header_dependence_split(
+        &registry,
+        manifest,
+        &context,
+        &context_for,
+        &violations,
+        &suppressed,
+    );
     Ok(AnalysisResults {
         violations,
         suppressed,
@@ -561,7 +580,7 @@ pub fn analyze_project(
         failures,
         abandoned_rules,
         not_converged: containment::take_not_converged(),
-        include_report: std::sync::Arc::clone(&context.include_report),
+        include_report: include_report_split(&context, &context_for, &c_files),
         header_dependence,
     })
 }
@@ -574,6 +593,7 @@ fn header_dependence(
     context: &context::ProjectContext,
     violations: &[RuleViolation],
     suppressed: &[SuppressedViolation],
+    keep: &dyn Fn(&str) -> bool,
 ) -> context::HeaderDependence {
     let rules: std::collections::BTreeSet<String> = manifest
         .enabled_rules()
@@ -587,7 +607,7 @@ fn header_dependence(
     let findings = violations
         .iter()
         .chain(suppressed.iter().map(|s| &s.violation))
-        .filter(|v| rules.contains(&v.rule_id))
+        .filter(|v| rules.contains(&v.rule_id) && keep(&v.file_path))
         .map(|v| (v.file_path.as_str(), v.line));
     context::HeaderDependence::build(
         rules.clone(),
@@ -599,6 +619,72 @@ fn header_dependence(
         ],
         &context.outside_macro_origins,
     )
+}
+
+/// [`header_dependence`] per context: a finding in a file outside the build
+/// configuration depends on the headers missing from the context it was
+/// analysed with, not on those missing from the full one.
+fn header_dependence_split<'a>(
+    registry: &RuleRegistry,
+    manifest: &RuleManifest,
+    context: &'a context::ProjectContext,
+    context_for: &dyn Fn(&str) -> &'a context::ProjectContext,
+    violations: &[RuleViolation],
+    suppressed: &[SuppressedViolation],
+) -> context::HeaderDependence {
+    let Some(outside) = context.outside_configuration.as_deref() else {
+        return header_dependence(registry, manifest, context, violations, suppressed, &|_| {
+            true
+        });
+    };
+    let is_outside = |file: &str| std::ptr::eq(context_for(file), outside);
+    let mut merged = header_dependence(registry, manifest, context, violations, suppressed, &|f| {
+        !is_outside(f)
+    });
+    let theirs = header_dependence(
+        registry,
+        manifest,
+        outside,
+        violations,
+        suppressed,
+        &is_outside,
+    );
+    merged.by_file.extend(theirs.by_file);
+    merged.harvested.extend(theirs.harvested);
+    merged
+}
+
+/// The include report, with the `#include`s left unresolved for the files
+/// outside the build configuration added: those files were analysed as if
+/// the generated headers were missing, so for them they are.
+fn include_report_split<'a>(
+    context: &'a context::ProjectContext,
+    context_for: &dyn Fn(&str) -> &'a context::ProjectContext,
+    c_files: &[String],
+) -> std::sync::Arc<context::IncludeReport> {
+    let Some(outside) = context.outside_configuration.as_deref() else {
+        return std::sync::Arc::clone(&context.include_report);
+    };
+    let outside_sources: std::collections::HashSet<String> = c_files
+        .iter()
+        .filter(|f| std::ptr::eq(context_for(f), outside))
+        .map(|f| compile_commands::real_path(std::path::Path::new(f)))
+        .collect();
+    if outside_sources.is_empty() {
+        return std::sync::Arc::clone(&context.include_report);
+    }
+    let mut report = (*context.include_report).clone();
+    report.unresolved.extend(
+        outside
+            .include_report
+            .unresolved
+            .iter()
+            .filter(|row| outside_sources.contains(&row.includer))
+            .cloned(),
+    );
+    report.unresolved.sort();
+    report.unresolved.dedup();
+    std::sync::Arc::new(report)
 }
 
 /// Drop every finding of a rule the scan abandoned (`containment`), active
@@ -649,7 +735,10 @@ fn load_project_context(
     scope: &ScanScope,
     data_model: crate::settings::IntFacts,
     generated: Option<&generated_headers::GeneratedHeaders>,
-) -> Result<context::ProjectContext> {
+) -> Result<(
+    context::ProjectContext,
+    Option<generated_headers::Membership>,
+)> {
     // The globs the prescan leaves out, as a cache records them, and the
     // ignore built from exactly those: a context built without them holds
     // other definitions. toolchain.toml's ignores are report-only.
@@ -785,6 +874,7 @@ fn load_project_context(
             .map(Arc::unwrap_or_clone),
     };
     let withholding = generated.map(|g| header_lookup.withholding(Arc::clone(&g.files)));
+    let mut members: Option<generated_headers::Membership> = None;
 
     // Resolve #include directives against include search paths, and the
     // build's forced includes, which need resolving even with no search path.
@@ -820,12 +910,11 @@ fn load_project_context(
         // Only a file the configuration does not compile reads the second
         // context; when every scanned source is compiled, there is none.
         if generated.is_some() {
-            let membership = compile_db.map_or_else(generated_headers::Membership::default, |db| {
-                generated_headers::Membership::of(db, &context.include_edges)
-            });
+            let membership = membership_of(compile_db, &context);
             let needed = c_files
                 .iter()
                 .any(|f| f.ends_with(".c") && !membership.contains(std::path::Path::new(f)));
+            members = Some(membership);
             if !needed {
                 outside = None;
             } else if outside.is_none() {
@@ -891,7 +980,23 @@ fn load_project_context(
         );
     }
 
-    Ok(context)
+    // Without include resolution the two contexts are one: membership still
+    // says which files read which.
+    if generated.is_some() && members.is_none() {
+        members = Some(membership_of(compile_db, &context));
+    }
+    Ok((context, members))
+}
+
+/// The `.c` files the database's configuration compiles; with no database,
+/// none, so every file reads the context without generated headers.
+fn membership_of(
+    compile_db: Option<&compile_commands::CompileDb>,
+    context: &context::ProjectContext,
+) -> generated_headers::Membership {
+    compile_db.map_or_else(generated_headers::Membership::default, |db| {
+        generated_headers::Membership::of(db, &context.include_edges)
+    })
 }
 
 /// Hand the cross-file context to the rules this scan will actually run.

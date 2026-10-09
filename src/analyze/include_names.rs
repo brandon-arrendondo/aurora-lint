@@ -91,6 +91,9 @@ pub struct HeaderLookup {
     /// the search goes on to the next directory, as a compiler's would if
     /// the file were not there.
     withheld: Option<Arc<HashSet<PathBuf>>>,
+    /// Found path → whether it is withheld, so each file is canonicalized
+    /// once however many includes reach it.
+    withheld_seen: Mutex<HashMap<PathBuf, bool>>,
 }
 
 impl HeaderLookup {
@@ -100,6 +103,7 @@ impl HeaderLookup {
             mode,
             dirs: Mutex::new(HashMap::new()),
             withheld: None,
+            withheld_seen: Mutex::new(HashMap::new()),
         }
     }
 
@@ -109,21 +113,27 @@ impl HeaderLookup {
             mode: self.mode,
             dirs: Mutex::new(HashMap::new()),
             withheld: Some(withheld),
+            withheld_seen: Mutex::new(HashMap::new()),
         }
     }
 
     /// `found`, unless it is a file this lookup withholds.
     fn unless_withheld(&self, found: Option<HeaderMatch>) -> Option<HeaderMatch> {
-        let Some(withheld) = self.withheld.as_ref() else {
+        let (Some(withheld), Some(m)) = (self.withheld.as_ref(), found.as_ref()) else {
             return found;
         };
-        match found {
-            Some(m)
-                if withheld.contains(&m.path.canonicalize().unwrap_or_else(|_| m.path.clone())) =>
-            {
-                None
-            }
-            other => other,
+        let hidden = *self
+            .withheld_seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(m.path.clone())
+            .or_insert_with(|| {
+                withheld.contains(&m.path.canonicalize().unwrap_or_else(|_| m.path.clone()))
+            });
+        if hidden {
+            None
+        } else {
+            found
         }
     }
 

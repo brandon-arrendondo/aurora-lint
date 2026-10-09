@@ -167,7 +167,17 @@ generated tree the database does not mark, is declared with
 scanned tree). A file there with the same bytes as a project file is a copy,
 and is treated as that project header. With no database there is no
 configuration to compile anything, so a declared tree is withheld from every
-file; with neither, nothing changes. The design and its reasons are in
+file; with neither, nothing changes.
+
+Recognition errs toward withholding: a database whose entries compile files
+outside their working directory marks that directory a build tree, so a
+hand-written header in it (an out-of-tree kernel module built with
+``make -C``, a library that compiles a sibling directory's source) is
+withheld from the files outside the configuration too. Those files are then
+analysed as if it were missing, never against the wrong configuration. A
+generated unit names its sources by ``#line`` only when the generator
+writes a path; one that writes a bare file name (``#line 1 "x.c"``) names
+nothing the scan can find, and those sources count as outside. The design and its reasons are in
 ``docs/design/generated-headers-and-configuration.md``.
 
 Reaching the Compiler's Own Headers

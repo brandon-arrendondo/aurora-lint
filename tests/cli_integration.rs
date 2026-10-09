@@ -2709,6 +2709,28 @@ fn generated_headers_reach_only_the_files_their_configuration_compiles() {
 }
 
 #[test]
+fn a_database_naming_sources_relative_to_its_build_directory_is_out_of_source() {
+    // Meson writes `file` and include directories relative to the build
+    // directory: `../project/src/member.c` is outside it, not inside.
+    let (_dir, project, build) = generated_headers_project(false);
+    let db = serde_json::json!([{
+        "directory": build,
+        "file": "../project/src/member.c",
+        "arguments": ["cc", "-I", "../project/include", "-I", "gen",
+                      "-c", "../project/src/member.c"],
+    }]);
+    let db_path = build.join("compile_commands.json");
+    std::fs::write(&db_path, db.to_string()).unwrap();
+    let (code, stderr, keys) =
+        generated_headers_scan(&project, &["--compile-commands", db_path.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+    let mut want: Vec<String> = MEMBER_FINDINGS.iter().map(|s| s.to_string()).collect();
+    want.push("other.c:7:PRE31-C".into());
+    want.sort();
+    assert_eq!(keys, want, "{stderr}");
+}
+
+#[test]
 fn an_in_source_build_needs_its_generated_tree_declared() {
     // The database's working directory is the project, so nothing in it marks
     // build/gen as the build's own: every file reads the generated headers.

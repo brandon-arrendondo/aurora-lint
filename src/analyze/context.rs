@@ -1851,6 +1851,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_context_outside_the_configuration_survives_a_prescan_cache() {
+        let mut outside = ProjectContext::new();
+        Arc::make_mut(&mut outside.known_functions).insert("only_outside".to_string());
+        let mut context = ProjectContext::new();
+        Arc::make_mut(&mut context.known_functions).insert("generated_accessor".to_string());
+        context.outside_configuration = Some(Arc::new(outside));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prescan.bin");
+        context.save_to_file(&path).unwrap();
+        let loaded = ProjectContext::load_from_file(&path).unwrap();
+        assert!(loaded.known_functions.contains("generated_accessor"));
+        let outside = loaded.outside_configuration.expect("kept");
+        assert!(outside.known_functions.contains("only_outside"));
+        assert!(!outside.known_functions.contains("generated_accessor"));
+        assert!(outside.outside_configuration.is_none());
+    }
+
+    #[test]
     fn a_file_with_no_include_of_its_own_still_reaches_a_forced_generated_header() {
         // `-include gen/defs_gen.h` on every compile line: a file with no
         // #include has no edge of its own, but the forced include reaches it.

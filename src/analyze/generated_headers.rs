@@ -82,31 +82,43 @@ impl GeneratedHeaders {
             }
             dirs.push(dir.clone());
         }
+        let mut build_trees: Vec<PathBuf> = Vec::new();
         if let Some(db) = db {
-            // A directory is a build tree when an entry run there compiles a
-            // file elsewhere, or compiles a unit it generated that names
-            // sources elsewhere (a concatenated or unity build).
-            let generated_unit_dirs = db.in_place_units.iter().filter_map(|(dir, file)| {
-                let dir = canonical(Path::new(dir));
-                unit_named_sources(Path::new(file))
-                    .iter()
-                    .any(|named| !Path::new(named).starts_with(&dir))
-                    .then_some(dir)
-            });
-            let build_trees: Vec<PathBuf> = db
-                .build_trees
+            // Only an include directory outside every project root can be the
+            // build's output; with none, nothing below is read.
+            let outside: Vec<(&String, PathBuf)> = db
+                .include_paths
                 .iter()
-                .map(|d| canonical(Path::new(d)))
-                .chain(generated_unit_dirs)
-                .filter(|d| !under_a_root(d))
+                .map(|inc| (inc, canonical(Path::new(inc))))
+                .filter(|(_, path)| path.is_dir() && !under_a_root(path))
                 .collect();
-            for inc in &db.include_paths {
-                let path = canonical(Path::new(inc));
-                if path.is_dir()
-                    && !under_a_root(&path)
-                    && build_trees.iter().any(|t| path.starts_with(t))
-                {
-                    dirs.push(inc.clone());
+            if !outside.is_empty() {
+                // A directory is a build tree when an entry run there compiles
+                // a file elsewhere, or compiles a unit it generated that names
+                // sources elsewhere (a concatenated or unity build). Only a
+                // unit whose directory holds one of those include directories
+                // is read.
+                let generated_unit_dirs = db.in_place_units.iter().filter_map(|(dir, file)| {
+                    let dir = canonical(Path::new(dir));
+                    if !outside.iter().any(|(_, inc)| inc.starts_with(&dir)) {
+                        return None;
+                    }
+                    unit_named_sources(Path::new(file))
+                        .iter()
+                        .any(|named| !Path::new(named).starts_with(&dir))
+                        .then_some(dir)
+                });
+                build_trees = db
+                    .build_trees
+                    .iter()
+                    .map(|d| canonical(Path::new(d)))
+                    .chain(generated_unit_dirs)
+                    .filter(|d| !under_a_root(d))
+                    .collect();
+                for (inc, path) in &outside {
+                    if build_trees.iter().any(|t| path.starts_with(t)) {
+                        dirs.push((*inc).clone());
+                    }
                 }
             }
         }
@@ -123,7 +135,7 @@ impl GeneratedHeaders {
         }
         candidates.sort();
         candidates.dedup();
-        let copies = copies_of_project_files(&candidates, &roots);
+        let copies = copies_of_project_files(&candidates, &roots, &build_trees);
         let files: HashSet<PathBuf> = candidates
             .into_iter()
             .filter(|f| !copies.contains(f))
@@ -155,8 +167,13 @@ impl GeneratedHeaders {
 /// that copies the project's own headers into its build tree (a public
 /// header staged for installation, a source tree staged for a later step)
 /// generates nothing, so a copy is an ordinary project header. Only project
-/// files of a size some candidate has are read.
-fn copies_of_project_files(candidates: &[PathBuf], roots: &[PathBuf]) -> HashSet<PathBuf> {
+/// files of a size some candidate has are read; version-control metadata and
+/// the build trees themselves are not project files.
+fn copies_of_project_files(
+    candidates: &[PathBuf],
+    roots: &[PathBuf],
+    build_trees: &[PathBuf],
+) -> HashSet<PathBuf> {
     let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).ok();
     let mut by_size: std::collections::HashMap<u64, Vec<&PathBuf>> = Default::default();
     for c in candidates {
@@ -171,7 +188,10 @@ fn copies_of_project_files(candidates: &[PathBuf], roots: &[PathBuf]) -> HashSet
     };
     let mut project_digests: HashSet<String> = HashSet::new();
     for root in roots {
-        for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+        let walk = WalkDir::new(root).into_iter().filter_entry(|e| {
+            e.file_name() != ".git" && !build_trees.iter().any(|t| e.path().starts_with(t))
+        });
+        for entry in walk.filter_map(|e| e.ok()) {
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -231,8 +251,8 @@ impl Membership {
     }
 }
 
-/// The files a translation unit names in `#line N "file"` directives, and
-/// the `.c` files it names in a quoted `#include`, by real path; relative
+/// The `.c` files a translation unit names in `#line N "file"` directives
+/// and in quoted `#include`s, by real path; relative
 /// names are read against the unit's own directory. A build that
 /// concatenates its sources into one generated unit marks each with a
 /// `#line`, and a unity build joins them by `#include`. Read from the unit
@@ -272,7 +292,14 @@ fn unit_named_sources(tu: &Path) -> Vec<String> {
             {
                 continue;
             }
-            if let Some(found) = parts.next().and_then(quoted).and_then(|n| resolve(&n)) {
+            // A source, not a grammar or template a generator names (a
+            // parser generator's `#line "../parse.y"`).
+            if let Some(found) = parts
+                .next()
+                .and_then(quoted)
+                .filter(|n| n.ends_with(".c"))
+                .and_then(|n| resolve(&n))
+            {
                 out.push(found);
             }
         } else if let Some(rest) = rest.strip_prefix("include") {

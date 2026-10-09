@@ -227,17 +227,21 @@ impl CompileDb {
 
         for entry in entries {
             let base = Path::new(&entry.directory);
-            let builds_elsewhere = entry
-                .file
-                .as_ref()
-                .is_some_and(|f| !absolutize(base, f).starts_with(base));
+            // Compared after resolving `..`: a Meson database names its
+            // sources `../src/x.c` from the build directory, which a
+            // component-wise prefix test would read as inside it.
+            let builds_elsewhere = entry.file.as_ref().is_some_and(|f| {
+                !lexically_normal(&absolutize(base, f)).starts_with(lexically_normal(base))
+            });
             if builds_elsewhere && seen_dirs.insert(entry.directory.clone()) {
                 db.build_trees.push(entry.directory.clone());
             }
             if let Some(file) = entry.file.as_ref().filter(|_| !builds_elsewhere) {
                 db.in_place_units.push((
                     entry.directory.clone(),
-                    absolutize(base, file).to_string_lossy().into_owned(),
+                    lexically_normal(&absolutize(base, file))
+                        .to_string_lossy()
+                        .into_owned(),
                 ));
             }
             let argv = match (&entry.arguments, &entry.command) {
@@ -660,6 +664,29 @@ pub(crate) fn real_path(p: &Path) -> String {
         .to_string()
 }
 
+/// `path` with `.` dropped and each `..` taking off the component before it,
+/// without touching the file system (a database may name paths that exist
+/// only on the machine that ran the build). A `..` with nothing before it to
+/// remove is kept.
+pub(crate) fn lexically_normal(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else {
+                    out.push(c);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 fn absolutize(base: &Path, dir: &str) -> PathBuf {
     let p = Path::new(dir);
     // A Windows absolute path is absolute on every host: joining `C:\inc` onto
@@ -999,6 +1026,31 @@ mod tests {
         let db = CompileDb::from_entries(&entries);
         let names: Vec<&str> = db.defines.iter().map(|d| d.name()).collect();
         assert_eq!(names, vec!["KEEP"]);
+    }
+
+    #[test]
+    fn an_entry_naming_its_source_through_dotdot_is_an_out_of_source_build() {
+        // Meson writes `file` relative to the build directory.
+        let db = CompileDb::from_entries(&[RawEntry {
+            directory: "/b/build".into(),
+            file: Some("../src/a.c".into()),
+            command: Some("cc -I. -c ../src/a.c".into()),
+            arguments: None,
+        }]);
+        assert_eq!(db.build_trees, vec!["/b/build".to_string()]);
+        assert!(db.in_place_units.is_empty());
+    }
+
+    #[test]
+    fn lexical_normalisation_resolves_dot_and_dotdot() {
+        assert_eq!(
+            lexically_normal(Path::new("/b/build/./../src/a.c")),
+            PathBuf::from("/b/src/a.c")
+        );
+        assert_eq!(
+            lexically_normal(Path::new("../x/../y")),
+            PathBuf::from("../y")
+        );
     }
 
     #[test]
