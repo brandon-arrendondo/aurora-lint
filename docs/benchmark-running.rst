@@ -384,10 +384,13 @@ Exit  Meaning
 2     no scan completed, or the command line was refused (an unknown tool or
       codebase, an unusable ``--dirs-out``, an unknown commit)
 4     some scans completed and some did not; the completed ones are ingested
+      (if that ingest also fails, the exit stays 4 and ``INGEST FAILED`` is
+      printed)
 ===== ==========================================================================
 
 A scan that failed to start (a missing compile-database cache, say) counts as
-not completed, as does one whose run reported ``FAILED``. A final ``FAILED:``
+not completed, as does one whose run reported ``FAILED`` or one aurora-lint
+reported incomplete (its exit 3). A final ``FAILED:``
 line names each by ``tool:codebase``. Exit 3 is aurora-lint's own "scan
 incomplete" code and is never returned by ``realworld-run`` itself.
 

@@ -88,6 +88,10 @@ class TestRealworldRunCommand(unittest.TestCase):
         code, _ = self._run([_ok("libcrc")], ingest_error="db locked")
         self.assertEqual(code, 1)
 
+    def test_partial_failure_stays_four_when_the_ingest_also_fails(self):
+        code, _ = self._run([_ok("lua"), _bad("libcrc")], ingest_error="db locked")
+        self.assertEqual(code, 4)
+
     def test_unknown_codebase_or_tool_exits_two(self):
         for kw in ({"codebase": "nonesuch"}, {"tool": "nonesuch"}):
             args = argparse.Namespace(tool="sqc", codebase="libcrc",
