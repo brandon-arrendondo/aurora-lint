@@ -2000,6 +2000,42 @@ def run_and_ingest(tools: list[str], codebases: list[str],
     return summary
 
 
+# Exit codes of `bench realworld-run` for scans that did not complete. 1 is an
+# ingest failure and 3 is aurora-lint's own "scan incomplete" code, so neither
+# is reused here.
+EXIT_NOTHING_RAN = 2
+EXIT_PARTIAL = 4
+
+
+def failed_scans(results: list[dict]) -> list[dict]:
+    """The scans in `results` that did not complete: one that failed to start
+    or whose run reported FAILED (`ok` false)."""
+    return [r for r in results if not r.get("ok")]
+
+
+def scan_exit_code(results: list[dict]) -> int:
+    """0 when every requested scan completed, `EXIT_NOTHING_RAN` when none
+    did, `EXIT_PARTIAL` when some did. A caller that ingests or queues the
+    run reads this to tell a run that scanned nothing from one that
+    succeeded."""
+    failed = failed_scans(results)
+    if not failed:
+        return 0
+    return EXIT_NOTHING_RAN if len(failed) == len(results) else EXIT_PARTIAL
+
+
+def failure_summary(results: list[dict]) -> str:
+    """One line naming each scan that did not complete as `tool:codebase`,
+    or an empty string when all did."""
+    failed = failed_scans(results)
+    if not failed:
+        return ""
+    total = len(results)
+    head = ("no scan completed" if len(failed) == total
+            else f"{len(failed)} of {total} scans did not complete")
+    return f"{head}: " + ", ".join(f"{r['tool']}:{r['codebase']}" for r in failed)
+
+
 def _settings_groups(results: list[dict]) -> dict[Path, list[dict]]:
     """The successful sqc scans in `results`, grouped by the export directory
     they wrote to, in scan order. One directory is one set of settings and so

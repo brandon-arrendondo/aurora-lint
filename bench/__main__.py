@@ -88,13 +88,13 @@ def cmd_realworld_run(args):
     for t in tools:
         if t not in VALID_TOOLS:
             print(f"Unknown tool '{t}'. Must be one of: {', '.join(VALID_TOOLS)}")
-            return
+            raise SystemExit(2)
     codebases = ([c.strip().lower() for c in args.codebase.split(",")]
                  if args.codebase else sorted(CODEBASES))
     for cb in codebases:
         if cb not in CODEBASES:
             print(f"Unknown codebase '{cb}'. Must be one of: {', '.join(sorted(CODEBASES))}")
-            return
+            raise SystemExit(2)
 
     # A named header tree stands in for the host's own headers on every
     # corpus that reads them; it must exist and replace the same prefix.
@@ -134,6 +134,15 @@ def cmd_realworld_run(args):
           f"{', '.join(codebases)}\n")
     summary = run_and_ingest(tools, codebases, compile_commands=args.compile_commands,
                              profile=args.profile, dirs_out=args.dirs_out)
+    # A run that scanned nothing, or only part of what was asked, is not a
+    # clean run: a queue worker or CI reads the exit status, and the "FAILED
+    # to start" lines above are easy to miss in a log.
+    from bench.realworld_runner import failure_summary, scan_exit_code
+    code = scan_exit_code(summary["results"])
+    if code:
+        print(f"\nFAILED: {failure_summary(summary['results'])} "
+              f"(exit {code})")
+        raise SystemExit(code)
     # The scans can all succeed and the ingest still fail; exit nonzero so a
     # `tee`d or scripted run does not read as clean.
     if summary.get("ingest_error"):
