@@ -563,6 +563,14 @@ save the generated manifest, then pass that manifest to a normal scan via
     # Use it for the actual scan
     aurora-lint /path/to/repo -m gated-rules.toml
 
+The generated manifest also carries the policy and environment settings the
+run resolved: the base manifest's with any ``--profile``, ``--policy``,
+``--environment``, ``--libc``, ``--include-names``, ``--data-model``,
+``--set``, ``--allocator`` or ``--deallocator`` given alongside
+``--detect-relevance`` layered over them, so ``-m gated-rules.toml`` scans
+under the same settings without repeating the flags. A comment at the top
+names the flags the values came from.
+
 Detection is conservative by design: a rule class is disabled only when no
 evidence of it was found anywhere in the scanned corpus (including
 resolved ``-I``/``-d`` includes); an unresolved include path leaves the

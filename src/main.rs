@@ -184,6 +184,39 @@ fn rule_enabled(manifest: &RuleManifest, rule_id: &str) -> bool {
     manifest.get_rule(rule_id).is_some_and(|c| c.enabled)
 }
 
+/// The manifest's settings with the command line's layered over them, before
+/// anything is resolved. A scan resolves these; `--detect-relevance` writes
+/// them out, so the manifest it generates scans the way this run would have.
+fn layered_settings(manifest: &RuleManifest, cli: &SettingsConfig) -> SettingsConfig {
+    let mut config = if cli.profile.is_some() {
+        manifest.settings_config().project_facts()
+    } else {
+        manifest.settings_config()
+    };
+    config.overlay(cli);
+    config
+}
+
+/// The long names of the settings flags this run was given, in the order the
+/// help lists them.
+fn settings_flags_given(matches: &clap::ArgMatches) -> Vec<String> {
+    [
+        ("profile", "--profile"),
+        ("policy", "--policy"),
+        ("environment", "--environment"),
+        ("libc", "--libc"),
+        ("include_names", "--include-names"),
+        ("data_model", "--data-model"),
+        ("set", "--set"),
+        ("allocator", "--allocator"),
+        ("deallocator", "--deallocator"),
+    ]
+    .into_iter()
+    .filter(|(id, _)| matches.contains_id(id))
+    .map(|(_, flag)| flag.to_string())
+    .collect()
+}
+
 /// The manifest's settings with the command line's layered over them.
 ///
 /// A `--profile` on the command line restarts from that preset: the
@@ -200,12 +233,7 @@ fn resolve_settings(
     cli: &SettingsConfig,
     msvc_db: bool,
 ) -> Result<AnalysisSettings> {
-    let mut config = if cli.profile.is_some() {
-        manifest.settings_config().project_facts()
-    } else {
-        manifest.settings_config()
-    };
-    config.overlay(cli);
+    let mut config = layered_settings(manifest, cli);
     if msvc_db {
         config.default_include_names(settings::IncludeNames::CaseInsensitive);
     }
@@ -852,7 +880,12 @@ fn run() -> Result<i32> {
             profile.has_threading, profile.has_windows, profile.max_c_standard
         );
 
-        let generated = analyze::relevance::generate_manifest_toml(&base_manifest, &profile);
+        let generated = analyze::relevance::generate_manifest_toml(
+            &base_manifest,
+            &profile,
+            &layered_settings(&base_manifest, &settings_cli),
+            &settings_flags_given(&matches),
+        );
 
         match write_manifest {
             Some(out_path) => {

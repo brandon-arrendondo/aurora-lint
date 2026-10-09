@@ -6395,3 +6395,24 @@ fn detect_relevance_leaves_con_rules_on_for_pthread_code() {
     assert!(manifest.contains("[rules.cert_c.CON03-C]\nenabled = true"));
     assert!(scan.contains("CON03-C"), "{scan}");
 }
+
+#[test]
+fn detect_relevance_carries_a_cli_environment_into_the_generated_manifest() {
+    // The scan below is not given --environment: the manifest alone must make
+    // it resolve the environment detection was asked for.
+    let (manifest, scan) = relevance_scan(
+        "relevance_interrupt_firmware",
+        &["--environment", "freestanding"],
+    );
+    assert!(manifest.contains("kind = \"freestanding\""), "{manifest}");
+    assert!(
+        manifest.contains("layered over them (--environment)"),
+        "the comment should name the flag the value came from:\n{manifest}"
+    );
+    let (_, plain_scan) = relevance_scan("relevance_interrupt_firmware", &[]);
+    assert!(
+        !plain_scan.contains("environment=freestanding"),
+        "{plain_scan}"
+    );
+    assert!(scan.contains("environment=freestanding"), "{scan}");
+}

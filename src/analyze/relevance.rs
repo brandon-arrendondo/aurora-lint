@@ -308,14 +308,30 @@ fn detect_file(path: &Path, profile: &mut ProjectProfile) {
 /// Renders TOML directly (not via `toml::to_string`) so per-rule rationale
 /// comments survive, matching the hand-authored style of
 /// `conf/realworld/*-rules.toml`.
-pub fn generate_manifest_toml(base: &RuleManifest, profile: &ProjectProfile) -> String {
+///
+/// `settings` is the policy/environment settings a scan of this run would
+/// resolve: the base manifest's with the command line's layered over them.
+/// Writing only the base's would make the generated manifest scan under
+/// different settings (hosted, say) than the run that detected relevance
+/// asked for. `cli_flags` names the settings flags that run was given, for the
+/// comment that says where the values came from.
+pub fn generate_manifest_toml(
+    base: &RuleManifest,
+    profile: &ProjectProfile,
+    settings: &crate::settings::SettingsConfig,
+    cli_flags: &[String],
+) -> String {
     let mut out = String::new();
 
-    // The base manifest's policy/environment settings carry over verbatim;
     // `toml` puts the bare `profile` key ahead of the tables, as TOML needs.
-    let settings = base.settings_config();
-    if settings != Default::default() {
-        out.push_str(&toml::to_string(&settings).expect("settings serialize"));
+    if *settings != Default::default() {
+        if !cli_flags.is_empty() {
+            out.push_str(&format!(
+                "# Settings: the base manifest's, with the command line's layered over them ({}).\n",
+                cli_flags.join(", ")
+            ));
+        }
+        out.push_str(&toml::to_string(settings).expect("settings serialize"));
         out.push('\n');
     }
 
@@ -577,16 +593,40 @@ mod tests {
             max_c_standard: None,
             has_annex_k: false,
         };
-        let toml = generate_manifest_toml(&manifest, &profile);
+        let toml = generate_manifest_toml(&manifest, &profile, &manifest.settings_config(), &[]);
         let reparsed = RuleManifest::from_toml_str(&toml).unwrap();
         assert_eq!(reparsed.settings_config(), manifest.settings_config());
+    }
+
+    #[test]
+    fn generate_writes_the_settings_it_is_given_and_names_the_flags() {
+        let manifest = base_manifest();
+        let settings = crate::settings::SettingsConfig {
+            environment: Some(crate::settings::EnvironmentConfig {
+                kind: Some(crate::settings::EnvironmentKind::Freestanding),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let toml = generate_manifest_toml(
+            &manifest,
+            &ProjectProfile::default(),
+            &settings,
+            &["--environment".to_string()],
+        );
+        assert!(
+            toml.starts_with("# Settings: the base manifest's, with the command line's layered over them (--environment).\n"),
+            "{toml}"
+        );
+        let reparsed = RuleManifest::from_toml_str(&toml).unwrap();
+        assert_eq!(reparsed.settings_config(), settings);
     }
 
     #[test]
     fn generate_disables_win_but_never_con_when_absent() {
         let manifest = base_manifest();
         let profile = ProjectProfile::default();
-        let toml = generate_manifest_toml(&manifest, &profile);
+        let toml = generate_manifest_toml(&manifest, &profile, &manifest.settings_config(), &[]);
         for id in CON_RULE_IDS {
             assert!(
                 toml.contains(&format!("[rules.cert_c.{id}]\nenabled = true")),
@@ -612,7 +652,7 @@ mod tests {
             max_c_standard: None,
             has_annex_k: false,
         };
-        let toml = generate_manifest_toml(&manifest, &profile);
+        let toml = generate_manifest_toml(&manifest, &profile, &manifest.settings_config(), &[]);
         for id in CON_RULE_IDS {
             assert!(toml.contains(&format!("[rules.cert_c.{id}]\nenabled = true")));
         }
@@ -634,14 +674,19 @@ mod tests {
             max_c_standard: None,
             has_annex_k: false,
         };
-        let toml = generate_manifest_toml(&manifest, &profile);
+        let toml = generate_manifest_toml(&manifest, &profile, &manifest.settings_config(), &[]);
         assert!(toml.contains("[rules.cert_c.CON01-C]\nenabled = false\n"));
         assert!(!toml.contains("CON01-C]\nenabled = false  # auto"));
     }
 
     #[test]
     fn con_comment_says_only_thread_or_atomic_apis_were_looked_for() {
-        let toml = generate_manifest_toml(&base_manifest(), &ProjectProfile::default());
+        let toml = generate_manifest_toml(
+            &base_manifest(),
+            &ProjectProfile::default(),
+            &base_manifest().settings_config(),
+            &[],
+        );
         assert!(toml.contains("interrupt or signal handlers are not looked for"));
         assert!(toml.contains("interrupt or signal handlers are not detected"));
         assert!(!toml.contains("kept:"));
@@ -655,7 +700,12 @@ mod tests {
             has_threading: true,
             ..Default::default()
         };
-        let toml = generate_manifest_toml(&base_manifest(), &profile);
+        let toml = generate_manifest_toml(
+            &base_manifest(),
+            &profile,
+            &base_manifest().settings_config(),
+            &[],
+        );
         assert!(!toml.contains("info: no thread or atomic APIs"));
     }
 }
