@@ -324,7 +324,8 @@ not a flag.
 ### Points this amendment does not settle
 
 These earlier statements read differently under the amendment. They are
-recorded here and left unchanged until decided:
+recorded here and left unchanged until decided. The 2026-10-08 amendment
+below settles or carries forward each one.
 
 - Decision 2 says "Policy has two settings"; Decision 4 names two presets.
 - Decision 4's 2026-10-03 amendment says `strict` applies the rules as
@@ -370,7 +371,9 @@ settled the environment points above and several rule readings.
    holds comes from the facts (item 3). This replaces Decision 4's
    `environment = freestanding` for the strict preset, and the oracle
    (Decision 5) records the strict, hosted truth. A team that trusts no
-   library still declares `freestanding` or `libc = "custom"`.
+   library still declares `freestanding` or `libc = "custom"`. (Revised
+   by the 2026-10-08 amendment: `--strict` trusts the ISO C hosted
+   contracts, and the POSIX contracts only when POSIX is declared.)
 2. **`--pedantic` trusts only a declared C library.** Small targets often
    link a reduced library ("embedded micros typically use tiny or micro
    variants"), so the pedantic preset is `policy = pedantic` with a
@@ -422,3 +425,187 @@ the rules it names, and items 1 to 3 and Decision 3's fixture clause are
 read with three presets: a fixture runs under `default` and `strict`, and
 under `pedantic` when its expectation names it, which it does where the
 verdict differs.
+
+## Amendment (2026-10-08, Brandon): the reading and the environment are separate, and POSIX and the editions are declared facts
+
+**Status:** ruled; not yet implemented. Today `--strict` with no library
+declared still trusts the ISO C and POSIX contracts, as the 2026-10-07
+settled item 1 says, and a compile database supplies include paths and `-D`
+macros but no facts. The code change that implements this amendment follows
+it.
+
+### Context
+
+The 2026-10-07 amendment ordered the presets as readings of a rule's text,
+and its settled item 1 made `--strict` assume a hosted C library whose ISO C
+and POSIX contracts hold. That folds an assumption about the platform into
+the reading. CERT C is written against hosted ISO C, and no rule's text
+presupposes POSIX, so a strict scan of code for a non-POSIX target would
+apply POSIX exemptions that nothing in the project declared.
+
+Decision 3 also has only one source of facts, the configuration. A compile
+database states many of the same facts (`-std=c11`,
+`-D_POSIX_C_SOURCE=200809L`), and a project that passes one is declaring
+its build.
+
+### Decision
+
+1. **A preset is a reading plus an environment stance.** The reading is
+   the policy, ordered as the 2026-10-07 amendment orders it: `default`
+   relaxed, `strict` as written, `pedantic` beyond the text. The stance is
+   what the preset assumes about the platform when nothing is declared.
+   - **`default`** assumes the typical case: a hosted ISO C library, POSIX,
+     and a library that honors both contract sets. A project whose target
+     differs declares the facts that differ.
+   - **`strict`** assumes what the rules' text presupposes: a hosted ISO C
+     library. POSIX and the editions are facts (item 3). When a fact is
+     unknown, no exemption that depends on it applies.
+   - **`pedantic`** assumes nothing. It trusts only declared facts, and the
+     scan names every missing fact and the enabled rules that depend on it,
+     as it already does for the C library (2026-10-07 settled item 2).
+2. **Any reading pairs with any environment.** The reading and the stance
+   are set independently, for example the strict reading on a declared
+   newlib target, or the default reading with POSIX declared absent. Every
+   assumption a stance makes can be overridden by a declaration, including
+   a declaration that a fact does not hold.
+3. **Facts are declared, in one of two places.**
+   - The facts are the C library and the editions (`libc`, `libc_version`,
+     `c_standard`, `posix_version`; 2026-10-07 settled item 3) and the
+     target facts of Decision 4's 2026-10-03 amendment.
+   - A fact comes from the project's configuration (a configuration file or
+     `--set`), or from a compile database the project passes
+     (`--compile-commands`). A compile database is a declaration: a project
+     that hands one over is stating facts about its build. There is no
+     third, "discovered" class.
+   - Nothing is inferred from the host that runs the scan (Decision 3;
+     ADR-0011 basis 4). The tool still never looks for a compile database it
+     was not given.
+   - A configuration fact holds for the whole project; a compile-database
+     fact may differ by translation unit. Where the two disagree for a
+     translation unit, the configuration wins and the scan reports the
+     conflict.
+   - Each fact records its source, configuration or compile database, and
+     enters the settings hash with it. `pedantic` accepts compile-database
+     facts, because they are declarations.
+4. **`hosted` means ISO C hosted.** The `hosted` environment kind trusts the
+   ISO C hosted library contracts. The POSIX contracts move behind the
+   `posix_version` fact. They hold when POSIX is declared, and under
+   `default` through its stance, never through `hosted`. This revises the
+   2026-10-07 settled item 1: with no library declared, `--strict` trusts
+   the ISO C hosted contracts, and the POSIX contracts only when
+   `posix_version` is declared.
+5. **Official benchmarks declare their facts** alongside their dependency
+   sets and build recipes (ADR-0018), or through the compile database a
+   recipe produces. Strict scoring then never depends on the host, and the
+   oracle's POSIX-dependent labels on the Linux corpora keep their meaning.
+
+### The points the 2026-10-07 amendment left open
+
+Each point is settled here, settled by a ruling already made, carried
+forward, or left for Brandon's ruling. The last two kinds are collected
+under "For Brandon's ruling" below.
+
+1. **"Policy has two settings" (Decision 2) and two presets (Decision 4).**
+   Settled. Policy has three settings and there are three presets,
+   `default`, `strict` and `pedantic`, ordered as in the 2026-10-07
+   amendment's Decision 1, each with the stance of Decision 1 above.
+   Decision 2's description of `default` and `strict` stands as amended by
+   the 2026-10-07 settled item 4, which gives `--strict` CERT's `_Noreturn`
+   reading.
+2. **"With full pedantry" (Decision 4, 2026-10-03).** Settled by the
+   2026-10-07 amendment's Decision 1. `strict` applies the rules as written,
+   and a reading beyond the text belongs to `pedantic`. The phrase no longer
+   describes `strict`.
+3. **A strippable assert under `strict` (Decision 2; ADR-0010 Decision 5).**
+   Carried forward, rule by rule, as the 2026-10-07 amendment decided. Three
+   rules are ruled:
+   - EXP34-C: a strippable assert is no guard under `strict` (2026-10-07
+     settled item 4).
+   - FLP36-C: an assert comparing compile-time constants is a precision
+     check under `strict`, not under `pedantic` (the same item).
+   - ERR05-C: a plain `assert` is a termination only under `pedantic`, and
+     an assert macro with no `NDEBUG` arm is one under every preset
+     (Brandon, 2026-10-07).
+
+   Every other rule keeps ADR-0010 Decision 5's strict reading until its own
+   ruling.
+4. **Fixtures "under both presets", and "its strict reading" (Decision 3).**
+   Settled.
+   - The 2026-10-07 settled section already reads the fixture clause with
+     three presets: a fixture runs under `default` and `strict`, and under
+     `pedantic` where its expectation names it.
+   - With no fact declared, a rule takes the reading the preset in force
+     gives under its stance (Decision 1 above) and no credit beyond it.
+     That is what "its strict reading" means here.
+   - Each fact gets fixtures with it undeclared, declared in the
+     configuration, declared by a compile database, and with the two in
+     conflict.
+5. **Oracle tags and named options for `pedantic`'s moves (Decisions 5 and
+   7).** Settled by the 2026-10-07 settled item 4: each move of
+   `pedantic`'s boundary is a named option, with its value under every
+   preset, and an oracle tag.
+6. **Publication, Juliet and run labels (Decision 8).**
+   - **Juliet:** settled (Brandon, 2026-10-08). Official Juliet runs are
+     built under `default` and `strict`. `pedantic` is added once this
+     amendment is implemented and Juliet's facts are declared. Juliet runs
+     in the benchmark environment against its declared set (ADR-0018).
+   - **Run labels:** settled by Decision 8's 2026-10-02 amendment, which
+     makes a label name the preset: a pedantic run is `-pedantic-{hash12}`.
+   - **Whether `pedantic` figures are published,** and how they stand
+     beside the `default` headline and `strict`: open, for Brandon's ruling.
+7. **"A deliberate, documented subset" and "the same violations, fewer
+   assumptions" (Consequences).** Settled by the 2026-10-07 amendment's
+   Decision 3: the presets are not nested. The default policy is a
+   deliberate, documented departure from the text, never a hidden one. A
+   team can start with the default preset and move either axis, and every
+   difference between two settings is a named option, a declared fact or a
+   declined rule, each of which the run's settings name.
+8. **ADR-0013 Decision 4 and a preset declining a rule; "the default is the
+   strict reading" in ADR-0013's 2026-10-07 amendment.** Proposed, for
+   Brandon's ruling:
+   - Removing a rule (ADR-0013 Decision 4) decides that no preset enforces
+     it. It is made once, with its changelog entry and its row in the
+     published not-shipped list. A preset that declines a rule leaves it
+     shipped and in play under the other presets. A rule every preset would
+     decline is removed, not declined.
+   - In ADR-0013's first tier, "the strict reading" means the rule's reading
+     with the fact unknown, under every preset, except where a preset's
+     stance assumes the fact. Only `default`'s stance assumes one: POSIX.
+     ADR-0013's text is amended in its own file once this is ruled.
+
+### For Brandon's ruling
+
+- **`default`'s library.** The ruling says `default` assumes "a glibc-like
+  library". The tool's model today is the ISO C and POSIX contract table
+  (`libc = "iso-posix"`), which is also the model Decision 5 publishes
+  with. Proposed: "glibc-like" means that table, not the `glibc` model and
+  its extensions.
+- **A benchmark's `libc`.** Decision 5 publishes figures with the ISO C and
+  POSIX model, never one library's extensions. A benchmark that declared
+  `libc = "glibc"` would bring glibc's contracts into published figures.
+  Proposed: benchmarks declare `posix_version` and `c_standard`, and their
+  library stays the ISO C and POSIX model unless ruled otherwise.
+- **`default`'s POSIX edition.** `default` assumes POSIX is present.
+  Proposed: it assumes no edition, so `posix_version` stays unknown and a
+  function an edition added or removed is read as unknown until the edition
+  is declared, as E4 of the rule-disposition rulings reads `c_standard`.
+- **The remaining per-rule assert readings** (point 3).
+- **Whether `pedantic` figures are published** (point 6).
+- **The ADR-0013 reconciliation** (point 8).
+
+### Consequences
+
+- The code change:
+  - `strict` stops trusting the POSIX contracts unless `posix_version` is
+    declared;
+  - the edition facts are read from a compile database, per translation
+    unit;
+  - each fact's source is recorded in the run's settings;
+  - the fixtures of point 4;
+  - an A/B on the real-world corpora under `default` and `strict`.
+- A `--strict` user scanning POSIX code without declaring POSIX gets the
+  findings that the POSIX exemptions withheld before. Declaring
+  `posix_version`, or passing a compile database that states it, restores
+  the exemptions. The release that ships the change says so in its changelog.
+- `rule-disposition.md` already reads POSIX this way (its E6, and the
+  FIO08-C, FIO14-C, FIO19-C, FIO24-C, MSC05-C, CON37-C and SIG30-C rows).
