@@ -141,7 +141,7 @@ visible in the file itself:
    drivers from `defconfig`. **Nothing in the gated file says it is gated.**
 
 Mechanism 3 accounts for the large majority of out-of-configuration files in
-this suite (102 of the 108 below). A source-level heuristic finds none of
+this suite (121 of the 127 below). A source-level heuristic finds none of
 them, which is the whole argument for a declaration.
 
 ### What the field cannot express
@@ -171,7 +171,7 @@ predicate, not a re-implementation.
 | lua | `linux-x86_64` | 60 | 0 | clean |
 | raylib | `linux-x86_64` (GLFW) | 23 | 9 | scored |
 | pureftpd | `linux-x86_64` | 131 | 0 | clean |
-| sel4 | `linux-x86_64-pc99` | 183 | 82 | scored |
+| sel4 | `linux-x86_64-pc99` | 183 | 101 | scored |
 | mbedtls | `linux-x86_64` | 174 | 0 | clean |
 | valkey | `linux-x86_64` | 234 | 0 | clean |
 | ventoy | `windows-x86` | 22 | 0 | clean |
@@ -729,32 +729,52 @@ kernel code).
 
 ### Primary build configuration
 
-`linux-x86_64-pc99` — `KernelPlatform=pc99 KernelArch=x86`, the configuration
-seL4's `compile_commands.json` is generated for (`macro-expansion.md` §11).
+`linux-x86_64-pc99` — `KernelPlatform=pc99 KernelArch=x86 KernelWordSize=64`,
+the configuration seL4's `compile_commands.json` is generated for
+(`macro-expansion.md` §11). The build's own `gen_config.h` confirms it is
+x86-64: `CONFIG_ARCH_X86_64` and `CONFIG_PLAT_PC99` are defined,
+`CONFIG_ARCH_IA32` is disabled and `CONFIG_WORD_SIZE` is 64.
 
-**This is the suite's largest denominator gap: 82 of 183 in-scope files (45%)
-are never compiled by it.** CMake selects one `arch/` and one `plat/` subtree
-and the unselected ones carry no guard at all, so nothing in the source hints
-that they are out:
+**This is the suite's largest denominator gap: 101 of 183 in-scope files (55%)
+are never compiled by it.** seL4 compiles the kernel as one translation unit,
+`kernel_all.c`, which concatenates its sources, so the compile database lists
+none of `src/*.c` and the set the configuration compiles is read from that
+file's `#line` markers instead: 77 of the 183. Of the 106 it leaves out, 101
+are another platform's, selected by the build system with no guard in the
+file (mechanism 3 above):
 
-| Out of configuration | Files |
-|---|---:|
-| `src/arch/arm/**` | 48 |
-| `src/arch/riscv/**` | 17 |
-| `src/arch/x86/32/**` | 10 |
-| `src/plat/{allwinnerA20,am335x,bcm2837,omap3,tk1}/**` | 7 |
-| **Total** | **82** |
+| Out of configuration | Files | How the build leaves it out |
+|---|---:|---|
+| `src/arch/arm/**` | 48 | CMake selects one `arch/` subtree |
+| `src/arch/riscv/**` | 17 | CMake selects one `arch/` subtree |
+| `src/arch/x86/32/**` | 10 | `KernelWordSize=64` selects `x86/64/` |
+| `src/plat/{allwinnerA20,am335x,bcm2837,omap3,tk1}/**` | 7 | CMake selects one `plat/` subtree |
+| `src/drivers/{serial,smmu,timer}/**` | 19 | `register_driver` adds a driver only when the platform's device tree names its compatible string; pc99 has no device tree |
+| **Total** | **101** | |
 
-These are scored today — sel4 holds thousands of labeled rows and they include
-`src/arch/arm/**` paths. ADR-0010 Decision 7 names this corpus as the precedent
-for its own answer ("seL4 built for x86, arm and riscv is effectively three
-codebases in one repository"), so the measurement-side path is onboarding
-`sel4-arm` as its own benchmark rather than deleting rows from this one.
+The other five are not a scope boundary, because what leaves them out is a
+feature flag inside this configuration (ADR-0010 Decision 1), so they stay in
+the denominator and are labeled on the construct:
+`src/object/reply.c`, `src/object/schedcontext.c`, `src/object/schedcontrol.c`
+and `src/kernel/sporadic.c` are compiled only with `KernelIsMCS`, and
+`src/machine/profiler.c` is a whole-file `#ifdef PROFILER`.
 
-**Unverified:** that `pc99` here means x86-64 rather than ia32. `src/arch/x86/32/**`
-is listed as out of configuration on that assumption; it was not confirmed
-against the generated `gen_config.h`, and it is the one line in this section
-that a reader should not take on trust.
+These are scored today: the sel4 oracle's labeled rows include all of these
+paths. ADR-0010 Decision 7 names this corpus as the precedent for its own
+answer ("seL4 built for x86, arm and riscv is effectively three codebases in
+one repository"), so the measurement-side path is onboarding `sel4-arm` as its
+own benchmark rather than deleting rows from this one.
+
+**Why it matters more with a compile database.** Scanned with only `include/`
+and `libsel4/include/` on the search path, every file that includes a header
+the build generates (`structures_gen.h`, `invocation.h`, `gen_config.h`) has
+DCL31-C's undeclared-function check turned off, which on this corpus is 164 of
+the 183 files. Given the build's compile database, the generated headers
+resolve and the check runs in all but 16. Those headers are generated for this
+configuration, though, so a file written for arm or riscv, an MCS-only file, or
+an `#ifdef CONFIG_VTX` arm calls accessors that the pc99 headers do not
+declare. Measured on the pinned commit, that adds 191 DCL31-C findings, and
+143 of them are in the platform files above.
 
 ## valkey
 
