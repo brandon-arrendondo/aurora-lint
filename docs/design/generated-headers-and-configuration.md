@@ -200,7 +200,8 @@ every corpus with a recipe, so in-source builds (sqlite's, pure-ftpd's,
 valkey's), whose generated headers `bench.dbbuild` already relocates into
 `${GEN}/src`, are covered too. A header reached only through R1/R2
 directories is *generated*; a header found first in a source directory is
-not, whatever its name.
+not, whatever its name. A file in a generated directory with the same bytes as a
+project file is a copy, not a generated header (§6.2).
 
 A side effect, left as is in this change (§8, decision 6): today a
 resolved generated header outside the project roots is classed as *outside
@@ -304,28 +305,38 @@ every relevant arm is `#ifdef`-shaped and evaluable.
 
 ### 6.2 What to watch on the other corpora
 
-Corpora whose recipe generates headers are where this design changes
-anything at all. From the recipes in `data/benchmark_deps/`, out-of-source:
+Only corpora whose build generates headers can change at all. The build
+caches for all twelve recipe corpora, at the environment pinned on
+`5fe0fa57`, record what each build generated:
 
-- curl (`curl_config.h`);
-- mosquitto and raylib, whose CMake builds may generate few or no headers;
+| Corpus | Generated files | Of which byte-identical copies of tracked files | What the rest are |
+|---|---|---|---|
+| sel4 | 21 | 0 | declaration lists, inline accessors, configuration values |
+| sqlite | 45 | 32 | declaration lists (`parse.h`, `opcodes.h`, `keywordhash.h`, …), the public header built from its template, the configure header |
+| valkey | 18 | 1 | the vendored allocator's configure output, a release header |
+| raylib | 6 | 6 | none: the build copies its own public headers and example resources |
+| libcrc | 2 | 0 | generated lookup tables (`.inc`) |
+| curl | 1 | 0 | the configure header (`curl_config.h`) |
+| pure-ftpd | 1 | 0 | the configure header (`config.h`) |
 
-and in-source, relocated to `${GEN}/src`:
+hostap, lua, mbed TLS, mosquitto and ventoy generate nothing, so this
+design cannot change them. hostap's configuration reaches the scan as `-D`
+flags, and ventoy's system headers are its dependency set.
 
-- sqlite: generated declaration lists such as `parse.h`, `opcodes.h` and
-  `keywordhash.h`, plus its configure header;
-- pure-ftpd (`config.h`);
-- valkey.
-
-hostap's configuration reaches the scan as `-D` flags, not as a header. lua,
-libcrc and mbed TLS build without generating headers, and ventoy's database
-comes from its project file. These lists are expectations; the build
-caches' `cache.json` `generated` maps are the record to confirm them.
+**Copies are not generated headers.** raylib's six files and 32 of
+sqlite's 45 have the same bytes as files tracked in the corpus: build steps
+that copy sources into the build tree (raylib's public headers; sqlite's
+`tsrc/` staging copy). They describe no configuration. Recognition
+therefore treats a file in a generated directory that is byte-identical to
+a file in the project tree as a copy, which is to say an ordinary project
+header. The test is content, not name, so it infers nothing. Without it,
+non-member files would lose raylib's own API declarations.
 
 Where the change will show: files the database does not compile, which the
 scan already counts in its "not compiled by the database's configuration"
-warning. Examples are curl's other TLS backends and platform files, and
-sqlite sources outside the `USE_AMALGAMATION=0` build.
+warning. Examples are curl's TLS backends and platform files outside the
+recipe's build (they read `curl_config.h` today), pure-ftpd's optional
+modules, and sqlite sources outside the `USE_AMALGAMATION=0` build.
 
 What to look for there:
 
