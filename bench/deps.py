@@ -780,9 +780,10 @@ def cache_lock(cache_dir, exclusive: bool):
 
 
 def check_cache(decl: dict, cache_dir, corpus_commit: str | None = None,
-                env_pin: str | None = None) -> tuple[dict, dict, bytes]:
-    """The build cache's record, its generated headers' bytes and its
-    compile_commands.json bytes, exactly the bytes hashed, after
+                env_pin: str | None = None) -> tuple[dict, dict, bytes, dict]:
+    """The build cache's record, its generated headers' bytes, its
+    compile_commands.json bytes and its generated units' bytes, exactly the
+    bytes hashed, after
     checking that it is in this layout (BUILD_CACHE_FORMAT) and was built
     from this recipe, for this corpus commit and environment, and that
     every file, generated units included, hashes to what cache.json records.
@@ -813,11 +814,14 @@ def check_cache(decl: dict, cache_dir, corpus_commit: str | None = None,
         if data is None or hashlib.sha256(data).hexdigest() != sha:
             raise ValueError(f"{f}: missing or not the recorded generated header")
         gen_files[rel] = data
+    unit_files = {}
     for rel, sha in sorted(record.get("generated_units", {}).items()):
         f = cache_dir / UNITS_DIR / rel
-        if not f.is_file() or hashlib.sha256(f.read_bytes()).hexdigest() != sha:
+        data = f.read_bytes() if f.is_file() else None
+        if data is None or hashlib.sha256(data).hexdigest() != sha:
             raise ValueError(f"{f}: missing or not the recorded generated unit")
-    return record, gen_files, body
+        unit_files[rel] = data
+    return record, gen_files, body, unit_files
 
 
 def _norm_path(value: str, corpus: str, build: str):
@@ -917,6 +921,33 @@ def overlay_source_dirs(template: list[dict], overlay: set[str]) -> list[dict]:
     return out
 
 
+# A line marker in a generated unit: `#line N "path"`, or GNU's `# N "path"`.
+_LINE_MARKER = re.compile(r'^([ \t]*#[ \t]*(?:line[ \t]+)?\d+[ \t]+")([^"\n]*)(")', re.M)
+
+
+def tokenize_line_markers(text: str, corpus: str, build: str,
+                          generated_src: set[str] = frozenset()) -> str:
+    """A generated unit's line markers with the paths of the machine that
+    built it written as tokens, as normalize_db writes the database's: a
+    file in the build tree ${GEN}/build/..., a file the build generated into
+    its copy of the checkout (`generated_src`, relative paths) ${GEN}/src/...,
+    and any other file of the checkout ${CORPUS}/.... A path outside both
+    trees (a system header) or a relative one is left as written."""
+    corpus, build = posixpath.normpath(corpus), posixpath.normpath(build)
+
+    def one(m):
+        path = m.group(2)
+        if not path.startswith("/"):
+            return m.group(0)
+        v = posixpath.normpath(path)
+        if v.startswith(corpus + "/") and v[len(corpus) + 1:] in generated_src:
+            token = "${GEN}/src/" + v[len(corpus) + 1:]
+        else:
+            token = _norm_path(v, corpus, build)
+        return m.group(1) + (token if token else path) + m.group(3)
+    return _LINE_MARKER.sub(one, text)
+
+
 def db_include_dirs(db_path) -> list[str]:
     """The include directories a materialized compile database searches,
     in its own order, each once. aurora-lint appends a database's paths
@@ -942,7 +973,9 @@ def materialize(decl: dict, corpus_path, cache_dir, bench_root=None,
                 env_pin: str | None = None) -> tuple[Path, dict]:
     """Write the corpus's compile database for this machine from its build
     cache: the template with ${CORPUS} and ${GEN} replaced, and the
-    generated headers copied into BENCH_ROOT/build/<id>/generated/. Refuses
+    generated headers copied into BENCH_ROOT/build/<id>/generated/, and the
+    generated units into BENCH_ROOT/build/<id>/units/ with their line
+    markers' tokens replaced the same way. Refuses
     a cache built from another recipe, commit or environment, and any file
     missing or whose sha256 differs from the cache's record.
     Returns the database's path and the cache record."""
@@ -950,7 +983,8 @@ def materialize(decl: dict, corpus_path, cache_dir, bench_root=None,
     # The bytes check_cache hashed, not a second read: without a lock file
     # (an older cache) a second read could come from a cache swapped in since.
     with cache_lock(cache_dir, exclusive=False):
-        record, gen_files, body = check_cache(decl, cache_dir, corpus_commit, env_pin)
+        record, gen_files, body, unit_files = check_cache(decl, cache_dir, corpus_commit,
+                                                          env_pin)
     entries = json.loads(body)
     # Every build-tree directory the template searches, whether or not the
     # build generated a header into it: a CMake build adds its binary
@@ -978,6 +1012,13 @@ def materialize(decl: dict, corpus_path, cache_dir, bench_root=None,
 
     db = [{"directory": sub(e["directory"]), "file": sub(e["file"]),
            "arguments": [sub(a) for a in e["arguments"]]} for e in entries]
+    # Generated units, their line markers naming this machine's files. Not
+    # under any directory the database searches: scans do not read them.
+    for rel, data in unit_files.items():
+        out = root / UNITS_DIR / rel
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(sub(data.decode("utf-8", "surrogateescape")),
+                       encoding="utf-8", errors="surrogateescape")
     path = root / "compile_commands.json"
     path.write_text(json.dumps(db, indent=1))
     return path, record

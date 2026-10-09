@@ -16,7 +16,7 @@ from unittest import mock
 from bench import container, deps, realworld_runner
 
 COMMIT, PIN = "c" * 40, "p" * 64
-DECL = {"corpus": "toy", "build": {"steps": ["make"], "db": "$BUILD/compile_commands.json"}}
+DECL = {"corpus": "toy", "platform": "linux-x86_64", "build": {"steps": ["make"], "db": "$BUILD/compile_commands.json"}}
 
 
 def write_cache(cache: Path, decl: dict, header: bytes = b"#define X 1\n") -> None:
@@ -128,7 +128,7 @@ class BuildCacheTest(unittest.TestCase):
 
     def test_check_cache_returns_the_bytes_it_hashed(self):
         write_cache(self.cache, self.decl)
-        record, _, body = deps.check_cache(self.decl, self.cache, COMMIT, PIN)
+        record, _, body, _ = deps.check_cache(self.decl, self.cache, COMMIT, PIN)
         self.assertEqual(hashlib.sha256(body).hexdigest(), record["db_sha256"])
 
     def test_a_scan_with_no_cache_gets_the_build_hint_from_under_the_lock(self):
@@ -200,6 +200,45 @@ class GeneratedUnitsTest(unittest.TestCase):
         rec["generated_units"] = {"build/kernel_all.c": hashlib.sha256(b"#line 1\n").hexdigest()}
         (cache / "cache.json").write_text(json.dumps(rec))
         return cache, rec
+
+    UNIT = ('#line 1 "/src/sel4/src/api/faults.c"\n'
+            'int a;\n'
+            '# 7 "/build/sel4/generated/arch/object/structures_gen.h" 1\n'
+            '#line 3 "/src/sel4/src/gen_config.h"\n'
+            '  #  line 2 "/usr/include/stdint.h"\n'
+            '#line 4 "relative.c"\n'
+            'char *s = "#line 9 \\"/src/sel4/not_a_marker.c\\"";\n')
+
+    def test_line_markers_are_tokenized_like_the_database(self):
+        out = deps.tokenize_line_markers(self.UNIT, "/src/sel4", "/build/sel4",
+                                         {"src/gen_config.h"})
+        self.assertEqual(out.splitlines(), [
+            '#line 1 "${CORPUS}/src/api/faults.c"',
+            'int a;',
+            '# 7 "${GEN}/build/generated/arch/object/structures_gen.h" 1',
+            '#line 3 "${GEN}/src/src/gen_config.h"',
+            '  #  line 2 "/usr/include/stdint.h"',      # a system header: as written
+            '#line 4 "relative.c"',
+            'char *s = "#line 9 \\"/src/sel4/not_a_marker.c\\"";',   # not a directive
+        ])
+
+    def test_materialize_writes_units_naming_this_machines_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            cache, rec = self._cache_with_unit(td)
+            unit = deps.tokenize_line_markers(self.UNIT, "/src/sel4", "/build/sel4",
+                                              {"src/gen_config.h"}).encode()
+            (cache / deps.UNITS_DIR / "build" / "kernel_all.c").write_bytes(unit)
+            rec["generated_units"] = {"build/kernel_all.c": hashlib.sha256(unit).hexdigest()}
+            (cache / "cache.json").write_text(json.dumps(rec))
+            db, _ = deps.materialize(DECL, Path(td) / "corpus", cache, Path(td) / "bench")
+            root = db.parent
+            text = (root / deps.UNITS_DIR / "build" / "kernel_all.c").read_text()
+            self.assertIn(f'#line 1 "{Path(td) / "corpus"}/src/api/faults.c"', text)
+            self.assertIn(f'# 7 "{root / "generated"}/build/generated/arch/object/'
+                          'structures_gen.h" 1', text)
+            self.assertNotIn("${", text)
+            # Outside every directory the database searches.
+            self.assertNotIn(str(root / deps.UNITS_DIR), db.read_text())
 
     def test_a_tampered_unit_fails_the_check(self):
         with tempfile.TemporaryDirectory() as td:

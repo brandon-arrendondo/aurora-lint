@@ -147,21 +147,30 @@ def build(project: str, corpus_dir: Path, cache_dir: Path, env_pin: str) -> dict
     body = json.dumps(template, indent=1, sort_keys=True).encode()
     (cache_dir / "compile_commands.json").write_bytes(body)
 
-    def keep(files: dict[str, Path], under: str) -> dict[str, str]:
+    def keep(files: dict[str, Path], under: str, rewrite=None) -> dict[str, str]:
         hashes = {}
         for rel, p in files.items():
             out = cache_dir / under / rel
             out.parent.mkdir(parents=True, exist_ok=True)
             data = p.read_bytes()
+            if rewrite:
+                data = rewrite(data.decode("utf-8", "surrogateescape")).encode(
+                    "utf-8", "surrogateescape")
             out.write_bytes(data)
             hashes[rel] = hashlib.sha256(data).hexdigest()
         return hashes
+
+    # A unit's line markers name this container's paths (sel4's kernel_all.c
+    # joins /src/sel4/src/...); written as tokens, like the database's, so
+    # materialize can name the scanning machine's files instead.
+    def tokenize(text: str) -> str:
+        return deps.tokenize_line_markers(text, str(src), str(bld), overlay)
     record = {"format": deps.BUILD_CACHE_FORMAT,
               "corpus": project, "corpus_commit": commit, "environment": env_pin,
               "recipe_sha256": deps.recipe_sha256(decl),
               "db_sha256": hashlib.sha256(body).hexdigest(),
               "entries": len(template), "generated": keep(gen, "generated"),
-              "generated_units": keep(units, deps.UNITS_DIR),
+              "generated_units": keep(units, deps.UNITS_DIR, tokenize),
               "generated_units_not_kept": units_gone,
               "dropped_include_dirs": sorted(dropped)}
     (cache_dir / "cache.json").write_text(json.dumps(record, indent=1, sort_keys=True) + "\n")

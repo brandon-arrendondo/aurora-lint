@@ -225,7 +225,7 @@ def build_db(project: str, image: str = DEFAULT_IMAGE,
             reason = "--rebuild"
         else:
             try:
-                record, _, _ = deps.check_cache(decl, cache, commit, pin)
+                record, *_ = deps.check_cache(decl, cache, commit, pin)
             except (FileNotFoundError, ValueError) as e:
                 reason = str(e)
             else:
