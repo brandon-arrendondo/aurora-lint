@@ -748,9 +748,12 @@ def cache_lock(cache_dir, exclusive: bool):
     """Hold the build cache's lock (`<cache>.lock` beside it): exclusive to
     build or replace it, shared to read it. A builder swaps a rebuilt cache
     in under the exclusive lock, so a reader holding the shared one never
-    sees half of one cache and half of another. A reader whose lock file
-    does not exist (no builder has run here yet; the cache directory may be
-    mounted read-only) reads unlocked."""
+    sees half of one cache and half of another; a scan that starts during a
+    rebuild waits for the whole rebuild. A reader whose lock file does not
+    exist (no builder has run here yet; the cache directory may be mounted
+    read-only) reads unlocked. flock holds only between processes on one
+    host, so BENCH_ROOT/.build-cache must be on a local filesystem, not NFS
+    shared between machines."""
     import fcntl
     path = Path(cache_dir).with_name(Path(cache_dir).name + ".lock")
     if exclusive:
@@ -770,8 +773,9 @@ def cache_lock(cache_dir, exclusive: bool):
 
 
 def check_cache(decl: dict, cache_dir, corpus_commit: str | None = None,
-                env_pin: str | None = None) -> tuple[dict, dict]:
-    """The build cache's record and its generated headers' bytes, after
+                env_pin: str | None = None) -> tuple[dict, dict, bytes]:
+    """The build cache's record, its generated headers' bytes and its
+    compile_commands.json bytes, exactly the bytes hashed, after
     checking that it was built from this recipe, for this corpus commit and
     environment, and that every file hashes to what cache.json records.
     Raises FileNotFoundError when there is no cache, ValueError when it is
@@ -787,7 +791,8 @@ def check_cache(decl: dict, cache_dir, corpus_commit: str | None = None,
         if want and record.get(key) != want:
             raise ValueError(f"{cache_dir}: built for {key} {record.get(key)}, not {want}")
     db = cache_dir / "compile_commands.json"
-    got = hashlib.sha256(db.read_bytes()).hexdigest() if db.is_file() else "missing"
+    body = db.read_bytes() if db.is_file() else b""
+    got = hashlib.sha256(body).hexdigest() if db.is_file() else "missing"
     if got != record.get("db_sha256"):
         raise ValueError(f"{db}: sha256 {got}, recorded {record.get('db_sha256')}")
     gen_files = {}
@@ -797,7 +802,7 @@ def check_cache(decl: dict, cache_dir, corpus_commit: str | None = None,
         if data is None or hashlib.sha256(data).hexdigest() != sha:
             raise ValueError(f"{f}: missing or not the recorded generated header")
         gen_files[rel] = data
-    return record, gen_files
+    return record, gen_files, body
 
 
 def _norm_path(value: str, corpus: str, build: str):
@@ -927,9 +932,10 @@ def materialize(decl: dict, corpus_path, cache_dir, bench_root=None,
     missing or whose sha256 differs from the cache's record.
     Returns the database's path and the cache record."""
     cache_dir = Path(cache_dir)
+    # The bytes check_cache hashed, not a second read: without a lock file
+    # (an older cache) a second read could come from a cache swapped in since.
     with cache_lock(cache_dir, exclusive=False):
-        record, gen_files = check_cache(decl, cache_dir, corpus_commit, env_pin)
-        body = (cache_dir / "compile_commands.json").read_bytes()
+        record, gen_files, body = check_cache(decl, cache_dir, corpus_commit, env_pin)
     entries = json.loads(body)
     # Every build-tree directory the template searches, whether or not the
     # build generated a header into it: a CMake build adds its binary

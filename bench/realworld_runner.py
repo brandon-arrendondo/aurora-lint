@@ -1677,13 +1677,16 @@ def _benchmark_compile_db(codebase: str, cfg: dict, deps_decl: dict, env_manifes
     commit = _get_codebase_sha(cfg["path"]) or ""
     pin = _env.pin(env_manifest)
     cache_dir = _deps.build_cache_dir(deps_decl, commit, pin)
-    if not (cache_dir / "cache.json").is_file():
+    # Checked inside materialize, under the cache's shared lock: a check out
+    # here could land between a rebuild's two renames and see no cache.
+    try:
+        db_path, record = _deps.materialize(deps_decl, cfg["path"], cache_dir,
+                                            corpus_commit=commit or None, env_pin=pin)
+    except FileNotFoundError:
         raise FileNotFoundError(
             f"no compile database built for {codebase} in this environment "
             f"({cache_dir}); build it with: python -m bench container-build-db "
-            f"--codebase {codebase}")
-    db_path, record = _deps.materialize(deps_decl, cfg["path"], cache_dir,
-                                        corpus_commit=commit or None, env_pin=pin)
+            f"--codebase {codebase}") from None
     return str(db_path), record
 
 

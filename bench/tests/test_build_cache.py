@@ -116,6 +116,30 @@ class BuildCacheTest(unittest.TestCase):
         self.assertEqual((self.cache / "generated" / "build" / "config.h").read_bytes(), b"old\n")
         self.assertFalse(any(".tmp-" in p.name for p in self.cache.parent.iterdir()))
 
+    def test_leftovers_of_a_killed_builder_are_swept(self):
+        write_cache(self.cache, self.decl)
+        for name in (".tmp-123", ".old-456"):
+            (self.cache.parent / (self.cache.name + name) / "x").mkdir(parents=True)
+        self.assertEqual(self.build(), 0)
+        self.assertEqual(self.builds, [])
+        self.assertEqual(sorted(p.name for p in self.cache.parent.iterdir()),
+                         [self.cache.name, self.cache.name + ".lock"])
+
+    def test_check_cache_returns_the_bytes_it_hashed(self):
+        write_cache(self.cache, self.decl)
+        record, _, body = deps.check_cache(self.decl, self.cache, COMMIT, PIN)
+        self.assertEqual(hashlib.sha256(body).hexdigest(), record["db_sha256"])
+
+    def test_a_scan_with_no_cache_gets_the_build_hint_from_under_the_lock(self):
+        from bench import environment
+        with mock.patch.object(deps, "build_cache_dir", return_value=self.cache), \
+             mock.patch.object(environment, "pin", return_value=PIN), \
+             mock.patch.object(deps, "cache_lock", wraps=deps.cache_lock) as lock:
+            with self.assertRaisesRegex(FileNotFoundError, "container-build-db --codebase toy"):
+                realworld_runner._benchmark_compile_db("toy", {"path": self.root / "toy"},
+                                                       self.decl, {})
+        lock.assert_called_once_with(self.cache, exclusive=False)
+
     def test_concurrent_builders_build_once(self):
         results = []
         threads = [threading.Thread(target=lambda: results.append(self.build()))

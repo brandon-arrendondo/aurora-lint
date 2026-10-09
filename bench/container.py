@@ -179,7 +179,10 @@ def build_db(project: str, image: str = DEFAULT_IMAGE,
     cache is never deleted while it is being read. All of it runs under the
     cache's exclusive lock (deps.cache_lock), which a scan's materialize
     shares, so concurrent builders build once and a scan never reads a
-    cache mid-swap. `rebuild` builds even over an intact cache."""
+    cache mid-swap; a scan that starts while a rebuild holds the lock waits
+    for it. BENCH_ROOT/.build-cache must be on a local filesystem: flock
+    does not hold across machines sharing it over NFS. `rebuild` builds even
+    over an intact cache."""
     from bench import deps
     from bench.realworld_runner import CODEBASES, _get_codebase_sha
     if shutil.which(runtime) is None:
@@ -201,11 +204,16 @@ def build_db(project: str, image: str = DEFAULT_IMAGE,
     decl = deps.declared_for(project)
     cache = deps.build_cache_dir(decl, commit, pin, bench_root)
     with deps.cache_lock(cache, exclusive=True):
+        # A builder killed mid-build or mid-swap leaves these; under the
+        # exclusive lock no other builder is using one.
+        for stale in [*cache.parent.glob(f"{cache.name}.tmp-*"),
+                      *cache.parent.glob(f"{cache.name}.old-*")]:
+            shutil.rmtree(stale, ignore_errors=True)
         if rebuild:
             reason = "--rebuild"
         else:
             try:
-                record, _ = deps.check_cache(decl, cache, commit, pin)
+                record, _, _ = deps.check_cache(decl, cache, commit, pin)
             except (FileNotFoundError, ValueError) as e:
                 reason = str(e)
             else:
