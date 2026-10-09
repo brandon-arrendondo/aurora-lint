@@ -9,127 +9,66 @@ General Strategy
 
 A typical CI setup uses two modes:
 
-1. **PR analysis** (diff-only): fast feedback on changed files only
-2. **Push/merge analysis** (full scan): comprehensive scan on the main branch
+1. **PR analysis** (diff-only): findings in the files the pull request changed
+2. **Push/merge analysis** (full scan): every file on the main branch
 
 Both modes export SARIF for integration with code scanning dashboards.
 
 ::
 
-    # PR mode: fast, only changed files, fail on High+
-    aurora-lint . --diff --min-severity Medium --fail-on-severity High --export results.sarif
+    # PR mode: only the files changed since the merge base with main, fail on High+
+    aurora-lint . --diff-base origin/main --min-severity Medium --fail-on-severity High --export results.sarif
 
     # Full scan: entire repo with cross-file context
     aurora-lint . -d . --min-severity Medium --fail-on-severity High --export results.sarif
 
+Diff-Only Scans in CI
+---------------------
+
+There are two diff-only flags, and a CI job wants the second:
+
+- ``--diff`` analyzes the C files with uncommitted changes, staged or not,
+  and untracked ones. A CI checkout has none, so in a pull-request job
+  ``--diff`` alone analyzes nothing and the job passes whatever the branch
+  changed.
+- ``--diff-base REF`` analyzes the C files changed between the merge base of
+  ``REF`` and ``HEAD``, plus those ``--diff`` alone finds, and implies
+  ``--diff``. In a pull-request job, ``REF`` is the target branch, for example
+  ``origin/main``. The checkout must hold ``REF`` and the history back to the
+  merge base. A shallow clone does not, and the error says so: use
+  ``fetch-depth: 0`` in ``actions/checkout`` (``fetchDepth: 0`` in Azure
+  Pipelines), or run ``git fetch --unshallow``.
+
+With either flag:
+
+- ``PATH`` must be the root of the git repository. Any other ``PATH`` (a
+  subdirectory, a single file, a directory outside any repository) is refused
+  with exit code ``2``. To leave parts of the repository out, pass the root
+  with ``--report-exclude``, ``--exclude-all`` or ``toolchain.toml``'s
+  ``[ignore]`` paths.
+- Only the analysis is limited to the changed files. The pre-scan still
+  reads every file under ``PATH``, so cross-file findings in a changed file
+  keep their context.
+- When no C file changed, the log says
+  ``diff-only: no changed C files to analyze``, so it can be told apart from
+  a clean scan.
+
 GitHub Actions
 --------------
 
-The repository includes a ready-to-use workflow at
-``.github/workflows/aurora-lint-analysis.yml``:
+An example workflow is at ``examples/aurora-lint-analysis.yml``; copy it into
+your repository's ``.github/workflows/``. Its pull-request job passes
+``--diff-base origin/${{ github.base_ref }}``:
 
-.. code-block:: yaml
-
-    name: aurora-lint CERT C Analysis
-
-    on:
-      push:
-        branches: [main]
-      pull_request:
-        branches: [main]
-
-    jobs:
-      build:
-        name: Build aurora-lint
-        runs-on: ubuntu-latest
-        steps:
-          - uses: actions/checkout@v4
-
-          - name: Cache Cargo
-            uses: actions/cache@v4
-            with:
-              path: |
-                ~/.cargo/registry
-                ~/.cargo/git
-                target
-              key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-          - name: Build aurora-lint
-            run: cargo build --release
-
-          - name: Upload binary
-            uses: actions/upload-artifact@v4
-            with:
-              name: aurora-lint-binary
-              path: target/release/aurora-lint
-
-      analyze-pr:
-        name: Analyze PR (diff only)
-        if: github.event_name == 'pull_request'
-        needs: build
-        runs-on: ubuntu-latest
-        permissions:
-          security-events: write
-        steps:
-          - uses: actions/checkout@v4
-            with:
-              fetch-depth: 0  # Full history for --diff mode
-
-          - name: Download aurora-lint
-            uses: actions/download-artifact@v4
-            with:
-              name: aurora-lint-binary
-
-          - run: chmod +x aurora-lint
-
-          - name: Run aurora-lint (diff mode)
-            run: |
-              ./aurora-lint . --diff \
-                --min-severity Medium \
-                --fail-on-severity High \
-                --export results.sarif
-
-          - name: Upload SARIF
-            uses: github/codeql-action/upload-sarif@v3
-            if: always()
-            with:
-              sarif_file: results.sarif
-
-      analyze-full:
-        name: Full Analysis
-        if: github.event_name == 'push'
-        needs: build
-        runs-on: ubuntu-latest
-        permissions:
-          security-events: write
-        steps:
-          - uses: actions/checkout@v4
-
-          - name: Download aurora-lint
-            uses: actions/download-artifact@v4
-            with:
-              name: aurora-lint-binary
-
-          - run: chmod +x aurora-lint
-
-          - name: Run aurora-lint (full scan)
-            run: |
-              ./aurora-lint . -d . \
-                --min-severity Medium \
-                --fail-on-severity High \
-                --export results.sarif
-
-          - name: Upload SARIF
-            uses: github/codeql-action/upload-sarif@v3
-            if: always()
-            with:
-              sarif_file: results.sarif
+.. literalinclude:: ../examples/aurora-lint-analysis.yml
+   :language: yaml
 
 Azure DevOps
 -------------
 
-A ready-to-use Azure Pipelines configuration is provided at
-``docs/azure-pipelines.yml``:
+An example Azure Pipelines configuration is at ``docs/azure-pipelines.yml``.
+Its pull-request job passes ``--diff-base origin/main``, the branch its
+``pr`` trigger targets:
 
 .. literalinclude:: azure-pipelines.yml
    :language: yaml
@@ -186,7 +125,8 @@ CI/CD Readiness
      - ``--rules ARR30-C,MEM30-C``
      - 100%
    * - Incremental
-     - ``--diff`` (git modified files)
+     - ``--diff`` (uncommitted changes), ``--diff-base REF`` (a branch's
+       changes)
      - 90%
    * - CI Workflows
      - GitHub Actions + Azure DevOps templates

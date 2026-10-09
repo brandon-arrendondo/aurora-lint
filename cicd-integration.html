@@ -50,6 +50,7 @@
 <li class="toctree-l1"><a class="reference internal" href="options.html">Policy and Environment Options</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">CI/CD Integration</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#general-strategy">General Strategy</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#diff-only-scans-in-ci">Diff-Only Scans in CI</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#github-actions">GitHub Actions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#azure-devops">Azure DevOps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#knowing-what-the-scan-could-not-see">Knowing What the Scan Could Not See</a></li>
@@ -106,29 +107,76 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 <h2>General Strategy<a class="headerlink" href="#general-strategy" title="Link to this heading"></a></h2>
 <p>A typical CI setup uses two modes:</p>
 <ol class="arabic simple">
-<li><p><strong>PR analysis</strong> (diff-only): fast feedback on changed files only</p></li>
-<li><p><strong>Push/merge analysis</strong> (full scan): comprehensive scan on the main branch</p></li>
+<li><p><strong>PR analysis</strong> (diff-only): findings in the files the pull request changed</p></li>
+<li><p><strong>Push/merge analysis</strong> (full scan): every file on the main branch</p></li>
 </ol>
 <p>Both modes export SARIF for integration with code scanning dashboards.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># PR mode: fast, only changed files, fail on High+</span>
-<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">.</span> <span class="o">--</span><span class="n">diff</span> <span class="o">--</span><span class="nb">min</span><span class="o">-</span><span class="n">severity</span> <span class="n">Medium</span> <span class="o">--</span><span class="n">fail</span><span class="o">-</span><span class="n">on</span><span class="o">-</span><span class="n">severity</span> <span class="n">High</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># PR mode: only the files changed since the merge base with main, fail on High+</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">.</span> <span class="o">--</span><span class="n">diff</span><span class="o">-</span><span class="n">base</span> <span class="n">origin</span><span class="o">/</span><span class="n">main</span> <span class="o">--</span><span class="nb">min</span><span class="o">-</span><span class="n">severity</span> <span class="n">Medium</span> <span class="o">--</span><span class="n">fail</span><span class="o">-</span><span class="n">on</span><span class="o">-</span><span class="n">severity</span> <span class="n">High</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span>
 
 <span class="c1"># Full scan: entire repo with cross-file context</span>
 <span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">.</span> <span class="o">-</span><span class="n">d</span> <span class="o">.</span> <span class="o">--</span><span class="nb">min</span><span class="o">-</span><span class="n">severity</span> <span class="n">Medium</span> <span class="o">--</span><span class="n">fail</span><span class="o">-</span><span class="n">on</span><span class="o">-</span><span class="n">severity</span> <span class="n">High</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span>
 </pre></div>
 </div>
 </section>
+<section id="diff-only-scans-in-ci">
+<h2>Diff-Only Scans in CI<a class="headerlink" href="#diff-only-scans-in-ci" title="Link to this heading"></a></h2>
+<p>There are two diff-only flags, and a CI job wants the second:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--diff</span></code> analyzes the C files with uncommitted changes, staged or not,
+and untracked ones. A CI checkout has none, so in a pull-request job
+<code class="docutils literal notranslate"><span class="pre">--diff</span></code> alone analyzes nothing and the job passes whatever the branch
+changed.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--diff-base</span> <span class="pre">REF</span></code> analyzes the C files changed between the merge base of
+<code class="docutils literal notranslate"><span class="pre">REF</span></code> and <code class="docutils literal notranslate"><span class="pre">HEAD</span></code>, plus those <code class="docutils literal notranslate"><span class="pre">--diff</span></code> alone finds, and implies
+<code class="docutils literal notranslate"><span class="pre">--diff</span></code>. In a pull-request job, <code class="docutils literal notranslate"><span class="pre">REF</span></code> is the target branch, for example
+<code class="docutils literal notranslate"><span class="pre">origin/main</span></code>. The checkout must hold <code class="docutils literal notranslate"><span class="pre">REF</span></code> and the history back to the
+merge base. A shallow clone does not, and the error says so: use
+<code class="docutils literal notranslate"><span class="pre">fetch-depth:</span> <span class="pre">0</span></code> in <code class="docutils literal notranslate"><span class="pre">actions/checkout</span></code> (<code class="docutils literal notranslate"><span class="pre">fetchDepth:</span> <span class="pre">0</span></code> in Azure
+Pipelines), or run <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span> <span class="pre">--unshallow</span></code>.</p></li>
+</ul>
+<p>With either flag:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">PATH</span></code> must be the root of the git repository. Any other <code class="docutils literal notranslate"><span class="pre">PATH</span></code> (a
+subdirectory, a single file, a directory outside any repository) is refused
+with exit code <code class="docutils literal notranslate"><span class="pre">2</span></code>. To leave parts of the repository out, pass the root
+with <code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code>, <code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code> or <code class="docutils literal notranslate"><span class="pre">toolchain.toml</span></code>’s
+<code class="docutils literal notranslate"><span class="pre">[ignore]</span></code> paths.</p></li>
+<li><p>Only the analysis is limited to the changed files. The pre-scan still
+reads every file under <code class="docutils literal notranslate"><span class="pre">PATH</span></code>, so cross-file findings in a changed file
+keep their context.</p></li>
+<li><p>When no C file changed, the log says
+<code class="docutils literal notranslate"><span class="pre">diff-only:</span> <span class="pre">no</span> <span class="pre">changed</span> <span class="pre">C</span> <span class="pre">files</span> <span class="pre">to</span> <span class="pre">analyze</span></code>, so it can be told apart from
+a clean scan.</p></li>
+</ul>
+</section>
 <section id="github-actions">
 <h2>GitHub Actions<a class="headerlink" href="#github-actions" title="Link to this heading"></a></h2>
-<p>The repository includes a ready-to-use workflow at
-<code class="docutils literal notranslate"><span class="pre">.github/workflows/aurora-lint-analysis.yml</span></code>:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">aurora-lint CERT C Analysis</span>
+<p>An example workflow is at <code class="docutils literal notranslate"><span class="pre">examples/aurora-lint-analysis.yml</span></code>; copy it into
+your repository’s <code class="docutils literal notranslate"><span class="pre">.github/workflows/</span></code>. Its pull-request job passes
+<code class="docutils literal notranslate"><span class="pre">--diff-base</span> <span class="pre">origin/${{</span> <span class="pre">github.base_ref</span> <span class="pre">}}</span></code>:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># aurora-lint Static Analysis - GitHub Actions Example Workflow</span>
+<span class="c1">#</span>
+<span class="c1"># This workflow runs aurora-lint CERT C analysis on your C/C++ codebase.</span>
+<span class="c1"># - On PRs: reports only on the C files the PR changes (--diff-base mode)</span>
+<span class="c1"># - On push to main: full repository scan</span>
+<span class="c1"># - Uploads SARIF results to GitHub Code Scanning</span>
+<span class="c1">#</span>
+<span class="c1"># Prerequisites:</span>
+<span class="c1">#   - aurora-lint must be built or available as a binary</span>
+<span class="c1">#   - A rules manifest passed with -m (or the built-in default, which enables</span>
+<span class="c1">#     every implemented rule)</span>
+
+<span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">aurora-lint CERT C Analysis</span>
 
 <span class="nt">on</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">push</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">branches</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">main</span><span class="p p-Indicator">]</span>
 <span class="w">  </span><span class="nt">pull_request</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">branches</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">main</span><span class="p p-Indicator">]</span>
+
+<span class="nt">env</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">CARGO_TERM_COLOR</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">always</span>
 
 <span class="nt">jobs</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">build</span><span class="p">:</span>
@@ -137,7 +185,7 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 <span class="w">    </span><span class="nt">steps</span><span class="p">:</span>
 <span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/checkout@v4</span>
 
-<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Cache Cargo</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Cache Cargo registry and build</span>
 <span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/cache@v4</span>
 <span class="w">        </span><span class="nt">with</span><span class="p">:</span>
 <span class="w">          </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
@@ -145,15 +193,18 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 <span class="w">            </span><span class="no">~/.cargo/git</span>
 <span class="w">            </span><span class="no">target</span>
 <span class="w">          </span><span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${{ runner.os }}-cargo-${{ hashFiles(&#39;**/Cargo.lock&#39;) }}</span>
+<span class="w">          </span><span class="nt">restore-keys</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<span class="w">            </span><span class="no">${{ runner.os }}-cargo-</span>
 
 <span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build aurora-lint</span>
 <span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cargo build --release</span>
 
-<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Upload binary</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Upload aurora-lint binary</span>
 <span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/upload-artifact@v4</span>
 <span class="w">        </span><span class="nt">with</span><span class="p">:</span>
 <span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">aurora-lint-binary</span>
 <span class="w">          </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">target/release/aurora-lint</span>
+<span class="w">          </span><span class="nt">retention-days</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
 
 <span class="w">  </span><span class="nt">analyze-pr</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Analyze PR (diff only)</span>
@@ -165,23 +216,28 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 <span class="w">    </span><span class="nt">steps</span><span class="p">:</span>
 <span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/checkout@v4</span>
 <span class="w">        </span><span class="nt">with</span><span class="p">:</span>
-<span class="w">          </span><span class="nt">fetch-depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w">  </span><span class="c1"># Full history for --diff mode</span>
+<span class="w">          </span><span class="c1"># --diff-base needs the base branch and the history back to the merge</span>
+<span class="w">          </span><span class="c1"># base; fetch-depth: 0 fetches every branch and the full history.</span>
+<span class="w">          </span><span class="nt">fetch-depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
 
-<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Download aurora-lint</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Download aurora-lint binary</span>
 <span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/download-artifact@v4</span>
 <span class="w">        </span><span class="nt">with</span><span class="p">:</span>
 <span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">aurora-lint-binary</span>
 
-<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">chmod +x aurora-lint</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Make aurora-lint executable</span>
+<span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">chmod +x aurora-lint</span>
 
+<span class="w">      </span><span class="c1"># PATH must be the repository root. A checkout has no uncommitted</span>
+<span class="w">      </span><span class="c1"># changes, so plain --diff would scan nothing here.</span>
 <span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Run aurora-lint (diff mode)</span>
 <span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
-<span class="w">          </span><span class="no">./aurora-lint . --diff \</span>
+<span class="w">          </span><span class="no">./aurora-lint . --diff-base origin/${{ github.base_ref }} \</span>
 <span class="w">            </span><span class="no">--min-severity Medium \</span>
 <span class="w">            </span><span class="no">--fail-on-severity High \</span>
 <span class="w">            </span><span class="no">--export results.sarif</span>
 
-<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Upload SARIF</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Upload SARIF to GitHub Code Scanning</span>
 <span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">github/codeql-action/upload-sarif@v3</span>
 <span class="w">        </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">always()</span>
 <span class="w">        </span><span class="nt">with</span><span class="p">:</span>
@@ -197,12 +253,13 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 <span class="w">    </span><span class="nt">steps</span><span class="p">:</span>
 <span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/checkout@v4</span>
 
-<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Download aurora-lint</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Download aurora-lint binary</span>
 <span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/download-artifact@v4</span>
 <span class="w">        </span><span class="nt">with</span><span class="p">:</span>
 <span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">aurora-lint-binary</span>
 
-<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">chmod +x aurora-lint</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Make aurora-lint executable</span>
+<span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">chmod +x aurora-lint</span>
 
 <span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Run aurora-lint (full scan)</span>
 <span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
@@ -211,7 +268,7 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 <span class="w">            </span><span class="no">--fail-on-severity High \</span>
 <span class="w">            </span><span class="no">--export results.sarif</span>
 
-<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Upload SARIF</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Upload SARIF to GitHub Code Scanning</span>
 <span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">github/codeql-action/upload-sarif@v3</span>
 <span class="w">        </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">always()</span>
 <span class="w">        </span><span class="nt">with</span><span class="p">:</span>
@@ -221,18 +278,20 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 </section>
 <section id="azure-devops">
 <h2>Azure DevOps<a class="headerlink" href="#azure-devops" title="Link to this heading"></a></h2>
-<p>A ready-to-use Azure Pipelines configuration is provided at
-<code class="docutils literal notranslate"><span class="pre">docs/azure-pipelines.yml</span></code>:</p>
+<p>An example Azure Pipelines configuration is at <code class="docutils literal notranslate"><span class="pre">docs/azure-pipelines.yml</span></code>.
+Its pull-request job passes <code class="docutils literal notranslate"><span class="pre">--diff-base</span> <span class="pre">origin/main</span></code>, the branch its
+<code class="docutils literal notranslate"><span class="pre">pr</span></code> trigger targets:</p>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># aurora-lint Static Analysis - Azure DevOps Example Pipeline</span>
 <span class="c1">#</span>
 <span class="c1"># This pipeline runs aurora-lint CERT C analysis on your C/C++ codebase.</span>
-<span class="c1"># - On PRs: analyzes only changed files (--diff mode)</span>
+<span class="c1"># - On PRs: reports only on the C files the PR changes (--diff-base mode)</span>
 <span class="c1"># - On push to main: full repository scan</span>
 <span class="c1"># - Publishes SARIF results as a build artifact</span>
 <span class="c1">#</span>
 <span class="c1"># Prerequisites:</span>
 <span class="c1">#   - Rust toolchain installed on the agent (or use a Rust container)</span>
-<span class="c1">#   - A aurora-lint-rules.toml manifest (or use built-in defaults)</span>
+<span class="c1">#   - A rules manifest passed with -m (or the built-in default, which enables</span>
+<span class="c1">#     every implemented rule)</span>
 
 <span class="nt">trigger</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">branches</span><span class="p">:</span>
@@ -284,7 +343,9 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 <span class="w">        </span><span class="nt">condition</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">eq(variables[&#39;Build.Reason&#39;], &#39;PullRequest&#39;)</span>
 <span class="w">        </span><span class="nt">steps</span><span class="p">:</span>
 <span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">checkout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">self</span>
-<span class="w">            </span><span class="nt">fetchDepth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w">  </span><span class="c1"># Full history for --diff mode</span>
+<span class="w">            </span><span class="c1"># --diff-base needs the base branch and the history back to the</span>
+<span class="w">            </span><span class="c1"># merge base; fetchDepth: 0 fetches every branch and the full history.</span>
+<span class="w">            </span><span class="nt">fetchDepth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
 
 <span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">DownloadPipelineArtifact@2</span>
 <span class="w">            </span><span class="nt">inputs</span><span class="p">:</span>
@@ -292,9 +353,12 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 <span class="w">              </span><span class="nt">targetPath</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">$(Build.SourcesDirectory)</span>
 <span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Download aurora-lint binary</span>
 
+<span class="w">          </span><span class="c1"># PATH must be the repository root. A checkout has no uncommitted</span>
+<span class="w">          </span><span class="c1"># changes, so plain --diff would scan nothing here. origin/main is</span>
+<span class="w">          </span><span class="c1"># the branch the pr trigger above targets: change them together.</span>
 <span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">script</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
 <span class="w">              </span><span class="no">chmod +x aurora-lint</span>
-<span class="w">              </span><span class="no">./aurora-lint . --diff \</span>
+<span class="w">              </span><span class="no">./aurora-lint . --diff-base origin/main \</span>
 <span class="w">                </span><span class="no">--min-severity Medium \</span>
 <span class="w">                </span><span class="no">--fail-on-severity High \</span>
 <span class="w">                </span><span class="no">--export results.sarif</span>
@@ -397,7 +461,8 @@ scan (<a class="reference internal" href="error-handling.html"><span class="doc"
 <td><p>100%</p></td>
 </tr>
 <tr class="row-even"><td><p>Incremental</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">--diff</span></code> (git modified files)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--diff</span></code> (uncommitted changes), <code class="docutils literal notranslate"><span class="pre">--diff-base</span> <span class="pre">REF</span></code> (a branch’s
+changes)</p></td>
 <td><p>90%</p></td>
 </tr>
 <tr class="row-odd"><td><p>CI Workflows</p></td>
