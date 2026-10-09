@@ -582,7 +582,7 @@ pub static DECLINED_RULES: &[(&str, &[Policy])] = &[];
 pub static LIBRARY_CONTRACT_READERS: &[&str] = &[
     "API00-C", "ARR30-C", "ARR38-C", "EXP33-C", "EXP34-C", "INT08-C", "INT10-C", "INT16-C",
     "INT30-C", "INT31-C", "INT32-C", "INT33-C", "INT34-C", "MEM01-C", "MEM30-C", "MEM31-C",
-    "MSC37-C", "PRE31-C",
+    "MSC07-C", "MSC37-C", "PRE31-C",
 ];
 
 /// Whether `table` declines `rule_id` under `policy`.

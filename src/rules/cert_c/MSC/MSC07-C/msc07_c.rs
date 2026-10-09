@@ -5,25 +5,51 @@
 //!
 //! Detects unreachable code patterns:
 //! 1. Statements after unconditional return in the same block
-//! 2. Statements after noreturn function calls (exit, abort, _Exit, longjmp, etc.)
+//! 2. Statements after a call to a function that never returns: the shared
+//!    noreturn set (`crate::analyze::noreturn`) the control-flow rules use,
+//!    so `exit`/`abort` end a block only under `stdlib_noreturn`, and a
+//!    project's own noreturn functions end it too
 //! 3. Statements after unconditional break/continue/goto in the same block
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::noreturn::{self, ByNoreturnTrust};
 use crate::manifest::Severity;
+use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::sync::Arc;
 use tree_sitter::Node;
 
-pub struct Msc07C;
+pub struct Msc07C {
+    /// The prescan's cross-file noreturn functions
+    /// (`ProjectContext::noreturn_functions`), under each noreturn setting.
+    noreturn_functions: RefCell<ByNoreturnTrust<Arc<HashSet<String>>>>,
+    /// The run's settings: which functions count as noreturn
+    /// (`stdlib_noreturn`, `trust_noreturn_keyword`).
+    settings: RefCell<Arc<AnalysisSettings>>,
+}
 
 impl Msc07C {
     pub fn new() -> Self {
-        Self
+        Self {
+            noreturn_functions: RefCell::default(),
+            settings: RefCell::default(),
+        }
     }
 
     fn walk_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let settings = Arc::clone(&self.settings.borrow());
+        let noreturn_names = noreturn::noreturn_names_for_file(
+            self.noreturn_functions.borrow().get(&settings),
+            node,
+            source,
+            &settings,
+        );
         for compound in query::find_descendants_of_kind(*node, "compound_statement") {
-            self.check_unreachable_after_terminal(&compound, source, violations);
+            self.check_unreachable_after_terminal(&compound, source, &noreturn_names, violations);
         }
     }
 
@@ -34,6 +60,7 @@ impl Msc07C {
         &self,
         compound: &Node,
         source: &str,
+        noreturn_names: &HashSet<String>,
         violations: &mut Vec<RuleViolation>,
     ) {
         let mut seen_terminal: Option<(&str, usize)> = None; // (kind_label, line)
@@ -90,7 +117,7 @@ impl Msc07C {
             } else {
                 Some(child)
             };
-            if let Some(label) = stmt.and_then(|n| terminal_label(&n, source)) {
+            if let Some(label) = stmt.and_then(|n| terminal_label(&n, source, noreturn_names)) {
                 if !after_dangling_else {
                     seen_terminal = Some((label, child.start_position().row + 1));
                 }
@@ -117,49 +144,23 @@ fn ends_with_dangling_else(node: &Node, source: &str) -> bool {
 
 /// Returns a human-readable label if the node is a terminal (control never
 /// passes to the next sibling).
-fn terminal_label(node: &Node, source: &str) -> Option<&'static str> {
+fn terminal_label(
+    node: &Node,
+    source: &str,
+    noreturn_names: &HashSet<String>,
+) -> Option<&'static str> {
     match node.kind() {
         "return_statement" => Some("return"),
         "break_statement" => Some("break"),
         "continue_statement" => Some("continue"),
         "goto_statement" => Some("goto"),
-        "expression_statement" => {
-            if is_noreturn_call(node, source) {
-                Some("noreturn function call")
-            } else {
-                None
-            }
+        "expression_statement"
+            if noreturn::is_noreturn_call_statement(node, source, noreturn_names) =>
+        {
+            Some("noreturn function call")
         }
         _ => None,
     }
-}
-
-/// Check if an expression_statement contains a call to a known noreturn function.
-fn is_noreturn_call(node: &Node, source: &str) -> bool {
-    let expr = match node.child(0) {
-        Some(e) => e,
-        None => return false,
-    };
-    if expr.kind() != "call_expression" {
-        return false;
-    }
-    let func = match expr.child_by_field_name("function") {
-        Some(f) => f,
-        None => return false,
-    };
-    let name = get_node_text(&func, source);
-    matches!(
-        name.trim(),
-        "exit"
-            | "_exit"
-            | "_Exit"
-            | "abort"
-            | "longjmp"
-            | "quick_exit"
-            | "thrd_exit"
-            | "ExitProcess"
-            | "ExitThread"
-    )
 }
 
 /// Nodes that should be skipped when scanning for unreachable code.
@@ -197,5 +198,13 @@ impl CertRule for Msc07C {
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.walk_node(node, source, violations);
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.noreturn_functions.borrow_mut() = context.noreturn_functions.clone();
+    }
+
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        *self.settings.borrow_mut() = Arc::clone(settings);
     }
 }
