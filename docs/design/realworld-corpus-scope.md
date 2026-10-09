@@ -239,8 +239,9 @@ record's target facts (ADR-0018, 2026-10-09 amendment): `libc = "iso-posix"`
 `posix_version` (2008 where glibc's default feature macros apply, 2001 for
 lua, whose `lprefix.h` selects `_XOPEN_SOURCE 600`) and `char_signed`
 (x86-64 System V; false for libcrc, which builds with `-funsigned-char`). Each
-carries its basis in a comment. ventoy and sel4 declare no `posix_version`
-(a Win32 program, and a stand-alone kernel), and ventoy no `c_standard`.
+carries its basis in a comment. ventoy and sel4 declare `posix_version = "none"`
+(a Win32 program, and a stand-alone kernel), and ventoy leaves `c_standard`
+undeclared.
 
 
 ## sqlite

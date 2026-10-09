@@ -13,9 +13,10 @@ data_model = "lp64"
 libc = "iso-posix"
 # CMakeLists.txt compiles the kernel with -std=c99.
 c_standard = "c99"
-# No posix_version: the seL4 kernel is a stand-alone application with its own
+# POSIX is declared absent: the seL4 kernel is a stand-alone application with its own
 # implementations of the standard library (CMakeLists.txt), not a program run
-# on a POSIX system, so no edition of POSIX describes its configuration of record.
+# on a POSIX system, so its configuration of record is not POSIX.
+posix_version = "none"
 # x86-64 System V psABI: plain char is signed.
 char_signed = true
 

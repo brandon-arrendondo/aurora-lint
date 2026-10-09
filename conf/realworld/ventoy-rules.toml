@@ -15,8 +15,9 @@ wchar_t_bits = 16
 # (ADR-0015 Decision 5; ADR-0018). This is the model's ISO C half only, since
 # Ventoy2Disk is not a POSIX program.
 libc = "iso-posix"
-# No posix_version: the configuration of record is a Win32 program built by MSVC
-# (primary_build_config), which is not a POSIX system.
+# POSIX is declared absent: the configuration of record is a Win32 program built by
+# MSVC (primary_build_config), which is not a POSIX system.
+posix_version = "none"
 # No c_standard: the Visual Studio project sets no /std, and the compile database
 # the recipe derives from it names clang-cl entries, so no one edition of ISO C
 # describes the MSVC build of record.

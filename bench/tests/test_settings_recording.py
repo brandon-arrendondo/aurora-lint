@@ -80,16 +80,17 @@ class TestManifestDeclarations(unittest.TestCase):
     def test_every_corpus_declares_its_library_and_target_facts(self):
         """ADR-0018 (2026-10-09 amendment): the ISO C and POSIX library, the
         C and POSIX editions and the signedness of char, except where the
-        configuration of record has none (ventoy: no POSIX, no one C
-        edition; sel4: no POSIX)."""
+        configuration of record has none: ventoy and sel4 declare POSIX absent,
+        and ventoy leaves the C edition undeclared."""
         import tomllib
         root = Path(__file__).resolve().parents[2] / "conf" / "realworld"
-        no_posix = {"ventoy", "sel4"}
+        no_posix = {"ventoy", "sel4"}  # declared absent: posix_version = "none"
         for path in sorted(root.glob("*-rules.toml")):
             corpus = path.name.removesuffix("-rules.toml")
             env = tomllib.loads(path.read_text())["environment"]
             self.assertEqual(env.get("libc"), "iso-posix", corpus)
-            self.assertEqual("posix_version" in env, corpus not in no_posix, corpus)
+            self.assertEqual(env.get("posix_version") == "none", corpus in no_posix, corpus)
+            self.assertIn("posix_version", env, corpus)
             self.assertEqual("c_standard" in env, corpus != "ventoy", corpus)
             self.assertEqual("char_signed" in env, corpus != "ventoy", corpus)
 

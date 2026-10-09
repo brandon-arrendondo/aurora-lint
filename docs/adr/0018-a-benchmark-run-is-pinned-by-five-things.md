@@ -187,8 +187,9 @@ same change as the decoupling code. Each real-world manifest declares the
 library, the editions and the target facts of its configuration of record,
 and Juliet declares the same through `JULIET_SETTING_OVERRIDES`.
 A corpus with no POSIX configuration of record (Ventoy2Disk, and the seL4
-kernel, which carries its own standard library) declares no
-`posix_version`, and Ventoy2Disk declares no `c_standard` either.
+kernel, which carries its own standard library) declares
+`posix_version = "none"`, a fact about its build of record, and Ventoy2Disk
+leaves `c_standard` undeclared because MSVC's build of record fixes none.
 
 ### Context
 
