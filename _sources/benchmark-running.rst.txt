@@ -374,6 +374,26 @@ nonzero, and the run is simply absent (or partial) in ``bench realworld`` and
 compared straight from their JSON exports, finding for finding, without the
 database.
 
+``realworld-run``'s exit status says how far the run got:
+
+===== ==========================================================================
+Exit  Meaning
+===== ==========================================================================
+0     every requested scan completed (and the ingest, if any, succeeded)
+1     the scans completed but the ingest failed
+2     no scan completed, or the command line was refused (an unknown tool or
+      codebase, an unusable ``--dirs-out``, an unknown commit)
+4     some scans completed and some did not; the completed ones are ingested
+      (if that ingest also fails, the exit stays 4 and ``INGEST FAILED`` is
+      printed)
+===== ==========================================================================
+
+A scan that failed to start (a missing compile-database cache, say) counts as
+not completed, as does one whose run reported ``FAILED`` or one aurora-lint
+reported incomplete (its exit 3). A final ``FAILED:``
+line names each by ``tool:codebase``. Exit 3 is aurora-lint's own "scan
+incomplete" code and is never returned by ``realworld-run`` itself.
+
 One invocation can write more than one export directory: a codebase's compile
 database or a settings option in its ``extra_args`` can change the settings it
 is scanned under, and each set of settings is its own directory and its own

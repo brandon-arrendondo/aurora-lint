@@ -495,6 +495,36 @@ nonzero, and the run is simply absent (or partial) in <code class="docutils lite
 <code class="docutils literal notranslate"><span class="pre">bench</span> <span class="pre">realworld-score</span></code> until the ingest is repeated. Two runs can still be
 compared straight from their JSON exports, finding for finding, without the
 database.</p>
+<p><code class="docutils literal notranslate"><span class="pre">realworld-run</span></code>’s exit status says how far the run got:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Exit</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>0</p></td>
+<td><p>every requested scan completed (and the ingest, if any, succeeded)</p></td>
+</tr>
+<tr class="row-odd"><td><p>1</p></td>
+<td><p>the scans completed but the ingest failed</p></td>
+</tr>
+<tr class="row-even"><td><p>2</p></td>
+<td><p>no scan completed, or the command line was refused (an unknown tool or
+codebase, an unusable <code class="docutils literal notranslate"><span class="pre">--dirs-out</span></code>, an unknown commit)</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>some scans completed and some did not; the completed ones are ingested
+(if that ingest also fails, the exit stays 4 and <code class="docutils literal notranslate"><span class="pre">INGEST</span> <span class="pre">FAILED</span></code> is
+printed)</p></td>
+</tr>
+</tbody>
+</table>
+<p>A scan that failed to start (a missing compile-database cache, say) counts as
+not completed, as does one whose run reported <code class="docutils literal notranslate"><span class="pre">FAILED</span></code> or one aurora-lint
+reported incomplete (its exit 3). A final <code class="docutils literal notranslate"><span class="pre">FAILED:</span></code>
+line names each by <code class="docutils literal notranslate"><span class="pre">tool:codebase</span></code>. Exit 3 is aurora-lint’s own “scan
+incomplete” code and is never returned by <code class="docutils literal notranslate"><span class="pre">realworld-run</span></code> itself.</p>
 <p>One invocation can write more than one export directory: a codebase’s compile
 database or a settings option in its <code class="docutils literal notranslate"><span class="pre">extra_args</span></code> can change the settings it
 is scanned under, and each set of settings is its own directory and its own
