@@ -1442,9 +1442,22 @@
           "src/plat/omap3/**",
           "src/plat/tk1/**"
         ],
-        "out_of_config_state": "scored"
+        "out_of_config_state": "clean"
       },
-      "scope_include": ["src/**"]
+      "scope_include": ["src/**"],
+      "scope_exclude": [
+        "src/arch/arm/**",
+        "src/arch/riscv/**",
+        "src/arch/x86/32/**",
+        "src/drivers/serial/**",
+        "src/drivers/smmu/**",
+        "src/drivers/timer/**",
+        "src/plat/allwinnerA20/**",
+        "src/plat/am335x/**",
+        "src/plat/bcm2837/**",
+        "src/plat/omap3/**",
+        "src/plat/tk1/**"
+      ]
     },
     {
       "name": "mbedtls",

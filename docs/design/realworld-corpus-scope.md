@@ -141,7 +141,7 @@ visible in the file itself:
    drivers from `defconfig`. **Nothing in the gated file says it is gated.**
 
 Mechanism 3 accounts for the large majority of out-of-configuration files in
-this suite (121 of the 127 below). A source-level heuristic finds none of
+this suite (20 of the 26 below). A source-level heuristic finds none of
 them, which is the whole argument for a declaration.
 
 ### What the field cannot express
@@ -171,7 +171,7 @@ predicate, not a re-implementation.
 | lua | `linux-x86_64` | 60 | 0 | clean |
 | raylib | `linux-x86_64` (GLFW) | 23 | 9 | scored |
 | pureftpd | `linux-x86_64` | 131 | 0 | clean |
-| sel4 | `linux-x86_64-pc99` | 183 | 101 | scored |
+| sel4 | `linux-x86_64-pc99` | 82 | 0 | clean |
 | mbedtls | `linux-x86_64` | 174 | 0 | clean |
 | valkey | `linux-x86_64` | 234 | 0 | clean |
 | ventoy | `windows-x86` | 22 | 0 | clean |
@@ -735,8 +735,8 @@ the configuration seL4's `compile_commands.json` is generated for
 x86-64: `CONFIG_ARCH_X86_64` and `CONFIG_PLAT_PC99` are defined,
 `CONFIG_ARCH_IA32` is disabled and `CONFIG_WORD_SIZE` is 64.
 
-**This is the suite's largest denominator gap: 101 of 183 in-scope files (55%)
-are never compiled by it.** seL4 compiles the kernel as one translation unit,
+**101 of the 183 files under `src/` (55%) are never compiled by it, and
+`scope_exclude` leaves them out of this oracle.** seL4 compiles the kernel as one translation unit,
 `kernel_all.c`, which concatenates its sources, so the compile database lists
 none of `src/*.c` and the set the configuration compiles is read from that
 file's `#line` markers instead: 77 of the 183. Of the 106 it leaves out, 101
@@ -759,11 +759,15 @@ the denominator and are labeled on the construct:
 and `src/kernel/sporadic.c` are compiled only with `KernelIsMCS`, and
 `src/machine/profiler.c` is a whole-file `#ifdef PROFILER`.
 
-These are scored today: the sel4 oracle's labeled rows include all of these
-paths. ADR-0010 Decision 7 names this corpus as the precedent for its own
-answer ("seL4 built for x86, arm and riscv is effectively three codebases in
-one repository"), so the measurement-side path is onboarding `sel4-arm` as its
-own benchmark rather than deleting rows from this one.
+They are still scanned and reported, and their labeled rows stay in the
+dataset; they are outside this oracle's denominator, which is ADR-0010
+Decision 7's answer ("seL4 built for x86, arm and riscv is effectively three
+codebases in one repository"). On 2026-10-08 that was 1,780 of the oracle's
+4,193 rows (314 TP, 1,466 FP), all at the pinned commit. They are the
+starting labels for a `sel4-arm` or `sel4-riscv` benchmark when one is
+onboarded, rather than rows deleted. The exclusion follows the declaration:
+both lists name the same eleven globs, and a file goes into one only with the
+other.
 
 **Why it matters more with a compile database.** Scanned with only `include/`
 and `libsel4/include/` on the search path, every file that includes a header
