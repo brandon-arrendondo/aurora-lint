@@ -130,20 +130,24 @@ of them, and a corpus's build run on a host configures against that host.
    not refuse.
 7. **Windows.** Linux corpora do not cover Windows, so their sets never
    include Windows SDK headers. Windows-only files in them read no Windows
-   headers, as ADR-0010's platform handling expects. The Win32 corpus is the
-   pending case below.
+   headers, as ADR-0010's platform handling expects.
+   - The Win32 corpus's set is the pinned Windows SDK and CRT tree, fetched
+     by xwin. Fetching it accepts Microsoft's licence, and that tree is never
+     copied between machines. So the shared image is built without it, and
+     each machine that runs the Win32 corpus adds it locally
+     (`container/licence.Dockerfile`), accepting the licence for itself.
+     Adding it to the shared image yields exactly the full environment's
+     pin, so one declared pin covers every machine.
+   - Its compile database comes from its Visual Studio project's declared
+     configuration, as `clang-cl` entries targeting MSVC, with that tree as
+     its system directories.
+   - Native-MSVC checks need a Windows host.
 
 ## Transition
 
 Until a corpus declares its set and recipe, its runs continue as before,
 under the same run id, and are not covered by the five-pin claim. Each corpus
 moves when its set is declared and its trend break is measured.
-
-Pending: the Win32 corpus (ventoy). Its set will be the pinned Windows SDK
-and CRT tree, held in the same image. Fetching that tree accepts Microsoft's
-licence, so a build argument will gate it. Its compile database will come
-from `clang-cl` targeting MSVC, with that tree as its system directories.
-Native-MSVC checks need a Windows host.
 
 ## Consequences
 
@@ -162,10 +166,11 @@ Native-MSVC checks need a Windows host.
 - **Pins rot.** Snapshot timestamps and sha256-pinned downloads keep their
   meaning, but their sources can disappear: a dated base-image tag, a
   release tarball, a non-snapshotted package repository. Every such artifact
-  is kept by the maintainers in a sha256-keyed artifact cache, refreshed whenever the Dockerfile changes. The image itself is distributed privately from that
-  private registry by digest. It is never published, because it contains
-  other projects' headers and Microsoft's SDK. Strangers build it from the
-  Dockerfile instead.
+  is kept by the maintainers in a sha256-keyed artifact cache, refreshed whenever the Dockerfile changes. The shared image is distributed privately from that
+  private registry by digest (`data/benchmark_environment.json` names it).
+  It is never published, because it contains other projects' headers.
+  Strangers build it from the Dockerfile instead. Microsoft's SDK is in
+  neither: each machine fetches its own.
 - **This repository stays Postgres-blind** (ADR-0004). Recording the pins
   alongside results in the shared database belongs to `benchmarking_db`.
 - **aurora-lint itself is unchanged.** Its behaviour with and without include

@@ -166,20 +166,19 @@ RUN cargo install xwin --version "${XWIN_VERSION}" --locked --root /usr/local \
  && rm -rf "${CARGO_HOME}/registry" "${CARGO_HOME}/git"
 
 # Every benchmark's dependency set, each its own tree under /bench/deps
-# (never installed into the image's system directories).
-#
-# LICENCE. The Win32 corpus's set is the Windows SDK and MSVC CRT, which
-# xwin downloads from Microsoft's servers under Microsoft's licence terms.
-# Building with --build-arg ACCEPT_MICROSOFT_LICENSE=true accepts them for
-# the image being built. Without it that set is skipped, the manifest
-# records it as unprovisioned (a different environment, with a different
-# pin), and scans of that corpus refuse to run.
-ARG ACCEPT_MICROSOFT_LICENSE=false
+# (never installed into the image's system directories), except the Win32
+# corpus's: that one is the Windows SDK and MSVC CRT, which xwin downloads
+# from Microsoft's servers under Microsoft's licence terms. This image is
+# built WITHOUT it, so it can be shared between machines; the manifest
+# records that set as unprovisioned. A machine that runs the Win32 corpus
+# adds it on top with container/licence.Dockerfile, accepting the licence
+# for that machine only, and the resulting image has the full environment's
+# pin. The Microsoft tree is never copied between machines.
 COPY bench /opt/aurora-bench/bench
 COPY data/benchmark_deps /opt/aurora-bench/data/benchmark_deps
 COPY data/benchmark_repos.json /opt/aurora-bench/data/benchmark_repos.json
 RUN cd /opt/aurora-bench \
- && export AURORA_ACCEPT_MICROSOFT_LICENSE=$([ "$ACCEPT_MICROSOFT_LICENSE" = true ] && echo 1 || echo 0) \
+ && export AURORA_ACCEPT_MICROSOFT_LICENSE=0 \
  && for f in data/benchmark_deps/*.json; do \
       python3 -m bench.deps fetch "$(basename "$f" .json)"; rc=$?; \
       [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || exit 1; \
@@ -188,7 +187,6 @@ RUN cd /opt/aurora-bench \
 
 # The environment manifest: its hash is the pin a run records.
 RUN cd /opt/aurora-bench \
- && export AURORA_ACCEPT_MICROSOFT_LICENSE=$([ "$ACCEPT_MICROSOFT_LICENSE" = true ] && echo 1 || echo 0) \
- && python3 -m bench.environment write /etc/aurora-bench/environment.json
+ && AURORA_ACCEPT_MICROSOFT_LICENSE=0 python3 -m bench.environment write /etc/aurora-bench/environment.json
 
 WORKDIR /work
