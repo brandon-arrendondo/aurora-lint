@@ -2829,6 +2829,57 @@ fn a_saved_prescan_keeps_the_context_without_generated_headers() {
 }
 
 #[test]
+fn reports_name_what_is_missing_for_the_files_outside_the_configuration() {
+    // other.c reaches the generated config through a project header; in its
+    // context that header's #include is unresolved, and both reports say so.
+    let (dir, project, build) = generated_headers_project(false);
+    std::fs::write(
+        project.join("include/common.h"),
+        "#include <config_gen.h>\nint common_value(void);\n",
+    )
+    .unwrap();
+    let other = project.join("src/other.c");
+    let text = std::fs::read_to_string(&other).unwrap();
+    std::fs::write(&other, format!("#include <common.h>\n{text}")).unwrap();
+    let db = build.join("compile_commands.json");
+    let headers = dir.path().join("headers.json");
+    let gaps = dir.path().join("gaps.json");
+    let gaps_arg = format!("--report-macro-gaps={}", gaps.display());
+    let (code, stderr, _) = generated_headers_scan(
+        &project,
+        &[
+            "--compile-commands",
+            db.to_str().unwrap(),
+            "--report-headers",
+            headers.to_str().unwrap(),
+            &gaps_arg,
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}");
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&headers).unwrap()).unwrap();
+    let rows = report["unresolved"].as_array().unwrap();
+    assert!(
+        rows.iter().any(|r| r["spelling"] == "config_gen.h"
+            && r["includer"].as_str().unwrap().ends_with("common.h")),
+        "{report:#}"
+    );
+    let gaps: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&gaps).unwrap()).unwrap();
+    assert!(
+        gaps["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["kind"] == "unresolved-include"
+                && g["name"]
+                    .as_str()
+                    .is_some_and(|n| n.contains("config_gen.h"))),
+        "{gaps:#}"
+    );
+}
+
+#[test]
 fn a_generated_include_inside_the_scanned_tree_is_refused() {
     let (_dir, project, _build) = generated_headers_project(false);
     let inside = project.join("include");

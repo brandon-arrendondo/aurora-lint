@@ -188,6 +188,9 @@ fn copies_of_project_files(
     };
     let mut project_digests: HashSet<String> = HashSet::new();
     for root in roots {
+        // A build tree is outside every root by construction, so skipping it
+        // matters only for a root that lies inside one (a scan of a source
+        // tree copied under the build directory).
         let walk = WalkDir::new(root).into_iter().filter_entry(|e| {
             e.file_name() != ".git" && !build_trees.iter().any(|t| e.path().starts_with(t))
         });

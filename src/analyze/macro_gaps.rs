@@ -451,6 +451,18 @@ pub struct MacroGapReport {
 }
 
 impl MacroGapReport {
+    /// One report of two scans' worth: `other`'s rows joined to these, one
+    /// row per gap, the audited files summed. For a scan split around
+    /// build-generated headers, whose two halves resolve differently.
+    pub fn merge(mut self, other: MacroGapReport) -> MacroGapReport {
+        self.gaps.extend(other.gaps);
+        dedupe_and_sort(&mut self.gaps);
+        self.expandable_macros = self.expandable_macros.max(other.expandable_macros);
+        self.files_audited += other.files_audited;
+        self.include_resolution_enabled |= other.include_resolution_enabled;
+        self
+    }
+
     /// Per-kind totals, in report order, summing `count`.
     pub fn totals(&self) -> BTreeMap<MacroGapKind, usize> {
         let mut out = BTreeMap::new();

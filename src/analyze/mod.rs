@@ -377,13 +377,32 @@ pub fn analyze_project(
     // Independent of the rules: it reads the same files and context, so it
     // can run first and the findings loop below stays untouched.
     let macro_gaps = report_macro_gaps.then(|| {
-        macro_gaps::build_report(
-            &c_files,
+        // A file outside the configuration is audited against the context
+        // it is analysed with, its headers looked up as that context did.
+        let (inside, outside): (Vec<String>, Vec<String>) = c_files
+            .iter()
+            .cloned()
+            .partition(|f| std::ptr::eq(context_for(f), &context));
+        let report = macro_gaps::build_report(
+            &inside,
             &context,
             directories,
             include_paths,
             &header_lookup,
-        )
+        );
+        match (context.outside_configuration.as_deref(), &generated) {
+            (Some(outside_context), Some(generated)) if !outside.is_empty() => {
+                let withholding = header_lookup.withholding(Arc::clone(&generated.files));
+                report.merge(macro_gaps::build_report(
+                    &outside,
+                    outside_context,
+                    directories,
+                    include_paths,
+                    &withholding,
+                ))
+            }
+            _ => report,
+        }
     });
 
     // Determine effective parallelism
@@ -655,8 +674,9 @@ fn header_dependence_split<'a>(
 }
 
 /// The include report, with the `#include`s left unresolved for the files
-/// outside the build configuration added: those files were analysed as if
-/// the generated headers were missing, so for them they are.
+/// outside the build configuration added, from them or any header they
+/// reach: those files were analysed as if the generated headers were
+/// missing, so for them they are.
 fn include_report_split<'a>(
     context: &'a context::ProjectContext,
     context_for: &dyn Fn(&str) -> &'a context::ProjectContext,
@@ -665,14 +685,26 @@ fn include_report_split<'a>(
     let Some(outside) = context.outside_configuration.as_deref() else {
         return std::sync::Arc::clone(&context.include_report);
     };
-    let outside_sources: std::collections::HashSet<String> = c_files
+    // Every file those sources reach in their own context: a generated
+    // header is usually included by a project header (outside.c -> common.h
+    // -> config.h), whose row names common.h.
+    let mut reached: std::collections::HashSet<String> = c_files
         .iter()
         .filter(|f| std::ptr::eq(context_for(f), outside))
         .map(|f| compile_commands::real_path(std::path::Path::new(f)))
         .collect();
-    if outside_sources.is_empty() {
+    if reached.is_empty() {
         return std::sync::Arc::clone(&context.include_report);
     }
+    let mut stack: Vec<String> = reached.iter().cloned().collect();
+    while let Some(file) = stack.pop() {
+        for next in outside.include_edges.get(&file).into_iter().flatten() {
+            if reached.insert(next.clone()) {
+                stack.push(next.clone());
+            }
+        }
+    }
+    let outside_sources = reached;
     let mut report = (*context.include_report).clone();
     report.unresolved.extend(
         outside
