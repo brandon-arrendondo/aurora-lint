@@ -639,6 +639,17 @@ save the generated manifest, then pass that manifest to a normal scan via
 <span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">-</span><span class="n">m</span> <span class="n">gated</span><span class="o">-</span><span class="n">rules</span><span class="o">.</span><span class="n">toml</span>
 </pre></div>
 </div>
+<p>The generated manifest also carries the policy and environment settings the
+run resolved: the base manifest’s with any <code class="docutils literal notranslate"><span class="pre">--profile</span></code>, <code class="docutils literal notranslate"><span class="pre">--policy</span></code>,
+<code class="docutils literal notranslate"><span class="pre">--environment</span></code>, <code class="docutils literal notranslate"><span class="pre">--libc</span></code>, <code class="docutils literal notranslate"><span class="pre">--include-names</span></code>, <code class="docutils literal notranslate"><span class="pre">--data-model</span></code>,
+<code class="docutils literal notranslate"><span class="pre">--set</span></code>, <code class="docutils literal notranslate"><span class="pre">--allocator</span></code> or <code class="docutils literal notranslate"><span class="pre">--deallocator</span></code> given alongside
+<code class="docutils literal notranslate"><span class="pre">--detect-relevance</span></code> layered over them, so <code class="docutils literal notranslate"><span class="pre">-m</span> <span class="pre">gated-rules.toml</span></code> scans
+under the same settings without repeating the flags. A comment at the top
+names the flags the values came from. Settings that combine invalidly are
+refused when the manifest is written, as a scan would refuse them. What a
+compile database implies (such as case-insensitive <code class="docutils literal notranslate"><span class="pre">#include</span></code> matching for
+one written for cl) is not written; pass <code class="docutils literal notranslate"><span class="pre">--compile-commands</span></code> again on the
+scan.</p>
 <p>Detection is conservative by design: a rule class is disabled only when no
 evidence of it was found anywhere in the scanned corpus (including
 resolved <code class="docutils literal notranslate"><span class="pre">-I</span></code>/<code class="docutils literal notranslate"><span class="pre">-d</span></code> includes); an unresolved include path leaves the
