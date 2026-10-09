@@ -36,6 +36,13 @@ pub struct Int33C {
     /// the parameter each checks (`ProjectContext::abort_check_macros`),
     /// under each noreturn setting (`ByNoreturnTrust`).
     abort_check_macros: RefCell<ByNoreturnTrust<Arc<HashMap<String, usize>>>>,
+    /// The prescan's cross-file noreturn functions
+    /// (`ProjectContext::noreturn_functions`), under each noreturn setting.
+    noreturn_functions: RefCell<ByNoreturnTrust<Arc<HashSet<String>>>>,
+    /// The functions a call in the current file never returns from: the
+    /// above for the run's settings, plus the file's own (set once per
+    /// check() call).
+    file_noreturn_names: RefCell<HashSet<String>>,
     /// The run's policy and environment settings: whether an
     /// NDEBUG-strippable assert guards a division (`assert_is_guard`).
     settings: RefCell<Arc<AnalysisSettings>>,
@@ -50,6 +57,8 @@ impl Int33C {
             vra_results: RefCell::new(HashMap::new()),
             visible: RefCell::default(),
             abort_check_macros: RefCell::default(),
+            noreturn_functions: RefCell::default(),
+            file_noreturn_names: RefCell::default(),
             settings: RefCell::default(),
         }
     }
@@ -97,6 +106,7 @@ impl CertRule for Int33C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_macros.borrow_mut() = context.macro_constants.clone();
         *self.abort_check_macros.borrow_mut() = context.abort_check_macros.clone();
+        *self.noreturn_functions.borrow_mut() = context.noreturn_functions.clone();
     }
 
     fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
@@ -129,6 +139,14 @@ impl CertRule for Int33C {
             node,
             source,
             self.settings.borrow().facts,
+        );
+
+        let settings = Arc::clone(&self.settings.borrow());
+        *self.file_noreturn_names.borrow_mut() = crate::analyze::noreturn::noreturn_names_for_file(
+            self.noreturn_functions.borrow().get(&settings),
+            node,
+            source,
+            &settings,
         );
 
         // First pass: find division macros and zero-initialized variables
@@ -880,40 +898,25 @@ impl Int33C {
         false
     }
 
-    /// Check if a branch contains return or exit
+    /// Whether a guard's branch leaves: it holds a `return`, `break` or
+    /// `continue` statement, or a direct call to a function that never
+    /// returns under the run's settings (`file_noreturn_names`: `exit` and
+    /// `abort` only under `stdlib_noreturn`). Read off the AST, never the
+    /// branch's text, so an identifier, comment or string that merely spells
+    /// one (`exit_code = 1;`, `return_value++`) does not end it (ADR-0005).
     fn has_return_or_exit(&self, node: &Node, source: &str) -> bool {
-        let text = ast_utils::get_node_text(node, source);
-
-        if text.contains("return") {
-            return true;
-        }
-        // An `exit`/`abort` spelling ends the branch only when the declared
-        // environment honors the standard library's noreturn contract
-        // (`stdlib_noreturn`).
-        if self.settings.borrow().flag("stdlib_noreturn")
-            && (text.contains("exit") || text.contains("abort"))
-        {
-            return true;
-        }
-
-        // Also check child nodes (and their descendants) for a return/break/
-        // continue statement. Note: this deliberately does NOT check `node`
-        // itself against these kinds (only its children and below), matching
-        // the original recursive walk's behavior.
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if query::find_first_descendant(child, |n| {
-                n.kind() == "return_statement"
-                    || n.kind() == "break_statement"
-                    || n.kind() == "continue_statement"
-            })
-            .is_some()
-            {
-                return true;
-            }
-        }
-
-        false
+        let noreturn_names = self.file_noreturn_names.borrow();
+        query::find_first_descendant(*node, |n| match n.kind() {
+            "return_statement" | "break_statement" | "continue_statement" => true,
+            "call_expression" => n
+                .child_by_field_name("function")
+                .filter(|f| f.kind() == "identifier")
+                .is_some_and(|f| {
+                    noreturn_names.contains(ast_utils::get_node_text(&f, source).trim())
+                }),
+            _ => false,
+        })
+        .is_some()
     }
 
     /// Check if division node is in a safe branch (e.g., in the body after a zero check)
