@@ -1721,6 +1721,11 @@ fn conditional_regions(chars: &[char]) -> Vec<bool> {
                     }
                     k += 1;
                 }
+                // A condition that never closes (a malformed body) runs to
+                // the end of the macro and governs nothing.
+                if k >= n {
+                    continue;
+                }
                 j = k + 1;
                 true
             }
@@ -1892,9 +1897,11 @@ fn prev_non_space(chars: &[char], at: usize) -> Option<usize> {
     chars[..at].iter().rposition(|c| !c.is_whitespace())
 }
 
-/// Index of the first non-whitespace character at or after `from`, if any.
+/// Index of the first non-whitespace character at or after `from`, if any;
+/// `None` when `from` is past the end.
 fn next_non_space(chars: &[char], from: usize) -> Option<usize> {
-    chars[from..]
+    chars
+        .get(from..)?
         .iter()
         .position(|c| !c.is_whitespace())
         .map(|off| from + off)
