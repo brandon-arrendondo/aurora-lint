@@ -1741,7 +1741,11 @@ pub fn always_diverges_with(stmt: &Node, ends_path: &dyn Fn(&Node) -> bool) -> b
         "compound_statement" => {
             let mut last = None;
             for child in stmt.child_nodes() {
-                if matches!(child.kind(), "comment" | "{" | "}") {
+                // An empty statement (`exit(1); ;`) does nothing, so it
+                // cannot be what the block falls out of.
+                let empty =
+                    child.kind() == "expression_statement" && child.named_child_count() == 0;
+                if empty || matches!(child.kind(), "comment" | "{" | "}") {
                     continue;
                 }
                 last = Some(child);
@@ -1750,6 +1754,64 @@ pub fn always_diverges_with(stmt: &Node, ends_path: &dyn Fn(&Node) -> bool) -> b
         }
         _ => ends_path(stmt),
     }
+}
+
+/// True when `stmt` is a loop control never leaves by its own condition or
+/// by a `break`: `for (;;)`, or `while`/`do ... while` on a nonzero integer
+/// literal, with no `break` that ends this loop (one inside a nested loop or
+/// `switch` ends only that) and no `goto` that could jump out. A `return` or
+/// a call that never returns inside it leaves the whole function, which is
+/// no fall-through either.
+pub fn loops_forever(stmt: &Node, source: &str) -> bool {
+    let infinite = match stmt.kind() {
+        "for_statement" => stmt.child_by_field_name("condition").is_none(),
+        "while_statement" | "do_statement" => stmt
+            .child_by_field_name("condition")
+            .is_some_and(|c| is_nonzero_integer_literal(&c, source)),
+        _ => false,
+    };
+    if !infinite {
+        return false;
+    }
+    let escapes = query::find_first_descendant(*stmt, |n| match n.kind() {
+        "goto_statement" => true,
+        "break_statement" => query::find_ancestor(n, |a| {
+            matches!(
+                a.kind(),
+                "for_statement" | "while_statement" | "do_statement" | "switch_statement"
+            )
+        })
+        .is_some_and(|owner| owner.id() == stmt.id()),
+        _ => false,
+    });
+    escapes.is_none()
+}
+
+/// A parenthesized or bare integer literal whose value is not zero (`1`,
+/// `(1)`, `0x1u`).
+fn is_nonzero_integer_literal(node: &Node, source: &str) -> bool {
+    let mut n = *node;
+    while n.kind() == "parenthesized_expression" {
+        match n.named_child(0) {
+            Some(inner) => n = inner,
+            None => return false,
+        }
+    }
+    if n.kind() != "number_literal" {
+        return false;
+    }
+    let text = get_node_text(&n, source)
+        .trim()
+        .trim_end_matches(['u', 'U', 'l', 'L'])
+        .to_ascii_lowercase();
+    let value = if let Some(hex) = text.strip_prefix("0x") {
+        u64::from_str_radix(hex, 16).ok()
+    } else if text.len() > 1 && text.starts_with('0') {
+        u64::from_str_radix(&text[1..], 8).ok()
+    } else {
+        text.parse::<u64>().ok()
+    };
+    value.is_some_and(|v| v != 0)
 }
 
 /// Which way a condition from [`dominating_conditions`] had to evaluate for

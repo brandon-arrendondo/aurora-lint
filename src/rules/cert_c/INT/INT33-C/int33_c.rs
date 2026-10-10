@@ -903,8 +903,9 @@ impl Int33C {
     /// of the branch ([`guard_dominance::always_diverges_with`]). Its last
     /// statement is a `return`, `break`, `continue` or `goto`, a direct call
     /// to a function that never returns under the run's settings
-    /// (`file_noreturn_names`), or an `if` with an `else` whose arms both
-    /// leave. A jump or call that merely appears inside the branch does not
+    /// (`file_noreturn_names`), a loop that never ends
+    /// ([`guard_dominance::loops_forever`]), or an `if` with an `else` whose
+    /// arms both leave. A jump or call that merely appears inside the branch does not
     /// count: `{ if (v) return 0; }` falls through when `v` is zero, and a
     /// `break` inside a nested loop or `switch` leaves only that construct.
     /// Read off the AST, never the branch's text (ADR-0005).
@@ -914,6 +915,9 @@ impl Int33C {
             match stmt.kind() {
                 "expression_statement" => {
                     crate::analyze::noreturn::is_noreturn_call_statement(stmt, source, names)
+                }
+                "for_statement" | "while_statement" | "do_statement" => {
+                    guard_dominance::loops_forever(stmt, source)
                 }
                 "if_statement" => {
                     let arm = |field: &str| {
