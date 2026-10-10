@@ -521,17 +521,10 @@ fn generate_rules_all_toml() -> Result<()> {
         // ids across files and any schema drift in the concatenation).
         validate_combined_manifest(&ruleset_name, &combined_content)?;
 
-        // Write combined file
-        let mut file = File::create(&output_path).context(format!(
-            "Failed to create rules-all.toml at {}",
+        write_if_changed(&output_path, &combined_content).context(format!(
+            "Failed to write rules-all.toml to {}",
             output_path.display()
         ))?;
-
-        file.write_all(combined_content.as_bytes())
-            .context(format!(
-                "Failed to write rules-all.toml to {}",
-                output_path.display()
-            ))?;
 
         println!("cargo:rerun-if-changed={}", ruleset_dir.display());
         println!(
@@ -599,12 +592,28 @@ fn sync_rules_templates() -> Result<()> {
     const HEADER: &str = "[metadata]\nname = \"CERT C Rules Configuration\"\nversion = \"1.0.0\"\ndescription = \"Configuration for CERT C coding standards compliance checking\"\ncert_version = \"2016\"\n\n";
 
     let all_path = PathBuf::from("rules_templates/rules-all.toml");
-    fs::write(&all_path, format!("{}{}", HEADER, body))
+    write_if_changed(&all_path, &format!("{}{}", HEADER, body))
         .with_context(|| format!("Failed to write {}", all_path.display()))?;
 
     println!("cargo:rerun-if-changed={}", src_path.display());
     println!("Synced {}", all_path.display());
     Ok(())
+}
+
+/// Write `content` to `path` unless the file already holds exactly that.
+///
+/// The generated manifests live inside directories this script watches with
+/// `rerun-if-changed`, and Cargo dates a build script's run from when it
+/// started. Rewriting a file there, even with the same bytes, therefore
+/// makes the next build see a change, rerun this script, and recompile the
+/// crate and every test target, on every `cargo` invocation. So an
+/// unchanged file is left untouched. A real change still costs one extra
+/// rerun on the next invocation, since that write happens mid-run too.
+fn write_if_changed(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    if fs::read(path).is_ok_and(|existing| existing == content.as_bytes()) {
+        return Ok(());
+    }
+    fs::write(path, content)
 }
 
 fn generate_integration_tests() -> Result<()> {
