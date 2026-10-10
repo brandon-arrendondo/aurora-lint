@@ -188,6 +188,27 @@ class ClassifyTests(Repo):
         self.assertEqual(self.class_of_change(), "full")
 
 
+class VerifiedStampTests(Repo):
+    def test_the_stamp_names_the_tree_not_the_commit(self):
+        tree = self._git("rev-parse", "HEAD^{tree}")
+        stamp = lc.verified_stamp("full")
+        self.assertIn(f"tree {tree} class full", stamp)
+        self.assertNotIn("UNCOMMITTED", stamp)
+        # A second commit with the same content has the same tree.
+        self._git("commit", "-q", "--allow-empty", "-m", "same tree")
+        self.assertIn(f"tree {tree} ", lc.verified_stamp("full"))
+
+    def test_a_head_other_than_the_checkout_is_named(self):
+        self.edit("src/lib.rs", "x + 1", "x + 2")
+        other = self.commit()
+        self._git("checkout", "-q", self.base)
+        self.assertIn(f"differs from --head {other}", lc.verified_stamp("full", other))
+
+    def test_a_dirty_working_tree_is_said_to_be_unverified(self):
+        self.edit("src/lib.rs", "x + 1", "x + 2")
+        self.assertIn("UNCOMMITTED", lc.verified_stamp("full"))
+
+
 class RustCodeTests(unittest.TestCase):
     def same(self, a, b):
         return lc.rust_code(a) == lc.rust_code(b)
