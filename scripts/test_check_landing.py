@@ -165,7 +165,11 @@ class ClassifyTests(Repo):
         self.edit("README.md", "# Project", "# The project")
         self.edit("bench/report.py", "'x'", "'y'")
         self.edit("src/lib.rs", "x + 1", "x + 2")
-        self.assertEqual(self.class_of_change(), "full")
+        result = lc.plan(self.base, self.commit())
+        self.assertEqual(result["class"], "full")
+        # ... and the Python change's tests still run alongside it.
+        for cmd in lc.PYTHON_TESTS:
+            self.assertIn(cmd, result["commands"])
 
     def test_fixtures_manifests_and_unknown_files_are_full(self):
         for rel, old, new in (
