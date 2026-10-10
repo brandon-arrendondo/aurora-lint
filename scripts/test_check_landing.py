@@ -152,6 +152,12 @@ class ClassifyTests(Repo):
         self.edit("bench/report.py", "'x'", "'y'")
         self.assertEqual(self.class_of_change(), "python")
 
+    def test_a_change_to_the_classifier_is_full(self):
+        self.write({"scripts/landing_check.py": "X = 1\n"})
+        self.base = self.commit()
+        self.edit("scripts/landing_check.py", "X = 1", "X = 2")
+        self.assertEqual(self.class_of_change(), "full")
+
     def test_a_scripts_change_also_builds_the_docs(self):
         # docs/conf.py imports from scripts/.
         self.write({"scripts/facts.py": "X = 1\n"})
@@ -207,6 +213,17 @@ class VerifiedStampTests(Repo):
         other = self.commit()
         self._git("checkout", "-q", self.base)
         self.assertIn(f"differs from --head {other}", lc.verified_stamp("full", other))
+
+    def test_an_untracked_file_is_said_to_be_unverified(self):
+        # A new fixture changes the generated tests even before it is added.
+        self.write({"src/rules/cert_c/EXP/EXP34-C/tests/fail/new.c": "int x;\n"})
+        self.assertIn("UNCOMMITTED", lc.verified_stamp("full"))
+
+    def test_a_gitignored_file_is_not(self):
+        self.write({".gitignore": "/scratch.txt\n"})
+        self.commit()
+        self.write({"scratch.txt": "notes\n"})
+        self.assertNotIn("UNCOMMITTED", lc.verified_stamp("full"))
 
     def test_a_dirty_working_tree_is_said_to_be_unverified(self):
         self.edit("src/lib.rs", "x + 1", "x + 2")
