@@ -120,7 +120,7 @@ Environment contracts
    - Default preset: ``true``; strict preset: ``true``; pedantic preset: ``false``
    - Scope: contract
    - Oracle tag: ``contract:stdlib_noreturn``
-   - Basis: C11 7.22.4.1, 7.22.4.4, 7.22.4.5, 7.22.4.7, 7.13.2.1 and 7.26.5.5; POSIX.1-2024 _exit(). A freestanding implementation need not provide <stdlib.h>, <setjmp.h> or <threads.h> at all. Known limitation: two cross-file summaries built by the prescan (a parameter's null state after `if (!p) exit(1);`, and whether a function never returns) still credit these calls whatever this option says.
+   - Basis: C11 7.22.4.1, 7.22.4.4, 7.22.4.5, 7.22.4.7, 7.13.2.1 and 7.26.5.5; POSIX.1-2024 _exit(). A freestanding implementation need not provide <stdlib.h>, <setjmp.h> or <threads.h> at all. Known limitation: three cross-file summaries built by the prescan (a parameter's null state after `if (!p) exit(1);`, whether a function never returns, and what a function leaves in an out-parameter) still credit these calls whatever this option says.
 
 ``stdlib_call_effects``
    Every ISO C or POSIX function the tool knows to have a side effect has one (it sets errno, touches a stream, allocates, or keeps hidden state), and the ones it lists as free of side effects (strlen, memcmp, isdigit, fabs, ntohs, ...) modify no object; whether that makes a call pure is the policy's pre31_listed_library_calls_pure. Withdrawn, a library call is a call to an unknown function.
