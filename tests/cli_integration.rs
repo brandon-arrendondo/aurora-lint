@@ -2996,9 +2996,9 @@ fn arms_the_configuration_leaves_off_read_no_generated_facts() {
 
 #[test]
 fn arms_are_decided_the_same_way_on_every_run() {
-    // h1.h derives MODE from A_ON, which only h2.h defines, so MODE depends
-    // on which is read first: it is defined with no known value, and
-    // neither MODE arm is taken, on every run.
+    // h1.h derives MODE from A_ON, which only h2.h defines: whichever header
+    // is read first, the configuration takes the MODE == 1 arm, on every
+    // run.
     let (_dir, project, build) = generated_headers_project(false);
     std::fs::write(
         project.join("include/h1.h"),
@@ -3029,9 +3029,9 @@ fn arms_are_decided_the_same_way_on_every_run() {
             .into_iter()
             .filter(|k| k.starts_with("member.c"))
             .collect();
-        // Neither undecided arm reads the generated size-1 array.
+        // The compiled arm keeps the size-1 array; the other arm does not.
         assert!(
-            !member.contains(&"member.c:9:ARR30-C".to_string()),
+            member.contains(&"member.c:9:ARR30-C".to_string()),
             "{member:?}"
         );
         assert!(

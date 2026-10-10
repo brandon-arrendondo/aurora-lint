@@ -231,16 +231,21 @@ decided separately.
     configuration's own view, not an assumption.
   - The project's own headers derive more of that state from it
     (`#ifdef CONFIG_ENABLE_SMP_SUPPORT` / `#define ENABLE_SMP_SUPPORT`), so
-    the headers the member files reach are read too. Each round reads every
-    header under the previous round's state and joins what it binds into
-    that state, until a round changes nothing. A join only moves a name up,
-    from undefined to a value, to no known value, to unknown: two headers
-    (or two rounds) that bind a name differently leave it defined with no
-    known value, or unknown. The result does not depend on the order the
-    headers are read in, which the state does not know; a value that
-    depends on that order is not decided. Rebuilding each round from
-    scratch instead would flip `#ifndef X` / `#define X` between rounds
-    forever.
+    the headers the member files reach are read too, after the generated
+    headers, whose definitions then stand for them as `-D`'s stand for
+    both. Each set is read in rounds: every header is read under the fixed
+    state plus what the OTHER headers bound in the previous round, never
+    its own, and each round's bindings replace the last, until a round
+    repeats the one before. A header so sees what every other header
+    defines, as if each included what it depends on first: the Kconfig
+    default `#ifndef CONFIG_SMP` / `#define UP_ONLY` binds nothing once the
+    generated header defines `CONFIG_SMP`, and `#ifndef X` / `#define X`
+    defines `X`. Headers that bind one name differently leave it defined
+    with no known value, or unknown, so the order they are read in cannot
+    matter. A name still changing when the rounds run out is unknown, and
+    so is every name a header binds under a condition on one, however many
+    links away; two headers that each define `X` unless it is defined
+    never settle, and `X` is unknown.
   - The evaluator is `configuration_arms` (three-valued: defined, `!`, `&&`,
     `||`, integer arithmetic and comparison, `#elif`). A reserved name
     (`__GNUC__`) the database does not define, a function-like macro in a

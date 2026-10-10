@@ -22,7 +22,7 @@
 //! headers were missing. This decides which facts a line resolves names
 //! with, never whether a finding is emitted (ADR-0010 D3).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::Path;
 
 use super::compile_commands::CompileDb;
@@ -57,10 +57,10 @@ impl Binding {
     }
 }
 
-/// The most rounds [`ConfigState::build`] reads the headers for. Real
-/// configurations settle in two or three; a bound keeps a pathological one
-/// finite.
-const MAX_ROUNDS: usize = 8;
+/// The most rounds [`ConfigState::build`] reads one set of headers for.
+/// Real configurations settle in two or three, a chain of headers each
+/// deriving a name from the one before in one round per link.
+const MAX_ROUNDS: usize = 16;
 
 /// The configuration's macro state: every name it defines, with its integer
 /// value when it has one, and the names it cannot decide. A name absent from
@@ -70,19 +70,64 @@ pub struct ConfigState {
     names: HashMap<String, Binding>,
 }
 
+/// A source of macro state, for reading a file under it.
+trait Macros {
+    /// What `name` is bound to, or `None` when nothing binds it.
+    fn binding(&self, name: &str) -> Option<Binding>;
+}
+
+impl Macros for ConfigState {
+    fn binding(&self, name: &str) -> Option<Binding> {
+        self.names.get(name).copied()
+    }
+}
+
+/// What each header bound in one round: name -> (header index, binding).
+type Round = HashMap<String, Vec<(usize, Binding)>>;
+
+/// The state one header is read under in a round: the fixed `base`, then
+/// what the OTHER headers bound in the previous round. Never its own: a
+/// header is read once, so `#ifndef X` / `#define X` must not see the X it
+/// defines itself.
+struct Others<'a> {
+    base: &'a HashMap<String, Binding>,
+    round: &'a Round,
+    me: usize,
+}
+
+impl Macros for Others<'_> {
+    fn binding(&self, name: &str) -> Option<Binding> {
+        if let Some(b) = self.base.get(name) {
+            return Some(*b);
+        }
+        self.round
+            .get(name)?
+            .iter()
+            .filter(|(header, _)| *header != self.me)
+            .map(|(_, b)| *b)
+            .reduce(Binding::join)
+    }
+}
+
 impl ConfigState {
     /// The state of `db`'s configuration: its `-D` flags, then the
-    /// definitions in `generated` headers and in `headers` (the project
-    /// headers the configuration's files reach). Each round reads every
-    /// header under the previous round's state and joins what it binds into
-    /// that state, until a round changes nothing. Joining only ever moves a
-    /// name from undefined to defined, from a value to no known value, and
-    /// from there to unknown, so a value read while a name it depends on
-    /// still looked undefined is not kept as the answer (`#ifndef A_ON` /
-    /// `#define MODE 2` read before the header defining `A_ON` leaves `MODE`
-    /// defined with no known value), the result does not depend on the order
-    /// the headers are read in, and `#ifndef X` / `#define X` settles in two
-    /// rounds rather than flipping. Include guards are taken as open, as on a
+    /// definitions in its `generated` headers, then those in `headers` (the
+    /// project headers the configuration's files reach), read under the
+    /// generated headers' as a build's own headers are.
+    ///
+    /// Each set is read in rounds. In a round every header is read under the
+    /// fixed state so far plus what the other headers bound in the previous
+    /// round, never its own, and the round's bindings replace the previous
+    /// round's; reading stops when a round binds what the one before did.
+    /// So a header sees what every other header defines, as if each included
+    /// what it depends on first: `#ifndef CONFIG_SMP` / `#define UP_ONLY`
+    /// binds nothing once the generated header defines `CONFIG_SMP`, and
+    /// `#ifndef X` / `#define X` defines `X`. Headers that bind one name
+    /// differently leave it defined with no known value, or unknown, so the
+    /// order they are read in cannot matter. A name still changing when the
+    /// rounds run out, and every name a header binds under a condition on
+    /// one, is unknown (two headers that each define `X` unless it is
+    /// defined never settle). Include guards are taken as open, as on a
     /// header's first inclusion.
     pub fn build<'a>(
         db: Option<&CompileDb>,
@@ -101,83 +146,107 @@ impl ConfigState {
                 base.insert(d.name().to_string(), Binding::Defined(value));
             }
         }
-        let mut paths: Vec<&Path> = generated.into_iter().chain(headers).collect();
-        paths.sort();
-        paths.dedup();
-        let texts: Vec<String> = paths
-            .into_iter()
-            .filter_map(|p| std::fs::read_to_string(p).ok())
-            .collect();
-        let mut state = ConfigState {
-            names: base.clone(),
+        let read = |paths: Vec<&Path>| -> Vec<String> {
+            let mut paths = paths;
+            paths.sort();
+            paths.dedup();
+            paths
+                .into_iter()
+                .filter_map(|p| std::fs::read_to_string(p).ok())
+                .collect()
         };
-        for _ in 0..MAX_ROUNDS {
-            let next = state.next_round(&base, &texts);
-            if next == state {
-                return state;
-            }
-            state = next;
-        }
-        // Not settled within the bound: a name the last two rounds bind
-        // differently could be either.
-        let next = state.next_round(&base, &texts);
-        let names: Vec<String> = state
-            .names
-            .keys()
-            .chain(next.names.keys())
-            .filter(|n| !base.contains_key(*n))
-            .cloned()
+        let generated: Vec<&Path> = generated.into_iter().collect();
+        let headers: Vec<&Path> = headers
+            .into_iter()
+            .filter(|h| !generated.contains(h))
             .collect();
-        for name in names {
-            if state.names.get(&name) != next.names.get(&name) {
-                state.names.insert(name, Binding::Unknown);
-            }
-        }
-        state
+        // The generated headers' definitions stand for the project's, as the
+        // command line's stand for both.
+        let generated_names = settle(&base, &read(generated));
+        base.extend(generated_names);
+        let project_names = settle(&base, &read(headers));
+        base.extend(project_names);
+        ConfigState { names: base }
     }
+}
 
-    /// `self` joined with what the headers `texts` bind when read under it,
-    /// over the database's `base`. Joined per name, so the order the headers
-    /// are read in cannot change it.
-    fn next_round(&self, base: &HashMap<String, Binding>, texts: &[String]) -> ConfigState {
-        let mut found: BTreeMap<String, Binding> = BTreeMap::new();
-        for text in texts {
-            for (name, binding) in scan(text, self, true).bindings {
-                found
-                    .entry(name)
-                    .and_modify(|b| *b = b.join(binding))
-                    .or_insert(binding);
-            }
-        }
-        let mut names = self.names.clone();
-        for (name, binding) in found {
-            // The command line's definitions stand.
-            if base.contains_key(&name) {
-                continue;
-            }
-            match names.get(&name) {
-                Some(prev) => {
-                    let joined = prev.join(binding);
-                    names.insert(name, joined);
-                }
-                // An #undef of a name nothing defines leaves it undefined.
-                None if binding == Binding::Undefined => {}
-                None => {
-                    names.insert(name, binding);
+/// What `texts` bind when read in rounds over the fixed `base`
+/// ([`ConfigState::build`]); a name in `base` stands.
+fn settle(base: &HashMap<String, Binding>, texts: &[String]) -> HashMap<String, Binding> {
+    let mut rounds: Vec<Round> = vec![Round::new()];
+    let mut depends: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+    for _ in 0..MAX_ROUNDS {
+        let prev = rounds.last().expect("seeded");
+        let mut next = Round::new();
+        for (me, text) in texts.iter().enumerate() {
+            let view = Others {
+                base,
+                round: prev,
+                me,
+            };
+            let scanned = scan(text, &view, true);
+            for (name, binding) in scanned.bindings {
+                if !base.contains_key(&name) {
+                    next.entry(name).or_default().push((me, binding));
                 }
             }
+            for (name, on) in scanned.depends {
+                depends.entry(name).or_default().extend(on);
+            }
         }
-        ConfigState { names }
+        let settled = &next == prev;
+        rounds.push(next);
+        if settled {
+            return joined(rounds.last().expect("pushed"));
+        }
     }
-
-    fn value_of(&self, name: &str) -> Lookup {
-        match self.names.get(name) {
-            Some(Binding::Defined(v)) => Lookup::Defined(*v),
-            Some(Binding::Unknown) => Lookup::Unknown,
-            Some(Binding::Undefined) => Lookup::Undefined,
-            None if is_reserved(name) => Lookup::Unknown,
-            None => Lookup::Undefined,
+    // Not settled: every name bound differently by the later rounds is
+    // unknown, and so is every name a header binds under a condition on
+    // an unknown one, however many links away (a chain longer than the
+    // rounds has links the rounds never reached).
+    let later: Vec<HashMap<String, Binding>> =
+        rounds[rounds.len() / 2..].iter().map(joined).collect();
+    let mut out = later.last().cloned().unwrap_or_default();
+    let mut unknown: Vec<String> = later
+        .iter()
+        .flat_map(|r| r.keys())
+        .filter(|n| later.iter().any(|r| r.get(*n) != later[0].get(*n)))
+        .cloned()
+        .collect();
+    let mut seen: std::collections::HashSet<String> = unknown.iter().cloned().collect();
+    while let Some(name) = unknown.pop() {
+        out.insert(name.clone(), Binding::Unknown);
+        for (dependent, on) in &depends {
+            if on.contains(&name) && !base.contains_key(dependent) && seen.insert(dependent.clone())
+            {
+                unknown.push(dependent.clone());
+            }
         }
+    }
+    out
+}
+
+/// A round's bindings joined across its headers; a name only undefined is
+/// left out.
+fn joined(round: &Round) -> HashMap<String, Binding> {
+    round
+        .iter()
+        .filter_map(|(name, bound)| {
+            let b = bound.iter().map(|(_, b)| *b).reduce(Binding::join)?;
+            (b != Binding::Undefined).then(|| (name.clone(), b))
+        })
+        .collect()
+}
+
+/// `name` as `macros` bind it; an implementation-reserved name nothing
+/// binds is unknown, any other is undefined.
+fn lookup(macros: &dyn Macros, name: &str) -> Lookup {
+    match macros.binding(name) {
+        Some(Binding::Defined(v)) => Lookup::Defined(v),
+        Some(Binding::Unknown) => Lookup::Unknown,
+        Some(Binding::Undefined) => Lookup::Undefined,
+        None if is_reserved(name) => Lookup::Unknown,
+        None => Lookup::Undefined,
     }
 }
 
@@ -185,7 +254,7 @@ impl ConfigState {
 /// with the file's own `#define`s and `#undef`s so far on top, kept apart so
 /// that reading a header never copies the whole state.
 struct View<'a> {
-    base: &'a ConfigState,
+    base: &'a dyn Macros,
     local: HashMap<String, Binding>,
 }
 
@@ -195,7 +264,7 @@ impl View<'_> {
             Some(Binding::Defined(v)) => Lookup::Defined(*v),
             Some(Binding::Undefined) => Lookup::Undefined,
             Some(Binding::Unknown) => Lookup::Unknown,
-            None => self.base.value_of(name),
+            None => lookup(self.base, name),
         }
     }
 }
@@ -596,6 +665,9 @@ struct Scan {
     compiled: Vec<bool>,
     /// Every name the source defines or undefines, as it leaves it.
     bindings: HashMap<String, Binding>,
+    /// Every name the source defines or undefines in any arm -> the names
+    /// the conditions of its arms test.
+    depends: HashMap<String, std::collections::HashSet<String>>,
 }
 
 /// One frame of the conditional stack.
@@ -605,9 +677,12 @@ struct Frame {
     current: Option<bool>,
     /// Some earlier arm of this conditional was taken, as far as known.
     any_taken: Option<bool>,
+    /// The names this conditional's conditions so far test (an `#else` arm
+    /// depends on every condition before it).
+    tests: Vec<String>,
 }
 
-fn scan(source: &str, state: &ConfigState, guards_open: bool) -> Scan {
+fn scan(source: &str, state: &dyn Macros, guards_open: bool) -> Scan {
     let lines: Vec<&str> = source.lines().collect();
     let mut compiled = vec![true; lines.len() + 1];
     let mut local = View {
@@ -620,6 +695,7 @@ fn scan(source: &str, state: &ConfigState, guards_open: bool) -> Scan {
     } else {
         None
     };
+    let mut depends: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
     let mut in_comment = false;
     let mut i = 0;
     while i < lines.len() {
@@ -643,6 +719,15 @@ fn scan(source: &str, state: &ConfigState, guards_open: bool) -> Scan {
         };
         let directive = directive.trim_start();
         let (word, rest) = split_word(directive);
+        let tests = || identifiers(rest).map(str::to_string).collect::<Vec<_>>();
+        if matches!(word, "define" | "undef") {
+            if let Some(name) = identifiers(rest).next() {
+                depends
+                    .entry(name.to_string())
+                    .or_default()
+                    .extend(stack.iter().flat_map(|f| f.tests.iter().cloned()));
+            }
+        }
         match word {
             "ifdef" | "ifndef" => {
                 let name = identifiers(rest).next().unwrap_or("");
@@ -663,6 +748,7 @@ fn scan(source: &str, state: &ConfigState, guards_open: bool) -> Scan {
                 stack.push(Frame {
                     current: cond,
                     any_taken: cond,
+                    tests: if is_guard { Vec::new() } else { tests() },
                 });
             }
             "if" => {
@@ -670,6 +756,7 @@ fn scan(source: &str, state: &ConfigState, guards_open: bool) -> Scan {
                 stack.push(Frame {
                     current: cond,
                     any_taken: cond,
+                    tests: tests(),
                 });
             }
             "elif" | "elifdef" | "elifndef" => {
@@ -692,6 +779,7 @@ fn scan(source: &str, state: &ConfigState, guards_open: bool) -> Scan {
                     };
                     top.current = and(not(top.any_taken), cond);
                     top.any_taken = or(top.any_taken, cond);
+                    top.tests.extend(tests());
                 }
             }
             "else" => {
@@ -736,6 +824,7 @@ fn scan(source: &str, state: &ConfigState, guards_open: bool) -> Scan {
     Scan {
         compiled,
         bindings: local.local,
+        depends,
     }
 }
 
@@ -1140,6 +1229,28 @@ mod tests {
         }
     }
 
+    /// The state `generated` and project `headers` (name, text) give.
+    fn from_generated(generated: &[(&str, &str)], headers: &[(&str, &str)]) -> ConfigState {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |set: &[(&str, &str)], sub: &str| -> Vec<std::path::PathBuf> {
+            std::fs::create_dir_all(dir.path().join(sub)).unwrap();
+            set.iter()
+                .map(|(name, text)| {
+                    let p = dir.path().join(sub).join(name);
+                    std::fs::write(&p, text).unwrap();
+                    p
+                })
+                .collect()
+        };
+        let g = write(generated, "gen");
+        let h = write(headers, "src");
+        ConfigState::build(
+            None,
+            g.iter().map(|p| p.as_path()),
+            h.iter().map(|p| p.as_path()),
+        )
+    }
+
     /// The state `headers` (name, text) give, read in the order given.
     fn from_headers(headers: &[(&str, &str)]) -> ConfigState {
         let dir = tempfile::tempdir().unwrap();
@@ -1241,11 +1352,10 @@ mod tests {
 
     #[test]
     fn a_value_derived_from_a_header_that_sorts_first_is_settled_in_any_order() {
-        // a_derive.h reads A_ON, which only b_config.h defines: read before
-        // it, a_derive.h gives MODE 2, read after it, MODE 1. Which the
-        // compiler sees depends on an include order the state does not know,
-        // so MODE is defined with no known value and neither arm is decided,
-        // whichever header is read first.
+        // a_derive.h reads A_ON, which only b_config.h defines: read under
+        // what the other headers define, it gives MODE 1, whichever header
+        // is read first, and the first round's MODE 2 (read while A_ON
+        // still looked undefined) does not outlive the round.
         let derive = (
             "a_derive.h",
             "#ifndef A_ON\n#define MODE 2\n#else\n#define MODE 1\n#endif\n",
@@ -1254,7 +1364,7 @@ mod tests {
         let member = "#if MODE == 1\nint one;\n#else\nint two;\n#endif\n";
         for order in [[derive, config], [config, derive]] {
             let c = compiled_lines(member, &from_headers(&order));
-            assert!(!c[2] && !c[4], "{order:?}");
+            assert!(c[2] && !c[4], "{order:?}");
             let c = compiled_lines("#ifdef MODE\nint m;\n#endif\n", &from_headers(&order));
             assert!(c[2], "{order:?}");
         }
@@ -1267,15 +1377,17 @@ mod tests {
         let defaults = (
             "defaults.h",
             "#ifndef DEFAULTS_H\n#define DEFAULTS_H\n#ifndef PAGE\n#define PAGE 4096\n#endif\n\
-             #if !defined(FTS3) && defined(FTS4)\n#define FTS3 1\n#endif\n#define FTS4 1\n#endif\n",
+             #if !defined(FTS3) && defined(FTS4)\n#define FTS3 1\n#endif\n#endif\n",
         );
+        let fts4 = ("fts4.h", "#define FTS4 1\n");
         let c = compiled_lines(
             "#if PAGE == 4096\nint p;\n#endif\n#ifdef FTS3\nint f;\n#endif\n",
-            &from_headers(&[defaults]),
+            &from_headers(&[defaults, fts4]),
         );
         assert!(c[2] && c[5], "{c:?}");
-        // Two headers that each define it unless defined, to different
-        // values: defined, with no known value.
+        // Two headers that each define it unless defined: whichever is read
+        // first defines it, so each sees the other's and the rounds never
+        // settle. It is unknown.
         let other = (
             "other.h",
             "#ifndef OTHER_H\n#define OTHER_H\n#ifndef PAGE\n#define PAGE 512\n#endif\n#endif\n",
@@ -1285,7 +1397,57 @@ mod tests {
             "#ifdef PAGE\nint d;\n#endif\n#if PAGE == 4096\nint p;\n#endif\n",
             &s,
         );
-        assert!(c[2] && !c[5], "{c:?}");
+        assert!(!c[2] && !c[5], "{c:?}");
+    }
+
+    #[test]
+    fn a_default_from_absence_drops_once_the_generated_header_defines_the_name() {
+        // The Kconfig pattern: a project header defaults a name from the
+        // absence of a configuration option the generated header sets.
+        let autoconf = ("autoconf.h", "#define CONFIG_SMP 1\n");
+        let config = (
+            "config.h",
+            "#ifndef CONFIG_H\n#define CONFIG_H\n#ifndef CONFIG_SMP\n#define UP_ONLY 1\n#endif\n\
+             #ifdef CONFIG_SMP\n#define NCPU 4\n#else\n#define NCPU 1\n#endif\n#endif\n",
+        );
+        let member = "#ifdef UP_ONLY\nint up;\n#endif\n#if NCPU == 4\nint four;\n#endif\n";
+        for s in [
+            from_generated(&[autoconf], &[config]),
+            from_headers(&[autoconf, config]),
+            from_headers(&[config, autoconf]),
+        ] {
+            let c = compiled_lines(member, &s);
+            assert!(!c[2] && c[5], "{c:?}");
+        }
+    }
+
+    #[test]
+    fn a_chain_longer_than_the_rounds_leaves_its_tail_unknown() {
+        // h{k}.h defines N{k+1} when N{k} is defined: one link per round,
+        // more links than rounds. Where the rounds stop, every name still
+        // to come is unknown, not undefined.
+        let n = MAX_ROUNDS + 4;
+        let texts: Vec<(String, String)> = (0..n)
+            .map(|k| {
+                let text = if k == 0 {
+                    "#define N0 1\n".to_string()
+                } else {
+                    format!("#ifdef N{}\n#define N{k} 1\n#endif\n", k - 1)
+                };
+                (format!("h{k:02}.h"), text)
+            })
+            .collect();
+        let headers: Vec<(&str, &str)> = texts
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        let s = from_headers(&headers);
+        let last = n - 1;
+        let c = compiled_lines(
+            &format!("#ifndef N{last}\nint no;\n#endif\n#ifdef N{last}\nint yes;\n#endif\n#ifdef N1\nint one;\n#endif\n"),
+            &s,
+        );
+        assert!(!c[2] && !c[5] && c[8], "{c:?}");
     }
 
     #[test]
