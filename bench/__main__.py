@@ -458,9 +458,13 @@ def cmd_realworld_score(args):
     o = result["overall"]
     if "abstention" in o:
         a = o["abstention"]
-        print(f"Scored as the {a['preset']} preset: it declines {len(a['rules'])} rule(s); "
-              f"{a['findings']} findings and {a['labels']} labels are abstentions, "
-              f"left out of every figure below ({a['coverage_pct']}% of findings enforced).")
+        print(f"Scored within the {a['preset']} preset's ruled scope: it declines "
+              f"{len(a['rules'])} rule(s); {a['findings']} findings and {a['labels']} "
+              f"labels are abstentions, left out of every figure below "
+              f"({a['coverage_pct']}% of findings enforced).")
+        print(f"  Abstained rules ({a['note']}):")
+        names = ", ".join(a["rules"]) or "none"
+        print(f"    {names}")
         print()
     print(f"Real-world measured precision/recall — v{run['sqc_version']}"
           f" ({_run_ident(run)})  run #{target_id}")
@@ -1345,9 +1349,11 @@ def main():
     p_score.add_argument("--json", action="store_true", help="Emit JSON")
     p_score.add_argument(
         "--preset", choices=("default", "strict", "pedantic"), default=None,
-        help="Score as this preset: a rule it declines (rules_templates/"
-             "rule-presets.json) is an abstention, left out of every "
-             "denominator and reported with the coverage that remains")
+        help="Score within this preset's RULED scope: a rule it declines "
+             "(rules_templates/rule-presets.json) is an abstention, left out "
+             "of every denominator and named in the output with the coverage "
+             "that remains. The binary still reports declined rules until "
+             "they are removed, and the run's own preset is not checked")
     p_score.set_defaults(func=cmd_realworld_score)
 
     # realworld-import-labels

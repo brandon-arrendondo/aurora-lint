@@ -2375,12 +2375,15 @@ class BenchDB:
         project (e.g. when comparing one codebase's rule deltas against
         ground_truth rather than the whole multi-project run).
 
-        preset: optional preset name. A rule that preset declines
-        (rules_templates/rule-presets.json, `not_enforced`) is an abstention:
-        its findings and labels leave every denominator below, and
-        `overall["abstention"]` reports what was left out and the share of
-        the run's findings still enforced. None (the default) scores every
-        rule, as before.
+        preset: optional preset name. It scores the run within that preset's
+        RULED scope: a rule it declines (rules_templates/rule-presets.json,
+        `not_enforced`) is an abstention, its findings and labels leave every
+        denominator below, and `overall["abstention"]` names the rules and
+        reports what was left out and the share of the run's findings still
+        enforced. This is the ruling, not what the binary did: the binary
+        still reports a declined rule until it is removed or the table is
+        wired to runtime declines, and the run's own preset is not checked
+        against this one. None (the default) scores every rule, as before.
 
         The returned `overall` reports label coverage on BOTH bases rather
         than leaving the ratio to callers: `label_coverage_pct` over every
@@ -2475,9 +2478,19 @@ class BenchDB:
             if restrict_files is not None:
                 allowed = restrict_files.get(project, set())
                 labels = [l for l in labels if l["file_path"] in allowed]
+            labels_before_abstention = len(labels)
             if abstained:
                 abstention_labels += sum(1 for l in labels if l["rule_id"] in abstained)
                 labels = [l for l in labels if l["rule_id"] not in abstained]
+            if not labels and labels_before_abstention:
+                warnings.append(
+                    f"{project}@{commit}: every ground-truth label at this commit "
+                    f"is for a rule {preset} declines ({run_finding_count} "
+                    "enforced findings unscored)")
+                projects.append({"project": project, "codebase_commit": commit,
+                                 "labels": 0, "run_findings": run_finding_count,
+                                 "tp": 0, "fp": 0, "uncertain": 0})
+                continue
             if not labels:
                 warnings.append(
                     f"{project}@{commit}: no ground-truth labels for this "
@@ -2600,6 +2613,9 @@ class BenchDB:
             total = enforced + abstention_findings
             overall["abstention"] = {
                 "preset": preset,
+                "note": "ruled declined; the binary still reports these rules "
+                        "until they are removed or the table is wired to "
+                        "runtime declines",
                 "rules": sorted(abstained),
                 "findings": abstention_findings,
                 "labels": abstention_labels,

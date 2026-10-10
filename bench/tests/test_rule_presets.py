@@ -83,6 +83,27 @@ class TestScoring(unittest.TestCase):
         self.assertEqual((a["findings"], a["labels"]), (2, 2))
         self.assertEqual(a["coverage_pct"], 33.3)
 
+    def test_the_note_says_this_is_the_ruling_not_the_binary(self):
+        a = self._score("strict")["overall"]["abstention"]
+        self.assertIn("binary still reports", a["note"])
+
+    def test_a_project_whose_labels_are_all_abstained_says_so(self):
+        db = BenchDB.__new__(BenchDB)
+        keys = {"p": {("a.c", 2, "B-C")}}
+        labels = [{"rule_id": "B-C", "file_path": "a.c", "line": 2, "verdict": "FP"}]
+        table = {"B-C": {"default": "as_written", "strict": "not_enforced",
+                         "pedantic": "not_enforced", "differs": True}}
+        with mock.patch.object(db, "get_realworld_run", return_value={"id": 1}), \
+                mock.patch.object(db, "get_realworld_results", return_value=[
+                    {"tool": "sqc", "project": "p", "codebase_commit": "c"}]), \
+                mock.patch.object(db, "_run_violation_keys", return_value=keys), \
+                mock.patch.object(db, "get_ground_truth_labels", return_value=labels), \
+                mock.patch.object(rule_presets, "load", return_value=table):
+            result = db.score_realworld_run(1, preset="strict")
+        text = " ".join(result["warnings"])
+        self.assertIn("declines", text)
+        self.assertNotIn("no ground-truth labels", text)
+
     def test_a_preset_that_declines_nothing_scores_everything(self):
         o = self._score("default")["overall"]
         self.assertEqual((o["labeled_tp"], o["labeled_fp"]), (1, 1))
