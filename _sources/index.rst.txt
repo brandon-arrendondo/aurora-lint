@@ -30,6 +30,7 @@ Brandon Arrendondo is the accountable BISSELL Associate for aurora-lint, its mai
    suppression
    configuration
    options
+   rule-presets
    cicd-integration
    error-handling
    interactive-ui

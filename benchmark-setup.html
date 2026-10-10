@@ -48,6 +48,7 @@
 <li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
 <li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
 <li class="toctree-l1"><a class="reference internal" href="options.html">Policy and Environment Options</a></li>
+<li class="toctree-l1"><a class="reference internal" href="rule-presets.html">Rule readings by preset</a></li>
 <li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
 <li class="toctree-l1"><a class="reference internal" href="error-handling.html">Error Handling and Exit Codes</a></li>
 <li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
@@ -446,6 +447,38 @@ not replace. Remove that checkout’s volume and run again. If the refusal
 persists, the build is not embedding the commit it is given; report it
 rather than working around it, because a run past this check would measure
 an unknown binary under this commit’s run id.</p>
+<p>A run is labelled with the checkout’s commit, so it must measure that
+commit. <code class="docutils literal notranslate"><span class="pre">realworld-run</span></code>, <code class="docutils literal notranslate"><span class="pre">juliet</span></code> and <code class="docutils literal notranslate"><span class="pre">container-run</span></code> refuse to start
+when the checkout has uncommitted changes, staged, unstaged or untracked,
+to anything that decides what a run measures. That covers the binary
+(<code class="docutils literal notranslate"><span class="pre">src/</span></code>, <code class="docutils literal notranslate"><span class="pre">build.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code>, <code class="docutils literal notranslate"><span class="pre">Cargo.lock</span></code>,
+<code class="docutils literal notranslate"><span class="pre">rust-toolchain.toml</span></code>, <code class="docutils literal notranslate"><span class="pre">.cargo/config.toml</span></code>), the manifests the
+scans run under (<code class="docutils literal notranslate"><span class="pre">rules_templates/</span></code>, <code class="docutils literal notranslate"><span class="pre">conf/</span></code>), the runner itself
+(<code class="docutils literal notranslate"><span class="pre">bench/</span></code> apart from <code class="docutils literal notranslate"><span class="pre">bench/tests/</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">scripts/generate_rule_cwe_map.py</span></code>, which a Juliet run executes), and
+the inputs it reads (<code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code>,
+<code class="docutils literal notranslate"><span class="pre">data/benchmark_deps/</span></code>, <code class="docutils literal notranslate"><span class="pre">data/benchmark_environment.json</span></code>,
+<code class="docutils literal notranslate"><span class="pre">data/rule_cwe_map.json</span></code>). The list is <code class="docutils literal notranslate"><span class="pre">DIRTY_PATHS</span></code> in
+<code class="docutils literal notranslate"><span class="pre">bench/config.py</span></code>. The refusal lists the changed files. Commit them
+before benchmarking. Changes elsewhere (<code class="docutils literal notranslate"><span class="pre">docs/</span></code>, <code class="docutils literal notranslate"><span class="pre">tests/</span></code>, an untracked
+note at the top level) and gitignored files do not count.</p>
+<p>For an exploratory run on uncommitted work, pass <code class="docutils literal notranslate"><span class="pre">--allow-dirty</span></code> to the
+subcommand (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">juliet</span> <span class="pre">--allow-dirty</span></code>, <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span>
+<span class="pre">container-run</span> <span class="pre">--</span> <span class="pre">realworld-run</span> <span class="pre">--allow-dirty</span></code>). The run is then recorded
+as <code class="docutils literal notranslate"><span class="pre">&lt;sha&gt;+dirty&lt;hash&gt;</span></code>, where the hash covers the changes themselves, so
+it never shares a run id with the clean commit or with a different set of
+changes. Such a run is not a benchmark of any commit. In the container the
+binary reports the same label, and <code class="docutils literal notranslate"><span class="pre">check-binary</span></code> expects it. The run
+listings (<code class="docutils literal notranslate"><span class="pre">realworld-runs</span></code>, <code class="docutils literal notranslate"><span class="pre">realworld</span></code>, <code class="docutils literal notranslate"><span class="pre">realworld-score</span></code>) show the
+mark after the shortened SHA.</p>
+<p>A Juliet run rebuilds its rule-CWE map (<code class="docutils literal notranslate"><span class="pre">data/rule_cwe_map.json</span></code> and the
+per-CWE manifests) before it scans. On a clean tree, if that rewrites a
+committed file, the run refuses to continue: commit the regenerated files
+first. With <code class="docutils literal notranslate"><span class="pre">--allow-dirty</span></code> the map is rebuilt before the run is
+labelled, so the label covers the files the run scans. <code class="docutils literal notranslate"><span class="pre">container-run</span></code>
+rebuilds it on the host before hashing the tree, for the same reason.</p>
+<p>Untracked sources inside a <em>corpus</em> checkout are <code class="docutils literal notranslate"><span class="pre">corpus-check</span></code>’s
+concern, not this check’s.</p>
 <p>Both runners refuse to scan a benchmark whose dependency set is missing or
 differs from its pin. On the host, fetch a set with <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench.deps</span>
 <span class="pre">fetch</span> <span class="pre">&lt;name&gt;</span></code> (<code class="docutils literal notranslate"><span class="pre">data/benchmark_deps/&lt;name&gt;.json</span></code>; it needs Python 3 and
