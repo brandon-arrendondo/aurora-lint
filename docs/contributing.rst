@@ -172,6 +172,12 @@ cannot classify, runs the full suite. The script's docstring lists the
 exact rules, such as why a prose file that a test reads counts as code.
 The git hooks run on every commit regardless.
 
+When ``--run`` passes, it prints a ``verified:`` line naming the git tree
+it tested (``git rev-parse HEAD^{tree}``), the host and the ``rustc``
+version. The tree hash identifies content, whichever commit carries it, so
+a later step can see that a tree with the same hash, under the same
+``rustc``, was already tested.
+
 CI uses the same script: on a pull request that touches only prose or
 Python outside the crate, the Rust jobs are skipped. A push to ``main``
 always runs everything.

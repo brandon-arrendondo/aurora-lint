@@ -35,9 +35,17 @@ decides only the suites on top of them.
     scripts/landing_check.py --base A --head B
     scripts/landing_check.py --print class      # one word, for CI
     scripts/landing_check.py --run              # run the chosen commands
+
+After --run passes it prints a `verified:` line naming the git TREE it
+tested (the content, whichever commit carries it), the class, the host and
+the rustc version. A landing whose tree hash (`git rev-parse HEAD^{tree}`)
+equals a recorded verified tree, under the same rustc, has already been
+tested and needs only the hooks.
 """
 
 import argparse
+import datetime
+import socket
 import re
 import subprocess
 import sys
@@ -267,6 +275,26 @@ def plan(base: str, head: str) -> dict:
     return {"class": worst, "files": files, "commands": commands}
 
 
+def is_dirty() -> bool:
+    return bool(git("status", "--porcelain", "--untracked-files=no").strip())
+
+
+def verified_stamp(cls: str, head: str = "HEAD", dirty_before: bool = False) -> str:
+    """The line --run prints once every chosen command has passed. The
+    commands ran on the checked-out tree, so that is the tree it names."""
+    tree = git("rev-parse", "HEAD^{tree}").strip()
+    notes = []
+    if dirty_before or is_dirty():
+        notes.append("WORKING TREE HAD UNCOMMITTED CHANGES: not a verification of this tree")
+    if git("rev-parse", f"{head}^{{tree}}").strip() != tree:
+        notes.append(f"ran on HEAD, whose tree differs from --head {head}")
+    rustc = subprocess.run(["rustc", "--version"], capture_output=True, text=True).stdout.strip()
+    when = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    note = "".join(f" ({n})" for n in notes)
+    return (f"verified: tree {tree} class {cls} on {socket.gethostname()} "
+            f"with {rustc or 'no rustc'} at {when}{note}")
+
+
 def default_base() -> str:
     for ref in ("origin/main", "main"):
         r = subprocess.run(["git", "-C", str(ROOT), "merge-base", ref, "HEAD"],
@@ -302,11 +330,13 @@ def main() -> int:
         print("  " + " ".join(cmd))
     if not args.run:
         return 0
+    dirty_before = is_dirty()
     for cmd in result["commands"]:
         print(f"\n$ {' '.join(cmd)}", flush=True)
         rc = subprocess.run(cmd, cwd=ROOT).returncode
         if rc:
             return rc
+    print("\n" + verified_stamp(result["class"], args.head, dirty_before))
     return 0
 
 
