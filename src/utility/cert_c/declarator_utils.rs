@@ -124,6 +124,75 @@ pub fn declares_function(declarator: &Node) -> bool {
     }
 }
 
+/// The `pointer_declarator` that makes the declared object a pointer, or
+/// `None` when the object's own type comes from the declaration's specifiers.
+/// The derivation nearest the name decides, as in [`declares_function`]; an
+/// array is seen through, because an array's elements carry its qualifiers.
+/// So the qualifiers that apply to the object itself are this node's
+/// `type_qualifier` children: `int *volatile p` (Some, volatile),
+/// `volatile int *p` (Some, unqualified: only the pointee is volatile),
+/// `int *volatile a[4]` (Some, volatile elements), `volatile int x` (None).
+pub fn object_pointer_declarator<'a>(declarator: &Node<'a>) -> Option<Node<'a>> {
+    let mut d = *declarator;
+    let mut nearest: Option<Node<'a>> = None;
+    loop {
+        match d.kind() {
+            "identifier" => return nearest.filter(|n| n.kind() == "pointer_declarator"),
+            "pointer_declarator" | "function_declarator" => nearest = Some(d),
+            "array_declarator" | "parenthesized_declarator" | "attributed_declarator" => {}
+            _ => return None,
+        }
+        match inner_declarator(&d) {
+            Some(inner) if inner.id() != d.id() => d = inner,
+            _ => return None,
+        }
+    }
+}
+
+/// Whether `id` is the name a declaration declares rather than a use of a
+/// name: the identifier at the end of a declarator chain of a `declaration`,
+/// `parameter_declaration`, `field_declaration`, `type_definition` or
+/// `function_definition`, in any of its declarators. An initializer and an
+/// array size are uses.
+pub fn is_declared_name(id: &Node) -> bool {
+    let mut child = *id;
+    while let Some(parent) = child.parent() {
+        match parent.kind() {
+            "pointer_declarator"
+            | "array_declarator"
+            | "function_declarator"
+            | "parenthesized_declarator"
+            | "attributed_declarator" => {
+                if inner_declarator(&parent).is_none_or(|d| d.id() != child.id()) {
+                    return false;
+                }
+            }
+            "init_declarator" => {
+                if parent
+                    .child_by_field_name("declarator")
+                    .is_none_or(|d| d.id() != child.id())
+                {
+                    return false;
+                }
+            }
+            "declaration"
+            | "parameter_declaration"
+            | "field_declaration"
+            | "type_definition"
+            | "function_definition" => {
+                let mut cursor = parent.walk();
+                let found = parent
+                    .children_by_field_name("declarator", &mut cursor)
+                    .any(|d| d.id() == child.id());
+                return found;
+            }
+            _ => return false,
+        }
+        child = parent;
+    }
+    false
+}
+
 /// The declarator one level inside `n`. Pointer, array and function
 /// declarators name it as the `declarator` field; a parenthesized declarator
 /// has no field for it (`( declarator )`, possibly with an `ms_call_modifier`
@@ -297,5 +366,58 @@ mod tests {
         let tree = parse_c_code("int **ptr;");
         let declarator = find_declarator(&tree).unwrap();
         assert!(is_pointer_declarator(&declarator));
+    }
+
+    /// Whether the object `code` declares is itself volatile, per
+    /// `object_pointer_declarator` (or the specifiers when it says None).
+    fn object_is_volatile(code: &str) -> bool {
+        let tree = parse_c_code(code);
+        let declarator = find_declarator(&tree).unwrap();
+        let has_volatile = |n: &Node| {
+            let mut cursor = n.walk();
+            let found = n
+                .children(&mut cursor)
+                .any(|c| c.kind() == "type_qualifier" && &code[c.byte_range()] == "volatile");
+            found
+        };
+        match object_pointer_declarator(&declarator) {
+            Some(ptr) => has_volatile(&ptr),
+            None => has_volatile(&declarator.parent().unwrap()),
+        }
+    }
+
+    #[test]
+    fn object_qualifiers_are_the_ones_nearest_the_name() {
+        assert!(object_is_volatile("int *volatile p;"));
+        assert!(!object_is_volatile("volatile int *p;"));
+        assert!(object_is_volatile("volatile int x;"));
+        assert!(object_is_volatile("int *volatile a[4];"));
+        assert!(!object_is_volatile("int *volatile *pp;"));
+        assert!(!object_is_volatile("int *volatile (*pa)[4];"));
+    }
+
+    #[test]
+    fn declared_names_are_not_uses() {
+        let code = "int n = 4; void f(int k) { int a[n], *b = &a[0], c = k; }";
+        let tree = parse_c_code(code);
+        let mut declared = Vec::new();
+        let mut used = Vec::new();
+        let mut stack = vec![tree.root_node()];
+        while let Some(n) = stack.pop() {
+            if n.kind() == "identifier" {
+                let name = &code[n.byte_range()];
+                if is_declared_name(&n) {
+                    declared.push(name);
+                } else {
+                    used.push(name);
+                }
+            }
+            let mut cursor = n.walk();
+            stack.extend(n.children(&mut cursor));
+        }
+        declared.sort();
+        used.sort();
+        assert_eq!(declared, ["a", "b", "c", "f", "k", "n"]);
+        assert_eq!(used, ["a", "k", "n"]);
     }
 }
