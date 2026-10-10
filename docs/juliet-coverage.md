@@ -3,7 +3,7 @@
 **Version**: aurora-lint v0.4.336 (sqc-0.4.336-0e8b74e7)
 **Overall**: 23,577 TP / 3,818 FP — **86.1% TP rate** across 79 CWEs (50,256 files)
 
-*Auto-generated from sqc_bench Postgres (run sqc-0.4.336-0e8b74e7) by benchmarking_db's bin/refresh_juliet_coverage.py -- see tools_sqc's CLAUDE.md on why this is the only path that may write this file as a project measurement.*
+*Auto-generated from sqc_bench Postgres (run sqc-0.4.336-0e8b74e7) by benchmarking_db's bin/refresh_juliet_coverage.py -- see aurora-lint's CLAUDE.md on why this is the only path that may write this file as a project measurement.*
 
 *Note (2026-10-08): this is a v0.4.336 snapshot. Rule-to-CWE mappings have changed since, so some rows (for example, "No rule mapped") no longer hold; current figures are in README.md's Benchmark Highlights table.*
 

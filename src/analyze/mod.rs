@@ -1313,7 +1313,7 @@ fn analyze_one_file(
         // (DCL15-C, DCL19-C, DCL20-C, MSC13-C, WIN04-C, API02-C, EXP37-C)
         // have each misread as real C declarations. Detect and
         // skip such files entirely rather than analyzing nonsense --
-        // tools_sqc is CERT-C only, so a file that can only be C++ is out
+        // aurora-lint is CERT-C only, so a file that can only be C++ is out
         // of scope, not a source of findings.
         if file_path.ends_with(".h") && lang_parsing_substrate::looks_like_cpp(source.as_bytes()) {
             return (file_violations, file_suppressed, file_failures);

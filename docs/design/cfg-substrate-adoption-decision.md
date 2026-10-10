@@ -18,7 +18,7 @@ its v1 scope explicitly excludes, by design:
 - `switch`/`match` decomposition (treated as one opaque statement)
 - `goto`/labeled-statement edge wiring
 - constant-condition dead-branch folding (explicitly deferred as
-  "tools_sqc's `MacroConstantMap` is a C-preprocessor-specific concept")
+  "aurora-lint's `MacroConstantMap` is a C-preprocessor-specific concept")
 
 aurora-lint's own `cfg.rs` implements all three, and they are load-bearing, not
 theoretical:
