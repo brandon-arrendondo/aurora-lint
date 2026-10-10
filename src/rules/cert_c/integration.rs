@@ -48,10 +48,27 @@ pub fn record_test_result(test_name: &str, passed: bool, expected_to_fail: bool)
     );
 }
 
-// Generate test summary report AFTER running tests
+// Generate test summary report AFTER running tests.
+//
+// The summary tabulates every fixture's result, so it is only written by a
+// process that ran fixtures. A process that recorded none (a `--list`, or a
+// filtered run that matched no fixture) leaves the last summary in place.
+// cargo-nextest runs each test in its own process and lists the tests
+// first, so under it (it sets `NEXTEST`) no process sees the whole run and
+// none writes; `cargo test` produces the summary.
 #[cfg(test)]
 #[ctor::dtor]
 fn generate_test_report() {
+    if std::env::var_os("NEXTEST").is_some() {
+        return;
+    }
+    let recorded = !TEST_RESULTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_empty();
+    if !recorded {
+        return;
+    }
     if let Err(e) = create_test_summary_report() {
         eprintln!("Warning: Failed to generate test summary report: {}", e);
     }
@@ -76,7 +93,7 @@ fn create_test_summary_report() -> Result<(), Box<dyn std::error::Error>> {
     render_summary_table(&mut report, &categories);
 
     fs::write(&output_path, report)?;
-    println!("Generated test summary report: {}", output_path.display());
+    eprintln!("Generated test summary report: {}", output_path.display());
     Ok(())
 }
 
