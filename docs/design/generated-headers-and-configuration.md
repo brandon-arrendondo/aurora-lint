@@ -250,7 +250,8 @@ decided separately.
     open, and `G` is recorded as defined, as the compiler holds it after the
     inclusion; the same two lines opening a header that goes on after their
     `#endif` are a default, not a guard. A header that undefines a name the
-    command line or a generated header defines leaves it unknown.
+    command line or a generated header defines, or binds it under an arm
+    the state cannot decide, leaves it unknown.
   - The evaluator is `configuration_arms` (three-valued: defined, `!`, `&&`,
     `||`, integer arithmetic and comparison, `#elif`). A reserved name
     (`__GNUC__`) the database does not define, a function-like macro in a

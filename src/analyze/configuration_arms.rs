@@ -1580,12 +1580,20 @@ mod tests {
         let member = "#ifdef USE_FAST\nint f;\n#else\nint s;\n#endif\n";
         let c = compiled_lines(member, &from_headers(&[fast]));
         assert!(c[2] && !c[4], "{c:?}");
-        // Two such headers, each defaulting Y to its own value: defined,
-        // whatever its value, with code after the default or without.
-        for tail in ["int more;\n", ""] {
+        // Two such headers, each defaulting Y to its own value, and `#ifndef
+        // Y` is never compiled. With code after the default, each header
+        // defines Y only while the other has not, so the rounds never settle
+        // and Y is unknown. When the default closes the file it is each
+        // header's include guard, taken as open and recorded: Y is defined,
+        // with no known value.
+        for (tail, binding) in [
+            ("int more;\n", Binding::Unknown),
+            ("", Binding::Defined(None)),
+        ] {
             let y1 = ("y1.h", format!("#ifndef Y\n#define Y 1\n#endif\n{tail}"));
             let y2 = ("y2.h", format!("#ifndef Y\n#define Y 2\n#endif\n{tail}"));
             let s = from_headers(&[(y1.0, y1.1.as_str()), (y2.0, y2.1.as_str())]);
+            assert_eq!(s.names.get("Y"), Some(&binding), "{tail:?}");
             let c = compiled_lines("#ifndef Y\nint none;\n#endif\n", &s);
             assert!(!c[2], "{tail:?}: {c:?}");
         }
