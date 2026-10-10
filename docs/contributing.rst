@@ -150,6 +150,32 @@ Build Requirements
     cargo test              # Run all tests
     cargo fmt               # Format code
 
+Which Tests a Change Needs
+--------------------------
+
+``scripts/landing_check.py`` reads a diff and prints the suites that change
+needs; ``--run`` runs them. It diffs ``HEAD`` against its merge base with
+``main`` unless given ``--base``/``--head``:
+
+::
+
+    scripts/landing_check.py          # class, per-file reasons, commands
+    scripts/landing_check.py --run
+
+A change that touches only prose needs no Rust build (Sphinx ``-W`` runs when
+``docs/`` changed). A change to Python under ``bench/`` or ``scripts/`` runs
+those unit tests. A ``.rs`` change that is comments only runs the build,
+doctests and clippy. A rule manifest change that touches only its text
+fields (title, description, wiki link) runs everything except the
+generated fixture tests. Anything else, including anything the script
+cannot classify, runs the full suite. The script's docstring lists the
+exact rules, such as why a prose file that a test reads counts as code.
+The git hooks run on every commit regardless.
+
+CI uses the same script: on a pull request that touches only prose or
+Python outside the crate, the Rust jobs are skipped. A push to ``main``
+always runs everything.
+
 Invoke Tasks
 ------------
 

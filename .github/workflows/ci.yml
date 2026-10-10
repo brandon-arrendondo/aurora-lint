@@ -12,6 +12,39 @@ env:
 # ubuntu-24.04 is pinned to match release.yml's build image; see the note there.
 
 jobs:
+  # Which suites a pull request needs, from scripts/landing_check.py (the
+  # same classifier landings use). The Rust jobs below are skipped only for
+  # a PR the classifier shows touches nothing but prose or Python outside
+  # the crate; a skipped job counts as passed for a required check. A push
+  # to main always runs everything, so the Pages docs job, which needs
+  # `test`, always has it. If the classifier fails, the class is `full`.
+  classify:
+    name: Classify change
+    runs-on: ubuntu-24.04
+    outputs:
+      rust: ${{ steps.classify.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - id: classify
+        name: Which suites does this change need?
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          rust=true
+          if [ "$EVENT" = pull_request ]; then
+            class=$(python3 scripts/landing_check.py \
+                      --base "$(git merge-base "$BASE" "$HEAD")" --head "$HEAD" \
+                      --print class) || class=full
+            echo "class: $class"
+            case "$class" in docs|python) rust=false ;; esac
+          fi
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+
   fmt:
     name: Format
     runs-on: ubuntu-24.04
@@ -28,6 +61,8 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-24.04
+    needs: classify
+    if: needs.classify.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@v5
 
@@ -88,6 +123,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-24.04
+    needs: classify
+    if: needs.classify.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@v5
 
@@ -135,6 +172,8 @@ jobs:
   test-macos:
     name: Test (macOS aarch64)
     runs-on: macos-latest
+    needs: classify
+    if: needs.classify.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@v5
 
