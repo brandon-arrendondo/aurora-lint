@@ -1539,6 +1539,8 @@ impl AnalysisSettings {
     }
 
     /// Whether POSIX holds for the unit at `file` (see [`posix_for`](Self::posix_for)).
+    /// Used by tests: the rules read [`posix_holds_project`](Self::posix_holds_project)
+    /// until they are wired to a per-file answer.
     pub fn posix_holds(&self, file: &str) -> bool {
         self.posix_for(Some(file)).holds()
     }
@@ -1580,7 +1582,7 @@ impl AnalysisSettings {
         }
         Some(format!(
             "POSIX is not declared, so no exemption that depends on it applies; declare it with \
-             [environment] posix_version = \"2008\" (or 2001, 2017, 2024, none), --set \
+             [environment] posix_version = \"2008\" (or pre2001, 2001, 2017, 2024, none), --set \
              posix_version=2008, or a compile database that defines _POSIX_C_SOURCE for every \
              unit. Rules that depend on it: {}.",
             rules.join(", ")
@@ -2380,7 +2382,7 @@ pub fn render_rst() -> String {
          the project's own declaration: the configuration, or a compile database\n   \
          passed with ``--compile-commands`` (``-std=``, ``-D_POSIX_C_SOURCE=``,\n   \
          ``-D_XOPEN_SOURCE=``, ``-m32`` and ``-m64``). A compile database's facts\n   \
-         is recorded per translation unit, but the rules read one project-wide\n   \
+         are recorded per translation unit, but the rules read one project-wide\n   \
          answer (see :doc:`configuration`); the configuration holds for the whole\n   \
          project and wins a disagreement, which the scan reports. Each declared\n   \
          fact's source (``cli``, ``config`` or ``compile database``) is part of\n   \

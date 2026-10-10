@@ -220,28 +220,66 @@ fn targets_mingw(argv: &[String]) -> bool {
         })
 }
 
-/// The facts one command line states, and the declarations it makes that
-/// they cannot read. A later flag replaces an earlier one, and a `-U` of a
-/// feature-test macro withdraws what it declared.
+/// For each `-D` of a POSIX feature-test macro in `argv`, in order, whether
+/// it was written with an `=` and nothing after it (`-D_POSIX_C_SOURCE=`),
+/// which defines the macro as empty, rather than bare (`-D_POSIX_C_SOURCE`),
+/// which defines it as 1. [`Flag::Define`] keeps both with an empty body.
+fn posix_macro_defines_written_empty(argv: &[String]) -> std::collections::VecDeque<bool> {
+    let mut out = std::collections::VecDeque::new();
+    let mut i = 0;
+    while i < argv.len() {
+        let arg = &argv[i];
+        i += 1;
+        let Some(rest) = arg.strip_prefix("-D") else {
+            continue;
+        };
+        let text = if rest.is_empty() {
+            let next = argv.get(i).cloned().unwrap_or_default();
+            i += 1;
+            next
+        } else {
+            rest.to_string()
+        };
+        let name = text.split('=').next().unwrap_or("");
+        if name == "_POSIX_C_SOURCE" || name == "_XOPEN_SOURCE" {
+            out.push_back(text.ends_with('=') && text.len() == name.len() + 1);
+        }
+    }
+    out
+}
+
+/// The facts one command line states, and the declarations that decided the
+/// unit but they cannot read. A later flag replaces an earlier one, so a bad
+/// declaration a later good one overrides is not reported, and a `-U` of a
+/// feature-test macro withdraws what it declared. `-D_POSIX_C_SOURCE=` defines
+/// the macro as empty, which glibc does not read as POSIX: it decides nothing,
+/// and is reported.
 fn tu_facts_of(argv: &[String], flags: &[Flag], msvc: bool) -> (TuFacts, Vec<String>) {
     let mut facts = TuFacts::default();
-    let mut unrecognized = Vec::new();
+    let mut posix_unreadable: Option<String> = None;
+    let mut std_unreadable: Option<String> = None;
+    let mut written_empty = posix_macro_defines_written_empty(argv);
     for flag in flags {
         match flag {
             Flag::Define(spelling, body)
                 if spelling == "_POSIX_C_SOURCE" || spelling == "_XOPEN_SOURCE" =>
             {
-                let shown = if body.is_empty() { "1" } else { body };
+                let empty = written_empty.pop_front().unwrap_or(false);
+                let shown = if body.is_empty() && !empty { "1" } else { body };
                 match posix_macro_edition(spelling, shown) {
-                    Reading::Edition(v) => facts.posix_version = Some(v),
+                    Reading::Edition(v) => {
+                        facts.posix_version = Some(v);
+                        posix_unreadable = None;
+                    }
                     Reading::Unrecognized => {
                         facts.posix_version = None;
-                        unrecognized.push(format!("-D{spelling}={shown}"));
+                        posix_unreadable = Some(format!("-D{spelling}={shown}"));
                     }
                 }
             }
             Flag::Undefine(name) if name == "_POSIX_C_SOURCE" || name == "_XOPEN_SOURCE" => {
                 facts.posix_version = None;
+                posix_unreadable = None;
             }
             _ => {}
         }
@@ -250,10 +288,13 @@ fn tu_facts_of(argv: &[String], flags: &[Flag], msvc: bool) -> (TuFacts, Vec<Str
         for arg in argv {
             if let Some(value) = arg.strip_prefix("-std=") {
                 match std_flag_edition(value) {
-                    Some(Reading::Edition(e)) => facts.c_standard = Some(e),
+                    Some(Reading::Edition(e)) => {
+                        facts.c_standard = Some(e);
+                        std_unreadable = None;
+                    }
                     Some(Reading::Unrecognized) => {
                         facts.c_standard = None;
-                        unrecognized.push(arg.clone());
+                        std_unreadable = Some(arg.clone());
                     }
                     None => {}
                 }
@@ -269,7 +310,10 @@ fn tu_facts_of(argv: &[String], flags: &[Flag], msvc: bool) -> (TuFacts, Vec<Str
             }
         }
     }
-    (facts, unrecognized)
+    (
+        facts,
+        posix_unreadable.into_iter().chain(std_unreadable).collect(),
+    )
 }
 
 /// Include search paths and command-line macro state distilled from a
@@ -281,11 +325,12 @@ pub struct CompileDb {
     /// states none has no entry. Facts may differ by unit; a later entry for
     /// the same unit replaces an earlier one.
     pub tu_facts: BTreeMap<String, TuFacts>,
-    /// The edition declarations (`-D_POSIX_C_SOURCE=`, `-std=`) a command
-    /// makes that name no edition the tool knows, as `file: flag`. Never
-    /// read as a fact, and reported so a declaration is not mistaken for
-    /// silence.
-    pub unrecognized_declarations: Vec<String>,
+    /// The edition declarations (`-D_POSIX_C_SOURCE=`, `-std=`) that decided a
+    /// unit's command but name no edition the tool knows, by unit. Never read
+    /// as a fact, and reported so a declaration is not mistaken for silence.
+    /// A declaration a later flag overrides, or a later entry for the same
+    /// unit replaces, is not here.
+    pub unrecognized_by_unit: BTreeMap<String, Vec<String>>,
     /// Absolute include search paths, first-seen order preserved so the search
     /// order of the original build is approximated.
     pub include_paths: Vec<String>,
@@ -416,8 +461,11 @@ impl CompileDb {
             if let Some(file) = &entry.file {
                 let (facts, unrecognized) = tu_facts_of(&argv, &flags, msvc);
                 let key = real_path(&absolutize(base, file));
-                db.unrecognized_declarations
-                    .extend(unrecognized.into_iter().map(|f| format!("{key}: {f}")));
+                if unrecognized.is_empty() {
+                    db.unrecognized_by_unit.remove(&key);
+                } else {
+                    db.unrecognized_by_unit.insert(key.clone(), unrecognized);
+                }
                 if facts.is_empty() {
                     db.tu_facts.remove(&key);
                 } else {
@@ -489,7 +537,11 @@ impl CompileDb {
                 .unwrap_or_default(),
             per_tu: self.tu_facts.clone(),
             unit_count: self.configured_sources.len(),
-            unrecognized: self.unrecognized_declarations.clone(),
+            unrecognized: self
+                .unrecognized_by_unit
+                .iter()
+                .flat_map(|(unit, flags)| flags.iter().map(move |f| format!("{unit}: {f}")))
+                .collect(),
         }
     }
 
@@ -2187,21 +2239,95 @@ mod tests {
             ],
         )]);
         assert_eq!(db.facts().of("/proj/a.c"), None);
-        assert_eq!(
-            db.unrecognized_declarations.len(),
-            2,
-            "{:?}",
-            db.unrecognized_declarations
-        );
-        assert!(db
-            .unrecognized_declarations
-            .iter()
-            .any(|d| d.ends_with("-std=c2y")));
-        assert!(db
-            .unrecognized_declarations
+        let unrecognized = db.facts().unrecognized;
+        assert_eq!(unrecognized.len(), 2, "{unrecognized:?}");
+        assert!(unrecognized.iter().any(|d| d.ends_with("-std=c2y")));
+        assert!(unrecognized
             .iter()
             .any(|d| d.ends_with("-D_POSIX_C_SOURCE=FOO")));
-        assert_eq!(db.facts().unrecognized, db.unrecognized_declarations);
+    }
+
+    #[test]
+    fn only_the_declarations_that_decided_a_unit_are_reported() {
+        // Later flags override the bad ones: nothing to report, and the
+        // unit resolves to what the good ones say.
+        let db = CompileDb::from_entries(&[unit(
+            "a.c",
+            &[
+                "cc",
+                "-std=c2y",
+                "-std=c11",
+                "-D_POSIX_C_SOURCE=FOO",
+                "-D_POSIX_C_SOURCE=200809L",
+            ],
+        )]);
+        let f = db.facts();
+        assert!(f.unrecognized.is_empty(), "{:?}", f.unrecognized);
+        let a = f.of("/proj/a.c").unwrap();
+        assert_eq!(a.c_standard, Some(CStandard::C11));
+        assert_eq!(a.posix_version, Some(PosixVersion::Posix2008));
+        // A -U withdraws a bad -D too.
+        let db = CompileDb::from_entries(&[unit(
+            "a.c",
+            &["cc", "-D_POSIX_C_SOURCE=FOO", "-U_POSIX_C_SOURCE"],
+        )]);
+        assert!(db.facts().unrecognized.is_empty());
+        // A later entry for the same unit replaces an earlier one, report
+        // included.
+        let db = CompileDb::from_entries(&[
+            unit("a.c", &["cc", "-std=c2y"]),
+            unit("a.c", &["cc", "-std=c99"]),
+        ]);
+        assert!(db.facts().unrecognized.is_empty());
+        assert_eq!(
+            db.facts().of("/proj/a.c").unwrap().c_standard,
+            Some(CStandard::C99)
+        );
+        // A bad declaration that is last still decides, and is reported.
+        let db = CompileDb::from_entries(&[unit(
+            "a.c",
+            &["cc", "-D_POSIX_C_SOURCE=200809L", "-D_POSIX_C_SOURCE=FOO"],
+        )]);
+        assert_eq!(db.facts().of("/proj/a.c"), None);
+        assert_eq!(db.facts().unrecognized.len(), 1);
+    }
+
+    #[test]
+    fn an_empty_valued_feature_macro_is_not_posix_but_a_bare_one_is() {
+        // gcc defines `-D_POSIX_C_SOURCE=` as empty, and glibc's
+        // (_POSIX_C_SOURCE - 0) >= 1 is then false; bare `-D_POSIX_C_SOURCE`
+        // defines it as 1.
+        for (flags, declared) in [
+            (&["cc", "-D_POSIX_C_SOURCE="][..], false),
+            (&["cc", "-D", "_POSIX_C_SOURCE="], false),
+            (&["cc", "-D_XOPEN_SOURCE="], false),
+            (&["cc", "-D_POSIX_C_SOURCE"], true),
+            (
+                &["cc", "-D_POSIX_C_SOURCE=", "-D_POSIX_C_SOURCE=200809L"],
+                true,
+            ),
+            (
+                &["cc", "-D_POSIX_C_SOURCE=200809L", "-D_POSIX_C_SOURCE="],
+                false,
+            ),
+        ] {
+            let db = CompileDb::from_entries(&[unit("a.c", flags)]);
+            let facts = db.facts();
+            assert_eq!(
+                facts
+                    .of("/proj/a.c")
+                    .and_then(|t| t.posix_version)
+                    .is_some(),
+                declared,
+                "{flags:?}"
+            );
+            // An empty value that decided the unit is reported.
+            assert_eq!(
+                facts.unrecognized.len(),
+                usize::from(!declared),
+                "{flags:?}"
+            );
+        }
     }
 
     #[test]
@@ -2221,7 +2347,7 @@ mod tests {
                 Some(PosixVersion::Pre2001),
                 "{flags:?}"
             );
-            assert!(db.unrecognized_declarations.is_empty(), "{flags:?}");
+            assert!(db.facts().unrecognized.is_empty(), "{flags:?}");
         }
     }
 

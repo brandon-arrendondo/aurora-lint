@@ -154,7 +154,9 @@ the machine running it. A fact comes from the configuration (a file, or
 ``--compile-commands``, which is a declaration of its own: ``-std=`` names the C
 edition, ``-D_POSIX_C_SOURCE=`` or ``-D_XOPEN_SOURCE=`` the POSIX edition (a
 value older than POSIX.1-2001, such as ``-D_POSIX_C_SOURCE=199506L`` or
-``-D_XOPEN_SOURCE=500``, declares ``pre2001``), and ``-m32`` or ``-m64`` the
+``-D_XOPEN_SOURCE=500``, or the bare ``-D_POSIX_C_SOURCE``, declares ``pre2001``;
+``-D_POSIX_C_SOURCE=`` with an empty value defines the macro as empty, which glibc
+does not read as POSIX, so it declares nothing and is reported), and ``-m32`` or ``-m64`` the
 data model (``-m64`` is LP64, or LLP64 for a MinGW target). A flag that looks
 like an edition declaration but names none the tool knows (``-std=c2y``,
 ``-D_POSIX_C_SOURCE=FOO``) is reported and treated as undeclared; it is never
