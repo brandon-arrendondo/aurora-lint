@@ -261,3 +261,116 @@ the fact. If it splits the model, a benchmark declares the ISO C model plus
   fact and the database is reported by the scan, and the manifest wins.
 - A `--strict` benchmark figure no longer depends on what the strict preset
   assumes about POSIX, only on what the benchmark declares.
+
+## Amendment (2026-10-09, Brandon): the sixth pin is the text of each rule
+
+**Status:** ruled (Brandon, 2026-10-09); not yet implemented. The title's
+"five things" is left as written; with this amendment a run is pinned by
+six.
+
+### Context
+
+The oracle records whether the code violates a CERT C rule "as written"
+(ADR-0014 Decision 1), and `--strict` is that reading (ADR-0015). The
+written rule moves. CERT's pages are maintained in the
+`cmu-sei/secure-coding-standards` repository, and they change: examples are
+fixed, lists gain or lose functions, exceptions are reworded, and this
+project contributes some of those changes. A label judged against one
+version of a page can be wrong against the next, and nothing in a run
+records which version a label meant. Brandon: "the 6th element of our
+reproducibility vector - what version of the rules are we using? ... that
+greatly affects the oracle", and "i'm also OK with per rule determination
+of pin of the rule".
+
+The project's rulings move too. A ruling can change what `--strict` reads
+in an unchanged page (how a list is read, which reading of an ambiguous
+sentence is taken), so a label also depends on the rulings it was judged
+under.
+
+### Decision
+
+1. **The sixth pin is the rule-text pin: a per-rule map.** Each rule id maps
+   to the merged commit of `cmu-sei/secure-coding-standards` its text is
+   pinned at, the path of its page's source in that commit, and the SHA-256
+   of that file's content (the rule's `rule_text_version`). The pin a run
+   records is the SHA-256 of the map's canonical serialisation, next to the
+   other five.
+2. **The map lives with the oracle.** It is one file in the oracle
+   repository, `benchmark_adjudication`, versioned with the labels it
+   governs. Each entry also records the date it was set and the reason it
+   moved (an upstream fix, a new rule, a correction of the pin). The oracle
+   commit (the third pin) therefore contains the map; recording the map's
+   digest as its own pin lets a release show that a rule's text moved
+   without diffing the oracle.
+3. **There is one oracle, not one per pin.** Each label carries the
+   `rule_text_version` it was judged against, so ADR-0014's key becomes
+   `(project, commit, file, line, rule, rule_text_version)`. "The oracle at
+   pin P" is a query: for each rule, the labels whose `rule_text_version`
+   equals the map's entry.
+4. **Each label also records the rulings version it was judged under:** the
+   commit of the project's record of rulings, or the identifier of the
+   ruling it applied. It is a field of the label, not part of its key: a
+   later ruling adds a newer label for the same key and leaves the earlier
+   one as history. Whether the rulings version is a seventh element of the
+   reproducibility vector or only this field is left for Brandon's ruling
+   (below).
+5. **Advancing one rule's pin relabels only that rule.** A pin moves on
+   Brandon's ruling, when CERT merges a change to the rule's page or when a
+   review finds the pin stale. Only that rule's map entry changes. Its
+   labels are re-judged against the new text under E5 of the 2026-10-07
+   cross-cutting rulings in `docs/design/rule-disposition.md` (relabel and
+   re-run before re-scoring), and attributed as a relabel caused by the
+   text. The old labels stay, under their old `rule_text_version`, as the
+   living record. Every other rule's pin and labels carry forward unchanged.
+6. **Scoring selects by the map.** For each rule, a score uses the labels
+   whose `rule_text_version` equals the map's entry for that rule, and among
+   those the label judged under the latest rulings version. A rule with no
+   labels at its pinned version is unscored at that pin, and the report says
+   so; it is not scored against labels for an older text.
+7. **A pin is always a merged commit.** Labels are never judged against
+   wording that has been proposed but not merged upstream, this project's
+   own proposals included. A ruling may anticipate a proposed change, but
+   the labels follow the merged text.
+8. **A release reports a moved pin.** A release's reproducibility record
+   carries the map's digest and lists every rule whose pin moved since the
+   previous release, with both commits. Where a measured rule's pin moved
+   inside the period a release reports on, that rule's figures are given
+   under both pins.
+
+### Implementation
+
+Named here; their code is specified where it is written.
+
+- **The oracle's label schema, export, ingest and scoring**, in
+  `benchmark_adjudication` and in `benchmarking_db`, which holds the shared
+  copy (ADR-0004): the `rule_text_version` key component, the rulings
+  version field, the map file, and selection by the map.
+- **aurora-lint's rule metadata** records, beside each rule's page link,
+  the page version its implementation was last reviewed against (commit
+  and content hash), so a rule reviewed against a different text than the
+  oracle's pin is visible.
+- **Run provenance**: the run's sidecar records the map's digest with the
+  other five pins.
+
+### For Brandon's ruling
+
+- **The rulings version:** a seventh element of the vector, or the label
+  field of Decision 4 only.
+- **Page changes that do not touch the rule's reading** (tool rows,
+  bibliography, formatting) still change the content hash. Whether such a
+  move may carry labels forward by a recorded review, without re-judging
+  them, or always relabels.
+- **The first map.** Existing labels record no text version. The first map
+  could pin each rule at one merged commit chosen when the map is created,
+  with existing labels taking that version as carried forward and marked
+  so; or existing labels could stay unpinned until relabelled.
+
+### Consequences
+
+- A label's churn now has three named causes, kept apart: the tool changed
+  (a run), the text changed (a pin), or the reading changed (a ruling).
+- A figure is comparable across releases rule by rule: where a rule's pin
+  did not move, its labels carry forward; where it did, both are reported.
+- Contributing a fix upstream changes the oracle only once the fix is
+  merged and the rule's pin is moved on a ruling, never by the proposal
+  itself.
