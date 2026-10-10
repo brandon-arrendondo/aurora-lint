@@ -344,12 +344,58 @@ pub fn cap_reached(what: &str) {
 /// ([`take_not_converged`]). ADR-0017 records which analyses are on this
 /// list and why; each one leaves it when its convergence is fixed.
 pub fn not_converged(what: &'static str) {
-    *NOT_CONVERGED
+    let captured = NOT_CONVERGED_HERE.with(|here| {
+        here.borrow_mut()
+            .as_mut()
+            .map(|counts| *counts.entry(what).or_insert(0) += 1)
+            .is_some()
+    });
+    if captured {
+        return;
+    }
+    add_not_converged(&NotConverged::from([(what, 1)]));
+}
+
+/// [`not_converged`] counts, by analysis.
+pub type NotConverged = std::collections::BTreeMap<&'static str, u64>;
+
+thread_local! {
+    /// Where this thread's [`not_converged`] counts go while
+    /// [`counting_not_converged`] runs, instead of the scan's.
+    static NOT_CONVERGED_HERE: std::cell::RefCell<Option<NotConverged>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f`, returning the [`not_converged`] counts it made instead of adding
+/// them to the scan's, so that two analyses of one file can be counted once
+/// ([`add_not_converged`]).
+pub fn counting_not_converged<R>(f: impl FnOnce() -> R) -> (R, NotConverged) {
+    struct Restore(Option<NotConverged>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let outer = self.0.take();
+            NOT_CONVERGED_HERE.with(|here| *here.borrow_mut() = outer);
+        }
+    }
+    let outer = NOT_CONVERGED_HERE.with(|here| here.replace(Some(NotConverged::new())));
+    let restore = Restore(outer);
+    let out = f();
+    let counts = NOT_CONVERGED_HERE
+        .with(|here| here.borrow_mut().take())
+        .unwrap_or_default();
+    drop(restore);
+    (out, counts)
+}
+
+/// Add `counts` to the scan's [`not_converged`] counts.
+pub fn add_not_converged(counts: &NotConverged) {
+    let mut all = NOT_CONVERGED
         .get_or_init(|| Mutex::new(std::collections::BTreeMap::new()))
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .entry(what)
-        .or_insert(0) += 1;
+        .unwrap_or_else(|e| e.into_inner());
+    for (what, n) in counts {
+        *all.entry(what).or_insert(0) += n;
+    }
 }
 
 static NOT_CONVERGED: OnceLock<Mutex<std::collections::BTreeMap<&'static str, u64>>> =

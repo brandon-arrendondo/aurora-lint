@@ -229,12 +229,33 @@ decided separately.
   - Reading an absence as "undefined" is exactly what the compiler does for a
     member file whose include closure fully resolves, so it is the
     configuration's own view, not an assumption.
-  - The existing primitive is `dead_regions::arm_assumptions` /
-    `line_compiles_under`. Its catalog entry confines it to choosing what a
-    name resolves to, never whether a finding is emitted, which is the use
-    here.
-  - It inherits the substrate's ceiling: `#elif` and arithmetic `#if` are not
-    evaluated.
+  - The project's own headers derive more of that state from it
+    (`#ifdef CONFIG_ENABLE_SMP_SUPPORT` / `#define ENABLE_SMP_SUPPORT`), so
+    the headers the member files reach are read too. Each round reads every
+    header, in path order, under the previous round's state and rebuilds the
+    state from scratch, until a round changes nothing; a name the rounds
+    never settle is unknown. Headers read in no known order that bind a name
+    differently leave it unknown (or defined with no known value), so the
+    result does not depend on the order they are read in.
+  - The evaluator is `configuration_arms` (three-valued: defined, `!`, `&&`,
+    `||`, integer arithmetic and comparison, `#elif`). A reserved name
+    (`__GNUC__`) the database does not define, a function-like macro in a
+    condition, a value that is not an integer, and a name defined or
+    undefined under an arm it cannot decide are unknown. An arm whose
+    condition is unknown is undecided and treated as excluded, as if the
+    headers were missing.
+  - Like `dead_regions::arm_assumptions`, it chooses what a name resolves
+    to, never whether a finding is emitted.
+  - A member file is analysed against both contexts only when an excluded
+    or undecided line names something a generated header defines at file
+    scope, or a name the file spells on a line with one; its compiled lines
+    keep the first context's findings and the rest take the second's.
+  - **Known limitation:** the state is one per database, not one per
+    translation unit. Its `-D` is the union of every entry's flags, and the
+    project headers read are all those any member file reaches, not each
+    file's own include closure. A database whose entries disagree on a
+    macro, or a header only some member files include, can decide an arm
+    for a file the way another file's configuration would.
 
 **A bench-side gap M1 exposes:** `bench.dbbuild` keeps only generated
 *headers* (`HEADER_SUFFIXES`), so the materialized database names
@@ -390,8 +411,9 @@ project:
    a generated translation unit names in `#line`, and files one `#include`s.
    `bench.dbbuild` keeps generated translation units in the build cache so
    the second source exists for the benchmark corpora.
-3. **M2 is adopted.** Arm-level membership applies inside member files. An
-   arm the substrate cannot evaluate (`#elif`, arithmetic `#if`) receives no
+3. **M2 is adopted.** Arm-level membership applies inside member files,
+   decided by `configuration_arms`' own three-valued evaluator, which reads
+   `#elif` and arithmetic `#if`. An arm it cannot decide receives no
    generated facts.
 4. **Notice: scan-level only, for now.** The stand-down line through the
    existing hook; no per-finding marker.

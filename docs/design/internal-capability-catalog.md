@@ -337,6 +337,24 @@ membership picks.
 |---|---|---|
 | `GeneratedHeaders::recognise` | `(declared: &[String], db: Option<&CompileDb>, project_roots: &[String]) -> Result<Option<GeneratedHeaders>>` | The files under `--generated-include` directories and under database include directories inside an out-of-source build tree (`build_trees`) and outside every project root, less byte-identical copies of project files. `None` when there are none. Refuses a declared directory inside a root. |
 | `Membership::of` | `(db: &CompileDb, include_edges) -> Membership` | The `.c` files the configuration compiles: the database's units, files they name in `#line`, and `.c` files they include. `contains(path)` answers per file. |
+| `Membership::with_arms` | `(self, db, generated, include_edges, outside_headers, scanned) -> Membership` | For each scanned member file, its compiled lines (`configuration_arms::compiled_lines`) when an excluded or undecided line names something a generated header defines; `arms_of(path)` gives them. Such a file is analysed against both contexts and merged by line. |
+
+### `src/analyze/configuration_arms.rs`
+**Problem solved:** which lines of a file one build configuration compiles,
+under that configuration's macro state rather than the fixed platform profile
+`dead_regions` assumes. A three-valued `#if` evaluator (`defined`, `!`, `&&`,
+`||`, integer arithmetic and comparison, `#elif`): a reserved name the state
+does not define, a function-like macro call, a non-integer value, and a name
+bound under an undecided arm are unknown. Comments are stripped and string
+and character literals blanked first. It decides which facts a line resolves
+names with, never whether a finding is emitted (ADR-0010 D3).
+
+| Item | Signature | Description |
+|---|---|---|
+| `ConfigState::build` | `(db: Option<&CompileDb>, generated, headers) -> ConfigState` | The configuration's macro state: the database's `-D`, then what the headers define, read in rounds (path order, each round rebuilt from the previous state) until it settles; a name the rounds never settle, or that headers bind differently, is unknown. Include guards are taken as open. One state per database: `-D` is unioned across entries. |
+| `compiled_lines` | `(source: &str, state: &ConfigState) -> Vec<bool>` | Per line (indexed from 1), whether every enclosing arm is taken under `state`, counting the file's own `#define`/`#undef`s from where they are. An undecided line is `false`. |
+| `names_defined_in` | `(text: &str) -> Vec<String>` | The names a header defines at file scope: macros, the names declarations and definitions declare (functions, typedefs, objects, function pointers, tags) and enumeration constants; never a function body's, a parameter's or a member's. Brace-aware, with each conditional's arms read from the same starting depth. |
+| `excludes_code_naming` | `(source, compiled, names) -> bool` | Whether a code line `compiled` excludes names one of `names`, or a name the file spells on a code line together with one. |
 
 ### `src/analyze/include_names.rs`
 **Problem solved:** finding the file an `#include` name refers to under the

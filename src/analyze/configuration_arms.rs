@@ -22,7 +22,7 @@
 //! headers were missing. This decides which facts a line resolves names
 //! with, never whether a finding is emitted (ADR-0010 D3).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use super::compile_commands::CompileDb;
@@ -30,25 +30,60 @@ use super::compile_commands::CompileDb;
 /// A three-valued preprocessor value: a known integer, or unknown.
 type Val = Option<i64>;
 
+/// What a name is bound to at some point of a configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Binding {
+    /// Defined, with its integer value when it has one.
+    Defined(Option<i64>),
+    /// Undefined (`#undef`).
+    Undefined,
+    /// Defined or undefined under an arm the state cannot decide, or bound
+    /// differently by headers whose order the state does not know.
+    Unknown,
+}
+
+impl Binding {
+    /// The binding a name has when two headers, read in no known order,
+    /// leave it as `self` and `other`: agreeing bindings stand, two
+    /// definitions with different values leave it defined with no known
+    /// value, and anything else could be either.
+    fn join(self, other: Binding) -> Binding {
+        match (self, other) {
+            (a, b) if a == b => a,
+            (Binding::Defined(_), Binding::Defined(_)) => Binding::Defined(None),
+            _ => Binding::Unknown,
+        }
+    }
+}
+
+/// The most rounds [`ConfigState::build`] reads the headers for. Real
+/// configurations settle in two or three; a header whose arms flip on its
+/// own definitions never does.
+const MAX_ROUNDS: usize = 8;
+
 /// The configuration's macro state: every name it defines, with its integer
-/// value when it has one. A name absent from it is undefined.
-#[derive(Debug, Clone, Default)]
+/// value when it has one, and the names it cannot decide. A name absent from
+/// it is undefined.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ConfigState {
-    defined: HashMap<String, Option<i64>>,
+    names: HashMap<String, Binding>,
 }
 
 impl ConfigState {
     /// The state of `db`'s configuration: its `-D` flags, then the
     /// definitions in `generated` headers and in `headers` (the project
-    /// headers the configuration's files reach), each read under the state
-    /// so far until nothing new is defined. Include guards are taken as
-    /// open, as on a header's first inclusion.
+    /// headers the configuration's files reach). Each round reads every
+    /// header, in path order, under the previous round's state and rebuilds
+    /// the state from the `-D` flags and what the headers define, so a value
+    /// read while a name it depends on still looked undefined does not
+    /// outlive the round; reading stops when a round changes nothing. Include
+    /// guards are taken as open, as on a header's first inclusion.
     pub fn build<'a>(
         db: Option<&CompileDb>,
         generated: impl IntoIterator<Item = &'a Path>,
         headers: impl IntoIterator<Item = &'a Path>,
     ) -> Self {
-        let mut state = ConfigState::default();
+        let mut base: HashMap<String, Binding> = HashMap::new();
         if let Some(db) = db {
             for d in &db.defines {
                 // A bare -DFOO defines FOO as 1.
@@ -57,34 +92,73 @@ impl ConfigState {
                 } else {
                     int_value(&d.body)
                 };
-                state.defined.insert(d.name().to_string(), value);
+                base.insert(d.name().to_string(), Binding::Defined(value));
             }
         }
-        let texts: Vec<String> = generated
+        let mut paths: Vec<&Path> = generated.into_iter().chain(headers).collect();
+        paths.sort();
+        paths.dedup();
+        let texts: Vec<String> = paths
             .into_iter()
-            .chain(headers)
             .filter_map(|p| std::fs::read_to_string(p).ok())
             .collect();
-        // Monotone in practice: each round can only add names; a bound keeps
-        // a header whose arms flip on its own definitions from looping.
-        for _ in 0..8 {
-            let before = state.defined.len();
-            for text in &texts {
-                let found = scan(text, &state, true).defines;
-                for (name, value) in found {
-                    state.defined.entry(name).or_insert(value);
-                }
+        let mut state = ConfigState {
+            names: base.clone(),
+        };
+        for _ in 0..MAX_ROUNDS {
+            let next = state.next_round(&base, &texts);
+            if next == state {
+                return state;
             }
-            if state.defined.len() == before {
-                break;
+            state = next;
+        }
+        // Not settled: a name the last two rounds bind differently could be
+        // either.
+        let next = state.next_round(&base, &texts);
+        let names: Vec<String> = state
+            .names
+            .keys()
+            .chain(next.names.keys())
+            .filter(|n| !base.contains_key(*n))
+            .cloned()
+            .collect();
+        for name in names {
+            if state.names.get(&name) != next.names.get(&name) {
+                state.names.insert(name, Binding::Unknown);
             }
         }
         state
     }
 
+    /// The state the headers `texts` leave when read under `self`, over the
+    /// database's `base`. Joined per name, so the order the headers are read
+    /// in cannot change it.
+    fn next_round(&self, base: &HashMap<String, Binding>, texts: &[String]) -> ConfigState {
+        let mut found: BTreeMap<String, Binding> = BTreeMap::new();
+        for text in texts {
+            for (name, binding) in scan(text, self, true).bindings {
+                found
+                    .entry(name)
+                    .and_modify(|b| *b = b.join(binding))
+                    .or_insert(binding);
+            }
+        }
+        let mut names = base.clone();
+        for (name, binding) in found {
+            // The command line's definitions stand.
+            if names.contains_key(&name) || binding == Binding::Undefined {
+                continue;
+            }
+            names.insert(name, binding);
+        }
+        ConfigState { names }
+    }
+
     fn value_of(&self, name: &str) -> Lookup {
-        match self.defined.get(name) {
-            Some(v) => Lookup::Defined(*v),
+        match self.names.get(name) {
+            Some(Binding::Defined(v)) => Lookup::Defined(*v),
+            Some(Binding::Unknown) => Lookup::Unknown,
+            Some(Binding::Undefined) => Lookup::Undefined,
             None if is_reserved(name) => Lookup::Unknown,
             None => Lookup::Undefined,
         }
@@ -96,15 +170,15 @@ impl ConfigState {
 /// that reading a header never copies the whole state.
 struct View<'a> {
     base: &'a ConfigState,
-    /// Name -> `Some(value)` defined here, `None` undefined here.
-    local: HashMap<String, Option<Option<i64>>>,
+    local: HashMap<String, Binding>,
 }
 
 impl View<'_> {
     fn value_of(&self, name: &str) -> Lookup {
         match self.local.get(name) {
-            Some(Some(v)) => Lookup::Defined(*v),
-            Some(None) => Lookup::Undefined,
+            Some(Binding::Defined(v)) => Lookup::Defined(*v),
+            Some(Binding::Undefined) => Lookup::Undefined,
+            Some(Binding::Unknown) => Lookup::Unknown,
             None => self.base.value_of(name),
         }
     }
@@ -140,23 +214,27 @@ pub fn excludes_code_naming(
         .lines()
         .map(|l| strip_comments(l, &mut in_comment))
         .collect();
-    let mut dependent: std::collections::HashSet<&str> = std::collections::HashSet::new();
     // Code only: a configuration test such as `#ifdef HAVE_X` names the
     // generated macro but makes nothing else depend on it.
-    for line in lines.iter().filter(|l| !l.trim_start().starts_with('#')) {
+    let mut directive = false;
+    let code: Vec<bool> = (0..lines.len())
+        .map(|i| {
+            !continues_directive(&lines, i, &mut directive)
+                && !lines[i].trim_start().starts_with('#')
+                && !lines[i].trim().is_empty()
+        })
+        .collect();
+    let mut dependent: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for line in lines.iter().zip(&code).filter(|(_, c)| **c).map(|(l, _)| l) {
         if identifiers(line).any(|id| names.contains(id)) {
             dependent.extend(identifiers(line).filter(|id| !is_keyword(id)));
         }
     }
-    for (i, code) in lines.iter().enumerate() {
-        let trimmed = code.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+    for (i, line) in lines.iter().enumerate() {
+        if !code[i] || compiled.get(i + 1).copied().unwrap_or(true) {
             continue;
         }
-        if compiled.get(i + 1).copied().unwrap_or(true) {
-            continue;
-        }
-        if identifiers(trimmed).any(|id| names.contains(id) || dependent.contains(id)) {
+        if identifiers(line).any(|id| names.contains(id) || dependent.contains(id)) {
             return true;
         }
     }
@@ -200,50 +278,308 @@ fn is_keyword(id: &str) -> bool {
             | "void"
             | "volatile"
             | "while"
+            | "_Alignas"
+            | "_Alignof"
+            | "_Atomic"
             | "_Bool"
+            | "_Complex"
+            | "_Generic"
+            | "_Noreturn"
+            | "_Static_assert"
+            | "_Thread_local"
+            | "alignas"
+            | "alignof"
+            | "bool"
+            | "constexpr"
+            | "false"
+            | "nullptr"
+            | "static_assert"
+            | "thread_local"
+            | "true"
+            | "typeof"
+            | "typeof_unqual"
             | "define"
             | "include"
     )
 }
 
-/// Every name a header defines at file scope: `#define`d macros, and the
-/// identifiers declared or defined at the start of a top-level declaration
-/// (functions, typedefs, objects). Over-collecting only costs a second
+/// Every name a header defines at file scope: `#define`d macros, the names
+/// a top-level declaration or definition declares (functions, typedefs,
+/// objects, function pointers, struct, union and enum tags), and enumeration
+/// constants. A function's body, a parameter list and a struct's members
+/// declare nothing at file scope. Over-collecting only costs a second
 /// analysis of a file; under-collecting would leave generated facts in an
 /// excluded arm.
 pub fn names_defined_in(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut in_comment = false;
-    for line in text.lines() {
-        let code = strip_comments(line, &mut in_comment);
-        let t = code.trim();
-        if let Some(rest) = t.strip_prefix('#') {
-            let rest = rest.trim_start();
-            if let Some(def) = rest.strip_prefix("define") {
-                if let Some(name) = identifiers(def).next() {
-                    out.push(name.to_string());
-                }
-            }
+    let lines: Vec<String> = text
+        .lines()
+        .map(|l| strip_comments(l, &mut in_comment))
+        .collect();
+    let mut scope = FileScope::default();
+    // Each conditional's scope where it opened and where its first arm left
+    // it: the arms of `#if A / int f(int a) { / #else / int f(long a) { /
+    // #endif` each open the body once, not twice.
+    let mut arms: Vec<(FileScope, Option<FileScope>)> = Vec::new();
+    let mut directive = false;
+    for i in 0..lines.len() {
+        if continues_directive(&lines, i, &mut directive) {
             continue;
         }
-        // `type name(` and `} name;` / `typedef ... name;` shapes.
-        if let Some(open) = t.find('(') {
-            if let Some(name) = identifiers(&t[..open]).last() {
-                out.push(name.to_string());
+        let Some(rest) = lines[i].trim_start().strip_prefix('#') else {
+            scope.feed(&lines[i], &mut out);
+            continue;
+        };
+        let (word, rest) = split_word(rest.trim_start());
+        match word {
+            "define" => out.extend(identifiers(rest).next().map(str::to_string)),
+            "if" | "ifdef" | "ifndef" => arms.push((scope.clone(), None)),
+            "elif" | "elifdef" | "elifndef" | "else" => {
+                if let Some((at_open, first)) = arms.last_mut() {
+                    if first.is_none() {
+                        *first = Some(scope.clone());
+                    }
+                    scope = at_open.clone();
+                }
             }
-        }
-        if t.ends_with(';') {
-            if let Some(name) = identifiers(t.trim_end_matches(';')).last() {
-                out.push(name.to_string());
+            "endif" => {
+                if let Some((_, Some(first))) = arms.pop() {
+                    scope = first;
+                }
             }
+            _ => {}
         }
     }
+    out.retain(|n| !is_keyword(n));
+    out.sort();
+    out.dedup();
     out
+}
+
+/// Attribute-like names whose parenthesised operand is no declarator.
+fn is_attribute_like(id: &str) -> bool {
+    matches!(
+        id,
+        "__attribute__"
+            | "__attribute"
+            | "__declspec"
+            | "__asm__"
+            | "__asm"
+            | "asm"
+            | "_Alignas"
+            | "alignas"
+            | "_Static_assert"
+            | "static_assert"
+            | "__typeof__"
+            | "typeof"
+            | "_Pragma"
+            | "__pragma"
+    )
+}
+
+/// Reads a header's code at file scope, a statement at a time: what is
+/// nested in parentheses, brackets and braces is blanked from the statement,
+/// so only the file-scope names it declares are left to read.
+#[derive(Debug, Clone, Default)]
+struct FileScope {
+    /// Brace depth.
+    brace: usize,
+    /// Parenthesis depth at file scope.
+    paren: usize,
+    /// Bracket depth at file scope.
+    bracket: usize,
+    /// The statement so far, at file scope.
+    stmt: String,
+    /// The text of the open outermost parenthesised group.
+    group: String,
+    /// The open group is an attribute, `asm` or static assertion.
+    skip_group: bool,
+    /// The open brace is a function's body.
+    fn_body: bool,
+    /// The open brace is an enumeration's body.
+    enum_body: bool,
+    /// Parenthesis depth inside an enumeration's body.
+    enum_paren: usize,
+    /// The next identifier in an enumeration's body names a constant.
+    item_start: bool,
+}
+
+impl FileScope {
+    fn feed(&mut self, code: &str, out: &mut Vec<String>) {
+        let chars: Vec<char> = code.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            i += 1;
+            if self.brace > 0 {
+                match c {
+                    '{' => self.brace += 1,
+                    '}' => {
+                        self.brace -= 1;
+                        if self.brace == 0 {
+                            self.close_body();
+                        }
+                    }
+                    _ if self.enum_body && self.brace == 1 => match c {
+                        '(' => self.enum_paren += 1,
+                        ')' => self.enum_paren = self.enum_paren.saturating_sub(1),
+                        ',' if self.enum_paren == 0 => self.item_start = true,
+                        _ if c.is_ascii_alphanumeric() || c == '_' => {
+                            let start = i - 1;
+                            while i < chars.len()
+                                && (chars[i].is_ascii_alphanumeric() || chars[i] == '_')
+                            {
+                                i += 1;
+                            }
+                            if self.item_start && !c.is_ascii_digit() {
+                                out.push(chars[start..i].iter().collect());
+                                self.item_start = false;
+                            }
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+                continue;
+            }
+            if self.paren > 0 {
+                match c {
+                    '(' => self.paren += 1,
+                    ')' => self.paren -= 1,
+                    _ => {}
+                }
+                if self.paren == 0 {
+                    self.close_group();
+                } else {
+                    self.group.push(c);
+                }
+                continue;
+            }
+            if self.bracket > 0 {
+                match c {
+                    '[' => self.bracket += 1,
+                    ']' => self.bracket -= 1,
+                    _ => {}
+                }
+                continue;
+            }
+            match c {
+                '(' => self.open_group(),
+                '[' => {
+                    self.bracket = 1;
+                    self.stmt.push(' ');
+                }
+                '{' => self.open_body(out),
+                // A brace closing nothing: the end of `extern "C" {`.
+                '}' => {}
+                ';' => {
+                    declared_names(&self.stmt, out);
+                    self.stmt.clear();
+                }
+                _ => self.stmt.push(c),
+            }
+        }
+        self.stmt.push(' ');
+    }
+
+    fn open_group(&mut self) {
+        let trimmed = self.stmt.trim_end();
+        let last = trimmed
+            .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .next()
+            .unwrap_or("");
+        self.skip_group = is_attribute_like(last);
+        if self.skip_group {
+            let keep = trimmed.len() - last.len();
+            self.stmt.truncate(keep);
+        }
+        self.paren = 1;
+        self.group.clear();
+    }
+
+    /// `(*name)` or `(*name[N])` declares `name`, a pointer to a function
+    /// (or an array of them); any other group declares nothing.
+    fn close_group(&mut self) {
+        if self.skip_group {
+            self.stmt.push(' ');
+            return;
+        }
+        let g = self.group.trim_start();
+        let pointer = g
+            .strip_prefix('*')
+            .map(|r| r.trim_start_matches(|c: char| c == '*' || c.is_whitespace()))
+            .and_then(|r| {
+                identifiers(r).find(|id| !matches!(*id, "const" | "volatile" | "restrict"))
+            });
+        match pointer {
+            Some(name) => {
+                self.stmt.push_str("(*");
+                self.stmt.push_str(name);
+                self.stmt.push(')');
+            }
+            None => self.stmt.push_str("()"),
+        }
+    }
+
+    fn open_body(&mut self, out: &mut Vec<String>) {
+        let ids: Vec<&str> = identifiers(&self.stmt).collect();
+        // `extern "C" {` opens no scope.
+        if ids == ["extern"] && self.stmt.contains('"') {
+            self.stmt.clear();
+            return;
+        }
+        self.brace = 1;
+        // The tag a body defines: `struct cfg { ... } cfg_default;`.
+        if let Some(at) = ids
+            .iter()
+            .position(|id| matches!(*id, "struct" | "union" | "enum"))
+        {
+            out.extend(ids.get(at + 1).map(|t| t.to_string()));
+        }
+        if self.stmt.contains('=') {
+            // An initializer: the statement goes on after it.
+        } else if self.stmt.contains('(') {
+            declared_names(&self.stmt, out);
+            self.fn_body = true;
+        } else if ids.contains(&"enum") {
+            self.enum_body = true;
+            self.item_start = true;
+            self.enum_paren = 0;
+        }
+        self.stmt.push(' ');
+    }
+
+    fn close_body(&mut self) {
+        if self.fn_body {
+            self.stmt.clear();
+        }
+        self.fn_body = false;
+        self.enum_body = false;
+    }
+}
+
+/// The names a file-scope statement declares, its nested groups already
+/// blanked: each declarator's `(*name)`, else the name before its parameter
+/// list, else its last name before any initializer.
+fn declared_names(stmt: &str, out: &mut Vec<String>) {
+    for piece in stmt.split(',') {
+        let piece = piece.split('=').next().unwrap_or("");
+        let name = if let Some(at) = piece.find("(*") {
+            identifiers(&piece[at..]).next()
+        } else if let Some(at) = piece.find('(') {
+            identifiers(&piece[..at]).last()
+        } else {
+            identifiers(piece).last()
+        };
+        out.extend(name.filter(|n| !is_keyword(n)).map(str::to_string));
+    }
 }
 
 struct Scan {
     compiled: Vec<bool>,
-    defines: Vec<(String, Option<i64>)>,
+    /// Every name the source defines or undefines, as it leaves it.
+    bindings: HashMap<String, Binding>,
 }
 
 /// One frame of the conditional stack.
@@ -258,7 +594,6 @@ struct Frame {
 fn scan(source: &str, state: &ConfigState, guards_open: bool) -> Scan {
     let lines: Vec<&str> = source.lines().collect();
     let mut compiled = vec![true; lines.len() + 1];
-    let mut defines = Vec::new();
     let mut local = View {
         base: state,
         local: HashMap::new(),
@@ -352,29 +687,40 @@ fn scan(source: &str, state: &ConfigState, guards_open: bool) -> Scan {
             "endif" => {
                 stack.pop();
             }
-            "define" if effective == Some(true) => {
+            // Under an arm the state cannot decide, a definition may or may
+            // not happen: the name is unknown from there on.
+            "define" if effective != Some(false) => {
                 let (name, body) = split_define(rest);
                 if !name.is_empty() && guard.as_deref() != Some(name.as_str()) {
-                    let value = if body.starts_with('(')
+                    let binding = if effective.is_none() {
+                        Binding::Unknown
+                    } else if body.starts_with('(')
                         && rest.trim_start().starts_with(&format!("{name}("))
                     {
-                        None
+                        Binding::Defined(None)
                     } else {
-                        int_value(&body)
+                        Binding::Defined(int_value(&body))
                     };
-                    local.local.insert(name.clone(), Some(value));
-                    defines.push((name, value));
+                    local.local.insert(name, binding);
                 }
             }
-            "undef" if effective == Some(true) => {
+            "undef" if effective != Some(false) => {
                 if let Some(name) = identifiers(rest).next() {
-                    local.local.insert(name.to_string(), None);
+                    let binding = if effective.is_none() {
+                        Binding::Unknown
+                    } else {
+                        Binding::Undefined
+                    };
+                    local.local.insert(name.to_string(), binding);
                 }
             }
             _ => {}
         }
     }
-    Scan { compiled, defines }
+    Scan {
+        compiled,
+        bindings: local.local,
+    }
 }
 
 /// Whether the arms on the stack are all taken: `Some(true)`, one is not:
@@ -474,10 +820,13 @@ fn parse_int(tok: &str) -> Option<i64> {
 }
 
 /// `line` with `/* */` and `//` comments removed, carrying an open block
-/// comment over to the next line.
+/// comment over to the next line, and the text of its string and character
+/// literals blanked: `"/*"` and `"http://"` open no comment, and a name
+/// spelled in a string is no use of it.
 fn strip_comments(line: &str, in_comment: &mut bool) -> String {
     let mut out = String::new();
     let mut chars = line.chars().peekable();
+    let mut prev = ' ';
     while let Some(c) = chars.next() {
         if *in_comment {
             if c == '*' && chars.peek() == Some(&'/') {
@@ -493,10 +842,37 @@ fn strip_comments(line: &str, in_comment: &mut bool) -> String {
                 out.push(' ');
             }
             ('/', Some('/')) => break,
+            // A quote after a digit is a digit separator (`1'000'000`).
+            ('"', _) | ('\'', _) if !(c == '\'' && prev.is_ascii_digit()) => {
+                out.push(c);
+                // To the closing quote, or the end of the line for an
+                // unterminated one; an escape skips the character after it.
+                while let Some(d) = chars.next() {
+                    if d == c {
+                        out.push(c);
+                        break;
+                    }
+                    out.push(' ');
+                    if d == '\\' && chars.next().is_some() {
+                        out.push(' ');
+                    }
+                }
+            }
             _ => out.push(c),
         }
+        prev = c;
     }
     out
+}
+
+/// Whether `lines[i]` continues a directive: the line before it is part of
+/// one and ends with `\`.
+fn continues_directive(lines: &[String], i: usize, directive: &mut bool) -> bool {
+    let line = &lines[i];
+    let continues = *directive;
+    let starts = !continues && line.trim_start().starts_with('#');
+    *directive = (continues || starts) && line.trim_end().ends_with('\\');
+    continues
 }
 
 fn identifiers(s: &str) -> impl Iterator<Item = &str> {
@@ -741,8 +1117,25 @@ mod tests {
 
     fn state(defs: &[(&str, Option<i64>)]) -> ConfigState {
         ConfigState {
-            defined: defs.iter().map(|(n, v)| (n.to_string(), *v)).collect(),
+            names: defs
+                .iter()
+                .map(|(n, v)| (n.to_string(), Binding::Defined(*v)))
+                .collect(),
         }
+    }
+
+    /// The state `headers` (name, text) give, read in the order given.
+    fn from_headers(headers: &[(&str, &str)]) -> ConfigState {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: Vec<std::path::PathBuf> = headers
+            .iter()
+            .map(|(name, text)| {
+                let p = dir.path().join(name);
+                std::fs::write(&p, text).unwrap();
+                p
+            })
+            .collect();
+        ConfigState::build(None, [], paths.iter().map(|p| p.as_path()))
     }
 
     #[test]
@@ -828,5 +1221,99 @@ mod tests {
         for n in ["N", "cap_get", "count", "s_t"] {
             assert!(names.contains(&n.to_string()), "{n}: {names:?}");
         }
+    }
+
+    #[test]
+    fn a_value_derived_from_a_header_that_sorts_first_is_settled_in_any_order() {
+        // a_derive.h reads A_ON, which only b_config.h (read after it in path
+        // order) defines: the first round sees A_ON undefined and derives
+        // MODE 2, which the next round must replace, not keep.
+        let derive = (
+            "a_derive.h",
+            "#ifndef A_ON\n#define MODE 2\n#else\n#define MODE 1\n#endif\n",
+        );
+        let config = ("b_config.h", "#define A_ON 1\n");
+        let member = "#if MODE == 1\nint one;\n#else\nint two;\n#endif\n";
+        for order in [[derive, config], [config, derive]] {
+            let c = compiled_lines(member, &from_headers(&order));
+            assert!(c[2] && !c[4], "{order:?}");
+        }
+    }
+
+    #[test]
+    fn a_comment_opener_in_a_string_or_char_literal_opens_no_comment() {
+        let header = ("cfg.h", "#define MAX 1\n");
+        let src = "const char *pat = \"/*\";\n#if MAX > 4\nint big;\n#else\nint small;\n#endif\n\
+                   const char *url = \"http://x\"; int after;\nchar q = '\"'; int z = 1'000;\n\
+                   #if MAX > 4\nint big2;\n#endif\n";
+        let c = compiled_lines(src, &from_headers(&[header]));
+        assert!(!c[3] && c[5] && c[7] && !c[10], "{c:?}");
+        let names = names_defined_in(src);
+        for n in ["pat", "url", "after", "q", "z"] {
+            assert!(names.contains(&n.to_string()), "{n}: {names:?}");
+        }
+    }
+
+    #[test]
+    fn a_name_defined_or_undefined_under_an_undecided_arm_is_unknown() {
+        let proj = (
+            "proj.h",
+            "#ifdef __GNUC__\n#define HAVE_B 1\n#endif\n\
+             #define HAVE_C 1\n#if defined(__clang__)\n#undef HAVE_C\n#endif\n",
+        );
+        let s = from_headers(&[proj]);
+        let src = "#ifndef HAVE_B\nint fallback;\n#endif\n#ifdef HAVE_C\nint c;\n#endif\n\
+                   #ifdef __GNUC__\n#define LOCAL 1\n#endif\n#ifdef LOCAL\nint a;\n#else\nint b;\n#endif\n";
+        let c = compiled_lines(src, &s);
+        assert!(!c[2] && !c[5] && !c[11] && !c[13], "{c:?}");
+    }
+
+    #[test]
+    fn only_file_scope_names_are_defined_by_a_header() {
+        let header = "static inline int helper(int v)\n{\n    int local = v;\n    if (v) return 0;\n\
+                      \x20   while (local) local--;\n    return local;\n}\n\
+                      typedef void (*cb_t)(int);\n\
+                      enum mode { MODE_A, MODE_B = (1 << 2), MODE_C };\n\
+                      struct cfg { int field; } cfg_default;\n\
+                      int table[COUNT], other;\n\
+                      int __attribute__((unused)) quiet;\n\
+                      #define WRAP(x) \\\n    do { wrapped(x); } while (0)\n\
+                      #ifdef __cplusplus\nextern \"C\" {\n#endif\n\
+                      #ifdef ALT\nint pick(int a) {\n#else\nint pick(long a) {\n#endif\n    return 0;\n}\n\
+                      int later(void);\n\
+                      #ifdef __cplusplus\n}\n#endif\n";
+        let names = names_defined_in(header);
+        for n in [
+            "helper",
+            "cb_t",
+            "mode",
+            "MODE_A",
+            "MODE_B",
+            "MODE_C",
+            "cfg",
+            "cfg_default",
+            "table",
+            "other",
+            "quiet",
+            "WRAP",
+            "pick",
+            "later",
+        ] {
+            assert!(names.contains(&n.to_string()), "{n}: {names:?}");
+        }
+        for n in [
+            "if", "return", "while", "do", "v", "local", "field", "a", "wrapped", "x", "COUNT",
+            "int", "unused",
+        ] {
+            assert!(!names.contains(&n.to_string()), "{n}: {names:?}");
+        }
+        // A member whose only excluded line is a statement like the
+        // header's body is not split.
+        let names: std::collections::HashSet<String> = names.into_iter().collect();
+        let member =
+            "int f(int v)\n{\n#ifdef OFF\n    if (v) return 0;\n#endif\n    return 1;\n}\n";
+        let c = compiled_lines(member, &from_headers(&[]));
+        assert!(!c[4]);
+        assert!(!excludes_code_naming(member, &c, &names));
     }
 }

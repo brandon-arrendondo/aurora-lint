@@ -2995,6 +2995,94 @@ fn arms_the_configuration_leaves_off_read_no_generated_facts() {
 }
 
 #[test]
+fn arms_are_decided_the_same_way_on_every_run() {
+    // h1.h derives MODE from A_ON, which only h2.h defines: whichever header
+    // is read first, the configuration takes the MODE == 1 arm.
+    let (_dir, project, build) = generated_headers_project(false);
+    std::fs::write(
+        project.join("include/h1.h"),
+        "#ifndef A_ON\n#define MODE 2\n#else\n#define MODE 1\n#endif\n",
+    )
+    .unwrap();
+    std::fs::write(project.join("include/h2.h"), "#define A_ON 1\n").unwrap();
+    std::fs::write(
+        project.join("src/member.c"),
+        "#include <obj/structs_gen.h>\n#include <config_gen.h>\n\
+         #include <h1.h>\n#include <h2.h>\n\
+         int member_nodes[MAX_NODES];\n\
+         int member_use(void)\n{\n\
+         #if MODE == 1\n\
+         \x20   return member_nodes[cpu()];\n\
+         #else\n\
+         \x20   return member_nodes[cpu() + 1];\n\
+         #endif\n}\n",
+    )
+    .unwrap();
+    let db = build.join("compile_commands.json");
+    let mut runs = Vec::new();
+    for _ in 0..8 {
+        let (code, stderr, keys) =
+            generated_headers_scan(&project, &["--compile-commands", db.to_str().unwrap()]);
+        assert_eq!(code, 0, "{stderr}");
+        let member: Vec<String> = keys
+            .into_iter()
+            .filter(|k| k.starts_with("member.c"))
+            .collect();
+        // The compiled arm keeps the size-1 array; the other arm does not.
+        assert!(
+            member.contains(&"member.c:9:ARR30-C".to_string()),
+            "{member:?}"
+        );
+        assert!(
+            !member.contains(&"member.c:11:ARR30-C".to_string()),
+            "{member:?}"
+        );
+        runs.push(member);
+    }
+    assert!(runs.windows(2).all(|w| w[0] == w[1]), "{runs:?}");
+}
+
+#[test]
+fn a_split_file_the_input_guard_refuses_is_never_parsed() {
+    // member.c is split by arm, but it is over --max-file-size: it is
+    // refused, once, and neither pass parses it (ADR-0017).
+    let (_dir, project, build) = generated_headers_project(false);
+    let padding = "/* padding */\n".repeat(80 * 1024);
+    std::fs::write(
+        project.join("src/member.c"),
+        format!(
+            "#include <config_gen.h>\n\
+             int member_nodes[MAX_NODES];\n\
+             void member_use(void)\n{{\n\
+             #if MAX_NODES > 1\n\
+             \x20   int local[2];\n\
+             \x20   local[5] = member_nodes[0];\n\
+             #endif\n}}\n{padding}"
+        ),
+    )
+    .unwrap();
+    let db = build.join("compile_commands.json");
+    let (code, stderr, keys) = generated_headers_scan(
+        &project,
+        &[
+            "--compile-commands",
+            db.to_str().unwrap(),
+            "-j",
+            "2",
+            "--max-file-size",
+            "1",
+        ],
+    );
+    let member: Vec<&String> = keys.iter().filter(|k| k.starts_with("member.c")).collect();
+    assert!(member.is_empty(), "{member:?}\n{stderr}");
+    assert_eq!(code, 3, "{stderr}");
+    assert!(
+        stderr.contains("1 unit(s) of work did not finish in 1 file(s)"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn a_generated_include_inside_the_scanned_tree_is_refused() {
     let (_dir, project, _build) = generated_headers_project(false);
     let inside = project.join("include");

@@ -454,36 +454,48 @@ pub fn analyze_project(
                 .par_bridge()
                 .map(|&(file_path, second_pass)| {
                     if second_pass {
-                        let result = split_for(file_path).map_or_else(
-                            || (Vec::new(), Vec::new(), Vec::new()),
-                            |(_, outside, repair)| {
-                                second_pass_item(
-                                    file_path,
-                                    repair,
-                                    manifest,
-                                    outside,
-                                    needs_vra,
-                                    &suppression_manager,
-                                    &escalation,
-                                    total_files,
-                                )
-                            },
-                        );
-                        return (file_path, true, result);
+                        let (result, counts) = containment::counting_not_converged(|| {
+                            split_for(file_path).map_or_else(
+                                || (Vec::new(), Vec::new(), Vec::new()),
+                                |(_, outside, repair)| {
+                                    second_pass_item(
+                                        file_path,
+                                        progress,
+                                        repair,
+                                        manifest,
+                                        outside,
+                                        needs_vra,
+                                        &suppression_manager,
+                                        &escalation,
+                                        total_files,
+                                    )
+                                },
+                            )
+                        });
+                        return (file_path, true, result, Some(counts));
                     }
-                    let result = first_pass_item(
-                        file_path,
-                        progress,
-                        repair_macros_for(file_path),
-                        context_for(file_path),
-                        manifest,
-                        needs_vra,
-                        &suppression_manager,
-                        &escalation,
-                        total_files,
-                        &file_counter,
-                    );
-                    (file_path, false, result)
+                    let first = || {
+                        first_pass_item(
+                            file_path,
+                            progress,
+                            repair_macros_for(file_path),
+                            context_for(file_path),
+                            manifest,
+                            needs_vra,
+                            &suppression_manager,
+                            &escalation,
+                            total_files,
+                            &file_counter,
+                        )
+                    };
+                    // A split file's two passes are counted once, in
+                    // `pair_passes`.
+                    if split_for(file_path).is_some() {
+                        let (result, counts) = containment::counting_not_converged(first);
+                        (file_path, false, result, Some(counts))
+                    } else {
+                        (file_path, false, first(), None)
+                    }
                 })
                 .collect()
         });
@@ -555,36 +567,48 @@ pub fn analyze_project(
             parser.set_repair_macros(std::sync::Arc::clone(repair_macros_for(file_path)));
         }
 
-        let result = analyze_one_file_contained(
-            file_path,
-            &mut parser,
-            &file_registry,
-            manifest,
-            file_context,
-            needs_vra,
-            &mut suppression_manager,
-            &escalation,
-            progress,
-            file_idx,
-            total_files,
-            true,
-        );
-        let (file_violations, file_suppressed, file_failures) = match split_for(file_path) {
+        let split = split_for(file_path);
+        let mut first = || {
+            analyze_one_file_contained(
+                file_path,
+                &mut parser,
+                &file_registry,
+                manifest,
+                file_context,
+                needs_vra,
+                &mut suppression_manager,
+                &escalation,
+                progress,
+                file_idx,
+                total_files,
+                true,
+            )
+        };
+        let (file_violations, file_suppressed, file_failures) = match split {
             Some((compiled, outside, repair)) => {
-                parser.set_repair_macros(Arc::clone(repair));
-                let other = analyze_outside_arms(
-                    file_path,
-                    &mut parser,
-                    manifest,
-                    outside,
-                    needs_vra,
-                    &suppression_manager,
-                    &escalation,
-                    total_files,
-                );
-                merge_by_arms(file_path, result, other, &compiled)
+                let (result, first_counts) = containment::counting_not_converged(first);
+                let (merged, second_counts) = if progress.is_some_and(|r| r.is_cancelled()) {
+                    (result, containment::NotConverged::new())
+                } else {
+                    parser.set_repair_macros(Arc::clone(repair));
+                    containment::counting_not_converged(|| {
+                        let other = analyze_outside_arms(
+                            file_path,
+                            &mut parser,
+                            manifest,
+                            outside,
+                            needs_vra,
+                            &suppression_manager,
+                            &escalation,
+                            total_files,
+                        );
+                        merge_by_arms(file_path, result, other, &compiled)
+                    })
+                };
+                containment::add_not_converged(&once_per_file(first_counts, second_counts));
+                merged
             }
-            None => result,
+            None => first(),
         };
         violations.extend(file_violations);
         suppressed.extend(file_suppressed);
@@ -1548,10 +1572,13 @@ fn first_pass_item(
 }
 
 /// A member file's second pass as a work item of its own: a parser of its
-/// own with the second context's repair macros.
+/// own with the second context's repair macros, under the same input guard
+/// as the first (ADR-0017). A file the guard refuses is reported by its
+/// first pass and never parsed.
 #[allow(clippy::too_many_arguments)]
 fn second_pass_item(
     file_path: &str,
+    progress: Option<&dyn ProgressReporter>,
     repair: &Arc<unknown_identifier_recovery::RepairMacros>,
     manifest: &RuleManifest,
     outside: &context::ProjectContext,
@@ -1560,6 +1587,12 @@ fn second_pass_item(
     escalation: &containment::Escalation,
     total_files: usize,
 ) -> FileResult {
+    if progress.is_some_and(|r| r.is_cancelled())
+        || input_guard::admit(std::path::Path::new(file_path)).is_err()
+    {
+        return (Vec::new(), Vec::new(), Vec::new());
+    }
+    let _permit = input_guard::large_file_permit(std::path::Path::new(file_path));
     let Ok(mut parser) = CParser::new() else {
         return (Vec::new(), Vec::new(), Vec::new());
     };
@@ -1585,34 +1618,62 @@ type FileResult = (
 
 /// The per-file results of a parallel scan, with each split file's two
 /// passes paired and merged by line (`compiled_of` gives its compiled
-/// lines); `(file, second_pass, result)` in, one result per file out.
+/// lines); `(file, second_pass, result, not-converged counts)` in, one
+/// result per file out. A split file's passes add their counts to the scan's
+/// once ([`once_per_file`]).
 fn pair_passes(
-    results: Vec<(&String, bool, FileResult)>,
+    results: Vec<(&String, bool, FileResult, Option<containment::NotConverged>)>,
     compiled_of: &dyn Fn(&str) -> Option<Arc<Vec<bool>>>,
 ) -> Vec<FileResult> {
-    let mut seconds: HashMap<String, FileResult> = HashMap::new();
+    type Pass = (FileResult, Option<containment::NotConverged>);
+    let mut seconds: HashMap<String, Pass> = HashMap::new();
     let mut firsts = Vec::with_capacity(results.len());
-    for (file_path, second_pass, result) in results {
+    for (file_path, second_pass, result, counts) in results {
         if second_pass {
-            seconds.insert(file_path.clone(), result);
+            seconds.insert(file_path.clone(), (result, counts));
         } else {
-            firsts.push((file_path, result));
+            firsts.push((file_path, (result, counts)));
         }
     }
     firsts
         .into_iter()
-        .map(|(file_path, result)| {
-            match (compiled_of(file_path), seconds.remove(file_path.as_str())) {
-                (Some(compiled), Some(other)) => merge_by_arms(file_path, result, other, &compiled),
+        .map(|(file_path, (result, counts))| {
+            let second = seconds.remove(file_path.as_str());
+            let second_counts = second.as_ref().and_then(|(_, c)| c.clone());
+            containment::add_not_converged(&once_per_file(
+                counts.unwrap_or_default(),
+                second_counts.unwrap_or_default(),
+            ));
+            match (compiled_of(file_path), second) {
+                (Some(compiled), Some((other, _))) => {
+                    merge_by_arms(file_path, result, other, &compiled)
+                }
                 _ => result,
             }
         })
         .collect()
 }
 
+/// One file's not-converged counts from its two passes: each analysis as
+/// often as the pass that stopped short more often, since both passes read
+/// the same functions.
+fn once_per_file(
+    first: containment::NotConverged,
+    second: containment::NotConverged,
+) -> containment::NotConverged {
+    let mut out = first;
+    for (what, n) in second {
+        let at = out.entry(what).or_insert(0);
+        *at = (*at).max(n);
+    }
+    out
+}
+
 /// One file's findings from its two passes: `inside`'s on the lines its
 /// configuration compiles (`compiled`, indexed from 1), `outside`'s on the
-/// rest. A finding located in another file keeps the first pass's.
+/// rest. A finding located in another file keeps the first pass's. A
+/// failure is reported once per stage and rule: the second pass's only when
+/// the first did not have it.
 fn merge_by_arms(
     file_path: &str,
     inside: (
@@ -1639,7 +1700,16 @@ fn merge_by_arms(
     suppressed.retain(|s| compiled_at(&s.violation));
     violations.extend(outside.0.into_iter().filter(|v| !compiled_at(v)));
     suppressed.extend(outside.1.into_iter().filter(|s| !compiled_at(&s.violation)));
-    failures.extend(outside.2);
+    let seen: std::collections::HashSet<(containment::Stage, String, Option<String>)> = failures
+        .iter()
+        .map(|f| (f.stage, f.file.clone(), f.rule_id.clone()))
+        .collect();
+    failures.extend(
+        outside
+            .2
+            .into_iter()
+            .filter(|f| !seen.contains(&(f.stage, f.file.clone(), f.rule_id.clone()))),
+    );
     (violations, suppressed, failures)
 }
 
@@ -2244,5 +2314,61 @@ mod tests {
         };
         assert!(results.violations.is_empty());
         assert!(results.suppressed.is_empty());
+    }
+
+    // -- a member file split by arm --
+
+    fn rule_failure(file: &str, rule: &str, message: &str) -> containment::ScanFailure {
+        containment::ScanFailure {
+            stage: containment::Stage::Rule,
+            file: file.to_string(),
+            rule_id: Some(rule.to_string()),
+            cause: containment::Cause::Panic,
+            message: message.to_string(),
+            location: None,
+        }
+    }
+
+    #[test]
+    fn a_split_file_reports_a_rule_failure_once() {
+        // The two passes read different contexts, so the same rule failing
+        // in both can carry different messages; it is still one loss.
+        let first = (
+            Vec::new(),
+            Vec::new(),
+            vec![rule_failure("a.c", "ARR30-C", "first context")],
+        );
+        let second = (
+            Vec::new(),
+            Vec::new(),
+            vec![
+                rule_failure("a.c", "ARR30-C", "second context"),
+                rule_failure("a.c", "INT30-C", "only here"),
+            ],
+        );
+        let (_, _, failures) = merge_by_arms("a.c", first, second, &[true, true]);
+        let rules: Vec<_> = failures
+            .iter()
+            .map(|f| f.rule_id.clone().unwrap())
+            .collect();
+        assert_eq!(rules, ["ARR30-C", "INT30-C"]);
+    }
+
+    #[test]
+    fn a_split_file_counts_each_analysis_that_stopped_short_once() {
+        let first = containment::NotConverged::from([("value-range analysis", 2)]);
+        let second = containment::NotConverged::from([("value-range analysis", 1), ("other", 1)]);
+        let out = once_per_file(first, second);
+        assert_eq!(out.get("value-range analysis"), Some(&2));
+        assert_eq!(out.get("other"), Some(&1));
+    }
+
+    #[test]
+    fn not_converged_counted_in_a_pass_does_not_reach_the_scan_until_added() {
+        let ((), counts) = containment::counting_not_converged(|| {
+            containment::not_converged("value-range analysis");
+            containment::not_converged("value-range analysis");
+        });
+        assert_eq!(counts.get("value-range analysis"), Some(&2));
     }
 }

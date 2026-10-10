@@ -156,7 +156,18 @@ missing, and the scan says how many::
 
     Note: 21 build-generated header(s) recognised; 106 of 183 scanned .c files are
     not compiled by the build configuration that generated them, and are analysed
-    as if those headers were missing.
+    as if those headers were missing; 12 more hold arms it does not compile,
+    which are.
+
+A file the configuration compiles can still hold arms it does not: an
+``#ifdef CONFIG_VTX`` block in a build without VT-x. Its lines are classed by
+the configuration's macro state (the database's ``-D``, the generated
+headers' definitions and what the project's headers derive from them), and
+the lines it does not compile, or cannot decide, are analysed as if the
+generated headers were missing. That state is one per database, not one per
+translation unit: entries that disagree on a macro, or a project header only
+some files include, can decide an arm for one file as another file's
+configuration would.
 
 The headers are recognised without a flag when the database's include
 directories lie in its build tree outside the scanned tree, as an
