@@ -44,7 +44,7 @@ UNKNOWN_COMMIT = "unknown"
 # A run is labelled with HEAD, so uncommitted changes to anything that decides
 # what it measures would be recorded as that commit. These are those paths:
 # the binary (src/, which also holds the rule TOMLs build.rs merges, build.rs,
-# Cargo.*); the manifests the scans run under (rules_templates/, conf/); the
+# Cargo.*, the pinned toolchain and cargo's own configuration); the manifests the scans run under (rules_templates/, conf/); the
 # runner, which picks the flags, scores the findings and names the run
 # (bench/, its tests aside, and the script a Juliet run executes to rebuild
 # its CWE map); and the inputs the runner reads (corpus pins and scope, the
@@ -52,7 +52,8 @@ UNKNOWN_COMMIT = "unknown"
 # files count too: build.rs and the runners pick files up by directory.
 # docs/, tests/ (the release binary does not contain them), container/ (the
 # image pin records it) and the rest do not.
-DIRTY_PATHS = ("src", "build.rs", "Cargo.toml", "Cargo.lock", "rules_templates", "conf",
+DIRTY_PATHS = ("src", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml",
+               ".cargo/config.toml", "rules_templates", "conf",
                "bench", ":(exclude)bench/tests", "scripts/generate_rule_cwe_map.py",
                "data/benchmark_repos.json", "data/benchmark_deps",
                "data/benchmark_environment.json", "data/rule_cwe_map.json")
@@ -92,7 +93,13 @@ def dirty_hash(project_dir: Path = PROJECT_DIR) -> str | None:
         return ""
     h = hashlib.sha256()
     try:
-        diff = subprocess.run(["git", "diff", "--binary", "HEAD", "--", *DIRTY_PATHS],
+        # Pinned against the user's and the repository's git configuration
+        # (prefixes, external diff drivers, textconv, renames), so the host
+        # and the container hash one tree identically.
+        diff = subprocess.run(["git", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+                               "-c", "diff.relative=false", "diff", "--binary", "--full-index",
+                               "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color",
+                               "HEAD", "--", *DIRTY_PATHS],
                               capture_output=True, cwd=project_dir, timeout=60)
         untracked = subprocess.run(["git", "ls-files", "--others", "--exclude-standard",
                                     "-z", "--", *DIRTY_PATHS],

@@ -351,7 +351,8 @@ A run is labelled with the checkout's commit, so it must measure that
 commit. ``realworld-run``, ``juliet`` and ``container-run`` refuse to start
 when the checkout has uncommitted changes, staged, unstaged or untracked,
 to anything that decides what a run measures. That covers the binary
-(``src/``, ``build.rs``, ``Cargo.toml``, ``Cargo.lock``), the manifests the
+(``src/``, ``build.rs``, ``Cargo.toml``, ``Cargo.lock``,
+``rust-toolchain.toml``, ``.cargo/config.toml``), the manifests the
 scans run under (``rules_templates/``, ``conf/``), the runner itself
 (``bench/`` apart from ``bench/tests/``, and
 ``scripts/generate_rule_cwe_map.py``, which a Juliet run executes), and
@@ -368,9 +369,16 @@ container-run -- realworld-run --allow-dirty``). The run is then recorded
 as ``<sha>+dirty<hash>``, where the hash covers the changes themselves, so
 it never shares a run id with the clean commit or with a different set of
 changes. Such a run is not a benchmark of any commit. In the container the
-binary reports the same label, and ``check-binary`` expects it. A Juliet
-run also refuses to continue if rebuilding its rule-CWE map rewrites a
-committed file: commit the regenerated files first.
+binary reports the same label, and ``check-binary`` expects it. The run
+listings (``realworld-runs``, ``realworld``, ``realworld-score``) show the
+mark after the shortened SHA.
+
+A Juliet run rebuilds its rule-CWE map (``data/rule_cwe_map.json`` and the
+per-CWE manifests) before it scans. On a clean tree, if that rewrites a
+committed file, the run refuses to continue: commit the regenerated files
+first. With ``--allow-dirty`` the map is rebuilt before the run is
+labelled, so the label covers the files the run scans. ``container-run``
+rebuilds it on the host before hashing the tree, for the same reason.
 
 Untracked sources inside a *corpus* checkout are ``corpus-check``'s
 concern, not this check's.

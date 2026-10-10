@@ -198,7 +198,13 @@ def run(run_args: list[str], image: str = DEFAULT_IMAGE, runtime: str = "podman"
               "could not record which aurora-lint commit it measured")
         return 2
     # The live tree is what the container builds and scans, so it is checked
-    # here, on the host, where git can always answer.
+    # here, on the host, where git can always answer. A Juliet run rewrites
+    # its rule-CWE map first (bench/runner.py), so that happens here too:
+    # the tree hashed is then the tree the container scans, and in the
+    # container the regeneration changes nothing.
+    if run_args[:1] == ["juliet"]:
+        from bench.runner import _ensure_rule_cwe_map
+        _ensure_rule_cwe_map()
     dirty = dirty_hash(PROJECT_DIR)
     if dirty is None:
         print(f"container-run: git cannot say whether {PROJECT_DIR} has uncommitted "

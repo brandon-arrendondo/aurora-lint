@@ -32,6 +32,7 @@ class TestDirtyTree(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.repo = Path(self._tmp.name)
         for rel in ("src/main.rs", "conf/realworld/x-rules.toml", "bench/runner.py",
+                    "rust-toolchain.toml", ".cargo/config.toml",
                     "bench/tests/test_x.py", "docs/index.rst", "tests/fixture.c",
                     "data/benchmark_repos.json"):
             (self.repo / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -66,6 +67,21 @@ class TestDirtyTree(unittest.TestCase):
         (self.repo / "src/new_rule.toml").write_text("new\n")
         with self.assertRaisesRegex(ValueError, "src/new_rule.toml"):
             self.label()
+
+    def test_the_toolchain_pin_and_cargo_config_are_measured(self):
+        for rel in ("rust-toolchain.toml", ".cargo/config.toml"):
+            (self.repo / rel).write_text("edited\n")
+            with self.assertRaisesRegex(ValueError, rel.replace(".", r"\.")):
+                self.label()
+            _git(self.repo, "checkout", "-q", "--", rel)
+
+    def test_the_hash_ignores_git_diff_configuration(self):
+        (self.repo / "src/main.rs").write_text("edited\n")
+        plain = config.dirty_hash(self.repo)
+        for key, value in (("diff.noprefix", "true"), ("diff.mnemonicPrefix", "true"),
+                           ("diff.relative", "true")):
+            _git(self.repo, "config", key, value)
+        self.assertEqual(config.dirty_hash(self.repo), plain)
 
     def test_changes_outside_what_a_run_measures_are_not_dirty(self):
         for rel in ("docs/index.rst", "tests/fixture.c", "bench/tests/test_x.py"):
@@ -112,16 +128,38 @@ class TestDirtyTree(unittest.TestCase):
 
 
 class TestJulietRegeneration(unittest.TestCase):
-    def test_a_regenerated_map_that_changes_committed_files_is_refused(self):
-        with mock.patch.object(runner, "_get_git_sha", side_effect=["abc1234", "abc1234+dirty1"]), \
+    def _run(self, allow, git_sha):
+        """run_benchmark up to the label, recording the order of the map's
+        regeneration and the commit lookups."""
+        calls = mock.Mock()
+        calls.sha.side_effect = git_sha
+        with mock.patch.dict(os.environ, {ALLOW_DIRTY_ENV: "1" if allow else ""}), \
+             mock.patch.object(runner, "_get_git_sha", calls.sha), \
+             mock.patch.object(runner, "_ensure_rule_cwe_map", calls.regenerate), \
              mock.patch.object(runner, "SQC_BIN", Path(__file__)), \
              mock.patch.object(runner, "JULIET_BASE", Path(__file__).parent), \
              mock.patch.object(runner, "_enumerate_cwes", return_value=["CWE78_x"]), \
-             mock.patch.object(runner, "_ensure_rule_cwe_map"), \
-             mock.patch.object(runner, "_get_sqc_version",
-                               side_effect=AssertionError("ran past the check")):
-            with self.assertRaisesRegex(ValueError, "would not measure its commit"):
+             mock.patch.object(runner, "_get_sqc_version", side_effect=RuntimeError("labelled")):
+            try:
                 runner.run_benchmark()
+            except RuntimeError:
+                pass
+        return [c[0] for c in calls.mock_calls]
+
+    def test_a_clean_run_whose_regeneration_changes_committed_files_is_refused(self):
+        # Clean, then the regenerated map makes the tree dirty, which
+        # aurora_lint_commit refuses.
+        with self.assertRaisesRegex(ValueError, "would not measure its commit"):
+            self._run(False, ["abc1234", ValueError("uncommitted changes")])
+        with self.assertRaisesRegex(ValueError, "would not measure its commit"):
+            self._run(False, ["abc1234", "abc1234+dirty1"])
+        self.assertEqual(self._run(False, ["abc1234", "abc1234"]),
+                         ["sha", "regenerate", "sha"])
+
+    def test_an_allow_dirty_run_is_labelled_after_the_regeneration(self):
+        # A dirty change to a rule's CWE mapping: regenerating moves the
+        # hash, so the label is taken once, after it, and not refused.
+        self.assertEqual(self._run(True, ["abc1234+dirty0123abcd"]), ["regenerate", "sha"])
 
 
 class TestContainerRun(unittest.TestCase):
@@ -133,10 +171,27 @@ class TestContainerRun(unittest.TestCase):
              mock.patch.object(container, "dirty_hash", return_value=dirty), \
              mock.patch.object(container, "tree_changes", return_value=[" M src/main.rs"]), \
              mock.patch.object(container, "image_pin", return_value="p" * 64), \
+             mock.patch.object(runner, "_ensure_rule_cwe_map") as self.regenerate, \
              mock.patch("subprocess.run") as run:
             run.return_value.returncode = 0
             rc = container.run(run_args, "img")
         return rc, run
+
+    def test_a_juliet_run_regenerates_its_map_on_the_host_before_the_hash(self):
+        order = mock.Mock()
+        with mock.patch("shutil.which", return_value="/usr/bin/podman"), \
+             mock.patch.object(container, "host_commit", return_value=(self.FULL, self.SHORT)), \
+             mock.patch.object(runner, "_ensure_rule_cwe_map", order.regenerate), \
+             mock.patch.object(container, "dirty_hash", order.hash), \
+             mock.patch.object(container, "image_pin", return_value="p" * 64), \
+             mock.patch("subprocess.run") as run:
+            order.hash.return_value = ""
+            run.return_value.returncode = 0
+            container.run(["juliet"], "img")
+            self.assertEqual([c[0] for c in order.mock_calls], ["regenerate", "hash"])
+            order.reset_mock()
+            container.run(["realworld-run"], "img")
+            self.assertEqual([c[0] for c in order.mock_calls], ["hash"])
 
     def test_a_dirty_tree_is_refused_before_any_container_starts(self):
         rc, run = self._run(["juliet"], "0123abcd")
@@ -171,6 +226,15 @@ class TestContainerRun(unittest.TestCase):
 
 
 class TestCli(unittest.TestCase):
+    def test_run_listings_keep_the_dirty_mark_after_cutting_the_sha(self):
+        from bench import __main__ as cli
+        clean = {"commit_sha": "abcdef0123456"}
+        dirty = {"commit_sha": f"abcdef0123456{DIRTY_MARK}0123abcd"}
+        self.assertEqual(cli._run_ident(clean), "abcdef01")
+        self.assertEqual(cli._run_ident(dirty), f"abcdef01{DIRTY_MARK}0123abcd")
+        self.assertEqual(cli._run_ident({**dirty, "variant": "cdb"}),
+                         f"abcdef01{DIRTY_MARK}0123abcd+cdb")
+
     def test_allow_dirty_sets_the_variable_only_when_given(self):
         from bench import __main__ as cli
         with mock.patch.dict(os.environ, {ALLOW_DIRTY_ENV: ""}):

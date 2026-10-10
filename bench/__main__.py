@@ -417,7 +417,11 @@ def _run_ident(run: dict) -> str:
     paired against (that is the point of an A/B pair), so printing the SHA
     alone would render the two identically.
     """
-    sha = (run.get("commit_sha") or "?")[:8]
+    from bench.config import DIRTY_MARK
+    # Cut the SHA, never the dirty mark after it: a dirty run must not print
+    # like the clean run of its commit.
+    base, mark, dirty = (run.get("commit_sha") or "?").partition(DIRTY_MARK)
+    sha = base[:8] + mark + dirty
     variant = run.get("variant")
     return f"{sha}+{variant}" if variant else sha
 

@@ -22,7 +22,8 @@ from bench.analyzer import analyze_shard, merge_shards
 from bench.config import (
     DEFAULT_JOBS, DEFAULT_PROFILE, GENERATE_MAP_SCRIPT, JULIET_BASE,
     MANIFEST_JULIET_FULL, MANIFEST_CWE_DIR, PROJECT_DIR, RULE_CWE_MAP, SQC_BIN,
-    JULIET_COMPILE_DB, JULIET_SETTING_OVERRIDES, aurora_lint_commit, juliet_run_id,
+    ALLOW_DIRTY_ENV, JULIET_COMPILE_DB, JULIET_SETTING_OVERRIDES, aurora_lint_commit,
+    juliet_run_id,
     juliet_settings, require_known_commit, settings_column,
 )
 from bench.db import BenchDB
@@ -609,7 +610,13 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     Returns:
         The run_id for the completed benchmark.
     """
-    # First, before any work: the run id names aurora-lint's commit.
+    allow_dirty = os.environ.get(ALLOW_DIRTY_ENV) == "1"
+    if allow_dirty:
+        # Regenerating the rule-CWE map rewrites tracked files, so an
+        # exploratory change to a rule's CWE mapping changes the tree again:
+        # label the tree the run will actually scan.
+        _ensure_rule_cwe_map()
+    # First, before any other work: the run id names aurora-lint's commit.
     sha = _get_git_sha()
     require_known_commit(sha, "bench juliet")
     if not SQC_BIN.exists():
@@ -636,14 +643,20 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
         all_cwes = _select_cwes(all_cwes, cwes)
     cwe_ids = tuple(sorted({_extract_cwe_id(n) for n in all_cwes})) if cwes else ()
 
-    _ensure_rule_cwe_map()
-    # That rewrites tracked files (data/rule_cwe_map.json, the per-CWE
-    # manifests); when what it wrote is not what is committed, the run would
-    # scan with files its commit does not hold.
-    if _get_git_sha() != sha:
-        raise ValueError("regenerating the rule-CWE map changed committed files, so this "
-                         "run would not measure its commit; commit the regenerated "
-                         "files (python3 scripts/generate_rule_cwe_map.py) first")
+    if not allow_dirty:
+        _ensure_rule_cwe_map()
+        # That rewrites tracked files (data/rule_cwe_map.json, the per-CWE
+        # manifests); when what it wrote is not what is committed, the run
+        # would scan with files its commit does not hold.
+        try:
+            again = _get_git_sha()
+        except ValueError:
+            again = None
+        if again != sha:
+                raise ValueError("regenerating the rule-CWE map changed committed files, so "
+                             "this run would not measure its commit; commit the "
+                             "regenerated files (python3 scripts/generate_rule_cwe_map.py) "
+                             "first")
 
     version = _get_sqc_version()
     # No manifest: none of Juliet's declares allocators or deallocators. One
