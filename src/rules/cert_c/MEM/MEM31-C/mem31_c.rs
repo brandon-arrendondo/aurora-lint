@@ -1317,7 +1317,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     if crate::analyze::noreturn::is_process_terminating_name(
                         &func_name,
                         self.noreturn_names,
-                    ) {
+                    ) && crate::analyze::noreturn::called_function_name(&child, source).is_some()
+                    {
                         continue;
                     }
 

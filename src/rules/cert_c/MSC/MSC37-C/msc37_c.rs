@@ -230,14 +230,15 @@ impl Msc37C {
         let Some(call) = node.child(0).filter(|c| c.kind() == "call_expression") else {
             return false;
         };
-        let Some(function) = call.child_by_field_name("function") else {
-            return false;
-        };
-        let name = get_node_text(&function, source).trim().to_string();
         // A standard noreturn function satisfies MSC37-C the same way an
         // explicit return would, when the environment honors that contract.
-        crate::analyze::noreturn::is_stdlib_noreturn_name(&name, &self.settings.borrow())
-            || noreturn_names.contains(&name)
+        // Either way the callee must name the function itself, not a
+        // pointer or a file's own definition spelled the same.
+        crate::analyze::noreturn::calls_stdlib_noreturn(
+            &call,
+            source,
+            Some(&self.settings.borrow()),
+        ) || crate::analyze::noreturn::calls_noreturn(&call, source, noreturn_names)
     }
 
     /// Check if the last statement in a compound statement is a return
