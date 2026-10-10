@@ -45,12 +45,87 @@ class TestCommand(unittest.TestCase):
         joined = " ".join(cmd)
         self.assertIn(f"{root}/mosquitto:/bench/mosquitto:ro", joined)
         self.assertIn("/repo:/work", joined)
-        self.assertIn("aurora-bench-target-abababababab:/work/target", joined)
+        self.assertIn(f"{container.target_volume('ab' * 32, '/repo')}:/work/target", joined)
+        self.assertTrue(container.target_volume("ab" * 32, "/repo")
+                        .startswith("aurora-bench-target-abababababab-"))
         self.assertIn(f"{out}:{out}", joined)
         self.assertIn(f"BENCH_DB={out}/a.db", joined)
         self.assertIn("--platform linux/amd64", joined)
         self.assertTrue(cmd[-1].startswith("cargo build --release --locked"))
         self.assertIn("realworld-run --codebase mosquitto", cmd[-1])
+
+    def test_the_binary_is_checked_between_the_build_and_the_scan(self):
+        cmd = container.command(["juliet"], "img", "ab" * 32, project_dir=Path("/repo"),
+                                commit=("f" * 40, "fffffff"))
+        inner = cmd[-1]
+        build, check, scan = (inner.index("cargo build"),
+                              inner.index("python3 -m bench.container check-binary"),
+                              inner.index("python3 -m bench juliet"))
+        self.assertLess(build, check)
+        self.assertLess(check, scan)
+        # Chained with &&, so a refused binary stops the scan.
+        self.assertIn("check-binary && python3 -m bench juliet", inner)
+        self.assertIn(f"{container.BUILD_COMMIT_ENV}={'f' * 40}", cmd)
+
+
+class TestTargetPerCheckout(unittest.TestCase):
+    """Every checkout is mounted at the same /work and cargo trusts source
+    mtimes, so a target volume shared between checkouts runs one checkout's
+    binary for another. Each checkout gets its own."""
+
+    def test_two_checkouts_never_share_a_target(self):
+        pin = "ab" * 32
+        a = container.target_volume(pin, "/srv/slots/1/aurora-lint")
+        b = container.target_volume(pin, "/srv/slots/2/aurora-lint")
+        self.assertNotEqual(a, b)
+        cmd_a = container.command(["juliet"], "img", pin, project_dir=Path("/srv/slots/1/aurora-lint"))
+        cmd_b = container.command(["juliet"], "img", pin, project_dir=Path("/srv/slots/2/aurora-lint"))
+        self.assertIn(f"{a}:/work/target", cmd_a)
+        self.assertIn(f"{b}:/work/target", cmd_b)
+
+    def test_one_checkout_keeps_its_target_and_each_environment_its_own(self):
+        with tempfile.TemporaryDirectory() as td:
+            link = Path(td) / "link"
+            link.symlink_to(td)
+            # The same checkout reached by another spelling is the same target.
+            self.assertEqual(container.target_volume("ab" * 32, td),
+                             container.target_volume("ab" * 32, link))
+        self.assertNotEqual(container.target_volume("ab" * 32, "/repo"),
+                            container.target_volume("cd" * 32, "/repo"))
+
+
+class TestCheckBinary(unittest.TestCase):
+    """The scan refuses a binary that does not report the commit it measures."""
+
+    def _binary(self, td, version_line):
+        b = Path(td) / "aurora-lint"
+        b.write_text(f"#!/bin/sh\necho '{version_line}'\n")
+        b.chmod(0o755)
+        return b
+
+    def test_the_binary_built_from_this_commit_passes(self):
+        with tempfile.TemporaryDirectory() as td:
+            b = self._binary(td, f"aurora-lint 0.6.0 (commit {'a' * 40})")
+            self.assertEqual(container.built_commit(b), "a" * 40)
+            self.assertEqual(container.check_binary(b, "a" * 40), 0)
+
+    def test_another_commits_binary_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            b = self._binary(td, f"aurora-lint 0.6.0 (commit {'b' * 40})")
+            self.assertEqual(container.check_binary(b, "a" * 40), 2)
+
+    def test_a_binary_that_records_no_commit_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            b = self._binary(td, "aurora-lint 0.6.0")
+            self.assertIsNone(container.built_commit(b))
+            self.assertEqual(container.check_binary(b, "a" * 40), 2)
+
+    def test_a_missing_binary_or_commit_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(container.check_binary(Path(td) / "absent", "a" * 40), 2)
+            b = self._binary(td, f"aurora-lint 0.6.0 (commit {'a' * 40})")
+            with mock.patch.dict("os.environ", {}, clear=True):
+                self.assertEqual(container.check_binary(b), 2)
 
 
 class TestToolsStage(unittest.TestCase):

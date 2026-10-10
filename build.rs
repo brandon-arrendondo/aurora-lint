@@ -73,6 +73,21 @@ fn main() {
     // build.rs itself first so its own edits always trigger a rerun.
     println!("cargo:rerun-if-changed=build.rs");
 
+    // The commit a benchmark container build is building (bench/container.py
+    // passes the host's HEAD), embedded in --version so the run can check,
+    // before it scans, that the binary in a reused target directory was
+    // built from this commit and not from another checkout's. Watching the
+    // variable also makes a build for a different commit recompile, whatever
+    // the source mtimes say. Unset, --version is the bare package version.
+    println!("cargo:rerun-if-env-changed=AURORA_LINT_BUILD_COMMIT");
+    let mut version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
+    if let Ok(commit) = std::env::var("AURORA_LINT_BUILD_COMMIT") {
+        if !commit.is_empty() {
+            version = format!("{version} (commit {commit})");
+        }
+    }
+    println!("cargo:rustc-env=AURORA_LINT_VERSION={version}");
+
     // Only compile resources on Windows
     #[cfg(target_os = "windows")]
     {

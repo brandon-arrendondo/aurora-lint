@@ -268,7 +268,7 @@ fn main() {
 fn run() -> Result<i32> {
     let matches = Command::new("aurora-lint")
         .about("aurora-lint - a fast CERT C static analyzer")
-        .version(env!("CARGO_PKG_VERSION"))
+        .version(env!("AURORA_LINT_VERSION"))
         .arg(
             Arg::new("path")
                 .help("Path to the file, directory, or git repository to analyze")

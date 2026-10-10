@@ -7,8 +7,10 @@ does not hold is mounted at run time: this checkout at /work (read-write,
 since results and the local database are written there) and each corpus
 checkout at /bench/<name>, read-only. aurora-lint is built inside the
 container with the image's rustc, into a target directory kept in a podman
-volume named after the image's environment pin, so a binary built by one
-environment is never reused by another.
+volume named after the image's environment pin and this checkout's path, so a
+binary built by one environment, or from another checkout, is never reused.
+The build embeds the commit it was given, and the run refuses to scan unless
+the binary reports this checkout's HEAD (check_binary).
 
   python -m bench container-run [--image IMAGE] [--runtime podman] \
       -- [realworld-run | juliet] [its arguments]
@@ -24,14 +26,16 @@ Every scan run this way records the environment manifest's pin in its
 sidecar (bench/environment.py), next to the dependency set's.
 """
 
+import hashlib
 import os
+import re
 import shlex
 import shutil
 import subprocess
 from pathlib import Path
 
 from bench.config import (BENCH_ROOT, COMMIT_ENV, COMMIT_SHORT_ENV, PROJECT_DIR,
-                          host_commit)
+                          SQC_BIN, host_commit)
 
 DEFAULT_IMAGE = os.environ.get("AURORA_BENCH_IMAGE", "localhost/aurora-bench:dev")
 # The image's 'tools' stage (podman build --target tools), where each
@@ -46,6 +50,52 @@ _HOST_PATH_ARGS = ("--dirs-out", "--run-id-out")
 # The bench subcommands container-run runs; a run whose first argument is
 # none of these is a realworld-run.
 SUBCOMMANDS = ("realworld-run", "juliet")
+# The commit the container's cargo build embeds in --version (build.rs).
+BUILD_COMMIT_ENV = "AURORA_LINT_BUILD_COMMIT"
+
+
+def target_volume(pin: str, project_dir) -> str:
+    """The podman volume holding `project_dir`'s cargo target directory in
+    the environment `pin`. Every checkout is mounted at the same /work, and
+    cargo judges a build fresh by source mtimes, so a target shared between
+    checkouts lets one whose sources are older than the last build (a
+    worktree made before another was built) run that other checkout's
+    binary, and lets two checkouts building at once overwrite each other's.
+    Keying the volume on the checkout's host path gives each its own."""
+    path = str(Path(project_dir).resolve())
+    return f"aurora-bench-target-{pin[:12]}-{hashlib.sha256(path.encode()).hexdigest()[:12]}"
+
+
+def built_commit(binary=SQC_BIN) -> str | None:
+    """The commit `binary` was built from, as its --version reports it, or
+    None when it reports none (built without AURORA_LINT_BUILD_COMMIT) or
+    does not run."""
+    try:
+        out = subprocess.run([str(binary), "--version"], capture_output=True,
+                             text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"\(commit ([0-9a-f]+)\)", out.stdout)
+    return m.group(1) if out.returncode == 0 and m else None
+
+
+def check_binary(binary=SQC_BIN, expected: str | None = None) -> int:
+    """0 if `binary` was built from `expected` (default: the full SHA
+    container-run passed in), else 2 with the reason. Run in the container
+    between the build and the scan, so a stale or foreign binary stops the
+    run instead of being measured as this commit."""
+    expected = expected if expected is not None else os.environ.get(COMMIT_ENV, "")
+    if not expected:
+        print(f"container-run: {COMMIT_ENV} is not set, so the binary cannot be "
+              "checked against the commit the run measures; refusing to scan")
+        return 2
+    got = built_commit(binary)
+    if got != expected:
+        print(f"container-run: {binary} was built from "
+              f"{got or 'an unrecorded commit'}, not this checkout's {expected}; "
+              "refusing to scan with another commit's binary")
+        return 2
+    return 0
 
 
 def image_pin(image: str, runtime: str = "podman") -> str:
@@ -91,12 +141,13 @@ def command(run_args: list[str], image: str, pin: str, runtime: str = "podman",
     project_dir = Path(project_dir) if project_dir else PROJECT_DIR
     cmd = [runtime, "run", "--rm", "--platform", "linux/amd64",
            "-v", f"{project_dir}:{WORK}",
-           "-v", f"aurora-bench-target-{pin[:12]}:{WORK}/target",
+           "-v", f"{target_volume(pin, project_dir)}:{WORK}/target",
            "-v", "aurora-bench-cargo-registry:/opt/cargo/registry",
            "-e", f"SQC_BENCH_ROOT={IN_BENCH_ROOT}",
            "-w", WORK]
     if commit:
-        cmd += ["-e", f"{COMMIT_ENV}={commit[0]}", "-e", f"{COMMIT_SHORT_ENV}={commit[1]}"]
+        cmd += ["-e", f"{COMMIT_ENV}={commit[0]}", "-e", f"{COMMIT_SHORT_ENV}={commit[1]}",
+                "-e", f"{BUILD_COMMIT_ENV}={commit[0]}"]
     for name in sorted(CODEBASES):
         # Mounted under the project's own name: scoring keys strip a path up
         # to its first /<project>/ (BenchDB.project_relpath), so the
@@ -119,7 +170,9 @@ def command(run_args: list[str], image: str, pin: str, runtime: str = "podman",
         cmd += ["-v", f"{juliet}:{IN_BENCH_ROOT}/benchmarks/juliet-test-suite-c:ro"]
     sub, rest = (run_args[0], run_args[1:]) if run_args[:1] and run_args[0] in SUBCOMMANDS \
         else ("realworld-run", run_args)
-    inner = (f"cargo build --release --locked --quiet && python3 -m bench {sub} "
+    # Without a commit, check-binary refuses: an unchecked binary is never scanned.
+    inner = (f"cargo build --release --locked --quiet && python3 -m bench.container "
+             f"check-binary && python3 -m bench {sub} "
              + " ".join(shlex.quote(a) for a in rest))
     cmd += [image, "sh", "-c", inner]
     return cmd
@@ -311,3 +364,11 @@ def build_db(project: str, image: str = DEFAULT_IMAGE,
             shutil.rmtree(old, ignore_errors=True)
         print(f"rebuilt: {cache} ({reason})")
         return 0
+
+
+if __name__ == "__main__":
+    import sys
+    if sys.argv[1:] != ["check-binary"]:
+        print("usage: python -m bench.container check-binary")
+        sys.exit(2)
+    sys.exit(check_binary())
