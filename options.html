@@ -104,9 +104,11 @@ what the default preset relaxes. See <a class="reference internal" href="configu
 them.</p>
 <ul class="simple">
 <li><p>The <strong>default</strong> preset is <code class="docutils literal notranslate"><span class="pre">policy</span> <span class="pre">=</span> <span class="pre">default</span></code> with a <code class="docutils literal notranslate"><span class="pre">hosted</span></code>
-environment and the ISO C + POSIX library model.</p></li>
+environment, the ISO C + POSIX library model, and POSIX assumed with no
+edition declared.</p></li>
 <li><p>The <strong>strict</strong> preset is <code class="docutils literal notranslate"><span class="pre">policy</span> <span class="pre">=</span> <span class="pre">strict</span></code> with a <code class="docutils literal notranslate"><span class="pre">hosted</span></code>
-environment and the ISO C + POSIX library model.</p></li>
+environment and the ISO C library model. POSIX contracts and exemptions
+apply only where POSIX is declared (<code class="docutils literal notranslate"><span class="pre">posix_version</span></code>).</p></li>
 <li><p>The <strong>pedantic</strong> preset is <code class="docutils literal notranslate"><span class="pre">policy</span> <span class="pre">=</span> <span class="pre">pedantic</span></code> with a <code class="docutils literal notranslate"><span class="pre">hosted</span></code>
 environment and only the library model a project declares (<code class="docutils literal notranslate"><span class="pre">libc</span></code>);
 with none declared, no library contract below holds. It reads a rule
@@ -209,20 +211,20 @@ a rule outright.</p></li>
 <li><p>Basis: C11 7.22.3.5p3.</p></li>
 </ul>
 </dd>
-<dt><code class="docutils literal notranslate"><span class="pre">stdlib_noreturn</span></code></dt><dd><p>abort, exit, _Exit, quick_exit, longjmp, thrd_exit and POSIX _exit never return to their caller.</p>
+<dt><code class="docutils literal notranslate"><span class="pre">stdlib_noreturn</span></code></dt><dd><p>abort, exit, _Exit, quick_exit, longjmp and thrd_exit never return to their caller, and so does POSIX _exit where POSIX holds (posix_version).</p>
 <ul class="simple">
 <li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; pedantic preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
 <li><p>Scope: contract</p></li>
 <li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">contract:stdlib_noreturn</span></code></p></li>
-<li><p>Basis: C11 7.22.4.1, 7.22.4.4, 7.22.4.5, 7.22.4.7, 7.13.2.1 and 7.26.5.5; POSIX.1-2024 _exit(). A freestanding implementation need not provide &lt;stdlib.h&gt;, &lt;setjmp.h&gt; or &lt;threads.h&gt; at all. Known limitation: three cross-file summaries built by the prescan (a parameter’s null state after <cite>if (!p) exit(1);</cite>, whether a function never returns, and what a function leaves in an out-parameter) still credit these calls whatever this option says.</p></li>
+<li><p>Basis: C11 7.22.4.1, 7.22.4.4, 7.22.4.5, 7.22.4.7, 7.13.2.1 and 7.26.5.5; POSIX.1-2024 _exit(). A freestanding implementation need not provide &lt;stdlib.h&gt;, &lt;setjmp.h&gt; or &lt;threads.h&gt; at all. Known limitation: three cross-file summaries built by the prescan (a parameter’s null state after <cite>if (!p) exit(1);</cite>, whether a function never returns, and what a function leaves in an out-parameter) still credit these calls, _exit included, whatever this option and posix_version say.</p></li>
 </ul>
 </dd>
-<dt><code class="docutils literal notranslate"><span class="pre">stdlib_call_effects</span></code></dt><dd><p>Every ISO C or POSIX function the tool knows to have a side effect has one (it sets errno, touches a stream, allocates, or keeps hidden state), and the ones it lists as free of side effects (strlen, memcmp, isdigit, fabs, ntohs, …) modify no object; whether that makes a call pure is the policy’s pre31_listed_library_calls_pure. Withdrawn, a library call is a call to an unknown function.</p>
+<dt><code class="docutils literal notranslate"><span class="pre">stdlib_call_effects</span></code></dt><dd><p>Every ISO C function, and every POSIX function where POSIX holds (posix_version), the tool knows to have a side effect has one (it sets errno, touches a stream, allocates, or keeps hidden state), and the ones it lists as free of side effects (strlen, memcmp, isdigit, fabs, ntohs, …) modify no object; whether that makes a call pure is the policy’s pre31_listed_library_calls_pure. Withdrawn, a library call is a call to an unknown function.</p>
 <ul class="simple">
 <li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; pedantic preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
 <li><p>Scope: contract</p></li>
 <li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">contract:stdlib_call_effects</span></code></p></li>
-<li><p>Basis: C11 7.24 and 7.4: memcmp, strcmp, strncmp, memchr, strchr, strcspn, strpbrk, strrchr, strspn, strstr, strlen and the character classification and case mapping functions modify no object; 7.22.1.4p8 and 7.12.1 (strtol and math functions report errors through errno); CERT PRE31-C-EX1: “even changing errno is a side effect”.</p></li>
+<li><p>Basis: C11 7.24 and 7.4: memcmp, strcmp, strncmp, memchr, strchr, strcspn, strpbrk, strrchr, strspn, strstr, strlen and the character classification and case mapping functions modify no object; 7.22.1.4p8 and 7.12.1 (strtol and math functions report errors through errno); CERT PRE31-C-EX1: “even changing errno is a side effect”. Known limitation: the cross-file effect summaries of scanned callees still credit a POSIX callee whatever posix_version says.</p></li>
 </ul>
 </dd>
 <dt><code class="docutils literal notranslate"><span class="pre">library_macros_evaluate_once</span></code></dt><dd><p>A C library function the implementation’s headers define as a macro (glibc’s tolower) evaluates each argument exactly once, whatever its replacement list looks like, including when a project macro hands it an argument. “The implementation’s headers” are any defining the name outside the scanned project, so a third-party library on the search path that redefines a standard name is trusted too (a redefinition C11 7.1.3 already makes undefined). Withdrawn, such a macro is judged by its definition like any other.</p>
@@ -288,11 +290,24 @@ POSIX the code is written for. Like the data model they describe the target,
 so a <code class="docutils literal notranslate"><span class="pre">--profile</span></code> keeps them. <code class="docutils literal notranslate"><span class="pre">libc</span></code> selects which library contracts
 above hold (<code class="docutils literal notranslate"><span class="pre">custom</span></code> trusts none until an override states it); the
 other three grant nothing and are recorded for rules whose reading depends
-on an edition. None is inferred, each is unknown unless declared, and each
-enters the settings hash only when declared.</p>
+on an edition. None is inferred from the machine running the scan, each is
+unknown unless declared, and each enters the settings hash only when
+declared. <code class="docutils literal notranslate"><span class="pre">c_standard</span></code>, <code class="docutils literal notranslate"><span class="pre">posix_version</span></code> and the data model are facts of
+the project’s own declaration: the configuration, or a compile database
+passed with <code class="docutils literal notranslate"><span class="pre">--compile-commands</span></code> (<code class="docutils literal notranslate"><span class="pre">-std=</span></code>, <code class="docutils literal notranslate"><span class="pre">-D_POSIX_C_SOURCE=</span></code>,
+<code class="docutils literal notranslate"><span class="pre">-D_XOPEN_SOURCE=</span></code>, <code class="docutils literal notranslate"><span class="pre">-m32</span></code> and <code class="docutils literal notranslate"><span class="pre">-m64</span></code>). A compile database’s facts
+are recorded per translation unit, but the rules read one project-wide
+answer (see <a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a>); the configuration holds for the whole
+project and wins a disagreement, which the scan reports. Each declared
+fact’s source (<code class="docutils literal notranslate"><span class="pre">cli</span></code>, <code class="docutils literal notranslate"><span class="pre">config</span></code> or <code class="docutils literal notranslate"><span class="pre">compile</span> <span class="pre">database</span></code>) is part of
+the settings hash. When a fact is unknown, no exemption that depends on it
+applies, except that the default preset assumes POSIX with no edition.
+Under <code class="docutils literal notranslate"><span class="pre">strict</span></code> and <code class="docutils literal notranslate"><span class="pre">pedantic</span></code> the scan names the missing
+<code class="docutils literal notranslate"><span class="pre">posix_version</span></code> and the enabled rules whose exemption waits on it
+(<code class="docutils literal notranslate"><span class="pre">--check-config</span></code> warns the same way).</p>
 <ul class="simple">
 <li><p>Set with <code class="docutils literal notranslate"><span class="pre">[environment]</span></code> keys, <code class="docutils literal notranslate"><span class="pre">--libc</span></code>, or <code class="docutils literal notranslate"><span class="pre">--set</span> <span class="pre">c_standard=c99</span></code>
-(also <code class="docutils literal notranslate"><span class="pre">posix_version</span></code>, <code class="docutils literal notranslate"><span class="pre">libc_version</span></code>)</p></li>
+(also <code class="docutils literal notranslate"><span class="pre">posix_version</span></code>, <code class="docutils literal notranslate"><span class="pre">libc_version</span></code>), or with a compile database</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">newlib-nano</span></code>: newlib with nano-malloc, whose <code class="docutils literal notranslate"><span class="pre">free(NULL)</span></code> returns at
 once and whose <code class="docutils literal notranslate"><span class="pre">realloc(NULL,</span> <span class="pre">n)</span></code> calls <code class="docutils literal notranslate"><span class="pre">malloc</span></code> (newlib’s
 <code class="docutils literal notranslate"><span class="pre">nano-mallocr.c</span></code>)</p></li>

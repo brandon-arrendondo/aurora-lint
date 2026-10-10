@@ -157,16 +157,23 @@ text where the rule has a sound or closed-form reading stricter than the
 text (only a body shown never to return ends a path), and may decline a
 rule that has none.</p></li>
 <li><p><strong>Environment</strong> says what the analyzer may believe about the platform the
-code runs on. <code class="docutils literal notranslate"><span class="pre">hosted</span></code> trusts the ISO C and POSIX library contracts (for
+code runs on. <code class="docutils literal notranslate"><span class="pre">hosted</span></code> trusts the ISO C library contracts (for
 example, <code class="docutils literal notranslate"><span class="pre">free(NULL)</span></code> does nothing) and <code class="docutils literal notranslate"><span class="pre">main</span></code>’s <code class="docutils literal notranslate"><span class="pre">argv</span></code> guarantees.
+The POSIX contracts hold where POSIX is a declared fact (<code class="docutils literal notranslate"><span class="pre">posix_version</span></code>,
+below), and the default preset assumes it.
 <code class="docutils literal notranslate"><span class="pre">freestanding</span></code> trusts no library semantics beyond the language unless a
 <code class="docutils literal notranslate"><span class="pre">libc</span></code> model is declared. The environment is always declared, never
 guessed from the machine running the scan.</p></li>
 </ul>
 <p>Three presets set both at once. The <strong>default</strong> preset is the default policy
-on a hosted environment, and the <strong>strict</strong> preset is the strict policy on a
-hosted environment; both trust the ISO C and POSIX library unless a <code class="docutils literal notranslate"><span class="pre">libc</span></code>
-is declared. The <strong>pedantic</strong> preset is the pedantic policy on a hosted
+on a hosted environment that assumes POSIX (with no edition of it), and the
+<strong>strict</strong> preset is the strict policy on a hosted environment that assumes
+only ISO C: both trust the ISO C library unless a <code class="docutils literal notranslate"><span class="pre">libc</span></code> is declared, but
+strict applies a POSIX contract or exemption only when <code class="docutils literal notranslate"><span class="pre">posix_version</span></code> is
+declared, in the configuration or by a compile database passed with
+<code class="docutils literal notranslate"><span class="pre">--compile-commands</span></code> (see <em>Declaring the platform</em> below). A strict scan with
+neither names the missing fact and the enabled rules whose exemption waits on
+it. The <strong>pedantic</strong> preset is the pedantic policy on a hosted
 environment that trusts only a declared library: small targets often link a
 reduced one, so a full ISO C library is not assumed. With no <code class="docutils literal notranslate"><span class="pre">libc</span></code>
 declared, a pedantic scan trusts no library contract and says so on stderr,
@@ -191,7 +198,7 @@ single options:</p>
 <span class="n">libc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;newlib&quot;</span><span class="w">             </span><span class="c1"># iso-posix | glibc | musl | newlib | newlib-nano | picolibc | custom</span>
 <span class="n">libc_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;4.4.0&quot;</span><span class="w">      </span><span class="c1"># recorded and hashed; grants no contract</span>
 <span class="n">c_standard</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;c99&quot;</span><span class="w">          </span><span class="c1"># c89 | c99 | c11 | c17 | c23; unknown unless declared</span>
-<span class="n">posix_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;none&quot;</span><span class="w">      </span><span class="c1"># none | 2001 | 2008 | 2017 | 2024; unknown unless declared</span>
+<span class="n">posix_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;none&quot;</span><span class="w">      </span><span class="c1"># none | pre2001 | 2001 | 2008 | 2017 | 2024; unknown unless declared</span>
 <span class="n">include_names</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;exact&quot;</span><span class="w">     </span><span class="c1"># &quot;exact&quot; | &quot;case-insensitive&quot; (as cl on Windows)</span>
 <span class="n">data_model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;lp64&quot;</span><span class="w">         </span><span class="c1"># &quot;iso&quot; (the default) | &quot;ilp32&quot; | &quot;lp64&quot; | &quot;llp64&quot;</span>
 <span class="c1"># int_bits = 32             # integer facts the data model loads; write one to</span>
@@ -232,6 +239,48 @@ neither preset sets it. Left unset, it is <code class="docutils literal notransl
 <code class="docutils literal notranslate"><span class="pre">exact</span></code> otherwise. The file system of the machine running the scan never
 decides it. It enters the settings hash only when <code class="docutils literal notranslate"><span class="pre">case-insensitive</span></code>, so
 settings that never mention it keep the hash they always had.</p>
+<p><strong>Declaring the platform.</strong> <code class="docutils literal notranslate"><span class="pre">c_standard</span></code>, <code class="docutils literal notranslate"><span class="pre">posix_version</span></code> and the target
+(<code class="docutils literal notranslate"><span class="pre">data_model</span></code>) are facts the project declares, never ones the scan finds on
+the machine running it. A fact comes from the configuration (a file, or
+<code class="docutils literal notranslate"><span class="pre">--set</span> <span class="pre">posix_version=2008</span></code>) or from a compile database passed with
+<code class="docutils literal notranslate"><span class="pre">--compile-commands</span></code>, which is a declaration of its own: <code class="docutils literal notranslate"><span class="pre">-std=</span></code> names the C
+edition, <code class="docutils literal notranslate"><span class="pre">-D_POSIX_C_SOURCE=</span></code> or <code class="docutils literal notranslate"><span class="pre">-D_XOPEN_SOURCE=</span></code> the POSIX edition (a
+value older than POSIX.1-2001, such as <code class="docutils literal notranslate"><span class="pre">-D_POSIX_C_SOURCE=199506L</span></code> or
+<code class="docutils literal notranslate"><span class="pre">-D_XOPEN_SOURCE=500</span></code>, or the bare <code class="docutils literal notranslate"><span class="pre">-D_POSIX_C_SOURCE</span></code>, declares <code class="docutils literal notranslate"><span class="pre">pre2001</span></code>;
+<code class="docutils literal notranslate"><span class="pre">-D_POSIX_C_SOURCE=</span></code> with an empty value defines the macro as empty, which glibc
+does not read as POSIX, so it declares nothing and is reported), and <code class="docutils literal notranslate"><span class="pre">-m32</span></code> or <code class="docutils literal notranslate"><span class="pre">-m64</span></code> the
+data model (<code class="docutils literal notranslate"><span class="pre">-m64</span></code> is LP64, or LLP64 for a MinGW target). A flag that looks
+like an edition declaration but names none the tool knows (<code class="docutils literal notranslate"><span class="pre">-std=c2y</span></code>,
+<code class="docutils literal notranslate"><span class="pre">-D_POSIX_C_SOURCE=FOO</span></code>) is reported and treated as undeclared; it is never
+rounded to a nearby edition.</p>
+<p>The configuration holds for the whole project and wins a disagreement, which
+the scan reports on stderr (<code class="docutils literal notranslate"><span class="pre">--check-config</span></code> too; a large database gets the
+first few conflicts and a count). A compile database’s facts are <em>recorded</em> per
+translation unit, so a settings report shows which units declared what, but
+the rules today read one project-wide answer:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">posix_version</span></code> from the configuration holds for every scanned file.</p></li>
+<li><p>From a compile database alone, a contract that is not read per unit (the
+POSIX entries of <code class="docutils literal notranslate"><span class="pre">stdlib_noreturn</span></code> and <code class="docutils literal notranslate"><span class="pre">stdlib_call_effects</span></code>) holds only
+when <em>every</em> unit of the database declares POSIX, and then it holds for every
+scanned file, including a <code class="docutils literal notranslate"><span class="pre">.c</span></code> file the database does not compile. A
+database in which some unit declares nothing grants none.</p></li>
+<li><p>The data model comes from a compile database only when every unit states the
+same one. A unit that states none leaves it unknown; it is never inferred
+from the units that do.</p></li>
+<li><p>A compile database’s <code class="docutils literal notranslate"><span class="pre">c_standard</span></code> is recorded per unit but no rule reads it
+yet, which is why <code class="docutils literal notranslate"><span class="pre">--pedantic</span></code> names only the missing <code class="docutils literal notranslate"><span class="pre">posix_version</span></code>.</p></li>
+</ul>
+<p>The settings record where each declared fact came from (<code class="docutils literal notranslate"><span class="pre">cli</span></code>, <code class="docutils literal notranslate"><span class="pre">config</span></code> or
+<code class="docutils literal notranslate"><span class="pre">compile</span> <span class="pre">database</span></code>), and that source is part of the settings hash; a scan
+with no declaration and no compile database hashes as it always did.</p>
+<p>When a fact is unknown, no exemption that depends on it applies. The default
+preset is the one exception: it assumes POSIX, with no edition, because most
+code runs on a POSIX system. <code class="docutils literal notranslate"><span class="pre">strict</span></code> and <code class="docutils literal notranslate"><span class="pre">pedantic</span></code> do not, so a
+<code class="docutils literal notranslate"><span class="pre">--strict</span></code> scan of POSIX code that declares nothing reports the findings the
+POSIX exemptions would have withheld. Declare <code class="docutils literal notranslate"><span class="pre">posix_version</span></code>, or pass a
+compile database that defines <code class="docutils literal notranslate"><span class="pre">_POSIX_C_SOURCE</span></code> for every unit, to restore
+them.</p>
 <p>Integer widths are implementation-defined, so the scan credits only what it is
 told. Each width is a plain key under <code class="docutils literal notranslate"><span class="pre">[environment]</span></code>, and <code class="docutils literal notranslate"><span class="pre">data_model</span></code> is a
 named bundle of those keys, loaded as if its lines were in the
