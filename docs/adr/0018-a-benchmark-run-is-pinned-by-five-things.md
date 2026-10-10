@@ -307,17 +307,18 @@ under.
    `(project, commit, file, line, rule, rule_text_version)`. "The oracle at
    pin P" is a query: for each rule, the labels whose `rule_text_version`
    equals the map's entry.
-4. **Each label also records the rulings version it was judged under:** the
-   commit of the project's record of rulings, or the identifier of the
-   ruling it applied. It is a field of the label, not part of its key: a
-   later ruling adds a newer label for the same key and leaves the earlier
-   one as history. Whether the rulings version is a seventh element of the
-   reproducibility vector or only this field is left for Brandon's ruling
-   (below).
+4. **Each label also records the rulings version it was judged under:** a
+   `benchmark_adjudication` commit, since the project's record of rulings
+   lives with the labels, or the identifier of the ruling it applied. It is
+   a field of the label, not part of its key: a later ruling adds a newer
+   label for the same key and leaves the earlier one as history. It is not
+   a seventh pin: because the rulings live in the oracle repository, the
+   oracle commit pins them with the labels (Rulings, below).
 5. **Advancing one rule's pin relabels only that rule.** A pin moves on
    Brandon's ruling, when CERT merges a change to the rule's page or when a
-   review finds the pin stale. Only that rule's map entry changes. Its
-   labels are re-judged against the new text under E5 of the 2026-10-07
+   review finds the pin stale. Only that rule's map entry changes. Unless
+   the move carries labels forward by a recorded review (Rulings, below),
+   its labels are re-judged against the new text under E5 of the 2026-10-07
    cross-cutting rulings in `docs/design/rule-disposition.md` (relabel and
    re-run before re-scoring), and attributed as a relabel caused by the
    text. The old labels stay, under their old `rule_text_version`, as the
@@ -352,18 +353,22 @@ Named here; their code is specified where it is written.
 - **Run provenance**: the run's sidecar records the map's digest with the
   other five pins.
 
-### For Brandon's ruling
+### Rulings (2026-10-09)
 
-- **The rulings version:** a seventh element of the vector, or the label
-  field of Decision 4 only.
-- **Page changes that do not touch the rule's reading** (tool rows,
-  bibliography, formatting) still change the content hash. Whether such a
-  move may carry labels forward by a recorded review, without re-judging
-  them, or always relabels.
-- **The first map.** Existing labels record no text version. The first map
-  could pin each rule at one merged commit chosen when the map is created,
-  with existing labels taking that version as carried forward and marked
-  so; or existing labels could stay unpinned until relabelled.
+- **The rulings version is a label field, not a seventh element** (Brandon:
+  "so long as it appears in the [benchmark_adjudication] repo so it does
+  have a SHA - it then becomes an extension of the oracle SHA"). The
+  project's record of rulings therefore lives with the labels in
+  `benchmark_adjudication`, and the oracle commit pins both. Moving the
+  record there is its own change.
+- **A page change that does not touch the rule's reading** (tool rows,
+  bibliography, formatting) carries the rule's labels forward by a recorded
+  review: the map entry records that the pin moved with no change to the
+  reading, and why. The labels take the new `rule_text_version` without
+  being re-judged.
+- **The first map** pins every rule at one merged commit: the one the
+  rules were last read against. Existing labels take that version as
+  carried forward and are marked so.
 
 ### Consequences
 
