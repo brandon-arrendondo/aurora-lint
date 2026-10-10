@@ -38,9 +38,15 @@ decides only the suites on top of them.
 
 After --run passes it prints a `verified:` line naming the git TREE it
 tested (the content, whichever commit carries it), the class, the host and
-the rustc version. A landing whose tree hash (`git rev-parse HEAD^{tree}`)
-equals a recorded verified tree, under the same rustc, has already been
-tested and needs only the hooks.
+the rustc version. Only a `class full` stamp vouches for a tree on its own:
+a landing whose tree hash (`git rev-parse HEAD^{tree}`) equals a recorded
+`class full` tree, under the same rustc, has already been tested and needs
+only the hooks. A lesser class ran less than the full suite, so its stamp
+holds only together with a passing run on the base it was classified
+against.
+
+A change to this script is FULL: a diff must not be graded by the
+classifier it edits. CI also runs the base commit's copy of it.
 """
 
 import argparse
@@ -210,6 +216,9 @@ def classify(path: str, base: str, head: str, rust_literals: str) -> tuple[str, 
     p = PurePosixPath(path)
     old, new = show(base, path), show(head, path)
 
+    if path == "scripts/landing_check.py":
+        return "full", "the classifier itself"
+
     if p.suffix in (".md", ".rst") or path.startswith("docs/"):
         if under_tests(path):
             return "full", "prose inside a tests/ directory"
@@ -280,7 +289,9 @@ def plan(base: str, head: str) -> dict:
 
 
 def is_dirty() -> bool:
-    return bool(git("status", "--porcelain", "--untracked-files=no").strip())
+    # Untracked files count: a new fixture .c changes the generated tests.
+    # Gitignored files do not.
+    return bool(git("status", "--porcelain", "--untracked-files=normal").strip())
 
 
 def verified_stamp(cls: str, head: str = "HEAD", dirty_before: bool = False) -> str:
@@ -289,7 +300,7 @@ def verified_stamp(cls: str, head: str = "HEAD", dirty_before: bool = False) -> 
     tree = git("rev-parse", "HEAD^{tree}").strip()
     notes = []
     if dirty_before or is_dirty():
-        notes.append("WORKING TREE HAD UNCOMMITTED CHANGES: not a verification of this tree")
+        notes.append("WORKING TREE HAD UNCOMMITTED OR UNTRACKED CHANGES: not a verification of this tree")
     if git("rev-parse", f"{head}^{{tree}}").strip() != tree:
         notes.append(f"ran on HEAD, whose tree differs from --head {head}")
     rustc = subprocess.run(["rustc", "--version"], capture_output=True, text=True).stdout.strip()

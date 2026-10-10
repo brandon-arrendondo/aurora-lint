@@ -18,6 +18,10 @@ jobs:
   # the crate; a skipped job counts as passed for a required check. A push
   # to main always runs everything, so the Pages docs job, which needs
   # `test`, always has it. If the classifier fails, the class is `full`.
+  #
+  # The classifier that grades a PR is the BASE commit's copy, so a PR
+  # cannot loosen it for itself, and any PR touching the classifier or
+  # .github/ runs everything regardless.
   classify:
     name: Classify change
     runs-on: ubuntu-24.04
@@ -37,9 +41,18 @@ jobs:
         run: |
           rust=true
           if [ "$EVENT" = pull_request ]; then
-            class=$(python3 scripts/landing_check.py \
-                      --base "$(git merge-base "$BASE" "$HEAD")" --head "$HEAD" \
-                      --print class) || class=full
+            class=full
+            if base=$(git merge-base "$BASE" "$HEAD") &&
+               git show "$base:scripts/landing_check.py" > scripts/landing_check_base.py; then
+              class=$(python3 scripts/landing_check_base.py \
+                        --base "$base" --head "$HEAD" --print class) || class=full
+              # Captured first: under pipefail, `git diff | grep -q` fails
+              # when grep exits early on a match.
+              changed=$(git diff --name-only "$base" "$HEAD")
+              if grep -qE '^(scripts/landing_check\.py|\.github/)' <<< "$changed"; then
+                class=full
+              fi
+            fi
             echo "class: $class"
             case "$class" in docs|python) rust=false ;; esac
           fi

@@ -173,14 +173,27 @@ exact rules, such as why a prose file that a test reads counts as code.
 The git hooks run on every commit regardless.
 
 When ``--run`` passes, it prints a ``verified:`` line naming the git tree
-it tested (``git rev-parse HEAD^{tree}``), the host and the ``rustc``
-version. The tree hash identifies content, whichever commit carries it, so
-a later step can see that a tree with the same hash, under the same
-``rustc``, was already tested.
+it tested (``git rev-parse HEAD^{tree}``), the class, the host and the
+``rustc`` version. The tree hash identifies content, whichever commit
+carries it. Only a ``class full`` line vouches for a tree on its own: a tree
+with the same hash, under the same ``rustc``, has already passed the whole
+suite. A lesser class ran less, so its line holds only together with a
+passing run on the base it was classified against. Uncommitted or untracked
+files (an unadded fixture changes the generated tests) mark the line as
+verifying nothing.
+
+The timings the script was tuned against are for a 4-core, 7 GB machine
+building with ``-j2``, and CI also runs everything again with
+``--features tui``.
 
 CI uses the same script: on a pull request that touches only prose or
-Python outside the crate, the Rust jobs are skipped. A push to ``main``
-always runs everything.
+Python outside the crate, the Rust jobs are skipped. The classifier that
+grades a pull request is the base commit's copy, and a pull request that
+changes the classifier or ``.github/`` runs everything. A push to ``main``
+always runs everything. One check rides on the skipped ``test`` job:
+``check_project_facts.py --generated``, which checks the test summary that
+``cargo test`` writes. A Python-only pull request therefore reaches it only
+on the push to ``main``.
 
 Invoke Tasks
 ------------
