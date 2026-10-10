@@ -220,34 +220,6 @@ fn targets_mingw(argv: &[String]) -> bool {
         })
 }
 
-/// For each `-D` of a POSIX feature-test macro in `argv`, in order, whether
-/// it was written with an `=` and nothing after it (`-D_POSIX_C_SOURCE=`),
-/// which defines the macro as empty, rather than bare (`-D_POSIX_C_SOURCE`),
-/// which defines it as 1. [`Flag::Define`] keeps both with an empty body.
-fn posix_macro_defines_written_empty(argv: &[String]) -> std::collections::VecDeque<bool> {
-    let mut out = std::collections::VecDeque::new();
-    let mut i = 0;
-    while i < argv.len() {
-        let arg = &argv[i];
-        i += 1;
-        let Some(rest) = arg.strip_prefix("-D") else {
-            continue;
-        };
-        let text = if rest.is_empty() {
-            let next = argv.get(i).cloned().unwrap_or_default();
-            i += 1;
-            next
-        } else {
-            rest.to_string()
-        };
-        let name = text.split('=').next().unwrap_or("");
-        if name == "_POSIX_C_SOURCE" || name == "_XOPEN_SOURCE" {
-            out.push_back(text.ends_with('=') && text.len() == name.len() + 1);
-        }
-    }
-    out
-}
-
 /// The facts one command line states, and the declarations that decided the
 /// unit but they cannot read. A later flag replaces an earlier one, so a bad
 /// declaration a later good one overrides is not reported, and a `-U` of a
@@ -258,14 +230,18 @@ fn tu_facts_of(argv: &[String], flags: &[Flag], msvc: bool) -> (TuFacts, Vec<Str
     let mut facts = TuFacts::default();
     let mut posix_unreadable: Option<String> = None;
     let mut std_unreadable: Option<String> = None;
-    let mut written_empty = posix_macro_defines_written_empty(argv);
     for flag in flags {
         match flag {
-            Flag::Define(spelling, body)
+            Flag::Define(spelling, _) | Flag::DefineEmpty(spelling)
                 if spelling == "_POSIX_C_SOURCE" || spelling == "_XOPEN_SOURCE" =>
             {
-                let empty = written_empty.pop_front().unwrap_or(false);
-                let shown = if body.is_empty() && !empty { "1" } else { body };
+                // A bare `-DNAME` defines it as 1; `-DNAME=` defines it empty.
+                let body = match flag {
+                    Flag::Define(_, body) if body.is_empty() => "1",
+                    Flag::Define(_, body) => body,
+                    _ => "",
+                };
+                let shown = body;
                 match posix_macro_edition(spelling, shown) {
                     Reading::Edition(v) => {
                         facts.posix_version = Some(v);
@@ -473,6 +449,12 @@ impl CompileDb {
                 }
             }
             for flag in flags {
+                // Everything below reads an empty definition as the bare form
+                // does: no replacement text.
+                let flag = match flag {
+                    Flag::DefineEmpty(spelling) => Flag::Define(spelling, String::new()),
+                    other => other,
+                };
                 match flag {
                     Flag::Include(dir) => {
                         let abs = absolutize(base, &dir);
@@ -481,6 +463,8 @@ impl CompileDb {
                             db.include_paths.push(s);
                         }
                     }
+                    // Rewritten to `Define` above.
+                    Flag::DefineEmpty(_) => {}
                     Flag::Define(spelling, body) => {
                         if seen_defines.insert(spelling.clone()) {
                             db.defines.push(CommandLineDefine { spelling, body });
@@ -711,8 +695,12 @@ impl CompileDb {
 enum Flag {
     /// A header search directory, exactly as spelled on the command line.
     Include(String),
-    /// `-D<spelling>[=<body>]`.
+    /// `-D<spelling>[=<body>]`, with a body (an empty one for a bare `-DNAME`,
+    /// which C defines as 1).
     Define(String, String),
+    /// `-D<spelling>=` with nothing after the `=`: the macro is defined as
+    /// empty, which is not what a bare `-D<spelling>` does.
+    DefineEmpty(String),
     /// `-U<name>`.
     Undefine(String),
     /// cl's `/FI<header>`: included ahead of the first line of every TU.
@@ -876,6 +864,9 @@ fn define_flag(attached: &str, argv: &[String], i: &mut usize, msvc: bool) -> Op
     };
     if spelling.is_empty() {
         return None;
+    }
+    if sep.is_some() && body.is_empty() {
+        return Some(Flag::DefineEmpty(spelling));
     }
     Some(Flag::Define(spelling, body))
 }
@@ -2308,6 +2299,37 @@ mod tests {
             ),
             (
                 &["cc", "-D_POSIX_C_SOURCE=200809L", "-D_POSIX_C_SOURCE="],
+                false,
+            ),
+            // cl spells the same flags with `/D` and `#`, and a `-D` may
+            // follow a `/D` in one command.
+            (&["cl.exe", "/D_POSIX_C_SOURCE="], false),
+            (&["cl.exe", "/D_POSIX_C_SOURCE"], true),
+            (&["cl.exe", "/D", "_POSIX_C_SOURCE="], false),
+            (
+                &["cl.exe", "/D_POSIX_C_SOURCE=200809L", "-D_POSIX_C_SOURCE="],
+                false,
+            ),
+            (
+                &["cl.exe", "-D_POSIX_C_SOURCE#200809L", "-D_POSIX_C_SOURCE="],
+                false,
+            ),
+            (
+                &["cl.exe", "/D_POSIX_C_SOURCE#", "/D_POSIX_C_SOURCE=200809L"],
+                true,
+            ),
+            // A flag that takes a value may swallow a `-D`; nothing desyncs.
+            (
+                &[
+                    "cc",
+                    "-U",
+                    "-D_POSIX_C_SOURCE=",
+                    "-D_POSIX_C_SOURCE=200809L",
+                ],
+                true,
+            ),
+            (
+                &["cc", "-I", "-D_POSIX_C_SOURCE", "-D_POSIX_C_SOURCE="],
                 false,
             ),
         ] {
