@@ -202,7 +202,7 @@ outside them is hand-written and untouched. `--realworld-run` has no default on
 purpose — pass a run you know is validly adjudicated, not the newest.
 
 **Published numbers come from Postgres via `benchmarking_db`'s
-`bin/refresh_tools_sqc_docs.py`** — not the better source, the only correct
+`bin/refresh_aurora_lint_docs.py`** — not the better source, the only correct
 one. It calls this repo's own `bench/render_docs.py` functions pointed at
 Postgres, so output shape is identical and nothing here gains Postgres
 awareness.

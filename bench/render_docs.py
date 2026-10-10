@@ -17,7 +17,7 @@ concrete DB class -- callers decide what `db` is (see `bench/__main__.py`'s
 SQLite file, same as every other `bench` subcommand).
 
 CROSS-REPO CONTRACT. The other caller is `benchmarking_db`'s
-`bin/refresh_tools_sqc_docs.py`, which imports these functions and hands them
+`bin/refresh_aurora_lint_docs.py`, which imports these functions and hands them
 its own Postgres-backed handle so the same blocks render from the shared
 database. That makes `db` an implicit protocol owned by this
 module, and it used to be an undeclared one: a foreign class with ~90 methods
