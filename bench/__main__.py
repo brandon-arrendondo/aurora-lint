@@ -434,7 +434,7 @@ def cmd_realworld_score(args):
         print("No real-world runs found.")
         return
 
-    result = db.score_realworld_run(target_id)
+    result = db.score_realworld_run(target_id, preset=args.preset)
     if "error" in result:
         print(f"Error: {result['error']}")
         return
@@ -456,6 +456,12 @@ def cmd_realworld_score(args):
 
     run = result["run"]
     o = result["overall"]
+    if "abstention" in o:
+        a = o["abstention"]
+        print(f"Scored as the {a['preset']} preset: it declines {len(a['rules'])} rule(s); "
+              f"{a['findings']} findings and {a['labels']} labels are abstentions, "
+              f"left out of every figure below ({a['coverage_pct']}% of findings enforced).")
+        print()
     print(f"Real-world measured precision/recall — v{run['sqc_version']}"
           f" ({_run_ident(run)})  run #{target_id}")
     print("(scored against ground-truth labels for each project's pinned commit)")
@@ -1337,6 +1343,11 @@ def main():
     p_score.add_argument("run", nargs="?", default=None,
                          help="Run identifier (version, ID, or 'latest')")
     p_score.add_argument("--json", action="store_true", help="Emit JSON")
+    p_score.add_argument(
+        "--preset", choices=("default", "strict", "pedantic"), default=None,
+        help="Score as this preset: a rule it declines (rules_templates/"
+             "rule-presets.json) is an abstention, left out of every "
+             "denominator and reported with the coverage that remains")
     p_score.set_defaults(func=cmd_realworld_score)
 
     # realworld-import-labels

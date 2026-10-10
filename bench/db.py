@@ -2352,7 +2352,8 @@ class BenchDB:
 
     def score_realworld_run(self, run_id: int,
                             restrict_files: dict | None = None,
-                            only_project: str | None = None) -> dict:
+                            only_project: str | None = None,
+                            preset: str | None = None) -> dict:
         """Measure precision/recall of a run against the ground-truth oracle.
 
         Joins the run's findings to ground_truth labels for the *same*
@@ -2373,6 +2374,13 @@ class BenchDB:
         only_project: optional project name to scope scoring to a single
         project (e.g. when comparing one codebase's rule deltas against
         ground_truth rather than the whole multi-project run).
+
+        preset: optional preset name. A rule that preset declines
+        (rules_templates/rule-presets.json, `not_enforced`) is an abstention:
+        its findings and labels leave every denominator below, and
+        `overall["abstention"]` reports what was left out and the share of
+        the run's findings still enforced. None (the default) scores every
+        rule, as before.
 
         The returned `overall` reports label coverage on BOTH bases rather
         than leaving the ratio to callers: `label_coverage_pct` over every
@@ -2399,6 +2407,17 @@ class BenchDB:
                 proj: {k for k in keys
                        if k[0] in restrict_files.get(proj, set())}
                 for proj, keys in run_keys.items()}
+
+        abstained: set[str] = set()
+        abstention_findings = 0
+        if preset is not None:
+            from bench import rule_presets
+            abstained = rule_presets.abstaining_rules(preset)
+            abstention_findings = sum(
+                1 for keys in run_keys.values() for k in keys if k[2] in abstained)
+            run_keys = {proj: {k for k in keys if k[2] not in abstained}
+                        for proj, keys in run_keys.items()}
+        abstention_labels = 0
 
         warnings = []
         # Projects this run could not score AT ALL because no codebase_commit
@@ -2456,6 +2475,9 @@ class BenchDB:
             if restrict_files is not None:
                 allowed = restrict_files.get(project, set())
                 labels = [l for l in labels if l["file_path"] in allowed]
+            if abstained:
+                abstention_labels += sum(1 for l in labels if l["rule_id"] in abstained)
+                labels = [l for l in labels if l["rule_id"] not in abstained]
             if not labels:
                 warnings.append(
                     f"{project}@{commit}: no ground-truth labels for this "
@@ -2573,6 +2595,18 @@ class BenchDB:
                 round(overall_labeled_total / scored_run_findings * 100, 1)
                 if scored_run_findings else 0.0),
         }
+        if preset is not None:
+            enforced = overall_run_findings
+            total = enforced + abstention_findings
+            overall["abstention"] = {
+                "preset": preset,
+                "rules": sorted(abstained),
+                "findings": abstention_findings,
+                "labels": abstention_labels,
+                # The share of the run's findings the preset still enforces:
+                # the coverage a risk figure is reported against.
+                "coverage_pct": round(enforced / total * 100, 1) if total else 100.0,
+            }
         per_rule.sort(key=lambda x: x["labeled_total"], reverse=True)
         return {
             "run": run, "run_id": run_id,
