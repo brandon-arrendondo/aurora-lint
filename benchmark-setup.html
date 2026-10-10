@@ -420,6 +420,32 @@ another image is suffixed <code class="docutils literal notranslate"><span class
 <span class="pre">realworld-run</span></code> or <code class="docutils literal notranslate"><span class="pre">bench</span> <span class="pre">juliet</span></code> on the host) <code class="docutils literal notranslate"><span class="pre">-hostenv</span></code>; against
 another header tree <code class="docutils literal notranslate"><span class="pre">-hdr-&lt;id&gt;</span></code>, or <code class="docutils literal notranslate"><span class="pre">-hdr-host</span></code> for the host’s own
 headers. Only the plain id is a benchmark run.</p>
+<p><code class="docutils literal notranslate"><span class="pre">container-run</span></code> builds aurora-lint inside the image, into a podman volume
+named <code class="docutils literal notranslate"><span class="pre">aurora-bench-target-&lt;pin&gt;-&lt;checkout&gt;</span></code>: one per environment pin
+<em>and</em> per checkout path. Every checkout is mounted at the same <code class="docutils literal notranslate"><span class="pre">/work</span></code> and
+cargo judges a build fresh by source mtimes, so a target shared between
+checkouts could hand one checkout another’s binary. A separate volume per
+checkout prevents that. The cost is that the first run from a new checkout
+path is a cold release build (a few minutes), and each throwaway A/B
+worktree gets a fresh volume holding a full release target (most of a
+gigabyte). Volumes are never removed for you. Those of deleted worktrees,
+and the older per-pin-only <code class="docutils literal notranslate"><span class="pre">aurora-bench-target-&lt;pin&gt;</span></code> volumes, are left
+behind; list and remove them once no run is using them:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>podman<span class="w"> </span>volume<span class="w"> </span>ls<span class="w"> </span>--filter<span class="w"> </span><span class="nv">name</span><span class="o">=</span>aurora-bench-target-
+podman<span class="w"> </span>volume<span class="w"> </span>rm<span class="w"> </span>aurora-bench-target-&lt;pin&gt;-&lt;checkout&gt;
+</pre></div>
+</div>
+<p>The build also records the checkout’s commit in the binary’s <code class="docutils literal notranslate"><span class="pre">--version</span></code>,
+and before scanning <code class="docutils literal notranslate"><span class="pre">container-run</span></code> checks it (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench.container</span>
+<span class="pre">check-binary</span></code>). If the binary does not report exactly the commit the run
+will be labelled with, the run stops with exit status 2 and a line ending
+<code class="docutils literal notranslate"><span class="pre">refusing</span> <span class="pre">to</span> <span class="pre">scan</span></code>, and nothing is scanned or recorded. The line names the
+commit the binary reports, if any. A build given the commit always
+recompiles for it, so this means the volume holds a binary the build did
+not replace. Remove that checkout’s volume and run again. If the refusal
+persists, the build is not embedding the commit it is given; report it
+rather than working around it, because a run past this check would measure
+an unknown binary under this commit’s run id.</p>
 <p>Both runners refuse to scan a benchmark whose dependency set is missing or
 differs from its pin. On the host, fetch a set with <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench.deps</span>
 <span class="pre">fetch</span> <span class="pre">&lt;name&gt;</span></code> (<code class="docutils literal notranslate"><span class="pre">data/benchmark_deps/&lt;name&gt;.json</span></code>; it needs Python 3 and
