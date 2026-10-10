@@ -245,7 +245,12 @@ decided separately.
     matter. A name still changing when the rounds run out is unknown, and
     so is every name a header binds under a condition on one, however many
     links away; two headers that each define `X` unless it is defined
-    never settle, and `X` is unknown.
+    never settle, and `X` is unknown. A header's include guard (an
+    `#ifndef G` / `#define G` whose `#endif` closes the file) is taken as
+    open, and `G` is recorded as defined, as the compiler holds it after the
+    inclusion; the same two lines opening a header that goes on after their
+    `#endif` are a default, not a guard. A header that undefines a name the
+    command line or a generated header defines leaves it unknown.
   - The evaluator is `configuration_arms` (three-valued: defined, `!`, `&&`,
     `||`, integer arithmetic and comparison, `#elif`). A reserved name
     (`__GNUC__`) the database does not define, a function-like macro in a

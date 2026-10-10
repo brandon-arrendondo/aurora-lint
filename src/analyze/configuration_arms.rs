@@ -127,8 +127,11 @@ impl ConfigState {
     /// order they are read in cannot matter. A name still changing when the
     /// rounds run out, and every name a header binds under a condition on
     /// one, is unknown (two headers that each define `X` unless it is
-    /// defined never settle). Include guards are taken as open, as on a
-    /// header's first inclusion.
+    /// defined never settle). A header's include guard is taken as open, as
+    /// on its first inclusion, and its `#define` is recorded like any other,
+    /// as the compiler holds it after the inclusion. A header that undefines
+    /// a name the command line or a generated header defines, or binds it
+    /// under an arm the state cannot decide, leaves it unknown.
     pub fn build<'a>(
         db: Option<&CompileDb>,
         generated: impl IntoIterator<Item = &'a Path>,
@@ -175,9 +178,13 @@ impl ConfigState {
 fn settle(base: &HashMap<String, Binding>, texts: &[String]) -> HashMap<String, Binding> {
     let mut rounds: Vec<Round> = vec![Round::new()];
     let mut depends: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+    // A fixed name a header may undefine: which holds after the header is
+    // read depends on whether it is.
+    let mut contested: std::collections::HashSet<String> = std::collections::HashSet::new();
     for _ in 0..MAX_ROUNDS {
         let prev = rounds.last().expect("seeded");
         let mut next = Round::new();
+        contested.clear();
         for (me, text) in texts.iter().enumerate() {
             let view = Others {
                 base,
@@ -188,6 +195,8 @@ fn settle(base: &HashMap<String, Binding>, texts: &[String]) -> HashMap<String, 
             for (name, binding) in scanned.bindings {
                 if !base.contains_key(&name) {
                     next.entry(name).or_default().push((me, binding));
+                } else if matches!(binding, Binding::Undefined | Binding::Unknown) {
+                    contested.insert(name);
                 }
             }
             for (name, on) in scanned.depends {
@@ -197,7 +206,9 @@ fn settle(base: &HashMap<String, Binding>, texts: &[String]) -> HashMap<String, 
         let settled = &next == prev;
         rounds.push(next);
         if settled {
-            return joined(rounds.last().expect("pushed"));
+            let mut out = joined(rounds.last().expect("pushed"));
+            out.extend(contested.into_iter().map(|n| (n, Binding::Unknown)));
+            return out;
         }
     }
     // Not settled: every name bound differently by the later rounds is
@@ -223,6 +234,7 @@ fn settle(base: &HashMap<String, Binding>, texts: &[String]) -> HashMap<String, 
             }
         }
     }
+    out.extend(contested.into_iter().map(|n| (n, Binding::Unknown)));
     out
 }
 
@@ -795,7 +807,7 @@ fn scan(source: &str, state: &dyn Macros, guards_open: bool) -> Scan {
             // not happen: the name is unknown from there on.
             "define" if effective != Some(false) => {
                 let (name, body) = split_define(rest);
-                if !name.is_empty() && guard.as_deref() != Some(name.as_str()) {
+                if !name.is_empty() {
                     let binding = if effective.is_none() {
                         Binding::Unknown
                     } else if body.starts_with('(')
@@ -858,24 +870,54 @@ fn not(a: Option<bool>) -> Option<bool> {
     a.map(|b| !b)
 }
 
-/// The macro a header's include guard tests: its first directive is
-/// `#ifndef G` and its second `#define G`.
+/// The macro a header's include guard tests: the header's first line of
+/// code is `#ifndef G`, its next directive is `#define G`, and the `#endif`
+/// closing that `#ifndef` is its last line of code. A header that only opens
+/// with `#ifndef X` / `#define X` (a default, followed by more code) has no
+/// guard.
 fn include_guard(lines: &[&str]) -> Option<String> {
     let mut in_comment = false;
-    let mut directives = lines.iter().filter_map(|l| {
-        let code = strip_comments(l, &mut in_comment);
-        let t = code.trim().to_string();
-        t.strip_prefix('#').map(|d| d.trim_start().to_string())
-    });
-    let first = directives.next()?;
+    let code: Vec<String> = lines
+        .iter()
+        .map(|l| strip_comments(l, &mut in_comment).trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let directive = |l: &str| l.strip_prefix('#').map(|d| d.trim_start().to_string());
+    let first = directive(code.first()?)?;
     let (w1, r1) = split_word(&first);
     if w1 != "ifndef" {
         return None;
     }
     let name = identifiers(r1).next()?.to_string();
-    let second = directives.next()?;
+    let second = directive(code.get(1)?)?;
     let (w2, r2) = split_word(&second);
-    (w2 == "define" && identifiers(r2).next() == Some(name.as_str())).then_some(name)
+    if w2 != "define" || identifiers(r2).next() != Some(name.as_str()) {
+        return None;
+    }
+    // The #endif matching the first #ifndef ends the code.
+    let mut depth = 0usize;
+    let mut continued = false;
+    for (i, line) in code.iter().enumerate() {
+        let was_continued = continued;
+        continued = line.ends_with('\\');
+        if was_continued {
+            continue;
+        }
+        let Some(d) = directive(line) else {
+            continue;
+        };
+        match split_word(&d).0 {
+            "if" | "ifdef" | "ifndef" => depth += 1,
+            "endif" => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return (i + 1 == code.len()).then_some(name);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Implementation-reserved: `__x` or `_X` (C11 7.1.3).
@@ -1525,5 +1567,58 @@ mod tests {
         let c = compiled_lines(member, &from_headers(&[]));
         assert!(!c[4]);
         assert!(!excludes_code_naming(member, &c, &names));
+    }
+
+    #[test]
+    fn a_default_that_opens_a_header_is_no_include_guard() {
+        // `#ifndef USE_FAST / #define USE_FAST 1 / #endif` followed by more
+        // code is a default, not a guard: USE_FAST is defined.
+        let fast = (
+            "fast.h",
+            "#ifndef USE_FAST\n#define USE_FAST 1\n#endif\nint fast_path(void);\n",
+        );
+        let member = "#ifdef USE_FAST\nint f;\n#else\nint s;\n#endif\n";
+        let c = compiled_lines(member, &from_headers(&[fast]));
+        assert!(c[2] && !c[4], "{c:?}");
+        // Two such headers, each defaulting Y to its own value: defined,
+        // whatever its value, with code after the default or without.
+        for tail in ["int more;\n", ""] {
+            let y1 = ("y1.h", format!("#ifndef Y\n#define Y 1\n#endif\n{tail}"));
+            let y2 = ("y2.h", format!("#ifndef Y\n#define Y 2\n#endif\n{tail}"));
+            let s = from_headers(&[(y1.0, y1.1.as_str()), (y2.0, y2.1.as_str())]);
+            let c = compiled_lines("#ifndef Y\nint none;\n#endif\n", &s);
+            assert!(!c[2], "{tail:?}: {c:?}");
+        }
+    }
+
+    #[test]
+    fn a_real_include_guard_is_defined_for_every_other_file() {
+        let guarded = (
+            "g.h",
+            "/* g */\n#ifndef G_H\n#define G_H\nint g(void);\n#endif /* G_H */\n",
+        );
+        let reader = ("r.h", "#ifdef G_H\n#define SAW_G 1\n#endif\nint r;\n");
+        let s = from_headers(&[guarded, reader]);
+        let c = compiled_lines(
+            "#ifdef G_H\nint a;\n#endif\n#ifdef SAW_G\nint b;\n#endif\n#if !defined(G_H)\nint c;\n#endif\n",
+            &s,
+        );
+        assert!(c[2] && c[5] && !c[8], "{c:?}");
+        // The guard is still open for the header itself.
+        let lines: Vec<&str> = guarded.1.lines().collect();
+        assert_eq!(include_guard(&lines).as_deref(), Some("G_H"));
+        let lines: Vec<&str> = "#ifndef X\n#define X 1\n#endif\nint x;\n".lines().collect();
+        assert_eq!(include_guard(&lines), None);
+    }
+
+    #[test]
+    fn a_header_undefining_a_generated_name_leaves_it_unknown() {
+        let autoconf = ("autoconf.h", "#define CONFIG_X 1\n#define CONFIG_Y 1\n");
+        let compat = ("compat.h", "#undef CONFIG_X\nint compat;\n");
+        let c = compiled_lines(
+            "#ifdef CONFIG_X\nint x;\n#endif\n#ifdef CONFIG_Y\nint y;\n#endif\n",
+            &from_generated(&[autoconf], &[compat]),
+        );
+        assert!(!c[2] && c[5], "{c:?}");
     }
 }
