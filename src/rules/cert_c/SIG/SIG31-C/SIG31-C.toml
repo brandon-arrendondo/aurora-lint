@@ -45,4 +45,4 @@ pedantic = "as_written"
 differs = true
 overlap = "SIG30-C"
 basis = "yes, at default only, through three named options (SIG31-C/2026-10-10/3-5). Pedantic reports what strict reports and adds loud declines (SIG31-C/2026-10-10/1, 7, 8)."
-ruling = "SIG31-C/2026-10-10/3-5, SIG31-C/2026-10-10/1"
+ruling = "SIG31-C/2026-10-10/3-5, SIG31-C/2026-10-10/1, SIG31-C/2026-10-10/7, SIG31-C/2026-10-10/8"

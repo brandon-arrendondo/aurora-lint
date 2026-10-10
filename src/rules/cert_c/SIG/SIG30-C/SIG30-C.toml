@@ -46,8 +46,8 @@ cwe = ["CWE-479"]
 [presets]
 default = "narrowed"
 strict = "as_written"
-pedantic = "stricter"
+pedantic = "as_written"
 differs = true
 overlap = "SIG31-C, ERR32-C"
-basis = "yes, in two places. With POSIX undeclared, default credits the functions safe in every POSIX edition (SIG30-C/2026-10-10/3); pedantic declines implementation-only list credits (SIG30-C/2026-10-10/10)."
+basis = "yes, at default: with POSIX undeclared, default credits the functions safe in every POSIX edition (SIG30-C/2026-10-10/3). Pedantic counts as written (ruled 2026-10-10): its partial decline of implementation-only list credits (SIG30-C/2026-10-10/10) is not a stricter reading."
 ruling = "SIG30-C/2026-10-10/3, SIG30-C/2026-10-10/10"

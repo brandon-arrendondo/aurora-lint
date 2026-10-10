@@ -199,7 +199,7 @@ fn ruling_id(id: &str) -> bool {
 /// none may carry one.
 fn private_reference(text: &str) -> Option<String> {
     // A bare number in parentheses or after `#` is a task id by its shape:
-    // `(2267)`, `#2267`.
+    // `(9999)`, `#9999`.
     let bytes = text.as_bytes();
     for (i, b) in bytes.iter().enumerate() {
         let digits = |from: usize| {

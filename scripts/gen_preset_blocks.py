@@ -71,9 +71,9 @@ PUBLIC_CELLS = {
     "POS54-C": ("narrowed", "not_enforced"),
     "PRE01-C": ("narrowed", "as_written"),
     "PRE02-C": ("narrowed", "as_written"),
-    "PRE09-C": ("widened", "stricter"),
+    "PRE09-C": ("widened", "as_written"),
     "PRE10-C": ("as_written", "stricter"),
-    "SIG30-C": ("narrowed", "stricter"),
+    "SIG30-C": ("narrowed", "as_written"),
     "SIG31-C": ("narrowed", "as_written"),
     "STR32-C": ("narrowed", "stricter"),
     "WIN00-C": ("as_written", "stricter"),
@@ -131,9 +131,13 @@ RULING_TOKEN = re.compile(
 )
 
 
+BARE_ITEMS = re.compile(r"(?:\s*(?:,|and)\s+(\d+(?:-\d+)?)\b(?![-/\w]*-C))+")
+
+
 def ruling_ids(text: str) -> list[str]:
-    """Every public ruling id the text names, a short form (`/6`) taking the
-    rule and date of the full id before it."""
+    """Every public ruling id the text names. A short form (`/6`) takes the
+    rule and date of the full id before it, and so does a bare number that
+    follows one in a list (`/1, 7, 8`)."""
     out, base = [], None
     for m in RULING_TOKEN.finditer(text):
         if m["rule"]:
@@ -143,6 +147,10 @@ def ruling_ids(text: str) -> list[str]:
             out.append(f"P/{m['principle']}")
         elif base:
             out.append(f"{base}/{m['short']}")
+        if base and (m["rule"] or m["short"]):
+            tail = BARE_ITEMS.match(text, m.end())
+            if tail:
+                out += [f"{base}/{n}" for n in re.findall(r"\d+(?:-\d+)?", tail.group(0))]
     return list(dict.fromkeys(out))
 DIFFERS = re.compile(r"\*\*Differs by preset:\*\*\s*(.*?)(?:\n- \*\*|\n\n)", re.S)
 
@@ -167,8 +175,11 @@ def shape_problems(cells: dict, public: str) -> list[str]:
     if re.search(r"yes, at pedantic", low):
         need(p != s_, "differs at pedantic, but pedantic equals strict")
         need(d == s_, "differs at pedantic only, but default differs from strict")
-    if re.search(r"pedantic equals strict(?! (apart|except))|strict and pedantic coincide|pedantic reports what strict reports", low):
+    if re.search(r"pedantic equals strict(?! (apart|except))|strict and pedantic coincide|pedantic reports what strict reports|pedantic counts as written", low):
         need(p == s_, "pedantic equals strict, but the cells differ")
+    # A notice or a partial decline flags nothing more, so it is not "stricter".
+    if p == "stricter" and re.search(r"only in the c-library posture|loud decline|c-library notice", low):
+        need(False, "pedantic is stricter, but the line says only a notice or decline differs")
     if re.search(r"default equals strict|default and strict coincide", low):
         need(d == s_, "default equals strict, but the cells differ")
     if re.search(r"yes, in all three|yes, in every column", low):

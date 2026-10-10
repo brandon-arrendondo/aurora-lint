@@ -1643,7 +1643,7 @@ behind a departure.
    * - PRE09-C
      - widened
      - as_written
-     - stricter
+     - as_written
      - 
      - PRE09-C/2026-10-09/6, PRE09-C/2026-10-10/presets
    * - PRE10-C
@@ -1709,7 +1709,7 @@ behind a departure.
    * - SIG30-C
      - narrowed
      - as_written
-     - stricter
+     - as_written
      - 
      - SIG30-C/2026-10-10/3, SIG30-C/2026-10-10/10
    * - SIG31-C
@@ -1717,7 +1717,7 @@ behind a departure.
      - as_written
      - as_written
      - 
-     - SIG31-C/2026-10-10/3-5, SIG31-C/2026-10-10/1
+     - SIG31-C/2026-10-10/3-5, SIG31-C/2026-10-10/1, SIG31-C/2026-10-10/7, SIG31-C/2026-10-10/8
    * - SIG34-C
      - as_written
      - as_written
@@ -1843,7 +1843,7 @@ behind a departure.
      - as_written
      - as_written
      - 
-     - WIN02-C/2026-10-10/4-6, WIN02-C/2026-10-10/3
+     - WIN02-C/2026-10-10/4-6, WIN02-C/2026-10-10/3, WIN02-C/2026-10-10/7, WIN02-C/2026-10-10/8
    * - WIN03-C
      - as_written
      - as_written

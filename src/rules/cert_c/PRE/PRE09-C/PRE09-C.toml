@@ -35,8 +35,8 @@ related_cwe = ["CWE-684"]
 [presets]
 default = "widened"
 strict = "as_written"
-pedantic = "stricter"
+pedantic = "as_written"
 differs = true
 overlap = "depends on MSC24-C's tables"
-basis = "yes, in two places. Default adds one widening (PRE09-C/2026-10-09/6); pedantic differs from strict only in the C-library posture (PRE09-C/2026-10-10/presets)."
+basis = "yes, at default only: one widening (PRE09-C/2026-10-09/6). Pedantic counts as written (ruled 2026-10-10): its C-library notice is not a stricter reading (PRE09-C/2026-10-10/presets)."
 ruling = "PRE09-C/2026-10-09/6, PRE09-C/2026-10-10/presets"
