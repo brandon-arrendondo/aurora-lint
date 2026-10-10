@@ -266,6 +266,10 @@ def plan(base: str, head: str) -> dict:
     files = [(path, *classify(path, base, head, literals)) for path in paths]
     worst = max((cls for _, cls, _ in files), key=ORDER.index)
     commands = list(COMMANDS[worst])
+    # Every other class's commands are a subset of the costlier classes';
+    # the Python suites are not, so they join whichever class won.
+    if any(cls == "python" for _, cls, _ in files) and worst != "python":
+        commands.extend(PYTHON_TESTS)
     # docs/conf.py imports scripts/check_project_facts.py, so a change
     # under scripts/ can break the docs build too.
     if any(p.startswith(("docs/", "scripts/")) for p in paths):
