@@ -30,7 +30,8 @@ use super::compile_commands::CompileDb;
 /// A three-valued preprocessor value: a known integer, or unknown.
 type Val = Option<i64>;
 
-/// What a name is bound to at some point of a configuration.
+/// What a name is bound to at some point of a configuration. Joined in
+/// the order undefined, a value, no known value, unknown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Binding {
     /// Defined, with its integer value when it has one.
@@ -57,8 +58,8 @@ impl Binding {
 }
 
 /// The most rounds [`ConfigState::build`] reads the headers for. Real
-/// configurations settle in two or three; a header whose arms flip on its
-/// own definitions never does.
+/// configurations settle in two or three; a bound keeps a pathological one
+/// finite.
 const MAX_ROUNDS: usize = 8;
 
 /// The configuration's macro state: every name it defines, with its integer
@@ -73,11 +74,16 @@ impl ConfigState {
     /// The state of `db`'s configuration: its `-D` flags, then the
     /// definitions in `generated` headers and in `headers` (the project
     /// headers the configuration's files reach). Each round reads every
-    /// header, in path order, under the previous round's state and rebuilds
-    /// the state from the `-D` flags and what the headers define, so a value
-    /// read while a name it depends on still looked undefined does not
-    /// outlive the round; reading stops when a round changes nothing. Include
-    /// guards are taken as open, as on a header's first inclusion.
+    /// header under the previous round's state and joins what it binds into
+    /// that state, until a round changes nothing. Joining only ever moves a
+    /// name from undefined to defined, from a value to no known value, and
+    /// from there to unknown, so a value read while a name it depends on
+    /// still looked undefined is not kept as the answer (`#ifndef A_ON` /
+    /// `#define MODE 2` read before the header defining `A_ON` leaves `MODE`
+    /// defined with no known value), the result does not depend on the order
+    /// the headers are read in, and `#ifndef X` / `#define X` settles in two
+    /// rounds rather than flipping. Include guards are taken as open, as on a
+    /// header's first inclusion.
     pub fn build<'a>(
         db: Option<&CompileDb>,
         generated: impl IntoIterator<Item = &'a Path>,
@@ -112,8 +118,8 @@ impl ConfigState {
             }
             state = next;
         }
-        // Not settled: a name the last two rounds bind differently could be
-        // either.
+        // Not settled within the bound: a name the last two rounds bind
+        // differently could be either.
         let next = state.next_round(&base, &texts);
         let names: Vec<String> = state
             .names
@@ -130,9 +136,9 @@ impl ConfigState {
         state
     }
 
-    /// The state the headers `texts` leave when read under `self`, over the
-    /// database's `base`. Joined per name, so the order the headers are read
-    /// in cannot change it.
+    /// `self` joined with what the headers `texts` bind when read under it,
+    /// over the database's `base`. Joined per name, so the order the headers
+    /// are read in cannot change it.
     fn next_round(&self, base: &HashMap<String, Binding>, texts: &[String]) -> ConfigState {
         let mut found: BTreeMap<String, Binding> = BTreeMap::new();
         for text in texts {
@@ -143,13 +149,23 @@ impl ConfigState {
                     .or_insert(binding);
             }
         }
-        let mut names = base.clone();
+        let mut names = self.names.clone();
         for (name, binding) in found {
             // The command line's definitions stand.
-            if names.contains_key(&name) || binding == Binding::Undefined {
+            if base.contains_key(&name) {
                 continue;
             }
-            names.insert(name, binding);
+            match names.get(&name) {
+                Some(prev) => {
+                    let joined = prev.join(binding);
+                    names.insert(name, joined);
+                }
+                // An #undef of a name nothing defines leaves it undefined.
+                None if binding == Binding::Undefined => {}
+                None => {
+                    names.insert(name, binding);
+                }
+            }
         }
         ConfigState { names }
     }
@@ -1225,9 +1241,11 @@ mod tests {
 
     #[test]
     fn a_value_derived_from_a_header_that_sorts_first_is_settled_in_any_order() {
-        // a_derive.h reads A_ON, which only b_config.h (read after it in path
-        // order) defines: the first round sees A_ON undefined and derives
-        // MODE 2, which the next round must replace, not keep.
+        // a_derive.h reads A_ON, which only b_config.h defines: read before
+        // it, a_derive.h gives MODE 2, read after it, MODE 1. Which the
+        // compiler sees depends on an include order the state does not know,
+        // so MODE is defined with no known value and neither arm is decided,
+        // whichever header is read first.
         let derive = (
             "a_derive.h",
             "#ifndef A_ON\n#define MODE 2\n#else\n#define MODE 1\n#endif\n",
@@ -1236,8 +1254,38 @@ mod tests {
         let member = "#if MODE == 1\nint one;\n#else\nint two;\n#endif\n";
         for order in [[derive, config], [config, derive]] {
             let c = compiled_lines(member, &from_headers(&order));
-            assert!(c[2] && !c[4], "{order:?}");
+            assert!(!c[2] && !c[4], "{order:?}");
+            let c = compiled_lines("#ifdef MODE\nint m;\n#endif\n", &from_headers(&order));
+            assert!(c[2], "{order:?}");
         }
+    }
+
+    #[test]
+    fn a_name_a_header_defines_unless_defined_settles() {
+        // The commonest header idiom: it must not read its own definition
+        // as one made elsewhere and drop it.
+        let defaults = (
+            "defaults.h",
+            "#ifndef DEFAULTS_H\n#define DEFAULTS_H\n#ifndef PAGE\n#define PAGE 4096\n#endif\n\
+             #if !defined(FTS3) && defined(FTS4)\n#define FTS3 1\n#endif\n#define FTS4 1\n#endif\n",
+        );
+        let c = compiled_lines(
+            "#if PAGE == 4096\nint p;\n#endif\n#ifdef FTS3\nint f;\n#endif\n",
+            &from_headers(&[defaults]),
+        );
+        assert!(c[2] && c[5], "{c:?}");
+        // Two headers that each define it unless defined, to different
+        // values: defined, with no known value.
+        let other = (
+            "other.h",
+            "#ifndef OTHER_H\n#define OTHER_H\n#ifndef PAGE\n#define PAGE 512\n#endif\n#endif\n",
+        );
+        let s = from_headers(&[defaults, other]);
+        let c = compiled_lines(
+            "#ifdef PAGE\nint d;\n#endif\n#if PAGE == 4096\nint p;\n#endif\n",
+            &s,
+        );
+        assert!(c[2] && !c[5], "{c:?}");
     }
 
     #[test]

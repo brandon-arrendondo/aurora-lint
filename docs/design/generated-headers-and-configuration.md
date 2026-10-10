@@ -232,11 +232,15 @@ decided separately.
   - The project's own headers derive more of that state from it
     (`#ifdef CONFIG_ENABLE_SMP_SUPPORT` / `#define ENABLE_SMP_SUPPORT`), so
     the headers the member files reach are read too. Each round reads every
-    header, in path order, under the previous round's state and rebuilds the
-    state from scratch, until a round changes nothing; a name the rounds
-    never settle is unknown. Headers read in no known order that bind a name
-    differently leave it unknown (or defined with no known value), so the
-    result does not depend on the order they are read in.
+    header under the previous round's state and joins what it binds into
+    that state, until a round changes nothing. A join only moves a name up,
+    from undefined to a value, to no known value, to unknown: two headers
+    (or two rounds) that bind a name differently leave it defined with no
+    known value, or unknown. The result does not depend on the order the
+    headers are read in, which the state does not know; a value that
+    depends on that order is not decided. Rebuilding each round from
+    scratch instead would flip `#ifndef X` / `#define X` between rounds
+    forever.
   - The evaluator is `configuration_arms` (three-valued: defined, `!`, `&&`,
     `||`, integer arithmetic and comparison, `#elif`). A reserved name
     (`__GNUC__`) the database does not define, a function-like macro in a
