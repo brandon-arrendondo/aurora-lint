@@ -39,6 +39,7 @@ Commands:
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -46,8 +47,16 @@ from bench.config import DEFAULT_JOBS, DEFAULT_PROFILE, PROFILES
 from bench.db import BenchDB
 
 
+def _allow_dirty(args) -> None:
+    """--allow-dirty, for every runner the run reaches (bench.config)."""
+    if getattr(args, "allow_dirty", False) is True:
+        from bench.config import ALLOW_DIRTY_ENV
+        os.environ[ALLOW_DIRTY_ENV] = "1"
+
+
 def cmd_juliet(args):
     from bench.runner import run_benchmark
+    _allow_dirty(args)
     cwes = [c for c in args.cwe.split(",") if c.strip()] if args.cwe else None
     try:
         run_id = run_benchmark(fast=not args.full, jobs=args.jobs,
@@ -84,6 +93,7 @@ def cmd_container_run(args):
 
 def cmd_realworld_run(args):
     from bench.realworld_runner import CODEBASES, VALID_TOOLS, run_and_ingest
+    _allow_dirty(args)
 
     tools = [t.strip().lower() for t in args.tool.split(",")] if args.tool else ["sqc"]
     for t in tools:
@@ -1240,6 +1250,10 @@ def main():
                                "recorded in the run's settings (default: default)")
     p_juliet.add_argument("--run-id-out", type=Path, default=None, metavar="PATH",
                           help="write the run id this run recorded to PATH")
+    p_juliet.add_argument("--allow-dirty", action="store_true",
+                          help="run even with uncommitted changes to what the run measures "
+                               "(bench.config.DIRTY_PATHS); the run is recorded as "
+                               "<sha>+dirty<hash>, never as the commit. Exploratory only")
     p_juliet.set_defaults(func=cmd_juliet)
 
     # status
@@ -1299,6 +1313,10 @@ def main():
                                "header_trees instead of this host's own "
                                "/usr/include (the default, also named 'host'); "
                                "the run gets its own id (-hdr-ID)")
+    p_rw_run.add_argument("--allow-dirty", action="store_true",
+                          help="run even with uncommitted changes to what the run measures "
+                               "(bench.config.DIRTY_PATHS); the run is recorded as "
+                               "<sha>+dirty<hash>, never as the commit. Exploratory only")
     p_rw_run.set_defaults(func=cmd_realworld_run)
 
     p_ctr = sub.add_parser(

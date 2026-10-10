@@ -1,5 +1,6 @@
 """Centralized paths, constants, and defaults for the benchmark infrastructure."""
 
+import hashlib
 import json
 import os
 import subprocess
@@ -39,6 +40,93 @@ COMMIT_ENV = "AURORA_BENCH_COMMIT"              # the full SHA
 COMMIT_SHORT_ENV = "AURORA_BENCH_COMMIT_SHORT"  # `git rev-parse --short` on the host
 UNKNOWN_COMMIT = "unknown"
 
+# ── A working tree that is not its commit ────────────────────────────────────
+# A run is labelled with HEAD, so uncommitted changes to anything that decides
+# what it measures would be recorded as that commit. These are those paths:
+# the binary (src/, which also holds the rule TOMLs build.rs merges, build.rs,
+# Cargo.*); the manifests the scans run under (rules_templates/, conf/); the
+# runner, which picks the flags, scores the findings and names the run
+# (bench/, its tests aside, and the script a Juliet run executes to rebuild
+# its CWE map); and the inputs the runner reads (corpus pins and scope, the
+# dependency sets, the declared environment, the rule-CWE map). Untracked
+# files count too: build.rs and the runners pick files up by directory.
+# docs/, tests/ (the release binary does not contain them), container/ (the
+# image pin records it) and the rest do not.
+DIRTY_PATHS = ("src", "build.rs", "Cargo.toml", "Cargo.lock", "rules_templates", "conf",
+               "bench", ":(exclude)bench/tests", "scripts/generate_rule_cwe_map.py",
+               "data/benchmark_repos.json", "data/benchmark_deps",
+               "data/benchmark_environment.json", "data/rule_cwe_map.json")
+# Set by --allow-dirty: run anyway, labelled DIRTY_MARK + the changes' hash.
+ALLOW_DIRTY_ENV = "AURORA_BENCH_ALLOW_DIRTY"
+# The host's hash of the changes, passed into the container (as the commit is).
+DIRTY_ENV = "AURORA_BENCH_DIRTY"
+# Joined to the SHA with no "-": ingest splits a results directory's name at
+# the first "-" after the SHA into a variant, which would record the clean SHA.
+DIRTY_MARK = "+dirty"
+
+
+def tree_changes(project_dir: Path = PROJECT_DIR) -> list[str] | None:
+    """`git status --porcelain` lines for DIRTY_PATHS in `project_dir`,
+    untracked files included and ignored ones not, or None when git cannot
+    answer."""
+    try:
+        out = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all",
+                              "--", *DIRTY_PATHS], capture_output=True, text=True,
+                             cwd=project_dir, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return [line for line in out.stdout.splitlines() if line.strip()]
+
+
+def dirty_hash(project_dir: Path = PROJECT_DIR) -> str | None:
+    """'' when DIRTY_PATHS are as committed, else a short hash of how they
+    differ (the diff against HEAD plus every untracked file's name and
+    content), so two different sets of changes never share a label. None
+    when git cannot answer."""
+    changes = tree_changes(project_dir)
+    if changes is None:
+        return None
+    if not changes:
+        return ""
+    h = hashlib.sha256()
+    try:
+        diff = subprocess.run(["git", "diff", "--binary", "HEAD", "--", *DIRTY_PATHS],
+                              capture_output=True, cwd=project_dir, timeout=60)
+        untracked = subprocess.run(["git", "ls-files", "--others", "--exclude-standard",
+                                    "-z", "--", *DIRTY_PATHS],
+                                   capture_output=True, cwd=project_dir, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if diff.returncode != 0 or untracked.returncode != 0:
+        return None
+    h.update(diff.stdout)
+    for name in sorted(n for n in untracked.stdout.split(b"\0") if n):
+        h.update(b"\0" + name + b"\0")
+        try:
+            h.update((project_dir / os.fsdecode(name)).read_bytes())
+        except OSError:
+            pass
+    return h.hexdigest()[:8]
+
+
+def _dirty_label(sha: str, dirty: str, project_dir: Path) -> str:
+    """`sha`, or `sha`+dirty<hash> for a tree with changes when --allow-dirty
+    was given; refused otherwise."""
+    if not dirty:
+        return sha
+    if os.environ.get(ALLOW_DIRTY_ENV) != "1":
+        changes = tree_changes(project_dir) or []
+        listing = "".join(f"\n  {c}" for c in changes[:20])
+        more = f"\n  ... and {len(changes) - 20} more" if len(changes) > 20 else ""
+        raise ValueError(
+            f"{project_dir} has uncommitted changes to what a benchmark measures, and "
+            f"the run would be recorded as commit {sha}:{listing}{more}\n"
+            "Commit them first (docs/benchmark-setup.rst), or pass --allow-dirty for an "
+            f"exploratory run, which is recorded as {sha}{DIRTY_MARK}<hash>.")
+    return f"{sha}{DIRTY_MARK}{dirty}"
+
 
 def host_commit(project_dir: Path = PROJECT_DIR) -> tuple[str, str] | None:
     """(full, short) SHA of the checkout at `project_dir`, as git there
@@ -61,7 +149,13 @@ def aurora_lint_commit(project_dir: Path = PROJECT_DIR) -> str:
     relabel a run. Only when git cannot resolve HEAD (inside the benchmark
     container, a worktree checkout or another uid's tree) is the commit
     `bench container-run` passed in used, and failing that UNKNOWN_COMMIT.
-    A passed-in short SHA that is not a prefix of the full one is refused."""
+    A passed-in short SHA that is not a prefix of the full one is refused.
+
+    A tree whose DIRTY_PATHS differ from that commit is refused, unless
+    --allow-dirty set ALLOW_DIRTY_ENV; then the SHA carries DIRTY_MARK and the
+    changes' hash (dirty_hash), so the run never claims the clean commit. Git
+    answers that here when it can; otherwise the hash container-run passed in
+    (DIRTY_ENV) is used, and where both exist they must agree."""
     short, full = os.environ.get(COMMIT_SHORT_ENV, ""), os.environ.get(COMMIT_ENV, "")
     if short and not full.startswith(short):
         raise ValueError(f"{COMMIT_SHORT_ENV}={short} is not a prefix of "
@@ -74,15 +168,24 @@ def aurora_lint_commit(project_dir: Path = PROJECT_DIR) -> str:
                              f"inside a `bench container-run`)")
         # Agreeing, the host's abbreviation is the one to record: its length
         # is git's choice per repository.
-        return short or resolved[1]
-    return short or UNKNOWN_COMMIT
+        sha = short or resolved[1]
+        dirty = dirty_hash(project_dir)
+        if dirty is None:
+            raise ValueError(f"git cannot say whether {project_dir} has uncommitted "
+                             "changes, so the run cannot be labelled with its commit")
+        passed = os.environ.get(DIRTY_ENV, "")
+        if full and passed != dirty:
+            raise ValueError(f"{DIRTY_ENV}={passed or '(unset)'} disagrees with git, which "
+                             f"hashes {project_dir}'s changes as {dirty or '(none)'}")
+        return _dirty_label(sha, dirty, project_dir)
+    return _dirty_label(short or UNKNOWN_COMMIT, os.environ.get(DIRTY_ENV, ""), project_dir)
 
 
 def require_known_commit(sha: str, what: str) -> None:
     """Refuse to run or ingest a benchmark whose aurora-lint commit is
     unknown: every such run would share one run id, so two refs would
     overwrite each other's results."""
-    if not sha or sha == UNKNOWN_COMMIT:
+    if not sha or sha.split(DIRTY_MARK)[0] == UNKNOWN_COMMIT:
         raise ValueError(
             f"{what}: aurora-lint's commit is unknown (git cannot resolve HEAD in "
             f"{PROJECT_DIR}), and a run recorded as '{UNKNOWN_COMMIT}' would share its "

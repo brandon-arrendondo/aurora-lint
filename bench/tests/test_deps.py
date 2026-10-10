@@ -381,6 +381,7 @@ class TestRunner(unittest.TestCase):
             with mock.patch.dict(rr.CODEBASES, {"lua": cfg}), \
                  mock.patch.dict(os.environ, env), \
                  mock.patch.object(rr, "_check_tool_available", return_value=True), \
+                 mock.patch.object(rr, "_get_git_sha", return_value="abc1234"), \
                  mock.patch("bench.config.compile_db_for",
                             return_value=Path(td) / "compile_commands.json"), \
                  mock.patch.object(deps, "deps_name", return_value="lua"), \

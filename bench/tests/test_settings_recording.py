@@ -120,6 +120,7 @@ class TestManifestDeclarations(unittest.TestCase):
         # the run before the settings are resolved.
         with mock.patch.object(rr, "resolve_settings", side_effect=resolve), \
                 mock.patch.object(rr, "_check_tool_available", return_value=True), \
+                mock.patch.object(rr, "_get_git_sha", return_value="abc1234"), \
                 mock.patch.object(rr, "_verified_deps", return_value=None), \
                 mock.patch.dict(rr.CODEBASES["mbedtls"],
                                 {"path": Path(self._tmp())}):

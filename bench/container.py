@@ -34,8 +34,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from bench.config import (BENCH_ROOT, COMMIT_ENV, COMMIT_SHORT_ENV, PROJECT_DIR,
-                          SQC_BIN, host_commit)
+from bench.config import (ALLOW_DIRTY_ENV, BENCH_ROOT, COMMIT_ENV, COMMIT_SHORT_ENV,
+                          DIRTY_ENV, DIRTY_MARK, PROJECT_DIR, SQC_BIN, dirty_hash,
+                          host_commit, tree_changes)
 
 DEFAULT_IMAGE = os.environ.get("AURORA_BENCH_IMAGE", "localhost/aurora-bench:dev")
 # The image's 'tools' stage (podman build --target tools), where each
@@ -75,16 +76,20 @@ def built_commit(binary=SQC_BIN) -> str | None:
                              text=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
         return None
-    m = re.search(r"\(commit ([0-9a-f]+)\)", out.stdout)
+    m = re.search(r"\(commit ([0-9a-f]+(?:\+dirty[0-9a-f]+)?)\)", out.stdout)
     return m.group(1) if out.returncode == 0 and m else None
 
 
 def check_binary(binary=SQC_BIN, expected: str | None = None) -> int:
     """0 if `binary` was built from `expected` (default: the full SHA
-    container-run passed in), else 2 with the reason. Run in the container
+    container-run passed in, with the dirty tree's mark when it passed one),
+    else 2 with the reason. Run in the container
     between the build and the scan, so a stale or foreign binary stops the
     run instead of being measured as this commit."""
-    expected = expected if expected is not None else os.environ.get(COMMIT_ENV, "")
+    if expected is None:
+        expected = os.environ.get(COMMIT_ENV, "")
+        if expected and os.environ.get(DIRTY_ENV):
+            expected += DIRTY_MARK + os.environ[DIRTY_ENV]
     if not expected:
         print(f"container-run: {COMMIT_ENV} is not set, so the binary cannot be "
               "checked against the commit the run measures; refusing to scan")
@@ -131,11 +136,13 @@ def _host_dirs(args: list[str]) -> list[Path]:
 
 
 def command(run_args: list[str], image: str, pin: str, runtime: str = "podman",
-            bench_root=None, project_dir=None, commit=None) -> list[str]:
+            bench_root=None, project_dir=None, commit=None, dirty: str = "") -> list[str]:
     """The `podman run` line for one container-run. `commit` is the
     checkout's (full, short) SHA as the host resolves it: only the checkout
     is mounted, so git inside cannot always answer (a worktree's .git names
-    a host directory; another uid's tree is "dubious ownership")."""
+    a host directory; another uid's tree is "dubious ownership"). `dirty` is
+    the host's hash of the tree's uncommitted changes (config.dirty_hash),
+    '' for a clean tree; run() passes one only under --allow-dirty."""
     from bench.realworld_runner import CODEBASES
     bench_root = Path(bench_root) if bench_root else BENCH_ROOT
     project_dir = Path(project_dir) if project_dir else PROJECT_DIR
@@ -146,8 +153,11 @@ def command(run_args: list[str], image: str, pin: str, runtime: str = "podman",
            "-e", f"SQC_BENCH_ROOT={IN_BENCH_ROOT}",
            "-w", WORK]
     if commit:
+        build = commit[0] + (DIRTY_MARK + dirty if dirty else "")
         cmd += ["-e", f"{COMMIT_ENV}={commit[0]}", "-e", f"{COMMIT_SHORT_ENV}={commit[1]}",
-                "-e", f"{BUILD_COMMIT_ENV}={commit[0]}"]
+                "-e", f"{DIRTY_ENV}={dirty}", "-e", f"{BUILD_COMMIT_ENV}={build}"]
+        if dirty:
+            cmd += ["-e", f"{ALLOW_DIRTY_ENV}=1"]
     for name in sorted(CODEBASES):
         # Mounted under the project's own name: scoring keys strip a path up
         # to its first /<project>/ (BenchDB.project_relpath), so the
@@ -187,9 +197,28 @@ def run(run_args: list[str], image: str = DEFAULT_IMAGE, runtime: str = "podman"
         print(f"container-run: git cannot resolve HEAD in {PROJECT_DIR}, so the run "
               "could not record which aurora-lint commit it measured")
         return 2
+    # The live tree is what the container builds and scans, so it is checked
+    # here, on the host, where git can always answer.
+    dirty = dirty_hash(PROJECT_DIR)
+    if dirty is None:
+        print(f"container-run: git cannot say whether {PROJECT_DIR} has uncommitted "
+              "changes, so the run could not be labelled with its commit")
+        return 2
+    if dirty and "--allow-dirty" not in run_args:
+        changes = tree_changes(PROJECT_DIR) or []
+        print(f"container-run: {PROJECT_DIR} has uncommitted changes to what a benchmark "
+              f"measures, and the run would be recorded as commit {commit[1]}:"
+              + "".join(f"\n  {c}" for c in changes[:20])
+              + (f"\n  ... and {len(changes) - 20} more" if len(changes) > 20 else "")
+              + "\nCommit them first, or pass --allow-dirty to the subcommand "
+              f"(e.g. container-run -- juliet --allow-dirty), which records the run as "
+              f"{commit[1]}{DIRTY_MARK}<hash>.")
+        return 2
     pin = image_pin(image, runtime)
-    print(f"environment {pin} ({image}); aurora-lint {commit[1]}")
-    return subprocess.run(command(run_args, image, pin, runtime, commit=commit)).returncode
+    label = commit[1] + (DIRTY_MARK + dirty if dirty else "")
+    print(f"environment {pin} ({image}); aurora-lint {label}")
+    return subprocess.run(command(run_args, image, pin, runtime, commit=commit,
+                                  dirty=dirty)).returncode
 
 
 # Limits on a compile-database build container. podman's default pids

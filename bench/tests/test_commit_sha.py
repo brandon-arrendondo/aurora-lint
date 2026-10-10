@@ -64,6 +64,13 @@ class TestWorktreeMountedAlone(unittest.TestCase):
 class TestPassedInCommit(unittest.TestCase):
     FULL, SHORT = "abcdef0123" + "0" * 30, "abcdef012"
 
+    def setUp(self):
+        # host_commit is stubbed, but the tree these run in is real: hold its
+        # uncommitted changes out of it (test_dirty_tree covers them).
+        patcher = mock.patch.object(config, "dirty_hash", return_value="")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_both_runners_use_it_when_git_cannot_resolve(self):
         with mock.patch.dict(os.environ, {COMMIT_ENV: self.FULL, COMMIT_SHORT_ENV: self.SHORT}), \
              mock.patch.object(config, "host_commit", return_value=None):

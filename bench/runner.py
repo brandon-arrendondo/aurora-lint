@@ -637,6 +637,13 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     cwe_ids = tuple(sorted({_extract_cwe_id(n) for n in all_cwes})) if cwes else ()
 
     _ensure_rule_cwe_map()
+    # That rewrites tracked files (data/rule_cwe_map.json, the per-CWE
+    # manifests); when what it wrote is not what is committed, the run would
+    # scan with files its commit does not hold.
+    if _get_git_sha() != sha:
+        raise ValueError("regenerating the rule-CWE map changed committed files, so this "
+                         "run would not measure its commit; commit the regenerated "
+                         "files (python3 scripts/generate_rule_cwe_map.py) first")
 
     version = _get_sqc_version()
     # No manifest: none of Juliet's declares allocators or deallocators. One
