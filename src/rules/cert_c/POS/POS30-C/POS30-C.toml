@@ -30,4 +30,4 @@ strict = "as_written"
 pedantic = "stricter"
 differs = true
 basis = "yes. Default runs with POSIX assumed, works within one function and credits pre-zeroed buffers; `readlinkat` is default and pedantic only; pedantic adds closed-form tests (POS30-C/2026-10-09/5, /6, /8)."
-ruling = "POS30-C/2026-10-09/5"
+ruling = "POS30-C/2026-10-09/5, POS30-C/2026-10-09/6, POS30-C/2026-10-09/8"

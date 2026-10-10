@@ -36,3 +36,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "PRE31-C owns the usage hazard"
 basis = "no. Not enforced in any preset."
+ruling = "PRE12-C/2026-10-07/disposition"

@@ -37,8 +37,10 @@ related = ["ERR00-C", "FLP32-C"]
 [presets]
 default = "narrowed"
 strict = "as_written"
-pedantic = "as_written"
+pedantic = "not_enforced"
 differs = true
 overlap = "MSC11-C reports a live assert that default treats as a guard"
+open_family = true
+inferred = "CERT's table plus fgetws and the C23 functions the declared c_standard has."
 basis = "yes. Default narrows by named options and widens the function set (ERR33-C/2026-10-09/2, /6, /7, /9); pedantic declines the rule (ERR33-C/2026-10-09/7)."
-ruling = "ERR33-C/2026-10-09/2, ERR33-C/2026-10-09/7"
+ruling = "ERR33-C/2026-10-09/2, ERR33-C/2026-10-09/6, ERR33-C/2026-10-09/7, ERR33-C/2026-10-09/9"

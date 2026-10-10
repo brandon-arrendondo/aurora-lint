@@ -37,3 +37,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "ERR34-C owns scanf-family numeric conversions"
 basis = "no; not enforced in any preset."
+ruling = "INT05-C/2026-10-07/disposition"

@@ -31,7 +31,7 @@ cwe = []
 [presets]
 default = "narrowed"
 strict = "as_written"
-pedantic = "stricter"
+pedantic = "as_written"
 differs = true
 basis = "yes, at default only (labels from macro expansion, MSC20-C/2026-10-07/2). Pedantic equals strict."
 ruling = "MSC20-C/2026-10-07/2"

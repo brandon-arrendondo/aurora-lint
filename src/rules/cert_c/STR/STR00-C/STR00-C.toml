@@ -44,3 +44,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "neighbouring rules own each form"
 basis = "no. Not enforced in any preset."
+ruling = "STR00-C/2026-09-26/disposition, STR00-C/2026-09-26/removal"

@@ -35,3 +35,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "STR31-C owns the getenv copy"
 basis = "no. Not enforced in any preset."
+ruling = "ENV01-C/2026-09-26/disposition, ENV01-C/2026-09-26/removal"

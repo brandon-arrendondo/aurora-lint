@@ -31,3 +31,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "FIO45-C owns the race"
 basis = "no. Not enforced in any preset."
+ruling = "FIO03-C/2026-10-07/disposition"

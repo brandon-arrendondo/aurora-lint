@@ -40,3 +40,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "EXP30-C owns conflicting unsequenced effects"
 basis = "no. Not enforced in any preset."
+ruling = "EXP10-C/2026-09-26/disposition, EXP10-C/2026-09-26/removal"

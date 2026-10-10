@@ -34,3 +34,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "CON43-C owns data races"
 basis = "no. Not enforced in any preset."
+ruling = "CON03-C/2026-09-26/disposition, CON03-C/2026-09-26/removal"

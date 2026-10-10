@@ -39,7 +39,7 @@ related_cwe = ["CWE-131", "CWE-190", "CWE-789"]
 [presets]
 default = "narrowed"
 strict = "as_written"
-pedantic = "stricter"
+pedantic = "as_written"
 differs = true
 overlap = "INT30-C/INT32-C may fire on wrapping sizes; INT04-C owns the dropped taint form"
 basis = "yes, at default only: portability-only type mismatches under a declared data model (MEM35-C/2026-10-07/presets). Pedantic equals strict."

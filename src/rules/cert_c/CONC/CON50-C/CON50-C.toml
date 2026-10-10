@@ -35,3 +35,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "CON31-C, CON34-C"
 basis = "no. Not enforced in any preset."
+ruling = "CON50-C/2026-09-26/disposition, CON50-C/2026-09-26/removal"

@@ -47,3 +47,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "MSC11-C"
 basis = "no. Not enforced in any preset."
+ruling = "ERR06-C/2026-10-07/disposition"

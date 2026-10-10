@@ -41,3 +41,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "ARR38-C"
 basis = "no. Not enforced in any preset."
+ruling = "FIO18-C/2026-09-26/disposition"

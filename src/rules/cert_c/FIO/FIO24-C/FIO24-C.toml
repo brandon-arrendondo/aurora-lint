@@ -35,9 +35,9 @@ cwe = []
 related_cwe = ["CWE-362", "CWE-675"]
 
 [presets]
-default = "as_written"
+default = "narrowed"
 strict = "as_written"
-pedantic = "stricter"
+pedantic = "as_written"
 differs = true
 overlap = "FIO45-C owns the race; FIO46-C took the double-close form"
 basis = "yes, in the environment each preset assumes (FIO24-C/2026-10-07/presets)."

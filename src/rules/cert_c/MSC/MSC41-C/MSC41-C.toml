@@ -32,10 +32,10 @@ cwe = ["CWE-259", "CWE-321"]
 related_cwe = ["CWE-798"]
 
 [presets]
-default = "narrowed"
+default = "as_written"
 strict = "as_written"
 pedantic = "stricter"
 differs = true
 overlap = "MEM03-C/MEM06-C share the sensitivity contract"
 basis = "yes, at pedantic only (other credentials and credential-like constants, MSC41-C/2026-10-07/1 and /4). Default equals strict."
-ruling = "MSC41-C/2026-10-07/1"
+ruling = "MSC41-C/2026-10-07/1, MSC41-C/2026-10-07/4"

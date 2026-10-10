@@ -28,3 +28,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "MSC42-C (CWE-327) ships the weak-algorithm detector"
 basis = "no. Not enforced in any preset."
+ruling = "MSC25-C/2026-09-26/disposition"

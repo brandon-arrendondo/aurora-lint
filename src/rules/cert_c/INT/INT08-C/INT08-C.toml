@@ -45,3 +45,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "INT30-C, INT31-C, INT32-C"
 basis = "no. Not enforced in any preset."
+ruling = "INT08-C/2026-10-07/disposition, INT08-C/2026-10-07/removal"

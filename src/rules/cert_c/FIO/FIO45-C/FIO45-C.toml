@@ -39,4 +39,4 @@ pedantic = "stricter"
 differs = true
 overlap = "co-fires with FIO05-C; absorbs check-then-open findings filed under FIO01-C/POS50-C; POS35-C owns lstat-then-open"
 basis = "yes, in all three: default by named options (FIO45-C/2026-10-07/1, /3, /ex2), pedantic by refusing the EX3 credit (FIO45-C/2026-10-07/presets)."
-ruling = "FIO45-C/2026-10-07/1, FIO45-C/2026-10-07/presets"
+ruling = "FIO45-C/2026-10-07/1, FIO45-C/2026-10-07/3, FIO45-C/2026-10-07/ex2, FIO45-C/2026-10-07/presets"

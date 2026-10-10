@@ -46,4 +46,4 @@ strict = "as_written"
 pedantic = "as_written"
 differs = true
 basis = "yes, at default only (FIO34-C/2026-10-09/1, /3, /4). Strict and pedantic coincide (P/coincide)."
-ruling = "FIO34-C/2026-10-09/1, P/coincide"
+ruling = "FIO34-C/2026-10-09/1, FIO34-C/2026-10-09/3, FIO34-C/2026-10-09/4, P/coincide"

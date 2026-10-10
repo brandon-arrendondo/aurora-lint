@@ -41,3 +41,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "API00-C and EXP34-C own the safety half"
 basis = "no. Not enforced in any preset."
+ruling = "MEM10-C/2026-10-07/disposition"

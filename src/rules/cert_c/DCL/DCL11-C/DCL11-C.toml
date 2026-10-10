@@ -42,3 +42,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "FIO47-C owns type mismatch; EXP34-C owns null string argument"
 basis = "no. Not enforced in any preset."
+ruling = "DCL11-C/2026-09-26/disposition, DCL11-C/2026-09-26/removal"

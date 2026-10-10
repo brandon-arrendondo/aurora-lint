@@ -36,3 +36,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "STR32-C"
 basis = "no. Not enforced in any preset."
+ruling = "FIO17-C/2026-09-26/disposition"

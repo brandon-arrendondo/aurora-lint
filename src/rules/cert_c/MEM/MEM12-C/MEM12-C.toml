@@ -32,3 +32,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "MEM31-C memory; FIO42-C streams and descriptors"
 basis = "no. Not enforced in any preset."
+ruling = "MEM12-C/2026-10-07/disposition, MEM12-C/2026-10-07/removal"

@@ -53,3 +53,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "FIO21-C owns the shared-directory remnant"
 basis = "no. Not enforced in any preset."
+ruling = "FIO15-C/2026-09-26/disposition"

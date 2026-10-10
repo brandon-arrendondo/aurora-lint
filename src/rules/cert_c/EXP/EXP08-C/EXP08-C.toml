@@ -33,3 +33,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "ARR39-C owns sizeof-derived count added to pointer"
 basis = "no. Not enforced in any preset."
+ruling = "EXP08-C/2026-09-26/disposition"

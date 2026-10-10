@@ -47,3 +47,4 @@ strict = "not_enforced"
 pedantic = "not_enforced"
 differs = false
 basis = "no; not enforced in any preset."
+ruling = "FLP05-C/2026-10-07/disposition"

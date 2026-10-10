@@ -43,4 +43,4 @@ strict = "as_written"
 pedantic = "stricter"
 differs = true
 basis = "yes, at pedantic (predictable, re-seeded and unknown seeds, MSC32-C/2026-10-09/2 and /7). Default equals strict, with one option that is off by default (MSC32-C/2026-10-09/8)."
-ruling = "MSC32-C/2026-10-09/2, MSC32-C/2026-10-09/8"
+ruling = "MSC32-C/2026-10-09/2, MSC32-C/2026-10-09/7, MSC32-C/2026-10-09/8"

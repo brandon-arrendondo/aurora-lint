@@ -33,3 +33,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "FIO47-C, INT30-C, INT18-C own its example forms"
 basis = "no; not enforced in any preset."
+ruling = "INT00-C/2026-10-07/disposition"

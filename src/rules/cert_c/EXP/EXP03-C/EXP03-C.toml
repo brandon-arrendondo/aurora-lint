@@ -37,3 +37,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "MEM35-C owns undersized allocation"
 basis = "no. Not enforced in any preset."
+ruling = "EXP03-C/2026-09-26/disposition, EXP03-C/2026-09-26/removal"

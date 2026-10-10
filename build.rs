@@ -311,11 +311,11 @@ fn check_fixture_matrix(table: &std::collections::BTreeMap<String, presets::Bloc
         "fixtures disagree with the per-rule preset table:\n  {}",
         problems.join("\n  ")
     );
+    // A count and a pointer, not the list: this build script reruns often.
     if !unexercised.is_empty() {
         println!(
-            "cargo:warning={} rule(s) read differently by some preset have fixtures but none with an `Expect:` header: {}",
-            unexercised.len(),
-            unexercised.join(", ")
+            "cargo:warning={} rule(s) read differently by some preset have fixtures but none with an `Expect:` header (see `scripts/list_unexercised_presets.py`)",
+            unexercised.len()
         );
     }
     Ok(())

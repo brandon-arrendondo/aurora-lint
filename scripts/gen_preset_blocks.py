@@ -78,7 +78,18 @@ PUBLIC_CELLS = {
     "STR32-C": ("narrowed", "stricter"),
     "WIN00-C": ("as_written", "stricter"),
     "WIN01-C": ("narrowed", "as_written"),
-    "WIN02-C": ("narrowed", "stricter"),
+    # Pedantic's loud declines alone are not "stricter": it flags nothing more.
+    "WIN02-C": ("narrowed", "as_written"),
+    "ERR33-C": ("narrowed", "not_enforced"),
+    "MEM35-C": ("narrowed", "as_written"),
+    "MSC20-C": ("narrowed", "as_written"),
+    "MSC41-C": ("as_written", "stricter"),
+    "POS01-C": ("narrowed", "stricter"),
+    # The 2026-10-08 POSIX pattern: default assumes POSIX and applies the
+    # exception; strict and pedantic apply it only under declared POSIX.
+    "CON37-C": ("narrowed", "as_written"),
+    "FIO24-C": ("narrowed", "as_written"),
+    "MSC05-C": ("narrowed", "as_written"),
     # Pending in the reviewed table, ruled since (2026-10-09).
     "INT32-C": ("narrowed", "stricter"),
     "POS36-C": ("as_written", "stricter"),
@@ -94,15 +105,75 @@ CODE_LAGS = {
     "ARR38-C": "A strippable assert still guards under default only (assert_is_guard); the ruling reads one form in every preset.",
     "FLP36-C": "A strippable assert still guards under default only (assert_is_guard); the ruling reads one form in every preset.",
 }
+# Open families (a list in the rule's text that default infers beyond): the
+# set default infers, documented.
+OPEN_FAMILY = {
+    "FIO30-C": "Strict's members plus format-attributed declarations, variadic or va_list forwarders, wrapper macros, and platform members on a declared platform or library (vsyslog, the <err.h> family, GNU error, the Windows _snprintf family, the Curses printw family), resolved by declaration.",
+    "ERR33-C": "CERT's table plus fgetws and the C23 functions the declared c_standard has.",
+    "POS39-C": "Byte swaps under a host-order test, target variants (ntohll/htonll, pre-Issue-8 be32toh) and declared project helpers, beyond the enumerated ntohl, ntohs, htonl, htons and the <endian.h> functions under a declared Issue 8.",
+}
+# Rulings a block cites beyond those its "Differs by preset" line names.
+EXTRA_RULINGS = {
+    "FLP36-C": ["FLP36-C/2026-10-07/presets"],
+}
 # Ruling and task references are private: the TOMLs ship.
 PRIVATE = [
+    re.compile(r"\s*\(ledger[^)]*\)"),
     re.compile(r"\s*\((?:aurora_lint |task )?\d{4}\)"),
     re.compile(r"\b(?:aurora_lint|task|tasks) #?\d{3,4}\b"),
     re.compile(r"\bP\d{2,3}\b"),
     re.compile(r"\bQ\d{1,2}\b"),
 ]
-RULING_ID = re.compile(r"\b[A-Z]{3}\d{2}-C/\d{4}-\d{2}-\d{2}/[A-Za-z0-9_-]+|\bP/[a-z][a-z0-9-]*")
+RULING_TOKEN = re.compile(
+    r"\b(?P<rule>[A-Z]{3}\d{2}-C)/(?P<date>\d{4}-\d{2}-\d{2})/(?P<item>[A-Za-z0-9_-]+)"
+    r"|\bP/(?P<principle>[a-z][a-z0-9-]*)"
+    r"|(?<![A-Za-z0-9_.-])/(?P<short>\d+(?:-\d+)?|presets|options|library|disposition|ex\d)\b"
+)
+
+
+def ruling_ids(text: str) -> list[str]:
+    """Every public ruling id the text names, a short form (`/6`) taking the
+    rule and date of the full id before it."""
+    out, base = [], None
+    for m in RULING_TOKEN.finditer(text):
+        if m["rule"]:
+            base = f"{m['rule']}/{m['date']}"
+            out.append(f"{base}/{m['item']}")
+        elif m["principle"]:
+            out.append(f"P/{m['principle']}")
+        elif base:
+            out.append(f"{base}/{m['short']}")
+    return list(dict.fromkeys(out))
 DIFFERS = re.compile(r"\*\*Differs by preset:\*\*\s*(.*?)(?:\n- \*\*|\n\n)", re.S)
+
+
+def shape_problems(cells: dict, public: str) -> list[str]:
+    """Where the cells disagree with the shape of the public line: "at default
+    only", "at pedantic only", "Pedantic equals strict", "Default equals
+    strict", "pedantic declines the rule", "in all three"."""
+    low = public.lower()
+    d, s_, p = cells["default"], cells["strict"], cells["pedantic"]
+    out = []
+
+    def need(ok: bool, what: str) -> None:
+        if not ok:
+            out.append(what)
+
+    if re.search(r"pedantic declines the rule", low):
+        need(p == "not_enforced", "pedantic declines the rule, but the cell is not not_enforced")
+    if re.search(r"yes, at default", low) or low.startswith("only through the named options"):
+        need(d != s_, "differs at default, but default equals strict")
+        need(p == s_, "differs at default only, but pedantic differs from strict")
+    if re.search(r"yes, at pedantic", low):
+        need(p != s_, "differs at pedantic, but pedantic equals strict")
+        need(d == s_, "differs at pedantic only, but default differs from strict")
+    if re.search(r"pedantic equals strict(?! (apart|except))|strict and pedantic coincide|pedantic reports what strict reports", low):
+        need(p == s_, "pedantic equals strict, but the cells differ")
+    if re.search(r"default equals strict|default and strict coincide", low):
+        need(d == s_, "default equals strict, but the cells differ")
+    if re.search(r"yes, in all three|yes, in every column", low):
+        need(d != s_ and p != s_, "differs in all three, but a preset equals strict")
+    return out
 
 
 def scrub(text: str) -> str:
@@ -137,6 +208,7 @@ def main() -> int:
             rows[r["rule"]] = r
     rulings = Path(args[1])
     changed = 0
+    shape_failures = 0
     for path in sorted(ROOT.glob("src/rules/cert_c/*/*/*.toml")):
         rule = path.stem
         row = rows.get(rule)
@@ -170,9 +242,19 @@ def main() -> int:
                 print(f"{rule}: the public ruling reads one form, the table says {cells}", file=sys.stderr)
                 return 1
 
+        if not all_off:
+            for problem in shape_problems(cells, public):
+                print(f"{rule}: {problem}  [{cells['default']}/{cells['strict']}/{cells['pedantic']}]", file=sys.stderr)
+                shape_failures += 1
         used = [o for o in options if re.search(rf"\b{o}\b", public) or re.search(rf"\b{o}\b", row["basis"])]
         used += [o for o in OPTIONS_READ.get(rule, []) if o not in used]
-        ids = list(dict.fromkeys(RULING_ID.findall(public)))
+        ids = ruling_ids(public)
+        if all_off:
+            # A decided cut cites its disposition (and removal) ruling.
+            body = (rulings / f"{rule}.md").read_text()
+            ids += [i for i in re.findall(rf"\b{rule}/\d{{4}}-\d{{2}}-\d{{2}}/(?:disposition|removal)\b", body)
+                    if i not in ids]
+        ids += [i for i in EXTRA_RULINGS.get(rule, []) if i not in ids]
         lines = ["[presets]"]
         for p in ("default", "strict", "pedantic"):
             lines.append(f"{p} = {q(cells[p])}")
@@ -181,6 +263,9 @@ def main() -> int:
             lines.append(f"overlap = {q(scrub(row['overlap_owner']))}")
         if used:
             lines.append("options = [" + ", ".join(q(o) for o in used) + "]")
+        if rule in OPEN_FAMILY:
+            lines.append("open_family = true")
+            lines.append(f"inferred = {q(OPEN_FAMILY[rule])}")
         lines.append(f"basis = {q(public)}")
         if ids:
             lines.append("ruling = " + q(", ".join(ids)))
@@ -194,6 +279,9 @@ def main() -> int:
             changed += 1
             if not check:
                 path.write_text(new)
+    if shape_failures:
+        print(f"{shape_failures} disagreement(s) between the cells and the public lines", file=sys.stderr)
+        return 1
     print(f"{changed} rule file(s) {'would change' if check else 'rewritten'}")
     return 1 if check and changed else 0
 

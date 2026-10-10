@@ -52,3 +52,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "MEM31-C, INT04-C, ERR33-C, EXP34-C"
 basis = "no. Not enforced in any preset."
+ruling = "MEM11-C/2026-10-07/disposition, MEM11-C/2026-10-07/removal"

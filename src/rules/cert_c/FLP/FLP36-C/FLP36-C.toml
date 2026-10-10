@@ -43,5 +43,5 @@ pedantic = "as_written"
 differs = false
 options = ["assert_is_guard"]
 basis = "no. Default, strict and pedantic coincide (P/coincide)."
-ruling = "P/coincide"
+ruling = "P/coincide, FLP36-C/2026-10-07/presets"
 code_lags = "A strippable assert still guards under default only (assert_is_guard); the ruling reads one form in every preset."

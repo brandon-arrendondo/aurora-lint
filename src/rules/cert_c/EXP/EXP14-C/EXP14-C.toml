@@ -36,3 +36,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "INT02-C owns it"
 basis = "no. Not enforced in any preset."
+ruling = "EXP14-C/2026-09-26/disposition"

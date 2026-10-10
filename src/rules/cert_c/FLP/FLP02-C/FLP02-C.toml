@@ -44,3 +44,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "FLP00-C owns floating equality"
 basis = "no; not enforced in any preset."
+ruling = "FLP02-C/2026-10-07/disposition"

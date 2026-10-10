@@ -49,13 +49,13 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - API03-C/2026-09-26/disposition
    * - API04-C
      - not_enforced
      - not_enforced
      - not_enforced
      - 
-     - 
+     - API04-C/2026-09-26/disposition
    * - API05-C
      - narrowed
      - as_written
@@ -67,25 +67,25 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - API07-C/2026-09-26/disposition, API07-C/2026-09-26/removal
    * - API09-C
      - not_enforced
      - not_enforced
      - not_enforced
      - 
-     - 
+     - API09-C/2026-09-26/disposition, API09-C/2026-09-26/removal
    * - API10-C
      - not_enforced
      - not_enforced
      - not_enforced
      - 
-     - 
+     - API10-C/2026-09-26/disposition
    * - ARR00-C
      - not_enforced
      - not_enforced
      - not_enforced
      - 
-     - 
+     - ARR00-C/2026-09-26/disposition, ARR00-C/2026-09-26/removal
    * - ARR01-C
      - as_written
      - as_written
@@ -151,7 +151,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - CON03-C/2026-09-26/disposition, CON03-C/2026-09-26/removal
    * - CON04-C
      - as_written
      - as_written
@@ -169,7 +169,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - CON06-C/2026-09-26/disposition
    * - CON07-C
      - as_written
      - as_written
@@ -187,7 +187,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - CON09-C/2026-09-26/disposition
    * - CON30-C
      - as_written
      - as_written
@@ -231,9 +231,9 @@ behind a departure.
      - 
      - P/coincide
    * - CON37-C
+     - narrowed
      - as_written
      - as_written
-     - stricter
      - 
      - CON37-C/2026-10-07/presets
    * - CON38-C
@@ -271,7 +271,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - CON50-C/2026-09-26/disposition, CON50-C/2026-09-26/removal
    * - DCL00-C
      - as_written
      - as_written
@@ -325,7 +325,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - DCL08-C/2026-09-26/disposition
    * - DCL09-C
      - as_written
      - as_written
@@ -337,13 +337,13 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - DCL10-C/2026-09-26/disposition, DCL10-C/2026-09-26/removal
    * - DCL11-C
      - not_enforced
      - not_enforced
      - not_enforced
      - 
-     - 
+     - DCL11-C/2026-09-26/disposition, DCL11-C/2026-09-26/removal
    * - DCL12-C
      - as_written
      - as_written
@@ -373,7 +373,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - DCL17-C/2026-09-26/disposition
    * - DCL18-C
      - narrowed
      - as_written
@@ -397,13 +397,13 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - DCL21-C/2026-09-26/disposition, DCL21-C/2026-09-26/removal
    * - DCL22-C
      - not_enforced
      - not_enforced
      - not_enforced
      - 
-     - 
+     - DCL22-C/2026-09-26/disposition, DCL22-C/2026-09-26/removal
    * - DCL23-C
      - as_written
      - as_written
@@ -469,7 +469,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - ENV01-C/2026-09-26/disposition, ENV01-C/2026-09-26/removal
    * - ENV02-C
      - as_written
      - as_written
@@ -487,7 +487,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - ENV04-C/2026-09-26/disposition
    * - ENV30-C
      - as_written
      - as_written
@@ -523,7 +523,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - ERR00-C/2026-09-26/disposition, ERR00-C/2026-09-26/removal
    * - ERR01-C
      - as_written
      - as_written
@@ -553,7 +553,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - ERR06-C/2026-10-07/disposition
    * - ERR07-C
      - narrowed
      - as_written
@@ -575,9 +575,9 @@ behind a departure.
    * - ERR33-C
      - narrowed
      - as_written
-     - as_written
+     - not_enforced
      - 
-     - ERR33-C/2026-10-09/2, ERR33-C/2026-10-09/7
+     - ERR33-C/2026-10-09/2, ERR33-C/2026-10-09/6, ERR33-C/2026-10-09/7, ERR33-C/2026-10-09/9
    * - ERR34-C
      - as_written
      - as_written
@@ -601,7 +601,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - EXP03-C/2026-09-26/disposition, EXP03-C/2026-09-26/removal
    * - EXP05-C
      - as_written
      - as_written
@@ -613,13 +613,13 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - EXP07-C/2026-09-26/disposition
    * - EXP08-C
      - not_enforced
      - not_enforced
      - not_enforced
      - 
-     - 
+     - EXP08-C/2026-09-26/disposition
    * - EXP09-C
      - as_written
      - as_written
@@ -631,7 +631,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - EXP10-C/2026-09-26/disposition, EXP10-C/2026-09-26/removal
    * - EXP11-C
      - as_written
      - as_written
@@ -655,7 +655,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - EXP14-C/2026-09-26/disposition
    * - EXP15-C
      - narrowed
      - as_written
@@ -787,7 +787,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - FIO03-C/2026-10-07/disposition
    * - FIO05-C
      - as_written
      - as_written
@@ -817,7 +817,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - FIO10-C/2026-09-26/disposition
    * - FIO11-C
      - as_written
      - as_written
@@ -841,19 +841,19 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - FIO15-C/2026-09-26/disposition
    * - FIO17-C
      - not_enforced
      - not_enforced
      - not_enforced
      - 
-     - 
+     - FIO17-C/2026-09-26/disposition
    * - FIO18-C
      - not_enforced
      - not_enforced
      - not_enforced
      - 
-     - 
+     - FIO18-C/2026-09-26/disposition
    * - FIO19-C
      - narrowed
      - as_written
@@ -885,9 +885,9 @@ behind a departure.
      - 
      - P/coincide
    * - FIO24-C
+     - narrowed
      - as_written
      - as_written
-     - stricter
      - 
      - FIO24-C/2026-10-07/presets
    * - FIO30-C
@@ -907,7 +907,7 @@ behind a departure.
      - as_written
      - as_written
      - 
-     - FIO34-C/2026-10-09/1, P/coincide
+     - FIO34-C/2026-10-09/1, FIO34-C/2026-10-09/3, FIO34-C/2026-10-09/4, P/coincide
    * - FIO37-C
      - as_written
      - as_written
@@ -955,7 +955,7 @@ behind a departure.
      - as_written
      - stricter
      - 
-     - FIO45-C/2026-10-07/1, FIO45-C/2026-10-07/presets
+     - FIO45-C/2026-10-07/1, FIO45-C/2026-10-07/3, FIO45-C/2026-10-07/ex2, FIO45-C/2026-10-07/presets
    * - FIO46-C
      - as_written
      - as_written
@@ -979,13 +979,13 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - FLP01-C/2026-10-07/disposition
    * - FLP02-C
      - not_enforced
      - not_enforced
      - not_enforced
      - 
-     - 
+     - FLP02-C/2026-10-07/disposition
    * - FLP03-C
      - narrowed
      - as_written
@@ -1003,7 +1003,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - FLP05-C/2026-10-07/disposition
    * - FLP06-C
      - as_written
      - as_written
@@ -1027,7 +1027,7 @@ behind a departure.
      - as_written
      - stricter
      - 
-     - FLP32-C/2026-10-09/presets, FLP32-C/2026-10-09/5
+     - FLP32-C/2026-10-09/presets, FLP32-C/2026-10-09/3, FLP32-C/2026-10-09/4, FLP32-C/2026-10-09/5
    * - FLP34-C
      - as_written
      - as_written
@@ -1039,7 +1039,7 @@ behind a departure.
      - as_written
      - as_written
      - ``assert_is_guard``
-     - P/coincide
+     - P/coincide, FLP36-C/2026-10-07/presets
    * - FLP37-C
      - as_written
      - as_written
@@ -1057,7 +1057,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - INT00-C/2026-10-07/disposition
    * - INT01-C
      - as_written
      - as_written
@@ -1081,7 +1081,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - INT05-C/2026-10-07/disposition
    * - INT07-C
      - narrowed
      - as_written
@@ -1093,7 +1093,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - INT08-C/2026-10-07/disposition, INT08-C/2026-10-07/removal
    * - INT09-C
      - as_written
      - as_written
@@ -1123,7 +1123,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - INT14-C/2026-10-07/disposition
    * - INT15-C
      - as_written
      - as_written
@@ -1135,7 +1135,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - INT16-C/2026-10-07/disposition, INT16-C/2026-10-07/removal
    * - INT17-C
      - as_written
      - as_written
@@ -1195,7 +1195,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - MEM00-C/2026-10-07/disposition, MEM00-C/2026-10-07/removal
    * - MEM01-C
      - as_written
      - as_written
@@ -1237,25 +1237,25 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - MEM07-C/2026-10-07/disposition
    * - MEM10-C
      - not_enforced
      - not_enforced
      - not_enforced
      - 
-     - 
+     - MEM10-C/2026-10-07/disposition
    * - MEM11-C
      - not_enforced
      - not_enforced
      - not_enforced
      - 
-     - 
+     - MEM11-C/2026-10-07/disposition, MEM11-C/2026-10-07/removal
    * - MEM12-C
      - not_enforced
      - not_enforced
      - not_enforced
      - 
-     - 
+     - MEM12-C/2026-10-07/disposition, MEM12-C/2026-10-07/removal
    * - MEM30-C
      - narrowed
      - as_written
@@ -1283,7 +1283,7 @@ behind a departure.
    * - MEM35-C
      - narrowed
      - as_written
-     - stricter
+     - as_written
      - 
      - MEM35-C/2026-10-07/presets
    * - MEM36-C
@@ -1311,9 +1311,9 @@ behind a departure.
      - 
      - P/coincide
    * - MSC05-C
+     - narrowed
      - as_written
      - as_written
-     - stricter
      - 
      - MSC05-C/2026-10-07/presets
    * - MSC06-C
@@ -1327,7 +1327,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - MSC07-C/2026-09-26/disposition
    * - MSC09-C
      - as_written
      - as_written
@@ -1363,13 +1363,13 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - MSC14-C/2026-10-07/disposition
    * - MSC15-C
      - not_enforced
      - not_enforced
      - not_enforced
      - 
-     - 
+     - MSC15-C/2026-09-26/disposition
    * - MSC17-C
      - narrowed
      - as_written
@@ -1381,17 +1381,17 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - MSC18-C/2026-09-26/disposition
    * - MSC19-C
      - not_enforced
      - not_enforced
      - not_enforced
      - 
-     - 
+     - MSC19-C/2026-09-26/disposition
    * - MSC20-C
      - narrowed
      - as_written
-     - stricter
+     - as_written
      - 
      - MSC20-C/2026-10-07/2
    * - MSC21-C
@@ -1411,7 +1411,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - MSC23-C/2026-09-26/disposition
    * - MSC24-C
      - narrowed
      - as_written
@@ -1423,7 +1423,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - MSC25-C/2026-09-26/disposition
    * - MSC30-C
      - as_written
      - as_written
@@ -1435,7 +1435,7 @@ behind a departure.
      - as_written
      - stricter
      - 
-     - MSC32-C/2026-10-09/2, MSC32-C/2026-10-09/8
+     - MSC32-C/2026-10-09/2, MSC32-C/2026-10-09/7, MSC32-C/2026-10-09/8
    * - MSC33-C
      - narrowed
      - as_written
@@ -1467,13 +1467,13 @@ behind a departure.
      - 
      - P/coincide
    * - MSC41-C
-     - narrowed
+     - as_written
      - as_written
      - stricter
      - 
-     - MSC41-C/2026-10-07/1
+     - MSC41-C/2026-10-07/1, MSC41-C/2026-10-07/4
    * - POS01-C
-     - as_written
+     - narrowed
      - as_written
      - stricter
      - 
@@ -1483,7 +1483,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - POS02-C/2026-09-26/disposition
    * - POS04-C
      - as_written
      - as_written
@@ -1501,7 +1501,7 @@ behind a departure.
      - as_written
      - stricter
      - 
-     - POS30-C/2026-10-09/5
+     - POS30-C/2026-10-09/5, POS30-C/2026-10-09/6, POS30-C/2026-10-09/8
    * - POS34-C
      - narrowed
      - as_written
@@ -1537,7 +1537,7 @@ behind a departure.
      - as_written
      - stricter
      - 
-     - POS39-C/2026-10-09/4, POS39-C/2026-10-09/presets
+     - POS39-C/2026-10-09/4, POS39-C/2026-10-09/presets, POS39-C/2026-10-09/6, POS39-C/2026-10-09/7
    * - POS44-C
      - as_written
      - as_written
@@ -1663,13 +1663,13 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - PRE12-C/2026-10-07/disposition
    * - PRE13-C
      - not_enforced
      - not_enforced
      - not_enforced
      - 
-     - 
+     - PRE13-C/2026-10-07/disposition
    * - PRE30-C
      - as_written
      - as_written
@@ -1693,7 +1693,7 @@ behind a departure.
      - as_written
      - stricter
      - 
-     - SIG00-C/2026-10-07/presets
+     - SIG00-C/2026-10-07/presets, SIG00-C/2026-10-07/2
    * - SIG01-C
      - as_written
      - as_written
@@ -1735,13 +1735,13 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - STR00-C/2026-09-26/disposition, STR00-C/2026-09-26/removal
    * - STR01-C
      - not_enforced
      - not_enforced
      - not_enforced
      - 
-     - 
+     - STR01-C/2026-09-26/disposition
    * - STR02-C
      - narrowed
      - as_written
@@ -1753,7 +1753,7 @@ behind a departure.
      - not_enforced
      - not_enforced
      - 
-     - 
+     - STR03-C/2026-10-07/disposition
    * - STR04-C
      - as_written
      - as_written
@@ -1841,7 +1841,7 @@ behind a departure.
    * - WIN02-C
      - narrowed
      - as_written
-     - stricter
+     - as_written
      - 
      - WIN02-C/2026-10-10/4-6, WIN02-C/2026-10-10/3
    * - WIN03-C
@@ -1862,3 +1862,9 @@ behind a departure.
      - as_written
      - 
      - P/coincide
+
+The shipped code of these rules still differs from the ruling above, until the
+rule is rewritten to it:
+
+- ARR38-C: A strippable assert still guards under default only (assert_is_guard); the ruling reads one form in every preset.
+- FLP36-C: A strippable assert still guards under default only (assert_is_guard); the ruling reads one form in every preset.

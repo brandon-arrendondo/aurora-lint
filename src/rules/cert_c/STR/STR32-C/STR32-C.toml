@@ -34,6 +34,6 @@ default = "narrowed"
 strict = "as_written"
 pedantic = "stricter"
 differs = true
-overlap = "STR31-C hands it memcpy sized by strlen (ledger)"
+overlap = "STR31-C hands it memcpy sized by strlen"
 basis = "yes, in all three (STR32-C/2026-10-09/presets)."
 ruling = "STR32-C/2026-10-09/presets"

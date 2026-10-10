@@ -42,3 +42,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "MEM30-C double free; MEM31-C leak"
 basis = "no. Not enforced in any preset."
+ruling = "MEM00-C/2026-10-07/disposition, MEM00-C/2026-10-07/removal"

@@ -32,3 +32,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "EXP12-C and ERR33-C report the checkable remainder"
 basis = "no. Not enforced in any preset."
+ruling = "API04-C/2026-09-26/disposition"

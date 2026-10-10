@@ -30,7 +30,7 @@ related_cwe = ["CWE-250", "CWE-272"]
 [presets]
 default = "narrowed"
 strict = "as_written"
-pedantic = "stricter"
+pedantic = "as_written"
 differs = true
 basis = "yes. Default narrows by named options (WIN02-C/2026-10-10/4-6); pedantic adds three loud declines (WIN02-C/2026-10-10/3, 7, 8)."
 ruling = "WIN02-C/2026-10-10/4-6, WIN02-C/2026-10-10/3"

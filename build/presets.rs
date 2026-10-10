@@ -198,6 +198,26 @@ fn ruling_id(id: &str) -> bool {
 /// Text that names a private task, ruling or ledger id. The TOMLs ship, so
 /// none may carry one.
 fn private_reference(text: &str) -> Option<String> {
+    // A bare number in parentheses or after `#` is a task id by its shape:
+    // `(2267)`, `#2267`.
+    let bytes = text.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        let digits = |from: usize| {
+            bytes[from..]
+                .iter()
+                .take_while(|c| c.is_ascii_digit())
+                .count()
+        };
+        if *b == b'#' && (3..=5).contains(&digits(i + 1)) {
+            return Some(text[i..i + 1 + digits(i + 1)].to_string());
+        }
+        if *b == b'(' {
+            let n = digits(i + 1);
+            if (3..=5).contains(&n) && bytes.get(i + 1 + n) == Some(&b')') {
+                return Some(text[i..i + 2 + n].to_string());
+            }
+        }
+    }
     let words: Vec<&str> = text
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .filter(|w| !w.is_empty())
@@ -411,6 +431,19 @@ pub fn to_rst(table: &BTreeMap<String, Block>) -> String {
             b.ruling.as_deref().unwrap_or("")
         ));
     }
+    let lagging: Vec<(&String, &str)> = table
+        .iter()
+        .filter_map(|(r, b)| b.code_lags.as_deref().map(|l| (r, l)))
+        .collect();
+    if !lagging.is_empty() {
+        out.push_str(
+            "\nThe shipped code of these rules still differs from the ruling above, until the\n\
+             rule is rewritten to it:\n\n",
+        );
+        for (rule, why) in lagging {
+            out.push_str(&format!("- {rule}: {why}\n"));
+        }
+    }
     out
 }
 
@@ -540,9 +573,9 @@ mod tests {
     fn private_ids_are_refused_wherever_prose_goes() {
         let base = "[presets]\ndefault = \"as_written\"\nstrict = \"as_written\"\npedantic = \"as_written\"\n";
         for bad in [
-            "basis = \"see P74\"",
-            "basis = \"task 2269\"",
-            "overlap = \"aurora_lint 2267\"",
+            "basis = \"see P99\"",
+            "basis = \"task 9999\"",
+            "overlap = \"aurora_lint 9999\"",
             "ruling = \"Q8\"",
         ] {
             let p = check("A-C", &format!("{base}{bad}\n"));

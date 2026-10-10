@@ -35,5 +35,7 @@ default = "widened"
 strict = "as_written"
 pedantic = "not_enforced"
 differs = true
+open_family = true
+inferred = "Strict's members plus format-attributed declarations, variadic or va_list forwarders, wrapper macros, and platform members on a declared platform or library (vsyslog, the <err.h> family, GNU error, the Windows _snprintf family, the Curses printw family), resolved by declaration."
 basis = "yes, in all three: default widens the family to macros and wrappers (FIO30-C/2026-10-09/2, FIO30-C/2026-10-09/3), pedantic declines the rule while the family is not well defined (FIO30-C/2026-10-09/2)."
 ruling = "FIO30-C/2026-10-09/2, FIO30-C/2026-10-09/3"

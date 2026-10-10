@@ -61,3 +61,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "ERR33-C (library calls), EXP12-C (ignored results)"
 basis = "no. Not enforced in any preset."
+ruling = "ERR00-C/2026-09-26/disposition, ERR00-C/2026-09-26/removal"

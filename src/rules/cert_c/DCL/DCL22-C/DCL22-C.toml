@@ -48,3 +48,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "SIG31-C owns signal-handler sliver; MSC22-C owns setjmp sliver"
 basis = "no. Not enforced in any preset."
+ruling = "DCL22-C/2026-09-26/disposition, DCL22-C/2026-09-26/removal"

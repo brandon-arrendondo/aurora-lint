@@ -47,3 +47,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "ARR30-C and the listed rules own each form"
 basis = "no. Not enforced in any preset."
+ruling = "ARR00-C/2026-09-26/disposition, ARR00-C/2026-09-26/removal"

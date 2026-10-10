@@ -41,3 +41,4 @@ pedantic = "not_enforced"
 differs = false
 overlap = "INT13-C owns the shift-of-signed dropped form"
 basis = "no. Not enforced in any preset."
+ruling = "INT14-C/2026-10-07/disposition"

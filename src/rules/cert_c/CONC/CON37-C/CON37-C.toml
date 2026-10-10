@@ -22,9 +22,9 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/CON37-C.+Do+not+call+signal%28%29+in+a+multithreaded+program"
 
 [presets]
-default = "as_written"
+default = "narrowed"
 strict = "as_written"
-pedantic = "stricter"
+pedantic = "as_written"
 differs = true
 overlap = "POS44-C split"
 basis = "yes, through the environment: default assumes POSIX, strict and pedantic apply EX1 only when POSIX is declared (CON37-C/2026-10-07/presets)."
