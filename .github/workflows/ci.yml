@@ -148,6 +148,31 @@ jobs:
       - name: cargo test (tui feature)
         run: cargo test --features tui
 
+  # tests/robustness.rs in release: every rule's fixtures scanned together
+  # under every rule (about ten minutes in a debug build, so it is ignored in
+  # the plain `cargo test`), and a larger seeded mutant pass than the default.
+  # The large-and-deep inputs test stays out: it is run by hand, time-boxed.
+  robustness:
+    name: Robustness (release)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Malformed input, mutants and every fixture under every rule
+        env:
+          AURORA_LINT_ROBUSTNESS_MUTANTS: "1500"
+        run: >-
+          cargo test --release --test robustness --
+          --include-ignored --skip large_and_deep_inputs
+
   coverage:
     name: Coverage
     runs-on: ubuntu-24.04

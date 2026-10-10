@@ -555,6 +555,48 @@ For the per-rule counts in the current checkout::
 wiki / local / undeclared split, and without ``--json`` lists the rules with
 no wiki-derived fixture at all.
 
+Malformed and Non-Compiling Input
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+aurora-lint analyses code that does not have to compile, so a missing quote
+or ``*/`` can move string and comment text, UTF-8 included, into positions no
+valid C produces. ``tests/robustness.rs`` scans generated malformed input
+with the real binary and every rule enabled, and fails on any crash,
+step-limit or time-limit failure, and on any exit but 0 or 1 (or 3, when the
+only thing incomplete is a file the input guard was meant to refuse):
+
+- **A fixed table**: unterminated strings, character literals and comments;
+  unbalanced brackets; truncation mid-token, mid-directive and inside a
+  UTF-8 sequence; BOM, CRLF, lone CR and mixed line endings; NUL bytes and
+  invalid UTF-8; very long lines and identifiers; damaged preprocessor
+  directives; stray UTF-8 (combining marks, emoji, bidi and zero-width
+  controls) in identifier, operator, macro-argument, directive, string and
+  comment positions; paths with spaces and non-ASCII names; binary blobs
+  named ``.c``, which must be refused with a reason.
+- **Seeded mutants** of the rules' own fixtures: a quote, ``*/`` or bracket
+  deleted, UTF-8 spliced at a character offset, a cut at a byte offset.
+  ``AURORA_LINT_ROBUSTNESS_SEED`` and ``AURORA_LINT_ROBUSTNESS_MUTANTS``
+  choose the seed and how many; a failure prints both, and keeps every
+  failing input with the recipe that built it under
+  ``target/robustness-failures/``.
+- **Every rule fixture under every rule**, in one scan: a rule's own fixture
+  tests run that rule alone, so they never show one rule crashing on another
+  rule's fixtures, nor what only a many-file scan reaches.
+
+The first two run in every ``cargo test``. The third runs in CI's release
+robustness job, with a larger mutant pass. A fourth, ignored test generates
+inputs too large or too deep for CI (a file over the size limit, 200 MiB of
+random bytes, a 16 MiB line, nesting and operator chains up to a million
+deep); run it by hand with
+``cargo test --release --test robustness -- --ignored``.
+``AURORA_LINT_ROBUSTNESS_BIN`` points the suite at another build, such as a
+Windows ``aurora-lint.exe`` run through WSL on cases written under
+``/mnt/c``.
+
+These sets raise confidence and catch regressions. They cannot show that no
+input crashes or hangs a scan; what slips through is contained and reported
+as an incomplete scan (see :doc:`error-handling`).
+
 What Tests Do NOT Cover
 ~~~~~~~~~~~~~~~~~~~~~~~
 
