@@ -32,9 +32,11 @@
 //! function: a file that defines its own `exit` (or declares one `static`)
 //! drops it from signal 1 ([`library_names_redefined`]), and a callee that
 //! resolves to an object, such as a local function pointer spelled `exit`, is
-//! no call to it ([`calls_noreturn`]). Known limitation: an `extern`
+//! no call to it ([`calls_noreturn`]). Known limitations: an `extern`
 //! definition of a library name in another file is not seen, because the
-//! prescan keeps no cross-file fact for it.
+//! prescan keeps no cross-file fact for it; nor is a `static` declaration of
+//! one that reaches the file only through an included header, since only the
+//! file's own text is read.
 //!
 //! `__attribute__((noreturn))` is proof under neither policy (ADR-0015): it
 //! is a promise the compiler does not check, so a function declared with it
@@ -507,12 +509,26 @@ fn terminating_call_name(stmt: &Node, source: &str) -> Option<String> {
     callee_spelling(&call, source).map(|(_, name)| name)
 }
 
-/// `call`'s callee when it is an identifier, read through parentheses
-/// (`(exit)(1)`), with its spelling. Unresolved: see [`called_function_name`].
-fn callee_spelling<'t>(call: &Node<'t>, source: &str) -> Option<(Node<'t>, String)> {
+/// `call`'s callee when it is an identifier, read through parentheses and a
+/// dereference (`(exit)(1)`, `(*exit)(1)`), with its spelling. Unresolved:
+/// see [`called_function_name`].
+pub fn callee_spelling<'t>(call: &Node<'t>, source: &str) -> Option<(Node<'t>, String)> {
     let mut function = call.child_by_field_name("function")?;
-    while function.kind() == "parenthesized_expression" {
-        function = function.named_child(0)?;
+    // `(exit)(1)` and `(*exit)(1)` both call `exit`: a function designator
+    // dereferenced is the same function. A pointer spelled `exit` is still
+    // rejected by the caller's binding check.
+    loop {
+        function = match function.kind() {
+            "parenthesized_expression" => function.named_child(0)?,
+            "pointer_expression"
+                if function
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "*") =>
+            {
+                function.child_by_field_name("argument")?
+            }
+            _ => break,
+        };
     }
     (function.kind() == "identifier").then(|| {
         (
@@ -551,22 +567,21 @@ pub fn calls_noreturn(call: &Node, source: &str, noreturn_names: &HashSet<String
 /// ([`called_function_name`]) on the standard list, the file does not give
 /// that name its own definition ([`library_names_redefined`]), and, when
 /// `settings` is given, the environment honors the library contract
-/// (`stdlib_noreturn`). `None` is for a fact computed once for every
-/// setting.
+/// ([`is_stdlib_noreturn_name`]: `stdlib_noreturn`, and POSIX for `_exit`).
+/// `None` is for a fact computed once for every setting.
 pub fn calls_stdlib_noreturn(
     call: &Node,
     source: &str,
     settings: Option<&AnalysisSettings>,
 ) -> bool {
-    if settings.is_some_and(|s| !s.flag("stdlib_noreturn")) {
-        return false;
-    }
     let Some((function, name)) = callee_spelling(call, source) else {
         return false;
     };
-    if !is_stdlib_noreturn_function(&name)
-        || crate::analyze::side_effects::designates_object(&function, source)
-    {
+    let on_list = match settings {
+        Some(settings) => is_stdlib_noreturn_name(&name, settings),
+        None => is_stdlib_noreturn_function(&name),
+    };
+    if !on_list || crate::analyze::side_effects::designates_object(&function, source) {
         return false;
     }
     let mut root = *call;
@@ -583,7 +598,9 @@ pub fn calls_stdlib_noreturn(
 /// only if that body is proved to be (the terminating-body inference). A
 /// plain prototype (`void exit(int);`) still declares the library function
 /// and does not count. Only file-scope declarations are read, and no
-/// definition's body is entered, so a call site can afford to ask.
+/// definition's body is entered, so a call site can afford to ask. A
+/// declaration that arrives through an `#include` is not in this file's text
+/// and is not seen.
 pub fn library_names_redefined(root: &Node, source: &str) -> HashSet<String> {
     let mut found = HashSet::new();
     let mut stack = vec![*root];

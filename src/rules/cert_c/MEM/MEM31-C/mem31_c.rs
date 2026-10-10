@@ -1302,7 +1302,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         for child in node.child_nodes() {
             if child.kind() == "call_expression" {
                 if let Some(function) = child.child_by_field_name("function") {
-                    let func_name = ast_utils::get_node_text_owned(&function, source);
+                    // Read through parentheses: `(exit)(1)` calls `exit`.
+                    let func_name = crate::analyze::noreturn::callee_spelling(&child, source)
+                        .map(|(_, name)| name)
+                        .unwrap_or_else(|| ast_utils::get_node_text_owned(&function, source));
                     let upper_name = func_name.to_uppercase();
 
                     // A call that ends the process is not an early
@@ -1314,12 +1317,31 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     // heuristic produced. Checked before the
                     // name test because the terminating callee usually
                     // matches it too.
-                    if crate::analyze::noreturn::is_process_terminating_name(
+                    let terminates = crate::analyze::noreturn::is_process_terminating_name(
                         &func_name,
                         self.noreturn_names,
-                    ) && crate::analyze::noreturn::called_function_name(&child, source).is_some()
+                    );
+                    if terminates
+                        || crate::analyze::noreturn::is_stdlib_noreturn_function(&func_name)
                     {
-                        continue;
+                        let names_function =
+                            crate::analyze::noreturn::called_function_name(&child, source)
+                                .is_some();
+                        if terminates && names_function {
+                            continue;
+                        }
+                        // A pointer or parameter spelled like a terminator, or
+                        // this file's own function by a library name, is an
+                        // ordinary call. It neither ends the process nor is a
+                        // macro hiding a return, so the name heuristic below
+                        // does not apply (ADR-0006).
+                        if !names_function
+                            || !crate::analyze::noreturn::calls_stdlib_noreturn(
+                                &child, source, None,
+                            )
+                        {
+                            continue;
+                        }
                     }
 
                     // Heuristic: macro names containing RETURN, EXIT, or similar might hide early returns
@@ -3504,9 +3526,17 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     }
 
     fn process_call(&mut self, node: &Node, source: &str) {
-        let Some(function) = node.child_by_field_name("function") else {
+        let Some(mut function) = node.child_by_field_name("function") else {
             return;
         };
+        // `(exit)(1)` calls `exit`: the parentheses only keep a function-like
+        // macro of that name from expanding.
+        while function.kind() == "parenthesized_expression" {
+            match function.named_child(0) {
+                Some(inner) => function = inner,
+                None => return,
+            }
+        }
         let func_name = self.callee_name(&function, source);
 
         // Check for signal() registration - may lead to async termination
@@ -3514,13 +3544,27 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             self.signal_registered = true;
         }
 
-        // Check for termination calls that leak memory
+        // Check for termination calls that leak memory. A call that spells
+        // the terminator itself must reach the library's function: a pointer
+        // or parameter of that name, or this file's own definition of it,
+        // returns like any call, and naming it as `exit()` would report a
+        // termination that is not there (ADR-0005, ADR-0006). A macro alias
+        // of one (`#define bail exit`) is still that function.
         if matches!(
             func_name.as_str(),
             "abort" | "exit" | "_Exit" | "_exit" | "quick_exit" | "longjmp" | "siglongjmp"
         ) {
-            self.report_termination_leaks(node, &func_name);
-            return;
+            let spelled_itself = crate::analyze::noreturn::callee_spelling(node, source)
+                .is_some_and(|(_, spelled)| spelled == func_name);
+            let reaches_library = if func_name == "siglongjmp" {
+                crate::analyze::noreturn::called_function_name(node, source).is_some()
+            } else {
+                crate::analyze::noreturn::calls_stdlib_noreturn(node, source, None)
+            };
+            if !spelled_itself || reaches_library {
+                self.report_termination_leaks(node, &func_name);
+                return;
+            }
         }
 
         self.process_rebinding_macro(node, source, &func_name);
