@@ -908,12 +908,9 @@ impl Int33C {
         let noreturn_names = self.file_noreturn_names.borrow();
         query::find_first_descendant(*node, |n| match n.kind() {
             "return_statement" | "break_statement" | "continue_statement" => true,
-            "call_expression" => n
-                .child_by_field_name("function")
-                .filter(|f| f.kind() == "identifier")
-                .is_some_and(|f| {
-                    noreturn_names.contains(ast_utils::get_node_text(&f, source).trim())
-                }),
+            "call_expression" => {
+                crate::analyze::noreturn::calls_noreturn(&n, source, &noreturn_names)
+            }
             _ => false,
         })
         .is_some()

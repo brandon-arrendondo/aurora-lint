@@ -2154,7 +2154,10 @@ fn body_returned_callees(body: &Node, source: &str, text_end: usize) -> Option<H
 /// is a standard library noreturn function
 /// ([`crate::analyze::noreturn::is_stdlib_noreturn_function`]) or a
 /// function-like macro that unconditionally calls one
-/// ([`macro_never_returns`]). This replaced a text search for `exit(` and
+/// ([`macro_never_returns`]). A standard library name counts only where it
+/// names the library's function
+/// ([`crate::analyze::noreturn::calls_stdlib_noreturn`]): not a pointer
+/// spelled `exit`, nor the file's own definition of one. This replaced a text search for `exit(` and
 /// `abort()`, which missed `exit (1)` and matched inside longer names
 /// (`do_exit(1)`, `my_abort()`), took any mention as the call, and counted a
 /// `return` only when a space followed it (ADR-0006). Nodes starting at or
@@ -2175,8 +2178,14 @@ fn check_never_returns(body: &Node, source: &str, end: usize, macro_arms: &Macro
         .filter_map(|stmt| stmt.named_child(0))
         .filter(|e| e.kind() == "call_expression")
         .any(|call| {
-            callee_identifier(&call, source)
-                .is_some_and(|name| never_returns_callee(name, macro_arms, MACRO_CALL_DEPTH))
+            callee_identifier(&call, source).is_some_and(|name| {
+                // A standard library name ends the function only when it
+                // names the library's function here: not a pointer spelled
+                // the same, nor the file's own definition of that name.
+                never_returns_callee(name, macro_arms, MACRO_CALL_DEPTH)
+                    && (!crate::analyze::noreturn::is_stdlib_noreturn_function(name)
+                        || crate::analyze::noreturn::calls_stdlib_noreturn(&call, source, None))
+            })
         });
     terminates
 }

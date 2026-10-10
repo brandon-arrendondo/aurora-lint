@@ -1165,16 +1165,14 @@ impl Api00C {
     fn is_noreturn_call(&self, expr_stmt: &Node, source: &str) -> bool {
         for i in 0..expr_stmt.child_count() {
             if let Some(child) = expr_stmt.child(i) {
-                if child.kind() == "call_expression" {
-                    if let Some(func) = child.child_by_field_name("function") {
-                        let func_name = get_node_text(&func, source);
-                        if crate::analyze::noreturn::is_stdlib_noreturn_name(
-                            func_name,
-                            &self.settings.borrow(),
-                        ) {
-                            return true;
-                        }
-                    }
+                if child.kind() == "call_expression"
+                    && crate::analyze::noreturn::calls_stdlib_noreturn(
+                        &child,
+                        source,
+                        Some(&self.settings.borrow()),
+                    )
+                {
+                    return true;
                 }
             }
         }

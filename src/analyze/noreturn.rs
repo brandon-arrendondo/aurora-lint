@@ -28,6 +28,14 @@
 //!    wrapper is recognized too. This is the only proof the pedantic policy
 //!    accepts for a project function.
 //!
+//! A standard library name counts only where the call names the library's
+//! function: a file that defines its own `exit` (or declares one `static`)
+//! drops it from signal 1 ([`library_names_redefined`]), and a callee that
+//! resolves to an object, such as a local function pointer spelled `exit`, is
+//! no call to it ([`calls_noreturn`]). Known limitation: an `extern`
+//! definition of a library name in another file is not seen, because the
+//! prescan keeps no cross-file fact for it.
+//!
 //! `__attribute__((noreturn))` is proof under neither policy (ADR-0015): it
 //! is a promise the compiler does not check, so a function declared with it
 //! is noreturn here only when its body is verified to be. The same holds for
@@ -231,7 +239,8 @@ pub fn collect_noreturn_function_names(
 /// [`collect_noreturn_function_names`] for `root`. A file's own static is
 /// the function its calls reach, so another file's same-named noreturn
 /// function must not end a path through it; the file's own noreturn helpers
-/// come back through the per-file set.
+/// come back through the per-file set. The same holds for a standard library
+/// name the file gives its own definition ([`library_names_redefined`]).
 pub fn noreturn_names_for_file(
     project: &HashSet<String>,
     root: &Node,
@@ -240,6 +249,7 @@ pub fn noreturn_names_for_file(
 ) -> HashSet<String> {
     let mut own_statics = HashSet::new();
     crate::analyze::prescan::collect_static_function_names(root, source, &mut own_statics);
+    own_statics.extend(library_names_redefined(root, source));
     let mut names: HashSet<String> = project.difference(&own_statics).cloned().collect();
     names.extend(collect_noreturn_function_names(root, source, settings));
     names
@@ -276,8 +286,10 @@ pub fn collect_keyword_noreturn_names(root: &Node, source: &str) -> HashSet<Stri
 /// the signals documented at module level, under each combination of
 /// `trust_noreturn_keyword` and `stdlib_noreturn`.
 pub fn collect_noreturn_names(root: &Node, source: &str) -> NoreturnNames {
+    let redefined = library_names_redefined(root, source);
     let stdlib: HashSet<String> = STDLIB_NORETURN_FUNCTIONS
         .iter()
+        .filter(|s| !redefined.contains(**s))
         .map(|s| s.to_string())
         .collect();
     let declared = collect_keyword_noreturn_names(root, source);
@@ -468,6 +480,9 @@ fn body_unconditionally_terminates(def: &Node, source: &str, names: &HashSet<Str
     let terminates = body.children(&mut cursor).any(|stmt| {
         terminating_call_name(&stmt, source)
             .is_some_and(|callee| is_process_terminating_name(&callee, names))
+            && stmt
+                .child(0)
+                .is_some_and(|call| called_function_name(&call, source).is_some())
     });
     terminates
 }
@@ -479,11 +494,132 @@ fn terminating_call_name(stmt: &Node, source: &str) -> Option<String> {
         return None;
     }
     let call = stmt.child(0).filter(|c| c.kind() == "call_expression")?;
-    let function = call.child_by_field_name("function")?;
-    if function.kind() != "identifier" {
-        return None;
+    callee_spelling(&call, source).map(|(_, name)| name)
+}
+
+/// `call`'s callee when it is an identifier, read through parentheses
+/// (`(exit)(1)`), with its spelling. Unresolved: see [`called_function_name`].
+fn callee_spelling<'t>(call: &Node<'t>, source: &str) -> Option<(Node<'t>, String)> {
+    let mut function = call.child_by_field_name("function")?;
+    while function.kind() == "parenthesized_expression" {
+        function = function.named_child(0)?;
     }
-    Some(get_node_text(&function, source).trim().to_string())
+    (function.kind() == "identifier").then(|| {
+        (
+            function,
+            get_node_text(&function, source).trim().to_string(),
+        )
+    })
+}
+
+/// The function `call` (a `call_expression`) names directly: its callee,
+/// read through parentheses (`(exit)(1)`), when that is an identifier which
+/// does not resolve to an object. A parameter, a local or a file-scope
+/// function pointer that happens to be spelled `exit` calls whatever it
+/// points at, not the function of that name (ADR-0006), so it is `None`.
+///
+/// Resolving a binding walks the enclosing scopes, which is too costly to do
+/// for every call. A caller that only cares about some names checks the
+/// spelling first, as [`calls_noreturn`] does.
+pub fn called_function_name(call: &Node, source: &str) -> Option<String> {
+    let (function, name) = callee_spelling(call, source)?;
+    (!crate::analyze::side_effects::designates_object(&function, source)).then_some(name)
+}
+
+/// Whether `call` (a `call_expression`) calls a function in
+/// `noreturn_names`: the callee is spelled as one, and that spelling names
+/// the function rather than an object ([`called_function_name`]).
+pub fn calls_noreturn(call: &Node, source: &str, noreturn_names: &HashSet<String>) -> bool {
+    callee_spelling(call, source).is_some_and(|(function, name)| {
+        noreturn_names.contains(&name)
+            && !crate::analyze::side_effects::designates_object(&function, source)
+    })
+}
+
+/// Whether `call` (a `call_expression`) calls one of the standard library's
+/// noreturn functions: the callee names a function
+/// ([`called_function_name`]) on the standard list, the file does not give
+/// that name its own definition ([`library_names_redefined`]), and, when
+/// `settings` is given, the environment honors the library contract
+/// (`stdlib_noreturn`). `None` is for a fact computed once for every
+/// setting.
+pub fn calls_stdlib_noreturn(
+    call: &Node,
+    source: &str,
+    settings: Option<&AnalysisSettings>,
+) -> bool {
+    if settings.is_some_and(|s| !s.flag("stdlib_noreturn")) {
+        return false;
+    }
+    let Some((function, name)) = callee_spelling(call, source) else {
+        return false;
+    };
+    if !is_stdlib_noreturn_function(&name)
+        || crate::analyze::side_effects::designates_object(&function, source)
+    {
+        return false;
+    }
+    let mut root = *call;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    !library_names_redefined(&root, source).contains(&name)
+}
+
+/// The standard library noreturn names (`exit`, `abort`, ...) that `root`
+/// gives its own meaning: a function definition by that name, with any
+/// linkage, or a `static` declaration of one. A call in the file then reaches
+/// the project's function rather than the library's, so the name is noreturn
+/// only if that body is proved to be (the terminating-body inference). A
+/// plain prototype (`void exit(int);`) still declares the library function
+/// and does not count. Only file-scope declarations are read, and no
+/// definition's body is entered, so a call site can afford to ask.
+pub fn library_names_redefined(root: &Node, source: &str) -> HashSet<String> {
+    let mut found = HashSet::new();
+    let mut stack = vec![*root];
+    while let Some(node) = stack.pop() {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "function_definition" => {
+                    if let Some(name) = definition_name(&child, source) {
+                        if is_stdlib_noreturn_function(&name) {
+                            found.insert(name);
+                        }
+                    }
+                }
+                "declaration" => {
+                    let mut specs = child.walk();
+                    let is_static = child.children(&mut specs).any(|c| {
+                        c.kind() == "storage_class_specifier"
+                            && get_node_text(&c, source).trim() == "static"
+                    });
+                    if !is_static {
+                        continue;
+                    }
+                    let mut decls = child.walk();
+                    for d in child.children_by_field_name("declarator", &mut decls) {
+                        let d = if d.kind() == "init_declarator" {
+                            d.child_by_field_name("declarator").unwrap_or(d)
+                        } else {
+                            d
+                        };
+                        let name =
+                            crate::utility::cert_c::ast_utils::get_identifier_from_declarator(
+                                &d, source,
+                            );
+                        if crate::utility::cert_c::declarator_utils::declares_function(&d)
+                            && is_stdlib_noreturn_function(&name)
+                        {
+                            found.insert(name);
+                        }
+                    }
+                }
+                _ => stack.push(child),
+            }
+        }
+    }
+    found
 }
 
 /// True if `node` is an `expression_statement` calling one of the C standard
@@ -491,7 +627,11 @@ fn terminating_call_name(stmt: &Node, source: &str) -> Option<String> {
 /// no per-file [`collect_noreturn_function_names`] set to hand; a project's
 /// own noreturn wrappers are not recognised this way.
 pub fn is_stdlib_noreturn_call_statement(node: &Node, source: &str) -> bool {
-    terminating_call_name(node, source).is_some_and(|name| is_stdlib_noreturn_function(&name))
+    node.kind() == "expression_statement"
+        && node
+            .child(0)
+            .filter(|c| c.kind() == "call_expression")
+            .is_some_and(|call| calls_stdlib_noreturn(&call, source, None))
 }
 
 /// True if `node` is an `expression_statement` wrapping a direct call to a
@@ -504,17 +644,9 @@ pub fn is_noreturn_call_statement(
     if node.kind() != "expression_statement" {
         return false;
     }
-    let Some(call) = node.child(0).filter(|c| c.kind() == "call_expression") else {
-        return false;
-    };
-    let Some(function) = call.child_by_field_name("function") else {
-        return false;
-    };
-    if function.kind() != "identifier" {
-        return false;
-    }
-    let name = get_node_text(&function, source).trim();
-    noreturn_names.contains(name)
+    node.child(0)
+        .filter(|c| c.kind() == "call_expression")
+        .is_some_and(|call| calls_noreturn(&call, source, noreturn_names))
 }
 
 /// True if calling `name` ends the process, so memory still held at that
