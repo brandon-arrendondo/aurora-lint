@@ -1639,8 +1639,11 @@ fn check_comma_in_subscript(node: &Node, source: &str) -> Option<RuleViolation> 
     // Check if it matches the pattern of having a comma in the subscript
     // Look for [...,...] pattern
     if let Some(open_bracket) = subscript_text.find('[') {
-        if let Some(close_bracket) = subscript_text.rfind(']') {
-            let inside_brackets = &subscript_text[open_bracket + 1..close_bracket];
+        // Search for the `]` after the `[`: in malformed code (an unterminated
+        // string or comment) a `]` can come before the first `[`.
+        let after_open = &subscript_text[open_bracket + 1..];
+        if let Some(close_bracket) = after_open.rfind(']') {
+            let inside_brackets = &after_open[..close_bracket];
 
             // Check if there's a comma in the subscript content
             if inside_brackets.contains(',') {
