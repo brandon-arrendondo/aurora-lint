@@ -88,13 +88,47 @@ use crate::utility::cert_c::ast_utils::{
 };
 use crate::utility::cert_c::declarator_utils::{
     declares_function, inner_declarator, is_declared_name, object_pointer_declarator,
+    typedef_declarators, TypedefShape,
 };
-use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
+
+/// What a declaration's type resolves to, through object-like macros and
+/// typedefs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BaseType {
+    /// A synchronization primitive: the object IS the synchronization.
+    Lock,
+    /// An atomic type.
+    Atomic,
+    /// Anything else.
+    Other,
+    /// The spelling could not be resolved: a macro or typedef cycle
+    /// (`#define A B` / `#define B A`), or a chain past the resolution cap.
+    Unknown,
+}
+
+impl BaseType {
+    /// One answer for several definitions of a name (the arms of an `#if`).
+    /// Which arm is compiled is unknown, so one that is not a lock or an
+    /// atomic keeps the object; past that, an unresolved arm is unknown.
+    fn join(self, other: BaseType) -> BaseType {
+        use BaseType::*;
+        match (self, other) {
+            (Other, _) | (_, Other) => Other,
+            (Unknown, _) | (_, Unknown) => Unknown,
+            (Lock, _) | (_, Lock) => Lock,
+            (Atomic, Atomic) => Atomic,
+        }
+    }
+}
+
+/// How many names one type spelling may expand through before it is
+/// `BaseType::Unknown`.
+const TYPE_RESOLUTION_CAP: usize = 32;
 
 /// One object CON03-C may report, with the declaration it is reported at.
 struct SharedVar<'a> {
@@ -129,7 +163,8 @@ pub struct Con03C {
     /// object-like macro (`#define my_mutex_t pthread_mutex_t`) is still
     /// recognised as a lock.
     macro_definitions: RefCell<Arc<HashMap<String, Vec<MacroDefinition>>>>,
-    /// The prescan's typedef aliases, for the same question asked of a
+    /// The typedef aliases this file sees, its own definitions winning over
+    /// the project's (`set_visible_types`), for the same question asked of a
     /// typedef name.
     typedef_types: RefCell<Arc<HashMap<String, String>>>,
     /// Typedef names that name a function type (`typedef int (cb_t)(void);`):
@@ -163,6 +198,10 @@ impl CertRule for Con03C {
         *self.function_typedef_names.borrow_mut() = Arc::clone(&context.function_typedef_names);
     }
 
+    fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
+        *self.typedef_types.borrow_mut() = Arc::clone(&types.typedef_types);
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
@@ -172,7 +211,8 @@ impl CertRule for Con03C {
             .borrow_mut()
             .extend(concurrency_roots::reachable_within_file(node, source));
 
-        let shared_vars = self.collect_shared_variables(node, source);
+        let own_typedefs = Self::own_typedef_kinds(node, source);
+        let shared_vars = self.collect_shared_variables(node, source, &own_typedefs);
         let uses = Self::identifier_uses_by_function(node, source);
 
         // Check each shared variable for proper synchronization
@@ -283,7 +323,12 @@ impl Con03C {
     /// Collect all global and static variables that could be shared across
     /// threads: every declarator of every such declaration, with or without
     /// an initializer, so `static int a, b;` yields both `a` and `b`.
-    fn collect_shared_variables<'a>(&self, node: &Node<'a>, source: &str) -> Vec<SharedVar<'a>> {
+    fn collect_shared_variables<'a>(
+        &self,
+        node: &Node<'a>,
+        source: &str,
+        own_typedefs: &HashMap<String, bool>,
+    ) -> Vec<SharedVar<'a>> {
         let mut shared_vars: Vec<SharedVar<'a>> = Vec::new();
         // (scope, name) -> index in `shared_vars`: one object per name per
         // scope. The scope is `None` at file scope, else the block's id.
@@ -303,11 +348,16 @@ impl Con03C {
                 continue;
             }
 
-            // Synchronization primitives ARE the synchronization — don't flag them
-            let decl_text = get_node_text(&decl_node, source);
-            if self.is_synchronization_type(&decl_text) || self.declares_lock(&decl_node, source) {
+            // Synchronization primitives ARE the synchronization — don't flag
+            // them, nor a pointer to one, which is a handle to it. A type
+            // whose spelling cannot be resolved names an unknown object:
+            // stay silent rather than guess (ADR-0006).
+            let base = self.base_type(&decl_node, source);
+            if matches!(base, BaseType::Lock | BaseType::Unknown) {
                 continue;
             }
+            let base_atomic =
+                base == BaseType::Atomic || self.has_type_qualifier(&decl_node, source, "_Atomic");
 
             // Thread-local storage gives each thread its own object: nothing
             // is shared.
@@ -327,7 +377,6 @@ impl Con03C {
             }
 
             let base_volatile = self.has_type_qualifier(&decl_node, source, "volatile");
-            let is_atomic = self.has_atomic_type(&decl_node, source);
             let is_extern = self.has_storage_class(&decl_node, source, "extern");
             let block = Self::enclosing_block(&decl_node);
             let file_scope = block.is_none();
@@ -347,7 +396,12 @@ impl Con03C {
                 // A function cannot be initialized, so `= NULL` settles it.
                 if declares_function(&declarator)
                     || (!initialized
-                        && self.declares_function_through_typedef(&decl_node, &declarator, source))
+                        && self.declares_function_through_typedef(
+                            &decl_node,
+                            &declarator,
+                            source,
+                            own_typedefs,
+                        ))
                 {
                     continue;
                 }
@@ -370,9 +424,12 @@ impl Con03C {
                 }
                 // The object's own qualifiers: for a pointer, those after its
                 // `*` (`int *volatile p`), never the pointee's (`volatile int *p`).
-                let is_volatile = match object_pointer_declarator(&declarator) {
-                    Some(ptr) => self.has_type_qualifier(&ptr, source, "volatile"),
-                    None => base_volatile,
+                let (is_volatile, is_atomic) = match object_pointer_declarator(&declarator) {
+                    Some(ptr) => (
+                        self.has_type_qualifier(&ptr, source, "volatile"),
+                        self.has_type_qualifier(&ptr, source, "_Atomic"),
+                    ),
+                    None => (base_volatile, base_atomic),
                 };
                 let var = SharedVar {
                     name,
@@ -419,6 +476,23 @@ impl Con03C {
         None
     }
 
+    /// Every typedef name this file defines, and whether a definition of it
+    /// names a function type (`typedef int (handler)(void);`). The file's own
+    /// definition is the one in scope, so it decides over the project's
+    /// (ADR-0006); the project's answers for a name the file only receives
+    /// through a header.
+    fn own_typedef_kinds(root: &Node, source: &str) -> HashMap<String, bool> {
+        let mut kinds: HashMap<String, bool> = HashMap::new();
+        for def in query::find_descendants_of_kind(*root, "type_definition") {
+            for declarator in typedef_declarators(&def) {
+                if let Some(name) = TypedefShape::of(&declarator, source).name {
+                    *kinds.entry(name).or_default() |= declares_function(&declarator);
+                }
+            }
+        }
+        kinds
+    }
+
     /// Whether `declarator` declares a function because the declaration's
     /// type is a typedef for a function type and the name is bare:
     /// `static handler_fn on_read;` declares a function, while
@@ -428,16 +502,20 @@ impl Con03C {
         decl: &Node,
         declarator: &Node,
         source: &str,
+        own_typedefs: &HashMap<String, bool>,
     ) -> bool {
         let Some(ty) = decl.child_by_field_name("type") else {
             return false;
         };
-        if ty.kind() != "type_identifier"
-            || !self
-                .function_typedef_names
-                .borrow()
-                .contains(get_node_text(&ty, source))
-        {
+        if ty.kind() != "type_identifier" {
+            return false;
+        }
+        let name = get_node_text(&ty, source);
+        let is_function_type = match own_typedefs.get(name) {
+            Some(&own) => own,
+            None => self.function_typedef_names.borrow().contains(name),
+        };
+        if !is_function_type {
             return false;
         }
         let mut d = *declarator;
@@ -469,50 +547,78 @@ impl Con03C {
         found
     }
 
-    /// Whether the declaration's type names a lock through an object-like
-    /// macro or a typedef the prescan saw: every definition of it, in every
-    /// `#if` arm, resolves to a synchronization or atomic type. One arm that
-    /// does not keeps the declaration, since which arm is compiled is unknown.
-    fn declares_lock(&self, decl: &Node, source: &str) -> bool {
+    /// What the declaration's type is: its specifier, resolved through
+    /// object-like macros and the typedefs this file sees, so a lock spelled
+    /// `#define my_mutex_t pthread_mutex_t` is still a lock. Only the type is
+    /// read, never the declarators: in `static int my_atomic_count, plain;`
+    /// neither name says anything about the type.
+    fn base_type(&self, decl: &Node, source: &str) -> BaseType {
         let Some(ty) = decl.child_by_field_name("type") else {
-            return false;
+            return BaseType::Other;
         };
-        if ty.kind() != "type_identifier" {
-            return false;
+        // A struct's members are not its type: `struct { sem_t s; int n; }`
+        // is not a semaphore. Only the tag names it.
+        let spelling = match ty.kind() {
+            "struct_specifier" | "union_specifier" => match ty.child_by_field_name("name") {
+                Some(tag) => format!(
+                    "{} {}",
+                    ty.kind().trim_end_matches("_specifier"),
+                    get_node_text(&tag, source)
+                ),
+                None => return BaseType::Other,
+            },
+            _ => get_node_text(&ty, source).to_string(),
+        };
+        let mut budget = TYPE_RESOLUTION_CAP;
+        self.resolve_spelling(&spelling, &mut Vec::new(), &mut budget)
+    }
+
+    /// Resolve a type spelling. A single name is expanded through every
+    /// definition of it as an object-like macro or a typedef; anything else
+    /// (`struct k_mutex`, `_Atomic int`) is classified as written.
+    fn resolve_spelling(
+        &self,
+        text: &str,
+        stack: &mut Vec<String>,
+        budget: &mut usize,
+    ) -> BaseType {
+        let names: Vec<&str> = type_tokens(text)
+            .filter(|t| !matches!(*t, "const" | "volatile" | "static" | "extern"))
+            .collect();
+        let [name] = names[..] else {
+            return classify_spelling(text);
+        };
+        if stack.iter().any(|s| s == name) || *budget == 0 {
+            return BaseType::Unknown;
         }
-        let macros = self.macro_definitions.borrow();
-        let typedefs = self.typedef_types.borrow();
-        let mut pending = vec![get_node_text(&ty, source).to_string()];
-        let mut seen = HashSet::new();
-        let mut resolved_any = false;
-        while let Some(name) = pending.pop() {
-            if !seen.insert(name.clone()) || seen.len() > 32 {
-                continue;
-            }
-            if let Some(defs) = macros.get(&name) {
-                for def in defs {
-                    match def {
-                        MacroDefinition::Object { body } => pending.push(body.trim().to_string()),
-                        _ => return false,
+        *budget -= 1;
+        let definitions: Vec<String> = {
+            let macros = self.macro_definitions.borrow();
+            match macros.get(name) {
+                Some(defs) => {
+                    let mut bodies = Vec::new();
+                    for def in defs {
+                        match def {
+                            MacroDefinition::Object { body } => bodies.push(body.clone()),
+                            _ => return BaseType::Other,
+                        }
                     }
+                    bodies
                 }
-                resolved_any = true;
-                continue;
+                None => match self.typedef_types.borrow().get(name) {
+                    Some(aliased) => vec![aliased.clone()],
+                    None => return classify_spelling(name),
+                },
             }
-            let terminal = resolve_typedef_chain(&name, &typedefs);
-            if terminal != name {
-                resolved_any = true;
-                pending.push(terminal);
-                continue;
-            }
-            let is_lock = self.is_synchronization_type(&name)
-                || name.contains("atomic_")
-                || name.contains("_Atomic");
-            if !is_lock {
-                return false;
-            }
-        }
-        resolved_any
+        };
+        stack.push(name.to_string());
+        let resolved = definitions
+            .iter()
+            .map(|d| self.resolve_spelling(d, stack, budget))
+            .reduce(BaseType::join)
+            .unwrap_or(BaseType::Other);
+        stack.pop();
+        resolved
     }
 
     fn has_storage_class(&self, node: &Node, source: &str, class: &str) -> bool {
@@ -541,48 +647,6 @@ impl Con03C {
             }
         }
         false
-    }
-
-    fn has_atomic_type(&self, node: &Node, source: &str) -> bool {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                let text = get_node_text(&child, source);
-                if text.contains("atomic_") || text.contains("_Atomic") {
-                    return true;
-                }
-                // Check recursively in type specifiers
-                if child.kind() == "type_specifier" && self.has_atomic_type(&child, source) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    fn is_synchronization_type(&self, decl_text: &str) -> bool {
-        let sync_types = [
-            "pthread_mutex_t",
-            "pthread_rwlock_t",
-            "pthread_cond_t",
-            "pthread_spinlock_t",
-            "pthread_barrier_t",
-            "mtx_t",
-            "cnd_t",
-            "sem_t",
-            // Windows' locks, which a portability layer often reaches through
-            // its own macro or typedef (`declares_lock` resolves those).
-            "CRITICAL_SECTION",
-            "SRWLOCK",
-            // Zephyr RTOS declares its primitives as bare structs, never
-            // through a typedef; matching `struct k_mutex` rather than
-            // `k_mutex` keeps a field named `mask_sem` or a `k_mutex_lock`
-            // call in the declaration text from counting.
-            "struct k_mutex",
-            "struct k_spinlock",
-            "struct k_sem",
-            "struct k_condvar",
-        ];
-        sync_types.iter().any(|t| decl_text.contains(t))
     }
 
     fn is_global_scope(&self, node: &Node) -> bool {
@@ -621,5 +685,48 @@ impl Con03C {
                 String::new()
             }
         }
+    }
+}
+
+/// The identifier-like tokens of a type spelling.
+fn type_tokens(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|t| !t.is_empty())
+}
+
+/// What a type spelling names, matched by whole token so a name that merely
+/// contains one (`sem_t_bytes`, `mask_sem`) does not count.
+fn classify_spelling(text: &str) -> BaseType {
+    const LOCKS: [&str; 10] = [
+        "pthread_mutex_t",
+        "pthread_rwlock_t",
+        "pthread_cond_t",
+        "pthread_spinlock_t",
+        "pthread_barrier_t",
+        "mtx_t",
+        "cnd_t",
+        "sem_t",
+        // Windows' locks, which a portability layer often reaches through
+        // its own macro or typedef.
+        "CRITICAL_SECTION",
+        "SRWLOCK",
+    ];
+    // Zephyr RTOS declares its primitives as bare structs, never through a
+    // typedef, so only `struct k_mutex` counts, not a `k_mutex` of any other kind.
+    const ZEPHYR_STRUCTS: [&str; 4] = ["k_mutex", "k_spinlock", "k_sem", "k_condvar"];
+    let tokens: Vec<&str> = type_tokens(text).collect();
+    let is_lock = tokens.iter().any(|t| LOCKS.contains(t))
+        || tokens
+            .windows(2)
+            .any(|w| w[0] == "struct" && ZEPHYR_STRUCTS.contains(&w[1]));
+    if is_lock {
+        BaseType::Lock
+    } else if tokens
+        .iter()
+        .any(|t| *t == "_Atomic" || t.starts_with("atomic_"))
+    {
+        BaseType::Atomic
+    } else {
+        BaseType::Other
     }
 }

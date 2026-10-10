@@ -6811,3 +6811,52 @@ fn detect_relevance_refuses_settings_a_scan_would_refuse() {
     assert!(stderr.contains("char_bits"), "{stderr}");
     assert!(!manifest.exists(), "no manifest should be written");
 }
+
+// ─── CON03-C: a file's own typedef decides (ADR-0006) ───────────────────────
+
+fn manifest_con03() -> PathBuf {
+    fixtures().join("manifest_con03.toml")
+}
+
+/// Two files give `slot_t` and `handler_t` different meanings: an int in
+/// `counter.c`, a mutex and a function type in `lock.c`. The project-wide
+/// tables keep one definition per name, so whichever file the prescan read
+/// last decided for both. Each file's own definition is the one in scope.
+#[test]
+fn con03_resolves_a_typedef_by_the_files_own_definition() {
+    let project = fixtures().join("crossfile_con03_typedefs");
+    let findings = |file: &str| -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.json");
+        let (code, _, stderr) = run_aurora_lint(&[
+            project.join(file).to_str().unwrap(),
+            "-m",
+            manifest_con03().to_str().unwrap(),
+            "-d",
+            project.to_str().unwrap(),
+            "-e",
+            out.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        let content = std::fs::read_to_string(&out).unwrap();
+        let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+        violations
+            .iter()
+            .map(|v| v["message"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let counter = findings("counter.c");
+    assert_eq!(counter.len(), 2, "both ints are shared: {counter:?}");
+    assert!(
+        counter.iter().any(|m| m.contains("'counter'")),
+        "{counter:?}"
+    );
+    assert!(counter.iter().any(|m| m.contains("'ticks'")), "{counter:?}");
+
+    let lock = findings("lock.c");
+    assert!(
+        lock.is_empty(),
+        "a mutex and a function are not shared variables: {lock:?}"
+    );
+}
