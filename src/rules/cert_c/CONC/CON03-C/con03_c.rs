@@ -86,7 +86,9 @@ use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
     declaration_has_storage_class, get_node_text, resolve_identifier_binding_in, IdentifierBinding,
 };
-use crate::utility::cert_c::declarator_utils::{declares_function, inner_declarator};
+use crate::utility::cert_c::declarator_utils::{
+    declares_function, inner_declarator, is_declared_name, object_pointer_declarator,
+};
 use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -243,6 +245,11 @@ impl Con03C {
                 continue;
             };
             for id in query::find_descendants_of_kind(body, "identifier") {
+                // A declaration's own name is not a use: a block-scope
+                // `static int s;` would otherwise count as used by itself.
+                if is_declared_name(&id) {
+                    continue;
+                }
                 uses.entry(get_node_text(&id, source))
                     .or_default()
                     .push((name.to_string(), id));
@@ -319,7 +326,7 @@ impl Con03C {
                 continue;
             }
 
-            let is_volatile = self.has_type_qualifier(&decl_node, source, "volatile");
+            let base_volatile = self.has_type_qualifier(&decl_node, source, "volatile");
             let is_atomic = self.has_atomic_type(&decl_node, source);
             let is_extern = self.has_storage_class(&decl_node, source, "extern");
             let block = Self::enclosing_block(&decl_node);
@@ -353,6 +360,20 @@ impl Con03C {
                 if name.is_empty() {
                     continue;
                 }
+                // A pointer declared `*const` cannot change after its
+                // initializer: there is nothing to race on, whatever it
+                // points at (`volatile struct regs *const r`).
+                if object_pointer_declarator(&declarator)
+                    .is_some_and(|ptr| self.has_type_qualifier(&ptr, source, "const"))
+                {
+                    continue;
+                }
+                // The object's own qualifiers: for a pointer, those after its
+                // `*` (`int *volatile p`), never the pointee's (`volatile int *p`).
+                let is_volatile = match object_pointer_declarator(&declarator) {
+                    Some(ptr) => self.has_type_qualifier(&ptr, source, "volatile"),
+                    None => base_volatile,
+                };
                 let var = SharedVar {
                     name,
                     decl: decl_node,
