@@ -318,6 +318,35 @@ realworld-run`` or ``bench juliet`` on the host) ``-hostenv``; against
 another header tree ``-hdr-<id>``, or ``-hdr-host`` for the host's own
 headers. Only the plain id is a benchmark run.
 
+``container-run`` builds aurora-lint inside the image, into a podman volume
+named ``aurora-bench-target-<pin>-<checkout>``: one per environment pin
+*and* per checkout path. Every checkout is mounted at the same ``/work`` and
+cargo judges a build fresh by source mtimes, so a target shared between
+checkouts could hand one checkout another's binary. A separate volume per
+checkout prevents that. The cost is that the first run from a new checkout
+path is a cold release build (a few minutes), and each throwaway A/B
+worktree gets a fresh volume holding a full release target (most of a
+gigabyte). Volumes are never removed for you. Those of deleted worktrees,
+and the older per-pin-only ``aurora-bench-target-<pin>`` volumes, are left
+behind; list and remove them once no run is using them:
+
+.. code-block:: bash
+
+    podman volume ls --filter name=aurora-bench-target-
+    podman volume rm aurora-bench-target-<pin>-<checkout>
+
+The build also records the checkout's commit in the binary's ``--version``,
+and before scanning ``container-run`` checks it (``python -m bench.container
+check-binary``). If the binary does not report exactly the commit the run
+will be labelled with, the run stops with exit status 2 and a line ending
+``refusing to scan``, and nothing is scanned or recorded. The line names the
+commit the binary reports, if any. A build given the commit always
+recompiles for it, so this means the volume holds a binary the build did
+not replace. Remove that checkout's volume and run again. If the refusal
+persists, the build is not embedding the commit it is given; report it
+rather than working around it, because a run past this check would measure
+an unknown binary under this commit's run id.
+
 Both runners refuse to scan a benchmark whose dependency set is missing or
 differs from its pin. On the host, fetch a set with ``python -m bench.deps
 fetch <name>`` (``data/benchmark_deps/<name>.json``; it needs Python 3 and
