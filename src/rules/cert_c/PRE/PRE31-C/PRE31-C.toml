@@ -30,3 +30,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/PRE31-C.+Avoid+side+effects+in+arguments+to+unsafe+macros"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+options = ["pre31_unknown_call_pure"]
+basis = "yes, at default (PRE31-C/2026-09-27/unproven-calls). Pedantic equals strict (P/open-cells)."
+ruling = "PRE31-C/2026-09-27/unproven-calls, P/open-cells"

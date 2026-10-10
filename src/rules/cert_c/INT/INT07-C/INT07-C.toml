@@ -29,3 +29,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT07-C.+Use+only+explicitly+signed+or+unsigned+char+type+for+numeric+values"
 cwe = []
 related_cwe = ["CWE-682"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+overlap = "INT07-C owns plain char in arithmetic/bit operations (STR00-C's removal waits on it)"
+basis = "yes, at default only (INT07-C/2026-10-09/presets). Pedantic equals strict."
+ruling = "INT07-C/2026-10-09/presets"

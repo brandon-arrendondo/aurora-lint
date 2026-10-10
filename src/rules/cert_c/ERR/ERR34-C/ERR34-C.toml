@@ -43,3 +43,12 @@ wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ERR34-C.+Detect+errors+whe
 cwe = ["CWE-391", "CWE-464"]
 related_cwe = ["CWE-676", "CWE-758"]
 related = ["ERR07-C"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "ERR33-C/ERR30-C own unchecked strto*"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

@@ -29,3 +29,11 @@ enabled = true
 [references]
 wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc05-c"
 cwe = []
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+basis = "yes, in the environment each preset assumes (MSC05-C/2026-10-07/presets)."
+ruling = "MSC05-C/2026-10-07/presets"

@@ -41,3 +41,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/WIN01-C.+Do+not+forcibly+terminate+execution"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+basis = "yes, at default only, through one named option (WIN01-C/2026-10-10/3). Strict and pedantic coincide (P/coincide)."
+ruling = "WIN01-C/2026-10-10/3, P/coincide"

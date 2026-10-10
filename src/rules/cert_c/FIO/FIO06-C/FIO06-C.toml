@@ -29,3 +29,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO06-C.+Create+files+with+appropriate+access+permissions"
 cwe = []
 related_cwe = ["CWE-276", "CWE-279", "CWE-732"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "EXP37-C reports the open O_CREAT-without-mode half"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

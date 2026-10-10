@@ -40,3 +40,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/DCL06-C.+Use+meaningful+symbolic+constants+to+represent+literal+values"
 cwe = []
 related_cwe = ["CWE-547"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+basis = "yes, at default (DCL06-C/2026-10-07/option-exempt-set). Pedantic equals strict (P/open-cells)."
+ruling = "DCL06-C/2026-10-07/option-exempt-set, P/open-cells"

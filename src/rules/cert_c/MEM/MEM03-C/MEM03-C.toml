@@ -30,3 +30,12 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM03-C.+Clear+sensitive+information+stored+in+reusable+resources"
 cwe = ["CWE-226", "CWE-244"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "MEM06-C shares one sensitivity contract (E8); MSC06-C for automatic objects"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

@@ -23,3 +23,11 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MSC07-C.+Detect+and+remove+dead+code"
 cwe = ["CWE-561"]
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "MSC12-C"
+basis = "no. Not enforced in any preset."

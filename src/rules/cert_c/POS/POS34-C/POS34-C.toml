@@ -32,3 +32,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS34-C.+Do+not+call+putenv%28%29+with+a+pointer+to+an+automatic+variable+as+the+argument"
 cwe = []
 related_cwe = ["CWE-562", "CWE-686"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+basis = "only through the named options of POS34-C/2026-10-07/options; strict and pedantic report as written."
+ruling = "POS34-C/2026-10-07/options"

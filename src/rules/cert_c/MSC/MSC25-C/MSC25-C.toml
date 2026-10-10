@@ -20,3 +20,11 @@ enabled = false
 [references]
 wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc25-c"
 cwe = []
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "MSC42-C (CWE-327) ships the weak-algorithm detector"
+basis = "no. Not enforced in any preset."

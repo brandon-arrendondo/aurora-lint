@@ -23,3 +23,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/CON30-C.+Clean+up+thread-specific+storage"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "E10 twin sharing: C11 tss and POSIX keys"
+basis = "no. One form in every preset (P/coincide)."
+ruling = "P/coincide"

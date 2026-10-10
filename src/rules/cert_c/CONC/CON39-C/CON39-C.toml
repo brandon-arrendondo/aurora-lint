@@ -30,3 +30,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/CON39-C.+Do+not+join+or+detach+a+thread+that+was+previously+joined+or+detached"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+basis = "no (P/coincide)."
+ruling = "P/coincide"

@@ -30,3 +30,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MSC33-C.+Do+not+pass+invalid+data+to+the+asctime%28%29+function"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "MSC24-C and CON33-C also fire on every call; pedantic ban reported once under MSC24-C"
+basis = "yes. Default credits `localtime`/`gmtime` results within a declared era and named validators (MSC33-C/2026-10-07/1). Pedantic adds `ctime` under the range test (MSC33-C/2026-10-07/3)."
+ruling = "MSC33-C/2026-10-07/1, MSC33-C/2026-10-07/3"

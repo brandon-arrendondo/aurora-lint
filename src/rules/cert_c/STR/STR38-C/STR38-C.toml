@@ -30,3 +30,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/STR38-C.+Do+not+confuse+narrow+and+wide+character+strings+and+functions"
 cwe = []
 related_cwe = ["CWE-121", "CWE-122"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+basis = "no. All three presets report the same findings; pedantic adds loud declines on five edges the text leaves open (STR38-C/2026-10-10/3-7)."
+ruling = "STR38-C/2026-10-10/3-7"

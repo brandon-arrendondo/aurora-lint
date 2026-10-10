@@ -40,3 +40,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ERR30-C.+Take+care+when+reading+errno"
 cwe = []
 related_cwe = ["CWE-456"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "ERR34-C/ERR33-C own unchecked strto* returns"
+basis = "yes. Default credits a POSIX `errno`-preserving form by a named option (ERR30-C/2026-10-09/presets); pedantic drops library trust without a declared C library and adds byte input/output functions and reads after functions that set no `errno` (ERR30-C/2026-10-09/3, ERR30-C/2026-10-09/presets)."
+ruling = "ERR30-C/2026-10-09/presets, ERR30-C/2026-10-09/3"

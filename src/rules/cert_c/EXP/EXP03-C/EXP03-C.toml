@@ -29,3 +29,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP03-C.+Do+not+assume+the+size+of+a+structure+is+the+sum+of+the+sizes+of+its+members"
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "MEM35-C owns undersized allocation"
+basis = "no. Not enforced in any preset."

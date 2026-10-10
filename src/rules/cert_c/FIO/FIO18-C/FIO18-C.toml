@@ -33,3 +33,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO18-C.+Never+expect+fwrite%28%29+to+terminate+the+writing+process+at+a+null+character"
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "ARR38-C"
+basis = "no. Not enforced in any preset."

@@ -29,3 +29,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/DCL41-C.+Do+not+declare+variables+inside+a+switch+statement+before+the+first+case+label"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "MSC12-C owns null statement; EXP33-C reports post-label initializer read"
+basis = "yes. Default narrows by declaration kind and has a `goto` option (DCL41-C/2026-10-07/presets, DCL41-C/2026-10-07/3). Pedantic equals strict except for the C23 post-label initializer, an edition gate (DCL41-C/2026-10-07/4)."
+ruling = "DCL41-C/2026-10-07/presets, DCL41-C/2026-10-07/3, DCL41-C/2026-10-07/4"

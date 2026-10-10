@@ -34,3 +34,10 @@ wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-stan
 cwe = []
 related_cwe = ["CWE-758"]
 related = ["INT13-C"]
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+basis = "no. Not enforced in any preset."

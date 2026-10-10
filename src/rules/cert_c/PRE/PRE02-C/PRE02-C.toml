@@ -23,3 +23,11 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/PRE02-C.+Macro+replacement+lists+should+be+parenthesized"
 related = ["PRE00-C", "PRE01-C", "PRE10-C", "PRE12-C"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+basis = "yes, at default only, by one named option (PRE02-C/2026-10-10/4). Pedantic equals strict (PRE02-C/2026-10-10/9)."
+ruling = "PRE02-C/2026-10-10/4, PRE02-C/2026-10-10/9"

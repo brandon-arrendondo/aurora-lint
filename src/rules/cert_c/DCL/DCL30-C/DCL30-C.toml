@@ -31,3 +31,12 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/DCL30-C.+Declare+objects+with+appropriate+storage+durations"
 cwe = ["CWE-562"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "DCL21-C folds in (compound literals)"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

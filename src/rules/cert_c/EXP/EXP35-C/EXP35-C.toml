@@ -43,3 +43,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP35-C.+Do+not+modify+objects+with+temporary+lifetime"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+basis = "yes, at default (EXP35-C/2026-10-07/presets). Pedantic equals strict (P/open-cells)."
+ruling = "EXP35-C/2026-10-07/presets, P/open-cells"

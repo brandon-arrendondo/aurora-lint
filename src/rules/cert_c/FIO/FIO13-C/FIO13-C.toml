@@ -35,3 +35,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO13-C.+Never+push+back+anything+other+than+one+read+character"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+overlap = "shares per-stream state machine with FIO39-C"
+basis = "yes, at default only (FIO13-C/2026-10-07/option). Strict and pedantic coincide (P/coincide)."
+ruling = "FIO13-C/2026-10-07/option, P/coincide"

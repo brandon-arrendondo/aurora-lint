@@ -29,3 +29,12 @@ enabled = true
 [references]
 wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc22-c"
 cwe = []
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "DCL22-C setjmp part carried here"
+basis = "no (P/coincide)."
+ruling = "P/coincide"

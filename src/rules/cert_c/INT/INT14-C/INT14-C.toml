@@ -33,3 +33,11 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT14-C.+Avoid+performing+bitwise+and+arithmetic+operations+on+the+same+data"
 related = ["INT13-C", "INT34-C"]
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "INT13-C owns the shift-of-signed dropped form"
+basis = "no. Not enforced in any preset."

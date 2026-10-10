@@ -33,3 +33,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO24-C.+Do+not+open+a+file+that+is+already+open"
 cwe = []
 related_cwe = ["CWE-362", "CWE-675"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "FIO45-C owns the race; FIO46-C took the double-close form"
+basis = "yes, in the environment each preset assumes (FIO24-C/2026-10-07/presets)."
+ruling = "FIO24-C/2026-10-07/presets"

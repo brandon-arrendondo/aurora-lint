@@ -29,3 +29,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/SIG34-C.+Do+not+call+signal%28%29+from+within+interruptible+signal+handlers"
 cwe = []
 related_cwe = ["CWE-479"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

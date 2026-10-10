@@ -23,3 +23,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS30-C.+Use+the+readlink%28%29+function+properly"
 cwe = []
 related_cwe = ["CWE-170"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+basis = "yes. Default runs with POSIX assumed, works within one function and credits pre-zeroed buffers; `readlinkat` is default and pedantic only; pedantic adds closed-form tests (POS30-C/2026-10-09/5, /6, /8)."
+ruling = "POS30-C/2026-10-09/5"

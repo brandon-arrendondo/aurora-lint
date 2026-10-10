@@ -22,3 +22,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ERR01-C.+Use+ferror%28%29+rather+than+errno+to+check+for+FILE+stream+errors"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "ERR30-C could absorb it (Svoboda 2009 alternative)"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

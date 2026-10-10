@@ -26,3 +26,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/CON07-C.+Ensure+that+compound+operations+on+shared+variables+are+atomic"
 cwe = ["CWE-366"]
 related_cwe = ["CWE-667"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "overlaps CON08-C on multi-object shape (declared gap)"
+basis = "no. One form in every preset (P/coincide)."
+ruling = "P/coincide"

@@ -32,3 +32,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM30-C.+Do+not+access+freed+memory"
 cwe = ["CWE-415", "CWE-416"]
 related_cwe = ["CWE-666", "CWE-672", "CWE-758"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+overlap = "owns every use and second release; MEM01-C only the reset; MEM31-C double free moves here; DCL30-C stack escape"
+basis = "yes, at default only: value-only uses of a released pointer (MEM30-C/2026-10-07/presets). Pedantic equals strict."
+ruling = "MEM30-C/2026-10-07/presets"

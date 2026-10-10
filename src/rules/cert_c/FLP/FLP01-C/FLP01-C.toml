@@ -32,3 +32,10 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FLP01-C.+Take+care+in+rearranging+floating-point+expressions"
 cwe = []
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+basis = "no; not enforced in any preset."

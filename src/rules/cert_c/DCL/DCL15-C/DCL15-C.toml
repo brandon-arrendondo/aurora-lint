@@ -27,3 +27,12 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/DCL15-C.+Declare+file-scope+objects+or+functions+that+do+not+need+external+linkage+as+static"
 related = ["DCL19-C"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "co-fires with DCL19-C part (iii) (overlap policy)"
+basis = "no (P/coincide)."
+ruling = "P/coincide"

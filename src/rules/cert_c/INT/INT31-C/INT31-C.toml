@@ -41,3 +41,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT31-C.+Ensure+that+integer+conversions+do+not+result+in+lost+or+misinterpreted+data"
 cwe = ["CWE-190", "CWE-191", "CWE-194", "CWE-195", "CWE-196", "CWE-197"]
 related_cwe = ["CWE-192", "CWE-681", "CWE-704"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "INT30-C wraps, INT32-C overflow, STR34-C/STR37-C char forms, INT02-C comparisons, FLP34-C float-to-int; MEM35-C may fire"
+basis = "yes, in every column: default narrows by provenance and proof, strict reports unproven conversions under the data model, pedantic judges at ISO C's minimum widths (INT31-C/2026-10-07/presets)."
+ruling = "INT31-C/2026-10-07/presets"

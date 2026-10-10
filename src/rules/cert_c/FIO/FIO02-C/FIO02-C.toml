@@ -31,3 +31,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO02-C.+Canonicalize+path+names+originating+from+tainted+sources"
 cwe = []
 related_cwe = ["CWE-22", "CWE-23", "CWE-28", "CWE-40", "CWE-41", "CWE-59", "CWE-73"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "FIO45-C owns the race"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

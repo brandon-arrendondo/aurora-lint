@@ -40,3 +40,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS37-C.+Ensure+that+privilege+relinquishment+is+successful"
 cwe = []
 related_cwe = ["CWE-273"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "POS36-C owns order; POS54-C owns unchecked set*uid returns"
+basis = "yes. Default narrows by a named option (POS37-C/2026-10-09/4); pedantic verifies more IDs (POS37-C/2026-10-09/presets)."
+ruling = "POS37-C/2026-10-09/4, POS37-C/2026-10-09/presets"

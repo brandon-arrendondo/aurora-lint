@@ -24,3 +24,12 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MSC12-C.+Detect+and+remove+code+that+has+no+effect+or+is+never+executed"
 cwe = ["CWE-398", "CWE-482", "CWE-561", "CWE-570"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "absorbs MSC07-C"
+basis = "no (P/coincide)."
+ruling = "P/coincide"

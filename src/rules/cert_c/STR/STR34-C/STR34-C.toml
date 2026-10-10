@@ -30,3 +30,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/STR34-C.+Cast+characters+to+unsigned+char+before+converting+to+larger+integer+sizes"
 cwe = []
 related_cwe = ["CWE-704"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+overlap = "STR37-C keeps <ctype.h> arguments"
+basis = "yes, at default (the EX1 option, STR34-C/2026-10-07/ex1). Pedantic equals strict (P/open-cells) (STR34-C/2026-10-07/presets)."
+ruling = "STR34-C/2026-10-07/ex1, P/open-cells, STR34-C/2026-10-07/presets"

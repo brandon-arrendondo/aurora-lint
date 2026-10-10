@@ -23,3 +23,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/PRE07-C.+Avoid+using+repeated+question+marks"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

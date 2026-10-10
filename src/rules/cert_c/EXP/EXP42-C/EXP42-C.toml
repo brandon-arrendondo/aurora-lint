@@ -27,3 +27,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP42-C.+Do+not+compare+padding+data"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+basis = "yes, in all three: default credits natural alignment and drops length-only operands; pedantic declines all packing and layout credit (EXP42-C/2026-10-09/presets)."
+ruling = "EXP42-C/2026-10-09/presets"

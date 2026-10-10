@@ -23,3 +23,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP15-C.+Do+not+place+a+semicolon+on+the+same+line+as+an+if%2C+for%2C+or+while+statement"
 cwe = ["CWE-483"]
 related_cwe = ["CWE-480"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+basis = "yes, at default only (EXP15-C/2026-10-09/3). Pedantic equals strict."
+ruling = "EXP15-C/2026-10-09/3"

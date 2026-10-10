@@ -24,3 +24,12 @@ wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-stan
 cwe = ["CWE-242", "CWE-464"]
 related_cwe = ["CWE-20", "CWE-73", "CWE-79", "CWE-89", "CWE-91", "CWE-94", "CWE-114", "CWE-120", "CWE-192", "CWE-197", "CWE-367", "CWE-601", "CWE-676"]
 related = ["STR31-C", "STR32-C"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "reports every asctime/ctime/ato* call once (sibling ids secondary); CON33-C/ERR07-C co-fire"
+basis = "yes. Default withholds `fopen`/`freopen` without Annex K and shares ERR07-C's options (MSC24-C/2026-10-09/2). Pedantic adds non-call references (MSC24-C/2026-10-09/5) and POSIX obsolescent and removed functions (MSC24-C/2026-10-09/8), and does not decide list 3 without a declared C library."
+ruling = "MSC24-C/2026-10-09/2, MSC24-C/2026-10-09/5, MSC24-C/2026-10-09/8"

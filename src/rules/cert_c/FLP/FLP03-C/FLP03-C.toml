@@ -27,3 +27,12 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FLP03-C.+Detect+and+handle+floating-point+errors"
 cwe = ["CWE-369"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+overlap = "FLP34-C owns conversions"
+basis = "yes, at default (FLP03-C/2026-10-07/taint); pedantic equals strict (P/open-cells)."
+ruling = "FLP03-C/2026-10-07/taint, P/open-cells"

@@ -28,3 +28,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/pages/viewpage.action?pageId=87152233"
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "STR32-C"
+basis = "no. Not enforced in any preset."

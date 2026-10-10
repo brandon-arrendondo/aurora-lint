@@ -26,3 +26,11 @@ enabled = true
 [references]
 wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc17-c"
 cwe = ["CWE-484"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+basis = "yes. Default credits any comment at the fall point (MSC17-C/2026-10-09/2). Pedantic equals strict except that it does not trust library noreturn functions without a declared C library (MSC17-C/2026-10-09/1)."
+ruling = "MSC17-C/2026-10-09/2, MSC17-C/2026-10-09/1"

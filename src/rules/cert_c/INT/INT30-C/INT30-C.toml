@@ -34,3 +34,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT30-C.+Ensure+that+unsigned+integer+operations+do+not+wrap"
 cwe = ["CWE-190", "CWE-191", "CWE-680"]
 related_cwe = ["CWE-131"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+overlap = "INT31-C/INT32-C siblings (taint gate decided jointly)"
+basis = "yes, at default (INT30-C/2026-10-07/option-int_provenance). Pedantic equals strict (P/open-cells)."
+ruling = "INT30-C/2026-10-07/option-int_provenance, P/open-cells"

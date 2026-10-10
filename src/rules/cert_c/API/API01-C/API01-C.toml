@@ -25,3 +25,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/API01-C.+Avoid+laying+out+strings+in+memory+directly+before+sensitive+data"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+basis = "no. One form in every preset (P/coincide)."
+ruling = "P/coincide"

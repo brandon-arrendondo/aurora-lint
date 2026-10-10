@@ -34,3 +34,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/DCL11-C.+Understand+the+type+issues+associated+with+variadic+functions"
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "FIO47-C owns type mismatch; EXP34-C owns null string argument"
+basis = "no. Not enforced in any preset."

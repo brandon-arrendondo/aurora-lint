@@ -29,3 +29,12 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM34-C.+Only+free+memory+allocated+dynamically"
 cwe = ["CWE-590", "CWE-761"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "EXP33-C owns an uninitialized pointer reaching free; MEM30-C owns double frees"
+basis = "yes, at pedantic only: C23's sized-free matching, an edition gate (MEM34-C/2026-10-07/presets). Default equals strict; its validated-library option is an opt-in, not a preset difference."
+ruling = "MEM34-C/2026-10-07/presets"

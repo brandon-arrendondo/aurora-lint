@@ -26,3 +26,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/SIG01-C.+Understand+implementation-specific+details+regarding+signal+handler+persistence"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "SIG34-C analogue"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

@@ -22,3 +22,11 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/PRE01-C.+Use+parentheses+within+macros+around+parameter+names"
 related = ["PRE00-C", "PRE02-C", "PRE10-C", "PRE12-C"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+basis = "yes, at default only (PRE01-C/2026-10-09/2). Pedantic equals strict (PRE01-C/2026-10-09/7)."
+ruling = "PRE01-C/2026-10-09/2, PRE01-C/2026-10-09/7"

@@ -21,3 +21,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/DCL18-C.+Do+not+begin+integer+constants+with+0+when+specifying+a+decimal+value"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+basis = "yes, at default (DCL18-C/2026-10-07/option-mode). Pedantic equals strict (P/open-cells)."
+ruling = "DCL18-C/2026-10-07/option-mode, P/open-cells"

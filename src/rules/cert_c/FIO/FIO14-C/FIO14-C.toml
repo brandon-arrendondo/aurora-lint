@@ -23,3 +23,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO14-C.+Understand+the+difference+between+text+mode+and+binary+mode+with+file+streams"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+overlap = "FIO19-C shares the POSIX binary-stream question"
+basis = "yes, at default only, while POSIX is undeclared (FIO14-C/2026-10-07/presets). Strict and pedantic coincide (P/coincide)."
+ruling = "FIO14-C/2026-10-07/presets, P/coincide"

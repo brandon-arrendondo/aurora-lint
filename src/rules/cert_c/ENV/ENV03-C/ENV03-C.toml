@@ -32,3 +32,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ENV03-C.+Sanitize+the+environment+when+invoking+external+programs"
 cwe = ["CWE-78", "CWE-426"]
 related_cwe = ["CWE-88", "CWE-471", "CWE-807"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "ENV33-C owns system/popen of a command; ENV03-C owns inherited environment and all exec*/posix_spawn"
+basis = "yes. Default has two named options (ENV03-C/2026-10-07/1, ENV03-C/2026-10-07/presets); pedantic adds checks on the refilled values and on the clear's result (ENV03-C/2026-10-07/2, ENV03-C/2026-10-07/presets)."
+ruling = "ENV03-C/2026-10-07/1, ENV03-C/2026-10-07/presets, ENV03-C/2026-10-07/2"

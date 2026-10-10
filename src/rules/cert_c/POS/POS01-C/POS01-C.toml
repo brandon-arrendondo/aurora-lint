@@ -37,3 +37,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS01-C.+Check+for+the+existence+of+links+when+dealing+with+files"
 cwe = []
 related_cwe = ["CWE-59", "CWE-362", "CWE-367"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "POS35-C owns lstat-then-open; FIO45-C may fire alongside"
+basis = "yes. Default has three named relaxations; pedantic adds the hard-link and directory-prefix tests (POS01-C/2026-10-07/presets)."
+ruling = "POS01-C/2026-10-07/presets"

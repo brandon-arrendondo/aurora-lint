@@ -25,3 +25,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/pages/viewpage.action?pageId=87152445"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+basis = "yes, at default only (FIO20-C/2026-10-09/presets). Strict and pedantic coincide (P/coincide)."
+ruling = "FIO20-C/2026-10-09/presets, P/coincide"

@@ -23,3 +23,12 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/pages/viewpage.action?pageId=87152148"
 cwe = ["CWE-415", "CWE-416"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "MEM30-C owns every later use; MEM01-C only the missing reset; one finding per free shared with MEM30-C"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

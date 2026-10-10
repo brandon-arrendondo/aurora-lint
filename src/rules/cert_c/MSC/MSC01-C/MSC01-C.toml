@@ -21,3 +21,11 @@ enabled = true
 [references]
 wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc01-c"
 cwe = ["CWE-478"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+basis = "yes, at default only (MSC01-C/2026-10-10/presets)."
+ruling = "MSC01-C/2026-10-10/presets"

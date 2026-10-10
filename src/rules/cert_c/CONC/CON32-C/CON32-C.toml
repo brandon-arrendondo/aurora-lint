@@ -39,3 +39,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/CON32-C.+Prevent+data+races+when+accessing+bit-fields+from+multiple+threads"
 cwe = []
 related_cwe = ["CWE-366"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "POS49-C is the pthreads twin (E10, one analysis)"
+basis = "no. One form in every preset (P/coincide)."
+ruling = "P/coincide"

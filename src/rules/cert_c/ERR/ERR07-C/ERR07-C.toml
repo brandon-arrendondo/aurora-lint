@@ -25,3 +25,12 @@ wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ERR07-C.+Prefer+functions+
 cwe = ["CWE-464"]
 related_cwe = ["CWE-20", "CWE-79", "CWE-89", "CWE-91", "CWE-94", "CWE-114", "CWE-601", "CWE-676"]
 related = ["ERR34-C"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "every call is also an MSC24-C finding; every ato* an ERR34-C finding; one finding per call with sibling ids secondary"
+basis = "yes. Default credits two constructs by named options (ERR07-C/2026-10-07/3, ERR07-C/2026-10-07/presets); pedantic adds non-call references (ERR07-C/2026-10-07/4)."
+ruling = "ERR07-C/2026-10-07/3, ERR07-C/2026-10-07/presets, ERR07-C/2026-10-07/4"

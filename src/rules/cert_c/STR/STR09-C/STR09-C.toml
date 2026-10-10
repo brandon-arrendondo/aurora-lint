@@ -27,3 +27,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/STR09-C.+Don%27t+assume+numeric+values+for+expressions+with+type+plain+character"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

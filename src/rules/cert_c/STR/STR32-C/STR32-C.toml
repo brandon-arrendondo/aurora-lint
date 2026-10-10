@@ -28,3 +28,12 @@ wiki = "https://wiki.sei.cmu.edu/confluence/display/c/STR32-C.+Do+not+pass+a+non
 cwe = ["CWE-126"]
 related_cwe = ["CWE-119", "CWE-123", "CWE-125", "CWE-170"]
 related = ["MSC24-C"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "STR31-C hands it memcpy sized by strlen (ledger)"
+basis = "yes, in all three (STR32-C/2026-10-09/presets)."
+ruling = "STR32-C/2026-10-09/presets"

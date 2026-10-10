@@ -34,3 +34,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/CON38-C.+Preserve+thread+safety+and+liveness+when+using+condition+variables"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "CON36-C owns do/while wait with no pre-test"
+basis = "no (P/coincide)."
+ruling = "P/coincide"

@@ -23,3 +23,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT18-C.+Evaluate+integer+expressions+in+a+larger+size+before+comparing+or+assigning+to+that+size"
 cwe = []
 related_cwe = ["CWE-190", "CWE-681"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+overlap = "INT02-C owns the dropped unsigned-vs-negative-literal form"
+basis = "yes, at default only (INT18-C/2026-10-09/4, INT18-C/2026-10-09/5). Pedantic equals strict (INT18-C/2026-10-09/3)."
+ruling = "INT18-C/2026-10-09/4, INT18-C/2026-10-09/5, INT18-C/2026-10-09/3"

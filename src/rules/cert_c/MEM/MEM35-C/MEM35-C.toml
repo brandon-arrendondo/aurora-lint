@@ -35,3 +35,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM35-C.+Allocate+sufficient+memory+for+an+object"
 cwe = ["CWE-121", "CWE-122", "CWE-467", "CWE-680"]
 related_cwe = ["CWE-131", "CWE-190", "CWE-789"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "INT30-C/INT32-C may fire on wrapping sizes; INT04-C owns the dropped taint form"
+basis = "yes, at default only: portability-only type mismatches under a declared data model (MEM35-C/2026-10-07/presets). Pedantic equals strict."
+ruling = "MEM35-C/2026-10-07/presets"

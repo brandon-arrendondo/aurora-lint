@@ -36,3 +36,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/STR11-C.+Do+not+specify+the+bound+of+a+character+array+initialized+with+a+string+literal"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "API00-C precedent for intent"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

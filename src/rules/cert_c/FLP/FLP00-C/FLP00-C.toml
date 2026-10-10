@@ -33,3 +33,12 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FLP00-C.+Understand+the+limitations+of+floating-point+numbers"
 cwe = []
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+overlap = "FLP02-C's equality form folds in; FLP37-C's compliant == is a candidate"
+basis = "yes, at default (FLP00-C/2026-10-07/zero); pedantic equals strict (P/open-cells)."
+ruling = "FLP00-C/2026-10-07/zero, P/open-cells"

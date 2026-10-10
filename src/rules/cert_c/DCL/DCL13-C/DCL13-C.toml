@@ -28,3 +28,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/DCL13-C.+Declare+function+parameters+that+are+pointers+to+values+not+changed+by+the+function+as+const"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "DCL00-C owns non-parameter objects"
+basis = "no (P/coincide)."
+ruling = "P/coincide"

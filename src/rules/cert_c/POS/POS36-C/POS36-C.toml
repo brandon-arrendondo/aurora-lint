@@ -30,3 +30,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS36-C.+Observe+correct+revocation+order+while+relinquishing+privileges"
 cwe = []
 related_cwe = ["CWE-696"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "POS37-C owns verification; ERR33-C/POS54-C own unchecked results"
+basis = "yes, at pedantic only (missing group and supplementary drops, `initgroups`; POS36-C/2026-10-09/1-3). Default equals strict."
+ruling = "POS36-C/2026-10-09/1-3"

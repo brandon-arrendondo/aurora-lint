@@ -28,3 +28,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP33-C.+Do+not+read+uninitialized+memory"
 cwe = ["CWE-457", "CWE-665", "CWE-758"]
 related_cwe = ["CWE-456", "CWE-908"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+options = ["static_zero_init"]
+basis = "yes, in all three: default by options (EXP33-C/2026-10-09/1, EXP33-C/2026-10-09/presets), pedantic by library and startup trust (EXP33-C/2026-10-07/library, EXP33-C/2026-10-09/6)."
+ruling = "EXP33-C/2026-10-09/1, EXP33-C/2026-10-09/presets, EXP33-C/2026-10-07/library, EXP33-C/2026-10-09/6"

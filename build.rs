@@ -6,6 +6,12 @@ use std::io::Write;
 use std::path::PathBuf;
 use walkdir::WalkDir;
 
+// The `[presets]` schema and its validation; also compiled into the library
+// for its unit tests (src/lib.rs).
+#[allow(dead_code)]
+#[path = "build/presets.rs"]
+mod presets;
+
 #[derive(Deserialize)]
 struct RuleConfig {
     rules: Option<HashMap<String, HashMap<String, RuleSettings>>>,
@@ -115,11 +121,204 @@ fn main() {
         std::process::exit(1);
     }
 
+    // Validate every rule's [presets] block and generate the table bench reads.
+    if let Err(e) = generate_rule_presets() {
+        eprintln!("Error in the per-rule preset table: {:#}", e);
+        std::process::exit(1);
+    }
+
     // Generate integration tests from C test files
     if let Err(e) = generate_integration_tests() {
         eprintln!("Error generating integration tests: {:#}", e);
         std::process::exit(1);
     }
+}
+
+/// The names in `settings::OPTIONS` (src/settings/mod.rs). build.rs cannot
+/// link the crate it builds, so it reads the table's `name:` lines: those
+/// between `pub static OPTIONS` and `pub static DECLINED_RULES`.
+fn settings_option_names() -> Result<std::collections::BTreeSet<String>> {
+    let src = fs::read_to_string("src/settings/mod.rs").context("read src/settings/mod.rs")?;
+    let start = src
+        .find("pub static OPTIONS")
+        .context("src/settings/mod.rs has no `pub static OPTIONS`")?;
+    let end = src[start..]
+        .find("pub static DECLINED_RULES")
+        .map(|i| start + i)
+        .context("src/settings/mod.rs has no `pub static DECLINED_RULES` after OPTIONS")?;
+    let names: std::collections::BTreeSet<String> = src[start..end]
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            let name = l.strip_prefix("name: \"")?.strip_suffix("\",")?;
+            Some(name.to_string())
+        })
+        .collect();
+    anyhow::ensure!(
+        !names.is_empty(),
+        "found no option names in settings::OPTIONS"
+    );
+    Ok(names)
+}
+
+/// Read every cert_c rule's `[presets]` block, fail the build on anything
+/// `presets::problems` reports, and write `rules_templates/rule-presets.json`
+/// (the table bench reads for abstention scoring). Bench stays free of Rust
+/// and of the crate: it reads this file.
+fn generate_rule_presets() -> Result<()> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut files: Vec<PathBuf> = WalkDir::new("src/rules/cert_c")
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .map(|e| e.into_path())
+        .filter(|p| {
+            p.extension().is_some_and(|x| x == "toml")
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n != "rules-all.toml" && n.contains('-'))
+        })
+        .collect();
+    files.sort();
+    let mut rules = BTreeSet::new();
+    let mut enabled = BTreeMap::new();
+    let mut blocks = BTreeMap::new();
+    for path in &files {
+        let id = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .context("rule file name")?
+            .to_string();
+        let content = fs::read_to_string(path)?;
+        enabled.insert(id.clone(), check_if_rule_enabled(&path.to_string_lossy())?);
+        let block = presets::parse(&content)
+            .with_context(|| format!("invalid [presets] block in {}", path.display()))?;
+        rules.insert(id.clone());
+        blocks.insert(id, block);
+    }
+    let options = settings_option_names()?;
+    let ctx = presets::Context {
+        rules: &rules,
+        options: &options,
+        enabled: &enabled,
+    };
+    let mut problems = Vec::new();
+    for (id, block) in &blocks {
+        problems.extend(presets::problems(id, block.as_ref(), &ctx));
+    }
+    anyhow::ensure!(
+        problems.is_empty(),
+        "the per-rule preset table has {} problem(s):\n  {}",
+        problems.len(),
+        problems.join("\n  ")
+    );
+    let table: BTreeMap<String, presets::Block> = blocks
+        .into_iter()
+        .filter_map(|(id, b)| b.map(|b| (id, b)))
+        .collect();
+    let json = presets::to_json(&table);
+    let out = PathBuf::from("rules_templates/rule-presets.json");
+    // Rewrite only on change so an unrelated build does not touch the file.
+    if fs::read_to_string(&out).ok().as_deref() != Some(json.as_str()) {
+        fs::write(&out, json).context("write rules_templates/rule-presets.json")?;
+    }
+    let rst = presets::to_rst(&table);
+    let page = PathBuf::from("docs/rule-presets.rst");
+    if fs::read_to_string(&page).ok().as_deref() != Some(rst.as_str()) {
+        fs::write(&page, rst).context("write docs/rule-presets.rst")?;
+    }
+    println!("cargo:rerun-if-changed=src/settings/mod.rs");
+    check_fixture_matrix(&table)
+}
+
+/// The fixtures must agree with the table. A fixture of a rule whose presets
+/// read it the same way (`differs = false`) may not expect a different verdict
+/// under default and strict, and no fixture may name a preset that declines
+/// the rule. A rule whose presets do differ should have a fixture whose
+/// `Expect:` header says how; those without one are counted in a build
+/// warning, not failed, since a rule with no fixtures is allowed
+/// (CLAUDE.md) and the differing readings arrive rule by rule.
+fn check_fixture_matrix(table: &std::collections::BTreeMap<String, presets::Block>) -> Result<()> {
+    let mut problems = Vec::new();
+    let mut unexercised = Vec::new();
+    for (rule, block) in table {
+        // The ruling has moved ahead of the code; the rewrite brings the
+        // fixtures along.
+        if block.code_lags.is_some() {
+            continue;
+        }
+        let Some(dir) = WalkDir::new("src/rules/cert_c")
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_type().is_dir() && e.file_name().to_str() == Some(rule.as_str()))
+            .map(|e| e.into_path().join("tests"))
+        else {
+            continue;
+        };
+        let mut any_fixture = false;
+        let mut any_expect = false;
+        for kind in ["fail", "pass", "expected_fail"] {
+            let Ok(entries) = fs::read_dir(dir.join(kind)) else {
+                continue;
+            };
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.extension().is_none_or(|x| x != "c") {
+                    continue;
+                }
+                any_fixture = true;
+                let header = fixture_header(&path)?;
+                any_expect |= !header.expect.is_empty();
+                let baseline = if kind == "pass" { "clean" } else { "violation" };
+                let verdict = |preset: &str| {
+                    header
+                        .expect
+                        .iter()
+                        .find(|(p, _)| p == preset)
+                        .map_or(baseline, |(_, e)| e.as_str())
+                        .to_ascii_lowercase()
+                };
+                if !block.derived_differs() && verdict("default") != verdict("strict") {
+                    problems.push(format!(
+                        "{}: expects {} under default and {} under strict, but the table reads {rule} the same under every preset",
+                        path.display(),
+                        verdict("default"),
+                        verdict("strict")
+                    ));
+                }
+                for (preset, _) in &header.expect {
+                    let cell = match preset.as_str() {
+                        "default" => block.default,
+                        "strict" => block.strict,
+                        _ => block.pedantic,
+                    };
+                    if cell == presets::Cell::NotEnforced
+                        && block.cells() != [presets::Cell::NotEnforced; 3]
+                    {
+                        problems.push(format!(
+                            "{}: names {preset}, which declines {rule}",
+                            path.display()
+                        ));
+                    }
+                }
+            }
+        }
+        if block.derived_differs() && any_fixture && !any_expect {
+            unexercised.push(rule.as_str());
+        }
+    }
+    anyhow::ensure!(
+        problems.is_empty(),
+        "fixtures disagree with the per-rule preset table:\n  {}",
+        problems.join("\n  ")
+    );
+    if !unexercised.is_empty() {
+        println!(
+            "cargo:warning={} rule(s) read differently by some preset have fixtures but none with an `Expect:` header: {}",
+            unexercised.len(),
+            unexercised.join(", ")
+        );
+    }
+    Ok(())
 }
 
 /// Validate a single individual rule manifest (`<RULE-ID>.toml`) before its

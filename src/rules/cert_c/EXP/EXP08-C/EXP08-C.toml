@@ -25,3 +25,11 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP08-C.+Ensure+pointer+arithmetic+is+used+correctly"
 cwe = ["CWE-468"]
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "ARR39-C owns sizeof-derived count added to pointer"
+basis = "no. Not enforced in any preset."

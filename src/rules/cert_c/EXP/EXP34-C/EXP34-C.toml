@@ -24,3 +24,13 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP34-C.+Do+not+dereference+null+pointers"
 cwe = ["CWE-476", "CWE-690"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+overlap = "MEM34-C/EXP33-C own the indeterminate-pointer case"
+options = ["assert_is_guard", "first_site_only"]
+basis = "yes, at default (EXP34-C/2026-10-07/presets). Pedantic equals strict (P/open-cells)."
+ruling = "EXP34-C/2026-10-07/presets, P/open-cells"

@@ -29,3 +29,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP05-C.+Do+not+cast+away+a+const+qualification"
 cwe = []
 related_cwe = ["CWE-704"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "EXP40-C owns the realised write hazard; both fire (overlap policy)"
+basis = "no. Default and pedantic equal strict (P/open-cells)."
+ruling = "P/open-cells"

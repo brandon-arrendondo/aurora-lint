@@ -38,3 +38,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/DCL00-C.+Const-qualify+immutable+objects"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "DCL13-C owns const-qualifying pointer parameters"
+basis = "no (P/coincide)."
+ruling = "P/coincide"

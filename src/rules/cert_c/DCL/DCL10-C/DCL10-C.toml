@@ -26,3 +26,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/DCL10-C.+Maintain+the+contract+between+the+writer+and+caller+of+variadic+functions"
 cwe = ["CWE-685"]
 related_cwe = ["CWE-628"]
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "FIO47-C owns format/argument mismatch"
+basis = "no. Not enforced in any preset."

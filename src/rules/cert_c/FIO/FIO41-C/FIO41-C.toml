@@ -25,3 +25,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO41-C.+Do+not+call+getc%28%29%2C+putc%28%29%2C+getwc%28%29%2C+or+putwc%28%29+with+a+stream+argument+that+has+side+effects"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "both FIO41-C and PRE31-C fire (overlap policy) unless subsumption is total"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

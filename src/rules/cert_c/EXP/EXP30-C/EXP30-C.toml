@@ -35,3 +35,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP30-C.+Do+not+depend+on+the+order+of+evaluation+for+side+effects"
 cwe = []
 related_cwe = ["CWE-758"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "EXP10-C folds in (indeterminately sequenced calls)"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

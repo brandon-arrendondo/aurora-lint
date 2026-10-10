@@ -29,3 +29,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM02-C.+Immediately+cast+the+result+of+a+memory+allocation+function+call+into+a+pointer+to+the+allocated+type"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

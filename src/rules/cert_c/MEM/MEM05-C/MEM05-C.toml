@@ -24,3 +24,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM05-C.+Avoid+large+stack+allocations"
 related = ["ENV01-C"]
 cwe = ["CWE-674"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "MSC04-C's recursion check moves here; base-case exemption not carried over"
+basis = "yes, at pedantic only (bounded VLAs, `alloca` and recursion; MEM05-C/2026-10-07/stack-forms, MEM05-C/2026-10-07/recursion). Default equals strict. The rule is in the preset test matrix."
+ruling = "MEM05-C/2026-10-07/stack-forms, MEM05-C/2026-10-07/recursion"

@@ -34,3 +34,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/PRE08-C.+Guarantee+that+header+file+names+are+unique"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+basis = "yes, at default (PRE08-C/2026-10-07/default). Pedantic equals strict (P/open-cells)."
+ruling = "PRE08-C/2026-10-07/default, P/open-cells"

@@ -33,3 +33,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM10-C.+Define+and+use+a+pointer+validation+function"
 cwe = []
 related_cwe = ["CWE-20", "CWE-79", "CWE-89", "CWE-91", "CWE-94", "CWE-114", "CWE-601"]
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "API00-C and EXP34-C own the safety half"
+basis = "no. Not enforced in any preset."

@@ -39,3 +39,12 @@ wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT34-C.+Do+not+shift+an+e
 cwe = []
 related_cwe = ["CWE-682", "CWE-758"]
 related = ["INT14-C"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "INT32-C keeps negative left operand/unrepresentable result"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

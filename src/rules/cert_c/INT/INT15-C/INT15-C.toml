@@ -34,3 +34,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT15-C.+Use+intmax_t+or+uintmax_t+for+formatted+IO+on+programmer-defined+integer+types"
 cwe = []
 related_cwe = ["CWE-681"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "FIO47-C ground for uncast case"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

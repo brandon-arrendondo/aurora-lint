@@ -25,3 +25,11 @@ enabled = false
 [references]
 wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/environment-env/env04-c"
 cwe = []
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "ENV33-C"
+basis = "no. Not enforced in any preset."

@@ -34,3 +34,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/API00-C.+Functions+should+validate+their+parameters"
 cwe = []
 related_cwe = ["CWE-20", "CWE-476"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+basis = "no. One form in every preset (P/coincide)."
+ruling = "P/coincide"

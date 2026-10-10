@@ -38,3 +38,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/CON40-C.+Do+not+refer+to+an+atomic+variable+twice+in+an+expression"
 cwe = []
 related_cwe = ["CWE-366"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+basis = "no (P/coincide)."
+ruling = "P/coincide"

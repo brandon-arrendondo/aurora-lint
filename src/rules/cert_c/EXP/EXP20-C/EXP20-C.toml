@@ -25,3 +25,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP20-C.+Perform+explicit+tests+to+determine+success%2C+true+and+false%2C+and+equality"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+basis = "yes, at default only (EXP20-C/2026-10-09/4). Strict and pedantic coincide (P/coincide)."
+ruling = "EXP20-C/2026-10-09/4, P/coincide"

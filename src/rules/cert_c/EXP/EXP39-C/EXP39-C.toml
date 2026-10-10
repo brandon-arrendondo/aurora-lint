@@ -38,3 +38,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP39-C.+Do+not+access+a+variable+through+a+pointer+of+an+incompatible+type"
 cwe = ["CWE-588", "CWE-843"]
 related_cwe = ["CWE-119", "CWE-125", "CWE-704"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

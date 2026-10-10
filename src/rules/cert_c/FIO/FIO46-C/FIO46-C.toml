@@ -27,3 +27,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO46-C.+Do+not+access+a+closed+file"
 cwe = ["CWE-675"]
 related_cwe = ["CWE-666", "CWE-672", "CWE-758", "CWE-910"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "owns double fclose (moved from FIO24-C)"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

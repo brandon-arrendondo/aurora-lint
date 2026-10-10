@@ -29,3 +29,11 @@ enabled = false
 wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc18-c"
 cwe = []
 related_cwe = ["CWE-259", "CWE-261", "CWE-311", "CWE-319", "CWE-321", "CWE-326", "CWE-798"]
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "MSC41-C, MEM03-C"
+basis = "no. Not enforced in any preset."

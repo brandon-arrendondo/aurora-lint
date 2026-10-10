@@ -23,3 +23,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/API09-C.+Compatible+values+should+have+the+same+type"
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "INT02-C, INT31-C"
+basis = "no. Not enforced in any preset."

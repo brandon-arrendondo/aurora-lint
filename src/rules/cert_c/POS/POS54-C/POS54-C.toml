@@ -41,3 +41,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS54-C.+Detect+and+handle+POSIX+library+errors"
 cwe = []
 related_cwe = ["CWE-252", "CWE-253", "CWE-391"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "not_enforced"
+differs = true
+overlap = "ERR33-C owns ISO C library functions; owns unchecked set*uid returns"
+basis = "yes. Pedantic declines the rule (POS54-C/2026-10-09/1); default differs from strict in its POSIX assumption (POS54-C/2026-10-09/2) and its named credits (POS54-C/2026-10-09/6)."
+ruling = "POS54-C/2026-10-09/1, POS54-C/2026-10-09/2, POS54-C/2026-10-09/6"

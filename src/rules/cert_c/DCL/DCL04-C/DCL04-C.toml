@@ -24,3 +24,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/DCL04-C.+Do+not+declare+more+than+one+variable+per+declaration"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+basis = "yes, at pedantic (DCL04-C/2026-10-07/presets)."
+ruling = "DCL04-C/2026-10-07/presets"

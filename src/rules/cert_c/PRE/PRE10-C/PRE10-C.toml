@@ -32,3 +32,11 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/PRE10-C.+Wrap+multistatement+macros+in+a+do-while+loop"
 related = ["PRE00-C", "PRE01-C", "PRE02-C", "PRE12-C"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+basis = "yes, at pedantic only. Default equals strict (PRE10-C/2026-10-09/1); pedantic adds closed forms (PRE10-C/2026-10-09/4-6)."
+ruling = "PRE10-C/2026-10-09/1, PRE10-C/2026-10-09/4-6"

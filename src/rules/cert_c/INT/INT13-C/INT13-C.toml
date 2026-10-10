@@ -37,3 +37,12 @@ wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT13-C.+Use+bitwise+opera
 cwe = []
 related_cwe = ["CWE-682"]
 related = ["INT14-C", "MSC14-C"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+overlap = "INT07-C owns plain char; promoted narrow operands are INT02-C's"
+basis = "yes, at default (INT13-C/2026-10-07/api-flags). Pedantic equals strict (P/open-cells)."
+ruling = "INT13-C/2026-10-07/api-flags, P/open-cells"

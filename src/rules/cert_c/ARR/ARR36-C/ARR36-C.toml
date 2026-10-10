@@ -32,3 +32,11 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ARR36-C.+Do+not+subtract+or+compare+two+pointers+that+do+not+refer+to+the+same+array"
 cwe = ["CWE-469"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+basis = "yes, at default (ARR36-C/2026-10-07/option-char-sub); pedantic equals strict (P/open-cells)."
+ruling = "ARR36-C/2026-10-07/option-char-sub, P/open-cells"

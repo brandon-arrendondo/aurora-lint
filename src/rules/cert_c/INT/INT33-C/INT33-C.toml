@@ -24,3 +24,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT33-C.+Ensure+that+division+and+remainder+operations+do+not+result+in+divide-by-zero+errors"
 cwe = ["CWE-369"]
 related_cwe = ["CWE-682"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+options = ["assert_is_guard"]
+basis = "yes, at default (INT33-C/2026-10-07/presets). Pedantic equals strict (P/open-cells)."
+ruling = "INT33-C/2026-10-07/presets, P/open-cells"

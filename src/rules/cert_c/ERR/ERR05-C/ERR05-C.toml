@@ -29,3 +29,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ERR05-C.+Application-independent+code+should+provide+error+detection+without+dictating+error+handling"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "MSC11-C owns the plain-assert case; wrapper/macro fix covers always-on assert macros"
+basis = "yes, at pedantic only: a plain `assert()` counts as a termination (ERR05-C/2026-10-07/presets). Default and strict coincide, and an always-on assert macro counts in every preset (ERR05-C/2026-10-07/assert)."
+ruling = "ERR05-C/2026-10-07/presets, ERR05-C/2026-10-07/assert"

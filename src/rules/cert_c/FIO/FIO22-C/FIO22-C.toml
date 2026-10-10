@@ -41,3 +41,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO22-C.+Close+files+before+spawning+processes"
 cwe = []
 related_cwe = ["CWE-403", "CWE-404", "CWE-770"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

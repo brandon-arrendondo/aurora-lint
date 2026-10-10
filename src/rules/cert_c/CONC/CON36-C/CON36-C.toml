@@ -34,3 +34,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/CON36-C.+Wrap+functions+that+can+spuriously+wake+up+in+a+loop"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "CON36-C owns a do/while wait with no pre-test (not CON38-C)"
+basis = "no (P/coincide)."
+ruling = "P/coincide"

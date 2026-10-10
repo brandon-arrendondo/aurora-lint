@@ -25,3 +25,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT01-C.+Use+size_t+or+rsize_t+for+all+integer+values+representing+the+size+of+an+object"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "INT02-C owns mixed-sign comparison"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

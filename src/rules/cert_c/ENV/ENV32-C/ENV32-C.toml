@@ -38,3 +38,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ENV32-C.+All+exit+handlers+must+return+normally"
 cwe = []
 related_cwe = ["CWE-705"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+basis = "yes. Default withholds the defined terminations by a named option (ENV32-C/2026-10-09/1); pedantic adds non-ending handlers and unresolved callees and registrations (ENV32-C/2026-10-09/4, ENV32-C/2026-10-09/presets)."
+ruling = "ENV32-C/2026-10-09/1, ENV32-C/2026-10-09/4, ENV32-C/2026-10-09/presets"

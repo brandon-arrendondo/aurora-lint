@@ -22,3 +22,11 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MSC37-C.+Ensure+that+control+never+reaches+the+end+of+a+non-void+function"
 cwe = ["CWE-758"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+basis = "no; default and strict agree on noreturn trust (MSC37-C/2026-10-07/noreturn). Pedantic's trust in the C library follows P/facts."
+ruling = "MSC37-C/2026-10-07/noreturn, P/facts"

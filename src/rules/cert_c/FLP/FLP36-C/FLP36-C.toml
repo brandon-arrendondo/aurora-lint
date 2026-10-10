@@ -35,3 +35,13 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FLP36-C.+Preserve+precision+when+converting+integral+values+to+floating-point+type"
 cwe = []
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+options = ["assert_is_guard"]
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"
+code_lags = "A strippable assert still guards under default only (assert_is_guard); the ruling reads one form in every preset."

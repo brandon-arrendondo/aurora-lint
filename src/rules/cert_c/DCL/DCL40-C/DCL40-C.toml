@@ -31,3 +31,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/DCL40-C.+Do+not+create+incompatible+declarations+of+the+same+function+or+object"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "long-identifier half left to DCL23-C"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

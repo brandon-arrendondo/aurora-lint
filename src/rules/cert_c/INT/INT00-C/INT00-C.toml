@@ -25,3 +25,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/pages/viewpage.action?pageId=87152417"
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "FIO47-C, INT30-C, INT18-C own its example forms"
+basis = "no; not enforced in any preset."

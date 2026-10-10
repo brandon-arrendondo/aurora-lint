@@ -31,3 +31,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ENV02-C.+Beware+of+multiple+environment+variables+with+the+same+effective+name"
 cwe = []
 related_cwe = ["CWE-462", "CWE-807"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

@@ -3138,4 +3138,63 @@ mod tests {
             Some(PosixVersion::Pre2001)
         );
     }
+
+    /// A rule that reads a policy option whose value differs between default
+    /// and strict reads the rule differently under them, so its preset block
+    /// must say so and name the option. The table is reviewed prose; this
+    /// ties it to the code for every direct reader.
+    #[test]
+    fn a_rule_reading_a_differing_policy_option_says_so_in_its_preset_block() {
+        let differing: Vec<&str> = OPTIONS
+            .iter()
+            .filter(|o| {
+                matches!(
+                    o.source,
+                    Source::Policy { default, strict, .. } if default != strict
+                )
+            })
+            .map(|o| o.name)
+            .collect();
+        assert!(!differing.is_empty());
+        let mut checked = 0;
+        for entry in walkdir::WalkDir::new("src/rules/cert_c")
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "rs"))
+        {
+            let source = std::fs::read_to_string(entry.path()).unwrap();
+            let Some(dir) = entry.path().parent() else {
+                continue;
+            };
+            let Some(rule) = dir.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let toml = dir.join(format!("{rule}.toml"));
+            let Ok(text) = std::fs::read_to_string(&toml) else {
+                continue;
+            };
+            for name in &differing {
+                if !source.contains(&format!("flag(\"{name}\")")) {
+                    continue;
+                }
+                let block = crate::preset_table::parse(&text)
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("{rule} has no [presets] block"));
+                checked += 1;
+                if block.code_lags.is_some() {
+                    continue;
+                }
+                assert_ne!(
+                    block.default, block.strict,
+                    "{rule} reads {name}, whose default and strict values differ, \
+                     but its preset block reads it the same under both"
+                );
+                assert!(
+                    block.options.iter().any(|o| o == name),
+                    "{rule} reads {name} but its preset block's options omit it"
+                );
+            }
+        }
+        assert!(checked >= 4, "found only {checked} direct readers");
+    }
 }

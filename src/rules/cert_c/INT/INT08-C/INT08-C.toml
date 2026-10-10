@@ -37,3 +37,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT08-C.+Verify+that+all+integer+values+are+in+range"
 cwe = ["CWE-190", "CWE-191", "CWE-197"]
 related = ["INT32-C"]
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "INT30-C, INT31-C, INT32-C"
+basis = "no. Not enforced in any preset."

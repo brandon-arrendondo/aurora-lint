@@ -28,3 +28,11 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FLP07-C.+Cast+the+return+value+of+a+function+that+returns+a+floating-point+type"
 cwe = []
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+basis = "no. Default, strict and pedantic coincide (P/coincide); each is refined by the same declared fact."
+ruling = "P/coincide"

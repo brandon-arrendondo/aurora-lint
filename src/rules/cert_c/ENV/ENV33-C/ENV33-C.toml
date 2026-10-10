@@ -38,3 +38,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/pages/viewpage.action?pageId=87152177"
 cwe = ["CWE-78", "CWE-426"]
 related_cwe = ["CWE-88", "CWE-676"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "STR02-C owns the tainted string (both fire); ENV03-C owns exec*/posix_spawn inheriting env"
+basis = "yes. Default withholds bounded untainted commands by a named option (ENV33-C/2026-10-07/4); pedantic adds command processors started through other APIs (ENV33-C/2026-10-07/3)."
+ruling = "ENV33-C/2026-10-07/4, ENV33-C/2026-10-07/3"

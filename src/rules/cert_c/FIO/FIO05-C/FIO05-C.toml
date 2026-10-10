@@ -30,3 +30,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO05-C.+Identify+files+using+multiple+file+attributes"
 cwe = []
 related_cwe = ["CWE-37", "CWE-38", "CWE-39", "CWE-62", "CWE-64", "CWE-65"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "co-fires with FIO45-C (overlap policy); revisit after FIO45-C rewrite with measured total subsumption"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

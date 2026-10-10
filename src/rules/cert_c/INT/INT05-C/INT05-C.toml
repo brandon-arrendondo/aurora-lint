@@ -29,3 +29,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT05-C.+Do+not+use+input+functions+to+convert+character+data+if+they+cannot+handle+all+possible+inputs"
 cwe = []
 related_cwe = ["CWE-192", "CWE-197"]
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "ERR34-C owns scanf-family numeric conversions"
+basis = "no; not enforced in any preset."

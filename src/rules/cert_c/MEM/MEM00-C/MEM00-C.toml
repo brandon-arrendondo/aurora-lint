@@ -34,3 +34,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM00-C.+Allocate+and+free+memory+in+the+same+module%2C+at+the+same+level+of+abstraction"
 cwe = []
 related_cwe = ["CWE-415", "CWE-416"]
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "MEM30-C double free; MEM31-C leak"
+basis = "no. Not enforced in any preset."

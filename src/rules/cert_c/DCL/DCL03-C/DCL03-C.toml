@@ -27,3 +27,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/DCL03-C.+Use+a+static+assertion+to+test+the+value+of+a+constant+expression"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+basis = "yes, at default (DCL03-C/2026-10-07/1). Pedantic equals strict (P/open-cells)."
+ruling = "DCL03-C/2026-10-07/1, P/open-cells"

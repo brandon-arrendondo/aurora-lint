@@ -26,3 +26,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ARR01-C.+Do+not+apply+the+sizeof+operator+to+a+pointer+when+taking+the+size+of+an+array"
 cwe = []
 related_cwe = ["CWE-467", "CWE-569", "CWE-783"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "MEM35-C owns the harmful cases"
+basis = "no. One form in every preset (P/coincide)."
+ruling = "P/coincide"

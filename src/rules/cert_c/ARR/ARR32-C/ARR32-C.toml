@@ -37,3 +37,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ARR32-C.+Ensure+size+arguments+for+variable+length+arrays+are+in+a+valid+range"
 cwe = []
 related_cwe = ["CWE-758"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "API05-C related (VLA gate)"
+basis = "no. One form in every preset (P/coincide)."
+ruling = "P/coincide"

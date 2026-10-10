@@ -30,6 +30,11 @@ pub mod rules;
 /// Policy and environment settings (ADR-0015): the presets, the option
 /// table, and resolving a configuration into concrete values.
 pub mod settings;
+
+/// The `[presets]` schema and its validation, shared with `build.rs`.
+#[cfg(test)]
+#[path = "../build/presets.rs"]
+mod preset_table;
 pub mod toolchain;
 /// The optional interactive terminal UI (`--features tui`) for browsing and
 /// managing violations.

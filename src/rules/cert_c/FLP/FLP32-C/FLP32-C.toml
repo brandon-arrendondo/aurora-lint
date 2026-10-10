@@ -30,3 +30,11 @@ wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FLP32-C.+Prevent+or+detect
 cwe = ["CWE-391"]
 related_cwe = ["CWE-682"]
 related = ["ERR33-C"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+basis = "yes. Default narrows to CERT's table and has named options (FLP32-C/2026-10-09/presets, /3, /4). Pedantic equals strict apart from the C-library assumption and fall-through handlers (FLP32-C/2026-10-09/presets, FLP32-C/2026-10-09/5)."
+ruling = "FLP32-C/2026-10-09/presets, FLP32-C/2026-10-09/5"

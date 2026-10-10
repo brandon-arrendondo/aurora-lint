@@ -26,3 +26,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS48-C.+Do+not+unlock+or+destroy+another+POSIX+thread%27s+mutex"
 cwe = []
 related_cwe = ["CWE-667"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "C11 twin is CON31-C (one analysis by API, E10)"
+basis = "no (P/coincide)."
+ruling = "P/coincide"

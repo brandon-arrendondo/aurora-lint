@@ -22,3 +22,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/SIG02-C.+Avoid+using+signals+to+implement+normal+functionality"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "SIG30-C/SIG31-C own unsafe calls in handlers"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

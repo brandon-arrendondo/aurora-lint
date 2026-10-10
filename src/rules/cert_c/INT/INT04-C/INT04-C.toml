@@ -25,3 +25,11 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT04-C.+Enforce+limits+on+integer+values+originating+from+tainted+sources"
 cwe = ["CWE-400", "CWE-789"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+basis = "yes, in every column: the source set (INT04-C/2026-10-09/1), parameter presumption (INT04-C/2026-10-09/2), project sinks (INT04-C/2026-10-09/3), loops (INT04-C/2026-10-09/5) and default's named options (INT04-C/2026-10-09/presets)."
+ruling = "INT04-C/2026-10-09/1, INT04-C/2026-10-09/2, INT04-C/2026-10-09/3, INT04-C/2026-10-09/5, INT04-C/2026-10-09/presets"

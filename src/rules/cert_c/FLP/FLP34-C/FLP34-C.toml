@@ -31,3 +31,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FLP34-C.+Ensure+that+floating-point+conversions+are+within+range+of+the+new+type"
 cwe = ["CWE-681"]
 related_cwe = ["CWE-197"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "INT31-C reported float-to-int today; FLP34-C owns it"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

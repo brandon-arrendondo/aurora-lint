@@ -24,3 +24,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP16-C.+Do+not+compare+function+pointers+to+constant+values"
 cwe = ["CWE-480"]
 related_cwe = ["CWE-482"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "MSC12-C owns the dropped 'a == b;' statement form"
+basis = "no at default and strict, which coincide (P/coincide). Pedantic equals strict (P/open-cells)."
+ruling = "P/coincide, P/open-cells"

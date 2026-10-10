@@ -28,3 +28,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS35-C.+Avoid+race+conditions+while+checking+for+the+existence+of+a+symbolic+link"
 cwe = []
 related_cwe = ["CWE-363"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "FIO45-C fires alongside; POS01-C credits the sequence only with a post-open fstat comparison; POS01-C does not report the open POS35-C reports"
+basis = "yes. Default adds a secure-directory option (POS35-C/2026-10-07/2); pedantic accepts only the atomic form (POS35-C/2026-10-07/presets)."
+ruling = "POS35-C/2026-10-07/2, POS35-C/2026-10-07/presets"

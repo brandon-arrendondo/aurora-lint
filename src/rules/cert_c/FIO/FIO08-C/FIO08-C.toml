@@ -25,3 +25,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO08-C.+Take+care+when+calling+remove%28%29+on+an+open+file"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+overlap = "FIO45-C owns the race family"
+basis = "yes, at default only, while POSIX is undeclared (FIO08-C/2026-10-07/presets). Strict and pedantic coincide (P/coincide)."
+ruling = "FIO08-C/2026-10-07/presets, P/coincide"

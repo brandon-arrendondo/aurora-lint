@@ -33,3 +33,12 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ARR39-C.+Do+not+add+or+subtract+a+scaled+integer+to+a+pointer"
 cwe = ["CWE-468"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "EXP08-C folds in"
+basis = "no. One form in every preset (P/coincide)."
+ruling = "P/coincide"

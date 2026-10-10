@@ -32,3 +32,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/DCL09-C.+Declare+functions+that+return+errno+with+a+return+type+of+errno_t"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+basis = "no (P/coincide)."
+ruling = "P/coincide"

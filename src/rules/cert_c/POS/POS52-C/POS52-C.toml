@@ -26,3 +26,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS52-C.+Do+not+perform+operations+that+can+block+while+holding+a+POSIX+lock"
 cwe = []
 related_cwe = ["CWE-557"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "CON05-C is the C11 twin (E10 both fire)"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

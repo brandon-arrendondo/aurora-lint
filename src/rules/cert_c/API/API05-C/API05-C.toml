@@ -40,3 +40,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/API05-C.+Use+conformant+array+parameters"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+basis = "yes, at default only (API05-C/2026-10-07/presets). Strict and pedantic coincide."
+ruling = "API05-C/2026-10-07/presets"

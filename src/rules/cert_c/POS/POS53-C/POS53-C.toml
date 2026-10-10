@@ -31,3 +31,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS53-C.+Do+not+use+more+than+one+mutex+for+concurrent+waiting+operations+on+a+condition+variable"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+overlap = "no C11 twin (E10 does not apply)"
+basis = "yes, at default only, by one named option (POS53-C/2026-10-07/option-start-routines). Pedantic equals strict. The C11 extension is a separate named option (POS53-C/2026-10-07/c11-condition-variables)."
+ruling = "POS53-C/2026-10-07/option-start-routines, POS53-C/2026-10-07/c11-condition-variables"

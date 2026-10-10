@@ -31,3 +31,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/PRE11-C.+Do+not+conclude+macro+definitions+with+a+semicolon"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "PRE31-C reverse location rule (finding at definition's final ';', expansion sites secondary)"
+basis = "yes. Default exempts generators (PRE11-C/2026-10-07/1); pedantic adds nested expansion (PRE11-C/2026-10-07/presets)."
+ruling = "PRE11-C/2026-10-07/1, PRE11-C/2026-10-07/presets"

@@ -27,3 +27,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP02-C.+Be+aware+of+the+short-circuit+behavior+of+the+logical+AND+and+OR+operators"
 cwe = []
 related_cwe = ["CWE-768"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+basis = "yes, at pedantic (EXP02-C/2026-10-07/presets). Default and strict coincide (P/coincide)."
+ruling = "EXP02-C/2026-10-07/presets, P/coincide"

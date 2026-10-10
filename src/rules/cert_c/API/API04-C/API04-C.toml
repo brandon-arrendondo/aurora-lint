@@ -24,3 +24,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/API04-C.+Provide+a+consistent+and+usable+error-checking+mechanism"
 cwe = []
 related_cwe = ["CWE-754"]
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "EXP12-C and ERR33-C report the checkable remainder"
+basis = "no. Not enforced in any preset."

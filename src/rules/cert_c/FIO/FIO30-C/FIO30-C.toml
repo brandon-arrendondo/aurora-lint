@@ -29,3 +29,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO30-C.+Exclude+user+input+from+format+strings"
 cwe = ["CWE-134"]
 related_cwe = ["CWE-20"]
+
+[presets]
+default = "widened"
+strict = "as_written"
+pedantic = "not_enforced"
+differs = true
+basis = "yes, in all three: default widens the family to macros and wrappers (FIO30-C/2026-10-09/2, FIO30-C/2026-10-09/3), pedantic declines the rule while the family is not well defined (FIO30-C/2026-10-09/2)."
+ruling = "FIO30-C/2026-10-09/2, FIO30-C/2026-10-09/3"

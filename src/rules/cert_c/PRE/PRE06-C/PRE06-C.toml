@@ -27,3 +27,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/PRE06-C.+Enclose+header+files+in+an+include+guard"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "reserved guard names are DCL37-C's"
+basis = "no. Strict is as written; default and pedantic equal strict (P/open-cells)."
+ruling = "P/open-cells"

@@ -39,3 +39,11 @@ wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ARR00-C.+Understand+how+ar
 cwe = []
 related_cwe = ["CWE-119", "CWE-123", "CWE-125", "CWE-129"]
 related = ["ARR30-C"]
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "ARR30-C and the listed rules own each form"
+basis = "no. Not enforced in any preset."

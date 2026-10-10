@@ -32,3 +32,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP37-C.+Call+functions+with+the+correct+number+and+type+of+arguments"
 cwe = []
 related_cwe = ["CWE-628", "CWE-685", "CWE-686"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "DCL20-C owns old-style declarations"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

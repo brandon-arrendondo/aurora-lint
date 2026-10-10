@@ -22,3 +22,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO40-C.+Reset+strings+on+fgets%28%29++or+fgetws%28%29+failure"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "unchecked calls stay with ERR33-C"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

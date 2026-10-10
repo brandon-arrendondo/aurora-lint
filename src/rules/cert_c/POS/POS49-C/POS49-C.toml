@@ -34,3 +34,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS49-C.+When+data+must+be+accessed+by+multiple+threads%2C+provide+a+mutex+and+guarantee+no+adjacent+data+is+also+accessed"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "C11 twin is CON32-C (E10, one analysis keyed by API); lead floats folding into CON32-C"
+basis = "no (P/coincide)."
+ruling = "P/coincide"

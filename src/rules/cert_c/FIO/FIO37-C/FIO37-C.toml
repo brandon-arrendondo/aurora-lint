@@ -36,3 +36,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO37-C.+Do+not+assume+that+fgets%28%29+or+fgetws%28%29+returns+a+nonempty+string+when+successful"
 cwe = []
 related_cwe = ["CWE-119", "CWE-241"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+basis = "yes, at pedantic only (FIO37-C/2026-10-09/2, FIO37-C/2026-10-09/4). Default and strict coincide (P/coincide)."
+ruling = "FIO37-C/2026-10-09/2, FIO37-C/2026-10-09/4, P/coincide"

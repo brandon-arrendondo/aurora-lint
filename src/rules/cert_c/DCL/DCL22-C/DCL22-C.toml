@@ -40,3 +40,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/DCL22-C.+Use+volatile+for+data+that+cannot+be+cached"
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "SIG31-C owns signal-handler sliver; MSC22-C owns setjmp sliver"
+basis = "no. Not enforced in any preset."

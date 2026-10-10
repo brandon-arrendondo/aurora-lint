@@ -27,3 +27,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/WIN04-C.+Consider+encrypting+function+pointers"
 cwe = []
 related_cwe = ["CWE-311", "CWE-319"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

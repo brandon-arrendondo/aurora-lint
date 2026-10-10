@@ -33,3 +33,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ERR33-C.+Detect+and+handle+standard+library+errors"
 cwe = ["CWE-252", "CWE-253", "CWE-390", "CWE-391", "CWE-690"]
 related = ["ERR00-C", "FLP32-C"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+overlap = "MSC11-C reports a live assert that default treats as a guard"
+basis = "yes. Default narrows by named options and widens the function set (ERR33-C/2026-10-09/2, /6, /7, /9); pedantic declines the rule (ERR33-C/2026-10-09/7)."
+ruling = "ERR33-C/2026-10-09/2, ERR33-C/2026-10-09/7"

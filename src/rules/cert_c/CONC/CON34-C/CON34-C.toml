@@ -32,3 +32,12 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/CON34-C.+Declare+objects+shared+between+threads+with+appropriate+storage+durations"
 related = ["CON33-C"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "POS50-C shares one analysis (E10); CON33-C owns non-thread-safe calls"
+basis = "no, apart from the named option of CON34-C/2026-10-07/option-lifetime, which is off by default (P/coincide)."
+ruling = "CON34-C/2026-10-07/option-lifetime, P/coincide"

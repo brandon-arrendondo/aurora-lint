@@ -26,3 +26,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT16-C.+Do+not+make+assumptions+about+representation+of+signed+integers"
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "INT13-C, INT32-C"
+basis = "no. Not enforced in any preset."

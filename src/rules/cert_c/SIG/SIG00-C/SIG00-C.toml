@@ -27,3 +27,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/SIG00-C.+Mask+signals+handled+by+noninterruptible+signal+handlers"
 cwe = []
 related_cwe = ["CWE-432", "CWE-662"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "SIG30-C/ERR32-C may co-fire on errno"
+basis = "yes. Default narrows to shared state (SIG00-C/2026-10-07/presets, /2); pedantic drops the tolerance exemption."
+ruling = "SIG00-C/2026-10-07/presets"

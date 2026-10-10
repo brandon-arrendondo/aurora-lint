@@ -40,3 +40,12 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/POS50-C.+Declare+objects+shared+between+POSIX+threads+with+appropriate+storage+durations"
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "CON34-C is the C11 twin sharing one analysis (E10); FIO45-C owns the dropped stat-then-use form"
+basis = "no, apart from the named option of POS50-C/2026-10-07/option-lifetime, which is off by default (P/coincide)."
+ruling = "POS50-C/2026-10-07/option-lifetime, P/coincide"

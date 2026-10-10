@@ -27,3 +27,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/pages/viewpage.action?pageId=87152120"
 cwe = []
 related_cwe = ["CWE-129", "CWE-682"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "as_written"
+differs = false
+overlap = "ARR30-C overlaps on index use"
+basis = "no. Default, strict and pedantic coincide (P/coincide)."
+ruling = "P/coincide"

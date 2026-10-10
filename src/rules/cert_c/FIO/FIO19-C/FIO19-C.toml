@@ -27,3 +27,11 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO19-C.+Do+not+use+fseek%28%29+and+ftell%28%29+to+compute+the+size+of+a+regular+file"
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+basis = "yes, at default only, while POSIX is undeclared (FIO19-C/2026-10-07/presets). Strict and pedantic coincide (P/coincide)."
+ruling = "FIO19-C/2026-10-07/presets, P/coincide"

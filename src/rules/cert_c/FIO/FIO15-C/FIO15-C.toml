@@ -45,3 +45,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO15-C.+Ensure+that+file+operations+are+performed+in+a+secure+directory"
 cwe = []
 related_cwe = ["CWE-379", "CWE-552"]
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "FIO21-C owns the shared-directory remnant"
+basis = "no. Not enforced in any preset."

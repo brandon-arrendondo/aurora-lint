@@ -32,3 +32,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO01-C.+Be+careful+using+functions+that+use+file+names+for+identification"
 cwe = ["CWE-367"]
 related_cwe = ["CWE-73", "CWE-676"]
+
+[presets]
+default = "as_written"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "FIO45-C may absorb the check-then-open path (co-fires; open question in disposition); FIO15-C"
+basis = "yes, at pedantic only (FIO01-C/2026-10-09/presets below). Default and strict coincide (P/coincide)."
+ruling = "FIO01-C/2026-10-09/presets, P/coincide"

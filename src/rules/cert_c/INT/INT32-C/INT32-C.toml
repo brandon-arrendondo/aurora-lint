@@ -45,3 +45,12 @@ wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT32-C.+Ensure+that+opera
 cwe = ["CWE-190", "CWE-191"]
 related_cwe = ["CWE-129", "CWE-680"]
 related = ["ARR38-C", "INT08-C"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "INT31-C takes short/char stores; INT34-C shift count; INT30-C unsigned; INT33-C divide by zero"
+basis = "yes, in every column: default narrows by provenance and proof, pedantic judges at ISO C's minimum widths and adds the C23 library forms (INT32-C/2026-10-09/presets, INT32-C/2026-10-09/2)."
+ruling = "INT32-C/2026-10-09/presets, INT32-C/2026-10-09/2"

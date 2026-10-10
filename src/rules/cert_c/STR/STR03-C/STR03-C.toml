@@ -32,3 +32,11 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/STR03-C.+Do+not+inadvertently+truncate+a+string"
 cwe = []
 related_cwe = ["CWE-170", "CWE-464"]
+
+[presets]
+default = "not_enforced"
+strict = "not_enforced"
+pedantic = "not_enforced"
+differs = false
+overlap = "ERR34-C owns the (char)atoi sub-check"
+basis = "no. Not enforced in any preset."

@@ -32,3 +32,12 @@ enabled = true
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/STR02-C.+Sanitize+data+passed+to+complex+subsystems"
 cwe = ["CWE-78", "CWE-90"]
 related_cwe = ["CWE-88"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "stricter"
+differs = true
+overlap = "ENV33-C reports the system call, STR02-C the tainted data (both fire); STR31-C/ENV03-C related"
+basis = "yes, in all three (STR02-C/2026-10-07/presets)."
+ruling = "STR02-C/2026-10-07/presets"

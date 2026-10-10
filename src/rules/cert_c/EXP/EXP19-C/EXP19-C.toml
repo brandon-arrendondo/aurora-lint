@@ -28,3 +28,11 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/EXP19-C.+Use+braces+for+the+body+of+an+if%2C+for%2C+or+while+statement"
 cwe = ["CWE-483"]
+
+[presets]
+default = "narrowed"
+strict = "as_written"
+pedantic = "as_written"
+differs = true
+basis = "yes, at default only (`exp19-else-if-chain`, EXP19-C/2026-10-10/2, and the shared `empty-loop-layout` option, EXP19-C/2026-10-10/5). Strict and pedantic coincide on findings (EXP19-C/2026-10-10/3)."
+ruling = "EXP19-C/2026-10-10/2, EXP19-C/2026-10-10/5, EXP19-C/2026-10-10/3"
