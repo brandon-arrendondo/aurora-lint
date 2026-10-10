@@ -1725,6 +1725,17 @@ fn spans(outer: &Node, inner: &Node) -> bool {
 /// is rejected — including a block ending in a preprocessor wrapper, where
 /// what runs depends on a `-D` this analyzer does not resolve.
 pub fn always_diverges(stmt: &Node) -> bool {
+    always_diverges_with(stmt, &|_| false)
+}
+
+/// [`always_diverges`], where `ends_path` names further statements the
+/// caller knows control cannot fall out of: a call to a function that never
+/// returns, which only the caller's noreturn set can say. The block rule is
+/// the same, so a branch diverges only if its LAST statement does:
+/// `{ if (v) return 0; }`, a loop whose `break` leaves only that loop, and a
+/// `switch` whose `break` leaves only the switch all fall through, while
+/// `{ log(); exit(1); }` does not when `ends_path` accepts the call.
+pub fn always_diverges_with(stmt: &Node, ends_path: &dyn Fn(&Node) -> bool) -> bool {
     match stmt.kind() {
         "goto_statement" | "return_statement" | "break_statement" | "continue_statement" => true,
         "compound_statement" => {
@@ -1735,9 +1746,9 @@ pub fn always_diverges(stmt: &Node) -> bool {
                 }
                 last = Some(child);
             }
-            last.is_some_and(|l| always_diverges(&l))
+            last.is_some_and(|l| always_diverges_with(&l, ends_path))
         }
-        _ => false,
+        _ => ends_path(stmt),
     }
 }
 

@@ -898,22 +898,46 @@ impl Int33C {
         false
     }
 
-    /// Whether a guard's branch leaves: it holds a `return`, `break` or
-    /// `continue` statement, or a direct call to a function that never
-    /// returns under the run's settings (`file_noreturn_names`: `exit` and
-    /// `abort` only under `stdlib_noreturn`). Read off the AST, never the
-    /// branch's text, so an identifier, comment or string that merely spells
-    /// one (`exit_code = 1;`, `return_value++`) does not end it (ADR-0005).
+    /// Whether a guard's branch always leaves, so the statements after the
+    /// guard run only when its condition was false: control cannot fall out
+    /// of the branch ([`guard_dominance::always_diverges_with`]). Its last
+    /// statement is a `return`, `break`, `continue` or `goto`, a direct call
+    /// to a function that never returns under the run's settings
+    /// (`file_noreturn_names`), or an `if` with an `else` whose arms both
+    /// leave. A jump or call that merely appears inside the branch does not
+    /// count: `{ if (v) return 0; }` falls through when `v` is zero, and a
+    /// `break` inside a nested loop or `switch` leaves only that construct.
+    /// Read off the AST, never the branch's text (ADR-0005).
     fn has_return_or_exit(&self, node: &Node, source: &str) -> bool {
         let noreturn_names = self.file_noreturn_names.borrow();
-        query::find_first_descendant(*node, |n| match n.kind() {
-            "return_statement" | "break_statement" | "continue_statement" => true,
-            "call_expression" => {
-                crate::analyze::noreturn::calls_noreturn(&n, source, &noreturn_names)
+        fn ends_path(stmt: &Node, source: &str, names: &HashSet<String>) -> bool {
+            match stmt.kind() {
+                "expression_statement" => {
+                    crate::analyze::noreturn::is_noreturn_call_statement(stmt, source, names)
+                }
+                "if_statement" => {
+                    let arm = |field: &str| {
+                        stmt.child_by_field_name(field).is_some_and(|arm| {
+                            // An `else` arm is wrapped in an `else_clause`.
+                            let arm = if arm.kind() == "else_clause" {
+                                match arm.named_child(0) {
+                                    Some(inner) => inner,
+                                    None => return false,
+                                }
+                            } else {
+                                arm
+                            };
+                            guard_dominance::always_diverges_with(&arm, &|s| {
+                                ends_path(s, source, names)
+                            })
+                        })
+                    };
+                    arm("consequence") && arm("alternative")
+                }
+                _ => false,
             }
-            _ => false,
-        })
-        .is_some()
+        }
+        guard_dominance::always_diverges_with(node, &|s| ends_path(s, source, &noreturn_names))
     }
 
     /// Check if division node is in a safe branch (e.g., in the body after a zero check)
