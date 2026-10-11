@@ -81,6 +81,22 @@ Policy options
    - Oracle tag: ``exec-spawn-not-command-processor``
    - Basis: CERT ENV33-C: "Do not invoke a command processor via system() or equivalent functions"; its compliant solutions call execve() and CreateProcess(), which run a program the same way _exec* and _spawn* do.
 
+``pos34_main_frame_exempt``
+   POS34-C: putenv() of an automatic object in main's own frame is not reported: main's automatic objects live until the program ends, so the environment entry does not dangle unless main is called recursively. Off, it is reported as CERT's rule is written.
+
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
+   - Scope: POS34-C
+   - Oracle tag: ``putenv-main-frame``
+   - Basis: The Clang Static Analyzer's security.PutenvStackArray skips main. CERT POS34-C states the rule for any function and gives no exemption; C23 6.2.4p2 ends an automatic object's lifetime when its block ends, and main's block ends when main returns.
+
+``pos34_exit_path_exempt``
+   POS34-C: putenv() of an automatic object is not reported when every path after the call ends in exit(), _exit(), _Exit(), quick_exit(), abort() or an exec* call, so the function never returns while the entry is live (the usual fork-then-exec shape). Off, it is reported as CERT's rule is written.
+
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
+   - Scope: POS34-C
+   - Oracle tag: ``putenv-exit-path``
+   - Basis: Clang's security.PutenvStackArray documents the exit and exec path as a known false positive. CERT POS34-C gives no such exemption.
+
 ``flp36_constant_assert_is_guard``
    FLP36-C: an assert whose condition compares constants the file can see, among them a standard integer limit or floating-point precision (LONG_MAX, DBL_MANT_DIG and the like), checks the platform, so it counts as a precision check even though NDEBUG can strip it.
 

@@ -38,6 +38,26 @@
 //! }
 //! ```
 //!
+//! **Non-compliant (pointer copy, member, compound literal):**
+//! ```c
+//! char env[1024];
+//! char *p = env;
+//! putenv(p);                 /* p points at automatic storage */
+//! putenv(&env[0]);           /* so does the address of its first element */
+//! putenv(s.buf);             /* an array member of an automatic struct */
+//! putenv((char[]){"A=1"});   /* a block-scope compound literal */
+//! ```
+//!
+//! The storage of the argument is found by resolving each name to its own
+//! declaration (ADR-0006): a `static` or `extern` declaration, a parameter
+//! (the caller's storage) and a pointer with any non-automatic value are
+//! never reported.
+//!
+//! Two named options withhold a report CERT's page would make:
+//! `pos34_main_frame_exempt` (the call is in `main`) and
+//! `pos34_exit_path_exempt` (every path after the call ends in
+//! `exit`/`_exit`/`_Exit`/`quick_exit`/`abort`/an `exec*` call).
+//!
 //! **Preferred (Use setenv):**
 //! ```c
 //! int func(const char *var) {
@@ -47,11 +67,51 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::settings::AnalysisSettings;
+use crate::utility::cert_c::ast_utils::{
+    declaration_has_storage_class, get_identifier_from_declarator, get_node_text,
+    resolve_identifier_declarator,
+};
 use lang_parsing_substrate::query;
+use std::sync::Arc;
 use tree_sitter::Node;
 
-pub struct Pos34C;
+/// The option that exempts a call in `main`'s own frame.
+const MAIN_FRAME_OPTION: &str = "pos34_main_frame_exempt";
+/// The option that exempts a call every path after which ends the process.
+const EXIT_PATH_OPTION: &str = "pos34_exit_path_exempt";
+
+/// Calls after which the process no longer runs this function's caller.
+const PROCESS_ENDING_CALLS: &[&str] = &[
+    "exit",
+    "_exit",
+    "_Exit",
+    "quick_exit",
+    "abort",
+    "execl",
+    "execle",
+    "execlp",
+    "execv",
+    "execve",
+    "execvp",
+    "execvpe",
+    "fexecve",
+];
+
+/// How far a pointer's value is followed through copies (`q = p; r = q;`).
+const MAX_COPY_DEPTH: usize = 4;
+
+pub struct Pos34C {
+    settings: std::cell::RefCell<Arc<AnalysisSettings>>,
+}
+
+impl Pos34C {
+    pub fn new() -> Self {
+        Self {
+            settings: std::cell::RefCell::new(Arc::new(AnalysisSettings::default())),
+        }
+    }
+}
 
 impl CertRule for Pos34C {
     fn rule_id(&self) -> &'static str {
@@ -70,6 +130,10 @@ impl CertRule for Pos34C {
         "POS34-C"
     }
 
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        *self.settings.borrow_mut() = Arc::clone(settings);
+    }
+
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.check_putenv_calls(node, source, violations);
     }
@@ -77,183 +141,512 @@ impl CertRule for Pos34C {
 
 impl Pos34C {
     fn check_putenv_calls(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        for node in query::find_descendants_of_kind(*node, "call_expression") {
-            let node = &node;
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-
-                if func_name == "putenv" {
-                    // Check the argument passed to putenv
-                    if let Some(arguments) = node.child_by_field_name("arguments") {
-                        if let Some(arg) = self.get_first_argument(&arguments) {
-                            let arg_text = get_node_text(&arg, source);
-
-                            // Check if it's a local automatic variable
-                            if self.is_automatic_variable(&arg, source, node) {
-                                violations.push(RuleViolation {
-                                    rule_id: self.rule_id().to_string(),
-                                    message: format!(
-                                        "putenv() called with pointer to automatic variable '{}'. \
-                                         The argument to putenv() must point to memory with static \
-                                         storage duration (static variable or heap allocation). \
-                                         Automatic variables are destroyed when the function returns, \
-                                         leaving a dangling pointer in the environment.",
-                                        arg_text
-                                    ),
-                                    severity: self.severity(),
-                                    line: node.start_position().row + 1,
-                                    column: node.start_position().column + 1,
-                                    file_path: String::new(),
-                                    suggestion: Some(
-                                        "Use 'static char env[...]' or malloc(), or prefer setenv() \
-                                         which handles memory management automatically"
-                                            .to_string(),
-                                    ),
-                                    requires_manual_review: Some(true),
-                                });
-                            }
-                        }
-                    }
-                }
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if !calls_putenv(&call, source) {
+                continue;
             }
+            let Some(arg) = first_argument(&call) else {
+                continue;
+            };
+            if !points_to_automatic(&arg, source, 0) {
+                continue;
+            }
+            if self.exempted(&call, source) {
+                continue;
+            }
+            let arg_text = get_node_text(&arg, source);
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                message: format!(
+                    "putenv() called with pointer to automatic variable '{}'. \
+                     The argument to putenv() must point to memory with static \
+                     storage duration (static variable or heap allocation). \
+                     Automatic variables are destroyed when the function returns, \
+                     leaving a dangling pointer in the environment.",
+                    arg_text
+                ),
+                severity: self.severity(),
+                line: call.start_position().row + 1,
+                column: call.start_position().column + 1,
+                file_path: String::new(),
+                suggestion: Some(
+                    "Use 'static char env[...]' or malloc(), or prefer setenv() \
+                     which handles memory management automatically"
+                        .to_string(),
+                ),
+                requires_manual_review: Some(true),
+            });
         }
     }
 
-    /// Get the first argument from an argument list
-    fn get_first_argument<'a>(&self, arguments: &Node<'a>) -> Option<Node<'a>> {
-        for i in 0..arguments.child_count() {
-            if let Some(child) = arguments.child(i) {
-                // Skip the parentheses and commas
-                if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
-                    return Some(child);
-                }
+    /// Whether a named option withholds the report for this call.
+    fn exempted(&self, call: &Node, source: &str) -> bool {
+        let settings = self.settings.borrow();
+        if settings.flag(MAIN_FRAME_OPTION) && containing_function_name(call, source) == "main" {
+            return true;
+        }
+        settings.flag(EXIT_PATH_OPTION) && every_path_ends_process(call, source)
+    }
+}
+
+/// `putenv(...)` or `(putenv)(...)`.
+fn calls_putenv(call: &Node, source: &str) -> bool {
+    let Some(mut function) = call.child_by_field_name("function") else {
+        return false;
+    };
+    while function.kind() == "parenthesized_expression" {
+        match function.named_child(0) {
+            Some(inner) => function = inner,
+            None => return false,
+        }
+    }
+    function.kind() == "identifier" && get_node_text(&function, source) == "putenv"
+}
+
+fn first_argument<'a>(call: &Node<'a>) -> Option<Node<'a>> {
+    call.child_by_field_name("arguments")?.named_child(0)
+}
+
+fn containing_function_name(node: &Node, source: &str) -> String {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "function_definition" {
+            return n
+                .child_by_field_name("declarator")
+                .map(|d| get_identifier_from_declarator(&d, source))
+                .unwrap_or_default();
+        }
+        current = n.parent();
+    }
+    String::new()
+}
+
+fn inside_function(node: &Node) -> bool {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "function_definition" {
+            return true;
+        }
+        current = n.parent();
+    }
+    false
+}
+
+/// Whether the expression is a pointer to an object of automatic storage
+/// duration: an array declared in a block, its address or the address of one
+/// of its elements, an array member of an automatic struct, a block-scope
+/// compound literal of array type, or a local pointer every value of which is
+/// one of those.
+fn points_to_automatic(expr: &Node, source: &str, depth: usize) -> bool {
+    match expr.kind() {
+        "parenthesized_expression" => expr
+            .named_child(0)
+            .is_some_and(|inner| points_to_automatic(&inner, source, depth)),
+        "cast_expression" => expr
+            .child_by_field_name("value")
+            .is_some_and(|inner| points_to_automatic(&inner, source, depth)),
+        "identifier" => identifier_points_to_automatic(expr, source, depth),
+        "pointer_expression" => {
+            let is_address_of = expr
+                .child_by_field_name("operator")
+                .is_some_and(|op| get_node_text(&op, source) == "&");
+            is_address_of
+                && expr
+                    .child_by_field_name("argument")
+                    .is_some_and(|operand| address_is_automatic(&operand, source))
+        }
+        "field_expression" => automatic_array_member(expr, source),
+        "compound_literal_expression" => {
+            inside_function(expr)
+                && expr.child_by_field_name("type").is_some_and(|t| {
+                    query::find_first_descendant(t, |n| {
+                        matches!(n.kind(), "abstract_array_declarator" | "array_declarator")
+                    })
+                    .is_some()
+                })
+        }
+        _ => false,
+    }
+}
+
+/// `&operand`: the address of an automatic object or a part of one.
+fn address_is_automatic(operand: &Node, source: &str) -> bool {
+    match operand.kind() {
+        "parenthesized_expression" => operand
+            .named_child(0)
+            .is_some_and(|inner| address_is_automatic(&inner, source)),
+        // `&env[0]`: the element's storage is the array's, when the base is the array.
+        "subscript_expression" => operand
+            .child_by_field_name("argument")
+            .is_some_and(|base| is_automatic_array_expr(&base, source)),
+        "identifier" => resolve_object(operand, source).is_some_and(|o| o.automatic),
+        "field_expression" => field_root_is_automatic_object(operand, source),
+        _ => false,
+    }
+}
+
+/// An expression that names an automatic array itself (not a pointer).
+fn is_automatic_array_expr(expr: &Node, source: &str) -> bool {
+    match expr.kind() {
+        "parenthesized_expression" => expr
+            .named_child(0)
+            .is_some_and(|inner| is_automatic_array_expr(&inner, source)),
+        "identifier" => resolve_object(expr, source).is_some_and(|o| o.automatic && o.array),
+        "field_expression" => automatic_array_member(expr, source),
+        _ => false,
+    }
+}
+
+struct Object<'a> {
+    declarator: Node<'a>,
+    /// A block-scope declaration with no `static`/`extern`/thread storage.
+    automatic: bool,
+    array: bool,
+    pointer: bool,
+}
+
+/// The declaration an identifier occurrence resolves to, by scope.
+fn resolve_object<'a>(ident: &Node<'a>, source: &str) -> Option<Object<'a>> {
+    let name = get_node_text(ident, source);
+    let (decl, declarator) = resolve_identifier_declarator(ident, name, source)?;
+    let (mut array, mut pointer) = (false, false);
+    let mut d = declarator;
+    loop {
+        match d.kind() {
+            "array_declarator" => array = true,
+            "pointer_declarator" => pointer = true,
+            "parenthesized_declarator" => {}
+            _ => break,
+        }
+        match d.child_by_field_name("declarator") {
+            Some(inner) => d = inner,
+            None => break,
+        }
+    }
+    // A parameter's storage belongs to the caller: an array parameter is a pointer.
+    let automatic = decl.kind() == "declaration"
+        && inside_function(&decl)
+        && !["static", "extern", "_Thread_local", "thread_local"]
+            .iter()
+            .any(|class| declaration_has_storage_class(&decl, class, source));
+    Some(Object {
+        declarator,
+        automatic,
+        array,
+        pointer,
+    })
+}
+
+fn identifier_points_to_automatic(ident: &Node, source: &str, depth: usize) -> bool {
+    let Some(object) = resolve_object(ident, source) else {
+        return false;
+    };
+    if !object.automatic {
+        return false;
+    }
+    if object.array {
+        // A pointer to an array is not the array's first element.
+        return !object.pointer;
+    }
+    if !object.pointer || depth >= MAX_COPY_DEPTH {
+        return false;
+    }
+    // A pointer: every value it is given must point at automatic storage.
+    let values = pointer_values(&object, ident, source);
+    !values.is_empty()
+        && values
+            .iter()
+            .all(|value| points_to_automatic(value, source, depth + 1))
+}
+
+/// The initializer and every assigned value of the pointer `object` in its
+/// function. Empty when its address is taken, because then it can be written
+/// where this cannot see.
+fn pointer_values<'a>(object: &Object<'a>, ident: &Node<'a>, source: &str) -> Vec<Node<'a>> {
+    let name = get_node_text(ident, source);
+    let mut values = Vec::new();
+    if let Some(parent) = object.declarator.parent() {
+        if parent.kind() == "init_declarator" {
+            if let Some(value) = parent.child_by_field_name("value") {
+                values.push(value);
             }
         }
-        None
     }
-
-    /// Check if a variable is automatic (not static, not from malloc)
-    fn is_automatic_variable(&self, arg: &Node, source: &str, call_node: &Node) -> bool {
-        let arg_text = get_node_text(arg, source);
-
-        // If argument is not an identifier, it might be a cast or other expression
-        // For simplicity, we'll check if the text contains an identifier pattern
-        let var_name = if arg.kind() == "identifier" {
-            arg_text
-        } else if arg.kind() == "cast_expression" {
-            // Handle cast like (char *)env
-            if let Some(value) = arg.child_by_field_name("value") {
-                get_node_text(&value, source)
-            } else {
-                return false;
-            }
-        } else {
-            // For other expressions, extract identifier if present
-            arg_text
+    let mut function = object.declarator.parent();
+    while let Some(n) = function {
+        if n.kind() == "function_definition" {
+            break;
+        }
+        function = n.parent();
+    }
+    let Some(function) = function else {
+        return Vec::new();
+    };
+    for occurrence in query::find_descendants_of_kind(function, "identifier") {
+        if get_node_text(&occurrence, source) != name {
+            continue;
+        }
+        // Another declaration's same-named variable is not this one.
+        let Some(other) = resolve_object(&occurrence, source) else {
+            continue;
         };
-
-        // Check if this variable is declared locally in the containing function
-        if let Some(function) = self.find_containing_function(call_node) {
-            if let Some(declaration) = self.find_variable_declaration(&function, &var_name, source)
+        if other.declarator.id() != object.declarator.id() {
+            continue;
+        }
+        let Some(parent) = occurrence.parent() else {
+            continue;
+        };
+        match parent.kind() {
+            "assignment_expression"
+                if parent
+                    .child_by_field_name("left")
+                    .is_some_and(|l| l.id() == occurrence.id()) =>
             {
-                // Check if the declaration has 'static' storage class
-                if self.is_static_declaration(&declaration, source) {
-                    return false; // Static variable, not automatic
+                match parent.child_by_field_name("right") {
+                    Some(right)
+                        if parent
+                            .child_by_field_name("operator")
+                            .is_some_and(|op| get_node_text(&op, source) == "=") =>
+                    {
+                        values.push(right)
+                    }
+                    _ => return Vec::new(),
                 }
+            }
+            "pointer_expression"
+                if parent
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| get_node_text(&op, source) == "&") =>
+            {
+                return Vec::new();
+            }
+            "update_expression" => return Vec::new(),
+            _ => {}
+        }
+    }
+    values
+}
 
-                // Check if the variable is initialized with malloc/calloc/realloc
-                if self.is_heap_allocated(&declaration, source) {
-                    return false; // Heap allocated pointer, not automatic
+/// `s.buf` where `s` is an automatic struct object and `buf` an array member.
+fn automatic_array_member(expr: &Node, source: &str) -> bool {
+    field_root_is_automatic_object(expr, source) && member_is_array(expr, source)
+}
+
+/// A `.`-only member path rooted at an automatic non-pointer object.
+fn field_root_is_automatic_object(expr: &Node, source: &str) -> bool {
+    let mut current = *expr;
+    loop {
+        match current.kind() {
+            "field_expression" => {
+                let is_arrow = current
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| get_node_text(&op, source) == "->");
+                if is_arrow {
+                    return false;
                 }
-
-                // Check if it's an array declaration (not a pointer)
-                // Arrays are automatic storage, pointers can point anywhere
-                if self.is_array_declaration(&declaration, source) {
-                    return true; // Array is automatic storage
+                match current.child_by_field_name("argument") {
+                    Some(inner) => current = inner,
+                    None => return false,
                 }
+            }
+            "subscript_expression" => match current.child_by_field_name("argument") {
+                Some(inner) => current = inner,
+                None => return false,
+            },
+            "parenthesized_expression" => match current.named_child(0) {
+                Some(inner) => current = inner,
+                None => return false,
+            },
+            "identifier" => {
+                return resolve_object(&current, source).is_some_and(|o| o.automatic && !o.pointer);
+            }
+            _ => return false,
+        }
+    }
+}
 
-                // For pointer variables not initialized with malloc, need more analysis
-                // If it's a pointer type (char *), we can't be sure where it points
-                // Conservatively assume pointers are not automatic unless we know otherwise
-                if self.is_pointer_declaration(&declaration, source) {
-                    return false; // Pointer could point to heap/static, conservatively safe
-                }
+/// Whether the member a `.` path ends in is declared as an array, read from
+/// the struct definition the root object's type names in this file.
+fn member_is_array(expr: &Node, source: &str) -> bool {
+    let Some(field) = expr.child_by_field_name("field") else {
+        return false;
+    };
+    let field_name = get_node_text(&field, source);
+    let Some(argument) = expr.child_by_field_name("argument") else {
+        return false;
+    };
+    let Some(root) = path_root(&argument) else {
+        return false;
+    };
+    let name = get_node_text(&root, source);
+    let Some((decl, _)) = resolve_identifier_declarator(&root, name, source) else {
+        return false;
+    };
+    let Some(type_node) = decl.child_by_field_name("type") else {
+        return false;
+    };
+    // Only the root's own struct type is read; a nested member's struct is not.
+    if argument.kind() != "identifier" {
+        return false;
+    }
+    let body = if type_node.kind() == "struct_specifier" || type_node.kind() == "union_specifier" {
+        match type_node.child_by_field_name("body") {
+            Some(body) => Some(body),
+            None => type_node
+                .child_by_field_name("name")
+                .and_then(|tag| struct_body_named(&type_node, get_node_text(&tag, source), source)),
+        }
+    } else {
+        None
+    };
+    let Some(body) = body else {
+        return false;
+    };
+    body.named_children(&mut body.walk())
+        .filter(|f| f.kind() == "field_declaration")
+        .flat_map(|f| {
+            let mut cursor = f.walk();
+            f.children_by_field_name("declarator", &mut cursor)
+                .collect::<Vec<_>>()
+        })
+        .any(|d| d.kind() == "array_declarator" && member_name(&d, source) == field_name)
+}
 
-                // If it's neither an array nor a pointer, it's likely automatic
+/// The member a field declarator names (`field_identifier`, which
+/// `get_identifier_from_declarator` does not read).
+fn member_name<'a>(declarator: &Node, source: &'a str) -> &'a str {
+    let mut d = *declarator;
+    while let Some(inner) = d.child_by_field_name("declarator") {
+        d = inner;
+    }
+    get_node_text(&d, source)
+}
+
+fn path_root<'a>(expr: &Node<'a>) -> Option<Node<'a>> {
+    let mut current = *expr;
+    loop {
+        match current.kind() {
+            "identifier" => return Some(current),
+            "field_expression" | "subscript_expression" => {
+                current = current.child_by_field_name("argument")?
+            }
+            "parenthesized_expression" => current = current.named_child(0)?,
+            _ => return None,
+        }
+    }
+}
+
+/// The body of the `struct tag { ... }` defined in the same file.
+fn struct_body_named<'a>(from: &Node<'a>, tag: &str, source: &str) -> Option<Node<'a>> {
+    let mut root = *from;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    query::find_descendants_of_kind(root, "struct_specifier")
+        .into_iter()
+        .chain(query::find_descendants_of_kind(root, "union_specifier"))
+        .find_map(|spec| {
+            let body = spec.child_by_field_name("body")?;
+            let name = spec.child_by_field_name("name")?;
+            (get_node_text(&name, source) == tag).then_some(body)
+        })
+}
+
+/// Whether control cannot return from the function after `call`: each
+/// statement that follows ends the process before any `return` or `goto` can
+/// be reached, climbing out of the blocks the call sits in.
+fn every_path_ends_process(call: &Node, source: &str) -> bool {
+    // The statement holding the call.
+    let mut stmt = *call;
+    loop {
+        let Some(parent) = stmt.parent() else {
+            return false;
+        };
+        if parent.kind() == "compound_statement" {
+            break;
+        }
+        stmt = parent;
+    }
+    // A branch of the statement holding the call may return.
+    if !matches!(stmt.kind(), "expression_statement" | "declaration") && contains_jump_out(&stmt) {
+        return false;
+    }
+    loop {
+        let Some(block) = stmt.parent() else {
+            return false;
+        };
+        let mut next = stmt.next_named_sibling();
+        while let Some(sibling) = next {
+            if sibling.kind() == "comment" {
+                next = sibling.next_named_sibling();
+                continue;
+            }
+            if ends_process_statement(&sibling, source) {
                 return true;
             }
-        }
-
-        // If we can't find the declaration, conservatively assume it's not automatic
-        false
-    }
-
-    /// Find the containing function node
-    fn find_containing_function<'a>(&self, node: &Node<'a>) -> Option<Node<'a>> {
-        let mut current = Some(*node);
-        while let Some(node) = current {
-            if node.kind() == "function_definition" {
-                return Some(node);
-            }
-            current = node.parent();
-        }
-        None
-    }
-
-    /// Find a variable declaration within a function
-    fn find_variable_declaration<'a>(
-        &self,
-        function: &Node<'a>,
-        var_name: &str,
-        source: &str,
-    ) -> Option<Node<'a>> {
-        self.search_declaration(function, var_name, source)
-    }
-
-    fn search_declaration<'a>(
-        &self,
-        node: &Node<'a>,
-        var_name: &str,
-        source: &str,
-    ) -> Option<Node<'a>> {
-        query::find_first_descendant(*node, |n| {
-            if n.kind() != "declaration" {
+            if contains_jump_out(&sibling) || sibling.kind() == "labeled_statement" {
                 return false;
             }
-            if let Some(declarator) = n.child_by_field_name("declarator") {
-                let decl_text = get_node_text(&declarator, source);
-                return decl_text.contains(var_name);
+            next = sibling.next_named_sibling();
+        }
+        // The block is exhausted: fall out into whatever encloses it.
+        let Some(owner) = block.parent() else {
+            return false;
+        };
+        match owner.kind() {
+            "if_statement" | "else_clause" => {
+                // Continue after the whole `if` (its else arm included).
+                stmt = if owner.kind() == "else_clause" {
+                    match owner.parent() {
+                        Some(i) => i,
+                        None => return false,
+                    }
+                } else {
+                    owner
+                };
+                if stmt
+                    .parent()
+                    .is_none_or(|p| p.kind() != "compound_statement")
+                {
+                    return false;
+                }
             }
-            false
-        })
+            "compound_statement" => stmt = block,
+            // A function falls off its end (a return); a loop can iterate; a
+            // switch arm falls through: none ends the process.
+            _ => return false,
+        }
     }
+}
 
-    /// Check if a declaration is static
-    fn is_static_declaration(&self, declaration: &Node, source: &str) -> bool {
-        let decl_text = get_node_text(declaration, source);
-        decl_text.contains("static")
-    }
+fn contains_jump_out(node: &Node) -> bool {
+    query::find_first_descendant(*node, |n| {
+        matches!(n.kind(), "return_statement" | "goto_statement")
+    })
+    .is_some()
+}
 
-    /// Check if a variable is heap allocated (initialized with malloc/calloc/realloc)
-    fn is_heap_allocated(&self, declaration: &Node, source: &str) -> bool {
-        let decl_text = get_node_text(declaration, source);
-        decl_text.contains("malloc")
-            || decl_text.contains("calloc")
-            || decl_text.contains("realloc")
+/// `exit(1);`, `execv(...);`, `(void)abort();`
+fn ends_process_statement(stmt: &Node, source: &str) -> bool {
+    if stmt.kind() != "expression_statement" {
+        return false;
     }
-
-    /// Check if a declaration is an array (e.g., char env[1024])
-    fn is_array_declaration(&self, declaration: &Node, source: &str) -> bool {
-        let decl_text = get_node_text(declaration, source);
-        // Simple heuristic: check for square brackets
-        decl_text.contains('[') && decl_text.contains(']')
+    let Some(mut expr) = stmt.named_child(0) else {
+        return false;
+    };
+    while matches!(expr.kind(), "cast_expression" | "parenthesized_expression") {
+        match expr
+            .child_by_field_name("value")
+            .or_else(|| expr.named_child(0))
+        {
+            Some(inner) => expr = inner,
+            None => return false,
+        }
     }
-
-    /// Check if a declaration is a pointer (e.g., char *env)
-    fn is_pointer_declaration(&self, declaration: &Node, source: &str) -> bool {
-        let decl_text = get_node_text(declaration, source);
-        // Simple heuristic: check for pointer declaration
-        // This is simplified and may need refinement
-        decl_text.contains('*') && !decl_text.contains('[')
+    if expr.kind() != "call_expression" {
+        return false;
     }
+    expr.child_by_field_name("function")
+        .filter(|f| f.kind() == "identifier")
+        .is_some_and(|f| PROCESS_ENDING_CALLS.contains(&get_node_text(&f, source)))
 }

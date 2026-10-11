@@ -1144,7 +1144,7 @@ impl RuleRegistry {
         registry.register(Box::new(pos01_c::Pos01C));
         registry.register(Box::new(pos04_c::Pos04C));
         registry.register(Box::new(pos05_c::Pos05C));
-        registry.register(Box::new(pos34_c::Pos34C));
+        registry.register(Box::new(pos34_c::Pos34C::new()));
         registry.register(Box::new(pos35_c::Pos35C::new()));
         registry.register(Box::new(pos30_c::Pos30C));
         registry.register(Box::new(pos36_c::Pos36C));
