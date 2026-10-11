@@ -148,7 +148,8 @@ library macros.
 
 | Function | Signature | Description |
 |---|---|---|
-| `is_defined_macro_name` | `(name: &str, source: &str) -> bool` | True if `#define name ...` appears anywhere in `source`, regardless of what it expands to (object-like *or* function-like — matches on the name only). Used to recognize a trailing bare identifier after a struct/union/enum body as an attribute-macro invocation rather than a genuine declaration, since a real C identifier can never collide with an in-scope `#define` name. **This is a primitive that was once almost re-implemented as a fresh ALL_CAPS heuristic — it already existed.** |
+| `is_defined_macro_name` | `(name: &str, source: &str) -> bool` | True if `#define name ...` appears anywhere in `source`, regardless of what it expands to (object-like *or* function-like — matches on the name only). Used to recognize a trailing bare identifier after a struct/union/enum body as an attribute-macro invocation rather than a genuine declaration, since a real C identifier can never collide with an in-scope `#define` name. **This is a primitive that was once almost re-implemented as a fresh ALL_CAPS heuristic — it already existed.** It scans the whole file on every call, so a pass that asks once per function or per name should build a `DefinedMacroNames` instead. |
+| `DefinedMacroNames` | `of(source: &str) -> Self`, `contains(&self, name: &str) -> bool`, `source(&self) -> &str` | `is_defined_macro_name` for many lookups against one file: `of` reads the file's `#define` names once, and `contains` answers each name from that set, with the same answer the per-name scan gives (a name that is not a plain word falls back to that scan). Use it whenever a pass asks about many names in the same file, e.g. once per function, where calling `is_defined_macro_name` each time rescans the whole file per call and makes the pass quadratic in file size. Function summaries build one per file and hand it to `const_eval` through `ConstantNameSets::file_macros`. |
 | `collect_defined_macro_names` | `(source: &str, out: &mut HashSet<String>)` | Collects every `#define NAME ...` object-macro name in `source` via plain regex (not AST), so results can be merged project-wide and used to resolve a macro name that lives in a *different* file (e.g. hostap's `STRUCT_PACKED` defined in `utils/common.h`, used on structs in `common/ieee802_11_defs.h`). |
 | `collect_packed_macro_names` | `(source: &str, out: &mut HashSet<String>)` | Specialization of the above scoped to macros whose replacement text contains "packed" (e.g. `#define STRUCT_PACKED __attribute__((packed))`). |
 | `collect_unused_attribute_macro_names` | `(source: &str, out: &mut HashSet<String>)` | Same shape, scoped to object-like macros whose replacement text *is* an unused-attribute annotation (`#define UNUSED __attribute__((unused))`, `[[maybe_unused]]`, the reserved `__unused` spellings). Matched as whole tokens, so `warn_unused_result` is not one. Merged project-wide into `ProjectContext::unused_attribute_macros`; the `#define` is almost always in a header far from the declaration it annotates. |
@@ -174,7 +175,9 @@ mistake MSC12-C nearly made — do not add a sixth ALL_CAPS heuristic.
 
 **Wiring pattern:** No wiring needed for the single-file check
 (`is_defined_macro_name(name, source)` — just call it with the current
-file's source). For cross-file resolution, a rule's struct must hold a
+file's source). For repeated lookups in one file, build
+`DefinedMacroNames::of(source)` once and call `contains` per name, so
+the file is read for `#define`s once instead of once per lookup. For cross-file resolution, a rule's struct must hold a
 `RefCell<Arc<HashSet<String>>>` and override `CertRule::set_project_context`
 to take a handle on `context.defined_macro_names` (see DCL40-C, and
 MSC12-C) — the field is already collected project-wide during prescan, so a
