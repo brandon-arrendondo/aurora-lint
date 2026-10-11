@@ -102,7 +102,7 @@ impl CertRule for Int33C {
     }
 
     fn severity(&self) -> Severity {
-        Severity::High
+        Severity::Low
     }
 
     fn cert_id(&self) -> &'static str {
