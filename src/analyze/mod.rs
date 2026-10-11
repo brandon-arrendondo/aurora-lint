@@ -2070,9 +2070,10 @@ pub(crate) fn compute_vra_if_needed(
     // Every function of the file replays calls against the same summaries,
     // so their return-range-only form is built once here.
     let replay = value_range::replay_summaries_of(&summaries);
+    let functions = function_definitions_by_start(root_node);
     let mut results = HashMap::new();
     for (&start_byte, func_cfg) in function_cfgs {
-        if let Some(func_node) = find_function_at_byte(root_node, start_byte) {
+        if let Some(&func_node) = functions.get(&start_byte) {
             results.insert(
                 start_byte,
                 value_range::analyze_value_ranges_with_replay(
@@ -2084,7 +2085,29 @@ pub(crate) fn compute_vra_if_needed(
     results
 }
 
-/// Find the function_definition node at a given start byte.
+/// Every function_definition node in the tree under `root`, by start byte,
+/// in one walk. Where two start at the same byte the one met first in a
+/// preorder walk is kept, which is the one [`find_function_at_byte`] returns:
+/// its pruning only skips subtrees that cannot hold a node starting there,
+/// so it meets the candidates in the same order.
+fn function_definitions_by_start<'a>(
+    root: &tree_sitter::Node<'a>,
+) -> HashMap<usize, tree_sitter::Node<'a>> {
+    let mut found = HashMap::new();
+    let mut stack = vec![*root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "function_definition" {
+            found.entry(node.start_byte()).or_insert(node);
+        }
+        let children: Vec<_> = node.child_nodes().collect();
+        stack.extend(children.into_iter().rev());
+    }
+    found
+}
+
+/// Find the function_definition node at a given start byte: the reference
+/// [`function_definitions_by_start`] is checked against, one search per call.
+#[cfg(test)]
 fn find_function_at_byte<'a>(
     node: &tree_sitter::Node<'a>,
     start_byte: usize,
@@ -2271,6 +2294,34 @@ mod tests {
         let start = second_func.start_byte();
         let found = find_function_at_byte(&root, start);
         assert!(found.is_some());
+    }
+
+    #[test]
+    fn function_definitions_by_start_agrees_with_find_function_at_byte() {
+        // Plain, K&R, nested in a preprocessor branch, and code tree-sitter
+        // recovers with ERROR nodes around or inside a definition.
+        let code = "int a(void) { return 1; }\n\
+                    int b(x) int x; { return x; }\n\
+                    #ifdef X\nstatic void c(void) {}\n#endif\n\
+                    MACRO(int d(void) { return 2; })\n\
+                    void e(void) { int f(void) { return 3; } }\n\
+                    struct s { int g(void) { } };\n\
+                    int h(void) { ) }\n";
+        let (tree, _source) = parse_c(code);
+        let root = tree.root_node();
+        let index = function_definitions_by_start(&root);
+        assert!(
+            index.len() >= 4,
+            "too few definitions parsed: {}",
+            index.len()
+        );
+        for byte in 0..=code.len() {
+            assert_eq!(
+                index.get(&byte).map(|n| n.id()),
+                find_function_at_byte(&root, byte).map(|n| n.id()),
+                "disagree at byte {byte}"
+            );
+        }
     }
 
     // -- get_code_snippet --
