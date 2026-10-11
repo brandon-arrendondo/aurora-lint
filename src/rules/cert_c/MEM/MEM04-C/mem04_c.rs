@@ -238,11 +238,22 @@ impl Mem04C {
         risky_vars: &mut HashMap<usize, HashSet<String>>,
     ) -> Option<String> {
         let size_text = get_node_text(size, source);
+        // The call as written: `os_malloc()`, or `os_malloc() (malloc)` when
+        // a macro wraps the allocator.
+        let callee = call
+            .child_by_field_name("function")
+            .map(|f| get_node_text(&f, source))
+            .unwrap_or(allocator);
+        let called = if callee == allocator {
+            format!("{}()", allocator)
+        } else {
+            format!("{}() ({})", callee, allocator)
+        };
         if const_eval::try_evaluate_expr(size, source, &facts.macros) == Some(0) {
             return Some(format!(
-                "{}() is called with a size of zero: the result of a zero-length \
+                "{} is called with a size of zero: the result of a zero-length \
                  allocation is implementation-defined and may not be accessed",
-                allocator
+                called
             ));
         }
         if Self::proven_nonzero(size, call, source, facts) {
@@ -250,17 +261,17 @@ impl Mem04C {
         }
         if allocator == "realloc" {
             return Some(format!(
-                "realloc() size '{}' is not proven non-zero: realloc(p, 0) may free p and \
+                "{} size '{}' is not proven non-zero: realloc(p, 0) may free p and \
                  return a null pointer (implementation-defined in C17, undefined in C23)",
-                size_text
+                called, size_text
             ));
         }
         if self.reads_input_or_parameter(size, call, source, risky_vars) {
             return Some(format!(
-                "{}() size '{}' comes from input or a parameter and nothing in the \
+                "{} size '{}' comes from input or a parameter and nothing in the \
                  function proves it non-zero: a zero-length allocation's result is \
                  implementation-defined",
-                allocator, size_text
+                called, size_text
             ));
         }
         None
