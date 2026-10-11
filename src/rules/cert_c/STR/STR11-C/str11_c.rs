@@ -16,9 +16,13 @@
 //! - **bound equals the size** (`char s[4] = "abc"`): terminated, but the
 //!   bound restates what the initializer already says, and drifts from it
 //!   when the literal is edited. Reported only for a bound the declaration
-//!   could leave out, its own outermost one: an inner dimension
-//!   (`char t[][4] = {"abc"}`), a member's bound and a typedef's are
-//!   required by C, and there only the two unterminated cases apply.
+//!   itself could leave out, its own outermost one (maintainer ruling,
+//!   2026-10-11). C forbids leaving out an inner dimension
+//!   (`char t[][4] = {"abc"}`, C11 6.7.6.2p1) or a member's bound (C11
+//!   6.7.2.1p18). C allows `typedef char T[];`, but dropping a typedef's
+//!   bound changes the type everywhere it is used, so CERT's remedy is not
+//!   local to the declaration. In those three places only the two
+//!   unterminated cases apply.
 //!
 //! EX1 (an array that is deliberately not a string) is credited only for a
 //! declared intent the compiler can check, `__attribute__((nonstring))` or
@@ -157,9 +161,9 @@ enum Shape<'a> {
         bound: Option<Node<'a>>,
         element: Box<Shape<'a>>,
         nonstring: bool,
-        /// Whether the declaration could leave this bound out: only the
-        /// outermost bound a declaration itself writes. An inner dimension,
-        /// a member's bound and a typedef's are required by C.
+        /// Whether the declaration itself could leave this bound out: only
+        /// the outermost bound it writes. C requires an inner dimension and
+        /// a member's bound; a typedef's could go, but not locally.
         omittable: bool,
     },
     /// A structure or union defined in the file: its members in order.
@@ -175,16 +179,26 @@ struct Cx<'a, 's> {
 }
 
 /// The file's structure and union definitions by tag, and its typedefs by
-/// name, each the first in source order, collected in one walk.
+/// name, collected in one walk and looked up by C's scope rules: a
+/// definition counts at a use only when its block encloses the use and it
+/// comes first, and the innermost such block wins. A block's
+/// `typedef char T4[8];` therefore answers for that block, never a
+/// file-scope `T4` of another size (ADR-0006).
 struct TypeIndex<'a> {
-    tags: HashMap<(&'static str, String), Node<'a>>,
-    typedefs: HashMap<String, Node<'a>>,
+    /// `(kind, tag)` to each definition's scope, start and body.
+    tags: HashMap<(&'static str, String), Vec<Scoped<'a>>>,
+    /// Typedef name to each definition's scope, start and node.
+    typedefs: HashMap<String, Vec<Scoped<'a>>>,
 }
+
+/// One definition: the id of the scope it is in, where it starts, and the
+/// node a lookup returns.
+type Scoped<'a> = (usize, usize, Node<'a>);
 
 impl<'a> TypeIndex<'a> {
     fn of(root: &Node<'a>, source: &str) -> Self {
-        let mut tags = HashMap::new();
-        let mut typedefs = HashMap::new();
+        let mut tags: HashMap<_, Vec<_>> = HashMap::new();
+        let mut typedefs: HashMap<_, Vec<_>> = HashMap::new();
         let nodes = query::find_descendants(*root, |n| {
             matches!(
                 n.kind(),
@@ -192,25 +206,78 @@ impl<'a> TypeIndex<'a> {
             )
         });
         for n in nodes {
+            let scope = scope_of(&n);
             if n.kind() == "type_definition" {
                 for d in n.children_by_field_name("declarator", &mut n.walk()) {
                     if let Some(name) = typedef_name(&d, source) {
-                        typedefs.entry(name.to_string()).or_insert(n);
+                        typedefs.entry(name.to_string()).or_default().push((
+                            scope,
+                            n.start_byte(),
+                            n,
+                        ));
                     }
                 }
             } else if let (Some(body), Some(name)) =
                 (n.child_by_field_name("body"), n.child_by_field_name("name"))
             {
-                let kind = if n.kind() == "struct_specifier" {
-                    "struct_specifier"
-                } else {
-                    "union_specifier"
-                };
-                tags.entry((kind, get_node_text(&name, source).to_string()))
-                    .or_insert(body);
+                tags.entry((record_kind(&n), get_node_text(&name, source).to_string()))
+                    .or_default()
+                    .push((scope, n.start_byte(), body));
             }
         }
         TypeIndex { tags, typedefs }
+    }
+
+    fn tag(&self, kind: &'static str, tag: &str, at: &Node) -> Option<Node<'a>> {
+        visible(self.tags.get(&(kind, tag.to_string()))?, at)
+    }
+
+    fn typedef(&self, name: &str, at: &Node) -> Option<Node<'a>> {
+        visible(self.typedefs.get(name)?, at)
+    }
+}
+
+/// The definition among `defs` that a use at `at` sees: from the innermost
+/// enclosing block outward, the last one in that block before the use.
+fn visible<'a>(defs: &[Scoped<'a>], at: &Node) -> Option<Node<'a>> {
+    let mut cur = Some(*at);
+    while let Some(n) = cur {
+        if is_scope(&n) {
+            let found = defs
+                .iter()
+                .filter(|(scope, start, _)| *scope == n.id() && *start < at.start_byte())
+                .max_by_key(|(_, start, _)| *start);
+            if let Some((_, _, node)) = found {
+                return Some(*node);
+            }
+        }
+        cur = n.parent();
+    }
+    None
+}
+
+/// A node that opens a scope for typedef names and tags.
+fn is_scope(n: &Node) -> bool {
+    matches!(n.kind(), "compound_statement" | "translation_unit")
+}
+
+/// The id of the innermost scope enclosing `n`.
+fn scope_of(n: &Node) -> usize {
+    let mut cur = n.parent();
+    while let Some(p) = cur {
+        if is_scope(&p) {
+            return p.id();
+        }
+        cur = p.parent();
+    }
+    0
+}
+
+fn record_kind(n: &Node) -> &'static str {
+    if n.kind() == "struct_specifier" {
+        "struct_specifier"
+    } else {
+        "union_specifier"
     }
 }
 
@@ -228,12 +295,7 @@ impl<'a, 's> Cx<'a, 's> {
             "struct_specifier" | "union_specifier" => {
                 let body = spec.child_by_field_name("body").or_else(|| {
                     let tag = get_node_text(&spec.child_by_field_name("name")?, self.source);
-                    let kind = if spec.kind() == "struct_specifier" {
-                        "struct_specifier"
-                    } else {
-                        "union_specifier"
-                    };
-                    self.index.tags.get(&(kind, tag.to_string())).copied()
+                    self.index.tag(record_kind(spec), tag, spec)
                 });
                 match body {
                     Some(b) => self.record_shape(&b, depth),
@@ -242,7 +304,7 @@ impl<'a, 's> Cx<'a, 's> {
             }
             "type_identifier" => {
                 let name = get_node_text(spec, self.source);
-                let typedef = self.index.typedefs.get(name).copied();
+                let typedef = self.index.typedef(name, spec);
                 match typedef {
                     Some(t) => {
                         let Some(ty) = t.child_by_field_name("type") else {

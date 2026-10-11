@@ -3,9 +3,10 @@
  * Source: testcases
  * Status: PASS - Should NOT trigger STR11-C violation
  *
- * Where C requires the bound - an inner dimension of an array of strings,
- * a structure member, a typedef'd array - it cannot be left out, so a
- * bound that holds the literal with its terminator is compliant. Only the
+ * Where the declaration cannot leave the bound out - an inner dimension of
+ * an array of strings or a structure member, which C requires, or a
+ * typedef'd array, whose bound belongs to every use of the type - a bound
+ * that holds the literal with its terminator is compliant. Only the
  * unterminated cases are reported there.
  */
 const char table[][4] = {"abc", "de", "f"};
