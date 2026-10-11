@@ -23,9 +23,11 @@
 //! further read (`fgets` again). A failure branch that returns, aborts or
 //! resets therefore passes — CERT's EX1 follows from the form, since a
 //! buffer that is never read again is never read while indeterminate.
-//! `sizeof`, a comparison of the pointer and taking its address into
-//! another variable are not reads; passing it to a function that does not
-//! only write it is.
+//! `sizeof` and a comparison of the pointer are not reads; passing it to a
+//! function that does not only write it is. A pointer that holds the
+//! array's address (`p = buf`, `char *p = buf`, through casts, `buf + k` and
+//! `&buf[k]`) is followed along the path: a read or write through it counts
+//! as one of the array, until the pointer is assigned something else.
 //!
 //! A call whose result is never tested is ERR33-C's construct, not this
 //! rule's.
@@ -147,14 +149,10 @@ impl Fio40C {
         }
 
         let body = func.child_by_field_name("body")?;
-        let mut accesses: Vec<(usize, Access, Node)> = occurrences(&body, &buffer, source)
-            .into_iter()
-            .map(|occ| (occ.start_byte(), classify(occ, source), occ))
-            .filter(|(_, a, _)| *a != Access::Neither)
-            .collect();
-        accesses.sort_by_key(|(at, _, _)| *at);
+        let events = path_events(&body, &buffer, source);
+        let initial = aliases_held_at(&events, call.start_byte());
 
-        let read = first_read_on_failure_path(cfg, &starts, &accesses)?;
+        let read = first_read_on_failure_path(cfg, &starts, &events, initial)?;
         let at = call.start_position();
         let buffer_text = get_node_text(&buffer, source);
         Some(RuleViolation {
@@ -399,6 +397,10 @@ fn last_name<'s>(n: &Node, source: &'s str) -> &'s str {
 
 fn is_declarator(n: &Node) -> bool {
     n.parent().is_some_and(|p| {
+        if p.kind() == "init_declarator" {
+            // The name declared, not the initializer's value.
+            return p.child_by_field_name("declarator") == Some(*n);
+        }
         p.kind().ends_with("_declarator")
             || matches!(p.kind(), "declaration" | "parameter_declaration")
     })
@@ -446,7 +448,7 @@ fn classify(occ: Node, source: &str) -> Access {
                     _ => return Access::Neither,
                 }
             }
-            "unary_expression" => return Access::Neither,
+            "unary_expression" | "update_expression" => return Access::Neither,
             "argument_list" => return classify_argument(&p, &v, source),
             "assignment_expression" => {
                 return if p.child_by_field_name("left") == Some(v) {
@@ -525,30 +527,191 @@ fn classify_argument(args: &Node, arg: &Node, source: &str) -> Access {
     }
 }
 
-/// Breadth-first over the CFG from the failure successors: the first read of
-/// the array met on some path before a write, if any.
+/// Something on a path that bears on the array: an access to it, a pointer
+/// starting or ceasing to hold its address, or an access through such a
+/// pointer (effective only while it holds the address).
+#[derive(Clone, Copy)]
+enum Event<'a> {
+    Array(Access, Node<'a>),
+    AliasOn(usize),
+    AliasOff(usize),
+    Alias(usize, Access, Node<'a>),
+}
+
+/// At most this many pointers are followed as aliases of one array.
+const MAX_ALIASES: usize = 64;
+
+/// Every event in the function body, in source order.
+fn path_events<'a>(body: &Node<'a>, buffer: &Node<'a>, source: &str) -> Vec<(usize, Event<'a>)> {
+    let mut aliases: Vec<Node<'a>> = Vec::new();
+    let mut events = Vec::new();
+    for occ in occurrences(body, buffer, source) {
+        if let Some(target) = alias_target(occ) {
+            let i = match aliases.iter().position(|a| same_lvalue(a, &target, source)) {
+                Some(i) => i,
+                None if aliases.len() < MAX_ALIASES => {
+                    aliases.push(target);
+                    aliases.len() - 1
+                }
+                None => continue,
+            };
+            events.push((occ.start_byte(), Event::AliasOn(i)));
+            continue;
+        }
+        let access = classify(occ, source);
+        if access != Access::Neither {
+            events.push((occ.start_byte(), Event::Array(access, occ)));
+        }
+    }
+    for (i, alias) in aliases.iter().enumerate() {
+        for occ in occurrences(body, alias, source) {
+            let Some(parent) = occ.parent() else {
+                continue;
+            };
+            if parent.kind() == "assignment_expression"
+                && parent.child_by_field_name("left") == Some(occ)
+            {
+                let plain = parent
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "=");
+                let from_array = parent.child_by_field_name("right").is_some_and(|r| {
+                    !occurrences(&r, buffer, source).is_empty()
+                        || occurrences_at(&r, buffer, source)
+                });
+                if plain && !from_array {
+                    events.push((occ.start_byte(), Event::AliasOff(i)));
+                }
+                continue;
+            }
+            if parent.kind() == "update_expression" {
+                continue;
+            }
+            let access = classify(occ, source);
+            if access != Access::Neither {
+                events.push((occ.start_byte(), Event::Alias(i, access, occ)));
+            }
+        }
+    }
+    events.sort_by_key(|(at, _)| *at);
+    events
+}
+
+/// `r` is itself the array (`p = buf;`), which `occurrences` under `r` does
+/// not see.
+fn occurrences_at(r: &Node, buffer: &Node, source: &str) -> bool {
+    let r = peel(*r);
+    r.kind() == buffer.kind() && same_lvalue(&r, buffer, source)
+}
+
+/// The pointer an occurrence of the array is stored into, when it is:
+/// `p = buf`, `char *p = buf`, through casts, `buf + k` and `&buf[k]`.
+fn alias_target<'a>(occ: Node<'a>) -> Option<Node<'a>> {
+    let mut v = occ;
+    loop {
+        let p = v.parent()?;
+        match p.kind() {
+            "parenthesized_expression" | "cast_expression" => v = p,
+            "binary_expression"
+                if p.child_by_field_name("operator")
+                    .is_some_and(|o| matches!(o.kind(), "+" | "-")) =>
+            {
+                v = p
+            }
+            "pointer_expression" if p.child(0).is_some_and(|o| o.kind() == "&") => v = p,
+            "subscript_expression" if p.child_by_field_name("argument") == Some(v) => {
+                let amp = p.parent()?;
+                if amp.kind() == "pointer_expression"
+                    && amp.child(0).is_some_and(|o| o.kind() == "&")
+                {
+                    v = amp;
+                } else {
+                    return None;
+                }
+            }
+            "assignment_expression" => {
+                let plain = p
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "=");
+                if !plain || p.child_by_field_name("right") != Some(v) {
+                    return None;
+                }
+                let left = peel(p.child_by_field_name("left")?);
+                return (left.kind() == "identifier").then_some(left);
+            }
+            "init_declarator" => {
+                if p.child_by_field_name("value") != Some(v) {
+                    return None;
+                }
+                let mut d = p.child_by_field_name("declarator")?;
+                while let Some(inner) = d.child_by_field_name("declarator") {
+                    d = inner;
+                }
+                return (d.kind() == "identifier").then_some(d);
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// The aliases holding the array's address when the call runs, read in
+/// source order: each one whose last event before `at` started it.
+fn aliases_held_at(events: &[(usize, Event)], at: usize) -> u64 {
+    let mut mask = 0u64;
+    for (pos, e) in events {
+        if *pos >= at {
+            break;
+        }
+        match e {
+            Event::AliasOn(i) => mask |= 1 << i,
+            Event::AliasOff(i) => mask &= !(1 << i),
+            _ => {}
+        }
+    }
+    mask
+}
+
+/// Breadth-first over the CFG from the failure successors, carrying which
+/// aliases hold the array's address: the first read of the array, directly
+/// or through a holding alias, met on some path before a write.
 fn first_read_on_failure_path<'a>(
     cfg: &FunctionCfg,
     starts: &[usize],
-    accesses: &[(usize, Access, Node<'a>)],
+    events: &[(usize, Event<'a>)],
+    initial: u64,
 ) -> Option<Node<'a>> {
-    let mut seen: HashSet<usize> = HashSet::new();
-    let mut queue: VecDeque<usize> = starts.iter().copied().collect();
-    while let Some(id) = queue.pop_front() {
-        if !seen.insert(id) {
+    let mut seen: HashSet<(usize, u64)> = HashSet::new();
+    let mut queue: VecDeque<(usize, u64)> = starts.iter().map(|&b| (b, initial)).collect();
+    'blocks: while let Some((id, mut mask)) = queue.pop_front() {
+        if !seen.insert((id, mask)) {
             continue;
         }
         let Some(block) = cfg.get_block(id) else {
             continue;
         };
-        let first = accesses
+        let in_block = events
             .iter()
-            .find(|(at, _, _)| block.statements.iter().any(|&(s, e)| *at >= s && *at < e));
-        match first {
-            Some((_, Access::Read, node)) => return Some(*node),
-            Some(_) => continue,
-            None => queue.extend(cfg.successors(id).into_iter().map(|(b, _)| b)),
+            .filter(|(at, _)| block.statements.iter().any(|&(s, e)| *at >= s && *at < e));
+        for (_, e) in in_block {
+            let access = match *e {
+                Event::Array(a, n) => Some((a, n)),
+                Event::Alias(i, a, n) if mask & (1 << i) != 0 => Some((a, n)),
+                Event::AliasOn(i) => {
+                    mask |= 1 << i;
+                    None
+                }
+                Event::AliasOff(i) => {
+                    mask &= !(1 << i);
+                    None
+                }
+                Event::Alias(..) => None,
+            };
+            match access {
+                Some((Access::Read, n)) => return Some(n),
+                Some((Access::Write, _)) => continue 'blocks,
+                _ => {}
+            }
         }
+        queue.extend(cfg.successors(id).into_iter().map(|(b, _)| (b, mask)));
     }
     None
 }
