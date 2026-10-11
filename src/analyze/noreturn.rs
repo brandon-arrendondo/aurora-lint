@@ -602,6 +602,18 @@ pub fn calls_stdlib_noreturn(
 /// declaration that arrives through an `#include` is not in this file's text
 /// and is not seen.
 pub fn library_names_redefined(root: &Node, source: &str) -> HashSet<String> {
+    library_names_redefined_among(root, source, is_stdlib_noreturn_function)
+}
+
+/// [`library_names_redefined`] for any set of library names: those `is_library`
+/// accepts that `root` defines, or declares `static`, as functions of its own.
+/// A rule that recognises a library call by its callee (FIO40-C's `fgets`)
+/// asks this before treating a call by that name as the library's.
+pub fn library_names_redefined_among(
+    root: &Node,
+    source: &str,
+    is_library: impl Fn(&str) -> bool,
+) -> HashSet<String> {
     let mut found = HashSet::new();
     let mut stack = vec![*root];
     while let Some(node) = stack.pop() {
@@ -610,7 +622,7 @@ pub fn library_names_redefined(root: &Node, source: &str) -> HashSet<String> {
             match child.kind() {
                 "function_definition" => {
                     if let Some(name) = definition_name(&child, source) {
-                        if is_stdlib_noreturn_function(&name) {
+                        if is_library(&name) {
                             found.insert(name);
                         }
                     }
@@ -636,7 +648,7 @@ pub fn library_names_redefined(root: &Node, source: &str) -> HashSet<String> {
                                 &d, source,
                             );
                         if crate::utility::cert_c::declarator_utils::declares_function(&d)
-                            && is_stdlib_noreturn_function(&name)
+                            && is_library(&name)
                         {
                             found.insert(name);
                         }

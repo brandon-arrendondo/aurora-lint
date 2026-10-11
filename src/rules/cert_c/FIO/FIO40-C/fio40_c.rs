@@ -32,7 +32,9 @@
 //! as one of the array, until the pointer is assigned something else.
 //!
 //! A call whose result is never tested is ERR33-C's construct, not this
-//! rule's.
+//! rule's. A file that defines its own function named `fgets` (or one of the
+//! writers above) is calling that function: its `fgets` is not the library
+//! read, and its writer counts only by what its summary shows.
 //!
 //! Paths are not value-sensitive: a read guarded by a flag that only the
 //! success path sets (`if (!error_flag) puts(buf);`) is still reached from
@@ -43,6 +45,7 @@ use crate::analyze::cfg::{build_function_cfg, CfgEdge, FunctionCfg};
 use crate::analyze::const_eval::{self, resolve_macro_alias};
 use crate::analyze::context::{ProjectContext, ScopedTable};
 use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::noreturn::library_names_redefined_among;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::call_roles::{frees_argument, writes_through_arg};
@@ -94,8 +97,10 @@ impl CertRule for Fio40C {
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let redefined = library_names_redefined_among(node, source, is_library_name);
         let calls = query::find_descendants(*node, |n| {
-            n.kind() == "call_expression" && read_function(&n, source).is_some()
+            n.kind() == "call_expression"
+                && read_function(&n, source).is_some_and(|f| !redefined.contains(f))
         });
         let cfgs = self.function_cfgs.borrow();
         let summaries = self.function_summaries.borrow();
@@ -103,6 +108,7 @@ impl CertRule for Fio40C {
         let callees = Callees {
             summaries: &summaries,
             aliases: &aliases,
+            redefined: &redefined,
             source,
         };
         let mut built: HashMap<usize, Option<FunctionCfg>> = HashMap::new();
@@ -207,7 +213,27 @@ impl Fio40C {
     }
 }
 
-/// `fgets` or `fgetws` when `call` calls one of them by name.
+/// The library names this rule gives a meaning of its own: the read
+/// functions, and the writers and deallocator it credits. A file that
+/// defines one of them is calling its own function, not the library's.
+fn is_library_name(name: &str) -> bool {
+    matches!(
+        name,
+        "fgets"
+            | "fgetws"
+            | "memset"
+            | "wmemset"
+            | "free"
+            | "strcat"
+            | "strncat"
+            | "strlcat"
+            | "wcscat"
+            | "wcsncat"
+    ) || (0..4).any(|i| writes_through_arg(name, i))
+}
+
+/// `fgets` or `fgetws` when `call` calls one of them by name; the caller
+/// rules out a file's own function by that name.
 fn read_function<'s>(call: &Node, source: &'s str) -> Option<&'s str> {
     let f = call.child_by_field_name("function")?;
     let name = get_node_text(&f, source);
@@ -539,6 +565,15 @@ fn classify_argument(args: &Node, arg: &Node, source: &str, callees: &Callees) -
     else {
         return Access::Read;
     };
+    let line = call.start_position().row + 1;
+    if callees.redefined.contains(name) {
+        // The file's own function by a library name: only its body speaks.
+        return if callees.ends(name, idx, line) {
+            Access::Write
+        } else {
+            Access::Read
+        };
+    }
     if matches!(
         name,
         "strcat" | "strncat" | "strlcat" | "wcscat" | "wcsncat"
@@ -548,7 +583,7 @@ fn classify_argument(args: &Node, arg: &Node, source: &str, callees: &Callees) -
     if matches!(name, "memset" | "wmemset") && idx == 0 {
         return Access::Write;
     }
-    if writes_through_arg(name, idx) || callees.ends(name, idx, call.start_position().row + 1) {
+    if writes_through_arg(name, idx) || callees.ends(name, idx, line) {
         Access::Write
     } else {
         Access::Read
@@ -563,12 +598,14 @@ fn classify_argument(args: &Node, arg: &Node, source: &str, callees: &Callees) -
 pub(crate) struct Callees<'c> {
     summaries: &'c ScopedTable<FunctionSummary>,
     aliases: &'c HashMap<String, String>,
+    /// Library names this file defines as its own functions.
+    redefined: &'c HashSet<String>,
     source: &'c str,
 }
 
 impl Callees<'_> {
     fn ends(&self, name: &str, idx: usize, line: usize) -> bool {
-        if frees_argument(name) == Some(idx) {
+        if !self.redefined.contains(name) && frees_argument(name) == Some(idx) {
             return true;
         }
         self.summaries.get(name).is_some_and(|s| {
