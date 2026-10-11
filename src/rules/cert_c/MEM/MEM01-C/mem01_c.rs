@@ -28,9 +28,11 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::context::ScopedTable;
 use crate::analyze::dataflow::find_node_at_range;
 use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::points_to::{lvalue_of, LValue};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::call_roles;
+use crate::utility::cert_c::clearing_extent::cleared_extent;
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -46,6 +48,9 @@ pub struct Mem01C {
     /// when they are set rather than once per function: it depends on
     /// nothing else.
     read_only_params: RefCell<Arc<HashMap<String, HashSet<usize>>>>,
+    /// [`Mem01C::build_freeing_wrappers`] of `cross_file_summaries`, built
+    /// with `read_only_params` for the same reason.
+    freeing_wrappers: RefCell<Arc<HashMap<String, HashSet<usize>>>>,
 }
 
 /// Per-callee parameter indices confirmed to be read-only-dereferenced,
@@ -57,6 +62,11 @@ pub struct Mem01C {
 /// tracking.
 struct AddressOfCallContext {
     read_only_params: Arc<HashMap<String, HashSet<usize>>>,
+    /// Per-callee parameter indices the callee's summary proves it frees: a
+    /// wrapper with a body (`os_free(p)`) that no `[environment.deallocators]`
+    /// entry names. The destructor idiom ends with one of these as often as
+    /// with `free`.
+    freeing_wrappers: Arc<HashMap<String, HashSet<usize>>>,
 }
 
 impl Mem01C {
@@ -65,6 +75,7 @@ impl Mem01C {
             function_cfgs: RefCell::new(HashMap::new()),
             cross_file_summaries: RefCell::default(),
             read_only_params: RefCell::default(),
+            freeing_wrappers: RefCell::default(),
         }
     }
 
@@ -100,6 +111,16 @@ impl Mem01C {
     /// reads this map to say a call is a genuine read of a possibly-freed
     /// pointer. A parameter dropped by either filter stops earning that claim,
     /// so the effect is withheld MEM01-C reports, never new ones.
+    /// Callees whose summary frees a parameter, by name.
+    fn build_freeing_wrappers(&self) -> HashMap<String, HashSet<usize>> {
+        self.cross_file_summaries
+            .borrow()
+            .iter()
+            .filter(|(_, summary)| !summary.frees_params.is_empty())
+            .map(|(name, summary)| (name.clone(), summary.frees_params.clone()))
+            .collect()
+    }
+
     fn build_read_only_params(&self) -> HashMap<String, HashSet<usize>> {
         let summaries = self.cross_file_summaries.borrow();
         let mut result = HashMap::new();
@@ -169,6 +190,7 @@ impl CertRule for Mem01C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.cross_file_summaries.borrow_mut() = context.function_summaries.clone();
         *self.read_only_params.borrow_mut() = Arc::new(self.build_read_only_params());
+        *self.freeing_wrappers.borrow_mut() = Arc::new(self.build_freeing_wrappers());
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
@@ -195,6 +217,7 @@ impl Mem01C {
 
         let addr_ctx = AddressOfCallContext {
             read_only_params: Arc::clone(&self.read_only_params.borrow()),
+            freeing_wrappers: Arc::clone(&self.freeing_wrappers.borrow()),
         };
 
         // Get pre-built CFG or build one on the fly
@@ -381,6 +404,9 @@ struct FreeSite {
     /// The objects a member path lives in, innermost first (`s->buf` lives in
     /// `s`). Freeing one of them ends the member too (the destructor idiom).
     containers: Vec<String>,
+    /// The lvalue as the points-to layer reads it, for asking whether a
+    /// clearing call's write reaches it.
+    lvalue: Option<LValue>,
 }
 
 impl FreeSite {
@@ -405,6 +431,7 @@ impl FreeSite {
             column: pos.column + 1,
             persists,
             containers,
+            lvalue: lvalue_of(&arg, source),
         })
     }
 }
@@ -448,9 +475,51 @@ fn freed_argument<'t>(call: &Node<'t>, source: &str) -> Option<Node<'t>> {
         .find(|a| a.kind() != "comment")
 }
 
+/// Whether `call` is a memory-clearing call (`memset`, `bzero`, ...) whose
+/// write reaches `lvalue`.
+fn clearing_call_covers(call: &Node, lvalue: &LValue, source: &str) -> bool {
+    let Some(callee) = call.child_by_field_name("function") else {
+        return false;
+    };
+    if !call_roles::is_memory_clearing_call(get_node_text(&callee, source)) {
+        return false;
+    }
+    let args = crate::analyze::macro_semantics::positional_args(call);
+    let Some((dest, rest)) = args.split_first() else {
+        return false;
+    };
+    cleared_extent(dest, rest, source).is_some_and(|extent| extent.covers(lvalue))
+}
+
+/// The arguments a call passes in the positions its callee's summary frees.
+fn wrapper_freed_arguments<'t>(
+    call: &Node<'t>,
+    source: &str,
+    addr_ctx: &AddressOfCallContext,
+) -> Option<Vec<Node<'t>>> {
+    let callee = call.child_by_field_name("function")?;
+    let positions = addr_ctx
+        .freeing_wrappers
+        .get(get_node_text(&callee, source))?;
+    let arguments = call.child_by_field_name("arguments")?;
+    let args: Vec<Node<'t>> = arguments
+        .named_children(&mut arguments.walk())
+        .filter(|a| a.kind() != "comment")
+        .collect();
+    Some(
+        positions
+            .iter()
+            .filter_map(|&i| args.get(i).copied())
+            .collect(),
+    )
+}
+
 /// Whether a path through `block_id` leaves the function.
+///
+/// `cfg.exits` is not used: with no explicit `return` it names the last block
+/// created, which for nested conditionals is a join block mid-function.
 fn path_ends_at(cfg: &FunctionCfg, block_id: usize) -> bool {
-    cfg.exits.contains(&block_id) || cfg.successors(block_id).is_empty()
+    cfg.successors(block_id).is_empty()
 }
 
 /// A global, or a block-scope `static`/`extern` declaration.
@@ -536,11 +605,27 @@ fn classify_stmt_on_path(
     if node.kind() == "expression_statement" {
         if let Some(call) = node.child(0).filter(|c| c.kind() == "call_expression") {
             // The object the member lives in is freed next: the member dies with it.
-            if let Some(freed) = freed_argument(&call, source) {
-                let freed = compact(get_node_text(&strip_parens_and_casts(&freed), source));
-                if site.containers.contains(&freed) {
+            let frees_container = |arg: &Node| {
+                let arg = compact(get_node_text(&strip_parens_and_casts(arg), source));
+                site.containers.contains(&arg)
+            };
+            if freed_argument(&call, source).is_some_and(|arg| frees_container(&arg)) {
+                return PtrAction::Reassigned;
+            }
+            if let Some(freed) = wrapper_freed_arguments(&call, source, addr_ctx) {
+                if freed.iter().any(frees_container) {
                     return PtrAction::Reassigned;
                 }
+            }
+        }
+        // A clearing call that writes over the freed member resets it:
+        // `free(c->a); memset(&c->csr, 0, (u8*)&c[1] - (u8*)&c->csr);`.
+        if let (Some(call), Some(lvalue)) = (
+            node.child(0).filter(|c| c.kind() == "call_expression"),
+            site.lvalue.as_ref(),
+        ) {
+            if clearing_call_covers(&call, lvalue, source) {
+                return PtrAction::Reassigned;
             }
         }
         // A path that ends the process escapes nothing.
