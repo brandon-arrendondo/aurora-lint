@@ -414,6 +414,11 @@ impl FreeSite {
     /// result, a string literal).
     fn of(call: &Node, arg: &Node, source: &str) -> Option<Self> {
         let arg = strip_parens_and_casts(arg);
+        // `ws[i].buf` names a different object whenever `i` changes, and the
+        // key is text: leave an indexed path to the rules that track values.
+        if query::find_first_descendant(arg, |n| n.kind() == "subscript_expression").is_some() {
+            return None;
+        }
         let key = compact(get_node_text(&arg, source));
         let pos = call.start_position();
         let (persists, containers) = match arg.kind() {
@@ -678,7 +683,10 @@ fn classify_stmt_for_ptr(
             // Check if ptr_name is the variable being declared (= reassignment)
             // vs used in the initializer of a different variable
             if let Some(declarator) = find_declarator_name(node, source) {
-                if declarator == ptr_name {
+                // A declaration of the variable a member path hangs off
+                // (`NodeWriter *n = &w[i];` at the top of a loop body) names a
+                // new object each time it runs.
+                if declarator == ptr_name || is_member_of(ptr_name, &declarator) {
                     return PtrAction::Reassigned;
                 }
             }
