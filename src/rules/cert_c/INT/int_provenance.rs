@@ -200,7 +200,7 @@ pub fn operand_is_risky(
 /// True when `name` is a file-scope global written by at least one tainted
 /// function (covers Juliet `_68`-style global-channel data flow and real
 /// configuration globals fed from the environment).
-fn global_is_tainted(
+pub fn global_is_tainted(
     name: &str,
     global_writers: &HashMap<String, HashSet<String>>,
     summaries: &(impl SummaryLookup + ?Sized),
