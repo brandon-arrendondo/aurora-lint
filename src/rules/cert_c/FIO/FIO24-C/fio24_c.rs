@@ -3,17 +3,13 @@
 
 //! FIO24-C: Do not open a file that is already open
 //!
-//! This rule detects:
-//! 1. When the same file is opened multiple times without closing in between.
-//! 2. When a file/handle/descriptor is closed multiple times (double close).
-//!
-//! Double-close is undefined behavior for FILE* (C11 7.21.3) and can cause
-//! use-after-free for file descriptors and Windows handles.
+//! This rule detects the same file opened again while an earlier open of it
+//! is still live. A double close is not this guideline's construct: closing
+//! a closed stream is FIO46-C's.
 //!
 //! ## Detection Strategy:
 //! - Track open/close calls for FILE*, POSIX fd, and Windows HANDLE
 //! - Detect duplicate opens on the same filename while still open
-//! - Detect duplicate close on the same variable without intervening reopen
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
@@ -23,23 +19,6 @@ use std::collections::HashMap;
 use tree_sitter::Node;
 
 pub struct Fio24C;
-
-/// Functions that open a resource (returning a handle/pointer/fd).
-const OPEN_FUNCTIONS: &[&str] = &[
-    "fopen",
-    "freopen",
-    "fdopen",
-    "tmpfile",
-    "open",
-    "_open",
-    "OPEN",
-    "CreateFile",
-    "CreateFileA",
-    "CreateFileW",
-    "CreateNamedPipe",
-    "CreateNamedPipeA",
-    "CreateNamedPipeW",
-];
 
 /// Functions that close a resource.
 const CLOSE_FUNCTIONS: &[&str] = &[
@@ -76,9 +55,6 @@ impl CertRule for Fio24C {
         let mut open_files: HashMap<String, Vec<(String, tree_sitter::Point)>> = HashMap::new();
         // Track file pointer variables: variable_name -> filename
         let mut file_pointers: HashMap<String, String> = HashMap::new();
-        // Track closed variables for double-close detection: variable_name -> close_line
-        let mut closed_vars: HashMap<String, usize> = HashMap::new();
-
         // Process each function body independently
         self.walk_functions(
             node,
@@ -86,7 +62,6 @@ impl CertRule for Fio24C {
             &mut violations,
             &mut open_files,
             &mut file_pointers,
-            &mut closed_vars,
         );
 
         violations
@@ -121,7 +96,6 @@ impl Fio24C {
         violations: &mut Vec<RuleViolation>,
         open_files: &mut HashMap<String, Vec<(String, tree_sitter::Point)>>,
         file_pointers: &mut HashMap<String, String>,
-        _closed_vars: &mut HashMap<String, usize>,
     ) {
         let functions = query::find_descendants_of_kind(*node, "function_definition");
 
@@ -165,18 +139,8 @@ impl Fio24C {
             open_files.clear();
             file_pointers.clear();
             for &idx in &groups[&root] {
-                // Each individual function still gets its own fresh
-                // double-close tracking scope.
-                let mut fn_closed: HashMap<String, usize> = HashMap::new();
                 if let Some(body) = functions[idx].child_by_field_name("body") {
-                    self.check_node(
-                        &body,
-                        source,
-                        violations,
-                        open_files,
-                        file_pointers,
-                        &mut fn_closed,
-                    );
+                    self.check_node(&body, source, violations, open_files, file_pointers);
                 }
             }
         }
@@ -210,17 +174,9 @@ impl Fio24C {
         violations: &mut Vec<RuleViolation>,
         open_files: &mut HashMap<String, Vec<(String, tree_sitter::Point)>>,
         file_pointers: &mut HashMap<String, String>,
-        closed_vars: &mut HashMap<String, usize>,
     ) {
         for call in query::find_descendants_of_kind(*node, "call_expression") {
-            self.check_call_expression(
-                &call,
-                source,
-                violations,
-                open_files,
-                file_pointers,
-                closed_vars,
-            );
+            self.check_call_expression(&call, source, violations, open_files, file_pointers);
         }
     }
 
@@ -231,7 +187,6 @@ impl Fio24C {
         violations: &mut Vec<RuleViolation>,
         open_files: &mut HashMap<String, Vec<(String, tree_sitter::Point)>>,
         file_pointers: &mut HashMap<String, String>,
-        closed_vars: &mut HashMap<String, usize>,
     ) {
         if let Some(func) = node.child_by_field_name("function") {
             let func_name = get_node_text(&func, source).trim().to_string();
@@ -240,21 +195,8 @@ impl Fio24C {
                 self.check_fopen_call(node, source, violations, open_files, file_pointers);
             }
 
-            if is_open_function(&func_name) {
-                // An open call assigned to a variable clears its "closed" state
-                let var_name = self.get_assigned_variable(node, source);
-                if !var_name.is_empty() {
-                    closed_vars.remove(&var_name);
-                }
-            } else if is_close_function(&func_name) {
-                self.check_close_call(
-                    node,
-                    source,
-                    violations,
-                    closed_vars,
-                    file_pointers,
-                    open_files,
-                );
+            if is_close_function(&func_name) {
+                self.record_close(node, source, file_pointers, open_files);
             }
         }
     }
@@ -314,46 +256,17 @@ impl Fio24C {
         }
     }
 
-    /// Check for double-close: if this variable was already closed without
-    /// intervening reopen, flag the duplicate close.
-    fn check_close_call(
+    /// A close ends the handle's open: the file it named may be opened again.
+    fn record_close(
         &self,
         node: &Node,
         source: &str,
-        violations: &mut Vec<RuleViolation>,
-        closed_vars: &mut HashMap<String, usize>,
         file_pointers: &mut HashMap<String, String>,
         open_files: &mut HashMap<String, Vec<(String, tree_sitter::Point)>>,
     ) {
         if let Some(args) = node.child_by_field_name("arguments") {
             if let Some(first_arg) = self.get_first_argument(&args) {
                 let var_name = get_node_text(&first_arg, source).trim().to_string();
-                let close_line = node.start_position().row + 1;
-
-                // Check for double close
-                if let Some(prev_close_line) = closed_vars.get(&var_name) {
-                    let start_point = node.start_position();
-                    violations.push(RuleViolation {
-                        rule_id: self.rule_id().to_string(),
-                        severity: Severity::Medium,
-                        message: format!(
-                            "Resource '{}' is closed again after already being closed at line {}. Double close is undefined behavior.",
-                            var_name, prev_close_line
-                        ),
-                        file_path: String::new(),
-                        line: start_point.row + 1,
-                        column: start_point.column + 1,
-                        suggestion: Some(
-                            "Remove the duplicate close call, or set the variable to NULL/INVALID_HANDLE_VALUE/-1 after the first close to prevent double close.".to_string()
-                        ),
-                        ..Default::default()
-                    });
-                } else {
-                    // Record that this variable has been closed
-                    closed_vars.insert(var_name.clone(), close_line);
-                }
-
-                // Also update the fopen tracking (for duplicate-open detection)
                 if let Some(filename) = file_pointers.get(&var_name) {
                     if let Some(opens) = open_files.get_mut(filename) {
                         opens.retain(|(var, _)| var != &var_name);
@@ -417,10 +330,6 @@ impl Fio24C {
         }
         None
     }
-}
-
-fn is_open_function(name: &str) -> bool {
-    OPEN_FUNCTIONS.contains(&name)
 }
 
 fn is_close_function(name: &str) -> bool {

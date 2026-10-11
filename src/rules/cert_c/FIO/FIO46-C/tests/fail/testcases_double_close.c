@@ -1,7 +1,7 @@
 /*
- * Rule: FIO24-C
+ * Rule: FIO46-C
  * Source: testcases
- * Status: FAIL - Should trigger FIO24-C violation
+ * Status: FAIL - Should trigger FIO46-C violation
  * Description: File handle closed twice without reopening
  */
 

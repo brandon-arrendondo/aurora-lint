@@ -27,7 +27,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declarator};
+use crate::utility::cert_c::ast_utils::{get_node_text, stream_key};
 use lang_parsing_substrate::query;
 use std::collections::BTreeMap;
 use tree_sitter::Node;
@@ -188,25 +188,4 @@ impl Fio39C {
         calls.sort_by_key(|(call, _)| call.start_byte());
         calls
     }
-}
-
-/// What a stream argument names, so two calls on the same stream share a
-/// key: an identifier by the declaration it resolves to (ADR-0006: a name
-/// shadowed in an inner block is another stream), anything else (`ctx->fp`,
-/// `files[i]`) by its text, parentheses dropped.
-fn stream_key(stream: &Node, source: &str) -> String {
-    let mut expr = *stream;
-    while expr.kind() == "parenthesized_expression" {
-        match expr.named_child(0) {
-            Some(inner) => expr = inner,
-            None => break,
-        }
-    }
-    let text = get_node_text(&expr, source);
-    if expr.kind() == "identifier" {
-        if let Some((_, declarator)) = resolve_identifier_declarator(&expr, text, source) {
-            return format!("decl@{}", declarator.start_byte());
-        }
-    }
-    format!("text:{text}")
 }

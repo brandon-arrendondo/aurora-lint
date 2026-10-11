@@ -565,6 +565,29 @@ pub fn find_parameter_declaration<'a>(
         .find(|p| declaration_declarator_for(p, name, source).is_some())
 }
 
+/// What a stream argument names, so two calls on the same stream share a
+/// key: an identifier by the declaration it resolves to (ADR-0006: a name
+/// shadowed in an inner block is another stream), anything else (`ctx->fp`,
+/// `files[i]`) by its text, parentheses dropped. A name nothing in reach
+/// declares, as `stdout` is to a file whose `<stdio.h>` is not expanded, is
+/// keyed by its text. FIO39-C and FIO46-C.
+pub fn stream_key(stream: &Node, source: &str) -> String {
+    let mut expr = *stream;
+    while expr.kind() == "parenthesized_expression" {
+        match expr.named_child(0) {
+            Some(inner) => expr = inner,
+            None => break,
+        }
+    }
+    let text = get_node_text(&expr, source);
+    if expr.kind() == "identifier" {
+        if let Some((_, declarator)) = resolve_identifier_declarator(&expr, text, source) {
+            return format!("decl@{}", declarator.start_byte());
+        }
+    }
+    format!("text:{text}")
+}
+
 /// Resolve `ident_node` (an occurrence of `name`) to the node that declares
 /// it AND the declarator within that node which binds this name:
 /// `(declaration | parameter_declaration, declarator)`. Same three-way
