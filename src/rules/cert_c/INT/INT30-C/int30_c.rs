@@ -1538,6 +1538,7 @@ impl Int30C {
                         object_macros: &self.project_macro_names.borrow(),
                         function_macros: &self.project_function_macro_names.borrow(),
                         constant_returning_functions: &self.constant_returning_functions.borrow(),
+                        file_macros: None,
                     },
                 );
             drop(macros);
@@ -1776,6 +1777,7 @@ impl Int30C {
             object_macros: &self.project_macro_names.borrow(),
             function_macros: &self.project_function_macro_names.borrow(),
             constant_returning_functions: &self.constant_returning_functions.borrow(),
+            file_macros: None,
         };
         const_eval::is_compile_time_constant_expr(&nmemb, source, &macros, names)
             && const_eval::is_compile_time_constant_expr(&size, source, &macros, names)

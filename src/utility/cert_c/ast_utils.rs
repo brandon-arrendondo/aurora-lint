@@ -2350,6 +2350,54 @@ pub fn is_defined_macro_name(name: &str, source: &str) -> bool {
     re.is_match(source)
 }
 
+/// Every name [`is_defined_macro_name`] answers true for in one `source`,
+/// collected in a single pass. Asking that function about each function of a
+/// file rescans the whole file per question, which is quadratic in file size;
+/// build this once per file instead and ask it.
+pub struct DefinedMacroNames<'s> {
+    source: &'s str,
+    names: std::collections::HashSet<&'s str>,
+}
+
+impl<'s> DefinedMacroNames<'s> {
+    /// Index every `#define`d name in `source`.
+    pub fn of(source: &'s str) -> Self {
+        // The prefix of `is_defined_macro_name`'s pattern, with the name
+        // captured. Matches can only start at a line start and end at the
+        // name, so iterating them never steps over a `#define` the
+        // single-name pattern would find, and `\w+` is maximal, so `name\b`
+        // matches exactly when the captured word is `name`.
+        static DEFINE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"(?m)^\s*#\s*define\s+(\w+)").expect("valid regex")
+        });
+        let names = DEFINE
+            .captures_iter(source)
+            .filter_map(|c| c.get(1).map(|m| m.as_str()))
+            .collect();
+        Self { source, names }
+    }
+
+    /// Same answer as `is_defined_macro_name(name, source)`.
+    pub fn contains(&self, name: &str) -> bool {
+        // `\w` as the regex crate reads it, so "a word" here and in the
+        // patterns agree on every character.
+        static WORD: std::sync::LazyLock<regex::Regex> =
+            std::sync::LazyLock::new(|| regex::Regex::new(r"^\w+$").expect("valid regex"));
+        if WORD.is_match(name) {
+            self.names.contains(name)
+        } else {
+            // Not a plain word: the set's word-boundary argument does not
+            // apply, so ask the single-name scan.
+            is_defined_macro_name(name, self.source)
+        }
+    }
+
+    /// The source this index was built from.
+    pub fn source(&self) -> &'s str {
+        self.source
+    }
+}
+
 /// True if `name` looks like a preprocessor macro constant *by naming
 /// convention alone*: ALL_CAPS letters, digits and underscores only, and not
 /// starting with a digit (so a bare numeric literal is never mistaken for a
@@ -3180,5 +3228,49 @@ mod static_macro_tests {
         let statics = static_macro_names_in_scope(&source, &project);
         let f = tree.root_node().child(0).unwrap();
         assert!(declares_static(&f, &source, &statics));
+    }
+}
+
+#[cfg(test)]
+mod defined_macro_names_tests {
+    use super::{is_defined_macro_name, DefinedMacroNames};
+
+    /// The one-pass index answers exactly what the per-name scan does, on
+    /// the shapes where a word-boundary or line-start difference could
+    /// show: indented and spaced-out directives, a name that prefixes
+    /// another, a directive split across lines, `#define` inside a line, and
+    /// non-ASCII names on both sides of the regex crate's `\w`.
+    #[test]
+    fn agrees_with_the_per_name_scan() {
+        let src = "#define A 1\n\
+                   \t#  define   B_LONG(x) x\n\
+                   #define\nSPLIT 2\n\
+                   int x; #define NOT_AT_LINE_START 3\n\
+                   #define\u{e9}t\u{e9} 4\n\
+                   #define a\u{b2}x 5\n\
+                   #undef A\n\
+                   #define C\n";
+        let index = DefinedMacroNames::of(src);
+        for name in [
+            "A",
+            "B",
+            "B_LONG",
+            "SPLIT",
+            "NOT_AT_LINE_START",
+            "\u{e9}t\u{e9}",
+            "a",
+            "a\u{b2}",
+            "a\u{b2}x",
+            "C",
+            "D",
+            "",
+            "A B",
+        ] {
+            assert_eq!(
+                index.contains(name),
+                is_defined_macro_name(name, src),
+                "{name:?}"
+            );
+        }
     }
 }

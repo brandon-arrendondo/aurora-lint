@@ -1232,6 +1232,7 @@ pub fn compute_summaries(
     let effect_ctx = EffectContext {
         arms: crate::analyze::macro_expand::collect_function_macro_arms(source),
         scope: crate::analyze::side_effects::FileScope::of(root, source),
+        defined_macros: crate::utility::cert_c::ast_utils::DefinedMacroNames::of(source),
     };
 
     collect_function_summaries(
@@ -1250,11 +1251,13 @@ pub fn compute_summaries(
     summaries
 }
 
-/// What [`crate::analyze::side_effects::collect_direct_effects`] needs from
-/// the file, computed once per file.
+/// What [`crate::analyze::side_effects::collect_direct_effects`] and
+/// [`returns_only_compile_time_constants`] need from the file, computed once
+/// per file.
 struct EffectContext<'t> {
     arms: HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>,
     scope: crate::analyze::side_effects::FileScope<'t>,
+    defined_macros: crate::utility::cert_c::ast_utils::DefinedMacroNames<'t>,
 }
 
 /// The callee names that overwrite their first argument's pointee in this
@@ -1342,6 +1345,7 @@ fn collect_function_summaries(
                     string_macros,
                     function_macros,
                     &effect_ctx.arms,
+                    &effect_ctx.defined_macros,
                     clearing_names,
                 );
                 summary.effects = crate::analyze::side_effects::collect_direct_effects(
@@ -1471,6 +1475,7 @@ fn analyze_function(
     string_macros: &HashMap<String, String>,
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     macro_arms: &HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>,
+    defined_macros: &crate::utility::cert_c::ast_utils::DefinedMacroNames<'_>,
     clearing_names: &HashSet<String>,
 ) -> FunctionSummary {
     // Internal linkage: `static` storage class at file scope. A direct-child
@@ -1691,7 +1696,7 @@ fn analyze_function(
         if compute_return_ranges && !is_void_return && !is_pointer_return {
             summary.return_range = compute_return_range(&body, source, macros);
             summary.returns_only_compile_time_constants =
-                returns_only_compile_time_constants(&body, source, macros);
+                returns_only_compile_time_constants(&body, source, macros, defined_macros);
         }
 
         // Only a pointer-returning function can hand a written-into
@@ -8599,12 +8604,15 @@ fn compute_return_range(
 /// [`FunctionSummary::returns_only_compile_time_constants`].
 ///
 /// Only per-file macro names are available here, so the project-wide sets are
-/// [`const_eval::ConstantNameSets::none`]; the unresolvable-identifier rule
-/// inside the predicate is what carries the cross-header cases.
+/// empty, as in [`const_eval::ConstantNameSets::none`]; the
+/// unresolvable-identifier rule inside the predicate is what carries the
+/// cross-header cases. `defined_macros` is the file's own `#define` names,
+/// built once per file rather than rescanned for every function.
 fn returns_only_compile_time_constants(
     body: &Node,
     source: &str,
     macros: &MacroConstantMap,
+    defined_macros: &crate::utility::cert_c::ast_utils::DefinedMacroNames<'_>,
 ) -> bool {
     let mut return_exprs = Vec::new();
     collect_return_expressions(body, source, &mut return_exprs);
@@ -8618,7 +8626,10 @@ fn returns_only_compile_time_constants(
             expr,
             source,
             macros,
-            const_eval::ConstantNameSets::none(),
+            const_eval::ConstantNameSets {
+                file_macros: Some(defined_macros),
+                ..const_eval::ConstantNameSets::none()
+            },
         )
     })
 }

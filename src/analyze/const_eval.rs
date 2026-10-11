@@ -2357,6 +2357,10 @@ pub struct ConstantNameSets<'a> {
     /// compile-time constant, from `FunctionSummary`'s
     /// `returns_only_compile_time_constants`.
     pub constant_returning_functions: &'a HashSet<String>,
+    /// The `#define` names of the `source` being asked about, collected once.
+    /// `None` scans `source` for each name instead, which is the same answer
+    /// but costs a pass over the file per identifier.
+    pub file_macros: Option<&'a ast_utils::DefinedMacroNames<'a>>,
 }
 
 impl ConstantNameSets<'static> {
@@ -2366,6 +2370,7 @@ impl ConstantNameSets<'static> {
             object_macros: &NO_NAMES,
             function_macros: &NO_NAMES,
             constant_returning_functions: &NO_NAMES,
+            file_macros: None,
         }
     }
 }
@@ -2392,6 +2397,13 @@ pub fn is_compile_time_constant_expr(
     names: ConstantNameSets,
 ) -> bool {
     let recurse = |n: &Node| is_compile_time_constant_expr(n, source, macros, names);
+    let defined_in_file = |name: &str| match names.file_macros {
+        Some(index) => {
+            debug_assert!(std::ptr::eq(index.source(), source));
+            index.contains(name)
+        }
+        None => ast_utils::is_defined_macro_name(name, source),
+    };
     match node.kind() {
         "number_literal" | "char_literal" | "sizeof_expression" | "alignof_expression" => true,
         "parenthesized_expression" => node.named_child(0).is_some_and(|inner| recurse(&inner)),
@@ -2435,9 +2447,7 @@ pub fn is_compile_time_constant_expr(
                 // ARGUMENTS are irrelevant, since no return depends on them.
                 return true;
             }
-            if !names.function_macros.contains(name)
-                && !ast_utils::is_defined_macro_name(name, source)
-            {
+            if !names.function_macros.contains(name) && !defined_in_file(name) {
                 return false;
             }
             node.child_by_field_name("arguments")
@@ -2453,8 +2463,7 @@ pub fn is_compile_time_constant_expr(
             }
             // A `#define` sqc saw but could not fold (its replacement names
             // something from a header outside the scan).
-            if names.object_macros.contains(name) || ast_utils::is_defined_macro_name(name, source)
-            {
+            if names.object_macros.contains(name) || defined_in_file(name) {
                 return true;
             }
             // No binding anywhere sqc looked: not a local, not a parameter,

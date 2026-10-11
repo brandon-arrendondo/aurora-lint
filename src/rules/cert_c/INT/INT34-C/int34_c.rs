@@ -396,6 +396,7 @@ impl Int34C {
                 object_macros: &self.project_macro_names.borrow(),
                 function_macros: &self.project_function_macro_names.borrow(),
                 constant_returning_functions: &self.constant_returning_functions.borrow(),
+                file_macros: None,
             },
         )
     }
