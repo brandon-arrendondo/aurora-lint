@@ -7427,6 +7427,22 @@ fn a_posix_name_another_scanned_file_defines_is_the_projects_function() {
 }
 
 #[test]
+fn another_files_static_definition_of_a_posix_name_does_not_shadow_the_library() {
+    // shim.c's static pthread_cond_wait is its own; use.c's call reaches the
+    // library's wait.
+    let project = declared_threads_findings("static_shim_project", "manifest_con30_con36.toml");
+    assert!(
+        has(&project, "CON36-C", 9, "pthread_cond_wait"),
+        "{project:?}"
+    );
+    assert!(
+        project.iter().all(|(_, _, m)| !m.contains("local_wait")),
+        "{project:?}"
+    );
+    assert_eq!(project.len(), 1, "{project:?}");
+}
+
+#[test]
 fn a_freertos_slot_holding_no_allocation_or_freed_by_the_kernel_heap_is_clean() {
     let declared =
         declared_threads_findings("freertos_slot_not_heap.c", "manifest_threads_freertos.toml");

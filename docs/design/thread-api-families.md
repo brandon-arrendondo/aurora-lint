@@ -194,7 +194,9 @@ name for. The same holds for a project's own `rand` (MSC30-C), `fclose`
 (FIO46-C) and noreturn names. The definition counts in the file being checked
 (a definition, or a `static` declaration) or in any other scanned file,
 through the prescan's function summaries; a plain prototype still declares
-the library's function. Such a call performs no operation unless the project
+the library's function. Another file's `static` definition is that file's
+alone, so it does not shadow a call from here; only a definition with external
+linkage does. Such a call performs no operation unless the project
 declares one for the name under `[environment.threads.functions]`, and that
 declaration is in force for exactly those calls: a call that reaches the
 library keeps the library's contract, so declaring a library name the project
@@ -259,7 +261,7 @@ The last row says which entries ship in the first step.
 | `cond_wait` | none. FreeRTOS has no condition variable, so CON36-C does not apply. Task notifications and event groups do not wake spuriously in the CON36 sense. |
 | shipped in the first step | Checked against FreeRTOS-Kernel V11.2.0. The plain `xSemaphoreTake`/`xSemaphoreGive` are left out, since they serve binary and counting semaphores too, and a call is a lock only when its handle came from a mutex-creating call. The recursive forms ship, along with the mutex-creating calls, task creation, the storage pointers and the delays. `vTaskDelete` is left out (see `thread_exit`). |
 | `tss_set` / `tss_get` | `vTaskSetThreadLocalStoragePointer(task, index, value)` / `pvTaskGetThreadLocalStoragePointer(task, index)`. These are fixed slots, and V11.2.0 has no destructor for them: neither `task.h` nor `tasks.c` declares `vTaskSetThreadLocalStoragePointerAndDelCallback` or a delete-callback option. That call is a vendor port's addition; a project on such a port declares it under `functions` as `tss_set` with `key` 2, `value` 3 and `destructor` 4. So for FreeRTOS, CON30-C's hazard reads: allocated memory stored in a slot and not freed before the task deletes itself. A stored null pointer, `&object` or literal holds nothing to free. |
-| heap | `pvPortMalloc` (as `malloc`) and `vPortFree` (frees argument 1), from `portable.h`. The profile adds them to the allocator and deallocator contracts, so a slot freed with `vPortFree(pvTaskGetThreadLocalStoragePointer(...))` is freed. |
+| heap | `pvPortMalloc` (as `malloc`) and `vPortFree` (frees argument 1), from `portable.h`. The profile adds them to the allocator and deallocator contracts in `call_roles`, so every memory rule reads them, and a slot freed with `vPortFree(pvTaskGetThreadLocalStoragePointer(...))` is freed. |
 | `sleep` (blocking, for CON05-C) | `vTaskDelay`, `xTaskDelayUntil`, plus queue receive/send and notify-take calls with a non-zero timeout |
 | types | `TaskHandle_t` → thread, `SemaphoreHandle_t` → mutex. A semaphore handle is not always a mutex; it is a mutex only when made by a `CreateMutex` call. Open item. |
 
@@ -273,8 +275,11 @@ The last row says which entries ship in the first step.
    Fixtures per family: c11, posix, a declared project family, freertos (CON30
    only; CON36 expects nothing), and a project function that shadows a library
    name. CON36-C also reports a spuriously-waking wait in no loop at all, not
-   only one under an `if`, except a wrapper's wait on a condition its
-   parameter supplies, whose loop is its callers'.
+   only one under an `if`, except a wrapper's: a function whose condition
+   comes from its parameter and whose body only waits (with at most a lock
+   before and an unlock after, and a return of the result), whose loop is its
+   callers'. A function that uses what it waited for, such as CERT's `pop`,
+   is no wrapper and is reported.
 3. **A local A/B on the real-world corpora** with a frozen binary on each side.
    CON30 and CON36 should only gain findings, all at POSIX call sites. Any
    lost finding is a regression to explain. Adjudication stays held.

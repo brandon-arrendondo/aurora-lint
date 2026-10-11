@@ -23,8 +23,10 @@
 //! the library's: the call reaches that body, whatever the standard reserves
 //! the name for. It performs no operation unless the project declares one
 //! for it under `[environment.threads.functions]`, which is in force for
-//! exactly those calls. The definition counts in this file or, through the
-//! prescan's function summaries, in any other scanned file. A shipped
+//! exactly those calls. The definition counts in this file (any linkage) or,
+//! through the prescan's function summaries, in any other scanned file with
+//! external linkage; another file's `static` is not reachable from here. A
+//! shipped
 //! profile's names are not shadowed this way: a project that carries the
 //! RTOS kernel's source defines them as the profile describes.
 
@@ -687,7 +689,7 @@ pub fn thread_op<'a>(
     }
     let name = get_node_text(&callee, source);
     let (family, op) = op_named(name, || {
-        project.is_some_and(|p| p.contains_key(name)) || file_defines(call, name, source)
+        file_defines(call, name, source) || project.is_some_and(|p| defined_elsewhere(p, name))
     })?;
     if !names_a_function(&callee, name, source) {
         return None;
@@ -719,6 +721,16 @@ pub fn thread_op_of_kind<'a>(
     kind: ThreadOpKind,
 ) -> Option<ThreadCall<'a>> {
     thread_op(call, source, project).filter(|c| c.kind() == kind)
+}
+
+/// Whether another scanned file defines `name` with external linkage, so a
+/// call from this file can reach it. Another file's `static` definition is
+/// that file's alone: a call here still reaches the library (ADR-0006). This
+/// file's own definitions are [`file_defines`]'.
+fn defined_elsewhere(project: &ProjectFunctions, name: &str) -> bool {
+    project
+        .get(name)
+        .is_some_and(|summary| !summary.has_internal_linkage)
 }
 
 /// Whether the file holding `node` defines the function `name` itself: a

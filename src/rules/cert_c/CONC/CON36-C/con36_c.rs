@@ -12,10 +12,14 @@
 //! wait whose contract says it can wake spuriously. A wait that cannot
 //! (FreeRTOS has no condition variable) is not this hazard.
 //!
-//! A wait in no loop and no 'if' whose condition is reached through one of
-//! the enclosing function's parameters is a wrapper: the loop that re-checks
-//! belongs to its callers, which this rule does not follow, so it is not
-//! reported.
+//! A wrapper's wait is not reported: the loop that re-checks belongs to its
+//! callers, which this rule does not follow. A wrapper is a function whose
+//! condition comes from one of its parameters and whose body does nothing
+//! but wait: its statements are the wait itself, at most a lock before it
+//! and an unlock after it (any mutex lock or unlock call), declarations, and
+//! a return of nothing, of the wait's result or of a name. A function that
+//! goes on to use what it waited for (CERT's `pop` that reads the queue
+//! after the wait) is not a wrapper, so its bare wait is reported.
 //!
 //! ## Examples:
 //!
@@ -45,6 +49,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
+use crate::analyze::init_state::strip_arg_casts;
 use crate::manifest::Severity;
 use crate::settings::threads::{Role, ThreadOpKind};
 use crate::utility::cert_c::ast_utils::{
@@ -137,7 +142,8 @@ impl Con36C {
             Placement::Bare => {
                 let wrapper = wait
                     .operand(Role::Cond)
-                    .is_some_and(|cond| reaches_a_parameter(&cond, source));
+                    .is_some_and(|cond| reaches_a_parameter(&cond, source))
+                    && only_waits(call_node, source, project.as_ref());
                 if wrapper {
                     return;
                 }
@@ -184,20 +190,83 @@ fn placement(node: &Node) -> Placement {
     }
 }
 
+/// Whether the function holding the wait `call` does nothing but wait: each
+/// statement of its body is the wait (bare, assigned, or as a declaration's
+/// initializer), a mutex lock or unlock call, a declaration with no other
+/// initializer, or a return of nothing, of the wait's result or of a name.
+fn only_waits(call: &Node, source: &str, project: Option<&ProjectFunctions>) -> bool {
+    let Some(body) = std::iter::successors(call.parent(), |n| n.parent())
+        .find(|n| n.kind() == "function_definition")
+        .and_then(|f| f.child_by_field_name("body"))
+    else {
+        return false;
+    };
+    let is_wait = |n: &Node| strip_arg_casts(n).id() == call.id();
+    let is_lock_or_unlock = |n: &Node| {
+        let n = strip_arg_casts(n);
+        thread_api::thread_op(&n, source, project).is_some_and(|op| {
+            matches!(
+                op.kind(),
+                ThreadOpKind::MutexLock | ThreadOpKind::MutexUnlock
+            )
+        })
+    };
+    let mut waited = false;
+    for statement in body.named_children(&mut body.walk()) {
+        let fine = match statement.kind() {
+            "comment" => true,
+            "expression_statement" => match statement.named_child(0) {
+                None => true,
+                Some(e) if is_wait(&e) => {
+                    waited = true;
+                    true
+                }
+                Some(e) if e.kind() == "assignment_expression" => e
+                    .child_by_field_name("right")
+                    .is_some_and(|r| is_wait(&r))
+                    .then(|| waited = true)
+                    .is_some(),
+                Some(e) => is_lock_or_unlock(&e),
+            },
+            "declaration" => statement
+                .named_children(&mut statement.walk())
+                .filter(|d| d.kind() == "init_declarator")
+                .all(|d| {
+                    let waits = d.child_by_field_name("value").is_some_and(|v| is_wait(&v));
+                    waited |= waits;
+                    waits
+                }),
+            "return_statement" => match statement.named_child(0) {
+                None => true,
+                Some(v) if is_wait(&v) => {
+                    waited = true;
+                    true
+                }
+                Some(v) => strip_arg_casts(&v).kind() == "identifier",
+            },
+            _ => false,
+        };
+        if !fine {
+            return false;
+        }
+    }
+    waited
+}
+
 /// Whether the condition operand is reached through a parameter of the
 /// enclosing function: `cond`, `&p->cond` or `&w.cond` where `cond`, `p` or
 /// `w` is a parameter.
 fn reaches_a_parameter(operand: &Node, source: &str) -> bool {
-    let mut node = crate::analyze::init_state::strip_arg_casts(operand);
+    let mut node = strip_arg_casts(operand);
     loop {
         node = match node.kind() {
             "pointer_expression" | "field_expression" => match node.child_by_field_name("argument")
             {
-                Some(inner) => crate::analyze::init_state::strip_arg_casts(&inner),
+                Some(inner) => strip_arg_casts(&inner),
                 None => return false,
             },
             "subscript_expression" => match node.child_by_field_name("argument") {
-                Some(inner) => crate::analyze::init_state::strip_arg_casts(&inner),
+                Some(inner) => strip_arg_casts(&inner),
                 None => return false,
             },
             "identifier" => {

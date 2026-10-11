@@ -434,7 +434,10 @@ a profile shipped with aurora-lint. ``freertos`` is checked against
 FreeRTOS-Kernel V11.2.0 and covers task creation, the recursive-mutex calls,
 the thread-local storage pointers and the task delays. It also reads the
 kernel heap: ``pvPortMalloc`` allocates as ``malloc`` does and ``vPortFree``
-frees, so a slot freed with ``vPortFree`` is freed. The project's own
+frees. That holds for every memory rule, not only the thread-local storage
+check: selecting ``freertos`` makes the two an allocator and a deallocator
+everywhere, as declaring them under ``[environment.allocators]`` and
+``[environment.deallocators]`` would. The project's own
 wrappers go under ``functions``, each with its operation and the 1-based
 positions of its operands:
 
