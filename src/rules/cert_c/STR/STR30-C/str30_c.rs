@@ -63,7 +63,7 @@ impl CertRule for Str30C {
         let mut violations = Vec::new();
         for write in trace.writes_under(node) {
             if seen.contains(&write.site.start_byte())
-                || !trace.literal_derived(&write.pointer, &write.site, None, 0)
+                || !trace.literal_derived(&write.pointer, &write.site, Seed::ALL, 0)
             {
                 continue;
             }
@@ -165,9 +165,27 @@ struct Write<'a> {
     kind: WriteKind<'a>,
 }
 
-/// A parameter traced as if it pointed into a literal: the start byte of its
-/// function and its name. Used to ask whether a callee writes through it.
-type Seed<'s> = Option<(usize, &'s str)>;
+/// Which values count as pointing into a literal for one question.
+#[derive(Clone, Copy)]
+struct Seed<'s> {
+    /// When set, the only source: a parameter traced as if it pointed into
+    /// a literal, by its function's start byte and its name. Used to ask
+    /// whether a callee writes through, or returns, that parameter.
+    param: Option<(usize, &'s str)>,
+    /// Whether a pointer declared to const characters is a source. It is at
+    /// a write (CERT: such a pointer "must be treated as a string literal"),
+    /// but not when asking what a function returns: a const view of a
+    /// parameter, returned, is the caller's argument, judged at the call.
+    const_sources: bool,
+}
+
+impl Seed<'_> {
+    /// Every source counts: a write's own question.
+    const ALL: Seed<'static> = Seed {
+        param: None,
+        const_sources: true,
+    };
+}
 
 /// One file's literal-origin trace.
 struct Trace<'a> {
@@ -181,6 +199,9 @@ struct Trace<'a> {
     /// Per function start: whether some `return` returns a literal-derived
     /// pointer. Provisionally false while being computed.
     returns_literal: RefCell<HashMap<usize, bool>>,
+    /// Per (function start, parameter index): whether some `return` returns
+    /// a pointer derived from the parameter. Provisionally false.
+    returns_params: RefCell<HashMap<(usize, usize), bool>>,
     /// Per declarator: the plain assignments to the variable it declares,
     /// as (assignment, value).
     assignments: RefCell<HashMap<usize, Vec<(Node<'a>, Node<'a>)>>>,
@@ -211,6 +232,7 @@ impl<'a> Trace<'a> {
             functions,
             param_writes: RefCell::default(),
             returns_literal: RefCell::default(),
+            returns_params: RefCell::default(),
             assignments: RefCell::default(),
             root,
         }
@@ -337,7 +359,10 @@ impl<'a> Trace<'a> {
             let params = ast_utils::get_function_parameters(def, self.source)?;
             let (name, _) = params.get(index)?;
             let body = def.child_by_field_name("body")?;
-            let seed = Some((def.start_byte(), name.as_str()));
+            let seed = Seed {
+                param: Some((def.start_byte(), name.as_str())),
+                const_sources: false,
+            };
             Some(
                 self.writes_under(&body)
                     .iter()
@@ -357,12 +382,18 @@ impl<'a> Trace<'a> {
         let d = depth + 1;
         let field = |name: &str| expr.child_by_field_name(name);
         match expr.kind() {
-            "string_literal" | "concatenated_string" => true,
+            // Asking about one parameter, only that parameter is a source.
+            "string_literal" | "concatenated_string" => seed.param.is_none(),
             "parenthesized_expression" => expr
                 .named_child(0)
                 .is_some_and(|e| self.literal_derived(&e, at, seed, d)),
+            // A cast to an integer type is a number, not a pointer.
             "cast_expression" => {
-                field("value").is_some_and(|e| self.literal_derived(&e, at, seed, d))
+                let to_pointer = field("type").is_some_and(|t| {
+                    query::find_first_descendant(t, |n| n.kind() == "abstract_pointer_declarator")
+                        .is_some()
+                });
+                to_pointer && field("value").is_some_and(|e| self.literal_derived(&e, at, seed, d))
             }
             "conditional_expression" => ["consequence", "alternative"]
                 .iter()
@@ -373,12 +404,21 @@ impl<'a> Trace<'a> {
             "assignment_expression" => {
                 field("right").is_some_and(|e| self.literal_derived(&e, at, seed, d))
             }
+            // `p + n`, `n + p` and `p - n` point where `p` does; `p - q` of
+            // two pointers is a distance.
             "binary_expression" => {
                 let op = ast_utils::get_binary_operator(expr, self.source).unwrap_or_default();
-                matches!(op, "+" | "-")
-                    && ["left", "right"]
-                        .iter()
-                        .any(|f| field(f).is_some_and(|e| self.literal_derived(&e, at, seed, d)))
+                let derived =
+                    |f: &str| field(f).is_some_and(|e| self.literal_derived(&e, at, seed, d));
+                match op {
+                    "+" => derived("left") || derived("right"),
+                    "-" => {
+                        derived("left")
+                            && !field("right")
+                                .is_some_and(|r| derived("right") || self.is_pointer(&r))
+                    }
+                    _ => false,
+                }
             }
             "update_expression" => {
                 field("argument").is_some_and(|e| self.literal_derived(&e, at, seed, d))
@@ -521,7 +561,7 @@ impl<'a> Trace<'a> {
             return false;
         };
         let members = self.struct_members(&decl);
-        if members.iter().any(|(m, is_const)| *m == field && *is_const) {
+        if seed.param.is_none() && members.iter().any(|(m, is_const)| *m == field && *is_const) {
             return true;
         }
         let Some(init) =
@@ -584,7 +624,8 @@ impl<'a> Trace<'a> {
             if field.kind() != "field_declaration" {
                 continue;
             }
-            let is_const = Self::has_const_qualifier(&field);
+            let is_const =
+                Self::has_const_qualifier(&field) && Self::is_character_type(&field, self.source);
             let mut cursor = field.walk();
             for declarator in field.children_by_field_name("declarator", &mut cursor) {
                 let Some(name) = Self::member_name(&declarator, self.source) else {
@@ -608,7 +649,27 @@ impl<'a> Trace<'a> {
         }
         let name = get_node_text(&function, self.source);
         if let Some(def) = self.functions.get(name) {
-            return self.returns_literal(def, depth);
+            if seed.param.is_none() && self.returns_literal(def, depth) {
+                return true;
+            }
+            // A returned parameter is whatever the caller passed there.
+            let Some(params) = ast_utils::get_function_parameters(def, self.source) else {
+                return false;
+            };
+            let args: Vec<Node<'a>> = call
+                .child_by_field_name("arguments")
+                .map(|a| {
+                    a.named_child_nodes()
+                        .filter(|n| n.kind() != "comment")
+                        .collect()
+                })
+                .unwrap_or_default();
+            return params.iter().enumerate().any(|(k, _)| {
+                args.get(k).is_some_and(|arg| {
+                    self.returns_param(def, k, depth)
+                        && self.literal_derived(arg, at, seed, depth + 1)
+                })
+            });
         }
         if !SEARCH_FUNCTIONS.contains(&name) {
             return false;
@@ -633,9 +694,43 @@ impl<'a> Trace<'a> {
             query::find_descendants_of_kind(body, "return_statement")
                 .into_iter()
                 .filter_map(|r| r.named_child(0))
-                .any(|value| self.literal_derived(&value, &value, None, depth + 1))
+                .any(|value| {
+                    let own = Seed {
+                        param: None,
+                        const_sources: false,
+                    };
+                    self.literal_derived(&value, &value, own, depth + 1)
+                })
         });
         self.returns_literal.borrow_mut().insert(key, found);
+        found
+    }
+
+    /// Whether some `return` in `def` returns a pointer derived from its
+    /// parameter `index`.
+    fn returns_param(&self, def: &Node<'a>, index: usize, depth: u32) -> bool {
+        let key = (def.start_byte(), index);
+        if let Some(&known) = self.returns_params.borrow().get(&key) {
+            return known;
+        }
+        self.returns_params.borrow_mut().insert(key, false);
+        let found = (|| {
+            let params = ast_utils::get_function_parameters(def, self.source)?;
+            let (name, _) = params.get(index)?;
+            let body = def.child_by_field_name("body")?;
+            let seed = Seed {
+                param: Some((def.start_byte(), name.as_str())),
+                const_sources: false,
+            };
+            Some(
+                query::find_descendants_of_kind(body, "return_statement")
+                    .into_iter()
+                    .filter_map(|r| r.named_child(0))
+                    .any(|value| self.literal_derived(&value, &value, seed, depth + 1)),
+            )
+        })()
+        .unwrap_or(false);
+        self.returns_params.borrow_mut().insert(key, found);
         found
     }
 
@@ -650,25 +745,26 @@ impl<'a> Trace<'a> {
         else {
             return false;
         };
+        let seeded = decl.kind() == "parameter_declaration"
+            && seed.param.is_some_and(|(func, param)| {
+                param == name
+                    && ast_utils::find_containing_function(&decl)
+                        .is_some_and(|f| f.start_byte() == func)
+            });
+        if seeded && !self.reassigned_on_every_path(ident, at) {
+            return true;
+        }
         let is_array = declarator.kind() == "array_declarator";
-        let pointee_const =
-            Self::has_const_qualifier(&decl) && (is_array || Self::is_single_pointer(&declarator));
-        if pointee_const {
+        let pointee_const = Self::has_const_qualifier(&decl)
+            && Self::is_character_type(&decl, self.source)
+            && (is_array || Self::is_single_pointer(&declarator));
+        if pointee_const && seed.const_sources && seed.param.is_none() {
             return true;
         }
         if is_array {
             return false;
         }
-        let seeded = decl.kind() == "parameter_declaration"
-            && seed.is_some_and(|(func, param)| {
-                param == name
-                    && ast_utils::find_containing_function(&decl)
-                        .is_some_and(|f| f.start_byte() == func)
-            });
         let values = self.reaching_values(ident, at);
-        if seeded && !self.reassigned_on_every_path(ident, at) {
-            return true;
-        }
         values
             .iter()
             .any(|value| self.literal_derived(value, value, seed, depth + 1))
@@ -699,11 +795,7 @@ impl<'a> Trace<'a> {
                 .collect();
         };
 
-        let sure = candidates
-            .iter()
-            .filter(|(a, _)| guard_dominance::runs_before_on_every_path(a, at))
-            .max_by_key(|(a, _)| a.start_byte())
-            .map(|(a, _)| *a);
+        let sure = Self::last_sure_assignment(&candidates, at);
         let from = sure.map_or(scope.start_byte(), |a| a.start_byte());
         let address_passed = query::find_first_descendant(scope, |n| {
             n.kind() == "pointer_expression"
@@ -735,7 +827,7 @@ impl<'a> Trace<'a> {
             .iter()
             .filter(|(a, _)| {
                 if a.start_byte() < at.start_byte() {
-                    a.start_byte() >= from
+                    a.start_byte() >= from && !Self::on_another_path(a, at, sure)
                 } else {
                     loops
                         .iter()
@@ -759,9 +851,147 @@ impl<'a> Trace<'a> {
         else {
             return false;
         };
-        self.assignments_to(&decl, &declarator, name)
-            .iter()
-            .any(|(a, _)| guard_dominance::runs_before_on_every_path(a, at))
+        let candidates = self.assignments_to(&decl, &declarator, name);
+        Self::last_sure_assignment(&candidates, at).is_some()
+    }
+
+    /// The last statement before `at` that assigns the variable on every
+    /// path through it ([`Self::assigns_on_every_path`]), being an earlier
+    /// statement of a block (or `case`) holding `at`. Values assigned before
+    /// it no longer reach `at`. A `goto` into the middle of a block is not
+    /// modelled -- the same AST approximation `guard_dominance` makes.
+    fn last_sure_assignment(
+        candidates: &[(Node<'a>, Node<'a>)],
+        at: &Node<'a>,
+    ) -> Option<Node<'a>> {
+        let mut current = *at;
+        while let Some(parent) = current.parent() {
+            if parent.kind() == "function_definition" {
+                return None;
+            }
+            if matches!(parent.kind(), "compound_statement" | "case_statement") {
+                let preceding: Vec<Node<'a>> = parent
+                    .named_child_nodes()
+                    .take_while(|stmt| stmt.end_byte() <= current.start_byte())
+                    .collect();
+                if let Some(stmt) = preceding
+                    .iter()
+                    .rev()
+                    .find(|stmt| Self::assigns_on_every_path(stmt, candidates))
+                {
+                    return Some(*stmt);
+                }
+            }
+            current = parent;
+        }
+        None
+    }
+
+    /// Whether `a`, before `at`, is on a path that cannot reach it: the two
+    /// sit in the two arms of one `if`/`else`, or in different cases of one
+    /// `switch` where `a`'s case does not fall through. A loop around that
+    /// construct still carries `a` round to `at`, unless `sure` (the last
+    /// assignment on every path to `at`) is inside that loop.
+    fn on_another_path(a: &Node<'a>, at: &Node<'a>, sure: Option<Node<'a>>) -> bool {
+        let inside = |outer: &Node, inner: &Node| {
+            inner.start_byte() >= outer.start_byte() && inner.end_byte() <= outer.end_byte()
+        };
+        let mut construct = None;
+        let mut current = *a;
+        while let Some(parent) = current.parent() {
+            if parent.kind() == "function_definition" {
+                break;
+            }
+            if parent.kind() == "if_statement" && inside(&parent, at) {
+                let arm = |f: &str| parent.child_by_field_name(f);
+                let (Some(then), Some(other)) = (arm("consequence"), arm("alternative")) else {
+                    break;
+                };
+                if (inside(&then, a) && inside(&other, at))
+                    || (inside(&other, a) && inside(&then, at))
+                {
+                    construct = Some(parent);
+                }
+                break;
+            }
+            if current.kind() == "case_statement" && inside(&parent, at) && !inside(&current, at) {
+                let falls_through = current
+                    .named_child_nodes()
+                    .filter(|s| s.kind() != "comment")
+                    .last()
+                    .is_none_or(|last| !guard_dominance::always_diverges(&last));
+                if !falls_through {
+                    construct = Some(parent);
+                }
+                break;
+            }
+            if inside(&parent, at) {
+                break;
+            }
+            current = parent;
+        }
+        let Some(construct) = construct else {
+            return false;
+        };
+        let innermost_loop = std::iter::successors(construct.parent(), |n| n.parent())
+            .take_while(|n| n.kind() != "function_definition")
+            .find(|n| {
+                matches!(
+                    n.kind(),
+                    "for_statement" | "while_statement" | "do_statement"
+                )
+            });
+        match innermost_loop {
+            None => true,
+            Some(l) => sure.is_some_and(|s| inside(&l, &s)),
+        }
+    }
+
+    /// Whether every path through `stmt` that continues after it makes one
+    /// of `candidates`: an expression statement whose expression is one (or
+    /// a link of a chain, `p = q = v;`, or of a comma expression), a block
+    /// with such a statement, or an `if`/`else` each of whose arms makes one
+    /// or always leaves.
+    fn assigns_on_every_path(stmt: &Node<'a>, candidates: &[(Node<'a>, Node<'a>)]) -> bool {
+        match stmt.kind() {
+            "expression_statement" => candidates.iter().any(|(a, _)| {
+                let mut n = *a;
+                while let Some(parent) = n.parent() {
+                    if parent.id() == stmt.id() {
+                        return true;
+                    }
+                    if !matches!(
+                        parent.kind(),
+                        "assignment_expression" | "parenthesized_expression" | "comma_expression"
+                    ) {
+                        return false;
+                    }
+                    n = parent;
+                }
+                false
+            }),
+            "compound_statement" => stmt
+                .named_child_nodes()
+                .any(|s| Self::assigns_on_every_path(&s, candidates)),
+            "if_statement" => {
+                let arm = |field: &str| {
+                    stmt.child_by_field_name(field).is_some_and(|arm| {
+                        let arm = if arm.kind() == "else_clause" {
+                            match arm.named_child(0) {
+                                Some(inner) => inner,
+                                None => return false,
+                            }
+                        } else {
+                            arm
+                        };
+                        guard_dominance::always_diverges(&arm)
+                            || Self::assigns_on_every_path(&arm, candidates)
+                    })
+                };
+                arm("consequence") && arm("alternative")
+            }
+            _ => false,
+        }
     }
 
     /// The plain assignments `name = value` in the variable's scope whose
@@ -833,6 +1063,34 @@ impl<'a> Trace<'a> {
             }
             d = d.child_by_field_name("declarator")?;
         }
+    }
+
+    /// Whether `expr` names a pointer or an array by its declaration (through
+    /// parentheses and casts), so `p - expr` is a distance between pointers.
+    fn is_pointer(&self, expr: &Node<'a>) -> bool {
+        let expr = guard_dominance::strip_arg_wrappers(expr);
+        if expr.kind() != "identifier" {
+            return false;
+        }
+        let name = get_node_text(&expr, self.source);
+        ast_utils::resolve_identifier_declarator(&expr, name, self.source)
+            .is_some_and(|(_, d)| matches!(d.kind(), "pointer_declarator" | "array_declarator"))
+    }
+
+    /// Whether a declaration's type is a character type a string literal
+    /// has: plain `char`, or `wchar_t`, `char8_t`, `char16_t`, `char32_t`.
+    /// `const void *` and `const unsigned char *` are buffers, not strings.
+    fn is_character_type(decl: &Node, source: &str) -> bool {
+        decl.child_by_field_name("type").is_some_and(|t| {
+            matches!(
+                (t.kind(), get_node_text(&t, source).trim()),
+                ("primitive_type", "char")
+                    | (
+                        "type_identifier" | "primitive_type",
+                        "wchar_t" | "char8_t" | "char16_t" | "char32_t"
+                    )
+            )
+        })
     }
 
     /// A declarator that is one level of pointer to the name: `*p`, `*const p`.
