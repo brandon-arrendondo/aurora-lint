@@ -678,6 +678,13 @@ fn manifest_arg(dir: &Path) -> &'static str {
 
 /// Scan `dir` with every rule, killing the scan at `limit`.
 fn scan_dir(dir: &Path, limit: Duration) -> Scan {
+    let manifest = manifest_arg(dir);
+    scan_dir_with(dir, manifest, limit)
+}
+
+/// Scan `dir` with the manifest `manifest` (a path relative to `dir`),
+/// killing the scan at `limit`.
+fn scan_dir_with(dir: &Path, manifest: &str, limit: Duration) -> Scan {
     let started = Instant::now();
     // The scan runs from inside the directory and scans `.`: from inside a
     // git checkout (this repository) it would analyse that repository, and
@@ -686,7 +693,7 @@ fn scan_dir(dir: &Path, limit: Duration) -> Scan {
         .current_dir(dir)
         .arg(".")
         .arg("-m")
-        .arg(manifest_arg(dir))
+        .arg(manifest)
         .args(["--rule-time-limit", "120"])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -1105,6 +1112,107 @@ fn large_and_deep_inputs_are_refused_or_analysed_within_budget() {
                 .cloned()
                 .unwrap_or_else(|| "non-string panic".into());
             failures.push(format!("{name}:{msg}"));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// One rule enabled, written next to the cases as `one-rule.toml`.
+fn one_rule_manifest(dir: &Path, rule_id: &str) -> &'static str {
+    std::fs::write(
+        dir.join("one-rule.toml"),
+        format!(
+            "[metadata]\nname = \"one rule\"\nversion = \"1.0.0\"\n\
+             description = \"robustness size series\"\ncert_version = \"2016\"\n\n\
+             [rules.cert_c.{rule_id}]\nenabled = true\n"
+        ),
+    )
+    .unwrap();
+    "one-rule.toml"
+}
+
+/// How much more an input eight times larger may cost before the size
+/// series calls the scan superlinear. A linear scan costs about 8x; one step
+/// that rescans the file per function or per directive costs 30x and more
+/// at these sizes, which is what this catches. The slack above 8 is for a
+/// loaded runner, not for growth.
+const SIZE_SERIES_MAX_RATIO: f64 = 14.0;
+
+/// A file of `bytes` bytes of one-line functions.
+fn one_line_functions(bytes: usize) -> Vec<u8> {
+    let mut out = String::new();
+    let mut i = 0;
+    while out.len() < bytes {
+        let _ = writeln!(out, "int f{i}(int a) {{ return a * {i} + 1; }}");
+        i += 1;
+    }
+    out.into_bytes()
+}
+
+/// A chain of `depth` object-like macros, each defined from the one before.
+fn define_chain(depth: usize) -> Vec<u8> {
+    let mut out = String::new();
+    for i in 1..depth {
+        let _ = writeln!(out, "#define M{i} (M{} + 1)", i - 1);
+    }
+    let _ = writeln!(out, "#define M0 1\nint z = M{};", depth - 1);
+    out.into_bytes()
+}
+
+/// Scan one generated file alone under one rule, and return how long it
+/// took. A scan that does not finish cleanly fails the test outright.
+fn time_one_file(name: &str, bytes: Vec<u8>, rule_id: &str) -> Duration {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(name), bytes).unwrap();
+    let manifest = one_rule_manifest(dir.path(), rule_id);
+    let scan = scan_dir_with(dir.path(), manifest, wall_limit(SCAN_WALL_LIMIT));
+    assert!(
+        matches!(scan.end, End::Exited(0 | 1)),
+        "{name} under {rule_id} did not finish cleanly; stderr tail:\n{}",
+        scan.stderr
+            .lines()
+            .rev()
+            .take(10)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    scan.elapsed
+}
+
+/// Generated inputs at two sizes, the larger eight times the smaller, each
+/// scanned under the one rule that exercises what grows: the prescan runs
+/// whatever rule is enabled, so a file of one-line functions under MSC04-C
+/// times the per-function prescan steps, and a deep `#define` chain under
+/// PRE32-C times that rule's per-directive work. Each pair must cost under
+/// [`SIZE_SERIES_MAX_RATIO`] times as much, so a step that rescans the
+/// whole file per item fails here rather than as a watchdog hang on a large
+/// real file.
+#[test]
+#[ignore = "size series: run in release with --ignored (CI robustness job)"]
+fn generated_size_series_scale_near_linearly() {
+    type Generate = fn(usize) -> Vec<u8>;
+    let series: [(&str, &str, Generate, usize); 2] = [
+        (
+            "one_line_functions",
+            "MSC04-C",
+            one_line_functions,
+            256 * 1024,
+        ),
+        ("define_chain", "PRE32-C", define_chain, 10_000),
+    ];
+    let mut failures = Vec::new();
+    for (name, rule_id, generate, small) in series {
+        let base = time_one_file(&format!("{name}_small.c"), generate(small), rule_id);
+        let large = time_one_file(&format!("{name}_large.c"), generate(8 * small), rule_id);
+        let ratio = large.as_secs_f64() / base.as_secs_f64().max(0.001);
+        eprintln!(
+            "{name} under {rule_id}: {base:.1?} -> {large:.1?} for 8x the input ({ratio:.1}x)"
+        );
+        if ratio > SIZE_SERIES_MAX_RATIO {
+            failures.push(format!(
+                "{name} under {rule_id}: 8x the input took {ratio:.1}x as long \
+                 ({base:.1?} -> {large:.1?}), over {SIZE_SERIES_MAX_RATIO}x"
+            ));
         }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
