@@ -43,6 +43,10 @@ pub mod loop_consumption;
 /// A node's children in order at linear cost: indexed when there are few,
 /// a cursor when there are many (`child(i)` walks from the first child).
 pub mod node_children;
+/// The conditions whose truth value is known where a site executes, with
+/// stale ones dropped: the shared reading of a guard for the rules that need
+/// a value proven non-zero there (INT33-C's divisor, MEM04-C's size).
+pub mod nonzero_facts;
 /// Shared helpers for arithmetic-overflow-detection rules (INT30-C, INT32-C).
 pub mod overflow_helpers;
 /// Positive pointer-type inference, so the integer-hazard rules (INT00-C,

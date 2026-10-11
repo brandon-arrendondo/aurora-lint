@@ -15,6 +15,7 @@ use crate::utility::cert_c::expr_type::TypeEnv;
 use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::node_children::NodeChildren;
+use crate::utility::cert_c::nonzero_facts;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -519,7 +520,7 @@ impl Int33C {
     /// Check if a divisor has been validated as non-zero.
     ///
     /// Every credit is a proof about the divisor at the division: a constant,
-    /// a condition known to hold there (see [`Self::guard_facts`]), an
+    /// a condition known to hold there (`nonzero_facts::known_conditions`), an
     /// assert or check macro before it, a value range, every assignment in
     /// the function, or every caller of a closed function. A condition that
     /// merely mentions the divisor, or a check somewhere else in the file,
@@ -534,8 +535,13 @@ impl Int33C {
             }
         }
 
-        let targets = Self::divisor_targets(divisor, source);
-        let facts = self.guard_facts(div_node, &targets, source);
+        let targets = nonzero_facts::peeled_spellings(divisor, source);
+        let facts = nonzero_facts::known_conditions(
+            div_node,
+            &targets,
+            source,
+            &self.file_noreturn_names.borrow(),
+        );
 
         // A condition known true or false here that excludes zero for the
         // divisor, an assert before the division, or a `fabs(x) > c` test.
@@ -557,7 +563,7 @@ impl Int33C {
             let operands = [a.clone(), b.clone()];
             let ordered = facts.iter().any(|(cond, truth)| {
                 Self::condition_separates(cond, &a, &b, *truth, source)
-                    && !Self::written_between(cond, div_node, &operands, source)
+                    && !nonzero_facts::written_between(cond, div_node, &operands, source)
             });
             if ordered {
                 return true;
@@ -577,258 +583,10 @@ impl Int33C {
         self.every_caller_passes_nonzero(divisor, source)
     }
 
-    /// The spellings a guard on the divisor may use: the divisor itself, and
-    /// what it is once parentheses and a sign are peeled off (`(-step)` is
-    /// non-zero exactly when `step` is). Nothing else: `*p` is not `p`, a
-    /// non-null pointer, and `f->den` is not some other object's `den`.
-    fn divisor_targets(divisor: &Node, source: &str) -> Vec<String> {
-        let mut targets = vec![guard_dominance::squeeze_text(divisor, source)];
-        let mut node = *divisor;
-        loop {
-            let inner = match node.kind() {
-                "parenthesized_expression" => node.named_child(0),
-                "unary_expression"
-                    if node
-                        .child_by_field_name("operator")
-                        .is_some_and(|op| matches!(op.kind(), "-" | "+")) =>
-                {
-                    node.child_by_field_name("argument")
-                }
-                _ => None,
-            };
-            let Some(inner) = inner else {
-                break;
-            };
-            let text = guard_dominance::squeeze_text(&inner, source);
-            if !targets.contains(&text) {
-                targets.push(text);
-            }
-            node = inner;
-        }
-        targets
-    }
-
-    /// Every condition whose truth value is known where `site` runs, paired
-    /// with that value, and not stale: nothing between the condition and
-    /// `site` writes one of `targets` or a variable they read.
-    ///
-    /// Two sources. `guard_dominance::dominating_conditions_with_branches`
-    /// gives the conditions enclosing the site (an `if` branch, a loop body,
-    /// a `?:` arm, the right of `&&`/`||`) and a preceding lone `if` whose
-    /// branch returns or jumps. [`Self::preceding_exit_facts`] adds what only
-    /// this rule's noreturn set can say -- `if (d == 0) exit(1);` -- and a
-    /// guard inside the same `case` of a `switch`.
-    fn guard_facts<'a>(
-        &self,
-        site: &Node<'a>,
-        targets: &[String],
-        source: &str,
-    ) -> Vec<(Node<'a>, bool)> {
-        let mut facts: Vec<(Node<'a>, bool)> =
-            guard_dominance::dominating_conditions_with_branches(site)
-                .into_iter()
-                .filter_map(|(cond, branch)| branch.map(|truth| (cond, truth)))
-                .collect();
-        facts.extend(self.preceding_exit_facts(site, source));
-        facts.retain(|(cond, _)| !Self::written_between(cond, site, targets, source));
-        facts
-    }
-
-    /// Conditions of statements before `site` in one of its enclosing blocks
-    /// that control can pass only one way: a lone `if` whose branch always
-    /// leaves ([`Self::has_return_or_exit`]) is false after it, an `if`/`else`
-    /// with exactly one arm that leaves holds the other arm's value, and a
-    /// `while` or `do` loop no `break` or `goto` leaves is false after it.
-    ///
-    /// The blocks are compound statements, preprocessor arms, and the `case`
-    /// holding the site: the statements of one `case` run in order, but an
-    /// earlier `case` is not looked into, since a jump to a later label skips
-    /// it. An `if` nested inside an earlier statement is not looked into
-    /// either: `if (v) { if (d == 0) return 0; }` leaves `d` unknown when `v`
-    /// is zero.
-    fn preceding_exit_facts<'a>(&self, site: &Node<'a>, source: &str) -> Vec<(Node<'a>, bool)> {
-        const BLOCKS: &[&str] = &[
-            "compound_statement",
-            "case_statement",
-            "preproc_if",
-            "preproc_ifdef",
-            "preproc_else",
-            "preproc_elif",
-        ];
-        let mut facts = Vec::new();
-        let mut current = *site;
-        while let Some(parent) = current.parent() {
-            if BLOCKS.contains(&parent.kind()) {
-                for stmt in parent.named_child_nodes() {
-                    if stmt.start_byte() >= current.start_byte() {
-                        break;
-                    }
-                    self.statement_exit_facts(&stmt, source, &mut facts);
-                }
-            }
-            if parent.kind() == "function_definition" {
-                break;
-            }
-            current = parent;
-        }
-        facts
-    }
-
-    /// [`Self::preceding_exit_facts`] for one statement, looking through
-    /// preprocessor wrappers to the statements they hold.
-    fn statement_exit_facts<'a>(
-        &self,
-        stmt: &Node<'a>,
-        source: &str,
-        out: &mut Vec<(Node<'a>, bool)>,
-    ) {
-        match stmt.kind() {
-            "preproc_if" | "preproc_ifdef" | "preproc_else" | "preproc_elif" => {
-                for inner in stmt.named_child_nodes() {
-                    self.statement_exit_facts(&inner, source, out);
-                }
-            }
-            "if_statement" => {
-                let Some(cond) = stmt.child_by_field_name("condition") else {
-                    return;
-                };
-                let leaves = |arm: Option<Node>| {
-                    arm.is_some_and(|arm| {
-                        let arm = if arm.kind() == "else_clause" {
-                            match arm.named_child(0) {
-                                Some(inner) => inner,
-                                None => return false,
-                            }
-                        } else {
-                            arm
-                        };
-                        self.has_return_or_exit(&arm, source)
-                    })
-                };
-                let consequence = leaves(stmt.child_by_field_name("consequence"));
-                let alternative = stmt.child_by_field_name("alternative");
-                let alternative_leaves = leaves(alternative);
-                if consequence && !alternative_leaves {
-                    out.push((cond, false));
-                } else if alternative.is_some() && alternative_leaves && !consequence {
-                    out.push((cond, true));
-                }
-            }
-            "while_statement" | "do_statement" => {
-                if let Some(cond) = stmt.child_by_field_name("condition") {
-                    if !Self::loop_can_leave_early(stmt) {
-                        out.push((cond, false));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Whether a loop can be left other than by its condition turning false:
-    /// a `break` that ends this loop (one in a nested loop or `switch` ends
-    /// only that), or a `goto`. A `return` or a call that never returns
-    /// leaves the whole function, so no statement after the loop runs.
-    fn loop_can_leave_early(stmt: &Node) -> bool {
-        query::find_first_descendant(*stmt, |n| match n.kind() {
-            "goto_statement" => true,
-            "break_statement" => query::find_ancestor(n, |a| {
-                matches!(
-                    a.kind(),
-                    "for_statement" | "while_statement" | "do_statement" | "switch_statement"
-                )
-            })
-            .is_some_and(|owner| owner.id() == stmt.id()),
-            _ => false,
-        })
-        .is_some()
-    }
-
-    /// Whether anything between `cond` and `site` may change one of
-    /// `targets`: an assignment, `++`/`--` or address-of whose operand is a
-    /// target or a variable a target reads. "Between" is the source after
-    /// the condition (after the whole loop, for the condition of a loop the
-    /// site follows) and before the site, plus the whole body of every loop
-    /// holding the site but not the condition, whose later statements run
-    /// again before the site on the next iteration.
-    fn written_between(cond: &Node, site: &Node, targets: &[String], source: &str) -> bool {
-        let Some(func) = ast_utils::find_containing_function(site) else {
-            return false;
-        };
-        // The targets, and the variables they read: `i` in `ds[i]`, `f` in
-        // `f->den` (a field name is never written on its own, so including
-        // it costs nothing).
-        let mut names: HashSet<String> = targets.iter().cloned().collect();
-        for target_text in targets {
-            for word in target_text
-                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                .filter(|w| !w.is_empty() && !w.starts_with(|c: char| c.is_ascii_digit()))
-            {
-                names.insert(word.to_string());
-            }
-        }
-
-        // A loop's condition is known false after the whole loop, so the
-        // writes that count start where the loop ends.
-        let from = cond
-            .parent()
-            .filter(|owner| {
-                matches!(
-                    owner.kind(),
-                    "while_statement" | "do_statement" | "for_statement"
-                ) && !(site.start_byte() >= owner.start_byte()
-                    && site.end_byte() <= owner.end_byte())
-            })
-            .map_or(cond.end_byte(), |owner| owner.end_byte());
-        let mut spans = vec![(from, site.start_byte())];
-        let mut current = *site;
-        while let Some(parent) = current.parent() {
-            if parent.kind() == "function_definition" {
-                break;
-            }
-            let is_loop = matches!(
-                parent.kind(),
-                "for_statement" | "while_statement" | "do_statement"
-            );
-            if is_loop
-                && !(cond.start_byte() >= parent.start_byte()
-                    && cond.end_byte() <= parent.end_byte())
-            {
-                spans.push((parent.start_byte(), parent.end_byte()));
-            }
-            current = parent;
-        }
-        // A write holding the site, `b = a % b`, happens after the division.
-        let within = |n: &Node| {
-            let holds_site = n.start_byte() <= site.start_byte() && n.end_byte() >= site.end_byte();
-            !holds_site
-                && spans
-                    .iter()
-                    .any(|&(lo, hi)| n.start_byte() >= lo && n.start_byte() < hi)
-        };
-        let writes = |operand: Option<Node>| {
-            operand.is_some_and(|op| names.contains(&guard_dominance::squeeze_text(&op, source)))
-        };
-        query::find_first_descendant(func, |n| {
-            within(&n)
-                && match n.kind() {
-                    "assignment_expression" => writes(n.child_by_field_name("left")),
-                    "update_expression" => writes(n.child_by_field_name("argument")),
-                    "pointer_expression" => {
-                        n.child_by_field_name("operator")
-                            .is_some_and(|op| op.kind() == "&")
-                            && writes(n.child_by_field_name("argument"))
-                    }
-                    _ => false,
-                }
-        })
-        .is_some()
-    }
-
     /// Whether a condition known where the division executes, or an assert
     /// on a statement before it, proves the divisor non-zero.
     ///
-    /// `facts` are [`Self::guard_facts`], so a true `n > 0 && x / n`, a false
+    /// `facts` are `nonzero_facts::known_conditions`, so a true `n > 0 && x / n`, a false
     /// `n == 0 || x / n`, the guarded arm of `n ? x / n : 0`, and a preceding
     /// `if (n == 0) return;` all read the same way, and a division in the
     /// zero branch itself (`if (n == 0) { x / n; }`) reads the condition true
@@ -987,52 +745,6 @@ impl Int33C {
             _ => false,
         })
         .is_some()
-    }
-
-    /// Whether a guard's branch always leaves, so the statements after the
-    /// guard run only when its condition was false: control cannot fall out
-    /// of the branch ([`guard_dominance::always_diverges_with`]). Its last
-    /// statement is a `return`, `break`, `continue` or `goto`, a direct call
-    /// to a function that never returns under the run's settings
-    /// (`file_noreturn_names`), a loop that never ends
-    /// ([`guard_dominance::loops_forever`]), or an `if` with an `else` whose
-    /// arms both leave. A jump or call that merely appears inside the branch does not
-    /// count: `{ if (v) return 0; }` falls through when `v` is zero, and a
-    /// `break` inside a nested loop or `switch` leaves only that construct.
-    /// Read off the AST, never the branch's text (ADR-0005).
-    fn has_return_or_exit(&self, node: &Node, source: &str) -> bool {
-        let noreturn_names = self.file_noreturn_names.borrow();
-        fn ends_path(stmt: &Node, source: &str, names: &HashSet<String>) -> bool {
-            match stmt.kind() {
-                "expression_statement" => {
-                    crate::analyze::noreturn::is_noreturn_call_statement(stmt, source, names)
-                }
-                "for_statement" | "while_statement" | "do_statement" => {
-                    guard_dominance::loops_forever(stmt, source)
-                }
-                "if_statement" => {
-                    let arm = |field: &str| {
-                        stmt.child_by_field_name(field).is_some_and(|arm| {
-                            // An `else` arm is wrapped in an `else_clause`.
-                            let arm = if arm.kind() == "else_clause" {
-                                match arm.named_child(0) {
-                                    Some(inner) => inner,
-                                    None => return false,
-                                }
-                            } else {
-                                arm
-                            };
-                            guard_dominance::always_diverges_with(&arm, &|s| {
-                                ends_path(s, source, names)
-                            })
-                        })
-                    };
-                    arm("consequence") && arm("alternative")
-                }
-                _ => false,
-            }
-        }
-        guard_dominance::always_diverges_with(node, &|s| ends_path(s, source, &noreturn_names))
     }
 
     /// Check if target is a descendant of node (O(1) via byte-range containment)
@@ -1264,22 +976,8 @@ impl Int33C {
     /// a cycle proves nothing.
     fn every_caller_passes_nonzero(&self, divisor: &Node, source: &str) -> bool {
         let mut param = *divisor;
-        loop {
-            let inner = match param.kind() {
-                "parenthesized_expression" => param.named_child(0),
-                "unary_expression"
-                    if param
-                        .child_by_field_name("operator")
-                        .is_some_and(|op| matches!(op.kind(), "-" | "+")) =>
-                {
-                    param.child_by_field_name("argument")
-                }
-                _ => None,
-            };
-            match inner {
-                Some(inner) => param = inner,
-                None => break,
-            }
+        while let Some(inner) = nonzero_facts::peel_sign(&param) {
+            param = inner;
         }
         if param.kind() != "identifier" {
             return false;

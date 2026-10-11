@@ -1145,6 +1145,21 @@ dominance (it returns true if the text contains `"if"` anywhere and one of
 eight spacing-sensitive comparison substrings). It is still ARR00-C's, in three
 places. Anything new should use this module.
 
+### `src/utility/cert_c/nonzero_facts.rs`
+
+What control has established about a value at one site, for a rule that
+needs it proven non-zero there. Builds on `guard_dominance`; the predicate
+over each condition (usually `condition_excludes_zero`) stays the caller's.
+INT33-C's divisor and MEM04-C's allocation size are the callers.
+
+| Function | Signature | What it does |
+|---|---|---|
+| `known_conditions` | `(site: &Node, targets: &[String], source: &str, noreturn: &HashSet<String>) -> Vec<(Node, bool)>` | Every condition with its truth value known where `site` runs: `dominating_conditions_with_branches` with a resolved branch, plus `preceding_exit_facts`; then any fact `written_between` it and the site is dropped. So `if (n == 0) { a / n; }` reads the condition TRUE (no credit), and `if (n == 0) return; n = m; a / n` has no fact left. |
+| `preceding_exit_facts` | `(site, source, noreturn) -> Vec<(Node, bool)>` | Statements before `site` in an enclosing block that control passes only one way: a lone `if` whose branch always leaves (false after), an `if`/`else` with exactly one leaving arm (the other's value), a `while`/`do` that no `break`/`goto` leaves (false after). The blocks include the `case` holding the site (`case 0: if (d == 0) continue; a / d;`), but never an earlier `case`, nor an `if` nested in an earlier statement (`if (v) { if (d == 0) return 0; }` proves nothing about `d`). |
+| `branch_always_leaves` | `(node, source, noreturn) -> bool` | `guard_dominance::always_diverges_with` with the ends a caller's noreturn set adds: a direct call to one of `noreturn`, a loop that never ends, an `if`/`else` whose arms both leave. |
+| `written_between` | `(cond, site, targets, source) -> bool` | An assignment, `++`/`--` or `&` of a target, or of a variable a target reads (`i` in `ds[i]`), after `cond` (after the whole loop, for a loop's condition) and before `site`, or anywhere in a loop holding the site but not the condition. A write holding the site (`b = a % b`) is after it. |
+| `peeled_spellings` / `peel_sign` | `(expr, source) -> Vec<String>` / `(expr) -> Option<Node>` | The spellings a guard on `expr` may use: itself, and with parentheses and a unary sign peeled (`(-step)` -> `step`). Never `p` for `*p` or a bare field name for `f->den`. |
+
 ### `src/utility/cert_c/result_checks.rs`
 **Problem solved:** "was the result this call stored tested against the value
 that signals the function's failure?" -- the forward-looking question that a
