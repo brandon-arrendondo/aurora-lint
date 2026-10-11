@@ -1335,6 +1335,10 @@ fn collect_function_summaries(
     let mut stack = vec![*node];
     while let Some(current) = stack.pop() {
         if current.kind() == "function_definition" && !is_macro_function_definition(&current) {
+            // One step per definition: the file decides how many there are,
+            // and a file of hundreds of thousands must be stopped by its
+            // budget, not by a watchdog that reports nothing.
+            crate::analyze::containment::checkpoint();
             if let Some(name) = extract_function_name(&current, source) {
                 let mut summary = analyze_function(
                     &current,
