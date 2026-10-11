@@ -421,7 +421,7 @@ impl FreeSite {
         }
         let key = compact(get_node_text(&arg, source));
         let pos = call.start_position();
-        let (persists, containers) = match arg.kind() {
+        let (persists, mut containers) = match arg.kind() {
             "identifier" => (identifier_outlives_function(&arg, source), Vec::new()),
             "field_expression" => (
                 member_outlives_function(&arg, source),
@@ -429,6 +429,11 @@ impl FreeSite {
             ),
             _ => return None,
         };
+        // `T *t = (T *)v;` names one object twice: freeing `v` after `t->m`
+        // frees the object `t->m` lives in.
+        if let Some(root) = containers.last().cloned() {
+            containers.extend(initializer_aliases(&arg, &root, source));
+        }
         Some(Self {
             key,
             free_byte: call.start_byte(),
@@ -439,6 +444,52 @@ impl FreeSite {
             lvalue: lvalue_of(&arg, source),
         })
     }
+}
+
+/// The other names for the object variable `root` names, through
+/// declarations whose initializer is one other variable (a cast around it
+/// aside): `vtab *t = (vtab *)v;` makes `t` and `v` the same pointer. One
+/// level at a time, in both directions, within the function holding `site`.
+fn initializer_aliases(site: &Node, root: &str, source: &str) -> Vec<String> {
+    let mut function = *site;
+    while function.kind() != "function_definition" {
+        match function.parent() {
+            Some(p) => function = p,
+            None => return Vec::new(),
+        }
+    }
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for init in query::find_descendants_of_kind(function, "init_declarator") {
+        let (Some(declarator), Some(value)) = (
+            init.child_by_field_name("declarator"),
+            init.child_by_field_name("value"),
+        ) else {
+            continue;
+        };
+        let value = strip_parens_and_casts(&value);
+        if value.kind() != "identifier" {
+            continue;
+        }
+        let name = ast_utils::get_identifier_from_declarator(&declarator, source);
+        if !name.is_empty() {
+            pairs.push((name, get_node_text(&value, source).to_string()));
+        }
+    }
+    let mut class = vec![root.to_string()];
+    let mut grew = true;
+    while grew {
+        grew = false;
+        for (a, b) in &pairs {
+            for (x, y) in [(a, b), (b, a)] {
+                if class.contains(x) && !class.contains(y) {
+                    class.push(y.clone());
+                    grew = true;
+                }
+            }
+        }
+    }
+    class.retain(|name| name != root);
+    class
 }
 
 fn compact(text: &str) -> String {
