@@ -23,12 +23,17 @@ use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Mem01C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     /// Cross-file function summaries from prescan (an earlier fix follow-on to 320/321).
     cross_file_summaries: RefCell<ScopedTable<FunctionSummary>>,
+    /// [`Mem01C::build_read_only_params`] of `cross_file_summaries`, built
+    /// when they are set rather than once per function: it depends on
+    /// nothing else.
+    read_only_params: RefCell<Arc<HashMap<String, HashSet<usize>>>>,
 }
 
 /// Per-callee parameter indices confirmed to be read-only-dereferenced,
@@ -39,7 +44,7 @@ pub struct Mem01C {
 /// behavior (see `call_address_of_action`), so only the read-only set needs
 /// tracking.
 struct AddressOfCallContext {
-    read_only_params: HashMap<String, HashSet<usize>>,
+    read_only_params: Arc<HashMap<String, HashSet<usize>>>,
 }
 
 impl Mem01C {
@@ -47,6 +52,7 @@ impl Mem01C {
         Self {
             function_cfgs: RefCell::new(HashMap::new()),
             cross_file_summaries: RefCell::default(),
+            read_only_params: RefCell::default(),
         }
     }
 
@@ -141,6 +147,7 @@ impl CertRule for Mem01C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.cross_file_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.read_only_params.borrow_mut() = Arc::new(self.build_read_only_params());
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
@@ -166,7 +173,7 @@ impl Mem01C {
         };
 
         let addr_ctx = AddressOfCallContext {
-            read_only_params: self.build_read_only_params(),
+            read_only_params: Arc::clone(&self.read_only_params.borrow()),
         };
 
         // Get pre-built CFG or build one on the fly
