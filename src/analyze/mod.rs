@@ -240,6 +240,8 @@ pub fn analyze_project(
     // Declared allocators and deallocators reach the function summaries
     // prescan builds, so they are installed first.
     crate::settings::memory::declare(settings.memory.clone())?;
+    // The thread-API families the concurrency rules read.
+    crate::settings::threads::declare(settings.threads.clone())?;
     // So does a declared closed program, which closes caller sets there.
     crate::settings::closure::declare(settings.flag("closed_program"))?;
 

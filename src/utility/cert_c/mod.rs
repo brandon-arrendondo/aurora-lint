@@ -71,4 +71,7 @@ pub mod std_functions;
 /// Slicing and truncating source text on character boundaries, so a
 /// multibyte character at the cut cannot panic the scan.
 pub mod text_bounds;
+/// Which thread-API operation a call performs (create, lock, wait, store
+/// thread-specific data, ...), across C11, POSIX and declared families.
+pub mod thread_api;
 pub mod variable_analysis;

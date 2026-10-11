@@ -417,6 +417,60 @@ handed to a library's deallocator with no body in the scan is reported leaked
 until that deallocator is declared. ``--report-deallocator-candidates`` (see
 :doc:`cli-usage`) lists the callees worth declaring.
 
+Thread-API families
+~~~~~~~~~~~~~~~~~~~
+
+The concurrency rules read the hazard CERT names, not one API's spelling
+(``docs/design/thread-api-families.md``). CON30-C and CON36-C ask which thread
+operation a call performs: thread create, mutex lock, condition wait, storing
+thread-specific data and so on. Each operation's operands are placed by
+argument position. C11 ``<threads.h>`` is always read. POSIX threads are read
+too, unless ``posix_version = "none"`` or ``posix = "off"`` below says the
+target is not POSIX. A call counts when its callee resolves to the function;
+a parameter or a function pointer spelled like one is not it.
+
+An RTOS's API is read only when the project declares it. ``families`` selects
+a profile shipped with aurora-lint. ``freertos`` is checked against
+FreeRTOS-Kernel V11.2.0 and covers task creation, the recursive-mutex calls,
+the thread-local storage pointers and the task delays. The project's own
+wrappers go under ``functions``, each with its operation and the 1-based
+positions of its operands:
+
+.. code-block:: toml
+
+   [environment.threads]
+   families = ["freertos"]
+
+   [environment.threads.functions]
+   os_mutex_lock   = { op = "mutex_lock", object = 1, blocking = "always" }
+   os_mutex_unlock = { op = "mutex_unlock", object = 1 }
+   os_cond_wait    = { op = "cond_wait", cond = 1, mutex = 2, spurious = true }
+   os_task_spawn   = { op = "thread_create", entry = 2, arg = 3, arity = 5 }
+
+   [environment.threads.types]
+   os_mutex_t = "mutex"
+
+The operations are ``thread_create``, ``thread_join``, ``thread_detach``,
+``thread_self``, ``thread_exit``, ``mutex_init``, ``mutex_lock``,
+``mutex_unlock``, ``mutex_destroy``, ``cond_wait``, ``cond_signal``,
+``cond_broadcast``, ``tss_create``, ``tss_set``, ``tss_get``, ``tss_delete``,
+``once`` and ``sleep``. Each takes only its own roles, and the scan refuses
+the manifest otherwise:
+
+- ``thread_create`` must give ``entry``, and may give ``arg`` and ``handle``.
+- A ``cond_wait`` must state ``spurious``, whether it can return without a
+  signal. CON36-C reports only a wait that can.
+- The thread-specific storage operations must give ``key``. For a family
+  with fixed slots instead of created keys, as FreeRTOS has, the key is the
+  slot index.
+- ``arity``, the exact argument count, is optional on every operation. A call
+  with another count is a different function of the same name.
+
+A C11 or POSIX function cannot be declared, since its contract is the
+library's. Neither can a function the selected profile already covers.
+These tables are facts about the project, so ``--profile`` keeps them.
+They enter the settings hash only when something differs from the default.
+
 Scope
 -----
 

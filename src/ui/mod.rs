@@ -2170,6 +2170,8 @@ impl TerminalUI {
         // Declared allocators and deallocators reach the function summaries
         // prescan builds, so they are installed first, as a CLI scan does.
         crate::settings::memory::declare(self.settings.memory.clone())?;
+        // The thread-API families the concurrency rules read.
+        crate::settings::threads::declare(self.settings.threads.clone())?;
         crate::settings::closure::declare(self.settings.flag("closed_program"))?;
 
         // Pre-scan directories for cross-file context

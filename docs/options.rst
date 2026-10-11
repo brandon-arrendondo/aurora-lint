@@ -243,3 +243,24 @@ Declared memory functions
      (default 1)
    - Part of the settings hash only when something is declared
    - Basis: the project's own statement of its environment (ADR-0001, ADR-0015)
+
+Declared thread-API families
+----------------------------
+
+``threads``
+   The concurrency rules read a hazard, not one API's spelling: CON30-C and
+   CON36-C ask which thread operation a call performs (create, lock, wait,
+   store thread-specific data, ...). C11 ``<threads.h>`` is always read.
+   POSIX threads are read unless ``posix_version = "none"`` or
+   ``posix = "off"`` says the target is not POSIX. A call counts when its
+   callee resolves to the function, not to an object of the same name. An
+   RTOS's API is read only when declared: ``families`` selects a shipped
+   profile (``freertos``, checked against FreeRTOS-Kernel V11.2.0), and
+   ``functions`` gives the project's own, each as ``{ op = "KIND", ROLE = N }``
+   with 1-based argument positions. A C11 or POSIX function cannot be
+   declared, since its contract is the library's.
+
+   - Set with ``[environment.threads]`` (``families``, ``posix``) and
+     ``[environment.threads.functions]`` / ``[environment.threads.types]``
+   - Part of the settings hash only when something differs from the default
+   - Basis: ``docs/design/thread-api-families.md`` (ADR-0006, ADR-0015)

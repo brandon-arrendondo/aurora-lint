@@ -16,6 +16,7 @@
 
 pub mod closure;
 pub mod memory;
+pub mod threads;
 
 pub use crate::utility::cert_c::data_model::{DataModel, Fact, FactSource, IntFacts};
 use anyhow::{bail, Result};
@@ -24,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
+pub use threads::{ThreadDeclarations, ThreadsConfig};
 
 /// A named preset: a value for both axes at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -886,6 +888,10 @@ pub struct EnvironmentConfig {
     /// argument it frees. See [`memory`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub deallocators: BTreeMap<String, usize>,
+    /// Declared thread-API families: shipped profiles by name, and the
+    /// project's own functions and types. See [`threads`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threads: Option<ThreadsConfig>,
     /// Per-contract overrides.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub overrides: BTreeMap<String, bool>,
@@ -939,8 +945,8 @@ impl EnvironmentConfig {
 
 impl SettingsConfig {
     /// Only what these settings say about the project itself rather than
-    /// which preset or options it wants: its declared allocators and
-    /// deallocators, and its target's data model, C library and editions. A `--profile`
+    /// which preset or options it wants: its declared allocators,
+    /// deallocators and thread-API families, and its target's data model, C library and editions. A `--profile`
     /// restarts from its preset and keeps these, since a preset chooses
     /// policy and never erases what a project's own functions do or what it
     /// is built for.
@@ -950,6 +956,7 @@ impl SettingsConfig {
         };
         if env.allocators.is_empty()
             && env.deallocators.is_empty()
+            && env.threads.as_ref().is_none_or(ThreadsConfig::is_empty)
             && env.data_model.is_none()
             && env.libc.is_none()
             && env.libc_version.is_none()
@@ -962,6 +969,7 @@ impl SettingsConfig {
         let mut kept = EnvironmentConfig {
             allocators: env.allocators.clone(),
             deallocators: env.deallocators.clone(),
+            threads: env.threads.clone(),
             data_model: env.data_model,
             libc: env.libc,
             libc_version: env.libc_version.clone(),
@@ -1046,6 +1054,11 @@ impl SettingsConfig {
                 .extend(e.allocators.iter().map(|(k, v)| (k.clone(), *v)));
             mine.deallocators
                 .extend(e.deallocators.iter().map(|(k, v)| (k.clone(), *v)));
+            if let Some(threads) = &e.threads {
+                mine.threads
+                    .get_or_insert_with(Default::default)
+                    .overlay(threads);
+            }
             mine.overrides
                 .extend(e.overrides.iter().map(|(k, v)| (k.clone(), *v)));
         }
@@ -1204,6 +1217,8 @@ pub struct AnalysisSettings {
     pub facts: IntFacts,
     /// The project's declared allocators and deallocators.
     pub memory: MemoryDeclarations,
+    /// The thread-API families in force (`threads`).
+    pub threads: ThreadDeclarations,
     /// The path globs whose files the cross-file prescan does not read
     /// (`--exclude-all` and `--prescan-exclude`, with their manifest keys),
     /// sorted and deduplicated. What a summary, a macro's alternatives or a
@@ -1271,6 +1286,10 @@ impl AnalysisSettings {
             };
             memory.validate()?;
         }
+        let threads = ThreadDeclarations::resolve(
+            config.environment.as_ref().and_then(|e| e.threads.as_ref()),
+            posix_version,
+        )?;
         // A hosted implementation provides the standard library, so its
         // contracts hold unless a model says otherwise; a freestanding one
         // provides none unless a library is declared. The pedantic preset
@@ -1422,6 +1441,7 @@ impl AnalysisSettings {
             data_model,
             facts,
             memory,
+            threads,
             prescan_scope: Vec::new(),
             values,
         })
@@ -1761,6 +1781,9 @@ impl AnalysisSettings {
         }
         if !self.memory.deallocators.is_empty() {
             identity["deallocators"] = serde_json::json!(self.memory.deallocators);
+        }
+        if !self.threads.is_default() {
+            identity["threads"] = serde_json::json!(self.threads);
         }
         // Likewise present only when the prescan leaves files out.
         if !self.prescan_scope.is_empty() {
@@ -2423,6 +2446,26 @@ pub fn render_rst() -> String {
          (default 1)\n   \
          - Part of the settings hash only when something is declared\n   \
          - Basis: the project's own statement of its environment (ADR-0001, ADR-0015)\n",
+    );
+    out.push_str(
+        "\nDeclared thread-API families\n\
+         ----------------------------\n\n\
+         ``threads``\n   \
+         The concurrency rules read a hazard, not one API's spelling: CON30-C and\n   \
+         CON36-C ask which thread operation a call performs (create, lock, wait,\n   \
+         store thread-specific data, ...). C11 ``<threads.h>`` is always read.\n   \
+         POSIX threads are read unless ``posix_version = \"none\"`` or\n   \
+         ``posix = \"off\"`` says the target is not POSIX. A call counts when its\n   \
+         callee resolves to the function, not to an object of the same name. An\n   \
+         RTOS's API is read only when declared: ``families`` selects a shipped\n   \
+         profile (``freertos``, checked against FreeRTOS-Kernel V11.2.0), and\n   \
+         ``functions`` gives the project's own, each as ``{ op = \"KIND\", ROLE = N }``\n   \
+         with 1-based argument positions. A C11 or POSIX function cannot be\n   \
+         declared, since its contract is the library's.\n\n   \
+         - Set with ``[environment.threads]`` (``families``, ``posix``) and\n     \
+         ``[environment.threads.functions]`` / ``[environment.threads.types]``\n   \
+         - Part of the settings hash only when something differs from the default\n   \
+         - Basis: ``docs/design/thread-api-families.md`` (ADR-0006, ADR-0015)\n",
     );
     out
 }

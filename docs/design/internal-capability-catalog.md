@@ -1628,6 +1628,29 @@ macro-synthesized ones).
    the rule still works correctly on a single-file run with no `-d`
    prescan, just with reduced (single-file) recall.
 
+## Thread-API operations
+
+### `src/utility/cert_c/thread_api.rs`
+**Problem solved:** every concurrency rule matched the callee's spelling
+against its own copied list. The same lock/unlock set appeared in several
+rules, the C11/POSIX twins shared nothing, and C11-only rules missed the
+POSIX form of their own hazard (CON36-C knew `cnd_wait` but not
+`pthread_cond_wait`). The 2026-10-07 rulings read the concurrency hazards
+API-neutrally, with C11 and POSIX built in and RTOS families declarable
+(`docs/design/thread-api-families.md`). **Ask this module which operation a
+call performs instead of comparing names.** The families in force are
+process-wide, installed before the scan (`settings::threads::declare`).
+CON30-C and CON36-C read it so far. The other CON/POS rules, and
+`concurrency_roots`'s spawn table, have not moved yet.
+
+| Function | Signature | Description |
+|---|---|---|
+| `thread_op` / `thread_op_of_kind` | `(call, source) -> Option<ThreadCall>` / `(call, source, kind)` | The operation a `call_expression` performs, by C11, then POSIX (unless declared off), then the selected profiles, then the project's `[environment.threads.functions]`. `None` for a callee that is not a plain name, that resolves to an object of that name (a local, parameter or function pointer, ADR-0006), or whose argument count differs from the contract's `arity`. |
+| `ThreadCall::kind` / `ThreadCall::operand` | `() -> ThreadOpKind` / `(Role) -> Option<Node>` | The kind, and the argument node the contract places a role at (`Role::Key`, `Role::Mutex`, ...). `family` and `op` (the full `ThreadOp`, e.g. `op.spurious`, `op.blocking`) are fields. |
+| `type_kind` | `(name: &str) -> Option<ThreadTypeKind>` | What a type name holds (`tss_t`/`pthread_key_t` -> `TssKey`, ...), by the same families. Resolve typedefs first if the rule needs to. |
+| `op_named` | `(name: &str) -> Option<(Family, ThreadOp)>` | The contract for a bare name, with no call to resolve. Prefer `thread_op` when you have the call. |
+| `Family::creates_storage_keys` / `Family::function_of` | `(self) -> bool` / `(self, kind) -> Option<String>` | Whether the family's thread-specific storage has created keys that can carry a destructor (C11, POSIX), as opposed to fixed slots (FreeRTOS). And the family's first function of a kind, for a message's suggestion. |
+
 ## Text slicing on character boundaries
 
 ### `src/utility/cert_c/text_bounds.rs`

@@ -126,7 +126,7 @@ reading and never erases what a project's own functions do. They are added to
 [environment.threads]
 # Built-in profiles to load, by name. c11 needs no entry.
 families = ["freertos"]
-# Optional, POSIX only: "auto" (the default, see §5), "on" or "off".
+# Optional, POSIX only: "auto" (the default, see §5) or "off".
 posix = "auto"
 
 # A project's own wrappers, and RTOS calls no profile covers.
@@ -140,8 +140,9 @@ os_cond_wait    = { op = "cond_wait", cond = 1, mutex = 2, spurious = true }
 os_mutex_t = "mutex"
 ```
 
-The CLI equivalents follow `--allocator`: `--thread-family NAME` and
-`--thread-op NAME=KIND[:ROLE=N,...]`.
+Command-line equivalents in the style of `--allocator` (`--thread-family
+NAME`, `--thread-op NAME=KIND[:ROLE=N,...]`) are a later step. The manifest
+table is the only way to declare in the first step.
 
 **Validation.** It runs at settings resolution, as `MemoryDeclarations::validate`
 does, and it refuses rather than ignoring:
@@ -168,10 +169,21 @@ it. I expect to need one cache-format bump, and will ask before taking 44.
 **Identity follows ADR-0006 and E2.** A declared name is matched when the call
 resolves to that function or macro. A function-like macro is followed through
 `macro_expand`, which matters for FreeRTOS: `xSemaphoreTake` is a macro over
-`xQueueSemaphoreTake`. If the project defines its own function with a built-in
-name, that call is the project's function, not the library's. `arity` keeps
-its current job of refusing a same-named function with the wrong argument
-count.
+`xQueueSemaphoreTake`. The first step matches the macro's name at the call
+site, as the profile lists it; following a project's own macro around one is
+a later step. A callee that resolves to an object of the same name (a local,
+a parameter, or a file-scope function pointer) is that object and performs
+no operation. `arity` keeps its current job of refusing a same-named
+function with the wrong argument count.
+
+**A project that defines a reserved name keeps the library's contract.**
+ISO C reserves the `thrd_`, `mtx_`, `cnd_` and `tss_` prefixes and POSIX
+reserves `pthread_` for the implementation. A project that defines
+`pthread_cond_wait` itself, as a shim over another platform's API for
+example, is supplying that interface, and its callers rely on that contract.
+This differs from what this note first proposed: the project's definition
+does not take the call out of the family. It is also why a declaration may not
+restate a built-in name.
 
 ## 5. What each preset does with an undeclared family
 
@@ -209,11 +221,11 @@ goes through the existing `posix_for(file)` gate, unchanged.
 twin gets the API-neutral analysis. Both fire on a POSIX call, which is E10's
 existing overlap policy (`docs/design/cross-rule-overlap.md`).
 
-## 6. What a FreeRTOS profile would contain
+## 6. What the FreeRTOS profile contains
 
-The names and signatures below are from memory. Each must be checked against
-a pinned FreeRTOS-Kernel source before the profile ships, and the profile
-should cite the version it was written against.
+The names and signatures below were checked against FreeRTOS-Kernel V11.2.0
+(`include/task.h`, `include/semphr.h`), and the profile cites that version.
+The last row says which entries ship in the first step.
 
 | Kind | FreeRTOS |
 |---|---|
@@ -226,6 +238,7 @@ should cite the version it was written against.
 | `mutex_destroy` | `vSemaphoreDelete` |
 | global critical section | `taskENTER_CRITICAL` / `taskEXIT_CRITICAL`, `vTaskSuspendAll` / `xTaskResumeAll`. This is a lock with no object, so it needs a `critical_enter`/`critical_exit` kind or `object = none`. Open item. |
 | `cond_wait` | none. FreeRTOS has no condition variable, so CON36-C does not apply. Task notifications and event groups do not wake spuriously in the CON36 sense. |
+| shipped in the first step | Checked against FreeRTOS-Kernel V11.2.0. The plain `xSemaphoreTake`/`xSemaphoreGive` are left out, since they serve binary and counting semaphores too, and a call is a lock only when its handle came from a mutex-creating call. The recursive forms ship, along with the mutex-creating calls, task creation, the storage pointers and the delays. `vTaskDelete` is left out (see `thread_exit`). |
 | `tss_set` / `tss_get` | `vTaskSetThreadLocalStoragePointer(task, index, value)` / `pvTaskGetThreadLocalStoragePointer(task, index)`. These are fixed slots with no destructor in the vanilla kernel. A destructor-carrying set exists as a vendor extension (ESP-IDF's `...AndDelCallback`) and would be a separate `esp-idf` profile. So for FreeRTOS, CON30-C's hazard reads: a heap value stored in a slot and not freed before the task deletes itself. |
 | `sleep` (blocking, for CON05-C) | `vTaskDelay`, `xTaskDelayUntil`, plus queue receive/send and notify-take calls with a non-zero timeout |
 | types | `TaskHandle_t` → thread, `SemaphoreHandle_t` → mutex. A semaphore handle is not always a mutex; it is a mutex only when made by a `CreateMutex` call. Open item. |
