@@ -143,6 +143,8 @@ impl CParser {
             &self.repair_macros,
         )
         .with_context(|| format!("Failed to parse file: {}", file_path))?;
+        // Too deep to walk: refused here, so no analysis recurses into it.
+        crate::analyze::input_guard::admit_tree(&tree)?;
 
         Ok((tree, source))
     }

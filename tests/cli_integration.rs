@@ -6619,6 +6619,44 @@ fn a_file_over_the_size_ceiling_is_skipped() {
 }
 
 #[test]
+fn a_file_nested_past_the_depth_limit_is_skipped_and_the_rest_analysed() {
+    // Two copies of a file that violates MSC04-C, and one nested 60 levels
+    // deep under a limit of 50: the deep one is refused with its depth, on a
+    // multi-file scan, and the others are still analysed.
+    let dir = copies_of_violation(2);
+    std::fs::write(
+        dir.path().join("deep.c"),
+        format!("int y = {}1{};\n", "(".repeat(60), ")".repeat(60)),
+    )
+    .unwrap();
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        dir.path().to_str().unwrap(),
+        "-m",
+        manifest_msc04().to_str().unwrap(),
+        "--max-nesting-depth",
+        "50",
+    ]);
+    assert_eq!(code, 3, "{stderr}");
+    assert!(
+        stderr.contains("input skipped (too deep): ")
+            && stderr.contains(
+                "deep.c: its syntax tree nests 63 levels deep, over --max-nesting-depth 50"
+            ),
+        "{stderr}"
+    );
+    assert!(stdout.contains("MSC04-C"), "{stdout}");
+    // 0 lifts the limit.
+    let (code, _, stderr) = run_aurora_lint(&[
+        dir.path().join("deep.c").to_str().unwrap(),
+        "-m",
+        manifest_msc04().to_str().unwrap(),
+        "--max-nesting-depth",
+        "0",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+}
+
+#[test]
 fn utf16_source_with_a_bom_is_not_mistaken_for_binary() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("wide.c");

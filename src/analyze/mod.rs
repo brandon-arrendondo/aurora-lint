@@ -1352,6 +1352,13 @@ fn analyze_one_file(
 
     let parsed = match parser.parse_file(file_path) {
         Ok(parsed) => Some(parsed),
+        // Parsed but refused (ADR-0017): reported like a refusal before it.
+        Err(e) if e.downcast_ref::<input_guard::Refusal>().is_some() => {
+            if let Some(refusal) = e.downcast_ref::<input_guard::Refusal>() {
+                file_failures.push(containment::ScanFailure::refused(file_path, refusal));
+            }
+            None
+        }
         Err(e) => {
             // A file the directory walk listed but the parser would not
             // take -- a binary blob with a C extension, an

@@ -161,6 +161,7 @@ fn invocation(incomplete: super::Incomplete<'_>, headers: super::Headers<'_>) ->
                 Cause::Cap => "analysis-cap",
                 Cause::TooLarge => "too-large",
                 Cause::NotText => "not-source-text",
+                Cause::TooDeep => "too-deep",
             };
             let mut n = serde_json::json!({
                 "level": "error",

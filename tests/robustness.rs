@@ -986,6 +986,57 @@ fn long_chain_cases() -> Vec<Case> {
     ]
 }
 
+/// Nesting from a thousand levels to a million: braces, parentheses, an
+/// operator chain and an `else if` ladder. A thousand is analysed; past
+/// `--max-nesting-depth` (5000 tree levels by default) the file must be
+/// refused with its depth. Analyses walk the tree recursively, and a stack
+/// overflow aborts the whole process before containment can report it, so
+/// before the guard ten thousand levels of any of these ended the scan.
+fn deep_nesting_cases() -> Vec<Case> {
+    let mut out = Vec::new();
+    for depth in [1_000, 10_000, 100_000, 1_000_000] {
+        let refuse = if depth > 1_000 {
+            Refuse::Must
+        } else {
+            Refuse::Never
+        };
+        let mut add = |name: String, bytes: Vec<u8>| {
+            let mut c = Case::new(format!("n_{name}.c"), bytes, name);
+            c.refuse = refuse;
+            out.push(c);
+        };
+        add(
+            format!("braces_{depth}_deep"),
+            format!("void h(void) {}{}\n", "{".repeat(depth), "}".repeat(depth)).into_bytes(),
+        );
+        add(
+            format!("parens_{depth}_deep"),
+            format!("int y = {}1{};\n", "(".repeat(depth), ")".repeat(depth)).into_bytes(),
+        );
+        // At 1000 these two are [`long_chain_cases`]. A million-branch
+        // ladder is a 37 MiB file whose parse alone takes 2 GiB, which buys
+        // nothing over the 100,000 one, 200,000 levels deep.
+        if depth > 1_000 {
+            add(format!("binary_chain_{depth}_long"), binary_chain(depth));
+        }
+        if depth > 1_000 && depth <= 100_000 {
+            add(format!("else_if_{depth}_long"), else_if_ladder(depth));
+        }
+    }
+    out
+}
+
+#[test]
+#[ignore = "deep nesting under every rule: run in release with --ignored (CI robustness job)"]
+fn deep_nesting_is_refused_or_analysed() {
+    assert_scans_cleanly(
+        "nesting",
+        &deep_nesting_cases(),
+        "deep nesting",
+        wall_limit(SCAN_WALL_LIMIT),
+    );
+}
+
 #[test]
 #[ignore = "long chains under every rule: run in release with --ignored (CI robustness job)"]
 fn long_chains_scan_within_budget() {
@@ -1052,30 +1103,8 @@ fn large_cases() -> Vec<Case> {
             .into_bytes(),
         Refuse::May,
     );
+    // Nesting past `--max-nesting-depth` is in CI: [`deep_nesting_cases`].
     for depth in [1_000, 10_000, 100_000, 1_000_000] {
-        add(
-            &format!("braces_{depth}_deep"),
-            format!("void h(void) {}{}\n", "{".repeat(depth), "}".repeat(depth)).into_bytes(),
-            Refuse::May,
-        );
-        add(
-            &format!("parens_{depth}_deep"),
-            format!("int y = {}1{};\n", "(".repeat(depth), ")".repeat(depth)).into_bytes(),
-            Refuse::May,
-        );
-        // At 1000 these two are in CI: [`long_chain_cases`].
-        if depth > 1_000 {
-            add(
-                &format!("binary_chain_{depth}_long"),
-                binary_chain(depth),
-                Refuse::May,
-            );
-            add(
-                &format!("else_if_{depth}_long"),
-                else_if_ladder(depth),
-                Refuse::May,
-            );
-        }
         add(
             &format!("macro_chain_{depth}_deep"),
             (1..depth)

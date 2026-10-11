@@ -47,6 +47,15 @@ Kinds:
   (raylib's `miniaudio.h`). The largest real C inputs a scanner meets are
   amalgamations and SDK headers of 9-10 MiB (sqlite3.c, the Windows SDK's
   biggest WinRT header). The 64 MiB default is several times either.
+- **Nesting ceiling.** On the scan's 16 MiB stacks, the prescan and the
+  rules get through 10,000 tree levels of braces, parentheses, an operator
+  chain and an `else if` ladder without overflowing, and braces,
+  parentheses and the chain overflow by 20,000. The 5000 default is half
+  the deepest that survives. (Near that depth a few rules still run past the
+  watchdog on a long chain or ladder, which ends the scan: a speed problem
+  of those rules, not an overflow.) The deepest real header measured is 620 levels (the Windows
+  SDK's `d3d9helper.h`); the deepest fixture, a stack-safety test of 2000
+  nested `if`s, is 4009.
 - **Comment-heavy input.** A comment-heavy file used to cost time
   quadratic in its length: walks that took a node's children by index
   re-walked every earlier sibling, comments included, for each one. They
@@ -75,6 +84,7 @@ Kinds:
 | `containment::Escalation` | 3 failing files | d | reported; the rule is abandoned |
 | `analyze::WORKER_STACK_BYTES` | 16 MiB per analysis thread | a/b | a stack overflow aborts the process and cannot be contained |
 | `input_guard::admit` | `--max-file-size` (64 MiB); the substrate's `classify_file` on the first 8 KiB | d | reported (stage `input`); the file is skipped |
+| `input_guard::admit_tree` (in `CParser::parse_file`) | `--max-nesting-depth` (5000 tree levels), measured after parsing | d | reported (stage `input`, cause `too deep`); the file is skipped by every parse caller, so no recursive walk sees it |
 | `input_guard::large_file_permit` | files over 8 MiB analysed one at a time | d | none needed: it orders the work, it does not drop any |
 
 ## CFG and dataflow

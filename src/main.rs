@@ -255,7 +255,16 @@ fn main() {
              deeply nested sources may overflow its default stack"
         );
     }
-    let result = run();
+    // The main thread's 8 MiB is less than the pools get, and a single-file
+    // or `--jobs 1` scan runs its prescan and rules on whichever thread
+    // calls `run`, so run it on a thread with the pools' stack.
+    let result = std::thread::Builder::new()
+        .name("scan".into())
+        .stack_size(analyze::WORKER_STACK_BYTES)
+        .spawn(run)
+        .expect("failed to start the scan thread")
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
     match result {
         Ok(exit_code) => std::process::exit(exit_code),
         Err(e) => {
@@ -489,6 +498,18 @@ fn run() -> Result<i32> {
                 .value_name("MIB")
                 .default_value(analyze::input_guard::DEFAULT_MAX_FILE_MIB_ARG)
                 .value_parser(clap::value_parser!(u64)),
+        )
+        .arg(
+            Arg::new("max_nesting_depth")
+                .long("max-nesting-depth")
+                .help(
+                    "Skip, and report (exit 3), any input file whose syntax tree nests deeper \
+                     than this many levels, which the analyses cannot walk without risking a \
+                     stack overflow (0 = no limit). See docs/error-handling.rst",
+                )
+                .value_name("LEVELS")
+                .default_value(analyze::input_guard::DEFAULT_MAX_NESTING_DEPTH_ARG)
+                .value_parser(clap::value_parser!(usize)),
         )
         .arg(
             Arg::new("jobs")
@@ -761,6 +782,9 @@ fn run() -> Result<i32> {
     analyze::input_guard::set_max_file_mib(nonzero(
         *matches.get_one::<u64>("max_file_size").unwrap(),
     ));
+    analyze::input_guard::set_max_nesting_depth(
+        Some(*matches.get_one::<usize>("max_nesting_depth").unwrap()).filter(|&d| d > 0),
+    );
     analyze::containment::set_limits(analyze::containment::Limits {
         steps: nonzero(*matches.get_one::<u64>("rule_step_limit").unwrap()),
         time: nonzero(*matches.get_one::<u64>("rule_time_limit").unwrap())
@@ -1225,6 +1249,13 @@ fn run() -> Result<i32> {
                 "  note: a step, time or size limit stops work that may only be unusually \
                  large; --rule-step-limit / --rule-time-limit / --max-file-size raise them \
                  (0 = no limit). See docs/error-handling.rst."
+            );
+        }
+        if failures.iter().any(|f| f.cause == Cause::TooDeep) {
+            eprintln!(
+                "  note: a file nested deeper than the analyses can walk was skipped; \
+                 --max-nesting-depth raises the limit, at the risk of a stack overflow \
+                 that ends the scan. See docs/error-handling.rst."
             );
         }
         if failures.iter().any(|f| f.cause == Cause::NotText) {

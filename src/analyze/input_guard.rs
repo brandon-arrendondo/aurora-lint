@@ -55,6 +55,8 @@ pub enum Refusal {
     TooLarge(String),
     /// Not text: a known binary format, or NUL bytes.
     NotText(String),
+    /// Parsed, but nested deeper than `--max-nesting-depth`.
+    TooDeep(String),
 }
 
 impl Refusal {
@@ -63,13 +65,94 @@ impl Refusal {
         match self {
             Refusal::TooLarge(_) => "too large",
             Refusal::NotText(_) => "not source text",
+            Refusal::TooDeep(_) => "too deep",
         }
     }
 
     /// The detail.
     pub fn detail(&self) -> &str {
         match self {
-            Refusal::TooLarge(s) | Refusal::NotText(s) => s,
+            Refusal::TooLarge(s) | Refusal::NotText(s) | Refusal::TooDeep(s) => s,
+        }
+    }
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.cause(), self.detail())
+    }
+}
+
+impl std::error::Error for Refusal {}
+
+/// The deepest parse tree a file may have by default. Many analyses, in the
+/// prescan and in the rules, walk the tree by recursion, once per level, and
+/// a stack overflow aborts the whole process before containment can see it
+/// (ADR-0017). A file nested deeper than the limit is refused after parsing,
+/// with its depth, so a scan of it is reported incomplete rather than ended.
+///
+/// Measured against the scan's [`WORKER_STACK_BYTES`]: every input shape the
+/// robustness suite generates (braces, parentheses, operator chains, `else
+/// if` ladders) is walked by the prescan and the rules at twice this depth
+/// without overflowing, and most overflow by four times. Hand-written C
+/// stays far below it.
+///
+/// [`WORKER_STACK_BYTES`]: crate::analyze::WORKER_STACK_BYTES
+pub const DEFAULT_MAX_NESTING_DEPTH: usize = 5_000;
+
+/// [`DEFAULT_MAX_NESTING_DEPTH`] as the command line's default text.
+pub const DEFAULT_MAX_NESTING_DEPTH_ARG: &str = "5000";
+
+static MAX_DEPTH: OnceLock<Mutex<Option<usize>>> = OnceLock::new();
+
+fn max_depth_cell() -> &'static Mutex<Option<usize>> {
+    MAX_DEPTH.get_or_init(|| Mutex::new(Some(DEFAULT_MAX_NESTING_DEPTH)))
+}
+
+/// Set the nesting limit (`--max-nesting-depth`; `None` = no limit).
+pub fn set_max_nesting_depth(levels: Option<usize>) {
+    *max_depth_cell().lock().unwrap_or_else(|e| e.into_inner()) = levels;
+}
+
+fn max_depth() -> Option<usize> {
+    *max_depth_cell().lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether a parsed file is shallow enough to analyse: its tree is at most
+/// `--max-nesting-depth` levels deep.
+pub fn admit_tree(tree: &tree_sitter::Tree) -> Result<(), Refusal> {
+    admit_tree_under(tree, max_depth())
+}
+
+fn admit_tree_under(tree: &tree_sitter::Tree, limit: Option<usize>) -> Result<(), Refusal> {
+    let Some(limit) = limit else {
+        return Ok(());
+    };
+    let depth = tree_depth(tree);
+    if depth > limit {
+        return Err(Refusal::TooDeep(format!(
+            "its syntax tree nests {depth} levels deep, over --max-nesting-depth {limit}"
+        )));
+    }
+    Ok(())
+}
+
+/// The number of levels below the root of `tree`'s deepest node, by one
+/// iterative walk.
+pub fn tree_depth(tree: &tree_sitter::Tree) -> usize {
+    let mut cursor = tree.walk();
+    let (mut depth, mut deepest) = (0usize, 0usize);
+    loop {
+        if cursor.goto_first_child() {
+            depth += 1;
+            deepest = deepest.max(depth);
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return deepest;
+            }
+            depth -= 1;
         }
     }
 }
@@ -129,6 +212,41 @@ mod tests {
         assert_eq!(
             DEFAULT_MAX_FILE_MIB_ARG.parse::<u64>().unwrap(),
             DEFAULT_MAX_FILE_MIB
+        );
+        assert_eq!(
+            DEFAULT_MAX_NESTING_DEPTH_ARG.parse::<usize>().unwrap(),
+            DEFAULT_MAX_NESTING_DEPTH
+        );
+    }
+
+    fn parse(source: &str) -> tree_sitter::Tree {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&lang_parsing_substrate::tree_sitter_c::LANGUAGE.into())
+            .unwrap();
+        parser.parse(source, None).unwrap()
+    }
+
+    #[test]
+    fn depth_counts_levels_below_the_root() {
+        // translation_unit > declaration > init_declarator > number_literal
+        assert_eq!(tree_depth(&parse("int x = 1;")), 3);
+        let nested = format!("int y = {}1{};", "(".repeat(50), ")".repeat(50));
+        assert_eq!(tree_depth(&parse(&nested)), 53);
+        assert_eq!(tree_depth(&parse("")), 0);
+    }
+
+    #[test]
+    fn a_tree_deeper_than_the_limit_is_refused_with_its_depth() {
+        let nested = parse(&format!("int y = {}1{};", "(".repeat(50), ")".repeat(50)));
+        assert_eq!(admit_tree_under(&nested, Some(53)), Ok(()));
+        assert_eq!(admit_tree_under(&nested, None), Ok(()));
+        let refused = admit_tree_under(&nested, Some(52)).unwrap_err();
+        assert_eq!(refused.cause(), "too deep");
+        assert!(refused.detail().contains("53 levels deep"), "{refused}");
+        assert!(
+            refused.detail().contains("--max-nesting-depth 52"),
+            "{refused}"
         );
     }
 

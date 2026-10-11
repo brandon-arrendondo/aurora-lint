@@ -112,6 +112,8 @@ pub enum Cause {
     TooLarge,
     /// The file is not source text (a binary format, NUL bytes).
     NotText,
+    /// The file's syntax tree nests deeper than the scan can walk.
+    TooDeep,
 }
 
 impl Cause {
@@ -123,6 +125,7 @@ impl Cause {
             Cause::Cap => "analysis cap",
             Cause::TooLarge => "too large",
             Cause::NotText => "not source text",
+            Cause::TooDeep => "too deep",
         }
     }
 }
@@ -179,6 +182,7 @@ impl ScanFailure {
             cause: match refusal {
                 Refusal::TooLarge(_) => Cause::TooLarge,
                 Refusal::NotText(_) => Cause::NotText,
+                Refusal::TooDeep(_) => Cause::TooDeep,
             },
             message: refusal.detail().to_string(),
             location: None,
