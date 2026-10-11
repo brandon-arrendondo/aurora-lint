@@ -653,7 +653,7 @@ fn loop_never_falls_through(node: &Node, source: &str) -> bool {
     let Some(body) = node.child_by_field_name("body") else {
         return false;
     };
-    !leaves_other_than_by_return(&body)
+    !leaves_other_than_by_return(node, &body, source)
 }
 
 fn is_constant_true(condition: &Node, source: &str) -> bool {
@@ -675,19 +675,43 @@ fn is_constant_true(condition: &Node, source: &str) -> bool {
     }
 }
 
-/// Whether a `break` aimed at the loop or switch this body belongs to, or any
-/// `goto`, appears in it. A `break` inside a nested loop or switch is aimed
-/// at that one.
-fn leaves_other_than_by_return(body: &Node) -> bool {
+/// Whether anything but a `return` takes control out of `construct` (a loop
+/// or a switch) to code that can reach the function's end: a `break` aimed at
+/// it, or a `goto` to a label after it. A `break` inside a nested loop or
+/// switch is aimed at that one; a `break` right after a `return`, `goto`,
+/// `continue` or another `break` is dead; a `goto` back to a label before the
+/// construct (`goto retry;`) re-enters it rather than leaving for the end.
+fn leaves_other_than_by_return(construct: &Node, body: &Node, source: &str) -> bool {
     let mut stack = vec![*body];
     while let Some(node) = stack.pop() {
         match node.kind() {
-            "goto_statement" => return true,
-            "break_statement" => return true,
+            "goto_statement" => {
+                if goto_leaves_forward(&node, construct, source) {
+                    return true;
+                }
+                continue;
+            }
+            "break_statement" => {
+                let dead = node.prev_named_sibling().is_some_and(|prev| {
+                    matches!(
+                        prev.kind(),
+                        "return_statement"
+                            | "goto_statement"
+                            | "continue_statement"
+                            | "break_statement"
+                    )
+                });
+                if !dead {
+                    return true;
+                }
+                continue;
+            }
             "while_statement" | "for_statement" | "do_statement" | "switch_statement" => {
                 // A `break` in here belongs to it; a `goto` still leaves.
-                if query::find_first_descendant(node, |n| n.kind() == "goto_statement").is_some() {
-                    return true;
+                for goto in query::find_descendants_of_kind(node, "goto_statement") {
+                    if goto_leaves_forward(&goto, construct, source) {
+                        return true;
+                    }
                 }
                 continue;
             }
@@ -700,6 +724,33 @@ fn leaves_other_than_by_return(body: &Node) -> bool {
         }
     }
     false
+}
+
+/// Whether `goto` jumps to a label after `construct` (or to one the function
+/// does not show). A label before it, or inside it, does not take control
+/// past the construct.
+fn goto_leaves_forward(goto: &Node, construct: &Node, source: &str) -> bool {
+    let Some(label) = goto.child_by_field_name("label") else {
+        return true;
+    };
+    let name = get_node_text(&label, source);
+    let mut function = *construct;
+    while function.kind() != "function_definition" {
+        match function.parent() {
+            Some(p) => function = p,
+            None => return true,
+        }
+    }
+    let target = query::find_descendants_of_kind(function, "labeled_statement")
+        .into_iter()
+        .find(|l| {
+            l.child_by_field_name("label")
+                .is_some_and(|n| get_node_text(&n, source) == name)
+        });
+    match target {
+        Some(l) => l.start_byte() >= construct.end_byte(),
+        None => true,
+    }
 }
 
 /// A `switch` falls off its end unless it has a `default`, nothing breaks out
@@ -716,7 +767,7 @@ fn switch_last_arm_tail<'a>(node: &Node<'a>, source: &str) -> Option<Node<'a>> {
             .trim_start()
             .starts_with("default")
     });
-    if !has_default || leaves_other_than_by_return(&body) {
+    if !has_default || leaves_other_than_by_return(node, &body, source) {
         return None;
     }
     let last = arms.last()?;
