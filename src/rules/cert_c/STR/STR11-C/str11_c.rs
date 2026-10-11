@@ -43,6 +43,7 @@ use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tree_sitter::Node;
 
@@ -78,23 +79,18 @@ impl CertRule for Str11C {
     }
 
     fn check(&self, root: &Node, source: &str) -> Vec<RuleViolation> {
-        let macros = const_eval::merged_macro_constants(
-            &self.project_macros.borrow(),
-            root,
-            source,
-            self.settings.borrow().facts,
-        );
-        let cx = Cx {
-            root: *root,
-            source,
-            macros: &macros,
-        };
-        let mut violations = Vec::new();
+        // Only an array (or a record holding one) initialized by a literal
+        // or a brace list can be reported; everything else is skipped before
+        // any table is built.
+        let mut candidates = Vec::new();
         for decl in query::find_descendants_of_kind(*root, "declaration") {
             let Some(base) = decl.child_by_field_name("type") else {
                 continue;
             };
-            let nonstring = has_nonstring_attribute(&decl, source);
+            let may_be_record = matches!(
+                base.kind(),
+                "struct_specifier" | "union_specifier" | "type_identifier"
+            );
             let mut cursor = decl.walk();
             for init in decl.children(&mut cursor) {
                 if init.kind() != "init_declarator" {
@@ -106,10 +102,37 @@ impl CertRule for Str11C {
                 ) else {
                     continue;
                 };
-                let base_shape = cx.base_shape(&base, 0);
-                let shape = cx.declarator_shape(&declarator, base_shape, nonstring);
-                cx.walk(&shape, &value, Some(&init), &mut violations, 0);
+                if !(is_string(&value) || value.kind() == "initializer_list") {
+                    continue;
+                }
+                let has_array = declarator.kind() == "array_declarator"
+                    || query::find_first_descendant(declarator, |n| n.kind() == "array_declarator")
+                        .is_some();
+                if has_array || may_be_record {
+                    candidates.push((decl, base, init, declarator, value));
+                }
             }
+        }
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+        let macros = const_eval::merged_macro_constants(
+            &self.project_macros.borrow(),
+            root,
+            source,
+            self.settings.borrow().facts,
+        );
+        let cx = Cx {
+            index: TypeIndex::of(root, source),
+            source,
+            macros: &macros,
+        };
+        let mut violations = Vec::new();
+        for (decl, base, init, declarator, value) in candidates {
+            let nonstring = has_nonstring_attribute(&decl, source);
+            let base_shape = cx.base_shape(&base, 0);
+            let shape = cx.declarator_shape(&declarator, base_shape, nonstring);
+            cx.walk(&shape, &value, Some(&init), &mut violations, 0);
         }
         violations
     }
@@ -137,9 +160,49 @@ enum Shape<'a> {
 }
 
 struct Cx<'a, 's> {
-    root: Node<'a>,
+    index: TypeIndex<'a>,
     source: &'s str,
     macros: &'s MacroConstantMap,
+}
+
+/// The file's structure and union definitions by tag, and its typedefs by
+/// name, each the first in source order, collected in one walk.
+struct TypeIndex<'a> {
+    tags: HashMap<(&'static str, String), Node<'a>>,
+    typedefs: HashMap<String, Node<'a>>,
+}
+
+impl<'a> TypeIndex<'a> {
+    fn of(root: &Node<'a>, source: &str) -> Self {
+        let mut tags = HashMap::new();
+        let mut typedefs = HashMap::new();
+        let nodes = query::find_descendants(*root, |n| {
+            matches!(
+                n.kind(),
+                "struct_specifier" | "union_specifier" | "type_definition"
+            )
+        });
+        for n in nodes {
+            if n.kind() == "type_definition" {
+                for d in n.children_by_field_name("declarator", &mut n.walk()) {
+                    if let Some(name) = typedef_name(&d, source) {
+                        typedefs.entry(name.to_string()).or_insert(n);
+                    }
+                }
+            } else if let (Some(body), Some(name)) =
+                (n.child_by_field_name("body"), n.child_by_field_name("name"))
+            {
+                let kind = if n.kind() == "struct_specifier" {
+                    "struct_specifier"
+                } else {
+                    "union_specifier"
+                };
+                tags.entry((kind, get_node_text(&name, source).to_string()))
+                    .or_insert(body);
+            }
+        }
+        TypeIndex { tags, typedefs }
+    }
 }
 
 /// Bound on following typedefs and nested records.
@@ -156,13 +219,12 @@ impl<'a, 's> Cx<'a, 's> {
             "struct_specifier" | "union_specifier" => {
                 let body = spec.child_by_field_name("body").or_else(|| {
                     let tag = get_node_text(&spec.child_by_field_name("name")?, self.source);
-                    query::find_first_descendant(self.root, |n| {
-                        n.kind() == spec.kind()
-                            && n.child_by_field_name("body").is_some()
-                            && n.child_by_field_name("name")
-                                .is_some_and(|t| get_node_text(&t, self.source) == tag)
-                    })
-                    .and_then(|d| d.child_by_field_name("body"))
+                    let kind = if spec.kind() == "struct_specifier" {
+                        "struct_specifier"
+                    } else {
+                        "union_specifier"
+                    };
+                    self.index.tags.get(&(kind, tag.to_string())).copied()
                 });
                 match body {
                     Some(b) => self.record_shape(&b, depth),
@@ -171,11 +233,7 @@ impl<'a, 's> Cx<'a, 's> {
             }
             "type_identifier" => {
                 let name = get_node_text(spec, self.source);
-                let typedef = query::find_first_descendant(self.root, |n| {
-                    n.kind() == "type_definition"
-                        && n.children_by_field_name("declarator", &mut n.walk())
-                            .any(|d| typedef_name(&d, self.source) == Some(name))
-                });
+                let typedef = self.index.typedefs.get(name).copied();
                 match typedef {
                     Some(t) => {
                         let Some(ty) = t.child_by_field_name("type") else {
