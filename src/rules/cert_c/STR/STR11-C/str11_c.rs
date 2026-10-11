@@ -178,15 +178,17 @@ struct Cx<'a, 's> {
     macros: &'s MacroConstantMap,
 }
 
-/// The file's structure and union definitions by tag, and its typedefs by
-/// name, collected in one walk and looked up by C's scope rules: a
-/// definition counts at a use only when its block encloses the use and it
-/// comes first, and the innermost such block wins. A block's
-/// `typedef char T4[8];` therefore answers for that block, never a
-/// file-scope `T4` of another size (ADR-0006).
+/// The file's structure and union tags and its typedefs, collected in one
+/// walk and looked up by C's scope rules (ADR-0006). A typedef counts at a
+/// use only when its block encloses the use and it comes first, the
+/// innermost such block winning, so a block's `typedef char T4[8];` answers
+/// for that block, never a file-scope `T4` of another size. A tag works
+/// differently (C11 6.7.2.3): its scope is fixed where it is first declared,
+/// and a definition later in that scope completes it, so
+/// `typedef struct S TS; struct S {...};` gives `TS` the later members.
 struct TypeIndex<'a> {
-    /// `(kind, tag)` to each definition's scope, start and body.
-    tags: HashMap<(&'static str, String), Vec<Scoped<'a>>>,
+    /// `(kind, tag)` to every declaration of it, defining or not.
+    tags: HashMap<(&'static str, String), Vec<TagDecl<'a>>>,
     /// Typedef name to each definition's scope, start and node.
     typedefs: HashMap<String, Vec<Scoped<'a>>>,
 }
@@ -194,6 +196,15 @@ struct TypeIndex<'a> {
 /// One definition: the id of the scope it is in, where it starts, and the
 /// node a lookup returns.
 type Scoped<'a> = (usize, usize, Node<'a>);
+
+/// One declaration of a tag: its scope, its own node's id and start, and
+/// its member list when it defines the tag.
+struct TagDecl<'a> {
+    scope: usize,
+    id: usize,
+    start: usize,
+    body: Option<Node<'a>>,
+}
 
 impl<'a> TypeIndex<'a> {
     fn of(root: &Node<'a>, source: &str) -> Self {
@@ -217,19 +228,44 @@ impl<'a> TypeIndex<'a> {
                         ));
                     }
                 }
-            } else if let (Some(body), Some(name)) =
-                (n.child_by_field_name("body"), n.child_by_field_name("name"))
-            {
+            } else if let Some(name) = n.child_by_field_name("name") {
                 tags.entry((record_kind(&n), get_node_text(&name, source).to_string()))
                     .or_default()
-                    .push((scope, n.start_byte(), body));
+                    .push(TagDecl {
+                        scope,
+                        id: n.id(),
+                        start: n.start_byte(),
+                        body: n.child_by_field_name("body"),
+                    });
             }
         }
         TypeIndex { tags, typedefs }
     }
 
+    /// The member list of the tag `at` (a bodiless specifier) refers to:
+    /// the scope of the innermost declaration of the tag before `at`, or,
+    /// when none is visible, `at`'s own scope, where `at` declares it; then
+    /// that scope's definition wherever it appears.
     fn tag(&self, kind: &'static str, tag: &str, at: &Node) -> Option<Node<'a>> {
-        visible(self.tags.get(&(kind, tag.to_string()))?, at)
+        let decls = self.tags.get(&(kind, tag.to_string()))?;
+        let mut scope = None;
+        let mut cur = Some(*at);
+        while let Some(n) = cur {
+            if is_scope(&n)
+                && decls
+                    .iter()
+                    .any(|d| d.scope == n.id() && d.id != at.id() && d.start < at.start_byte())
+            {
+                scope = Some(n.id());
+                break;
+            }
+            cur = n.parent();
+        }
+        let scope = scope.unwrap_or_else(|| scope_of(at));
+        decls
+            .iter()
+            .filter(|d| d.scope == scope)
+            .find_map(|d| d.body)
     }
 
     fn typedef(&self, name: &str, at: &Node) -> Option<Node<'a>> {
