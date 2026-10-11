@@ -24,7 +24,7 @@ wchar_t wide[3] = L"abc";
 char rows[2][3] = {"abc", "def"};
 
 typedef char tag_t[4];
-tag_t tag = "abc";
+tag_t tag = "abcd";
 
 struct entry {
     char code[3];

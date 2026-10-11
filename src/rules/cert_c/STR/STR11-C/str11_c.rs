@@ -15,7 +15,10 @@
 //!   terminating null character;
 //! - **bound equals the size** (`char s[4] = "abc"`): terminated, but the
 //!   bound restates what the initializer already says, and drifts from it
-//!   when the literal is edited.
+//!   when the literal is edited. Reported only for a bound the declaration
+//!   could leave out, its own outermost one: an inner dimension
+//!   (`char t[][4] = {"abc"}`), a member's bound and a typedef's are
+//!   required by C, and there only the two unterminated cases apply.
 //!
 //! EX1 (an array that is deliberately not a string) is credited only for a
 //! declared intent the compiler can check, `__attribute__((nonstring))` or
@@ -105,10 +108,7 @@ impl CertRule for Str11C {
                 if !(is_string(&value) || value.kind() == "initializer_list") {
                     continue;
                 }
-                let has_array = declarator.kind() == "array_declarator"
-                    || query::find_first_descendant(declarator, |n| n.kind() == "array_declarator")
-                        .is_some();
-                if has_array || may_be_record {
+                if declares_array(&declarator) || may_be_record {
                     candidates.push((decl, base, init, declarator, value));
                 }
             }
@@ -131,7 +131,12 @@ impl CertRule for Str11C {
         for (decl, base, init, declarator, value) in candidates {
             let nonstring = has_nonstring_attribute(&decl, source);
             let base_shape = cx.base_shape(&base, 0);
-            let shape = cx.declarator_shape(&declarator, base_shape, nonstring);
+            let mut shape = cx.declarator_shape(&declarator, base_shape, nonstring);
+            if declares_array(&declarator) {
+                if let Shape::Array { omittable, .. } = &mut shape {
+                    *omittable = true;
+                }
+            }
             cx.walk(&shape, &value, Some(&init), &mut violations, 0);
         }
         violations
@@ -152,6 +157,10 @@ enum Shape<'a> {
         bound: Option<Node<'a>>,
         element: Box<Shape<'a>>,
         nonstring: bool,
+        /// Whether the declaration could leave this bound out: only the
+        /// outermost bound a declaration itself writes. An inner dimension,
+        /// a member's bound and a typedef's are required by C.
+        omittable: bool,
     },
     /// A structure or union defined in the file: its members in order.
     Record(Vec<(String, Shape<'a>)>),
@@ -294,6 +303,7 @@ impl<'a, 's> Cx<'a, 's> {
                 let inner = d.child_by_field_name("declarator");
                 let shape = Shape::Array {
                     bound: d.child_by_field_name("size"),
+                    omittable: false,
                     element: Box::new(base),
                     nonstring,
                 };
@@ -336,10 +346,18 @@ impl<'a, 's> Cx<'a, 's> {
                 bound,
                 element,
                 nonstring,
+                omittable,
             } => {
                 if is_string(value) {
                     if matches!(**element, Shape::Other) {
-                        self.check_literal(*bound, value, *nonstring, site.unwrap_or(value), out);
+                        self.check_literal(
+                            *bound,
+                            value,
+                            *nonstring,
+                            *omittable,
+                            site.unwrap_or(value),
+                            out,
+                        );
                     }
                     return;
                 }
@@ -351,7 +369,7 @@ impl<'a, 's> Cx<'a, 's> {
                 if matches!(**element, Shape::Other) {
                     if let [only] = elements.as_slice() {
                         if is_string(only) {
-                            self.check_literal(*bound, only, *nonstring, only, out);
+                            self.check_literal(*bound, only, *nonstring, *omittable, only, out);
                         }
                     }
                     return;
@@ -414,6 +432,7 @@ impl<'a, 's> Cx<'a, 's> {
         bound: Option<Node<'a>>,
         literal: &Node<'a>,
         nonstring: bool,
+        omittable: bool,
         site: &Node<'a>,
         out: &mut Vec<RuleViolation>,
     ) {
@@ -435,6 +454,10 @@ impl<'a, 's> Cx<'a, 's> {
         let message = if bound > size {
             return;
         } else if bound == size {
+            if !omittable {
+                // Terminated, and the bound cannot be left out.
+                return;
+            }
             format!(
                 "Character array bound [{bound_text}] restates the size of string literal \
                  {literal_text} ({size} elements with its terminator); omit the bound and let \
@@ -480,6 +503,13 @@ fn typedef_name<'s>(d: &Node, source: &'s str) -> Option<&'s str> {
         d = inner;
     }
     (d.kind() == "type_identifier").then(|| get_node_text(&d, source))
+}
+
+/// The declarator itself applies an array derivation (`a[4]`, `*a[4]`), as
+/// opposed to naming a typedef'd array.
+fn declares_array(d: &Node) -> bool {
+    d.kind() == "array_declarator"
+        || query::find_first_descendant(*d, |n| n.kind() == "array_declarator").is_some()
 }
 
 fn is_string(n: &Node) -> bool {
