@@ -20,7 +20,9 @@ use crate::analyze::cfg::{build_function_cfg_with_constants_and_noreturn, BlockI
 use crate::analyze::const_eval::MacroConstantMap;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::dataflow::find_node_at_range;
-use crate::analyze::noreturn::{called_function_name, noreturn_names_for_file, ByNoreturnTrust};
+use crate::analyze::noreturn::{
+    called_function_name, library_names_redefined_among, noreturn_names_for_file, ByNoreturnTrust,
+};
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::{get_node_text, stream_key};
@@ -51,9 +53,17 @@ const STDIN_IMPLICIT: &[&str] = &[
 const STDERR_IMPLICIT: &[&str] = &["perror"];
 
 /// The streams that may be closed at a program point, by [`stream_key`], each
-/// with the earliest line of a close that reaches it and the stream as it was
-/// spelled there.
-type Closed = BTreeMap<String, (usize, String)>;
+/// with the earliest close that reaches it.
+type Closed = BTreeMap<String, ClosedBy>;
+
+/// A close of a stream: where the `fclose` call is, and the stream as it was
+/// spelled there. Ordered by position, so the earliest close sorts first.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ClosedBy {
+    line: usize,
+    byte: usize,
+    spelling: String,
+}
 
 pub struct Fio46C {
     /// The prescan's cross-file noreturn functions, under each noreturn
@@ -104,6 +114,10 @@ impl CertRule for Fio46C {
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        // A file that defines its own `fclose` calls that, not the library's.
+        if library_names_redefined_among(node, source, |name| name == "fclose").contains("fclose") {
+            return;
+        }
         let functions = query::find_descendants_of_kind(*node, "function_definition");
         if !functions.iter().any(|f| closes_a_stream(f, source)) {
             return;
@@ -142,7 +156,13 @@ fn callee_spelling<'a>(call: &Node, source: &'a str) -> Option<&'a str> {
 /// What one walk over a block's statements found.
 enum Finding {
     /// `fclose` of a stream that may already be closed.
-    DoubleClose { stream: String, closed_at: usize },
+    /// `same_call` when the earlier close is this call, on an earlier pass
+    /// through a loop.
+    DoubleClose {
+        stream: String,
+        closed_at: usize,
+        same_call: bool,
+    },
     /// A stream that may be closed, passed to a function or read.
     Use {
         stream: String,
@@ -207,8 +227,12 @@ impl Fio46C {
 
     fn violation(&self, node: &Node, finding: Finding) -> RuleViolation {
         let (message, suggestion) = match finding {
-            Finding::DoubleClose { stream, closed_at } => (
-                if closed_at == node.start_position().row + 1 {
+            Finding::DoubleClose {
+                stream,
+                closed_at,
+                same_call,
+            } => (
+                if same_call {
                     format!(
                         "Stream '{stream}' may already be closed by this fclose() on an earlier pass through the loop. Closing a closed stream is undefined behavior."
                     )
@@ -266,8 +290,9 @@ impl Fio46C {
 
 /// The closed state at each reachable block's entry: a forward may-analysis
 /// whose merge is union, so a stream closed on any path into a block may be
-/// closed there. A block is walked again only when its entry state grows,
-/// and states only grow, so this ends.
+/// closed there. A block is walked again only when its entry state gains a
+/// stream or an earlier close of one, and both only move one way, so this
+/// ends.
 fn solve(cfg: &FunctionCfg, walker: &Walker) -> BTreeMap<BlockId, Closed> {
     let mut entry: BTreeMap<BlockId, Closed> = BTreeMap::new();
     entry.insert(cfg.entry, Closed::new());
@@ -281,8 +306,13 @@ fn solve(cfg: &FunctionCfg, walker: &Walker) -> BTreeMap<BlockId, Closed> {
             let mut grew = false;
             for (stream, closed) in &state {
                 match into.get_mut(stream) {
-                    Some(have) if have.0 <= closed.0 => {}
-                    Some(have) => *have = closed.clone(),
+                    Some(have) if *have <= *closed => {}
+                    // An earlier close reaches the block: the state is the
+                    // same streams, but its messages name another line.
+                    Some(have) => {
+                        *have = closed.clone();
+                        grew = true;
+                    }
                     None => {
                         into.insert(stream.clone(), closed.clone());
                         grew = true;
@@ -439,13 +469,12 @@ impl<'t> Walker<'_, 't> {
         findings: &mut Option<&mut Vec<(Node<'t>, Finding)>>,
     ) {
         let key = stream_key(node, self.source);
-        if let (Some(&(closed_at, _)), Some(findings)) = (state.get(&key), findings.as_deref_mut())
-        {
+        if let (Some(closed), Some(findings)) = (state.get(&key), findings.as_deref_mut()) {
             findings.push((
                 *node,
                 Finding::Use {
                     stream: stream_spelling(node, self.source),
-                    closed_at,
+                    closed_at: closed.line,
                     callee: callee.map(str::to_string),
                 },
             ));
@@ -462,19 +491,24 @@ impl<'t> Walker<'_, 't> {
         if name.as_deref() == Some("fclose") {
             if let Some(stream) = first_argument(call) {
                 let key = stream_key(&stream, self.source);
-                if let (Some(&(closed_at, _)), Some(findings)) =
-                    (state.get(&key), findings.as_deref_mut())
-                {
+                if let (Some(closed), Some(findings)) = (state.get(&key), findings.as_deref_mut()) {
                     findings.push((
                         *call,
                         Finding::DoubleClose {
                             stream: stream_spelling(&stream, self.source),
-                            closed_at,
+                            closed_at: closed.line,
+                            same_call: closed.byte == call.start_byte(),
                         },
                     ));
                 }
-                let line = call.start_position().row + 1;
-                state.insert(key, (line, stream_spelling(&stream, self.source)));
+                state.insert(
+                    key,
+                    ClosedBy {
+                        line: call.start_position().row + 1,
+                        byte: call.start_byte(),
+                        spelling: stream_spelling(&stream, self.source),
+                    },
+                );
             }
             return;
         }
@@ -526,8 +560,8 @@ impl<'t> Walker<'_, 't> {
         // name the standard gives it.
         let closed = state
             .values()
-            .filter(|(_, spelled)| spelled == stream)
-            .map(|(line, _)| *line)
+            .filter(|closed| closed.spelling == stream)
+            .map(|closed| closed.line)
             .min();
         if let (Some(closed_at), Some(findings)) = (closed, findings.as_deref_mut()) {
             findings.push((
