@@ -24,16 +24,18 @@
 //! Any size that is the constant zero is reported for every allocator.
 //!
 //! A size is proven non-zero by constant evaluation (macros and enumerators
-//! included), `sizeof`, `strlen(s) + 1`, a product whose every factor is
-//! proven, or a condition known to hold at the call that excludes zero
+//! included), `sizeof`, `strlen(s) + 1`, a product of compile-time factors,
+//! or a condition known to hold at the call that excludes zero
 //! (`if (n == 0) return NULL;`, `n > 0`, `!(n < 1)`;
-//! `nonzero_facts::known_conditions`). `n * sizeof(T)` is not exempt: `n`
-//! still needs its proof.
+//! `nonzero_facts::known_conditions`). `n * sizeof(T)` is not exempt, and a
+//! guard on `n` alone does not prove it: the product may wrap to zero.
 //!
 //! An allocator is a call to the library function: a name the file defines
 //! itself, or a local or parameter spelled the same, is not one. A
-//! function-like macro whose expansion passes one of its parameters as an
-//! allocator's size is an allocation too, at that argument.
+//! function-like macro whose expansion passes an allocator a size reading
+//! one of its parameters is an allocation too, unless the allocator is the
+//! file's own; the size is read as the macro expands it at the call
+//! (`ALLOC_N(int, n)` allocates `sizeof(int) * (n)`).
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval::{self, MacroConstantMap};
@@ -97,9 +99,42 @@ struct FileFacts {
     noreturn: HashSet<String>,
     /// Allocator names the file gives its own definition.
     redefined: HashSet<String>,
-    /// Function-like macros that wrap an allocator: the allocator and the
-    /// macro parameters it receives as sizes.
-    wrappers: HashMap<String, (&'static str, Vec<usize>)>,
+    /// Function-like macros that wrap an allocator, by name.
+    wrappers: HashMap<String, Wrapper>,
+}
+
+/// A function-like macro whose expansion calls an allocator with a size
+/// that reads one of the macro's parameters.
+#[derive(Clone)]
+struct Wrapper {
+    allocator: &'static str,
+    /// Each size argument the allocator receives, as written in the
+    /// expansion with the macro's parameters replaced by [`placeholder`]s:
+    /// `sizeof(int)*(__mem04_arg1__)` for `ALLOC_N(T, n)`.
+    sizes: Vec<String>,
+}
+
+/// The stand-in for macro parameter `i` in a [`Wrapper`]'s sizes.
+fn placeholder(i: usize) -> String {
+    format!("__mem04_arg{}__", i)
+}
+
+/// What a call allocates through.
+enum Allocation {
+    /// The library allocator itself, with the indices of its size
+    /// arguments.
+    Direct(&'static str, Vec<usize>),
+    /// A macro wrapping it.
+    Wrapped(Wrapper),
+}
+
+/// One size an allocation receives: `expr` in `text` (the file's source, or
+/// for a wrapper, the size as the macro expands it at this call), and the
+/// arguments of the call that it reads outside `sizeof`.
+struct Size<'t, 'a> {
+    expr: Node<'t>,
+    text: &'t str,
+    reads: Vec<Node<'a>>,
 }
 
 impl CertRule for Mem04C {
@@ -156,8 +191,12 @@ impl CertRule for Mem04C {
 
         let mut violations = Vec::new();
         let mut risky_vars: HashMap<usize, HashSet<String>> = HashMap::new();
+        let mut parser = tree_sitter::Parser::new();
+        if parser.set_language(&crate::parser::c_language()).is_err() {
+            return Vec::new();
+        }
         for call in query::find_descendants_of_kind(*node, "call_expression") {
-            let Some((allocator, sizes)) = Self::allocation_at(&call, source, &facts) else {
+            let Some(allocation) = Self::allocation_at(&call, source, &facts) else {
                 continue;
             };
             let Some(args) = call.child_by_field_name("arguments") else {
@@ -167,10 +206,44 @@ impl CertRule for Mem04C {
                 .named_child_nodes()
                 .filter(|a| a.kind() != "comment")
                 .collect();
-            for &i in &sizes {
-                let Some(size) = args.get(i) else {
-                    continue;
-                };
+            let (allocator, expansions) = match &allocation {
+                Allocation::Direct(allocator, _) => (*allocator, Vec::new()),
+                Allocation::Wrapped(wrapper) => {
+                    let macro_args = Self::macro_arguments(&call, source);
+                    (
+                        wrapper.allocator,
+                        wrapper
+                            .sizes
+                            .iter()
+                            .filter_map(|template| {
+                                Self::expand_size(&mut parser, template, &macro_args)
+                            })
+                            .collect(),
+                    )
+                }
+            };
+            let sizes: Vec<Size> = match &allocation {
+                Allocation::Direct(_, indices) => indices
+                    .iter()
+                    .filter_map(|&i| args.get(i))
+                    .map(|size| Size {
+                        expr: *size,
+                        text: source,
+                        reads: vec![*size],
+                    })
+                    .collect(),
+                Allocation::Wrapped(_) => expansions
+                    .iter()
+                    .filter_map(|(tree, text, reads)| {
+                        Some(Size {
+                            expr: Self::expanded_expression(tree)?,
+                            text,
+                            reads: reads.clone(),
+                        })
+                    })
+                    .collect(),
+            };
+            for size in &sizes {
                 if let Some(message) =
                     self.finding(allocator, &call, size, source, &facts, &mut risky_vars)
                 {
@@ -200,11 +273,7 @@ impl Mem04C {
     /// The allocator `call` invokes and the indices of its size arguments:
     /// a direct call to the library function, or a call to a macro wrapping
     /// one.
-    fn allocation_at(
-        call: &Node,
-        source: &str,
-        facts: &FileFacts,
-    ) -> Option<(&'static str, Vec<usize>)> {
+    fn allocation_at(call: &Node, source: &str, facts: &FileFacts) -> Option<Allocation> {
         let function = call.child_by_field_name("function")?;
         if function.kind() != "identifier" {
             return None;
@@ -221,23 +290,141 @@ impl Mem04C {
             ) {
                 return None;
             }
-            return Some((allocator, sizes.to_vec()));
+            return Some(Allocation::Direct(allocator, sizes.to_vec()));
         }
-        facts.wrappers.get(name).cloned()
+        // A macro wrapping an allocator the file defines for itself calls
+        // the file's function, as a direct call would.
+        facts
+            .wrappers
+            .get(name)
+            .filter(|w| !facts.redefined.contains(w.allocator))
+            .cloned()
+            .map(Allocation::Wrapped)
     }
 
-    /// The message for `size`, the size argument of a call to `allocator`,
-    /// or `None` when it is not reported.
+    /// The arguments of a macro invocation parsed as a call, each as its
+    /// text and the nodes it spans: split at the argument list's own commas,
+    /// since a type argument does not parse as one expression
+    /// (`ALLOC_N(struct S, n)` holds an `ERROR`).
+    fn macro_arguments<'a>(call: &Node<'a>, source: &str) -> Vec<(String, Vec<Node<'a>>)> {
+        let Some(list) = call.child_by_field_name("arguments") else {
+            return Vec::new();
+        };
+        let mut bounds = vec![list.start_byte() + 1];
+        let mut nodes = Vec::new();
+        for child in list.child_nodes() {
+            match child.kind() {
+                "," => bounds.push(child.end_byte()),
+                "(" | ")" | "comment" => {}
+                _ => nodes.push(child),
+            }
+        }
+        let end = list.end_byte().saturating_sub(1);
+        let mut args = Vec::new();
+        for (i, &from) in bounds.iter().enumerate() {
+            let to = bounds.get(i + 1).map_or(end, |&next| next - 1);
+            let Some(text) = source.get(from..to).map(str::trim) else {
+                continue;
+            };
+            if text.is_empty() {
+                continue;
+            }
+            let spanned = nodes
+                .iter()
+                .filter(|n| n.start_byte() >= from && n.end_byte() <= to)
+                .copied()
+                .collect();
+            args.push((text.to_string(), spanned));
+        }
+        args
+    }
+
+    /// A wrapper's size `template` as this call expands it -- each
+    /// placeholder replaced by the argument at its position, parenthesized
+    /// when it is an expression of more than one token (never a type name,
+    /// which `sizeof((struct S))` would not take) -- parsed on its own: the tree, its
+    /// text, and the argument nodes it reads outside `sizeof`. `None` when
+    /// an argument is missing or the result does not parse.
+    fn expand_size<'a>(
+        parser: &mut tree_sitter::Parser,
+        template: &str,
+        args: &[(String, Vec<Node<'a>>)],
+    ) -> Option<(tree_sitter::Tree, String, Vec<Node<'a>>)> {
+        let wrap = |expr: &str| format!("void __mem04_size(void) {{ ({}); }}", expr);
+        let template_text = wrap(template);
+        let template_tree = parser.parse(&template_text, None)?;
+        let mut reads: Vec<Node<'a>> = Vec::new();
+        for ident in query::find_descendants_of_kind(template_tree.root_node(), "identifier") {
+            let name = get_node_text(&ident, &template_text);
+            let Some(i) = (0..args.len()).find(|&i| placeholder(i) == name) else {
+                continue;
+            };
+            let under_sizeof = query::find_ancestor(ident, |a| {
+                matches!(a.kind(), "sizeof_expression" | "alignof_expression")
+            })
+            .is_some();
+            if !under_sizeof {
+                for node in &args[i].1 {
+                    if !reads.iter().any(|r| r.id() == node.id()) {
+                        reads.push(*node);
+                    }
+                }
+            }
+        }
+        let mut expanded = template.to_string();
+        // Highest index first, so `__mem04_arg1__` is not read inside
+        // `__mem04_arg11__`.
+        for i in (0..args.len()).rev() {
+            let (text, nodes) = &args[i];
+            let single = nodes.len() == 1
+                && matches!(
+                    nodes[0].kind(),
+                    "identifier"
+                        | "number_literal"
+                        | "parenthesized_expression"
+                        | "call_expression"
+                );
+            let arg = if single || crate::analyze::side_effects::is_type_name_text(text) {
+                text.clone()
+            } else {
+                format!("({})", text)
+            };
+            expanded = expanded.replace(&placeholder(i), &arg);
+        }
+        if expanded.contains("__mem04_arg") {
+            return None;
+        }
+        let text = wrap(&expanded);
+        let tree = parser.parse(&text, None)?;
+        if tree.root_node().has_error() {
+            return None;
+        }
+        Some((tree, text, reads))
+    }
+
+    /// The size expression of a tree [`Self::expand_size`] parsed.
+    fn expanded_expression(tree: &tree_sitter::Tree) -> Option<Node<'_>> {
+        let statement =
+            query::find_first_descendant(tree.root_node(), |n| n.kind() == "expression_statement")?;
+        let mut expr = statement.named_child(0)?;
+        if expr.kind() == "parenthesized_expression" {
+            expr = expr.named_child(0)?;
+        }
+        Some(expr)
+    }
+
+    /// The message for `size`, a size a call to `allocator` receives, or
+    /// `None` when it is not reported.
     fn finding(
         &self,
         allocator: &str,
         call: &Node,
-        size: &Node,
+        size: &Size,
         source: &str,
         facts: &FileFacts,
         risky_vars: &mut HashMap<usize, HashSet<String>>,
     ) -> Option<String> {
-        let size_text = get_node_text(size, source);
+        let size_text = get_node_text(&size.expr, size.text);
         // The call as written: `os_malloc()`, or `os_malloc() (malloc)` when
         // a macro wraps the allocator.
         let callee = call
@@ -249,14 +436,14 @@ impl Mem04C {
         } else {
             format!("{}() ({})", callee, allocator)
         };
-        if const_eval::try_evaluate_expr(size, source, &facts.macros) == Some(0) {
+        if const_eval::try_evaluate_expr(&size.expr, size.text, &facts.macros) == Some(0) {
             return Some(format!(
                 "{} is called with a size of zero: the result of a zero-length \
                  allocation is implementation-defined and may not be accessed",
                 called
             ));
         }
-        if Self::proven_nonzero(size, call, source, facts) {
+        if Self::proven_nonzero(&size.expr, size.text, call, source, facts) {
             return None;
         }
         if allocator == "realloc" {
@@ -266,7 +453,11 @@ impl Mem04C {
                 called, size_text
             ));
         }
-        if self.reads_input_or_parameter(size, call, source, risky_vars) {
+        let reads_input = size
+            .reads
+            .iter()
+            .any(|read| self.reads_input_or_parameter(read, call, source, risky_vars));
+        if reads_input {
             return Some(format!(
                 "{} size '{}' comes from input or a parameter and nothing in the \
                  function proves it non-zero: a zero-length allocation's result is \
@@ -277,24 +468,33 @@ impl Mem04C {
         None
     }
 
-    /// Whether `expr` is proven non-zero where `site` executes: a non-zero
-    /// constant, `sizeof`, `strlen(s) + c` with `c > 0`, a product or a `?:`
-    /// whose every operand is proven, or a condition known there excluding
-    /// zero.
-    fn proven_nonzero(expr: &Node, site: &Node, source: &str, facts: &FileFacts) -> bool {
-        if let Some(v) = const_eval::try_evaluate_expr(expr, source, &facts.macros) {
+    /// Whether `expr`, in `text`, is proven non-zero where `site` (in
+    /// `source`) executes: a non-zero constant, `sizeof`, `strlen(s) + c`
+    /// with `c > 0`, a `?:` whose arms are both proven, a product of
+    /// compile-time factors ([`Self::compile_time_nonzero`]), or a
+    /// condition known there excluding zero. A product with a factor known
+    /// only at run time may wrap to zero however its factors are guarded:
+    /// `n * sizeof(struct T)` for `n != 0` needs a check on the product.
+    fn proven_nonzero(
+        expr: &Node,
+        text: &str,
+        site: &Node,
+        source: &str,
+        facts: &FileFacts,
+    ) -> bool {
+        if let Some(v) = const_eval::try_evaluate_expr(expr, text, &facts.macros) {
             return v != 0;
         }
         match expr.kind() {
             "sizeof_expression" | "alignof_expression" => return true,
             "parenthesized_expression" => {
                 if let Some(inner) = expr.named_child(0) {
-                    return Self::proven_nonzero(&inner, site, source, facts);
+                    return Self::proven_nonzero(&inner, text, site, source, facts);
                 }
             }
             "cast_expression" => {
                 if let Some(value) = expr.child_by_field_name("value") {
-                    if Self::proven_nonzero(&value, site, source, facts) {
+                    if Self::proven_nonzero(&value, text, site, source, facts) {
                         return true;
                     }
                 }
@@ -305,34 +505,30 @@ impl Mem04C {
                     expr.child_by_field_name("alternative"),
                 );
                 if let (Some(a), Some(b)) = arms {
-                    if Self::proven_nonzero(&a, site, source, facts)
-                        && Self::proven_nonzero(&b, site, source, facts)
+                    if Self::proven_nonzero(&a, text, site, source, facts)
+                        && Self::proven_nonzero(&b, text, site, source, facts)
                     {
                         return true;
                     }
                 }
             }
             "binary_expression" => {
-                let op = ast_utils::get_binary_operator(expr, source).unwrap_or_default();
+                let op = ast_utils::get_binary_operator(expr, text).unwrap_or_default();
                 let (Some(left), Some(right)) = (
                     expr.child_by_field_name("left"),
                     expr.child_by_field_name("right"),
                 ) else {
                     return false;
                 };
-                if op == "*"
-                    && Self::proven_nonzero(&left, site, source, facts)
-                    && Self::proven_nonzero(&right, site, source, facts)
-                {
+                if op == "*" && Self::compile_time_nonzero(expr, text, facts) {
                     return true;
                 }
                 if op == "+" {
                     let positive = |n: &Node| {
-                        const_eval::try_evaluate_expr(n, source, &facts.macros)
-                            .is_some_and(|v| v > 0)
+                        const_eval::try_evaluate_expr(n, text, &facts.macros).is_some_and(|v| v > 0)
                     };
-                    if (Self::is_string_length(&left, source) && positive(&right))
-                        || (Self::is_string_length(&right, source) && positive(&left))
+                    if (Self::is_string_length(&left, text) && positive(&right))
+                        || (Self::is_string_length(&right, text) && positive(&left))
                     {
                         return true;
                     }
@@ -340,7 +536,7 @@ impl Mem04C {
             }
             _ => {}
         }
-        let targets = nonzero_facts::peeled_spellings(expr, source);
+        let targets = nonzero_facts::peeled_spellings(expr, text);
         nonzero_facts::known_conditions(site, &targets, source, &facts.noreturn)
             .iter()
             .any(|(cond, truth)| {
@@ -352,6 +548,31 @@ impl Mem04C {
                     &facts.macros,
                 )
             })
+    }
+
+    /// A non-zero value fixed at translation: a non-zero constant,
+    /// `sizeof`, `alignof`, or a product, cast or parenthesization of them.
+    fn compile_time_nonzero(expr: &Node, text: &str, facts: &FileFacts) -> bool {
+        if let Some(v) = const_eval::try_evaluate_expr(expr, text, &facts.macros) {
+            return v != 0;
+        }
+        match expr.kind() {
+            "sizeof_expression" | "alignof_expression" => true,
+            "parenthesized_expression" => expr
+                .named_child(0)
+                .is_some_and(|inner| Self::compile_time_nonzero(&inner, text, facts)),
+            "cast_expression" => expr
+                .child_by_field_name("value")
+                .is_some_and(|value| Self::compile_time_nonzero(&value, text, facts)),
+            "binary_expression" => {
+                ast_utils::get_binary_operator(expr, text) == Some("*")
+                    && ["left", "right"].iter().all(|f| {
+                        expr.child_by_field_name(f)
+                            .is_some_and(|e| Self::compile_time_nonzero(&e, text, facts))
+                    })
+            }
+            _ => false,
+        }
     }
 
     /// A call to `strlen`, `wcslen` or `strnlen`, possibly cast: a length,
@@ -466,13 +687,10 @@ impl Mem04C {
     }
 
     /// Function-like macros, the project's and the file's (the file's own
-    /// winning), whose expansion calls an allocator with one of the macro's
-    /// parameters, alone, as a size argument: `#define xmalloc(n) malloc(n)`.
-    fn allocator_wrappers(
-        &self,
-        node: &Node,
-        source: &str,
-    ) -> HashMap<String, (&'static str, Vec<usize>)> {
+    /// winning), whose expansion calls an allocator with a size argument
+    /// that reads one of the macro's parameters: `#define xmalloc(n)
+    /// malloc(n)`, `#define ALLOC_N(T, n) malloc(sizeof(T) * (n))`.
+    fn allocator_wrappers(&self, node: &Node, source: &str) -> HashMap<String, Wrapper> {
         let mut table = HashMap::clone(&self.function_macros.borrow());
         table.extend(macro_expand::collect_function_macros(node, source));
         let mut wrappers = HashMap::new();
@@ -480,14 +698,12 @@ impl Mem04C {
             if ALLOCATORS.iter().any(|(a, _)| a == name) || def.params.is_empty() {
                 continue;
             }
-            let placeholders: Vec<String> = (0..def.params.len())
-                .map(|i| format!("__mem04_arg{}__", i))
-                .collect();
+            let placeholders: Vec<String> = (0..def.params.len()).map(placeholder).collect();
             let Some(expansion) = macro_expand::expand_invocation(&table, name, &placeholders)
             else {
                 continue;
             };
-            if let Some(found) = Self::allocator_in_expansion(&expansion, &placeholders) {
+            if let Some(found) = Self::allocator_in_expansion(&expansion) {
                 wrappers.insert(name.clone(), found);
             }
         }
@@ -495,12 +711,8 @@ impl Mem04C {
     }
 
     /// The first allocator call in `expansion` one of whose size arguments
-    /// is, parentheses aside, exactly one of `placeholders`: the allocator,
-    /// and the placeholders' indices.
-    fn allocator_in_expansion(
-        expansion: &str,
-        placeholders: &[String],
-    ) -> Option<(&'static str, Vec<usize>)> {
+    /// reads a placeholder, with every size argument it passes.
+    fn allocator_in_expansion(expansion: &str) -> Option<Wrapper> {
         let bytes = expansion.as_bytes();
         let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
         for (allocator, sizes) in ALLOCATORS {
@@ -536,19 +748,17 @@ impl Mem04C {
                         last.push(c);
                     }
                 }
-                let indices: Vec<usize> = sizes
+                let size_args: Vec<String> = sizes
                     .iter()
-                    .filter_map(|&i| {
-                        let arg: String = parts
-                            .get(i)?
-                            .chars()
-                            .filter(|c| !c.is_whitespace() && *c != '(' && *c != ')')
-                            .collect();
-                        placeholders.iter().position(|p| *p == arg)
-                    })
+                    .filter_map(|&i| parts.get(i).map(|p| p.trim().to_string()))
                     .collect();
-                if !indices.is_empty() {
-                    return Some((allocator, indices));
+                if size_args.len() == sizes.len()
+                    && size_args.iter().any(|a| a.contains("__mem04_arg"))
+                {
+                    return Some(Wrapper {
+                        allocator,
+                        sizes: size_args,
+                    });
                 }
             }
         }
