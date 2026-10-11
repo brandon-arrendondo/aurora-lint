@@ -2067,13 +2067,16 @@ pub(crate) fn compute_vra_if_needed(
         then: prescan_summaries,
     };
 
+    // Every function of the file replays calls against the same summaries,
+    // so their return-range-only form is built once here.
+    let replay = value_range::replay_summaries_of(&summaries);
     let mut results = HashMap::new();
     for (&start_byte, func_cfg) in function_cfgs {
         if let Some(func_node) = find_function_at_byte(root_node, start_byte) {
             results.insert(
                 start_byte,
-                value_range::analyze_value_ranges(
-                    func_cfg, &func_node, source, &macros, &summaries,
+                value_range::analyze_value_ranges_with_replay(
+                    func_cfg, &func_node, source, &macros, &summaries, &replay,
                 ),
             );
         }

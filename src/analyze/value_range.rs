@@ -15,6 +15,7 @@ use super::dataflow::find_node_at_range;
 use super::function_summary::FunctionSummary;
 use crate::analyze::context::SummaryLookup;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 // ---------------------------------------------------------------------------
@@ -73,9 +74,11 @@ pub struct RangeAnalysisResult {
     pub block_entry_ranges: HashMap<BlockId, RangeMap>,
     /// Exit ranges for each block (after transfer function).
     pub block_exit_ranges: HashMap<BlockId, RangeMap>,
-    /// Callee return ranges used during analysis (retained for intra-block replay
-    /// in `get_var_range_at` / `eval_expr_range_at`).
-    pub(crate) return_ranges: HashMap<String, ValueRange>,
+    /// Callee return ranges used during analysis, as return-range-only
+    /// summaries (retained for intra-block replay in `get_var_range_at` /
+    /// `eval_expr_range_at`). Shared by every function of a file: see
+    /// [`replay_summaries_of`].
+    replay_summaries: Arc<HashMap<String, FunctionSummary>>,
     /// Per-block running range-map state after each statement, keyed by that
     /// statement's end byte, built once (per block) from the converged entry
     /// state. Lets [`get_all_var_ranges_at`] binary-search for the state at a
@@ -1482,8 +1485,56 @@ pub fn analyze_value_ranges(
     macros: &MacroConstantMap,
     summaries: &(impl SummaryLookup + ?Sized),
 ) -> RangeAnalysisResult {
+    let replay = replay_summaries_of(summaries);
+    analyze_value_ranges_with_replay(cfg, func_node, source, macros, summaries, &replay)
+}
+
+/// [`analyze_value_ranges`] with the replay summaries already built from
+/// `summaries` by [`replay_summaries_of`]. They depend only on `summaries`,
+/// so a caller analysing every function of a file against the same lookup
+/// builds them once for the file: building them per function walks every
+/// summary in the project once per function.
+pub fn analyze_value_ranges_with_replay(
+    cfg: &FunctionCfg,
+    func_node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    summaries: &(impl SummaryLookup + ?Sized),
+    replay: &Arc<HashMap<String, FunctionSummary>>,
+) -> RangeAnalysisResult {
     let max_iterations = 500 * cfg.blocks.len();
-    analyze_value_ranges_capped(cfg, func_node, source, macros, summaries, max_iterations)
+    analyze_value_ranges_capped(
+        cfg,
+        func_node,
+        source,
+        macros,
+        summaries,
+        replay,
+        max_iterations,
+    )
+}
+
+/// The callee return ranges in `summaries`, each as a summary that carries
+/// only its return range: what intra-block replay evaluates calls against.
+pub fn replay_summaries_of(
+    summaries: &(impl SummaryLookup + ?Sized),
+) -> Arc<HashMap<String, FunctionSummary>> {
+    Arc::new(
+        summaries
+            .entries()
+            .filter_map(|(name, s)| {
+                s.return_range.map(|range| {
+                    (
+                        name.clone(),
+                        FunctionSummary {
+                            return_range: Some(range),
+                            ..FunctionSummary::default()
+                        },
+                    )
+                })
+            })
+            .collect(),
+    )
 }
 
 /// [`analyze_value_ranges`] with the worklist's iteration cap given.
@@ -1493,6 +1544,7 @@ fn analyze_value_ranges_capped(
     source: &str,
     macros: &MacroConstantMap,
     summaries: &(impl SummaryLookup + ?Sized),
+    replay: &Arc<HashMap<String, FunctionSummary>>,
     max_iterations: usize,
 ) -> RangeAnalysisResult {
     // Skip VRA for very large functions to bound worst-case runtime.
@@ -1636,23 +1688,15 @@ fn analyze_value_ranges_capped(
         }
     }
 
-    // Extract callee return ranges for intra-block replay
-    let return_ranges: HashMap<String, ValueRange> = summaries
-        .entries()
-        .filter_map(|(name, s)| s.return_range.map(|r| (name.clone(), r)))
-        .collect();
-
     // Build per-block replay checkpoints and the cross-block statement index
     // once here (from the now-converged entry ranges), so point queries in
     // `get_all_var_ranges_at` no longer replay each block prefix from
     // scratch.
-    let replay_summaries = build_replay_summaries(&return_ranges);
     let mut block_checkpoints: HashMap<BlockId, Vec<(usize, RangeMap)>> = HashMap::new();
     let mut statement_index: Vec<(usize, usize, BlockId)> = Vec::new();
     for block in &cfg.blocks {
         let entry = entry_ranges.get(&block.id).cloned().unwrap_or_default();
-        let checkpoints =
-            build_block_checkpoints(&entry, block, &body, source, macros, &replay_summaries);
+        let checkpoints = build_block_checkpoints(&entry, block, &body, source, macros, replay);
         block_checkpoints.insert(block.id, checkpoints);
         for &(start, end) in &block.statements {
             statement_index.push((start, end, block.id));
@@ -1663,7 +1707,7 @@ fn analyze_value_ranges_capped(
     RangeAnalysisResult {
         block_entry_ranges: entry_ranges,
         block_exit_ranges: exit_ranges,
-        return_ranges,
+        replay_summaries: Arc::clone(replay),
         block_checkpoints,
         statement_index,
     }
@@ -1674,7 +1718,7 @@ fn empty_range_result() -> RangeAnalysisResult {
     RangeAnalysisResult {
         block_entry_ranges: HashMap::new(),
         block_exit_ranges: HashMap::new(),
-        return_ranges: HashMap::new(),
+        replay_summaries: Arc::default(),
         block_checkpoints: HashMap::new(),
         statement_index: Vec::new(),
     }
@@ -1834,7 +1878,7 @@ pub fn get_var_range_at(
 
     // Simulate forward through statements up to (but not past) the offset.
     // Use return ranges stored during the main analysis for intra-block replay.
-    let replay_summaries = build_replay_summaries(&result.return_ranges);
+    let replay_summaries = &*result.replay_summaries;
     let mut state = entry.clone();
     for &(start, end) in &block.statements {
         if start >= byte_offset {
@@ -1846,7 +1890,7 @@ pub fn get_var_range_at(
                 &stmt_node,
                 source,
                 macros,
-                &replay_summaries,
+                replay_summaries,
                 &mut state,
                 &empty_types,
             );
@@ -1871,7 +1915,7 @@ pub fn eval_expr_range_at(
 
     // Simulate forward through statements up to (but not past) the expression.
     // Use return ranges stored during the main analysis for intra-block replay.
-    let replay_summaries = build_replay_summaries(&result.return_ranges);
+    let replay_summaries = &*result.replay_summaries;
     let mut state = entry.clone();
     let empty_types = HashMap::new();
     for &(start, end) in &block.statements {
@@ -1883,7 +1927,7 @@ pub fn eval_expr_range_at(
                 &stmt_node,
                 source,
                 macros,
-                &replay_summaries,
+                replay_summaries,
                 &mut state,
                 &empty_types,
             );
@@ -2089,25 +2133,6 @@ fn extract_simple_var(node: &Node, source: &str) -> Option<String> {
     } else {
         None
     }
-}
-
-/// Extract a VarRangeMap from the current RangeMap state (for use with try_evaluate_range).
-/// Build lightweight FunctionSummary map from stored return ranges for intra-block replay.
-fn build_replay_summaries(
-    return_ranges: &HashMap<String, ValueRange>,
-) -> HashMap<String, FunctionSummary> {
-    return_ranges
-        .iter()
-        .map(|(name, range)| {
-            (
-                name.clone(),
-                FunctionSummary {
-                    return_range: Some(*range),
-                    ..FunctionSummary::default()
-                },
-            )
-        })
-        .collect()
 }
 
 /// Resolve a call_expression's return range from function summaries.
@@ -2515,7 +2540,15 @@ again:
         let fcfg = cfg::build_function_cfg(&func, code).unwrap();
         let empty: HashMap<String, crate::analyze::function_summary::FunctionSummary> =
             HashMap::new();
-        let capped = analyze_value_ranges_capped(&fcfg, &func, code, &macros, &empty, 1);
+        let capped = analyze_value_ranges_capped(
+            &fcfg,
+            &func,
+            code,
+            &macros,
+            &empty,
+            &replay_summaries_of(&empty),
+            1,
+        );
         assert!(capped.block_entry_ranges.is_empty() && capped.block_exit_ranges.is_empty());
         let full = analyze_value_ranges(&fcfg, &func, code, &macros, &empty);
         assert!(!full.block_entry_ranges.is_empty());
