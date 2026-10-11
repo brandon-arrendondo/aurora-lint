@@ -4,7 +4,7 @@
 //! MEM01-C: Store a new value in pointers immediately after free()
 //!
 //! "Immediately" means before the pointer variable can next be read or escape
-//! (maintainer ruling, rulings walk-through Q40). Forward reachability over the
+//! (maintainer ruling). Forward reachability over the
 //! CFG from each free() looks for the first thing that happens to the freed
 //! lvalue on every path:
 //! - it is stored to (reset): the path is fine;

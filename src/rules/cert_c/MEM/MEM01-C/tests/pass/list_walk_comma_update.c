@@ -1,6 +1,6 @@
 /*
  * Rule: MEM01-C
- * Source: Maintainer ruling, rulings walk-through Q40 (MEM01-C)
+ * Source: CERT MEM01-C text; maintainer ruling that "immediately" means before the pointer can next be read or escape
  * Status: PASS - a comma in the for update stores to p first
  */
 
