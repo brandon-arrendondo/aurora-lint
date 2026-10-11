@@ -310,10 +310,11 @@ fn identifier_tokens(text: &str) -> impl Iterator<Item = &str> {
         .filter(|t| !t.is_empty())
 }
 
-/// Whether `text` spells the GNU noreturn attribute: `__attribute__((noreturn))`
-/// (or `__noreturn__`, among other attributes in the list) or the C23
-/// vendor-prefixed `[[gnu::noreturn]]`. The unprefixed `[[noreturn]]` is the
-/// ISO keyword ([`has_noreturn_keyword`]) and is not this.
+/// Whether `text` spells a noreturn attribute: the GNU `__attribute__((noreturn))`
+/// (or `__noreturn__`, among other attributes in the list), the C23
+/// `[[noreturn]]` or `[[gnu::noreturn]]`, or the C11 `_Noreturn` specifier.
+/// The ISO spellings are credited elsewhere by `trust_noreturn_keyword`; they
+/// are read here too so a macro defined as one is an attribute macro.
 fn spells_gnu_noreturn_attribute(text: &str) -> bool {
     let is_noreturn = |t: &str| matches!(t, "noreturn" | "__noreturn__");
     let mut rest = text;
@@ -340,17 +341,18 @@ fn spells_gnu_noreturn_attribute(text: &str) -> bool {
         }
         rest = &rest[end.min(rest.len())..];
     }
+    if identifier_tokens(text).any(|t| t == "_Noreturn") {
+        return true;
+    }
     let mut rest = text;
     while let Some(at) = rest.find("[[") {
         rest = &rest[at + 2..];
         let end = rest.find("]]").unwrap_or(rest.len());
         let mut tokens = identifier_tokens(&rest[..end]);
-        if tokens
-            .next()
-            .is_some_and(|t| matches!(t, "gnu" | "__gnu__"))
-            && tokens.any(is_noreturn)
-        {
-            return true;
+        match tokens.next() {
+            Some(t) if is_noreturn(t) || t == "_Noreturn" => return true,
+            Some("gnu" | "__gnu__") if tokens.any(is_noreturn) => return true,
+            _ => {}
         }
         rest = &rest[end..];
     }
@@ -1099,6 +1101,9 @@ mod tests {
             "void die(void) __attribute__((noreturn));\n",
             "void die(void) __attribute__((cold, __noreturn__));\n",
             "[[gnu::noreturn]] void die(void);\n",
+            "[[noreturn]] void die(void);\n",
+            "_Noreturn void die(void);\n",
+            "#define NORETURN _Noreturn\nNORETURN void die(void);\n",
             "#define NORETURN __attribute__((__noreturn__))\nvoid die(void) NORETURN;\n",
             "#define NORETURN __attribute__((__noreturn__))\nNORETURN void die(void);\n",
         ] {
@@ -1113,7 +1118,7 @@ mod tests {
             "void die(void) __attribute__((format(printf, 1, 2), noreturn_like));\n",
             "#define NORETURN\nvoid die(void) NORETURN;\n",
             "void die(void) NORETURN;\n",
-            "_Noreturn void die(void);\n",
+            "#define NORETURN\n[[deprecated]] void die(void) NORETURN;\n",
         ] {
             assert!(!attribute_names(src).contains("die"), "{src}");
         }

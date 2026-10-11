@@ -98,7 +98,7 @@ Policy options
    - Basis: Clang's security.PutenvStackArray documents the exit and exec path as a known false positive. CERT POS34-C gives no such exemption.
 
 ``msc37_attribute_noreturn``
-   MSC37-C: a call to a function declared noreturn by a GNU attribute (__attribute__((noreturn)), [[gnu::noreturn]], or a macro defined as one) ends a path the way a return does, as does a function-like macro whose every definition is such a call. Off, only the ISO spellings and verified bodies do, as everywhere else.
+   MSC37-C: a call to a function declared noreturn by a GNU attribute (__attribute__((noreturn)), [[gnu::noreturn]], or a macro defined as one) ends a path the way a return does, as does a function-like macro whose every definition is such a call. The declaration must be in a file the scan reads or a header the prescan reads. Off, only the ISO spellings and verified bodies do, as everywhere else.
 
    - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
    - Scope: MSC37-C
