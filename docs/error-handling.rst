@@ -94,6 +94,10 @@ After parsing, one more check:
   such as an expression or ``else if`` ladder thousands of terms long.
   Raising it far past the default can crash the scan.
 
+The same checks apply to a header a scanned file includes, which is read
+only for its declarations and macros: leaving one out changes what the
+scanned files' findings rest on.
+
 A refused file is **skipped and reported**, never analysed, and the scan
 exits ``3``:
 

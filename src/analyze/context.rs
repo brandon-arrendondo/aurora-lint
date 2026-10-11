@@ -1418,6 +1418,9 @@ pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
     ("prescan_scope", ""),
     ("closed_program", "false"),
     ("generated_headers", ""),
+    // No nesting limit existed before this key. The size ceiling did, and
+    // could be set, so a cache that does not record it is refused.
+    ("max_nesting_depth", "none"),
 ];
 
 /// Version of the prescan cache's serialized layout. Bump it with any change

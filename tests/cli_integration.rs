@@ -6657,6 +6657,98 @@ fn a_file_nested_past_the_depth_limit_is_skipped_and_the_rest_analysed() {
 }
 
 #[test]
+fn an_included_header_nested_past_the_depth_limit_is_reported_not_dropped() {
+    // A header outside the scanned tree, read only for its declarations and
+    // macros, nests 153 levels deep under a limit of 100. Dropping it in
+    // silence loses `MYFREE`, so the free through it reads as a leak: it must
+    // be refused out loud instead, and the scan marked incomplete.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("inc")).unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("inc/deep.h"),
+        format!(
+            "#define MYFREE(p) free(p)\nstatic int z = {}1{};\n",
+            "(".repeat(150),
+            ")".repeat(150)
+        ),
+    )
+    .unwrap();
+    let main = dir.path().join("src/main.c");
+    std::fs::write(
+        &main,
+        "#include <stdlib.h>\n#include \"deep.h\"\n\
+         void g(void) { char *p = malloc(4); if (!p) return; MYFREE(p); }\n",
+    )
+    .unwrap();
+    let inc = dir.path().join("inc");
+    let sarif = dir.path().join("out.sarif");
+    let (code, _, stderr) = run_aurora_lint(&[
+        main.to_str().unwrap(),
+        "-I",
+        inc.to_str().unwrap(),
+        "--max-nesting-depth",
+        "100",
+        "-e",
+        sarif.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 3, "{stderr}");
+    assert!(
+        stderr.contains("input skipped (too deep): ")
+            && stderr.contains(
+                "deep.h: its syntax tree nests 153 levels deep, over --max-nesting-depth 100"
+            ),
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr.matches("input skipped (too deep)").count(),
+        1,
+        "{stderr}"
+    );
+    let sarif = std::fs::read_to_string(&sarif).unwrap();
+    assert!(sarif.contains("too-deep"), "{sarif}");
+    // Under no limit the header is read and the free is seen.
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        main.to_str().unwrap(),
+        "-I",
+        inc.to_str().unwrap(),
+        "--max-nesting-depth",
+        "0",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(!stdout.contains("is not freed"), "{stdout}");
+}
+
+/// A file the input guard refuses contributes no cross-file facts, so a
+/// prescan cache records the limits it was built under and is refused under
+/// others.
+#[test]
+fn a_prescan_cache_is_refused_under_different_input_limits() {
+    let dir = copies_of_violation(1);
+    let root = dir.path().to_str().unwrap();
+    let cache = dir.path().join("prescan.bin");
+    let cache = cache.to_str().unwrap();
+    let (code, _, stderr) = run_aurora_lint(&[root, "-d", root, "--save-prescan", cache]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let (code, _, stderr) =
+        run_aurora_lint(&[root, "--load-prescan", cache, "--max-nesting-depth", "100"]);
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("max_nesting_depth = 5000, but this run uses max_nesting_depth = 100"),
+        "stderr: {stderr}"
+    );
+    let (code, _, stderr) =
+        run_aurora_lint(&[root, "--load-prescan", cache, "--max-file-size", "1"]);
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("max_file_size = 67108864, but this run uses max_file_size = 1048576"),
+        "stderr: {stderr}"
+    );
+    let (code, _, stderr) = run_aurora_lint(&[root, "--load-prescan", cache]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+}
+
+#[test]
 fn utf16_source_with_a_bom_is_not_mistaken_for_binary() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("wide.c");

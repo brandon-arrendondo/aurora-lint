@@ -274,6 +274,16 @@ The backstop against a hang. Default 300; \fB0\fR removes the limit.
 Skip, and report (exit 3), any input file larger than this instead of
 parsing it. Files that are not source text (binary or archive formats, NUL
 bytes) are skipped and reported too. Default 64; \fB0\fR removes the limit.
+.TP
+\fB\-\-max\-nesting\-depth\fR \fILEVELS\fR
+Skip, and report (exit 3), any input file whose syntax tree nests deeper
+than this many levels, which the analyses cannot walk without risking a
+stack overflow. A header read only for its declarations and macros is
+reported the same way. Default 5000; \fB0\fR removes the limit, at the
+risk of a stack overflow on deeper input.
+.B \-\-load\-prescan
+refuses a cache built under a different limit or
+.BR \-\-max\-file\-size .
 .SS "Performance & Parallelism"
 .TP
 \fB\-j\fR, \fB\-\-jobs\fR \fIN\fR

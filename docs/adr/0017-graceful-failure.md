@@ -153,8 +153,17 @@ Before this decision, a failure anywhere ended the scan.
      file that cannot be classified (a FIFO, a device, an unreadable path)
      is refused, since reading it can block.
 
+   One more check comes after parsing (`input_guard::admit_tree`, in every
+   parse). A file whose syntax tree nests deeper than
+   `--max-nesting-depth` is refused. The analyses walk the tree
+   recursively, and a stack overflow, like an out-of-memory kill, aborts
+   the process before containment can see it. The inventory records the
+   calibration.
+
    A refused file is skipped and reported like any other failure: stage
-   `input`, exit 3, a SARIF notification. Files the user excluded never get
+   `input`, exit 3, a SARIF notification. That holds for a header read only
+   for its declarations and macros as well, since leaving it out changes
+   what the scanned files' findings rest on. Files the user excluded never get
    that far and are not reported. Files over 8 MiB are analysed one at a
    time, however many `--jobs` there are, so several huge inputs cannot be
    in memory together.

@@ -48,6 +48,13 @@ fn max_bytes() -> Option<u64> {
     *max_bytes_cell().lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The size ceiling in force as a prescan cache records it: bytes, or
+/// `none`. A file over it contributes no facts, so a cache built under one
+/// ceiling is not the context for another.
+pub fn max_file_size_key() -> String {
+    max_bytes().map_or_else(|| "none".to_string(), |b| b.to_string())
+}
+
 /// Why a file was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
@@ -116,6 +123,12 @@ pub fn set_max_nesting_depth(levels: Option<usize>) {
 
 fn max_depth() -> Option<usize> {
     *max_depth_cell().lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The nesting limit in force as a prescan cache records it: levels, or
+/// `none`. Like [`max_file_size_key`]: a refused file contributes no facts.
+pub fn max_nesting_depth_key() -> String {
+    max_depth().map_or_else(|| "none".to_string(), |d| d.to_string())
 }
 
 /// Whether a parsed file is shallow enough to analyse: its tree is at most

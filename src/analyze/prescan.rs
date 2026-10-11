@@ -227,23 +227,36 @@ impl FilePrescanResult {
     }
 }
 
-fn process_file(file_path: &Path, is_header: bool, model: IntFacts) -> FilePrescanResult {
+fn process_file(
+    file_path: &Path,
+    is_header: bool,
+    model: IntFacts,
+) -> std::result::Result<FilePrescanResult, super::input_guard::Refusal> {
     let mut result = FilePrescanResult::empty();
     result.display_path = file_path.to_string_lossy().to_string();
 
     let mut parser = match CParser::new() {
         Ok(p) => p,
-        Err(_) => return result,
+        Err(_) => return Ok(result),
     };
 
-    if let Ok((tree, source)) = parser.parse_file(&file_path.to_string_lossy()) {
+    let parsed = match parser.parse_file(&file_path.to_string_lossy()) {
+        Ok(parsed) => Some(parsed),
+        // Refused once parsed (nested too deep): it contributes no facts,
+        // and the refusal is reported (ADR-0017).
+        Err(e) => match e.downcast::<super::input_guard::Refusal>() {
+            Ok(refusal) => return Err(refusal),
+            Err(_) => None,
+        },
+    };
+    if let Some((tree, source)) = parsed {
         // Skip a header that can only be C++ -- its declarations
         // (default-argument prototypes, namespaced names, ...) are not real
         // C API surface and must not pollute cross-file summaries any more
         // than they should generate direct C-rule findings (the same check
         // in analyze_one_file).
         if is_header && lang_parsing_substrate::looks_like_cpp(source.as_bytes()) {
-            return result;
+            return Ok(result);
         }
 
         let root = tree.root_node();
@@ -499,7 +512,7 @@ fn process_file(file_path: &Path, is_header: bool, model: IntFacts) -> FilePresc
         }
     }
 
-    result
+    Ok(result)
 }
 
 /// Pre-scan the given directories to collect function names and summaries from `.c`/`.h` files.
@@ -681,7 +694,11 @@ fn prescan_file_list(
                     super::test_failure_hook("prescan");
                     process_file(path, *is_header, model)
                 }) {
-                    Ok(result) => (result, None),
+                    Ok(Ok(result)) => (result, None),
+                    Ok(Err(refusal)) => (
+                        FilePrescanResult::empty(),
+                        Some(ScanFailure::refused(&path.to_string_lossy(), &refusal)),
+                    ),
                     Err(failure) => (
                         FilePrescanResult::empty(),
                         Some(ScanFailure::new(
@@ -7594,6 +7611,40 @@ pub fn resolve_includes(
     )
 }
 
+/// Parse the header at `resolved` (spelled `header_path`, real path
+/// `header_key`) for its declarations and macros. A header is read for its
+/// facts like any prescanned file, so it is admitted and refused the same
+/// way (ADR-0017): leaving one out changes what the scanned files' findings
+/// rest on, so a refusal joins `failures` (once per file: a header in the
+/// scanned tree was already refused under its own path) and the prescan is
+/// incomplete.
+fn read_header_for_facts(
+    parser: &mut CParser,
+    resolved: &Path,
+    header_path: &str,
+    header_key: &str,
+    failures: &mut Vec<ScanFailure>,
+) -> Option<(tree_sitter::Tree, String)> {
+    let err = match super::input_guard::admit(resolved)
+        .map_err(anyhow::Error::from)
+        .and_then(|()| parser.parse_file(header_path))
+    {
+        Ok(parsed) => return Some(parsed),
+        Err(err) => err,
+    };
+    let refusal = err.downcast_ref::<super::input_guard::Refusal>()?;
+    let reported = failures.iter().any(|f| {
+        f.stage == containment::Stage::Input
+            && Path::new(&f.file)
+                .canonicalize()
+                .is_ok_and(|c| c.to_string_lossy() == header_key)
+    });
+    if !reported {
+        failures.push(ScanFailure::refused(header_path, refusal));
+    }
+    None
+}
+
 /// [`resolve_includes`] with the prescan scope: `scoped_out(path, root)` is
 /// true for a project file the scan leaves out ([`is_scoped_out`]), which then
 /// can't stand for a header an include names.
@@ -7727,7 +7778,14 @@ pub fn resolve_includes_scoped(
             resolved_set.insert(canonical);
 
             let header_path = resolved.to_string_lossy().to_string();
-            if let Ok((htree, hsource)) = parser.parse_file(&header_path) {
+            let parsed = read_header_for_facts(
+                &mut parser,
+                &resolved,
+                &header_path,
+                &header_key,
+                &mut context.prescan_failures,
+            );
+            if let Some((htree, hsource)) = parsed {
                 let root = htree.root_node();
                 collect_function_names(
                     &root,

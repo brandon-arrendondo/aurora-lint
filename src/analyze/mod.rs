@@ -878,6 +878,16 @@ fn load_project_context(
             "generated_headers".to_string(),
             generated.map_or_else(String::new, |g| g.fingerprint()),
         ),
+        // A file the input guard refuses contributes no facts, so the limits
+        // it refuses by decide what the context holds.
+        (
+            "max_file_size".to_string(),
+            input_guard::max_file_size_key(),
+        ),
+        (
+            "max_nesting_depth".to_string(),
+            input_guard::max_nesting_depth_key(),
+        ),
     ]);
 
     let mut context = if let Some(cache_path) = load_prescan {
