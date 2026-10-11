@@ -2103,6 +2103,64 @@ pub fn render_config_settings(current: &AnalysisSettings) -> String {
     for (name, arg) in &current.memory.deallocators {
         out.push_str(&format!("{name:?} = {arg}\n"));
     }
+    out.push_str(&threads_table(&current.threads));
+    out
+}
+
+/// The `[environment.threads]` part of a written config: the declarations in
+/// force, or a commented example when there are none.
+fn threads_table(threads: &ThreadDeclarations) -> String {
+    let config = threads.to_config();
+    let mut out = String::from(
+        "\n# Thread-API families: shipped RTOS profiles to read, whether POSIX threads are read\n\
+         # (\"off\" for a target that is not POSIX), and the project's own thread functions and types.\n\
+         [environment.threads]\n",
+    );
+    if config.families.is_empty() {
+        out.push_str("# families = [\"freertos\"]\n");
+    } else {
+        let names: Vec<String> = config
+            .families
+            .iter()
+            .map(|p| format!("{:?}", p.name()))
+            .collect();
+        out.push_str(&format!("families = [{}]\n", names.join(", ")));
+    }
+    if config.posix == Some(threads::PosixFamily::Off) {
+        out.push_str("posix = \"off\"\n");
+    }
+    out.push_str("\n[environment.threads.functions]\n");
+    if config.functions.is_empty() {
+        out.push_str(
+            "# os_cond_wait = { op = \"cond_wait\", cond = 1, mutex = 2, spurious = true }\n",
+        );
+    }
+    for (name, op) in &config.functions {
+        let fields = toml::Value::try_from(op)
+            .ok()
+            .and_then(|v| v.as_table().cloned())
+            .unwrap_or_default();
+        // `op` first, as a declaration reads.
+        let fields: Vec<String> = std::iter::once(format!("op = \"{}\"", op.op))
+            .chain(
+                fields
+                    .iter()
+                    .filter(|(k, _)| k.as_str() != "op")
+                    .map(|(k, v)| format!("{k} = {v}")),
+            )
+            .collect();
+        out.push_str(&format!("{name:?} = {{ {} }}\n", fields.join(", ")));
+    }
+    out.push_str("\n[environment.threads.types]\n");
+    if config.types.is_empty() {
+        out.push_str("# os_mutex_t = \"mutex\"\n");
+    }
+    for (name, kind) in &config.types {
+        let kind = toml::Value::try_from(kind)
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        out.push_str(&format!("{name:?} = {kind}\n"));
+    }
     out
 }
 

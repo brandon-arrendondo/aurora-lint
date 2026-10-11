@@ -7393,11 +7393,73 @@ fn posix_waits_are_read_unless_the_target_is_declared_not_posix() {
 }
 
 #[test]
-fn a_declaration_may_not_redefine_a_posix_function() {
-    let stderr = declared_threads_scan(
+fn a_posix_name_the_project_defines_is_its_own_function() {
+    // The file's own pthread_cond_wait is not the POSIX wait.
+    let own = declared_threads_findings("posix_shim_wait_in_if.c", "manifest_con30_con36.toml");
+    assert!(own.is_empty(), "{own:?}");
+    // A declaration for the name is in force for that definition...
+    let declared = declared_threads_findings(
+        "posix_shim_wait_in_if.c",
+        "manifest_threads_posix_shim_spurious.toml",
+    );
+    assert!(
+        has(&declared, "CON36-C", 11, "pthread_cond_wait"),
+        "{declared:?}"
+    );
+    // ...and for no call that reaches the library's.
+    let library = declared_threads_findings(
         "posix_wait_in_if.c",
-        "manifest_threads_redefines_posix.toml",
-    )
-    .expect_err("the scan refuses the declaration");
-    assert!(stderr.contains("is a POSIX function"), "{stderr}");
+        "manifest_threads_posix_shim_no_spurious.toml",
+    );
+    assert!(
+        has(&library, "CON36-C", 10, "pthread_cond_wait"),
+        "{library:?}"
+    );
+}
+
+#[test]
+fn a_posix_name_another_scanned_file_defines_is_the_projects_function() {
+    let project = declared_threads_findings("shim_project", "manifest_con30_con36.toml");
+    assert!(project.is_empty(), "{project:?}");
+    // The calling file alone reaches the library's wait.
+    let alone = declared_threads_findings("shim_project/use.c", "manifest_con30_con36.toml");
+    assert!(has(&alone, "CON36-C", 9, "pthread_cond_wait"), "{alone:?}");
+}
+
+#[test]
+fn a_freertos_slot_holding_no_allocation_or_freed_by_the_kernel_heap_is_clean() {
+    let declared =
+        declared_threads_findings("freertos_slot_not_heap.c", "manifest_threads_freertos.toml");
+    assert!(declared.is_empty(), "{declared:?}");
+}
+
+#[test]
+fn a_written_config_keeps_the_declared_thread_api_families() {
+    for manifest in [
+        "manifest_threads_freertos.toml",
+        "manifest_threads_project_spurious.toml",
+        "manifest_threads_posix_off.toml",
+    ] {
+        let original = fixtures().join(manifest);
+        let original = original.to_str().unwrap();
+        let (_dir, path, text) = written_config(&["-m", original]);
+        assert!(text.contains("[environment.threads]"), "{manifest}: {text}");
+        let current = |m: &str| {
+            let (code, stdout, stderr) = run_aurora_lint(&["--list-options", "json", "-m", m]);
+            assert_eq!(code, 0, "{manifest}: {stderr}");
+            serde_json::from_str::<serde_json::Value>(&stdout).unwrap()["current"].clone()
+        };
+        assert_eq!(current(&path), current(original), "{manifest}: {text}");
+        let (code, stdout, stderr) = run_aurora_lint(&["--check-config", "-m", &path]);
+        assert_eq!(code, 0, "{manifest}: {stderr}");
+        assert_eq!(stdout.trim(), "configuration ok");
+    }
+    let (_dir, _path, text) = written_config(&[
+        "-m",
+        fixtures()
+            .join("manifest_threads_freertos.toml")
+            .to_str()
+            .unwrap(),
+    ]);
+    assert!(text.contains("\nfamilies = [\"freertos\"]\n"), "{text}");
 }

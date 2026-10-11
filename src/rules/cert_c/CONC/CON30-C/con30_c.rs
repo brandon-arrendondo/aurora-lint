@@ -14,8 +14,15 @@
 //! `pthread_getspecific`, and declared families, through
 //! `thread_api::thread_op`. A family whose storage is fixed slots with no key
 //! creation (FreeRTOS's thread-local storage pointers) has no destructor to
-//! register, so a slot stored into anywhere in the file and never freed
-//! through its get call is reported at the store.
+//! register, unless its store call takes one, so a slot stored into anywhere
+//! in the file and never freed through its get call is reported at the
+//! store.
+//!
+//! Only a store that may hold allocated memory counts: a null pointer
+//! (clearing the key), an address taken with `&`, a string literal, or a
+//! name declared as an array or a function holds nothing to free. The free
+//! is any deallocator's (`call_roles::freed_argument`): `free`, a declared
+//! one, or a selected profile's kernel heap (FreeRTOS's `vPortFree`).
 //!
 //! ## Examples:
 //!
@@ -37,16 +44,26 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::init_state::strip_arg_casts;
+use crate::analyze::side_effects::is_null_pointer_constant;
 use crate::manifest::Severity;
 use crate::settings::threads::{Role, ThreadOpKind, ThreadTypeKind};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declarator};
+use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::node_children::NodeChildren;
-use crate::utility::cert_c::thread_api::{self, Family};
+use crate::utility::cert_c::thread_api::{self, Family, ProjectFunctions};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
-pub struct Con30C;
+#[derive(Default)]
+pub struct Con30C {
+    /// The project's function definitions in every scanned file, for a
+    /// library name the project defines itself.
+    project: RefCell<Option<ProjectFunctions>>,
+}
 
 /// Tracks TSS key information
 #[allow(dead_code)]
@@ -87,6 +104,10 @@ impl CertRule for Con30C {
 
     fn cert_id(&self) -> &'static str {
         "CON30-C"
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = Some(context.function_summaries.clone());
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -258,9 +279,10 @@ impl Con30C {
         allowed: Option<&HashSet<String>>,
     ) {
         let is_allowed = |key_name: &str| allowed.is_none_or(|set| set.contains(key_name));
+        let project = self.project.borrow();
 
         for call in query::find_descendants_of_kind(*node, "call_expression") {
-            if let Some(op) = thread_api::thread_op(&call, source) {
+            if let Some(op) = thread_api::thread_op(&call, source, project.as_ref()) {
                 match op.kind() {
                     ThreadOpKind::TssCreate => {
                         if let Some(key_name) = op.operand(Role::Key).map(|k| key_text(&k, source))
@@ -283,7 +305,12 @@ impl Con30C {
                             }
                         }
                     }
-                    ThreadOpKind::TssSet if op.family.creates_storage_keys() => {
+                    ThreadOpKind::TssSet
+                        if op.family.creates_storage_keys()
+                            && op
+                                .operand(Role::Value)
+                                .is_none_or(|v| may_hold_allocation(&v, source)) =>
+                    {
                         if let Some(key_name) = op.operand(Role::Key).map(|k| key_text(&k, source))
                         {
                             if is_allowed(&key_name) {
@@ -295,41 +322,30 @@ impl Con30C {
                 }
                 continue;
             }
-            if let Some(function) = call.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-
-                // Check for free(tss_get(key))
-                if func_name == "free" {
-                    if let Some(key_name) = self.check_tss_get_in_free(&call, source) {
-                        if is_allowed(&key_name) {
-                            tss_get_freed.insert(key_name);
-                        }
-                    }
+            // free(tss_get(key)), or any deallocator's.
+            if let Some(key_name) = self.freed_storage_key(&call, source, project.as_ref()) {
+                if is_allowed(&key_name) {
+                    tss_get_freed.insert(key_name);
                 }
             }
         }
     }
 
-    /// Check if free() is called on tss_get() result
-    fn check_tss_get_in_free(&self, call_node: &Node, source: &str) -> Option<String> {
-        if let Some(args) = call_node.child_by_field_name("arguments") {
-            // Look for tss_get call inside free's arguments
-            for child in args.child_nodes() {
-                if let Some(key) = self.find_tss_get_key(&child, source) {
-                    return Some(key);
-                }
-            }
-        }
-        None
-    }
-
-    /// Find a thread-specific storage get call and return the key name
-    fn find_tss_get_key(&self, node: &Node, source: &str) -> Option<String> {
-        let call = query::find_first_descendant(*node, |n| {
+    /// The key or slot whose stored value `call` frees: `free(tss_get(key))`,
+    /// or any deallocator's freed argument holding a storage get call.
+    fn freed_storage_key(
+        &self,
+        call: &Node,
+        source: &str,
+        project: Option<&ProjectFunctions>,
+    ) -> Option<String> {
+        let freed = call_roles::freed_argument(call, source)?;
+        let get_call = query::find_first_descendant(freed, |n| {
             n.kind() == "call_expression"
-                && thread_api::thread_op_of_kind(&n, source, ThreadOpKind::TssGet).is_some()
+                && thread_api::thread_op_of_kind(&n, source, project, ThreadOpKind::TssGet)
+                    .is_some()
         })?;
-        let get = thread_api::thread_op(&call, source)?;
+        let get = thread_api::thread_op(&get_call, source, project)?;
         get.operand(Role::Key).map(|k| key_text(&k, source))
     }
 
@@ -344,11 +360,18 @@ impl Con30C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
+        let project = self.project.borrow();
+        let project = project.as_ref();
         let mut stores: Vec<(String, SlotStore)> = Vec::new();
         let mut freed: HashSet<String> = HashSet::new();
         for call in query::find_descendants_of_kind(*root, "call_expression") {
-            if let Some(op) = thread_api::thread_op_of_kind(&call, source, ThreadOpKind::TssSet) {
-                if op.family.creates_storage_keys() {
+            if let Some(op) =
+                thread_api::thread_op_of_kind(&call, source, project, ThreadOpKind::TssSet)
+            {
+                let holds_allocation = op
+                    .operand(Role::Value)
+                    .is_none_or(|v| may_hold_allocation(&v, source));
+                if op.family.creates_storage_keys() || !holds_allocation {
                     continue;
                 }
                 if let Some(slot) = op.operand(Role::Key).map(|k| key_text(&k, source)) {
@@ -367,13 +390,8 @@ impl Con30C {
                 }
                 continue;
             }
-            let is_free = call
-                .child_by_field_name("function")
-                .is_some_and(|f| get_node_text(&f, source) == "free");
-            if is_free {
-                if let Some(slot) = self.check_tss_get_in_free(&call, source) {
-                    freed.insert(slot);
-                }
+            if let Some(slot) = self.freed_storage_key(&call, source, project) {
+                freed.insert(slot);
             }
         }
         for (slot, store) in stores {
@@ -388,9 +406,9 @@ impl Con30C {
                 rule_id: self.rule_id().to_string(),
                 message: format!(
                     "Thread-local storage slot {slot} is stored into with {}() and never freed; \
-                     {} storage has no destructor to clean the slot up at thread exit. Free \
-                     it explicitly before the thread ends: free({get_name}(..., {slot})).",
-                    store.set_name, store.family
+                     no destructor cleans the slot up at thread exit. Free it explicitly \
+                     before the thread ends: free({get_name}(..., {slot})).",
+                    store.set_name
                 ),
                 severity: self.severity(),
                 line: store.line,
@@ -412,8 +430,39 @@ fn key_text(arg: &Node, source: &str) -> String {
         .map_or_else(|| text.to_string(), |s| s.trim().to_string())
 }
 
-/// Whether a destructor operand names one: not a null pointer constant.
+/// Whether a destructor operand names one: not a null pointer constant,
+/// casts aside (`(void *)0` is none).
 fn is_destructor(arg: &Node, source: &str) -> bool {
-    let text = get_node_text(arg, source).trim();
-    !matches!(text, "NULL" | "0" | "nullptr" | "")
+    !is_null_pointer_constant(arg, source) && !get_node_text(arg, source).trim().is_empty()
+}
+
+/// Whether a stored value may be memory the thread allocated, so that it
+/// needs freeing: not a null pointer constant (that clears the key), not an
+/// address taken with `&`, not a literal, and not a name declared as an
+/// array or a function. A pointer the file cannot place (a variable, a
+/// call's result) may be.
+fn may_hold_allocation(value: &Node, source: &str) -> bool {
+    if is_null_pointer_constant(value, source) {
+        return false;
+    }
+    let value = strip_arg_casts(value);
+    match value.kind() {
+        "pointer_expression" => value
+            .child_by_field_name("operator")
+            .is_none_or(|op| get_node_text(&op, source) != "&"),
+        "string_literal" | "concatenated_string" | "number_literal" | "char_literal" => false,
+        "identifier" => {
+            let name = get_node_text(&value, source);
+            match resolve_identifier_declarator(&value, name, source) {
+                // An array parameter is a pointer.
+                Some((decl, declarator)) => match declarator.kind() {
+                    "array_declarator" => decl.kind() == "parameter_declaration",
+                    "function_declarator" => false,
+                    _ => true,
+                },
+                None => true,
+            }
+        }
+        _ => true,
+    }
 }

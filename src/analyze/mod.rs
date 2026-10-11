@@ -890,6 +890,13 @@ fn load_project_context(
             "max_nesting_depth".to_string(),
             input_guard::max_nesting_depth_key(),
         ),
+        // A selected thread-API profile brings its kernel's heap
+        // (`thread_api::profile_deallocator`), which the summaries' frees
+        // are proved with, as the memory declarations below are.
+        (
+            "thread_profiles".to_string(),
+            crate::settings::threads::declared().profile_key(),
+        ),
     ]);
 
     let mut context = if let Some(cache_path) = load_prescan {

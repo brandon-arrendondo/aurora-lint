@@ -432,7 +432,9 @@ a parameter or a function pointer spelled like one is not it.
 An RTOS's API is read only when the project declares it. ``families`` selects
 a profile shipped with aurora-lint. ``freertos`` is checked against
 FreeRTOS-Kernel V11.2.0 and covers task creation, the recursive-mutex calls,
-the thread-local storage pointers and the task delays. The project's own
+the thread-local storage pointers and the task delays. It also reads the
+kernel heap: ``pvPortMalloc`` allocates as ``malloc`` does and ``vPortFree``
+frees, so a slot freed with ``vPortFree`` is freed. The project's own
 wrappers go under ``functions``, each with its operation and the 1-based
 positions of its operands:
 
@@ -466,10 +468,20 @@ the manifest otherwise:
 - ``arity``, the exact argument count, is optional on every operation. A call
   with another count is a different function of the same name.
 
-A C11 or POSIX function cannot be declared, since its contract is the
-library's. Neither can a function the selected profile already covers.
-These tables are facts about the project, so ``--profile`` keeps them.
-They enter the settings hash only when something differs from the default.
+A C11 or POSIX name the project defines itself, such as a
+``pthread_cond_wait`` shim over another platform's API, is the project's
+function: its calls reach that body, in the same file or in any other scanned
+file, so they are not the library's operation. A declaration of such a name
+under ``functions`` is in force for those calls alone. A call that reaches
+the library keeps the library's contract, so declaring a library name the
+project does not define changes nothing. A function the selected profile
+already covers cannot be declared, nor can a C11 or POSIX type. When a
+manifest and the command line both declare one function, they must give it
+the same contract.
+
+These tables are facts about the project, so ``--profile`` keeps them and
+``--write-config`` writes them. They enter the settings hash only when
+something differs from the default.
 
 Scope
 -----

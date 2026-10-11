@@ -1412,7 +1412,8 @@ impl ProjectContext {
 /// cache from before they were recorded took them from a data model alone.
 /// Before `closed_program` was recorded no caller set was closed by
 /// declaration. Before `generated_headers` was recorded no context was split
-/// around build-generated headers.
+/// around build-generated headers. Before `thread_profiles` was recorded no
+/// thread-API profile's kernel heap was read.
 pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
     ("include_names", "exact"),
     ("prescan_scope", ""),
@@ -1421,6 +1422,7 @@ pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
     // No nesting limit existed before this key. The size ceiling did, and
     // could be set, so a cache that does not record it is refused.
     ("max_nesting_depth", "none"),
+    ("thread_profiles", ""),
 ];
 
 /// Version of the prescan cache's serialized layout. Bump it with any change

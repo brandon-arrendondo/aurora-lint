@@ -153,37 +153,55 @@ does, and it refuses rather than ignoring:
   a role the kind does not take;
 - a position of 0, or one past `arity` when `arity` is given;
 - a name that is not a C identifier;
-- a name the built-in `c11`/`posix` tables already define ("'pthread_mutex_lock'
-  is a POSIX function; its contract is the library's");
-- a name declared twice with different contracts, including across a named
-  profile and `functions`;
+- a type name the built-in `c11`/`posix` tables already define. A function
+  name they define is accepted, and is in force only for calls that reach the
+  project's own definition of that name (below);
+- a name a selected profile already defines;
+- a name declared with different contracts by two configuration layers (a
+  manifest and the command line, say): one function has one contract, so the
+  layers must agree rather than one replacing the other;
 - an unknown profile name, with the shipped list.
 
 **Install.** Declarations are installed once per process before prescan:
 `threads::declare()` / `declared()`, a `OnceLock` as in
 `settings/memory.rs`. Function summaries and the roots table are built in
 prescan, so a later declaration would reach some tables and not others.
-Changing a declaration changes the settings hash, so the prescan cache keys on
-it. I expect to need one cache-format bump, and will ask before taking 44.
+Changing a declaration changes the settings hash. CON30-C and CON36-C need no
+new cache data: they read the declarations at check time, and the prescan's
+function summaries for definitions in other files. A selected profile's kernel
+heap (FreeRTOS's `pvPortMalloc`/`vPortFree`) does reach the summaries, through
+`call_roles`, so a prescan cache records the profiles it was built under
+(`thread_profiles`) and is refused under others. Folding the roots table in
+(§7, step 4) adds a cached field and will need a cache-format bump.
 
 **Identity follows ADR-0006 and E2.** A declared name is matched when the call
 resolves to that function or macro. A function-like macro is followed through
 `macro_expand`, which matters for FreeRTOS: `xSemaphoreTake` is a macro over
 `xQueueSemaphoreTake`. The first step matches the macro's name at the call
 site, as the profile lists it; following a project's own macro around one is
-a later step. A callee that resolves to an object of the same name (a local,
-a parameter, or a file-scope function pointer) is that object and performs
-no operation. `arity` keeps its current job of refusing a same-named
-function with the wrong argument count.
+a later step. So is a project's object-like alias of a library name
+(`#define WAIT pthread_cond_wait`): the call is matched by the name written
+at it, and `WAIT` is not followed to the wait yet. A callee that resolves to
+an object of the same name (a local, a parameter, or a file-scope function
+pointer) is that object and performs no operation. `arity` keeps its current
+job of refusing a same-named function with the wrong argument count.
 
-**A project that defines a reserved name keeps the library's contract.**
-ISO C reserves the `thrd_`, `mtx_`, `cnd_` and `tss_` prefixes and POSIX
-reserves `pthread_` for the implementation. A project that defines
-`pthread_cond_wait` itself, as a shim over another platform's API for
-example, is supplying that interface, and its callers rely on that contract.
-This differs from what this note first proposed: the project's definition
-does not take the call out of the family. It is also why a declaration may not
-restate a built-in name.
+**A project's own definition of a C11 or POSIX name shadows the library.**
+A project that defines `pthread_cond_wait` itself, as a shim over another
+platform's API for example, makes its calls reach that body, so they are the
+project's function and not the library's, whatever the standard reserves the
+name for. The same holds for a project's own `rand` (MSC30-C), `fclose`
+(FIO46-C) and noreturn names. The definition counts in the file being checked
+(a definition, or a `static` declaration) or in any other scanned file,
+through the prescan's function summaries; a plain prototype still declares
+the library's function. Such a call performs no operation unless the project
+declares one for the name under `[environment.threads.functions]`, and that
+declaration is in force for exactly those calls: a call that reaches the
+library keeps the library's contract, so declaring a library name the project
+does not define changes nothing. A function summary does not record where its
+definition came from, so a definition in a header the scan reads counts as
+the project's. A shipped profile's names are not shadowed this way: a project
+that carries the kernel's source defines them as the profile describes.
 
 ## 5. What each preset does with an undeclared family
 
@@ -207,7 +225,8 @@ Under that reading:
 | Situation | `default` | `strict` | `pedantic` |
 |---|---|---|---|
 | C11 call | recognized | recognized | recognized |
-| A POSIX call that resolves to a system-header declaration, or that has no visible declaration and no project definition | recognized: default assumes POSIX | recognized: the reserved name is the library's, so the hazard is reported, which is strict's direction | recognized, plus the existing `posix_notice` naming `posix_version` when it is undeclared |
+| A POSIX call that resolves to a system-header declaration, or that has no visible declaration and no project definition | recognized: default assumes POSIX | recognized, so the hazard is reported, which is strict's direction | recognized, plus the existing `posix_notice` naming `posix_version` when it is undeclared |
+| A C11 or POSIX name the project defines itself | the project's function: no operation unless declared for it (§4) | the same | the same |
 | `posix_version = "none"` declared, or `threads.posix = "off"` | POSIX family off | off | off |
 | An RTOS profile or project operations not declared | nothing: those calls are unknown functions | nothing | nothing (no spelling-based "looks like FreeRTOS" notice; that would be discovery by spelling) |
 | An RTOS profile or project operations declared | in force | in force | in force |
@@ -239,7 +258,8 @@ The last row says which entries ship in the first step.
 | global critical section | `taskENTER_CRITICAL` / `taskEXIT_CRITICAL`, `vTaskSuspendAll` / `xTaskResumeAll`. This is a lock with no object, so it needs a `critical_enter`/`critical_exit` kind or `object = none`. Open item. |
 | `cond_wait` | none. FreeRTOS has no condition variable, so CON36-C does not apply. Task notifications and event groups do not wake spuriously in the CON36 sense. |
 | shipped in the first step | Checked against FreeRTOS-Kernel V11.2.0. The plain `xSemaphoreTake`/`xSemaphoreGive` are left out, since they serve binary and counting semaphores too, and a call is a lock only when its handle came from a mutex-creating call. The recursive forms ship, along with the mutex-creating calls, task creation, the storage pointers and the delays. `vTaskDelete` is left out (see `thread_exit`). |
-| `tss_set` / `tss_get` | `vTaskSetThreadLocalStoragePointer(task, index, value)` / `pvTaskGetThreadLocalStoragePointer(task, index)`. These are fixed slots with no destructor in the vanilla kernel. A destructor-carrying set exists as a vendor extension (ESP-IDF's `...AndDelCallback`) and would be a separate `esp-idf` profile. So for FreeRTOS, CON30-C's hazard reads: a heap value stored in a slot and not freed before the task deletes itself. |
+| `tss_set` / `tss_get` | `vTaskSetThreadLocalStoragePointer(task, index, value)` / `pvTaskGetThreadLocalStoragePointer(task, index)`. These are fixed slots, and V11.2.0 has no destructor for them: neither `task.h` nor `tasks.c` declares `vTaskSetThreadLocalStoragePointerAndDelCallback` or a delete-callback option. That call is a vendor port's addition; a project on such a port declares it under `functions` as `tss_set` with `key` 2, `value` 3 and `destructor` 4. So for FreeRTOS, CON30-C's hazard reads: allocated memory stored in a slot and not freed before the task deletes itself. A stored null pointer, `&object` or literal holds nothing to free. |
+| heap | `pvPortMalloc` (as `malloc`) and `vPortFree` (frees argument 1), from `portable.h`. The profile adds them to the allocator and deallocator contracts, so a slot freed with `vPortFree(pvTaskGetThreadLocalStoragePointer(...))` is freed. |
 | `sleep` (blocking, for CON05-C) | `vTaskDelay`, `xTaskDelayUntil`, plus queue receive/send and notify-take calls with a non-zero timeout |
 | types | `TaskHandle_t` → thread, `SemaphoreHandle_t` → mutex. A semaphore handle is not always a mutex; it is a mutex only when made by a `CreateMutex` call. Open item. |
 
@@ -252,7 +272,9 @@ The last row says which entries ship in the first step.
    coverage (`pthread_key_*`, `pthread_setspecific`, `pthread_cond_*wait`).
    Fixtures per family: c11, posix, a declared project family, freertos (CON30
    only; CON36 expects nothing), and a project function that shadows a library
-   name.
+   name. CON36-C also reports a spuriously-waking wait in no loop at all, not
+   only one under an `if`, except a wrapper's wait on a condition its
+   parameter supplies, whose loop is its callers'.
 3. **A local A/B on the real-world corpora** with a frozen binary on each side.
    CON30 and CON36 should only gain findings, all at POSIX call sites. Any
    lost finding is a regression to explain. Adjudication stays held.
@@ -271,7 +293,9 @@ The last row says which entries ship in the first step.
 2. **The format is the structured one in §4:** `[environment.threads]` with
    `families`, `functions` (inline tables of `op` plus 1-based roles) and
    `types`. It refuses everything listed there, including redefining a
-   built-in name, and denies unknown fields.
+   built-in name, and denies unknown fields. Amended in review: a project's
+   own definition of a C11 or POSIX name shadows the library, and a
+   declaration of that name is accepted for that definition alone (§4).
 3. **The hard-coded Zephyr and Win32 names stay always on for now.** A later
    step moves them into `zephyr` and `win32` profiles, once a Zephyr
    real-world oracle exists to measure what declaring them changes.

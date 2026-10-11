@@ -100,8 +100,9 @@ pub fn is_string_duplicator(name: &str) -> bool {
 }
 
 /// Any heap-allocating call: [`is_heap_allocator`], [`is_string_duplicator`],
-/// or an allocator the project declares (`[environment.allocators]`). This is
-/// the broader set most allocation-lifetime-tracking rules
+/// an allocator the project declares (`[environment.allocators]`), or a
+/// selected thread-API profile's kernel heap (FreeRTOS's `pvPortMalloc`). This
+/// is the broader set most allocation-lifetime-tracking rules
 /// (leak/free/thread-lifetime checks) actually want.
 pub fn is_allocator_call(name: &str) -> bool {
     is_heap_allocator(name)
@@ -109,6 +110,7 @@ pub fn is_allocator_call(name: &str) -> bool {
         || crate::settings::memory::declared()
             .allocators
             .contains_key(name)
+        || crate::utility::cert_c::thread_api::profile_allocator(name).is_some()
 }
 
 /// The standard allocator contract a call to `name` follows: a standard
@@ -122,6 +124,7 @@ pub fn allocator_contract(name: &str) -> Option<crate::settings::AllocatorContra
             .allocators
             .get(name)
             .copied()
+            .or_else(|| crate::utility::cert_c::thread_api::profile_allocator(name))
     })
 }
 
@@ -132,10 +135,12 @@ pub fn is_realloc_like(name: &str) -> bool {
 }
 
 /// The argument (0-based) a call to `name` frees, by proof rather than by
-/// spelling: `free`'s only argument, or the argument a project-declared
-/// deallocator names (`[environment.deallocators]`). `realloc`'s release of
-/// its first argument is [`is_realloc_like`]'s, since the call also
-/// allocates. A wrapper whose body frees is `FunctionSummary`'s to prove.
+/// spelling: `free`'s only argument, the argument a project-declared
+/// deallocator names (`[environment.deallocators]`), or the one a selected
+/// thread-API profile's kernel heap frees (FreeRTOS's `vPortFree`).
+/// `realloc`'s release of its first argument is [`is_realloc_like`]'s, since
+/// the call also allocates. A wrapper whose body frees is `FunctionSummary`'s
+/// to prove.
 pub fn frees_argument(name: &str) -> Option<usize> {
     if name == "free" {
         return Some(0);
@@ -144,6 +149,7 @@ pub fn frees_argument(name: &str) -> Option<usize> {
         .deallocators
         .get(name)
         .map(|arg| arg - 1)
+        .or_else(|| crate::utility::cert_c::thread_api::profile_deallocator(name))
 }
 
 /// Whether `name` is `free` or a declared deallocator, whatever argument it

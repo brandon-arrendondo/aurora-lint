@@ -16,14 +16,24 @@
 //! resolves to a local, a parameter or a file-scope object of that name, such
 //! as a function pointer, is that object and performs no operation. A call
 //! whose argument count differs from the operation's arity is a different
-//! function of the same name. A reserved library name that a project defines
-//! itself (a shim implementing `pthread_cond_wait` over another API, say)
-//! still names the library's interface, since the standard reserves the name
-//! for exactly that contract.
+//! function of the same name.
+//!
+//! A C11 or POSIX name the project defines itself (a shim implementing
+//! `pthread_cond_wait` over another API, say) is the project's function, not
+//! the library's: the call reaches that body, whatever the standard reserves
+//! the name for. It performs no operation unless the project declares one
+//! for it under `[environment.threads.functions]`, which is in force for
+//! exactly those calls. The definition counts in this file or, through the
+//! prescan's function summaries, in any other scanned file. A shipped
+//! profile's names are not shadowed this way: a project that carries the
+//! RTOS kernel's source defines them as the profile describes.
 
+use crate::analyze::context::ScopedTable;
+use crate::analyze::function_summary::FunctionSummary;
 use crate::settings::threads::{
     declared, Blocking, Profile, Role, ThreadOp, ThreadOpKind, ThreadTypeKind,
 };
+use crate::settings::AllocatorContract;
 use crate::utility::cert_c::ast_utils::{
     get_node_text, resolve_identifier_binding, IdentifierBinding,
 };
@@ -247,6 +257,14 @@ const POSIX_OPS: &[(&str, ThreadOp)] = &[
         },
     ),
     (
+        "pthread_mutex_clocklock",
+        ThreadOp {
+            object: Some(1),
+            blocking: Some(Blocking::Timeout),
+            ..op(K::MutexLock, 3)
+        },
+    ),
+    (
         "pthread_mutex_trylock",
         ThreadOp {
             object: Some(1),
@@ -364,8 +382,15 @@ const POSIX_TYPES: &[(&str, ThreadTypeKind)] = &[
 ///   as well as mutexes, so a call is a lock only when its handle came from a
 ///   mutex-creating call. The recursive forms take only a recursive mutex.
 /// - `vTaskDelete` ends the caller only when passed `NULL`.
-/// - FreeRTOS has no condition variable. A task has no join or detach, and
-///   its thread-local storage slots have no destructor.
+/// - FreeRTOS has no condition variable, and a task has no join or detach.
+///   The V11.2.0 kernel's thread-local storage slots take no destructor:
+///   `vTaskSetThreadLocalStoragePointerAndDelCallback` is a vendor port's
+///   addition, not in this kernel, so a project on such a port declares it
+///   (`tss_set` with `destructor`).
+///
+/// The kernel's heap (`portable.h`) is read with the profile too:
+/// `pvPortMalloc` allocates as `malloc` does and `vPortFree` frees its
+/// argument ([`profile_allocator`], [`profile_deallocator`]).
 const FREERTOS_OPS: &[(&str, ThreadOp)] = &[
     (
         "xTaskCreate",
@@ -424,6 +449,26 @@ const FREERTOS_OPS: &[(&str, ThreadOp)] = &[
 ];
 
 const FREERTOS_TYPES: &[(&str, ThreadTypeKind)] = &[("TaskHandle_t", ThreadTypeKind::Thread)];
+
+/// FreeRTOS's heap, `portable.h` (V11.2.0).
+const FREERTOS_ALLOCATORS: &[(&str, AllocatorContract)] =
+    &[("pvPortMalloc", AllocatorContract::Malloc)];
+/// The argument (0-based) each FreeRTOS heap function frees.
+const FREERTOS_DEALLOCATORS: &[(&str, usize)] = &[("vPortFree", 0)];
+
+/// The allocator contract a selected profile's kernel gives `name`.
+pub fn profile_allocator(name: &str) -> Option<AllocatorContract> {
+    declared().families.iter().find_map(|p| match p {
+        Profile::Freertos => lookup(FREERTOS_ALLOCATORS, name),
+    })
+}
+
+/// The argument (0-based) a selected profile's kernel function `name` frees.
+pub fn profile_deallocator(name: &str) -> Option<usize> {
+    declared().families.iter().find_map(|p| match p {
+        Profile::Freertos => lookup(FREERTOS_DEALLOCATORS, name),
+    })
+}
 
 /// Which family an operation belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -531,17 +576,34 @@ fn profile_type(profile: Profile, name: &str) -> Option<ThreadTypeKind> {
     }
 }
 
-/// The contract in force for the function `name`, and its family: C11, then
-/// POSIX when read, then the selected profiles, then the project's own.
-pub fn op_named(name: &str) -> Option<(Family, ThreadOp)> {
+/// The contract in force for the function `name`, and its family.
+///
+/// A C11 or POSIX name is asked `defined_by_project` first: when the project
+/// defines the name itself, the call reaches that body, and only the
+/// project's own declaration for it is in force. Otherwise C11, then POSIX
+/// when read; a declaration of such a name does not apply to the library's
+/// function. Any other name follows the selected profiles, then the
+/// project's own declarations.
+pub fn op_named(
+    name: &str,
+    defined_by_project: impl FnOnce() -> bool,
+) -> Option<(Family, ThreadOp)> {
     let declarations = declared();
-    if let Some(op) = lookup(C11_OPS, name) {
-        return Some((Family::C11, op));
-    }
-    if declarations.posix {
-        if let Some(op) = lookup(POSIX_OPS, name) {
-            return Some((Family::Posix, op));
+    if builtin_family_of(name).is_some() {
+        if defined_by_project() {
+            return declarations
+                .functions
+                .get(name)
+                .map(|op| (Family::Project, *op));
         }
+        if let Some(op) = lookup(C11_OPS, name) {
+            return Some((Family::C11, op));
+        }
+        return declarations
+            .posix
+            .then(|| lookup(POSIX_OPS, name))
+            .flatten()
+            .map(|op| (Family::Posix, op));
     }
     for profile in &declarations.families {
         if let Some(op) = profile_op(*profile, name) {
@@ -601,10 +663,21 @@ impl<'a> ThreadCall<'a> {
     }
 }
 
+/// The project's function definitions across every scanned file: the
+/// prescan's function summaries, as a rule's `set_project_context` receives
+/// them, scoped to the file being checked.
+pub type ProjectFunctions = ScopedTable<FunctionSummary>;
+
 /// The thread-API operation `call` (a `call_expression`) performs, or `None`
 /// when its callee is not a plain name, does not resolve to a function, or
-/// matches no contract in force.
-pub fn thread_op<'a>(call: &Node<'a>, source: &str) -> Option<ThreadCall<'a>> {
+/// matches no contract in force. `project` holds the definitions in other
+/// files, for a C11 or POSIX name the project defines itself
+/// ([`op_named`]); `None` reads this file's alone.
+pub fn thread_op<'a>(
+    call: &Node<'a>,
+    source: &str,
+    project: Option<&ProjectFunctions>,
+) -> Option<ThreadCall<'a>> {
     if call.kind() != "call_expression" {
         return None;
     }
@@ -613,7 +686,9 @@ pub fn thread_op<'a>(call: &Node<'a>, source: &str) -> Option<ThreadCall<'a>> {
         return None;
     }
     let name = get_node_text(&callee, source);
-    let (family, op) = op_named(name)?;
+    let (family, op) = op_named(name, || {
+        project.is_some_and(|p| p.contains_key(name)) || file_defines(call, name, source)
+    })?;
     if !names_a_function(&callee, name, source) {
         return None;
     }
@@ -640,9 +715,48 @@ pub fn thread_op<'a>(call: &Node<'a>, source: &str) -> Option<ThreadCall<'a>> {
 pub fn thread_op_of_kind<'a>(
     call: &Node<'a>,
     source: &str,
+    project: Option<&ProjectFunctions>,
     kind: ThreadOpKind,
 ) -> Option<ThreadCall<'a>> {
-    thread_op(call, source).filter(|c| c.kind() == kind)
+    thread_op(call, source, project).filter(|c| c.kind() == kind)
+}
+
+/// Whether the file holding `node` defines the function `name` itself: a
+/// definition by that name, with any linkage, or a `static` declaration of
+/// one (whose definition must follow in this file). A plain prototype still
+/// declares the library's function. File-scope declarations only, through
+/// preprocessor groups, never into a body.
+fn file_defines(node: &Node, name: &str, source: &str) -> bool {
+    let mut root = *node;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    let mut stack = vec![root];
+    while let Some(scope) = stack.pop() {
+        for child in scope.child_nodes() {
+            match child.kind() {
+                "function_definition"
+                    if child
+                        .child_by_field_name("declarator")
+                        .is_some_and(|d| declares_function(&d, name, source)) =>
+                {
+                    return true;
+                }
+                "declaration"
+                    if declares_function(&child, name, source)
+                        && child.child_nodes().any(|c| {
+                            c.kind() == "storage_class_specifier"
+                                && get_node_text(&c, source).trim() == "static"
+                        }) =>
+                {
+                    return true;
+                }
+                kind if kind.starts_with("preproc_") => stack.push(child),
+                _ => {}
+            }
+        }
+    }
+    false
 }
 
 /// Whether the occurrence `callee` of `name` names a function rather than an

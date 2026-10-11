@@ -12,10 +12,13 @@
 //! - what the project declares here: shipped RTOS profiles named in
 //!   `families`, and its own functions under `functions` and `types`.
 //!
-//! A built-in name cannot be declared: its contract is the library's
-//! (ADR-0015), the same refusal `[environment.allocators]` makes. One process
-//! scans under one set of declarations; [`declare`] installs it before the
-//! scan.
+//! A C11 or POSIX name may be declared only for the project's own
+//! definition of it: the declaration is in force for a call that reaches a
+//! function the project defines by that name, in any scanned file, and for
+//! no other. A call that reaches the library keeps the library's contract
+//! (ADR-0015), so declaring a library name the project does not define
+//! changes nothing. One process scans under one set of declarations;
+//! [`declare`] installs it before the scan.
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -437,6 +440,10 @@ pub struct ThreadsConfig {
     /// The project's own types, by name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub types: BTreeMap<String, ThreadTypeKind>,
+    /// Names two config layers declared differently, refused when the table
+    /// is resolved.
+    #[serde(skip)]
+    conflicts: Vec<String>,
 }
 
 impl ThreadsConfig {
@@ -445,8 +452,11 @@ impl ThreadsConfig {
         self == &Self::default()
     }
 
-    /// Layer `other` over `self`: its families join, its `posix` wins, and
-    /// its functions and types win per name.
+    /// Layer `other` over `self`: its families join and its `posix` wins.
+    /// Its functions and types join too, but a name both layers declare
+    /// must mean the same in each: one function has one contract, so two
+    /// layers that disagree are refused when the table is resolved rather
+    /// than one silently replacing the other.
     pub fn overlay(&mut self, other: &ThreadsConfig) {
         for family in &other.families {
             if !self.families.contains(family) {
@@ -456,10 +466,27 @@ impl ThreadsConfig {
         if other.posix.is_some() {
             self.posix = other.posix;
         }
-        self.functions
-            .extend(other.functions.iter().map(|(k, v)| (k.clone(), *v)));
-        self.types
-            .extend(other.types.iter().map(|(k, v)| (k.clone(), *v)));
+        for (name, op) in &other.functions {
+            match self.functions.get(name) {
+                Some(mine) if mine != op => self
+                    .conflicts
+                    .push(format!("[environment.threads.functions]: '{name}'")),
+                _ => {
+                    self.functions.insert(name.clone(), *op);
+                }
+            }
+        }
+        for (name, kind) in &other.types {
+            match self.types.get(name) {
+                Some(mine) if mine != kind => self
+                    .conflicts
+                    .push(format!("[environment.threads.types]: '{name}'")),
+                _ => {
+                    self.types.insert(name.clone(), *kind);
+                }
+            }
+        }
+        self.conflicts.extend(other.conflicts.iter().cloned());
     }
 }
 
@@ -497,6 +524,12 @@ impl ThreadDeclarations {
         posix_version: Option<super::PosixVersion>,
     ) -> Result<Self> {
         let config = config.cloned().unwrap_or_default();
+        if let Some(conflict) = config.conflicts.first() {
+            bail!(
+                "{conflict} is declared differently by two configuration layers; one \
+                 function has one contract, so declare it once"
+            );
+        }
         let declarations = Self {
             posix: config.posix != Some(PosixFamily::Off)
                 && posix_version != Some(super::PosixVersion::None),
@@ -513,21 +546,40 @@ impl ThreadDeclarations {
         self == &Self::default()
     }
 
+    /// The selected profiles' names, comma-separated, or "" for none: what a
+    /// prescan cache records it was built under.
+    pub fn profile_key(&self) -> String {
+        self.families
+            .iter()
+            .map(|p| p.name())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// The `[environment.threads]` table that resolves to these
+    /// declarations, with `posix_version` resolving as it does: what a
+    /// written config carries.
+    pub fn to_config(&self) -> ThreadsConfig {
+        ThreadsConfig {
+            families: self.families.iter().copied().collect(),
+            posix: (!self.posix).then_some(PosixFamily::Off),
+            functions: self.functions.clone(),
+            types: self.types.clone(),
+            conflicts: Vec::new(),
+        }
+    }
+
     /// Refuse a declaration that cannot mean what it says: a name that is
-    /// not a C identifier, a contract its kind contradicts, or a name a
-    /// built-in or selected family already defines, whose contract is that
-    /// family's.
+    /// not a C identifier, a contract its kind contradicts, a name a selected
+    /// profile already defines, whose contract is that profile's, or a C11 or
+    /// POSIX type name, whose meaning is the library's. A C11 or POSIX
+    /// function name is accepted: it is in force only for the project's own
+    /// definition of that name (`thread_api::op_named`).
     pub fn validate(&self) -> Result<()> {
         use crate::utility::cert_c::thread_api;
         for (name, op) in &self.functions {
             if !is_identifier(name) {
                 bail!("[environment.threads.functions]: '{name}' is not a C identifier");
-            }
-            if let Some(family) = thread_api::builtin_family_of(name) {
-                bail!(
-                    "[environment.threads.functions]: '{name}' is a {family} function; its \
-                     contract is the library's, not a declaration"
-                );
             }
             if let Some(profile) = self
                 .families
@@ -658,11 +710,12 @@ mod tests {
     }
 
     #[test]
-    fn a_built_in_or_profile_name_is_refused() {
-        let c11 = resolve("[functions]\ncnd_wait = { op = \"cond_wait\", spurious = false }\n")
-            .unwrap_err();
-        assert!(c11.to_string().contains("C11"), "{c11}");
-        assert!(resolve("[functions]\npthread_mutex_lock = { op = \"mutex_lock\" }\n").is_err());
+    fn a_profile_or_library_type_name_is_refused_and_a_library_function_name_is_not() {
+        // Accepted, and in force only for the project's own definition.
+        let shim =
+            resolve("[functions]\ncnd_wait = { op = \"cond_wait\", spurious = false }\n").unwrap();
+        assert_eq!(shim.functions["cnd_wait"].spurious, Some(false));
+        resolve("[functions]\npthread_mutex_lock = { op = \"mutex_lock\" }\n").unwrap();
         assert!(resolve(
             "families = [\"freertos\"]\n[functions]\nxTaskCreate = { op = \"thread_create\", entry = 1 }\n"
         )
@@ -671,6 +724,41 @@ mod tests {
         resolve("[functions]\nxTaskCreate = { op = \"thread_create\", entry = 1 }\n").unwrap();
         assert!(resolve("[types]\nmtx_t = \"mutex\"\n").is_err());
         assert!(resolve("[functions]\n\"os-lock\" = { op = \"mutex_lock\" }\n").is_err());
+    }
+
+    #[test]
+    fn layers_that_give_one_function_two_contracts_are_refused() {
+        let parse = |text: &str| toml::from_str::<ThreadsConfig>(text).unwrap();
+        let mut base = parse("[functions]\nos_lock = { op = \"mutex_lock\", object = 1 }\n");
+        base.overlay(&parse(
+            "[functions]\nos_lock = { op = \"mutex_lock\", object = 1 }\n\
+             os_unlock = { op = \"mutex_unlock\", object = 1 }\n",
+        ));
+        let agreed = ThreadDeclarations::resolve(Some(&base), None).unwrap();
+        assert_eq!(agreed.functions.len(), 2);
+        base.overlay(&parse(
+            "[functions]\nos_lock = { op = \"mutex_lock\", object = 2 }\n",
+        ));
+        let err = ThreadDeclarations::resolve(Some(&base), None).unwrap_err();
+        assert!(err.to_string().contains("'os_lock'"), "{err}");
+
+        let mut types = parse("[types]\nos_mutex_t = \"mutex\"\n");
+        types.overlay(&parse("[types]\nos_mutex_t = \"cond\"\n"));
+        assert!(ThreadDeclarations::resolve(Some(&types), None).is_err());
+    }
+
+    #[test]
+    fn the_written_table_resolves_to_the_same_declarations() {
+        let declared = resolve(
+            "families = [\"freertos\"]\nposix = \"off\"\n\
+             [functions]\nos_wait = { op = \"cond_wait\", cond = 1, spurious = true }\n\
+             [types]\nos_mutex_t = \"mutex\"\n",
+        )
+        .unwrap();
+        let written = toml::to_string(&declared.to_config()).unwrap();
+        assert_eq!(resolve(&written).unwrap(), declared);
+        assert_eq!(declared.profile_key(), "freertos");
+        assert_eq!(ThreadDeclarations::default().profile_key(), "");
     }
 
     #[test]
