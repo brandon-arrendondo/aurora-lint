@@ -914,6 +914,18 @@ pub struct ProjectContext {
     /// reported at all.
     #[serde(default)]
     pub unused_attribute_macros: Arc<HashSet<String>>,
+    /// Object-like macros defined as the GNU noreturn attribute
+    /// (`#define NORETURN __attribute__((__noreturn__))`), across all
+    /// scanned files and the headers they reach.
+    #[serde(default)]
+    pub attribute_noreturn_macros: Arc<HashSet<String>>,
+    /// Functions declared noreturn by that attribute, spelled directly or
+    /// through one of `attribute_noreturn_macros`, anywhere in the project.
+    /// Kept apart from `noreturn_functions` because the attribute is proof
+    /// only under MSC37-C's `msc37_attribute_noreturn` option; a function
+    /// whose body is verified never to return is in both.
+    #[serde(default)]
+    pub attribute_noreturn_functions: Arc<HashSet<String>>,
     /// Functions whose name appears as a bare value inside an aggregate
     /// initializer (e.g. `{ "mysql", pw_mysql_parse, pw_mysql_check,
     /// pw_mysql_exit }` or a designated `.check = pw_mysql_check`) — the

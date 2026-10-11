@@ -61,6 +61,10 @@
 //!
 //! - a call to a function trusted not to return (`_Noreturn`, `exit`, ...; the
 //!   `trust_noreturn_keyword` option), never a wrapper that merely calls one;
+//! - a call to a function declared noreturn by a GNU attribute, directly or
+//!   through a macro defined as one, or to a function-like macro whose every
+//!   definition is such a call (the default preset; the
+//!   `msc37_attribute_noreturn` option);
 //! - a call to C23 `unreachable()`, only when the C23 edition is declared
 //!   (`c_standard`) and the file defines no `unreachable` of its own;
 //! - a loop with a constant-true condition and no `break` or `goto` out of it;
@@ -84,6 +88,10 @@ pub struct Msc37C {
     /// `RETURN`-style macro defined in a header is known when a file's
     /// function ends with it.
     project_function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
+    /// Functions the project declares noreturn by GNU attribute, and the
+    /// macros defined as that attribute, for `msc37_attribute_noreturn`.
+    attribute_functions: RefCell<Arc<HashSet<String>>>,
+    attribute_macros: RefCell<Arc<HashSet<String>>>,
     /// The run's policy and environment settings: whether a `_Noreturn`
     /// declaration is trusted (`trust_noreturn_keyword`).
     settings: RefCell<Arc<AnalysisSettings>>,
@@ -99,6 +107,8 @@ impl Msc37C {
     pub fn new() -> Self {
         Self {
             project_function_macros: RefCell::default(),
+            attribute_functions: RefCell::default(),
+            attribute_macros: RefCell::default(),
             settings: RefCell::default(),
             typedefs: RefCell::default(),
             file_path: RefCell::default(),
@@ -157,6 +167,54 @@ impl Msc37C {
                 names.insert(name.clone());
             }
         }
+        names
+    }
+
+    /// The functions this file's calls reach that are declared noreturn by
+    /// GNU attribute (`msc37_attribute_noreturn`), and the function-like
+    /// macros whose every definition is one call to such a function.
+    ///
+    /// A function the file defines `static` is its own, so another file's
+    /// same-named attribute declaration does not reach it; the file's own
+    /// declarations are read with the project's attribute macros.
+    fn attribute_noreturn_names(&self, root: &Node, source: &str) -> HashSet<String> {
+        use crate::analyze::noreturn as nr;
+        let mut own_statics = HashSet::new();
+        crate::analyze::prescan::collect_static_function_names(root, source, &mut own_statics);
+        let mut names: HashSet<String> = self
+            .attribute_functions
+            .borrow()
+            .difference(&own_statics)
+            .cloned()
+            .collect();
+        let mut macros: HashSet<String> = self.attribute_macros.borrow().as_ref().clone();
+        nr::collect_attribute_noreturn_macro_names(source, &mut macros);
+        names.extend(nr::attribute_noreturn_declared_in(
+            &nr::collect_attribute_candidates(
+                root,
+                source,
+                &nr::raw_text_or(&self.file_path.borrow(), source),
+            ),
+            &macros,
+        ));
+        let mut alternatives = collect_function_macro_alternatives(source);
+        for (name, m) in self.project_function_macros.borrow().iter() {
+            alternatives
+                .entry(name.clone())
+                .or_insert_with(|| vec![m.clone()]);
+        }
+        let ends_in_attribute_call = |alts: &Vec<FunctionMacro>| {
+            !alts.is_empty()
+                && alts
+                    .iter()
+                    .all(|m| single_call_callee(&m.body).is_some_and(|c| names.contains(c)))
+        };
+        let credited: Vec<String> = alternatives
+            .iter()
+            .filter(|(_, alts)| ends_in_attribute_call(alts))
+            .map(|(name, _)| name.clone())
+            .collect();
+        names.extend(credited);
         names
     }
 
@@ -860,6 +918,8 @@ impl CertRule for Msc37C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_function_macros.borrow_mut() = context.function_macros.clone();
+        *self.attribute_functions.borrow_mut() = Arc::clone(&context.attribute_noreturn_functions);
+        *self.attribute_macros.borrow_mut() = Arc::clone(&context.attribute_noreturn_macros);
     }
 
     fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
@@ -889,6 +949,9 @@ impl Msc37C {
             noreturn_names.retain(|name| verified.contains(name));
         }
         noreturn_names.extend(self.collect_returning_macros(source));
+        if settings.flag("msc37_attribute_noreturn") {
+            noreturn_names.extend(self.attribute_noreturn_names(node, source));
+        }
         // C23 `unreachable()` (C23 7.21.1) ends a path, where the edition is
         // declared and the file does not define a function or macro of that
         // name itself: CERT's EX2 helper named `unreachable` is that case.
@@ -900,4 +963,34 @@ impl Msc37C {
             self.check_function_definition(&func, source, &noreturn_names, violations);
         }
     }
+}
+
+/// The callee of `body` (a macro's replacement list) when the whole of it is
+/// one call, `_fail(s, __FILE__)` or `halt()`; `None` for anything more or
+/// less.
+fn single_call_callee(body: &str) -> Option<&str> {
+    let body = body.trim().trim_end_matches(';').trim_end();
+    let open = body.find('(')?;
+    let callee = body[..open].trim();
+    if callee.is_empty()
+        || !callee
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (i, c) in body[open..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return (open + i + 1 == body.len()).then_some(callee);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }

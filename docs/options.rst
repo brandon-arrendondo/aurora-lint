@@ -97,6 +97,14 @@ Policy options
    - Oracle tag: ``putenv-exit-path``
    - Basis: Clang's security.PutenvStackArray documents the exit and exec path as a known false positive. CERT POS34-C gives no such exemption.
 
+``msc37_attribute_noreturn``
+   MSC37-C: a call to a function declared noreturn by a GNU attribute (__attribute__((noreturn)), [[gnu::noreturn]], or a macro defined as one) ends a path the way a return does, as does a function-like macro whose every definition is such a call. Off, only the ISO spellings and verified bodies do, as everywhere else.
+
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
+   - Scope: MSC37-C
+   - Oracle tag: ``noreturn-attribute``
+   - Basis: CERT MSC37-C-EX2 exempts a path that calls a function marked _Noreturn; GCC and Clang give the GNU attribute the same meaning, and kernels and runtimes use it where C11 is unavailable. It is a promise the compiler does not check, so no stricter policy accepts it.
+
 ``flp36_constant_assert_is_guard``
    FLP36-C: an assert whose condition compares constants the file can see, among them a standard integer limit or floating-point precision (LONG_MAX, DBL_MANT_DIG and the like), checks the platform, so it counts as a precision check even though NDEBUG can strip it.
 

@@ -90,6 +90,11 @@ struct FilePrescanResult {
     macro_operand_params: HashMap<String, crate::analyze::macro_expand::OperandParams>,
     function_macro_arms: HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>,
     unused_attribute_macros: HashSet<String>,
+    /// Object-like macros this file defines as the GNU noreturn attribute.
+    attribute_noreturn_macros: HashSet<String>,
+    /// Each function this file declares or defines, with the identifier
+    /// tokens of its declaration (`noreturn::collect_attribute_candidates`).
+    attribute_candidates: HashMap<String, HashSet<String>>,
     initializer_function_refs: HashSet<String>,
     value_position_identifiers: HashSet<String>,
     /// File names of `.c` files this file `#include`s -- a static defined in
@@ -194,6 +199,8 @@ impl FilePrescanResult {
             macro_operand_params: HashMap::new(),
             function_macro_arms: HashMap::new(),
             unused_attribute_macros: HashSet::new(),
+            attribute_noreturn_macros: HashSet::new(),
+            attribute_candidates: HashMap::new(),
             initializer_function_refs: HashSet::new(),
             value_position_identifiers: HashSet::new(),
             included_c_files: HashSet::new(),
@@ -366,6 +373,15 @@ fn process_file(
             crate::analyze::noreturn::collect_noreturn_names(&root, &source);
         result.keyword_noreturn =
             crate::analyze::noreturn::collect_keyword_noreturn_names(&root, &source);
+        crate::analyze::noreturn::collect_attribute_noreturn_macro_names(
+            &source,
+            &mut result.attribute_noreturn_macros,
+        );
+        result.attribute_candidates = crate::analyze::noreturn::collect_attribute_candidates(
+            &root,
+            &source,
+            &crate::analyze::noreturn::raw_text_or(&result.display_path, &source),
+        );
         result.returning_functions = crate::analyze::noreturn::collect_returning_definitions(
             &root,
             &source,
@@ -806,6 +822,8 @@ fn prescan_file_list(
         HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>,
     )> = Vec::new();
     let mut unused_attribute_macros: HashSet<String> = HashSet::new();
+    let mut attribute_noreturn_macros: HashSet<String> = HashSet::new();
+    let mut attribute_candidates: HashMap<String, HashSet<String>> = HashMap::new();
     let mut initializer_function_refs: HashSet<String> = HashSet::new();
     let mut value_position_identifiers: HashSet<String> = HashSet::new();
     let mut value_positions_by_file: HashMap<String, HashSet<String>> = HashMap::new();
@@ -1133,6 +1151,10 @@ fn prescan_file_list(
             ),
         }
         unused_attribute_macros.extend(r.unused_attribute_macros);
+        attribute_noreturn_macros.extend(r.attribute_noreturn_macros);
+        for (name, tokens) in r.attribute_candidates {
+            attribute_candidates.entry(name).or_default().extend(tokens);
+        }
         initializer_function_refs.extend(r.initializer_function_refs);
         if let Some(key) = &file_key {
             value_positions_by_file
@@ -1589,6 +1611,11 @@ fn prescan_file_list(
         !global_constant_conflicts.contains(name) && !file_scope_writes.contains(name)
     });
 
+    let attribute_noreturn_functions = crate::analyze::noreturn::attribute_noreturn_declared_in(
+        &attribute_candidates,
+        &attribute_noreturn_macros,
+    );
+
     let abort_check_macros = abort_check_noreturn.map(|names| {
         Arc::new(crate::analyze::check_macros::abort_check_macros(
             &macro_definitions,
@@ -1655,6 +1682,8 @@ fn prescan_file_list(
         outside_configuration: None,
         include_edges_beyond_search_path: Arc::new(HashMap::new()),
         unused_attribute_macros: Arc::new(unused_attribute_macros),
+        attribute_noreturn_macros: Arc::new(attribute_noreturn_macros),
+        attribute_noreturn_functions: Arc::new(attribute_noreturn_functions),
         global_constants,
         closure_dependent_constants: Arc::new(closure_dependent_constants),
         global_var_null_states: Arc::new(global_var_null_states),
@@ -7895,6 +7924,23 @@ pub fn resolve_includes_scoped(
                     &hsource,
                     Arc::make_mut(&mut context.unused_attribute_macros),
                 );
+                // A header outside the scanned set is read once, so its
+                // attribute macros are those known when it is reached.
+                crate::analyze::noreturn::collect_attribute_noreturn_macro_names(
+                    &hsource,
+                    Arc::make_mut(&mut context.attribute_noreturn_macros),
+                );
+                let header_attribute_names =
+                    crate::analyze::noreturn::attribute_noreturn_declared_in(
+                        &crate::analyze::noreturn::collect_attribute_candidates(
+                            &root,
+                            &hsource,
+                            &crate::analyze::noreturn::raw_text_or(&header_path, &hsource),
+                        ),
+                        &context.attribute_noreturn_macros,
+                    );
+                Arc::make_mut(&mut context.attribute_noreturn_functions)
+                    .extend(header_attribute_names);
 
                 // Enqueue transitive includes from this header
                 let header_dir = resolved.parent().map(|p| p.to_path_buf());

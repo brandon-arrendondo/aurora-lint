@@ -474,6 +474,7 @@ const HASHED_ONLY_WHEN_OVERRIDDEN: &[&str] = &[
     "env33_exec_spawn_exempt",
     "pos34_main_frame_exempt",
     "pos34_exit_path_exempt",
+    "msc37_attribute_noreturn",
     "flp36_constant_assert_is_guard",
     "pre31_listed_library_calls_pure",
     "signal_handlers_persistent",
@@ -672,6 +673,26 @@ pub static OPTIONS: &[OptionSpec] = &[
                   reported as CERT's rule is written.",
         basis: "Clang's security.PutenvStackArray documents the exit and exec path as a \
                 known false positive. CERT POS34-C gives no such exemption.",
+    },
+    OptionSpec {
+        name: "msc37_attribute_noreturn",
+        axis: Axis::Policy,
+        scope: Scope::RuleSpecific("MSC37-C"),
+        source: Source::Policy {
+            default: true,
+            strict: false,
+            pedantic: false,
+        },
+        oracle_tag: "noreturn-attribute",
+        summary: "MSC37-C: a call to a function declared noreturn by a GNU attribute \
+                  (__attribute__((noreturn)), [[gnu::noreturn]], or a macro defined as \
+                  one) ends a path the way a return does, as does a function-like macro \
+                  whose every definition is such a call. Off, only the ISO spellings and \
+                  verified bodies do, as everywhere else.",
+        basis: "CERT MSC37-C-EX2 exempts a path that calls a function marked _Noreturn; \
+                GCC and Clang give the GNU attribute the same meaning, and kernels and \
+                runtimes use it where C11 is unavailable. It is a promise the compiler \
+                does not check, so no stricter policy accepts it.",
     },
     OptionSpec {
         name: "flp36_constant_assert_is_guard",

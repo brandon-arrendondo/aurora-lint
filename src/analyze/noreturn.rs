@@ -43,6 +43,10 @@
 //! is noreturn here only when its body is verified to be. The same holds for
 //! a bare-identifier attribute macro such as seL4's `NORETURN`, whose
 //! expansion is that attribute: it is not recognized by its spelling at all.
+//! The one exception is MSC37-C's `msc37_attribute_noreturn` option, which
+//! credits a call to such a function ([`collect_attribute_candidates`]) in the
+//! default preset only; those names are kept apart from the sets above, so no
+//! other rule sees them.
 //!
 //! Signals 1 and 2 change what signal 3 infers (a wrapper around `exit` or a
 //! `_Noreturn` function is noreturn only when that callee is), so the names
@@ -295,6 +299,200 @@ pub fn collect_keyword_noreturn_names(root: &Node, source: &str) -> HashSet<Stri
         }
     }
     declared
+}
+
+/// Sentinel standing in the token set of a declaration that carries the GNU
+/// noreturn attribute itself, as opposed to a macro that may expand to it.
+pub const GNU_NORETURN_DIRECT: &str = "\0gnu-noreturn";
+
+fn identifier_tokens(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|t| !t.is_empty())
+}
+
+/// Whether `text` spells the GNU noreturn attribute: `__attribute__((noreturn))`
+/// (or `__noreturn__`, among other attributes in the list) or the C23
+/// vendor-prefixed `[[gnu::noreturn]]`. The unprefixed `[[noreturn]]` is the
+/// ISO keyword ([`has_noreturn_keyword`]) and is not this.
+fn spells_gnu_noreturn_attribute(text: &str) -> bool {
+    let is_noreturn = |t: &str| matches!(t, "noreturn" | "__noreturn__");
+    let mut rest = text;
+    while let Some(at) = rest.find("__attribute__") {
+        rest = &rest[at + "__attribute__".len()..];
+        let Some(open) = rest.find('(') else { break };
+        let mut depth = 0usize;
+        let mut end = rest.len();
+        for (i, c) in rest[open..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if identifier_tokens(&rest[open..end]).any(is_noreturn) {
+            return true;
+        }
+        rest = &rest[end.min(rest.len())..];
+    }
+    let mut rest = text;
+    while let Some(at) = rest.find("[[") {
+        rest = &rest[at + 2..];
+        let end = rest.find("]]").unwrap_or(rest.len());
+        let mut tokens = identifier_tokens(&rest[..end]);
+        if tokens
+            .next()
+            .is_some_and(|t| matches!(t, "gnu" | "__gnu__"))
+            && tokens.any(is_noreturn)
+        {
+            return true;
+        }
+        rest = &rest[end..];
+    }
+    false
+}
+
+/// Add to `out` the name of every object-like `#define` in `source` whose
+/// replacement list spells the GNU noreturn attribute
+/// (`#define NORETURN __attribute__((__noreturn__))`), in any preprocessor
+/// branch. What makes a bare identifier an attribute is its definition, not
+/// its spelling (ADR-0006): an undefined or differently defined `NORETURN`
+/// declares nothing. A chain through a second macro is not followed.
+pub fn collect_attribute_noreturn_macro_names(source: &str, out: &mut HashSet<String>) {
+    for cap in crate::utility::cert_c::ast_utils::define_line_re().captures_iter(source) {
+        let body = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+        if body.starts_with('(') {
+            continue;
+        }
+        if let Some(name) = cap.get(1).filter(|_| spells_gnu_noreturn_attribute(body)) {
+            out.insert(name.as_str().to_string());
+        }
+    }
+}
+
+/// The text of a declaration or definition that can hold its attributes: all
+/// of it except the parameter list and the body.
+fn declaration_head(decl: &Node, source: &str) -> String {
+    let mut cut: Vec<(usize, usize)> = Vec::new();
+    if let Some(body) = decl.child_by_field_name("body") {
+        cut.push((body.start_byte(), body.end_byte()));
+    }
+    if let Some(params) =
+        find_function_declarator(decl).and_then(|f| f.child_by_field_name("parameters"))
+    {
+        cut.push((params.start_byte(), params.end_byte()));
+    }
+    cut.sort_unstable();
+    let mut head = String::new();
+    let mut at = decl.start_byte();
+    for (from, to) in cut {
+        if from >= at {
+            head.push_str(source.get(at..from).unwrap_or(""));
+            head.push(' ');
+            at = to;
+        }
+    }
+    head.push_str(source.get(at..decl.end_byte()).unwrap_or(""));
+    head
+}
+
+/// For each function `root` declares or defines, the identifier tokens of
+/// its declaration outside the parameter list and body, plus
+/// [`GNU_NORETURN_DIRECT`] when it spells the GNU noreturn attribute itself.
+/// A name qualifies as declared noreturn by attribute once one of its tokens
+/// is an attribute macro ([`attribute_noreturn_declared_in`]); the macro may
+/// be defined in a header other than the one holding the declaration, so the
+/// join is left to the caller.
+///
+/// `raw` is the file as written. The parse reads a repaired copy in which a
+/// bare identifier the grammar cannot place, such as an attribute macro
+/// between the declarator and the `;`, is blanked to spaces; the repair keeps
+/// every byte offset, so the declaration's text is sliced from `raw`.
+pub fn collect_attribute_candidates(
+    root: &Node,
+    source: &str,
+    raw: &str,
+) -> HashMap<String, HashSet<String>> {
+    let raw = if raw.len() == source.len() {
+        raw
+    } else {
+        source
+    };
+    let mut out: HashMap<String, HashSet<String>> = HashMap::new();
+    for node in
+        query::find_descendants_of_kinds(*root, &["declaration", "function_definition", "ERROR"])
+    {
+        // A trailing attribute macro the grammar cannot place leaves the
+        // declaration as an `ERROR` node holding the function declarator
+        // directly: `void halt(void) NORETURN;`.
+        let declarator = if node.kind() == "ERROR" {
+            let mut cursor = node.walk();
+            let direct = node
+                .children(&mut cursor)
+                .find(|c| c.kind() == "function_declarator");
+            if direct.is_none() || get_node_text(&node, raw).contains('{') {
+                continue;
+            }
+            direct
+        } else {
+            node.child_by_field_name("declarator")
+        };
+        let Some(declarator) = declarator else {
+            continue;
+        };
+        let Some(name_node) =
+            find_function_declarator(&declarator).and_then(|f| f.child_by_field_name("declarator"))
+        else {
+            continue;
+        };
+        let name = get_node_text(&name_node, source).trim().to_string();
+        if name.is_empty() || name.contains(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            continue;
+        }
+        let head = declaration_head(&node, raw);
+        let tokens = out.entry(name.clone()).or_default();
+        if spells_gnu_noreturn_attribute(&head) {
+            tokens.insert(GNU_NORETURN_DIRECT.to_string());
+        }
+        tokens.extend(
+            identifier_tokens(&head)
+                .filter(|t| *t != name)
+                .map(str::to_string),
+        );
+    }
+    out.retain(|_, tokens| !tokens.is_empty());
+    out
+}
+
+/// The file at `path` as written, for [`collect_attribute_candidates`]; the
+/// parsed `source` itself when it cannot be read.
+pub fn raw_text_or(path: &str, source: &str) -> String {
+    std::fs::read_to_string(path)
+        .ok()
+        .filter(|raw| raw.len() == source.len())
+        .unwrap_or_else(|| source.to_string())
+}
+
+/// The names in `candidates` ([`collect_attribute_candidates`]) declared
+/// noreturn by GNU attribute: spelled directly, or through one of
+/// `attribute_macros` ([`collect_attribute_noreturn_macro_names`]).
+pub fn attribute_noreturn_declared_in(
+    candidates: &HashMap<String, HashSet<String>>,
+    attribute_macros: &HashSet<String>,
+) -> HashSet<String> {
+    candidates
+        .iter()
+        .filter(|(_, tokens)| {
+            tokens.contains(GNU_NORETURN_DIRECT)
+                || tokens.iter().any(|t| attribute_macros.contains(t))
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
 }
 
 /// Collect the names of every function in `root` recognized as noreturn by
@@ -881,6 +1079,43 @@ mod tests {
         ] {
             assert!(!default_names(src).contains("die"), "{src}");
             assert!(!pedantic_names(src).contains("die"), "{src}");
+        }
+    }
+
+    fn attribute_names(src: &str) -> HashSet<String> {
+        let (tree, source) = parse(src);
+        let mut macros = HashSet::new();
+        collect_attribute_noreturn_macro_names(&source, &mut macros);
+        attribute_noreturn_declared_in(
+            &collect_attribute_candidates(&tree.root_node(), &source, &source),
+            &macros,
+        )
+    }
+
+    #[test]
+    fn gnu_attribute_spellings_declare_a_function_noreturn() {
+        for src in [
+            "__attribute__((noreturn)) void die(void);\n",
+            "void die(void) __attribute__((noreturn));\n",
+            "void die(void) __attribute__((cold, __noreturn__));\n",
+            "[[gnu::noreturn]] void die(void);\n",
+            "#define NORETURN __attribute__((__noreturn__))\nvoid die(void) NORETURN;\n",
+            "#define NORETURN __attribute__((__noreturn__))\nNORETURN void die(void);\n",
+        ] {
+            assert!(attribute_names(src).contains("die"), "{src}");
+        }
+    }
+
+    #[test]
+    fn other_attributes_and_undefined_macros_do_not() {
+        for src in [
+            "void die(void) __attribute__((format(printf, 1, 2)));\n",
+            "void die(void) __attribute__((format(printf, 1, 2), noreturn_like));\n",
+            "#define NORETURN\nvoid die(void) NORETURN;\n",
+            "void die(void) NORETURN;\n",
+            "_Noreturn void die(void);\n",
+        ] {
+            assert!(!attribute_names(src).contains("die"), "{src}");
         }
     }
 

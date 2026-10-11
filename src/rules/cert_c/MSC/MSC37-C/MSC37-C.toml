@@ -24,9 +24,9 @@ wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MSC37-C.+Ensure+that+contr
 cwe = ["CWE-758"]
 
 [presets]
-default = "as_written"
+default = "narrowed"
 strict = "as_written"
 pedantic = "as_written"
-differs = false
-basis = "no; default and strict agree on noreturn trust (MSC37-C/2026-10-07/noreturn). C23 unreachable() ends a path only where the edition is declared, under every preset. Pedantic's trust in the C library follows P/facts."
-ruling = "MSC37-C/2026-10-07/noreturn, P/facts"
+differs = true
+basis = "only through the named option msc37_attribute_noreturn: the default credits a call to a function declared noreturn by a GNU attribute, strict and pedantic accept only the ISO spellings and verified bodies. C23 unreachable() ends a path only where the edition is declared, under every preset. Pedantic's trust in the C library follows P/facts."
+ruling = "MSC37-C/2026-10-07/noreturn, MSC37-C/2026-10-11/options, P/facts"

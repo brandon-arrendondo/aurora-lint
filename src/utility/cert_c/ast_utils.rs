@@ -2385,7 +2385,7 @@ pub fn macro_expands_to_packed(name: &str, source: &str) -> bool {
 /// group 2 the rest of the line. The three per-file `#define` sweeps below
 /// each ran on every prescanned file, and compiling a fresh `Regex` per call
 /// cost more than the matching itself.
-fn define_line_re() -> &'static regex::Regex {
+pub(crate) fn define_line_re() -> &'static regex::Regex {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| {
         regex::Regex::new(r"(?m)^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\b([^\n]*)$").unwrap()
