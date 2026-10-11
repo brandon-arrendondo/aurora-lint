@@ -39,7 +39,8 @@ impl Default for Pre32C {
 /// Information about an unclosed function call
 struct UnclosedCallInfo {
     function_name: String,
-    open_parens: usize,
+    /// Whether a `)` later in the file closes the call's `(`.
+    closes: bool,
 }
 
 impl CertRule for Pre32C {
@@ -71,9 +72,11 @@ impl CertRule for Pre32C {
         let mut file_names = HashSet::new();
         collect_function_macro_names(source, &mut file_names);
         *self.file_macro_names.borrow_mut() = file_names;
+        let masked = mask_source(source);
         let text = FileText {
             directives: directive_starts(source),
-            masked: mask_source(source),
+            parens: Parens::of(&masked),
+            masked,
         };
         self.check_node(node, source, &text, violations);
     }
@@ -85,6 +88,60 @@ impl CertRule for Pre32C {
 struct FileText {
     directives: Vec<usize>,
     masked: String,
+    parens: Parens,
+}
+
+/// The parentheses of a masked file, matched once in a single forward pass,
+/// so the innermost `(` still open at any position, and whether it is ever
+/// closed, are a binary search rather than a scan of the file. Scanning
+/// for them at each directive was quadratic in the number of directives.
+struct Parens {
+    /// For each `(` and `)` in source order: its byte offset, and the `(`
+    /// left innermost-open just after it, as an index into `open_closed`.
+    events: Vec<(usize, Option<usize>)>,
+    /// Per `(`, in source order: whether a later `)` matches it.
+    open_closed: Vec<bool>,
+    /// Per `(`, in source order: its byte offset.
+    open_at: Vec<usize>,
+}
+
+impl Parens {
+    fn of(masked: &str) -> Self {
+        let mut events = Vec::new();
+        let mut open_closed = Vec::new();
+        let mut open_at = Vec::new();
+        let mut stack: Vec<usize> = Vec::new();
+        for (at, b) in masked.bytes().enumerate() {
+            match b {
+                b'(' => {
+                    stack.push(open_closed.len());
+                    open_closed.push(false);
+                    open_at.push(at);
+                }
+                // A `)` with nothing open closes nothing.
+                b')' => {
+                    if let Some(open) = stack.pop() {
+                        open_closed[open] = true;
+                    }
+                }
+                _ => continue,
+            }
+            events.push((at, stack.last().copied()));
+        }
+        Self {
+            events,
+            open_closed,
+            open_at,
+        }
+    }
+
+    /// The innermost `(` open just before byte `at`: its offset, and
+    /// whether a `)` after it closes it.
+    fn innermost_open_before(&self, at: usize) -> Option<(usize, bool)> {
+        let k = self.events.partition_point(|&(pos, _)| pos < at);
+        let open = self.events[..k].last()?.1?;
+        Some((self.open_at[open], self.open_closed[open]))
+    }
 }
 
 impl FileText {
@@ -141,23 +198,16 @@ impl Pre32C {
     ) {
         // Parentheses are counted in the masked text: one inside a string,
         // character literal or comment opens no call.
-        let source = text.masked.as_str();
         let start_byte = node.start_byte();
-        let _end_byte = node.end_byte();
 
         // Look backwards from the preprocessor directive to find an unclosed call expression
         // We need to check if there's an open parenthesis for a function call that spans this directive
-        let text_before = &source[..start_byte];
-
-        // Find the last function call that might contain this directive
-        // Look for pattern like "func(" or "MACRO("
-        if let Some(call_info) = self.find_unclosed_call_before(text_before) {
+        if let Some(call_info) = self.find_unclosed_call_before(text, start_byte) {
             // Now check if the call closes after this preprocessor directive
             // Note: For preproc_ifdef/preproc_if/etc., the node spans the entire block (from #ifdef to #endif)
             // So we need to check what's after the START of the directive, not the END
             // This means we look at whether there's a closing paren somewhere after the directive starts
-            let text_after_start = &source[start_byte..];
-            if self.has_matching_close_paren(text_after_start, call_info.open_parens) {
+            if call_info.closes {
                 // This preprocessor directive is inside a function/macro call
                 let start_point = node.start_position();
                 violations.push(RuleViolation {
@@ -178,81 +228,31 @@ impl Pre32C {
         }
     }
 
-    /// Find an unclosed function call before the given position
-    fn find_unclosed_call_before(&self, text: &str) -> Option<UnclosedCallInfo> {
-        let mut paren_depth = 0i32;
-        let chars: Vec<char> = text.chars().collect();
-        let mut i = chars.len();
-
-        // Scan backwards
-        while i > 0 {
-            i -= 1;
-            match chars[i] {
-                ')' => paren_depth += 1,
-                '(' => {
-                    paren_depth -= 1;
-                    if paren_depth < 0 {
-                        // Found the nearest unclosed open paren. This is the
-                        // innermost construct enclosing the start position,
-                        // whatever it turns out to be — an `if (`, a `while (`,
-                        // a plain grouping paren, or an actual call. It is the
-                        // answer to "what, if anything, is unclosed here";
-                        // scanning further back would only walk into earlier,
-                        // already-closed statements and misattribute this
-                        // position to an unrelated call. So resolve it here,
-                        // one way or the other, and stop.
-                        let mut end = i;
-                        // Skip whitespace
-                        while end > 0 && chars[end - 1].is_whitespace() {
-                            end -= 1;
-                        }
-                        // Extract identifier
-                        let mut start = end;
-                        while start > 0
-                            && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_')
-                        {
-                            start -= 1;
-                        }
-                        if start < end {
-                            let function_name: String = chars[start..end].iter().collect();
-                            if self.is_potentially_macro_function(&function_name) {
-                                return Some(UnclosedCallInfo {
-                                    function_name,
-                                    open_parens: (-paren_depth) as usize,
-                                });
-                            }
-                        }
-                        return None;
-                    }
-                }
-                _ => {}
-            }
-        }
-        None
-    }
-
-    /// Check if there's a matching close paren for the unclosed call
-    fn has_matching_close_paren(&self, text: &str, open_count: usize) -> bool {
-        let mut close_count = 0usize;
-        let mut paren_depth = 0i32;
-
-        for c in text.chars() {
-            match c {
-                '(' => paren_depth += 1,
-                ')' => {
-                    if paren_depth > 0 {
-                        paren_depth -= 1;
-                    } else {
-                        close_count += 1;
-                        if close_count >= open_count {
-                            return true;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        false
+    /// Find an unclosed function call before byte `at` of the masked text.
+    ///
+    /// The nearest unclosed open paren is the innermost construct enclosing
+    /// the position, whatever it turns out to be — an `if (`, a `while (`, a
+    /// plain grouping paren, or an actual call. It is the answer to "what, if
+    /// anything, is unclosed here"; anything further back is an earlier,
+    /// already-closed statement and would misattribute this position to an
+    /// unrelated call. So it is resolved one way or the other, and nothing
+    /// further back is consulted.
+    fn find_unclosed_call_before(&self, text: &FileText, at: usize) -> Option<UnclosedCallInfo> {
+        let (open, closes) = text.parens.innermost_open_before(at)?;
+        // The identifier just before the paren, past any whitespace.
+        let before = text.masked[..open].trim_end_matches(char::is_whitespace);
+        let name_start = before
+            .char_indices()
+            .rev()
+            .take_while(|&(_, c)| c.is_alphanumeric() || c == '_')
+            .last()
+            .map(|(i, _)| i)?;
+        let function_name = &before[name_start..];
+        self.is_potentially_macro_function(function_name)
+            .then(|| UnclosedCallInfo {
+                function_name: function_name.to_string(),
+                closes,
+            })
     }
 
     fn check_function_call(
