@@ -3544,24 +3544,32 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             self.signal_registered = true;
         }
 
-        // Check for termination calls that leak memory. A call that spells
-        // the terminator itself must reach the library's function: a pointer
-        // or parameter of that name, or this file's own definition of it,
-        // returns like any call, and naming it as `exit()` would report a
-        // termination that is not there (ADR-0005, ADR-0006). A macro alias
-        // of one (`#define bail exit`) is still that function.
+        // Check for termination calls that leak memory. The call must reach
+        // the library's function: a pointer or parameter spelled like one, or
+        // this file's own definition of the name, returns like any call, and
+        // naming it as `exit()` would report a termination that is not there
+        // (ADR-0005, ADR-0006). That holds through a macro alias too
+        // (`#define bail exit`): the alias expands to whatever `exit` names
+        // in this file.
         if matches!(
             func_name.as_str(),
             "abort" | "exit" | "_Exit" | "_exit" | "quick_exit" | "longjmp" | "siglongjmp"
         ) {
             let spelled_itself = crate::analyze::noreturn::callee_spelling(node, source)
                 .is_some_and(|(_, spelled)| spelled == func_name);
-            let reaches_library = if func_name == "siglongjmp" {
+            let reaches_library = if !spelled_itself {
+                let mut root = *node;
+                while let Some(parent) = root.parent() {
+                    root = parent;
+                }
+                !crate::analyze::noreturn::library_names_redefined(&root, source)
+                    .contains(&func_name)
+            } else if func_name == "siglongjmp" {
                 crate::analyze::noreturn::called_function_name(node, source).is_some()
             } else {
                 crate::analyze::noreturn::calls_stdlib_noreturn(node, source, None)
             };
-            if !spelled_itself || reaches_library {
+            if reaches_library {
                 self.report_termination_leaks(node, &func_name);
                 return;
             }
