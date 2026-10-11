@@ -23,8 +23,10 @@
 //! further read (`fgets` again). A failure branch that returns, aborts or
 //! resets therefore passes — CERT's EX1 follows from the form, since a
 //! buffer that is never read again is never read while indeterminate.
-//! `sizeof` and a comparison of the pointer are not reads; passing it to a
-//! function that does not only write it is. A pointer that holds the
+//! `sizeof` and a comparison of the pointer are not reads. Passing it to a
+//! function is a read unless the function frees, clears or writes that
+//! argument: `free` or a declared deallocator, or a body whose summary shows
+//! it, never a callee's name. A pointer that holds the
 //! array's address (`p = buf`, `char *p = buf`, through casts, `buf + k` and
 //! `&buf[k]`) is followed along the path: a read or write through it counts
 //! as one of the array, until the pointer is assigned something else.
@@ -38,19 +40,27 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{build_function_cfg, CfgEdge, FunctionCfg};
+use crate::analyze::const_eval::{self, resolve_macro_alias};
+use crate::analyze::context::{ProjectContext, ScopedTable};
+use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
-use crate::utility::cert_c::call_roles::writes_through_arg;
+use crate::utility::cert_c::call_roles::{frees_argument, writes_through_arg};
 use crate::utility::cert_c::result_checks::same_lvalue;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 #[derive(Default)]
 pub struct Fio40C {
     /// The driver's per-function CFGs, keyed by the function's start byte.
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
+    /// Which parameters each function's body frees or writes.
+    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
+    /// The project's `#define ALIAS target` table.
+    macro_aliases: RefCell<Arc<HashMap<String, String>>>,
 }
 
 impl CertRule for Fio40C {
@@ -70,6 +80,15 @@ impl CertRule for Fio40C {
         "FIO40-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.macro_aliases.borrow_mut() = context.macro_aliases.clone();
+    }
+
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
         *self.function_cfgs.borrow_mut() = cfgs.clone();
     }
@@ -79,6 +98,13 @@ impl CertRule for Fio40C {
             n.kind() == "call_expression" && read_function(&n, source).is_some()
         });
         let cfgs = self.function_cfgs.borrow();
+        let summaries = self.function_summaries.borrow();
+        let aliases = const_eval::merged_macro_aliases(&self.macro_aliases.borrow(), node, source);
+        let callees = Callees {
+            summaries: &summaries,
+            aliases: &aliases,
+            source,
+        };
         let mut built: HashMap<usize, Option<FunctionCfg>> = HashMap::new();
         for call in calls {
             let Some(func) = enclosing_function(&call) else {
@@ -94,7 +120,7 @@ impl CertRule for Fio40C {
             let Some(cfg) = cfg else {
                 continue;
             };
-            if let Some(v) = self.check_call(&call, &func, cfg, source) {
+            if let Some(v) = self.check_call(&call, &func, cfg, source, &callees) {
                 violations.push(v);
             }
         }
@@ -120,6 +146,7 @@ impl Fio40C {
         func: &Node,
         cfg: &FunctionCfg,
         source: &str,
+        callees: &Callees,
     ) -> Option<RuleViolation> {
         let name = read_function(call, source)?;
         let buffer = buffer_argument(call, source)?;
@@ -149,7 +176,7 @@ impl Fio40C {
         }
 
         let body = func.child_by_field_name("body")?;
-        let events = path_events(&body, &buffer, source);
+        let events = path_events(&body, &buffer, source, callees);
         let initial = aliases_held_at(&events, call.start_byte());
 
         let read = first_read_on_failure_path(cfg, &starts, &events, initial)?;
@@ -408,7 +435,7 @@ fn is_declarator(n: &Node) -> bool {
 
 /// Whether one occurrence of the array reads its contents, writes them, or
 /// does neither.
-fn classify(occ: Node, source: &str) -> Access {
+fn classify(occ: Node, source: &str, callees: &Callees) -> Access {
     let mut v = occ;
     loop {
         let Some(p) = v.parent() else {
@@ -430,11 +457,11 @@ fn classify(occ: Node, source: &str) -> Access {
                 let zero = p
                     .child_by_field_name("index")
                     .is_some_and(|i| get_node_text(&i, source).trim() == "0");
-                return classify_element(p, zero, source);
+                return classify_element(p, zero, source, callees);
             }
             "pointer_expression" => {
                 if p.child(0).is_some_and(|o| o.kind() == "*") {
-                    return classify_element(p, true, source);
+                    return classify_element(p, true, source, callees);
                 }
                 // `&buf`: the address, used as the array itself is.
                 v = p;
@@ -449,7 +476,7 @@ fn classify(occ: Node, source: &str) -> Access {
                 }
             }
             "unary_expression" | "update_expression" => return Access::Neither,
-            "argument_list" => return classify_argument(&p, &v, source),
+            "argument_list" => return classify_argument(&p, &v, source, callees),
             "assignment_expression" => {
                 return if p.child_by_field_name("left") == Some(v) {
                     // The pointer itself replaced: the old contents are gone
@@ -470,7 +497,7 @@ fn classify(occ: Node, source: &str) -> Access {
 
 /// `buf[k]` or `*buf`: a store into the first element resets the string; any
 /// other store leaves it as indeterminate as before; a load reads it.
-fn classify_element(element: Node, first: bool, source: &str) -> Access {
+fn classify_element(element: Node, first: bool, source: &str, callees: &Callees) -> Access {
     let mut e = element;
     while let Some(p) = e.parent() {
         match p.kind() {
@@ -478,7 +505,7 @@ fn classify_element(element: Node, first: bool, source: &str) -> Access {
             "sizeof_expression" | "alignof_expression" => return Access::Neither,
             "pointer_expression" if p.child(0).is_some_and(|o| o.kind() == "&") => {
                 // `&buf[k]`: a pointer into the array.
-                return classify(p, source);
+                return classify(p, source, callees);
             }
             "assignment_expression" if p.child_by_field_name("left") == Some(e) => {
                 let plain = p
@@ -499,14 +526,15 @@ fn classify_element(element: Node, first: bool, source: &str) -> Access {
 /// The array passed to a call: written by a function that only stores
 /// into that argument, read otherwise (a concatenation reads its
 /// destination first).
-fn classify_argument(args: &Node, arg: &Node, source: &str) -> Access {
+fn classify_argument(args: &Node, arg: &Node, source: &str, callees: &Callees) -> Access {
     let Some(call) = args.parent() else {
         return Access::Read;
     };
     let Some(callee) = call.child_by_field_name("function") else {
         return Access::Read;
     };
-    let name = get_node_text(&callee, source);
+    let spelled = get_node_text(&callee, source);
+    let name = resolve_macro_alias(callees.aliases, spelled);
     let Some(idx) = (0..args.named_child_count()).find(|&i| args.named_child(i) == Some(*arg))
     else {
         return Access::Read;
@@ -520,10 +548,35 @@ fn classify_argument(args: &Node, arg: &Node, source: &str) -> Access {
     if matches!(name, "memset" | "wmemset") && idx == 0 {
         return Access::Write;
     }
-    if writes_through_arg(name, idx) {
+    if writes_through_arg(name, idx) || callees.ends(name, idx, call.start_position().row + 1) {
         Access::Write
     } else {
         Access::Read
+    }
+}
+
+/// What the scan knows about the functions a call may reach: a call that
+/// frees the array or writes through it ends its indeterminate contents
+/// as surely as a store does. Known only by proof: `free`, a declared
+/// deallocator, or a body whose summary frees, clears or writes that
+/// parameter -- never by a callee's name.
+pub(crate) struct Callees<'c> {
+    summaries: &'c ScopedTable<FunctionSummary>,
+    aliases: &'c HashMap<String, String>,
+    source: &'c str,
+}
+
+impl Callees<'_> {
+    fn ends(&self, name: &str, idx: usize, line: usize) -> bool {
+        if frees_argument(name) == Some(idx) {
+            return true;
+        }
+        self.summaries.get(name).is_some_and(|s| {
+            let s = s.at(self.source, line);
+            s.frees_params.contains(&idx)
+                || s.modifies_params.contains(&idx)
+                || s.clears_params.contains(&idx)
+        })
     }
 }
 
@@ -542,7 +595,12 @@ enum Event<'a> {
 const MAX_ALIASES: usize = 64;
 
 /// Every event in the function body, in source order.
-fn path_events<'a>(body: &Node<'a>, buffer: &Node<'a>, source: &str) -> Vec<(usize, Event<'a>)> {
+fn path_events<'a>(
+    body: &Node<'a>,
+    buffer: &Node<'a>,
+    source: &str,
+    callees: &Callees,
+) -> Vec<(usize, Event<'a>)> {
     let mut aliases: Vec<Node<'a>> = Vec::new();
     let mut events = Vec::new();
     for occ in occurrences(body, buffer, source) {
@@ -558,7 +616,7 @@ fn path_events<'a>(body: &Node<'a>, buffer: &Node<'a>, source: &str) -> Vec<(usi
             events.push((occ.start_byte(), Event::AliasOn(i)));
             continue;
         }
-        let access = classify(occ, source);
+        let access = classify(occ, source, callees);
         if access != Access::Neither {
             events.push((occ.start_byte(), Event::Array(access, occ)));
         }
@@ -586,7 +644,7 @@ fn path_events<'a>(body: &Node<'a>, buffer: &Node<'a>, source: &str) -> Vec<(usi
             if parent.kind() == "update_expression" {
                 continue;
             }
-            let access = classify(occ, source);
+            let access = classify(occ, source, callees);
             if access != Access::Neither {
                 events.push((occ.start_byte(), Event::Alias(i, access, occ)));
             }
