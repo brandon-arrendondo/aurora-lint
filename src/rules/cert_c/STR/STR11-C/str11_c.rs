@@ -229,14 +229,24 @@ impl<'a> TypeIndex<'a> {
                     }
                 }
             } else if let Some(name) = n.child_by_field_name("name") {
-                tags.entry((record_kind(&n), get_node_text(&name, source).to_string()))
-                    .or_default()
-                    .push(TagDecl {
-                        scope,
-                        id: n.id(),
-                        start: n.start_byte(),
-                        body: n.child_by_field_name("body"),
-                    });
+                let decls = tags
+                    .entry((record_kind(&n), get_node_text(&name, source).to_string()))
+                    .or_default();
+                let body = n.child_by_field_name("body");
+                // A bodiless `struct S` declares the tag only standing alone
+                // (`struct S;`) or where no declaration of it is visible
+                // (C11 6.7.2.3p7-p9); otherwise it refers to the visible one.
+                // Nodes arrive in source order, so `decls` holds exactly the
+                // declarations before `n`.
+                if body.is_none() && !stands_alone(&n) && tag_visible(decls, &n) {
+                    continue;
+                }
+                decls.push(TagDecl {
+                    scope,
+                    id: n.id(),
+                    start: n.start_byte(),
+                    body,
+                });
             }
         }
         TypeIndex { tags, typedefs }
@@ -290,6 +300,28 @@ fn visible<'a>(defs: &[Scoped<'a>], at: &Node) -> Option<Node<'a>> {
         cur = n.parent();
     }
     None
+}
+
+/// `struct S;`: a declaration whose only content is the bodiless specifier.
+fn stands_alone(spec: &Node) -> bool {
+    spec.parent().is_some_and(|d| {
+        d.kind() == "declaration"
+            && d.child_by_field_name("type") == Some(*spec)
+            && d.child_by_field_name("declarator").is_none()
+    })
+}
+
+/// Whether some declaration among `decls` (all of which precede `at`) is in
+/// a scope enclosing `at`.
+fn tag_visible(decls: &[TagDecl], at: &Node) -> bool {
+    let mut cur = Some(*at);
+    while let Some(n) = cur {
+        if is_scope(&n) && decls.iter().any(|d| d.scope == n.id()) {
+            return true;
+        }
+        cur = n.parent();
+    }
+    false
 }
 
 /// A node that opens a scope for typedef names and tags.
