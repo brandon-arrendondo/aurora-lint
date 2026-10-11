@@ -3,12 +3,24 @@
 
 //! MEM01-C: Store a new value in pointers immediately after free()
 //!
-//! Uses CFG-based forward reachability to detect actual danger after free():
-//! - Double-free: free(ptr) followed by free(ptr) on a reachable path
-//! - Use-after-free: free(ptr) followed by ptr dereference/use on a reachable path
+//! "Immediately" means before the pointer variable can next be read or escape
+//! (maintainer ruling, rulings walk-through Q40). Forward reachability over the
+//! CFG from each free() looks for the first thing that happens to the freed
+//! lvalue on every path:
+//! - it is stored to (reset): the path is fine;
+//! - it is read, passed on or freed again: the pointer was left dangling
+//!   across a read (the finding MEM30-C also makes at the later use);
+//! - the path ends while the lvalue outlives the function (a global, a
+//!   function-local `static`, a member reached through a pointer): the pointer
+//!   escapes still holding the freed address.
 //!
-//! Suppresses violations when the freed pointer is never used again (goes out of
-//! scope, is reassigned, or function exits).
+//! The lvalue is an identifier or a member path (`s->buf`, `g.p`). A freed
+//! local, parameter or member of a local struct dies at function exit, so it
+//! escapes nothing. The destructor idiom is exempt: `free(s->buf); free(s);`
+//! frees the object the member lives in next, so the member dies with it. A
+//! path that ends the process (`exit()`) escapes nothing either. The calls
+//! that free are `free`, C23 `free_sized` / `free_aligned_sized` and a
+//! project-declared deallocator.
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self as cfg_mod, FunctionCfg};
@@ -108,6 +120,15 @@ impl Mem01C {
     }
 }
 
+/// How a freed pointer was left behind.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Hazard {
+    /// Read, passed on or freed again before any store.
+    Read,
+    /// A path ends while the lvalue outlives the function.
+    Escapes,
+}
+
 #[derive(Debug, PartialEq)]
 enum PtrAction {
     /// ptr = ... (any assignment to ptr, including NULL)
@@ -191,21 +212,32 @@ impl Mem01C {
         // Find all free() calls in this function
         let free_calls = self.collect_free_calls(&body, source);
 
-        for (ptr_name, free_byte, line, column) in free_calls {
-            if self.ptr_has_post_free_use(cfg, &body, source, &ptr_name, free_byte, &addr_ctx) {
+        for site in free_calls {
+            let hazard = self.ptr_hazard_after_free(cfg, &body, source, &site, &addr_ctx);
+            if let Some(hazard) = hazard {
+                let name = &site.key;
+                let message = match hazard {
+                    Hazard::Read => format!(
+                        "Pointer '{}' is read, passed on or freed again after free() without \
+                         being set again",
+                        name
+                    ),
+                    Hazard::Escapes => format!(
+                        "Pointer '{}' outlives this function still holding the freed address: \
+                         it is not set to NULL after free()",
+                        name
+                    ),
+                };
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: Severity::High,
-                    message: format!(
-                        "Pointer '{}' is used or freed again after free() without reassignment",
-                        ptr_name
-                    ),
+                    message,
                     file_path: String::new(),
-                    line,
-                    column,
+                    line: site.line,
+                    column: site.column,
                     suggestion: Some(format!(
                         "Set '{} = NULL;' after free({}) or remove the subsequent use",
-                        ptr_name, ptr_name
+                        name, name
                     )),
                     ..Default::default()
                 });
@@ -213,52 +245,44 @@ impl Mem01C {
         }
     }
 
-    /// Collect all free(ptr) call sites: (ptr_name, free_byte, line, column)
-    fn collect_free_calls(&self, node: &Node, source: &str) -> Vec<(String, usize, usize, usize)> {
+    /// Every free() of an lvalue the function could reset.
+    fn collect_free_calls(&self, node: &Node, source: &str) -> Vec<FreeSite> {
         let mut results = Vec::new();
-        for node in query::find_descendants_of_kind(*node, "call_expression") {
-            if let Some(ptr_name) = self.extract_free_arg(&node, source) {
-                let pos = node.start_position();
-                results.push((ptr_name, node.start_byte(), pos.row + 1, pos.column + 1));
-            }
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            let Some(arg) = freed_argument(&call, source) else {
+                continue;
+            };
+            let Some(site) = FreeSite::of(&call, &arg, source) else {
+                continue;
+            };
+            results.push(site);
         }
         results
     }
 
-    fn extract_free_arg(&self, call_node: &Node, source: &str) -> Option<String> {
-        call_roles::freed_argument(call_node, source)
-            .map(|arg| get_node_text(&arg, source).to_string())
-    }
-
-    /// BFS forward through the CFG from the free() call site.
-    /// Returns true if ptr_name is used or freed again on any reachable path
-    /// without an intervening reassignment.
-    fn ptr_has_post_free_use(
+    /// Forward through the CFG from the free() call site: how the freed
+    /// lvalue is left on the first path that does not store to it, if any.
+    fn ptr_hazard_after_free(
         &self,
         cfg: &FunctionCfg,
         body: &Node,
         source: &str,
-        ptr_name: &str,
-        free_byte: usize,
+        site: &FreeSite,
         addr_ctx: &AddressOfCallContext,
-    ) -> bool {
-        let containing_block = match find_block_containing(cfg, free_byte) {
+    ) -> Option<Hazard> {
+        let containing_block = match find_block_containing(cfg, site.free_byte) {
             Some(b) => b,
-            None => return true, // conservative: can't locate block, flag it
+            None => return Some(Hazard::Read), // conservative: can't locate block, flag it
         };
 
         // Scan remaining statements in the containing block after the free
-        match self.scan_block_from(
-            containing_block,
-            body,
-            source,
-            ptr_name,
-            free_byte,
-            addr_ctx,
-        ) {
-            Some(PtrAction::FreedAgain) | Some(PtrAction::Used) => return true,
-            Some(PtrAction::Reassigned) => return false,
+        match self.scan_block_from(containing_block, body, source, site, addr_ctx) {
+            Some(PtrAction::FreedAgain) | Some(PtrAction::Used) => return Some(Hazard::Read),
+            Some(PtrAction::Reassigned) => return None,
             _ => {} // fall through to BFS
+        }
+        if site.persists && path_ends_at(cfg, containing_block.id) {
+            return Some(Hazard::Escapes);
         }
 
         // BFS through successor blocks
@@ -281,10 +305,13 @@ impl Mem01C {
             };
 
             // Scan all statements in this block from the start
-            match self.scan_block_all(block, body, source, ptr_name, addr_ctx) {
-                Some(PtrAction::FreedAgain) | Some(PtrAction::Used) => return true,
+            match self.scan_block_all(block, body, source, site, addr_ctx) {
+                Some(PtrAction::FreedAgain) | Some(PtrAction::Used) => return Some(Hazard::Read),
                 Some(PtrAction::Reassigned) => continue, // safe on this path
                 _ => {
+                    if site.persists && path_ends_at(cfg, block_id) {
+                        return Some(Hazard::Escapes);
+                    }
                     // No decisive action, continue to successors
                     for (succ_id, _edge) in cfg.successors(block_id) {
                         queue.push_back(succ_id);
@@ -293,7 +320,7 @@ impl Mem01C {
             }
         }
 
-        false // all reachable paths are safe
+        None // all reachable paths are safe
     }
 
     /// Scan statements in a block starting AFTER after_byte.
@@ -303,16 +330,15 @@ impl Mem01C {
         block: &crate::analyze::cfg::BasicBlock,
         body: &Node,
         source: &str,
-        ptr_name: &str,
-        after_byte: usize,
+        site: &FreeSite,
         addr_ctx: &AddressOfCallContext,
     ) -> Option<PtrAction> {
         for &(start, end) in &block.statements {
-            if start <= after_byte {
+            if start <= site.free_byte {
                 continue;
             }
             if let Some(stmt_node) = find_node_at_range(body, start, end) {
-                let action = classify_stmt_for_ptr(&stmt_node, source, ptr_name, addr_ctx);
+                let action = classify_stmt_on_path(&stmt_node, source, site, addr_ctx);
                 if action != PtrAction::Irrelevant {
                     return Some(action);
                 }
@@ -327,12 +353,12 @@ impl Mem01C {
         block: &crate::analyze::cfg::BasicBlock,
         body: &Node,
         source: &str,
-        ptr_name: &str,
+        site: &FreeSite,
         addr_ctx: &AddressOfCallContext,
     ) -> Option<PtrAction> {
         for &(start, end) in &block.statements {
             if let Some(stmt_node) = find_node_at_range(body, start, end) {
-                let action = classify_stmt_for_ptr(&stmt_node, source, ptr_name, addr_ctx);
+                let action = classify_stmt_on_path(&stmt_node, source, site, addr_ctx);
                 if action != PtrAction::Irrelevant {
                     return Some(action);
                 }
@@ -340,6 +366,199 @@ impl Mem01C {
         }
         None
     }
+}
+
+/// One free() of an lvalue, and what the lvalue is.
+struct FreeSite {
+    /// The freed lvalue with its whitespace removed: `p`, `s->buf`, `g.p`.
+    key: String,
+    free_byte: usize,
+    line: usize,
+    column: usize,
+    /// The lvalue outlives the function: a global, a `static`, or a member
+    /// reached through a pointer. A path that ends with it unset escapes.
+    persists: bool,
+    /// The objects a member path lives in, innermost first (`s->buf` lives in
+    /// `s`). Freeing one of them ends the member too (the destructor idiom).
+    containers: Vec<String>,
+}
+
+impl FreeSite {
+    /// `None` when the argument is not an lvalue a store could reset (a call
+    /// result, a string literal).
+    fn of(call: &Node, arg: &Node, source: &str) -> Option<Self> {
+        let arg = strip_parens_and_casts(arg);
+        let key = compact(get_node_text(&arg, source));
+        let pos = call.start_position();
+        let (persists, containers) = match arg.kind() {
+            "identifier" => (identifier_outlives_function(&arg, source), Vec::new()),
+            "field_expression" => (
+                member_outlives_function(&arg, source),
+                member_containers(&arg, source),
+            ),
+            _ => return None,
+        };
+        Some(Self {
+            key,
+            free_byte: call.start_byte(),
+            line: pos.row + 1,
+            column: pos.column + 1,
+            persists,
+            containers,
+        })
+    }
+}
+
+fn compact(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+fn strip_parens_and_casts<'a>(node: &Node<'a>) -> Node<'a> {
+    let mut current = *node;
+    loop {
+        let inner = match current.kind() {
+            "parenthesized_expression" => current.named_child(0),
+            "cast_expression" => current.child_by_field_name("value"),
+            _ => None,
+        };
+        match inner {
+            Some(n) => current = n,
+            None => return current,
+        }
+    }
+}
+
+/// The argument a call frees: `free`'s, a declared deallocator's, or the
+/// first argument of C23 `free_sized` / `free_aligned_sized`
+/// (`call_roles::frees_argument` names neither, and it is shared with rules
+/// whose summaries are cached).
+fn freed_argument<'t>(call: &Node<'t>, source: &str) -> Option<Node<'t>> {
+    if let Some(arg) = call_roles::freed_argument(call, source) {
+        return Some(arg);
+    }
+    let callee = call.child_by_field_name("function")?;
+    if !matches!(
+        get_node_text(&callee, source),
+        "free_sized" | "free_aligned_sized"
+    ) {
+        return None;
+    }
+    call.child_by_field_name("arguments")?
+        .named_children(&mut call.walk())
+        .find(|a| a.kind() != "comment")
+}
+
+/// Whether a path through `block_id` leaves the function.
+fn path_ends_at(cfg: &FunctionCfg, block_id: usize) -> bool {
+    cfg.exits.contains(&block_id) || cfg.successors(block_id).is_empty()
+}
+
+/// A global, or a block-scope `static`/`extern` declaration.
+fn identifier_outlives_function(ident: &Node, source: &str) -> bool {
+    let name = get_node_text(ident, source);
+    let Some((decl, _)) = ast_utils::resolve_identifier_declarator(ident, name, source) else {
+        return false;
+    };
+    if decl.kind() != "declaration" {
+        return false; // a parameter is the callee's own copy
+    }
+    let mut inside_function = false;
+    let mut current = decl.parent();
+    while let Some(n) = current {
+        if n.kind() == "function_definition" {
+            inside_function = true;
+            break;
+        }
+        current = n.parent();
+    }
+    !inside_function
+        || ["static", "extern", "_Thread_local", "thread_local"]
+            .iter()
+            .any(|class| ast_utils::declaration_has_storage_class(&decl, class, source))
+}
+
+/// A member path outlives the function unless it is a `.`-only path into a
+/// local (or by-value parameter) struct.
+fn member_outlives_function(expr: &Node, source: &str) -> bool {
+    let mut current = *expr;
+    loop {
+        match current.kind() {
+            "field_expression" => {
+                if current
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| get_node_text(&op, source) == "->")
+                {
+                    return true;
+                }
+                match current.child_by_field_name("argument") {
+                    Some(inner) => current = inner,
+                    None => return false,
+                }
+            }
+            "subscript_expression" => match current.child_by_field_name("argument") {
+                Some(inner) => current = inner,
+                None => return false,
+            },
+            "parenthesized_expression" => match current.named_child(0) {
+                Some(inner) => current = inner,
+                None => return false,
+            },
+            "identifier" => return identifier_outlives_function(&current, source),
+            // `(*p).buf`, `get()->buf`: through a pointer.
+            _ => return true,
+        }
+    }
+}
+
+/// `s->buf` lives in `s`; `a.b->c` in `a.b` and `a`.
+fn member_containers(expr: &Node, source: &str) -> Vec<String> {
+    let mut containers = Vec::new();
+    let mut current = *expr;
+    while current.kind() == "field_expression" {
+        let Some(inner) = current.child_by_field_name("argument") else {
+            break;
+        };
+        let inner = strip_parens_and_casts(&inner);
+        containers.push(compact(get_node_text(&inner, source)));
+        current = inner;
+    }
+    containers
+}
+
+/// Classify one statement on a path from the free: the path-ending and
+/// destructor-idiom cases first, then what the statement does to the key.
+fn classify_stmt_on_path(
+    node: &Node,
+    source: &str,
+    site: &FreeSite,
+    addr_ctx: &AddressOfCallContext,
+) -> PtrAction {
+    if node.kind() == "expression_statement" {
+        if let Some(call) = node.child(0).filter(|c| c.kind() == "call_expression") {
+            // The object the member lives in is freed next: the member dies with it.
+            if let Some(freed) = freed_argument(&call, source) {
+                let freed = compact(get_node_text(&strip_parens_and_casts(&freed), source));
+                if site.containers.contains(&freed) {
+                    return PtrAction::Reassigned;
+                }
+            }
+        }
+        // A path that ends the process escapes nothing.
+        if node
+            .child(0)
+            .filter(|c| c.kind() == "call_expression")
+            .and_then(|c| c.child_by_field_name("function"))
+            .is_some_and(|f| {
+                matches!(
+                    get_node_text(&f, source),
+                    "exit" | "_exit" | "_Exit" | "quick_exit" | "abort"
+                )
+            })
+        {
+            return PtrAction::Reassigned;
+        }
+    }
+    classify_stmt_for_ptr(node, source, &site.key, addr_ctx)
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +622,12 @@ fn classify_stmt_for_ptr(
                 PtrAction::Irrelevant
             }
         }
+        // A `for` update clause is stored as its own expression, not wrapped in
+        // an expression_statement: `for (...; p = next)` stores to p before
+        // the condition reads it.
+        "assignment_expression" | "call_expression" | "update_expression" | "comma_expression" => {
+            classify_expr_for_ptr(node, source, ptr_name, addr_ctx)
+        }
         _ => {
             // For any other statement kind, check if ptr_name appears. A
             // `&ptr_name` passed to a call nested anywhere in the statement
@@ -426,8 +651,8 @@ fn classify_expr_for_ptr(
     match expr.kind() {
         "assignment_expression" => {
             if let Some(left) = expr.child_by_field_name("left") {
-                let left_text = get_node_text(&left, source);
-                if left_text == ptr_name {
+                let left_text = compact(get_node_text(&left, source));
+                if left_text == ptr_name || is_member_of(ptr_name, &left_text) {
                     return PtrAction::Reassigned;
                 }
                 // `ptr[0] = ...` reads the freed pointer whatever the RHS does
@@ -448,8 +673,8 @@ fn classify_expr_for_ptr(
                             return PtrAction::FreedAgain;
                         }
                     }
-                } else if call_roles::freed_argument(expr, source).is_some_and(|arg| {
-                    arg.kind() == "identifier" && get_node_text(&arg, source) == ptr_name
+                } else if freed_argument(expr, source).is_some_and(|arg| {
+                    compact(get_node_text(&strip_parens_and_casts(&arg), source)) == ptr_name
                 }) {
                     return PtrAction::FreedAgain;
                 }
@@ -476,6 +701,22 @@ fn classify_expr_for_ptr(
             }
             PtrAction::Irrelevant
         }
+        "comma_expression" => {
+            // `p = next, n++`: evaluated left to right
+            for part in [
+                expr.child_by_field_name("left"),
+                expr.child_by_field_name("right"),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let action = classify_expr_for_ptr(&part, source, ptr_name, addr_ctx);
+                if action != PtrAction::Irrelevant {
+                    return action;
+                }
+            }
+            PtrAction::Irrelevant
+        }
         "update_expression" => {
             // ptr++ or ptr--
             if subtree_contains_identifier(expr, source, ptr_name) {
@@ -495,10 +736,30 @@ fn classify_expr_for_ptr(
 /// Check if an identifier matching ptr_name appears in the subtree.
 /// Matches only identifier nodes (not substrings of other identifiers).
 fn subtree_contains_identifier(node: &Node, source: &str, name: &str) -> bool {
+    if is_member_path(name) {
+        return query::find_first_descendant(*node, |n| {
+            matches!(n.kind(), "field_expression" | "subscript_expression")
+                && compact(get_node_text(&n, source)) == name
+        })
+        .is_some();
+    }
     query::find_first_descendant(*node, |n| {
         n.kind() == "identifier" && get_node_text(&n, source) == name
     })
     .is_some()
+}
+
+/// A key naming a member (`s->buf`, `g.p`, `a[0]`), not a plain variable.
+fn is_member_path(key: &str) -> bool {
+    key.contains("->") || key.contains('.') || key.contains('[')
+}
+
+/// Whether storing to `left` replaces the object `key` lives in: `s = other`
+/// ends `s->buf`.
+fn is_member_of(key: &str, left: &str) -> bool {
+    key.strip_prefix(left).is_some_and(|rest| {
+        rest.starts_with("->") || rest.starts_with('.') || rest.starts_with('[')
+    })
 }
 
 /// True if an `assignment_expression` with `ptr_name` as its LHS appears
@@ -511,7 +772,10 @@ fn subtree_assigns_identifier(node: &Node, source: &str, name: &str) -> bool {
             return false;
         }
         n.child_by_field_name("left")
-            .map(|left| get_node_text(&left, source) == name)
+            .map(|left| {
+                let left = compact(get_node_text(&left, source));
+                left == name || is_member_of(name, &left)
+            })
             .unwrap_or(false)
     })
     .is_some()
@@ -614,7 +878,7 @@ fn address_of_arg_index(args: &Node, source: &str, name: &str) -> Option<usize> 
                 .unwrap_or(false);
             if is_address_of {
                 if let Some(operand) = arg.child_by_field_name("argument") {
-                    if operand.kind() == "identifier" && get_node_text(&operand, source) == name {
+                    if compact(get_node_text(&operand, source)) == name {
                         return Some(idx);
                     }
                 }
