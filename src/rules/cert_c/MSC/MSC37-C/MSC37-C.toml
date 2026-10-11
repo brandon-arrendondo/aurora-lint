@@ -28,5 +28,5 @@ default = "as_written"
 strict = "as_written"
 pedantic = "as_written"
 differs = false
-basis = "no; default and strict agree on noreturn trust (MSC37-C/2026-10-07/noreturn). Pedantic's trust in the C library follows P/facts."
+basis = "no; default and strict agree on noreturn trust (MSC37-C/2026-10-07/noreturn). C23 unreachable() ends a path only where the edition is declared, under every preset. Pedantic's trust in the C library follows P/facts."
 ruling = "MSC37-C/2026-10-07/noreturn, P/facts"

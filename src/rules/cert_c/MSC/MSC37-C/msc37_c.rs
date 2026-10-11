@@ -46,13 +46,26 @@
 //! }
 //! ```
 //!
-//! **Exception - main() implicitly returns 0:**
+//! **Exception - a hosted `int main()` implicitly returns 0 (EX1):**
 //! ```c
 //! int main(void) {
 //!     printf("Hello World\n");
 //!     // Implicitly returns 0 - compliant per C standard
 //! }
 //! ```
+//!
+//! A `main` that is not `int main` in a hosted environment returns nothing
+//! implicitly, so it is checked like any other function.
+//!
+//! ## What ends a path without a `return`
+//!
+//! - a call to a function trusted not to return (`_Noreturn`, `exit`, ...; the
+//!   `trust_noreturn_keyword` option), never a wrapper that merely calls one;
+//! - a call to C23 `unreachable()`, only when the C23 edition is declared
+//!   (`c_standard`) and the file defines no `unreachable` of its own;
+//! - a loop with a constant-true condition and no `break` or `goto` out of it;
+//! - a `switch` with a `default`, no `break` out of it, and a last arm that
+//!   ends this way.
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
@@ -74,6 +87,12 @@ pub struct Msc37C {
     /// The run's policy and environment settings: whether a `_Noreturn`
     /// declaration is trusted (`trust_noreturn_keyword`).
     settings: RefCell<Arc<AnalysisSettings>>,
+    /// `typedef name -> aliased type text` as this file sees it, so a
+    /// function returning `VOID` (`typedef void VOID;`) is a void function.
+    typedefs: RefCell<Arc<HashMap<String, String>>>,
+    /// The file being checked, for the edition a compile database declares
+    /// for it.
+    file_path: RefCell<String>,
 }
 
 impl Msc37C {
@@ -81,7 +100,41 @@ impl Msc37C {
         Self {
             project_function_macros: RefCell::default(),
             settings: RefCell::default(),
+            typedefs: RefCell::default(),
+            file_path: RefCell::default(),
         }
+    }
+
+    /// Whether the C23 edition is declared for this file: by the
+    /// configuration, which wins, or by the compile database's entry for it.
+    /// Undeclared is read strictly (C11), where `unreachable()` is no macro
+    /// of the standard library.
+    fn c23_declared(&self) -> bool {
+        let settings = self.settings.borrow();
+        let declared = settings.c_standard.or_else(|| {
+            settings
+                .compile_facts
+                .of(&self.file_path.borrow())
+                .and_then(|facts| facts.c_standard)
+        });
+        declared.is_some_and(|edition| edition >= crate::settings::CStandard::C23)
+    }
+
+    /// Whether the function returns `void`: the type specifier is `void`
+    /// (directly, through a macro that precedes it, or through a typedef) and
+    /// the declarator adds no pointer. `void *f()` returns a value.
+    fn returns_void(&self, func_def: &Node, type_node: &Node, source: &str) -> bool {
+        if declarator_returns_pointer(func_def.child_by_field_name("declarator")) {
+            return false;
+        }
+        if self.is_void_type(type_node, source) || self.has_void_specifier(func_def, source) {
+            return true;
+        }
+        type_node.kind() == "type_identifier"
+            && crate::utility::cert_c::overflow_helpers::resolve_typedef_chain(
+                get_node_text(type_node, source).trim(),
+                &self.typedefs.borrow(),
+            ) == "void"
     }
 
     /// Function-like macros whose replacement list contains a `return`:
@@ -272,6 +325,14 @@ impl Msc37C {
             match op {
                 Op::Eval(node) => match node.kind() {
                     "return_statement" => values.push(true),
+                    // The last statement of an `else` or a `case` arm that is
+                    // itself a call that does not return.
+                    "expression_statement" => {
+                        values.push(self.is_noreturn_call_statement(&node, source, noreturn_names))
+                    }
+                    "while_statement" | "for_statement" | "do_statement" => {
+                        values.push(loop_never_falls_through(&node, source));
+                    }
                     "compound_statement" => match last_statement_of_block(&node) {
                         Some(stmt)
                             if self.is_noreturn_call_statement(&stmt, source, noreturn_names) =>
@@ -295,11 +356,10 @@ impl Msc37C {
                             _ => values.push(false),
                         }
                     }
-                    "switch_statement" => {
-                        // Basic check: has a return statement anywhere.
-                        // This is a simplification - full analysis would be more complex
-                        values.push(self.has_return_statement(&node));
-                    }
+                    "switch_statement" => match switch_last_arm_tail(&node, source) {
+                        Some(tail) => ops.push(Op::Eval(tail)),
+                        None => values.push(false),
+                    },
                     // `cleanup: return ret;` -- the label's own statement
                     // is its last named child, and it is what runs last.
                     "labeled_statement" => {
@@ -371,7 +431,7 @@ impl Msc37C {
 
         // Skip void functions — also check for void as a sibling specifier
         // to handle macros preceding void (e.g., STATIC void func())
-        if self.is_void_type(&type_node, source) || self.has_void_specifier(node, source) {
+        if self.returns_void(node, &type_node, source) {
             return;
         }
 
@@ -394,8 +454,13 @@ impl Msc37C {
             None => return,
         };
 
-        // Exception: main() can implicitly return 0
-        if self.is_main_function(&declarator, source) {
+        // EX1: a hosted `int main` returns 0 when it reaches its closing brace
+        // (C11 5.1.2.2.3). A freestanding `main`, or one of another return
+        // type, has no such rule.
+        if self.is_main_function(&declarator, source)
+            && type_trimmed == "int"
+            && self.settings.borrow().environment == crate::settings::EnvironmentKind::Hosted
+        {
             return;
         }
 
@@ -405,38 +470,32 @@ impl Msc37C {
             None => return,
         };
 
-        // Check if function has any return statement
-        if !self.has_return(&body, source, noreturn_names) {
-            violations.push(RuleViolation {
-                rule_id: self.rule_id().to_string(),
-                severity: self.severity(),
-                message: "Non-void function has no return statement. Control reaching the end of a non-void function without returning a value is undefined behavior.".to_string(),
-                file_path: String::new(),
-                line: node.start_position().row + 1,
-                column: node.start_position().column + 1,
-                suggestion: Some(
-                    "Add a return statement on all execution paths of this function".to_string()
-                ),
-                ..Default::default()
-            });
+        // A body that ends every path with a return, a call that does not
+        // return, or a loop nothing leaves is complete, whatever it contains.
+        if self.ends_with_return(&body, source, noreturn_names) {
             return;
         }
-
-        // Check if function body ends with return or all branches return
-        if !self.ends_with_return(&body, source, noreturn_names) {
-            violations.push(RuleViolation {
-                rule_id: self.rule_id().to_string(),
-                severity: self.severity(),
-                message: "Non-void function may reach end without returning a value. Ensure all execution paths have explicit return statements.".to_string(),
-                file_path: String::new(),
-                line: node.start_position().row + 1,
-                column: node.start_position().column + 1,
-                suggestion: Some(
-                    "Add return statements to ensure all execution paths return a value".to_string()
-                ),
-                ..Default::default()
-            });
-        }
+        let (message, suggestion) = if self.has_return(&body, source, noreturn_names) {
+            (
+                "Non-void function may reach end without returning a value. Ensure all execution paths have explicit return statements.",
+                "Add return statements to ensure all execution paths return a value",
+            )
+        } else {
+            (
+                "Non-void function has no return statement. Control reaching the end of a non-void function without returning a value is undefined behavior.",
+                "Add a return statement on all execution paths of this function",
+            )
+        };
+        violations.push(RuleViolation {
+            rule_id: self.rule_id().to_string(),
+            severity: self.severity(),
+            message: message.to_string(),
+            file_path: String::new(),
+            line: node.start_position().row + 1,
+            column: node.start_position().column + 1,
+            suggestion: Some(suggestion.to_string()),
+            ..Default::default()
+        });
     }
 }
 
@@ -541,6 +600,135 @@ fn has_statement_child(node: &Node) -> bool {
         })
 }
 
+/// Whether the declarator of a function definition makes it return a pointer
+/// (`void *f(void)`, `char **g(void)`): a pointer declarator wraps the
+/// function declarator.
+fn declarator_returns_pointer(declarator: Option<Node>) -> bool {
+    let mut current = declarator;
+    while let Some(d) = current {
+        match d.kind() {
+            "pointer_declarator" => return true,
+            "function_declarator" | "parenthesized_declarator" => {
+                current = d.child_by_field_name("declarator");
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Whether the translation unit declares or defines a function, or defines a
+/// macro, called `name`.
+fn defines_name(root: &Node, source: &str, name: &str) -> bool {
+    query::find_first_descendant(*root, |n| match n.kind() {
+        "function_declarator" => n
+            .child_by_field_name("declarator")
+            .is_some_and(|d| get_node_text(&d, source) == name),
+        "preproc_def" | "preproc_function_def" => n
+            .child_by_field_name("name")
+            .is_some_and(|d| get_node_text(&d, source) == name),
+        _ => false,
+    })
+    .is_some()
+}
+
+/// A loop whose condition is a nonzero constant (`while (1)`, `for (;;)`,
+/// `do ... while (true)`) and that nothing leaves except a `return` (or a
+/// call that does not return): control never reaches the end after it.
+fn loop_never_falls_through(node: &Node, source: &str) -> bool {
+    let condition = match node.kind() {
+        "for_statement" => node.child_by_field_name("condition"),
+        _ => match node.child_by_field_name("condition") {
+            Some(c) => Some(c),
+            None => return false,
+        },
+    };
+    let constant_true = match condition {
+        None => node.kind() == "for_statement", // `for (;;)`
+        Some(c) => is_constant_true(&c, source),
+    };
+    if !constant_true {
+        return false;
+    }
+    let Some(body) = node.child_by_field_name("body") else {
+        return false;
+    };
+    !leaves_other_than_by_return(&body)
+}
+
+fn is_constant_true(condition: &Node, source: &str) -> bool {
+    let mut c = *condition;
+    while c.kind() == "parenthesized_expression" {
+        match c.named_child(0) {
+            Some(inner) => c = inner,
+            None => return false,
+        }
+    }
+    match c.kind() {
+        "true" => true,
+        "number_literal" => {
+            let text = get_node_text(&c, source).trim_end_matches(['u', 'U', 'l', 'L']);
+            text.parse::<u64>().map(|v| v != 0).unwrap_or(false)
+        }
+        "identifier" => get_node_text(&c, source) == "true",
+        _ => false,
+    }
+}
+
+/// Whether a `break` aimed at the loop or switch this body belongs to, or any
+/// `goto`, appears in it. A `break` inside a nested loop or switch is aimed
+/// at that one.
+fn leaves_other_than_by_return(body: &Node) -> bool {
+    let mut stack = vec![*body];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "goto_statement" => return true,
+            "break_statement" => return true,
+            "while_statement" | "for_statement" | "do_statement" | "switch_statement" => {
+                // A `break` in here belongs to it; a `goto` still leaves.
+                if query::find_first_descendant(node, |n| n.kind() == "goto_statement").is_some() {
+                    return true;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                stack.push(child);
+            }
+        }
+    }
+    false
+}
+
+/// A `switch` falls off its end unless it has a `default`, nothing breaks out
+/// of it, and its last arm ends the function. Returns that last arm's final
+/// statement to be judged, or `None` when the switch does not qualify.
+fn switch_last_arm_tail<'a>(node: &Node<'a>, source: &str) -> Option<Node<'a>> {
+    let body = node.child_by_field_name("body")?;
+    let arms: Vec<Node<'a>> = (0..body.named_child_count())
+        .filter_map(|i| body.named_child(i))
+        .filter(|c| c.kind() == "case_statement")
+        .collect();
+    let has_default = arms.iter().any(|arm| {
+        get_node_text(arm, source)
+            .trim_start()
+            .starts_with("default")
+    });
+    if !has_default || leaves_other_than_by_return(&body) {
+        return None;
+    }
+    let last = arms.last()?;
+    (0..last.named_child_count())
+        .filter_map(|i| last.named_child(i))
+        .rfind(|c| !matches!(c.kind(), "comment" | "preproc_call"))
+        .filter(|c| {
+            // The arm's own label value is not a statement.
+            c.kind().ends_with("_statement") || c.kind() == "compound_statement"
+        })
+}
+
 impl CertRule for Msc37C {
     fn reads_header_facts(&self) -> bool {
         true
@@ -555,7 +743,7 @@ impl CertRule for Msc37C {
     }
 
     fn severity(&self) -> Severity {
-        Severity::Medium
+        Severity::High
     }
 
     fn cert_id(&self) -> &'static str {
@@ -573,6 +761,14 @@ impl CertRule for Msc37C {
     fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
         *self.settings.borrow_mut() = Arc::clone(settings);
     }
+
+    fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
+        *self.typedefs.borrow_mut() = Arc::clone(&types.typedef_types);
+    }
+
+    fn set_file_path(&self, path: &std::path::Path) {
+        *self.file_path.borrow_mut() = path.to_string_lossy().into_owned();
+    }
 }
 
 impl Msc37C {
@@ -589,6 +785,12 @@ impl Msc37C {
             noreturn_names.retain(|name| verified.contains(name));
         }
         noreturn_names.extend(self.collect_returning_macros(source));
+        // C23 `unreachable()` (C23 7.21.1) ends a path, where the edition is
+        // declared and the file does not define a function or macro of that
+        // name itself: CERT's EX2 helper named `unreachable` is that case.
+        if self.c23_declared() && !defines_name(node, source, "unreachable") {
+            noreturn_names.insert("unreachable".to_string());
+        }
         // Check function definitions
         for func in query::find_descendants_of_kind(*node, "function_definition") {
             self.check_function_definition(&func, source, &noreturn_names, violations);
