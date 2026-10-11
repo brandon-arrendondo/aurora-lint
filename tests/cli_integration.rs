@@ -7294,3 +7294,110 @@ fn con03_resolves_a_typedef_by_the_files_own_definition() {
         "a mutex and a function are not shared variables: {lock:?}"
     );
 }
+
+/// Scan one `declared_threads/` fixture under `manifest`; return each
+/// finding as `(rule, line, message)`, or the scan's stderr when it refuses.
+fn declared_threads_scan(file: &str, manifest: &str) -> Result<Vec<(String, u64, String)>, String> {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let path = fixtures().join("declared_threads").join(file);
+    let manifest = fixtures().join(manifest);
+    let (code, _, stderr) = run_aurora_lint(&[
+        path.to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    if code != 0 && code != 1 {
+        return Err(stderr);
+    }
+    let findings: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    Ok(findings
+        .iter()
+        .map(|f| {
+            (
+                f["rule_id"].as_str().unwrap().to_string(),
+                f["line"].as_u64().unwrap(),
+                f["message"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect())
+}
+
+fn declared_threads_findings(file: &str, manifest: &str) -> Vec<(String, u64, String)> {
+    declared_threads_scan(file, manifest).unwrap_or_else(|stderr| panic!("stderr: {stderr}"))
+}
+
+#[test]
+fn a_freertos_slot_stored_and_never_freed_is_reported_once_the_family_is_declared() {
+    let declared =
+        declared_threads_findings("freertos_slot_leak.c", "manifest_threads_freertos.toml");
+    assert!(
+        has(
+            &declared,
+            "CON30-C",
+            10,
+            "vTaskSetThreadLocalStoragePointer"
+        ),
+        "{declared:?}"
+    );
+    let bare = declared_threads_findings("freertos_slot_leak.c", "manifest_con30_con36.toml");
+    assert!(
+        bare.is_empty(),
+        "an undeclared family is unknown functions: {bare:?}"
+    );
+}
+
+#[test]
+fn a_freertos_slot_freed_through_its_get_call_is_clean() {
+    let declared =
+        declared_threads_findings("freertos_slot_freed.c", "manifest_threads_freertos.toml");
+    assert!(declared.is_empty(), "{declared:?}");
+}
+
+#[test]
+fn a_declared_wait_is_read_by_the_spurious_wake_up_it_states() {
+    let spurious = declared_threads_findings(
+        "project_wait_in_if.c",
+        "manifest_threads_project_spurious.toml",
+    );
+    assert!(
+        has(&spurious, "CON36-C", 10, "os_cond_wait"),
+        "{spurious:?}"
+    );
+    let never = declared_threads_findings(
+        "project_wait_in_if.c",
+        "manifest_threads_project_no_spurious.toml",
+    );
+    assert!(never.is_empty(), "{never:?}");
+    let bare = declared_threads_findings("project_wait_in_if.c", "manifest_con30_con36.toml");
+    assert!(bare.is_empty(), "{bare:?}");
+}
+
+#[test]
+fn posix_waits_are_read_unless_the_target_is_declared_not_posix() {
+    let default = declared_threads_findings("posix_wait_in_if.c", "manifest_con30_con36.toml");
+    assert!(
+        has(&default, "CON36-C", 10, "pthread_cond_wait"),
+        "{default:?}"
+    );
+    for manifest in [
+        "manifest_threads_not_posix.toml",
+        "manifest_threads_posix_off.toml",
+    ] {
+        let off = declared_threads_findings("posix_wait_in_if.c", manifest);
+        assert!(off.is_empty(), "{manifest}: {off:?}");
+    }
+}
+
+#[test]
+fn a_declaration_may_not_redefine_a_posix_function() {
+    let stderr = declared_threads_scan(
+        "posix_wait_in_if.c",
+        "manifest_threads_redefines_posix.toml",
+    )
+    .expect_err("the scan refuses the declaration");
+    assert!(stderr.contains("is a POSIX function"), "{stderr}");
+}

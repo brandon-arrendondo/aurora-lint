@@ -1,0 +1,16 @@
+[metadata]
+name = "CLI Integration Test - declared thread-API families"
+version = "1.0.0"
+description = "CON30-C and CON36-C with a project's declared thread-API families"
+cert_version = "2016"
+
+[environment.threads.functions]
+os_cond_wait = { op = "cond_wait", cond = 1, mutex = 2, spurious = true }
+os_mutex_lock = { op = "mutex_lock", object = 1, blocking = "always" }
+os_mutex_unlock = { op = "mutex_unlock", object = 1 }
+
+[rules.cert_c.CON30-C]
+enabled = true
+
+[rules.cert_c.CON36-C]
+enabled = true

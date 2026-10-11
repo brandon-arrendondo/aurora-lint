@@ -4,9 +4,18 @@
 //! CON30-C: Clean up thread-specific storage
 //!
 //! Thread-specific storage (TSS) must be properly freed to avoid memory leaks.
-//! When using tss_set() to store allocated memory, ensure either:
-//! 1. A destructor is registered via tss_create(&key, destructor), OR
-//! 2. Memory is explicitly freed via free(tss_get(key)) before thread exit
+//! When storing allocated memory under a key, ensure either:
+//! 1. A destructor is registered when the key is created
+//!    (`tss_create(&key, destructor)`), OR
+//! 2. Memory is explicitly freed via `free(tss_get(key))` before thread exit
+//!
+//! The hazard is read API-neutrally (`docs/design/thread-api-families.md`):
+//! C11's `tss_*`, POSIX's `pthread_key_create`/`pthread_setspecific`/
+//! `pthread_getspecific`, and declared families, through
+//! `thread_api::thread_op`. A family whose storage is fixed slots with no key
+//! creation (FreeRTOS's thread-local storage pointers) has no destructor to
+//! register, so a slot stored into anywhere in the file and never freed
+//! through its get call is reported at the store.
 //!
 //! ## Examples:
 //!
@@ -29,8 +38,10 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
+use crate::settings::threads::{Role, ThreadOpKind, ThreadTypeKind};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::node_children::NodeChildren;
+use crate::utility::cert_c::thread_api::{self, Family};
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -45,6 +56,20 @@ struct TssKeyInfo {
     has_destructor: bool,
     create_line: usize,
     create_column: usize,
+    /// The family whose call created the key, for the message.
+    family: Family,
+    /// The creating call's name.
+    create_name: String,
+}
+
+/// A store into a fixed slot of a family with no key creation.
+#[derive(Debug, Clone)]
+struct SlotStore {
+    family: Family,
+    set_name: String,
+    has_destructor: bool,
+    line: usize,
+    column: usize,
 }
 
 impl CertRule for Con30C {
@@ -84,6 +109,7 @@ impl CertRule for Con30C {
             Some(&global_keys),
         );
         self.collect_violations(&tss_keys, &tss_set_calls, &tss_get_freed, &mut violations);
+        self.collect_slot_violations(node, source, &mut violations);
 
         // A `tss_t key;` declared *inside* a function is a distinct object
         // from a same-named local in another function. Give each function
@@ -131,6 +157,15 @@ impl Con30C {
         violations: &mut Vec<RuleViolation>,
     ) {
         for (key_name, key_info) in tss_keys {
+            let set_name = key_info
+                .family
+                .function_of(ThreadOpKind::TssSet)
+                .unwrap_or_else(|| "tss_set".to_string());
+            let get_name = key_info
+                .family
+                .function_of(ThreadOpKind::TssGet)
+                .unwrap_or_else(|| "tss_get".to_string());
+            let create_name = &key_info.create_name;
             // If tss_set was called for this key
             if tss_set_calls.contains(key_name) {
                 // And no destructor was registered
@@ -140,19 +175,18 @@ impl Con30C {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             message: format!(
-                                "Thread-specific storage key '{}' created without destructor and \
-                                 memory stored via tss_set() is never freed. Register a destructor \
-                                 in tss_create() or explicitly free(tss_get({})).",
-                                key_name, key_name
+                                "Thread-specific storage key '{key_name}' created without \
+                                 destructor and memory stored via {set_name}() is never freed. \
+                                 Register a destructor in {create_name}() or explicitly \
+                                 free({get_name}({key_name}))."
                             ),
                             severity: self.severity(),
                             line: key_info.create_line,
                             column: key_info.create_column,
                             file_path: String::new(),
                             suggestion: Some(format!(
-                                "Either register a destructor: tss_create(&{}, free) or \
-                                 explicitly cleanup: free(tss_get({}))",
-                                key_name, key_name
+                                "Either register a destructor: {create_name}(&{key_name}, free) \
+                                 or explicitly cleanup: free({get_name}({key_name}))"
                             )),
                             requires_manual_review: None,
                         });
@@ -177,8 +211,8 @@ impl Con30C {
             }
             let is_tss_t = child
                 .child_by_field_name("type")
-                .map(|t| get_node_text(&t, source).trim() == "tss_t")
-                .unwrap_or(false);
+                .and_then(|t| thread_api::type_kind(get_node_text(&t, source).trim()))
+                == Some(ThreadTypeKind::TssKey);
             if !is_tss_t {
                 continue;
             }
@@ -226,36 +260,43 @@ impl Con30C {
         let is_allowed = |key_name: &str| allowed.is_none_or(|set| set.contains(key_name));
 
         for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(op) = thread_api::thread_op(&call, source) {
+                match op.kind() {
+                    ThreadOpKind::TssCreate => {
+                        if let Some(key_name) = op.operand(Role::Key).map(|k| key_text(&k, source))
+                        {
+                            if is_allowed(&key_name) {
+                                let has_destructor = op
+                                    .operand(Role::Destructor)
+                                    .is_some_and(|d| is_destructor(&d, source));
+                                tss_keys.insert(
+                                    key_name.clone(),
+                                    TssKeyInfo {
+                                        key_name,
+                                        has_destructor,
+                                        create_line: call.start_position().row + 1,
+                                        create_column: call.start_position().column + 1,
+                                        family: op.family,
+                                        create_name: op.name.clone(),
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    ThreadOpKind::TssSet if op.family.creates_storage_keys() => {
+                        if let Some(key_name) = op.operand(Role::Key).map(|k| key_text(&k, source))
+                        {
+                            if is_allowed(&key_name) {
+                                tss_set_calls.insert(key_name);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
-
-                // Check for tss_create
-                if func_name == "tss_create" {
-                    if let Some((key_name, has_destructor)) =
-                        self.extract_tss_create_info(&call, source)
-                    {
-                        if is_allowed(&key_name) {
-                            tss_keys.insert(
-                                key_name.clone(),
-                                TssKeyInfo {
-                                    key_name,
-                                    has_destructor,
-                                    create_line: call.start_position().row + 1,
-                                    create_column: call.start_position().column + 1,
-                                },
-                            );
-                        }
-                    }
-                }
-
-                // Check for tss_set
-                if func_name == "tss_set" {
-                    if let Some(key_name) = self.extract_tss_key_name(&call, source) {
-                        if is_allowed(&key_name) {
-                            tss_set_calls.insert(key_name);
-                        }
-                    }
-                }
 
                 // Check for free(tss_get(key))
                 if func_name == "free" {
@@ -267,43 +308,6 @@ impl Con30C {
                 }
             }
         }
-    }
-
-    /// Extract key name and destructor info from tss_create(&key, destructor)
-    fn extract_tss_create_info(&self, call_node: &Node, source: &str) -> Option<(String, bool)> {
-        if let Some(args) = call_node.child_by_field_name("arguments") {
-            let arg_list = self.get_arguments(args, source);
-
-            if arg_list.len() >= 2 {
-                // First arg is &key
-                let key_arg = arg_list[0].trim();
-                let key_name = key_arg
-                    .strip_prefix('&')
-                    .map_or_else(|| key_arg.to_string(), |s| s.trim().to_string());
-
-                // Second arg is destructor (NULL means no destructor)
-                let destructor_arg = arg_list[1].trim();
-                let has_destructor = destructor_arg != "NULL"
-                    && destructor_arg != "0"
-                    && destructor_arg != "nullptr"
-                    && !destructor_arg.is_empty();
-
-                return Some((key_name, has_destructor));
-            }
-        }
-        None
-    }
-
-    /// Extract key name from tss_set(key, value) or tss_get(key)
-    fn extract_tss_key_name(&self, call_node: &Node, source: &str) -> Option<String> {
-        if let Some(args) = call_node.child_by_field_name("arguments") {
-            let arg_list = self.get_arguments(args, source);
-
-            if !arg_list.is_empty() {
-                return Some(arg_list[0].trim().to_string());
-            }
-        }
-        None
     }
 
     /// Check if free() is called on tss_get() result
@@ -319,32 +323,97 @@ impl Con30C {
         None
     }
 
-    /// Find tss_get call and return the key name
+    /// Find a thread-specific storage get call and return the key name
     fn find_tss_get_key(&self, node: &Node, source: &str) -> Option<String> {
         let call = query::find_first_descendant(*node, |n| {
-            if n.kind() != "call_expression" {
-                return false;
-            }
-            n.child_by_field_name("function")
-                .map(|f| get_node_text(&f, source) == "tss_get")
-                .unwrap_or(false)
+            n.kind() == "call_expression"
+                && thread_api::thread_op_of_kind(&n, source, ThreadOpKind::TssGet).is_some()
         })?;
-
-        self.extract_tss_key_name(&call, source)
+        let get = thread_api::thread_op(&call, source)?;
+        get.operand(Role::Key).map(|k| key_text(&k, source))
     }
 
-    /// Get argument strings from an argument_list node
-    fn get_arguments(&self, args_node: Node, source: &str) -> Vec<String> {
-        let mut arguments = Vec::new();
-
-        for child in args_node.child_nodes() {
-            let kind = child.kind();
-            if kind != "," && kind != "(" && kind != ")" {
-                let arg_text = get_node_text(&child, source).to_string();
-                arguments.push(arg_text);
+    /// Report each store into a fixed slot (a family with no key creation,
+    /// so no destructor) when nothing in the file frees that slot through
+    /// its get call and the store carries no destructor of its own. A slot
+    /// belongs to the task, not to one function, so the whole translation
+    /// unit is one scope.
+    fn collect_slot_violations(
+        &self,
+        root: &Node,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let mut stores: Vec<(String, SlotStore)> = Vec::new();
+        let mut freed: HashSet<String> = HashSet::new();
+        for call in query::find_descendants_of_kind(*root, "call_expression") {
+            if let Some(op) = thread_api::thread_op_of_kind(&call, source, ThreadOpKind::TssSet) {
+                if op.family.creates_storage_keys() {
+                    continue;
+                }
+                if let Some(slot) = op.operand(Role::Key).map(|k| key_text(&k, source)) {
+                    stores.push((
+                        slot,
+                        SlotStore {
+                            family: op.family,
+                            set_name: op.name.clone(),
+                            has_destructor: op
+                                .operand(Role::Destructor)
+                                .is_some_and(|d| is_destructor(&d, source)),
+                            line: call.start_position().row + 1,
+                            column: call.start_position().column + 1,
+                        },
+                    ));
+                }
+                continue;
+            }
+            let is_free = call
+                .child_by_field_name("function")
+                .is_some_and(|f| get_node_text(&f, source) == "free");
+            if is_free {
+                if let Some(slot) = self.check_tss_get_in_free(&call, source) {
+                    freed.insert(slot);
+                }
             }
         }
-
-        arguments
+        for (slot, store) in stores {
+            if store.has_destructor || freed.contains(&slot) {
+                continue;
+            }
+            let get_name = store
+                .family
+                .function_of(ThreadOpKind::TssGet)
+                .unwrap_or_else(|| "the slot's get call".to_string());
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                message: format!(
+                    "Thread-local storage slot {slot} is stored into with {}() and never freed; \
+                     {} storage has no destructor to clean the slot up at thread exit. Free \
+                     it explicitly before the thread ends: free({get_name}(..., {slot})).",
+                    store.set_name, store.family
+                ),
+                severity: self.severity(),
+                line: store.line,
+                column: store.column,
+                file_path: String::new(),
+                suggestion: Some(format!(
+                    "Free the stored value before the thread ends: free({get_name}(..., {slot}))"
+                )),
+                requires_manual_review: None,
+            });
+        }
     }
+}
+
+/// A key operand's name: `key` for `key` and for `&key`.
+fn key_text(arg: &Node, source: &str) -> String {
+    let text = get_node_text(arg, source).trim();
+    text.strip_prefix('&')
+        .map_or_else(|| text.to_string(), |s| s.trim().to_string())
+}
+
+/// Whether a destructor operand names one: not a null pointer constant.
+fn is_destructor(arg: &Node, source: &str) -> bool {
+    let text = get_node_text(arg, source).trim();
+    !matches!(text, "NULL" | "0" | "nullptr" | "")
 }

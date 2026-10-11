@@ -1,0 +1,14 @@
+[metadata]
+name = "CLI Integration Test - declared thread-API families"
+version = "1.0.0"
+description = "CON30-C and CON36-C with a project's declared thread-API families"
+cert_version = "2016"
+
+[environment]
+posix_version = "none"
+
+[rules.cert_c.CON30-C]
+enabled = true
+
+[rules.cert_c.CON36-C]
+enabled = true

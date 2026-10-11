@@ -3,9 +3,13 @@
 
 //! CON36-C: Wrap functions that can spuriously wake up in a loop
 //!
-//! This rule detects uses of cnd_wait() or cnd_timedwait() wrapped in 'if'
-//! statements instead of 'while' loops. Condition variables can spuriously
-//! wake up, so the condition must be re-checked after waking.
+//! This rule detects a condition wait that can wake spuriously wrapped in an
+//! 'if' statement instead of a loop. Such a wait can return without a signal,
+//! so the condition must be re-checked after waking. The hazard is read
+//! API-neutrally (`docs/design/thread-api-families.md`): C11's `cnd_wait()`
+//! and `cnd_timedwait()`, POSIX's `pthread_cond_wait()` family, and any
+//! declared wait whose contract says it can wake spuriously. A wait that
+//! cannot (FreeRTOS has no condition variable) is not this hazard.
 //!
 //! ## Examples:
 //!
@@ -28,13 +32,15 @@
 //! ```
 //!
 //! ## Detection Strategy:
-//! - Find calls to cnd_wait() or cnd_timedwait()
+//! - Find calls whose thread-API contract is a spuriously-waking condition
+//!   wait (`thread_api::thread_op`)
 //! - Check if the call is inside an 'if' statement
 //! - Report violation if not wrapped in a 'while' loop
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::settings::threads::ThreadOpKind;
+use crate::utility::cert_c::thread_api;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -70,22 +76,15 @@ impl CertRule for Con36C {
 impl Con36C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         for call in query::find_descendants_of_kind(*node, "call_expression") {
-            self.check_cnd_wait_call(&call, source, violations);
+            self.check_wait_call(&call, source, violations);
         }
     }
 
-    fn check_cnd_wait_call(
-        &self,
-        call_node: &Node,
-        source: &str,
-        violations: &mut Vec<RuleViolation>,
-    ) {
-        // Get the function being called
-        if let Some(function) = call_node.child_by_field_name("function") {
-            let func_name = get_node_text(&function, source);
-
-            // Check if it's cnd_wait or cnd_timedwait
-            if func_name == "cnd_wait" || func_name == "cnd_timedwait" {
+    fn check_wait_call(&self, call_node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        if let Some(wait) = thread_api::thread_op_of_kind(call_node, source, ThreadOpKind::CondWait)
+        {
+            let func_name = wait.name;
+            if wait.op.spurious == Some(true) {
                 // Check if this call is inside an 'if' statement instead of 'while'
                 if self.is_inside_if_not_while(call_node) {
                     violations.push(RuleViolation {
