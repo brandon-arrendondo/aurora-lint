@@ -28,11 +28,13 @@
 //! array element are not writes.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::const_eval::{self, MacroConstantMap};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::node_children::NodeChildren;
+use crate::utility::cert_c::nonzero_facts;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -440,9 +442,10 @@ impl<'a> Trace<'a> {
                     _ => false,
                 }
             }
-            "subscript_expression" => {
-                field("argument").is_some_and(|a| self.element_derived(&a, at, seed, d))
-            }
+            "subscript_expression" => field("argument").is_some_and(|a| {
+                let index = field("index").and_then(|i| self.constant(&i));
+                self.element_derived(&a, index, at, seed, d)
+            }),
             "field_expression" => self.field_derived(expr, at, seed, d),
             "call_expression" => self.call_result_derived(expr, at, seed, d),
             "identifier" => self.variable_derived(expr, at, seed, d),
@@ -463,7 +466,7 @@ impl<'a> Trace<'a> {
         if pp.kind() != "identifier" {
             return false;
         }
-        if self.element_derived(&pp, at, seed, depth) {
+        if self.element_derived(&pp, Some(0), at, seed, depth) {
             return true;
         }
         self.reaching_values(&pp, at).iter().any(|value| {
@@ -479,9 +482,22 @@ impl<'a> Trace<'a> {
         })
     }
 
-    /// `a[i]` where `a` is an array whose elements may hold literal-derived
-    /// pointers: initialized with one, or an element assigned one.
-    fn element_derived(&self, array: &Node<'a>, at: &Node<'a>, seed: Seed, depth: u32) -> bool {
+    /// `a[i]` where `a` is an array whose element `i` (`index`, when it is a
+    /// constant) may hold a literal-derived pointer at `at`: its initializer
+    /// there, or an assignment to that element reaching `at` the way
+    /// [`Self::reaching_values`] reads a variable's. An assignment to
+    /// another constant element is a different object; one at an index not
+    /// known may be this one, but kills nothing. A local array whose name is
+    /// used as a value before `at` (passed, stored: its address escapes) may
+    /// hold anything, and is not reported.
+    fn element_derived(
+        &self,
+        array: &Node<'a>,
+        index: Option<i64>,
+        at: &Node<'a>,
+        seed: Seed,
+        depth: u32,
+    ) -> bool {
         if array.kind() != "identifier" {
             return false;
         }
@@ -491,34 +507,131 @@ impl<'a> Trace<'a> {
         else {
             return false;
         };
-        if let Some(init) = Self::initializer_of(&declarator) {
-            if init.kind() == "initializer_list"
-                && init
-                    .named_child_nodes()
-                    .any(|e| self.literal_derived(&e, &e, seed, depth + 1))
-            {
-                return true;
+        let scope = Self::scope_of(&decl);
+        let same_array = |b: &Node| {
+            b.kind() == "identifier"
+                && get_node_text(b, self.source) == name
+                && ast_utils::resolve_identifier_declarator(b, name, self.source)
+                    .is_some_and(|(_, d)| d.id() == declarator.id())
+        };
+        let loops: Vec<Node<'a>> = std::iter::successors(at.parent(), |n| n.parent())
+            .take_while(|n| n.kind() != "function_definition")
+            .filter(|n| {
+                matches!(
+                    n.kind(),
+                    "for_statement" | "while_statement" | "do_statement"
+                )
+            })
+            .collect();
+        let inside = |outer: &Node, inner: &Node| {
+            inner.start_byte() >= outer.start_byte() && inner.end_byte() <= outer.end_byte()
+        };
+        if let Some(scope) = scope {
+            let escapes = query::find_first_descendant(scope, |n| {
+                let before_or_looping =
+                    n.start_byte() < at.start_byte() || loops.iter().any(|l| inside(l, &n));
+                let as_value = n.parent().is_some_and(|p| {
+                    let base_of_subscript = p.kind() == "subscript_expression"
+                        && p.child_by_field_name("argument")
+                            .is_some_and(|a| a.id() == n.id());
+                    !(base_of_subscript
+                        || p.kind() == "sizeof_expression"
+                        || p.kind().ends_with("declarator"))
+                });
+                before_or_looping && as_value && same_array(&n)
+            });
+            if escapes.is_some() {
+                return false;
             }
         }
-        let scope = Self::scope_of(&decl).unwrap_or(self.root);
-        query::find_descendants_of_kind(scope, "assignment_expression")
-            .into_iter()
-            .filter(|a| Self::is_plain_assignment(a))
-            .any(|a| {
-                let element_of_array = a
-                    .child_by_field_name("left")
-                    .filter(|l| l.kind() == "subscript_expression")
-                    .and_then(|l| l.child_by_field_name("argument"))
-                    .filter(|b| b.kind() == "identifier" && get_node_text(b, self.source) == name)
-                    .is_some_and(|b| {
-                        ast_utils::resolve_identifier_declarator(&b, name, self.source)
-                            .is_some_and(|(_, d)| d.id() == declarator.id())
-                    });
-                element_of_array
-                    && a.start_byte() < at.start_byte()
-                    && a.child_by_field_name("right")
-                        .is_some_and(|v| self.literal_derived(&v, &a, seed, depth + 1))
-            })
+
+        // (assignment, value, writes exactly element `index`)
+        let assignments: Vec<(Node<'a>, Node<'a>, bool)> =
+            query::find_descendants_of_kind(scope.unwrap_or(self.root), "assignment_expression")
+                .into_iter()
+                .filter(|a| Self::is_plain_assignment(a))
+                .filter_map(|a| {
+                    let left = a.child_by_field_name("left")?;
+                    if left.kind() != "subscript_expression"
+                        || !left
+                            .child_by_field_name("argument")
+                            .is_some_and(|b| same_array(&b))
+                    {
+                        return None;
+                    }
+                    let j = left
+                        .child_by_field_name("index")
+                        .and_then(|i| self.constant(&i));
+                    if index.is_some() && j.is_some() && j != index {
+                        return None;
+                    }
+                    let exact = index.is_some() && j == index;
+                    Some((a, a.child_by_field_name("right")?, exact))
+                })
+                .collect();
+
+        let sure = match scope {
+            Some(_) if index.is_some() => {
+                let exact: Vec<(Node<'a>, Node<'a>)> = assignments
+                    .iter()
+                    .filter(|(_, _, exact)| *exact)
+                    .map(|(a, v, _)| (*a, *v))
+                    .collect();
+                Self::last_sure_assignment(&exact, at, self.source)
+            }
+            _ => None,
+        };
+        let from = sure.map_or(0, |s| s.start_byte());
+        let assigned = assignments.iter().any(|(a, v, _)| {
+            let reaches = match scope {
+                // A global: flow-insensitive.
+                None => true,
+                Some(_) if a.start_byte() < at.start_byte() => {
+                    a.start_byte() >= from && !Self::on_another_path(a, at, sure)
+                }
+                Some(_) => loops
+                    .iter()
+                    .any(|l| inside(l, a) && sure.is_none_or(|s| !inside(l, &s))),
+            };
+            reaches && self.literal_derived(v, a, seed, depth + 1)
+        });
+        if assigned {
+            return true;
+        }
+        if sure.is_some() {
+            return false;
+        }
+        let Some(init) = Self::initializer_of(&declarator) else {
+            return false;
+        };
+        if init.kind() != "initializer_list" {
+            return false;
+        }
+        let elements: Vec<Node<'a>> = init
+            .named_child_nodes()
+            .filter(|e| e.kind() != "comment")
+            .collect();
+        let positional = elements.iter().all(|e| e.kind() != "initializer_pair");
+        match index {
+            Some(k) if positional => usize::try_from(k)
+                .ok()
+                .and_then(|k| elements.get(k))
+                .is_some_and(|e| self.literal_derived(e, e, seed, depth + 1)),
+            _ => elements.iter().any(|e| {
+                let value = if e.kind() == "initializer_pair" {
+                    e.child_by_field_name("value").unwrap_or(*e)
+                } else {
+                    *e
+                };
+                self.literal_derived(&value, &value, seed, depth + 1)
+            }),
+        }
+    }
+
+    /// The value of an integer constant expression, as far as it is spelled
+    /// out in the expression itself.
+    fn constant(&self, expr: &Node) -> Option<i64> {
+        const_eval::try_evaluate_expr(expr, self.source, &MacroConstantMap::new())
     }
 
     /// `x.f` or `p->f` holding a literal-derived pointer: assigned one under
@@ -776,8 +889,9 @@ impl<'a> Trace<'a> {
     /// `at` runs on every path to it; one after `at` inside a loop holding
     /// `at` reaches through the loop, unless the killing assignment is in
     /// that loop too. For a global, every assignment in the file counts.
-    /// A variable whose address is passed to a call between its last sure
-    /// assignment and `at` may hold anything, and reaches nothing.
+    /// A variable whose address is taken before `at`, or in a loop holding
+    /// it, may be written through that pointer and hold anything: nothing
+    /// reaches ([`Self::address_escapes`]).
     fn reaching_values(&self, ident: &Node<'a>, at: &Node<'a>) -> Vec<Node<'a>> {
         let name = get_node_text(ident, self.source);
         let Some((decl, declarator)) =
@@ -795,22 +909,8 @@ impl<'a> Trace<'a> {
                 .collect();
         };
 
-        let sure = Self::last_sure_assignment(&candidates, at);
+        let sure = Self::last_sure_assignment(&candidates, at, self.source);
         let from = sure.map_or(scope.start_byte(), |a| a.start_byte());
-        let address_passed = query::find_first_descendant(scope, |n| {
-            n.kind() == "pointer_expression"
-                && n.start_byte() >= from
-                && n.start_byte() < at.start_byte()
-                && n.child_by_field_name("operator")
-                    .is_some_and(|op| op.kind() == "&")
-                && n.child_by_field_name("argument")
-                    .is_some_and(|v| get_node_text(&v, self.source) == name)
-                && n.parent().is_some_and(|p| p.kind() == "argument_list")
-        });
-        if address_passed.is_some() {
-            return Vec::new();
-        }
-
         let loops: Vec<Node<'a>> = std::iter::successors(at.parent(), |n| n.parent())
             .take_while(|n| n.kind() != "function_definition")
             .filter(|n| {
@@ -823,6 +923,9 @@ impl<'a> Trace<'a> {
         let inside = |outer: &Node, inner: &Node| {
             inner.start_byte() >= outer.start_byte() && inner.end_byte() <= outer.end_byte()
         };
+        if self.address_escapes(&scope, &declarator, name, at, &loops, from) {
+            return Vec::new();
+        }
         let mut values: Vec<Node<'a>> = candidates
             .iter()
             .filter(|(a, _)| {
@@ -842,6 +945,108 @@ impl<'a> Trace<'a> {
         values
     }
 
+    /// Whether the address of the variable `declarator` declares, named
+    /// `name`, is taken in `scope` where a write through it may come before
+    /// `at` (before `at`, or inside one of `loops`, the loops holding `at`,
+    /// which come round to it again), so the variable may hold anything.
+    /// Two uses of the address are not that: an argument of a library call
+    /// that keeps no copy, which writes only during the call and matters
+    /// only between `from` (the last sure assignment) and `at`; and the
+    /// initial value of a local pointer through which the variable is only
+    /// read (`char **pp = &p; (*pp)[0] = 'x';`).
+    fn address_escapes(
+        &self,
+        scope: &Node<'a>,
+        declarator: &Node<'a>,
+        name: &str,
+        at: &Node<'a>,
+        loops: &[Node<'a>],
+        from: usize,
+    ) -> bool {
+        let looping = |n: &Node| {
+            loops
+                .iter()
+                .any(|l| n.start_byte() >= l.start_byte() && n.end_byte() <= l.end_byte())
+        };
+        query::find_first_descendant(*scope, |n| {
+            let before_or_looping = n.start_byte() < at.start_byte() || looping(&n);
+            let is_address = n.kind() == "pointer_expression"
+                && n.child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "&")
+                && n.child_by_field_name("argument")
+                    .filter(|v| v.kind() == "identifier" && get_node_text(v, self.source) == name)
+                    .is_some_and(|v| {
+                        ast_utils::resolve_identifier_declarator(&v, name, self.source)
+                            .is_some_and(|(_, d)| d.id() == declarator.id())
+                    });
+            if !(before_or_looping && is_address) {
+                return false;
+            }
+            if nonzero_facts::passed_to_library_call(&n, &self.root, self.source) {
+                return (n.start_byte() >= from && n.start_byte() < at.start_byte()) || looping(&n);
+            }
+            !self.read_only_alias(&n)
+        })
+        .is_some()
+    }
+
+    /// Whether `address` (`&p`) initializes a local pointer `pp` whose every
+    /// other use reads through it -- `*pp` or `pp[i]`, never assigned,
+    /// incremented, or itself having its address taken -- so no write
+    /// reaches `p` through it.
+    fn read_only_alias(&self, address: &Node<'a>) -> bool {
+        let Some(mut alias) = address
+            .parent()
+            .filter(|p| p.kind() == "init_declarator")
+            .and_then(|p| p.child_by_field_name("declarator"))
+            .filter(|d| d.kind() == "pointer_declarator")
+        else {
+            return false;
+        };
+        while alias.kind() == "pointer_declarator" {
+            match alias.child_by_field_name("declarator") {
+                Some(inner) => alias = inner,
+                None => return false,
+            }
+        }
+        if alias.kind() != "identifier" {
+            return false;
+        }
+        let alias_name = get_node_text(&alias, self.source);
+        let Some(func) = ast_utils::find_containing_function(address) else {
+            return false;
+        };
+        let written = |n: &Node| {
+            n.parent().is_some_and(|p| {
+                (p.kind() == "assignment_expression"
+                    && p.child_by_field_name("left")
+                        .is_some_and(|l| l.id() == n.id()))
+                    || p.kind() == "update_expression"
+                    || (p.kind() == "pointer_expression"
+                        && p.child_by_field_name("operator")
+                            .is_some_and(|op| op.kind() == "&"))
+            })
+        };
+        query::find_descendants_of_kind(func, "identifier")
+            .into_iter()
+            .filter(|n| n.id() != alias.id() && get_node_text(n, self.source) == alias_name)
+            .all(|n| {
+                let Some(parent) = n.parent() else {
+                    return false;
+                };
+                let through = match parent.kind() {
+                    "pointer_expression" => parent
+                        .child_by_field_name("operator")
+                        .is_some_and(|op| op.kind() == "*"),
+                    "subscript_expression" => parent
+                        .child_by_field_name("argument")
+                        .is_some_and(|a| a.id() == n.id()),
+                    _ => false,
+                };
+                through && !written(&parent) && !written(&n)
+            })
+    }
+
     /// Whether `ident`'s variable is assigned on every path before `at`, so
     /// the value it entered with no longer reaches.
     fn reassigned_on_every_path(&self, ident: &Node<'a>, at: &Node<'a>) -> bool {
@@ -852,18 +1057,28 @@ impl<'a> Trace<'a> {
             return false;
         };
         let candidates = self.assignments_to(&decl, &declarator, name);
-        Self::last_sure_assignment(&candidates, at).is_some()
+        Self::last_sure_assignment(&candidates, at, self.source).is_some()
     }
 
     /// The last statement before `at` that assigns the variable on every
     /// path through it ([`Self::assigns_on_every_path`]), being an earlier
     /// statement of a block (or `case`) holding `at`. Values assigned before
-    /// it no longer reach `at`. A `goto` into the middle of a block is not
-    /// modelled -- the same AST approximation `guard_dominance` makes.
+    /// it no longer reach `at`, unless control can jump past it into the
+    /// stretch before `at` (`nonzero_facts::region_entered_by_jump`): then
+    /// there is none.
     fn last_sure_assignment(
         candidates: &[(Node<'a>, Node<'a>)],
         at: &Node<'a>,
+        source: &str,
     ) -> Option<Node<'a>> {
+        let sure = Self::last_sure_statement(candidates, at)?;
+        let func = ast_utils::find_containing_function(at)?;
+        (!nonzero_facts::region_entered_by_jump(&func, sure.end_byte(), at.start_byte(), source))
+            .then_some(sure)
+    }
+
+    /// [`Self::last_sure_assignment`] before jumps are considered.
+    fn last_sure_statement(candidates: &[(Node<'a>, Node<'a>)], at: &Node<'a>) -> Option<Node<'a>> {
         let mut current = *at;
         while let Some(parent) = current.parent() {
             if parent.kind() == "function_definition" {
