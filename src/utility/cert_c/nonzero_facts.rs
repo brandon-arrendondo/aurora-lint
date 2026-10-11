@@ -242,7 +242,9 @@ pub fn branch_always_leaves(node: &Node, source: &str, noreturn: &HashSet<String
 /// before the site, plus the whole body of every loop holding the site but
 /// not the condition, whose later statements run again before the site on
 /// the next iteration. A write holding the site, `b = a % b`, happens after
-/// it and does not count.
+/// it and does not count, and neither does a plain assignment of a non-zero
+/// integer literal (`if (d == -1) d = 1;`): every caller of this module asks
+/// whether a value is non-zero, and such a write keeps it so.
 pub fn written_between(cond: &Node, site: &Node, targets: &[String], source: &str) -> bool {
     let Some(func) = ast_utils::find_containing_function(site) else {
         return false;
@@ -301,7 +303,14 @@ pub fn written_between(cond: &Node, site: &Node, targets: &[String], source: &st
     query::find_first_descendant(func, |n| {
         within(&n)
             && match n.kind() {
-                "assignment_expression" => writes(n.child_by_field_name("left")),
+                "assignment_expression" => {
+                    let keeps_nonzero = n
+                        .child_by_field_name("operator")
+                        .is_some_and(|op| op.kind() == "=")
+                        && n.child_by_field_name("right")
+                            .is_some_and(|r| is_nonzero_integer_literal(&r, source));
+                    !keeps_nonzero && writes(n.child_by_field_name("left"))
+                }
                 "update_expression" => writes(n.child_by_field_name("argument")),
                 "pointer_expression" => {
                     n.child_by_field_name("operator")
@@ -312,4 +321,28 @@ pub fn written_between(cond: &Node, site: &Node, targets: &[String], source: &st
             }
     })
     .is_some()
+}
+
+/// An integer literal other than zero, possibly negated or parenthesized:
+/// `1`, `-1`, `(0x10u)`.
+fn is_nonzero_integer_literal(node: &Node, source: &str) -> bool {
+    let mut n = *node;
+    while let Some(inner) = peel_sign(&n) {
+        n = inner;
+    }
+    if n.kind() != "number_literal" {
+        return false;
+    }
+    let text = ast_utils::get_node_text(&n, source)
+        .trim()
+        .trim_end_matches(['u', 'U', 'l', 'L'])
+        .to_ascii_lowercase();
+    let value = if let Some(hex) = text.strip_prefix("0x") {
+        u64::from_str_radix(hex, 16).ok()
+    } else if text.len() > 1 && text.starts_with('0') {
+        u64::from_str_radix(&text[1..], 8).ok()
+    } else {
+        text.parse::<u64>().ok()
+    };
+    value.is_some_and(|v| v != 0)
 }

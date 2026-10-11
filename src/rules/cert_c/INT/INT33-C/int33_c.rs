@@ -570,6 +570,12 @@ impl Int33C {
             }
         }
 
+        // The divisor's last assignment before the division stored a value
+        // proven non-zero there: `if (!step) return; p->step = step; x / p->step`.
+        if self.assigned_nonzero_before(div_node, &targets, source) {
+            return true;
+        }
+
         // Check if ALL assignments to the divisor variable in the containing
         // function are provably non-zero constants.  This catches the common
         // Juliet "goodG2B" pattern: `data = -1; data = 7; 100 / data;`
@@ -581,6 +587,49 @@ impl Int33C {
         // A parameter of a closed function every caller passes a value
         // proven non-zero.
         self.every_caller_passes_nonzero(divisor, source)
+    }
+
+    /// Whether the last plain assignment to one of `targets` at statement
+    /// level in a block holding `site` (an earlier statement of it) stores a
+    /// value this rule proves non-zero at the assignment, and nothing between
+    /// the assignment and `site` writes the divisor again.
+    fn assigned_nonzero_before(&self, site: &Node, targets: &[String], source: &str) -> bool {
+        let mut current = *site;
+        while let Some(parent) = current.parent() {
+            if parent.kind() == "function_definition" {
+                return false;
+            }
+            if matches!(parent.kind(), "compound_statement" | "case_statement") {
+                let preceding: Vec<Node> = parent
+                    .named_child_nodes()
+                    .take_while(|stmt| stmt.end_byte() <= current.start_byte())
+                    .collect();
+                for stmt in preceding.iter().rev() {
+                    let Some(assignment) = stmt.named_child(0).filter(|e| {
+                        stmt.kind() == "expression_statement" && e.kind() == "assignment_expression"
+                    }) else {
+                        continue;
+                    };
+                    let plain = assignment
+                        .child_by_field_name("operator")
+                        .is_some_and(|op| op.kind() == "=");
+                    let assigns_target = assignment.child_by_field_name("left").is_some_and(|l| {
+                        targets.contains(&guard_dominance::squeeze_text(&l, source))
+                    });
+                    if !(plain && assigns_target) {
+                        continue;
+                    }
+                    return !nonzero_facts::written_between(&assignment, site, targets, source)
+                        && assignment
+                            .child_by_field_name("right")
+                            .is_some_and(|value| {
+                                self.is_divisor_checked(&assignment, &value, source)
+                            });
+                }
+            }
+            current = parent;
+        }
+        false
     }
 
     /// Whether a condition known where the division executes, or an assert
