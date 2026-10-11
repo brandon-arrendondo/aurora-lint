@@ -940,6 +940,56 @@ fn every_rule_fixture_scans_under_every_rule() {
     );
 }
 
+/// `int x = 1 + 1 + ... + 1;`, `terms` additions long.
+fn binary_chain(terms: usize) -> Vec<u8> {
+    format!("int x = {}1;\n", "1 + ".repeat(terms)).into_bytes()
+}
+
+/// One function whose body is an `if` and `branches - 1` `else if`s, each
+/// nested in the last.
+fn else_if_ladder(branches: usize) -> Vec<u8> {
+    format!(
+        "int g(int a) {{ if (a == 0) return 0;{} return -1; }}\n",
+        (1..branches)
+            .map(|i| format!(" else if (a == {i}) return {i};"))
+            .collect::<String>()
+    )
+    .into_bytes()
+}
+
+/// Long expressions and `else if` ladders at lengths real code reaches
+/// (generated tables, state machines, unrolled arithmetic). A rule that asks
+/// a whole-subtree question at each operator, or climbs `Node::parent()`
+/// from each one, is cubic in the length here: a 1000-term `1 + 1 + ...` once
+/// ran the integer rules past the watchdog, which ends the whole scan.
+fn long_chain_cases() -> Vec<Case> {
+    let case = |name: &str, bytes: Vec<u8>| Case::new(format!("c_{name}.c"), bytes, name);
+    vec![
+        case("binary_chain_1000_long", binary_chain(1_000)),
+        case("else_if_1000_long", else_if_ladder(1_000)),
+        // Identifiers make each operand a declaration to resolve as well.
+        case(
+            "identifier_chain_100_long",
+            format!(
+                "int f(int a, unsigned u) {{ return {}a; }}\n",
+                "a + u * ".repeat(100)
+            )
+            .into_bytes(),
+        ),
+    ]
+}
+
+#[test]
+#[ignore = "long chains under every rule: run in release with --ignored (CI robustness job)"]
+fn long_chains_scan_within_budget() {
+    assert_scans_cleanly(
+        "chains",
+        &long_chain_cases(),
+        "long chains",
+        wall_limit(SCAN_WALL_LIMIT),
+    );
+}
+
 /// Inputs too large or too deep for every `cargo test`: generated at test
 /// time, never committed. Each must be refused with a reason or analysed
 /// within budget -- never a crash, a hang or a stack overflow, which aborts
@@ -1006,22 +1056,19 @@ fn large_cases() -> Vec<Case> {
             format!("int y = {}1{};\n", "(".repeat(depth), ")".repeat(depth)).into_bytes(),
             Refuse::May,
         );
-        add(
-            &format!("binary_chain_{depth}_long"),
-            format!("int x = {}1;\n", "1 + ".repeat(depth)).into_bytes(),
-            Refuse::May,
-        );
-        add(
-            &format!("else_if_{depth}_long"),
-            format!(
-                "int g(int a) {{ if (a == 0) return 0;{} return -1; }}\n",
-                (1..depth)
-                    .map(|i| format!(" else if (a == {i}) return {i};"))
-                    .collect::<String>()
-            )
-            .into_bytes(),
-            Refuse::May,
-        );
+        // At 1000 these two are in CI: [`long_chain_cases`].
+        if depth > 1_000 {
+            add(
+                &format!("binary_chain_{depth}_long"),
+                binary_chain(depth),
+                Refuse::May,
+            );
+            add(
+                &format!("else_if_{depth}_long"),
+                else_if_ladder(depth),
+                Refuse::May,
+            );
+        }
         add(
             &format!("macro_chain_{depth}_deep"),
             (1..depth)

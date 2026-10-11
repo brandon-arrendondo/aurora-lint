@@ -202,9 +202,9 @@ jobs:
 
   # tests/robustness.rs in release: every rule's fixtures scanned together
   # under every rule (ten minutes or more in a debug build, growing with every
-  # fixture, so it is ignored in the plain `cargo test`), and a larger seeded
-  # mutant pass than the default. The large-and-deep inputs test stays out: it
-  # is run by hand, time-boxed.
+  # fixture, so it is ignored in the plain `cargo test`), long operator and
+  # `else if` chains, and a larger seeded mutant pass than the default. The
+  # large-and-deep inputs test stays out: it is run by hand, time-boxed.
   robustness:
     name: Robustness (release)
     runs-on: ubuntu-24.04
