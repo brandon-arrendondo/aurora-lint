@@ -58,40 +58,103 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::{IncludeClosure, ProjectContext};
+use crate::analyze::macro_expand;
+use crate::analyze::noreturn::{called_function_name, library_names_redefined_among};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::path::PathBuf;
 use tree_sitter::Node;
 
-pub struct Msc30C;
+/// The standard library function this rule reports.
+const RAND: &str = "rand";
+
+pub struct Msc30C {
+    /// The prescan's macro tables: a project macro named `rand` replaces the
+    /// library function in the files that can see it.
+    project: RefCell<Option<ProjectContext>>,
+    /// The file being checked, for the headers it includes.
+    file_path: RefCell<Option<PathBuf>>,
+}
 
 impl Msc30C {
     pub fn new() -> Self {
-        Self
+        Self {
+            project: RefCell::new(None),
+            file_path: RefCell::new(None),
+        }
+    }
+
+    /// Whether `rand` names something other than the library function
+    /// anywhere in this file (ADR-0006): the file defines a function by that
+    /// name or declares one `static`, or a macro by that name is in reach --
+    /// one this file `#define`s, a function-like one a header it includes
+    /// defines, or an object-like one the project defines. The object-like
+    /// table records no defining file, so a project-wide `#define rand` is
+    /// taken to reach every file. A project's external definition of `rand`
+    /// in another file is not seen: a `static` one there is a different
+    /// function, and the prescan keys a lone `static` definition as it keys
+    /// an external one.
+    fn rand_is_redefined(&self, root: &Node, source: &str) -> bool {
+        if library_names_redefined_among(root, source, |name| name == RAND).contains(RAND) {
+            return true;
+        }
+        let defines_here = ["preproc_def", "preproc_function_def"]
+            .into_iter()
+            .flat_map(|kind| query::find_descendants_of_kind(*root, kind))
+            .any(|def| {
+                def.child_by_field_name("name")
+                    .is_some_and(|name| get_node_text(&name, source) == RAND)
+            });
+        if defines_here {
+            return true;
+        }
+        let project = self.project.borrow();
+        let Some(project) = project.as_ref() else {
+            return false;
+        };
+        if project.macros_defined_outside_project.contains(RAND) {
+            return false;
+        }
+        if project.defined_macro_names.contains(RAND) {
+            return true;
+        }
+        if !project.function_macro_names.contains(RAND) {
+            return false;
+        }
+        let closure = self
+            .file_path
+            .borrow()
+            .as_deref()
+            .and_then(|path| IncludeClosure::of(&project.include_edges, path));
+        !macro_expand::reachable_arms(&project.function_macro_arms, RAND, closure.as_ref())
+            .is_empty()
     }
 
     /// Check if a function call is to rand()
     fn check_rand_call(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "call_expression" {
-            if let Some(function_node) = node.child_by_field_name("function") {
-                let function_name = get_node_text(&function_node, source);
-
-                if function_name.trim() == "rand" {
-                    violations.push(RuleViolation {
-                        rule_id: self.rule_id().to_string(),
-                        severity: self.severity(),
-                        message: "Use of rand() function for pseudorandom number generation detected. rand() produces poor quality random numbers that may be predictable.".to_string(),
-                        file_path: String::new(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
-                        suggestion: Some(
-                            "Replace rand() with a better alternative: random() (POSIX), drand48() (POSIX), arc4random() (cryptographic), or BCryptGenRandom() (Windows)".to_string()
-                        ),
-                        ..Default::default()
-                    });
-                }
-            }
+        if called_function_name(node, source).as_deref() == Some(RAND) {
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                severity: self.severity(),
+                message: "Use of rand() function for pseudorandom number generation detected. rand() produces poor quality random numbers that may be predictable.".to_string(),
+                file_path: String::new(),
+                line: node.start_position().row + 1,
+                column: node.start_position().column + 1,
+                suggestion: Some(
+                    "Replace rand() with a better alternative: random() (POSIX), drand48() (POSIX), arc4random() (cryptographic), or BCryptGenRandom() (Windows)".to_string()
+                ),
+                ..Default::default()
+            });
         }
+    }
+}
+
+impl Default for Msc30C {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -112,6 +175,14 @@ impl CertRule for Msc30C {
         "MSC30-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = Some(context.clone());
+    }
+
+    fn set_file_path(&self, path: &std::path::Path) {
+        *self.file_path.borrow_mut() = Some(path.to_path_buf());
+    }
+
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.check_node(node, source, violations);
     }
@@ -119,8 +190,21 @@ impl CertRule for Msc30C {
 
 impl Msc30C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check for rand() calls
-        for call in query::find_descendants_of_kind(*node, "call_expression") {
+        // The spelling first: resolving a callee walks its scopes.
+        let calls: Vec<Node> = query::find_descendants_of_kind(*node, "call_expression")
+            .into_iter()
+            .filter(|call| {
+                call.child_by_field_name("function").is_some_and(|f| {
+                    get_node_text(&f, source)
+                        .trim_matches(|c: char| c == '(' || c == ')' || c.is_whitespace())
+                        == RAND
+                })
+            })
+            .collect();
+        if calls.is_empty() || self.rand_is_redefined(node, source) {
+            return;
+        }
+        for call in calls {
             self.check_rand_call(&call, source, violations);
         }
     }
