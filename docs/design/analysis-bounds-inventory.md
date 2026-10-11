@@ -61,7 +61,9 @@ Kinds:
   worklists;
 - CFG construction (once per statement);
 - macro rescans;
-- the unknown-identifier repair loop.
+- the unknown-identifier repair loop;
+- the per-expression loops of INT02-C, INT30-C and INT32-C (once per
+  candidate operator).
 
 ## Scan level (ADR-0017)
 

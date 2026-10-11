@@ -181,6 +181,40 @@ pub fn file_scope_descendants_of_kinds<'a>(root: Node<'a>, kinds: &[&str]) -> Ve
     out
 }
 
+/// Every descendant of `root` matching one of `kinds`, in the pre-order
+/// [`query::find_descendants_of_kinds`] yields (root included), each paired
+/// with a fact about its ancestors carried down on the way: a node's state is
+/// `step(&parent_state, parent)`, folded from `init` at `root`. `root`'s own
+/// state is `init`.
+///
+/// This is the carry-it-down form of a per-node ancestor climb. Asking a
+/// climbing predicate ("inside `sizeof`?", "which function?") of every
+/// candidate pays O(depth) `Node::parent()` calls of O(depth) each, so a file
+/// whose candidates nest as deep as they are many (a long `a + b + ...` chain,
+/// an `else if` ladder) costs the cube of its size; here every node pays one
+/// `step`.
+pub fn descendants_of_kinds_with<'a, S: Clone>(
+    root: Node<'a>,
+    kinds: &[&str],
+    init: S,
+    step: impl Fn(&S, Node<'a>) -> S,
+) -> Vec<(Node<'a>, S)> {
+    let mut out = Vec::new();
+    let mut stack = vec![(root, init)];
+    while let Some((node, state)) = stack.pop() {
+        let mut cursor = node.walk();
+        let children: Vec<Node<'a>> = node.children(&mut cursor).collect();
+        if !children.is_empty() {
+            let inner = step(&state, node);
+            stack.extend(children.into_iter().rev().map(|c| (c, inner.clone())));
+        }
+        if kinds.contains(&node.kind()) {
+            out.push((node, state));
+        }
+    }
+    out
+}
+
 /// The file-scope items of `root`, in source order: its children, looking
 /// through every preprocessor conditional (`#if`/`#ifdef`/`#elif`/`#else`
 /// arm) and every parser `ERROR` node on the way, and stopping everywhere

@@ -20,7 +20,6 @@ use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
 use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
 use crate::utility::cert_c::std_functions;
-use lang_parsing_substrate::query;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -453,7 +452,9 @@ impl Int30C {
         type_map: &HashMap<String, String>,
         env: &TypeEnv,
     ) {
-        let matches = query::find_descendants_of_kinds(
+        // Each match's enclosing function is carried down the walk, not
+        // climbed to per match.
+        let matches = ast_utils::descendants_of_kinds_with(
             *node,
             &[
                 "binary_expression",
@@ -461,6 +462,11 @@ impl Int30C {
                 "call_expression",
                 "update_expression",
             ],
+            None,
+            |function: &Option<Node>, parent| match parent.kind() {
+                "function_definition" => Some(parent),
+                _ => *function,
+            },
         );
 
         // Scope type_map per function to avoid cross-function name collisions
@@ -471,14 +477,14 @@ impl Int30C {
         // the same function.
         let mut fn_type_maps: HashMap<usize, HashMap<String, String>> = HashMap::new();
 
-        for matched in matches {
-            let scoped_type_map: &HashMap<String, String> =
-                match ast_utils::find_containing_function(&matched) {
-                    Some(func_node) => fn_type_maps.entry(func_node.id()).or_insert_with(|| {
-                        overflow_helpers::collect_variable_types(&func_node, source)
-                    }),
-                    None => type_map,
-                };
+        for (matched, function) in matches {
+            crate::analyze::containment::checkpoint();
+            let scoped_type_map: &HashMap<String, String> = match function {
+                Some(func_node) => fn_type_maps.entry(func_node.id()).or_insert_with(|| {
+                    overflow_helpers::collect_variable_types(&func_node, source)
+                }),
+                None => type_map,
+            };
 
             match matched.kind() {
                 "binary_expression" => {

@@ -21,7 +21,6 @@ use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
 use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
 use crate::utility::cert_c::std_functions;
-use lang_parsing_substrate::query;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -185,6 +184,79 @@ impl Int32C {
     }
 }
 
+/// What [`Int32C::check_node`] needs of a candidate's ancestors, carried down
+/// the walk by [`ast_utils::descendants_of_kinds_with`].
+#[derive(Clone, Copy, Default)]
+struct AncestorFacts<'a> {
+    /// The innermost `function_definition` enclosing the node.
+    function: Option<Node<'a>>,
+    /// Inside a compile-time context, where nothing overflows at run time:
+    /// `sizeof`, `_Static_assert`, an enumerator's value or an array size
+    /// (`int arr[N + 1]`), below the innermost function definition.
+    compile_time: bool,
+    /// An operand of a comparison (`a + b > c`, the shape of an overflow
+    /// check) within the node's statement: some `binary_expression` with a
+    /// comparison operator encloses it below the nearest statement,
+    /// declaration, block or function.
+    in_comparison: bool,
+    /// The innermost `for`/`while`/`do` enclosing the node within its
+    /// function, whose conditions bound the loop variables.
+    innermost_loop: Option<Node<'a>>,
+}
+
+impl<'a> AncestorFacts<'a> {
+    /// The facts for a child of `parent`, given `parent`'s own.
+    fn step(&self, parent: Node<'a>, source: &str) -> Self {
+        let in_comparison = match parent.kind() {
+            "expression_statement"
+            | "return_statement"
+            | "declaration"
+            | "function_definition"
+            | "compound_statement" => false,
+            "binary_expression" => self.in_comparison || Self::compares(parent, source),
+            _ => self.in_comparison,
+        };
+        match parent.kind() {
+            "function_definition" => AncestorFacts {
+                function: Some(parent),
+                compile_time: false,
+                in_comparison,
+                innermost_loop: None,
+            },
+            "for_statement" | "while_statement" | "do_statement" => AncestorFacts {
+                in_comparison,
+                innermost_loop: Some(parent),
+                ..*self
+            },
+            "sizeof_expression"
+            | "static_assert_declaration"
+            | "enumerator"
+            | "array_declarator" => AncestorFacts {
+                compile_time: true,
+                in_comparison,
+                ..*self
+            },
+            _ => AncestorFacts {
+                in_comparison,
+                ..*self
+            },
+        }
+    }
+
+    /// Whether a `binary_expression` has a comparison operator among its
+    /// children.
+    fn compares(binary: Node, source: &str) -> bool {
+        let mut cursor = binary.walk();
+        let found = binary.children(&mut cursor).any(|child| {
+            matches!(
+                get_node_text(&child, source),
+                ">" | "<" | ">=" | "<=" | "==" | "!="
+            )
+        });
+        found
+    }
+}
+
 impl CertRule for Int32C {
     fn reads_header_facts(&self) -> bool {
         true
@@ -304,7 +376,10 @@ impl Int32C {
         type_map: &HashMap<String, String>,
         env: &TypeEnv,
     ) {
-        let candidates = query::find_descendants_of_kinds(
+        // Each candidate's enclosing function and whether it sits in a
+        // compile-time context are carried down the walk, not climbed to
+        // per candidate.
+        let candidates = ast_utils::descendants_of_kinds_with(
             *node,
             &[
                 "binary_expression",
@@ -313,6 +388,8 @@ impl Int32C {
                 "update_expression",
                 "call_expression",
             ],
+            AncestorFacts::default(),
+            |facts, parent| facts.step(parent, source),
         );
 
         // Scope type_map per function to avoid cross-function name collisions
@@ -321,19 +398,19 @@ impl Int32C {
         // computed once even though many candidates share the same function.
         let mut fn_type_maps: HashMap<usize, HashMap<String, String>> = HashMap::new();
 
-        for candidate in candidates {
+        for (candidate, facts) in candidates {
+            crate::analyze::containment::checkpoint();
             // Skip nodes inside compile-time contexts (cannot overflow at runtime)
-            if self.is_in_compile_time_context(&candidate) {
+            if facts.compile_time {
                 continue;
             }
 
-            let scoped_type_map: &HashMap<String, String> =
-                match overflow_helpers::enclosing_function_definition(&candidate) {
-                    Some(func_node) => fn_type_maps
-                        .entry(func_node.id())
-                        .or_insert_with(|| self.collect_variable_types(&func_node, source)),
-                    None => type_map,
-                };
+            let scoped_type_map: &HashMap<String, String> = match facts.function {
+                Some(func_node) => fn_type_maps
+                    .entry(func_node.id())
+                    .or_insert_with(|| self.collect_variable_types(&func_node, source)),
+                None => type_map,
+            };
 
             match candidate.kind() {
                 "binary_expression" => {
@@ -343,6 +420,7 @@ impl Int32C {
                         violations,
                         scoped_type_map,
                         env,
+                        &facts,
                     );
                 }
                 "assignment_expression" => {
@@ -352,6 +430,7 @@ impl Int32C {
                         violations,
                         scoped_type_map,
                         env,
+                        &facts,
                     );
                 }
                 "unary_expression" => {
@@ -361,10 +440,17 @@ impl Int32C {
                         violations,
                         scoped_type_map,
                         env,
+                        &facts,
                     );
                 }
                 "update_expression" => {
-                    self.check_increment_decrement(&candidate, source, violations, scoped_type_map);
+                    self.check_increment_decrement(
+                        &candidate,
+                        source,
+                        violations,
+                        scoped_type_map,
+                        &facts,
+                    );
                 }
                 "call_expression" => {
                     self.check_function_call(&candidate, source, violations, scoped_type_map);
@@ -372,27 +458,6 @@ impl Int32C {
                 _ => {}
             }
         }
-    }
-
-    /// Check if this node is inside a compile-time context where overflow cannot occur at runtime.
-    /// Covers: sizeof(), _Static_assert, enum value definitions, array size declarators.
-    fn is_in_compile_time_context(&self, node: &Node) -> bool {
-        let mut current = node.parent();
-        while let Some(parent) = current {
-            match parent.kind() {
-                "sizeof_expression" => return true,
-                "static_assert_declaration" => return true,
-                "enumerator" => return true,
-                "array_declarator" => {
-                    // Array size expressions like int arr[N + 1] are compile-time
-                    return true;
-                }
-                "function_definition" => break,
-                _ => {}
-            }
-            current = parent.parent();
-        }
-        false
     }
 
     /// For compound assignments (`x op= y`), check if `x op y` provably fits
@@ -441,6 +506,7 @@ impl Int32C {
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
         env: &TypeEnv,
+        site: &AncestorFacts,
     ) {
         // INT32-C concerns signed INTEGER overflow (UB). C's usual arithmetic
         // conversions promote the whole expression to float/double the moment
@@ -461,12 +527,12 @@ impl Int32C {
 
         if let Some(operator) = self.get_operator(node, source) {
             match operator.as_str() {
-                "+" => self.check_addition(node, source, violations, type_map),
-                "-" => self.check_subtraction(node, source, violations, type_map),
-                "*" => self.check_multiplication(node, source, violations, type_map),
-                "/" => self.check_division(node, source, violations, type_map),
-                "%" => self.check_modulo(node, source, violations, type_map),
-                "<<" => self.check_left_shift(node, source, violations, type_map),
+                "+" => self.check_addition(node, source, violations, type_map, site),
+                "-" => self.check_subtraction(node, source, violations, type_map, site),
+                "*" => self.check_multiplication(node, source, violations, type_map, site),
+                "/" => self.check_division(node, source, violations, type_map, site),
+                "%" => self.check_modulo(node, source, violations, type_map, site),
+                "<<" => self.check_left_shift(node, source, violations, type_map, site),
                 _ => {}
             }
         }
@@ -479,6 +545,7 @@ impl Int32C {
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
         env: &TypeEnv,
+        site: &AncestorFacts,
     ) {
         // See check_binary_operation: skip compound assignments whose operand
         // types make this floating-point arithmetic, not integer overflow.
@@ -493,12 +560,14 @@ impl Int32C {
 
         if let Some(operator) = self.get_assignment_operator(node, source) {
             match operator.as_str() {
-                "+=" => self.check_compound_addition(node, source, violations, type_map),
-                "-=" => self.check_compound_subtraction(node, source, violations, type_map),
-                "*=" => self.check_compound_multiplication(node, source, violations, type_map),
+                "+=" => self.check_compound_addition(node, source, violations, type_map, site),
+                "-=" => self.check_compound_subtraction(node, source, violations, type_map, site),
+                "*=" => {
+                    self.check_compound_multiplication(node, source, violations, type_map, site)
+                }
                 "/=" => self.check_compound_division(node, source, violations),
                 "%=" => self.check_compound_modulo(node, source, violations),
-                "<<=" => self.check_compound_left_shift(node, source, violations, type_map),
+                "<<=" => self.check_compound_left_shift(node, source, violations, type_map, site),
                 _ => {}
             }
         }
@@ -511,6 +580,7 @@ impl Int32C {
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
         env: &TypeEnv,
+        site: &AncestorFacts,
     ) {
         if let Some(operator) = self.get_unary_operator(node, source) {
             if operator == "-" {
@@ -521,7 +591,7 @@ impl Int32C {
                         return;
                     }
                 }
-                self.check_negation(node, source, violations, type_map);
+                self.check_negation(node, source, violations, type_map, site);
             }
         }
     }
@@ -559,6 +629,7 @@ impl Int32C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
     ) {
         if let (Some(left), Some(right)) = (
             node.child_by_field_name("left"),
@@ -579,14 +650,14 @@ impl Int32C {
 
             if self.is_signed_type(&left_type) || self.is_signed_type(&right_type) {
                 // Skip if this operation is part of an overflow check comparison
-                if self.is_part_of_comparison(node, source) {
+                if site.in_comparison {
                     return;
                 }
 
                 // Opt-in provenance gate: only flag when an operand derives
                 // from untrusted/unbounded input. Bounded local state (counters,
                 // indices, struct-field counts) cannot reach the type limit here.
-                if !self.has_risky_operand_provenance(node, source, type_map) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
                     return;
                 }
 
@@ -606,7 +677,7 @@ impl Int32C {
                 // Skip if constant evaluation proves the result fits where it
                 // lands. An unresolved destination proves nothing, so it does
                 // not skip.
-                if self.result_fits_destination(node, source, type_map) {
+                if self.result_fits_destination(node, source, type_map, site) {
                     return;
                 }
 
@@ -654,6 +725,7 @@ impl Int32C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
     ) {
         if let (Some(left), Some(right)) = (
             node.child_by_field_name("left"),
@@ -674,7 +746,7 @@ impl Int32C {
 
             if self.is_signed_type(&left_type) || self.is_signed_type(&right_type) {
                 // Skip if this operation is part of an overflow check comparison
-                if self.is_part_of_comparison(node, source) {
+                if site.in_comparison {
                     return;
                 }
 
@@ -687,7 +759,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source, type_map) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
                     return;
                 }
 
@@ -705,7 +777,7 @@ impl Int32C {
                 // Skip if constant evaluation proves the result fits where it
                 // lands. An unresolved destination proves nothing, so it does
                 // not skip.
-                if self.result_fits_destination(node, source, type_map) {
+                if self.result_fits_destination(node, source, type_map, site) {
                     return;
                 }
 
@@ -743,6 +815,7 @@ impl Int32C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
     ) {
         if let (Some(left), Some(right)) = (
             node.child_by_field_name("left"),
@@ -763,12 +836,12 @@ impl Int32C {
 
             if self.is_signed_type(&left_type) || self.is_signed_type(&right_type) {
                 // Skip if this operation is part of an overflow check comparison
-                if self.is_part_of_comparison(node, source) {
+                if site.in_comparison {
                     return;
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source, type_map) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
                     return;
                 }
 
@@ -793,7 +866,7 @@ impl Int32C {
                 // Skip if constant evaluation proves the result fits where it
                 // lands. An unresolved destination proves nothing, so it does
                 // not skip.
-                if self.result_fits_destination(node, source, type_map) {
+                if self.result_fits_destination(node, source, type_map, site) {
                     return;
                 }
 
@@ -825,6 +898,7 @@ impl Int32C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
     ) {
         if let (Some(left), Some(right)) = (
             node.child_by_field_name("left"),
@@ -849,7 +923,7 @@ impl Int32C {
             // INT_MIN / -1 causes overflow because -INT_MIN cannot be represented
             if self.is_signed_type(&left_type) || self.is_signed_type(&right_type) {
                 // Skip if this division is part of an overflow check comparison
-                if self.is_part_of_comparison(node, source) {
+                if site.in_comparison {
                     return;
                 }
 
@@ -868,7 +942,7 @@ impl Int32C {
                 let is_variable_division = left.kind() == "identifier"
                     && right.kind() == "identifier"
                     && !self.is_unsigned_type(&right_type)
-                    && self.has_risky_operand_provenance(node, source, type_map);
+                    && self.has_risky_operand_provenance(node, source, type_map, site.function);
 
                 if (has_explicit_risk || is_variable_division)
                     && !self.has_division_overflow_check(node, source)
@@ -900,6 +974,7 @@ impl Int32C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
     ) {
         if let (Some(left), Some(right)) = (
             node.child_by_field_name("left"),
@@ -934,7 +1009,7 @@ impl Int32C {
                 let is_variable_modulo = left.kind() == "identifier"
                     && right.kind() == "identifier"
                     && !self.is_unsigned_type(&right_type)
-                    && self.has_risky_operand_provenance(node, source, type_map);
+                    && self.has_risky_operand_provenance(node, source, type_map, site.function);
 
                 if (has_explicit_risk || is_variable_modulo)
                     && !self.has_modulo_overflow_check(node, source)
@@ -966,6 +1041,7 @@ impl Int32C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
     ) {
         if let Some(argument) = node.child_by_field_name("argument") {
             let _arg_text = get_node_text(&argument, source);
@@ -980,7 +1056,7 @@ impl Int32C {
             // Opt-in provenance gate: only INT_MIN negates to overflow, which a
             // bounded local operand cannot reach.
             if self.is_signed_type(&arg_type)
-                && self.has_risky_operand_provenance(node, source, type_map)
+                && self.has_risky_operand_provenance(node, source, type_map, site.function)
                 && !self.has_negation_overflow_check(node, source)
             {
                 let start_point = node.start_position();
@@ -1011,6 +1087,7 @@ impl Int32C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
     ) {
         if let (Some(left), Some(_right)) = (
             node.child_by_field_name("left"),
@@ -1033,12 +1110,12 @@ impl Int32C {
                 // Skip if constant evaluation proves the result fits where it
                 // lands. An unresolved destination proves nothing, so it does
                 // not skip.
-                if self.result_fits_destination(node, source, type_map) {
+                if self.result_fits_destination(node, source, type_map, site) {
                     return;
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source, type_map) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
                     return;
                 }
 
@@ -1099,6 +1176,7 @@ impl Int32C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
     ) {
         if let Some(left) = node.child_by_field_name("left") {
             let left_type = self.infer_type(&left, source, type_map);
@@ -1134,7 +1212,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source, type_map) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
                     return;
                 }
 
@@ -1168,6 +1246,7 @@ impl Int32C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
     ) {
         if let Some(left) = node.child_by_field_name("left") {
             let left_type = self.infer_type(&left, source, type_map);
@@ -1203,7 +1282,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source, type_map) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
                     return;
                 }
 
@@ -1235,6 +1314,7 @@ impl Int32C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
     ) {
         if let Some(left) = node.child_by_field_name("left") {
             let left_type = self.infer_type(&left, source, type_map);
@@ -1270,7 +1350,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source, type_map) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
                     return;
                 }
 
@@ -1376,6 +1456,7 @@ impl Int32C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
     ) {
         if let Some(left) = node.child_by_field_name("left") {
             let left_type = self.infer_type(&left, source, type_map);
@@ -1399,7 +1480,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source, type_map) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
                     return;
                 }
 
@@ -1431,6 +1512,7 @@ impl Int32C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
     ) {
         if let Some(argument) = node.child_by_field_name("argument") {
             let arg_type = self.infer_type(&argument, source, type_map);
@@ -1443,7 +1525,7 @@ impl Int32C {
             if self.is_signed_type(&arg_type) {
                 // Opt-in provenance gate: a bounded counter cannot reach INT_MAX
                 // (++) or INT_MIN (--); only an untrusted/unbounded operand can.
-                if !self.has_risky_operand_provenance(node, source, type_map) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
                     return;
                 }
 
@@ -1464,6 +1546,7 @@ impl Int32C {
                     node,
                     source,
                     type_map,
+                    site,
                     self.stored_type_bits(&arg_type),
                     matches!(arg_type.as_str(), "char" | "short"),
                 ) {
@@ -2733,11 +2816,13 @@ impl Int32C {
         node: &Node,
         source: &str,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
     ) -> bool {
         self.expression_fits_in(
             node,
             source,
             type_map,
+            site,
             self.result_width_bits(node, source, type_map),
             self.result_is_narrow_store(node, source, type_map),
         )
@@ -2778,6 +2863,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
         destination_bits: u32,
         narrow_store: bool,
     ) -> bool {
@@ -2794,8 +2880,9 @@ impl Int32C {
             }
             other => other,
         };
-        const_eval::expression_fits_in_signed_vra(
+        const_eval::expression_fits_in_signed_vra_at(
             node,
+            site.innermost_loop.as_ref(),
             source,
             &self.current_macros.borrow(),
             bits,
@@ -3205,6 +3292,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         type_map: &HashMap<String, String>,
+        function: Option<Node>,
     ) -> bool {
         // VRA-concrete-overflow channel: a provably-overflowing expression
         // (e.g. INT_MAX + 1, width-sensitive for short/char) is risky regardless
@@ -3222,7 +3310,7 @@ impl Int32C {
         }
 
         let summaries = self.function_summaries.borrow();
-        let func = match ast_utils::find_containing_function(node) {
+        let func = match function {
             Some(f) => f,
             None => return true,
         };
@@ -3736,43 +3824,6 @@ impl Int32C {
         self.has_function_level_overflow_check(node, source, &["INT_MIN", "if"])
             || self.has_function_level_overflow_check(node, source, &["LONG_MIN", "if"])
             || self.has_function_level_overflow_check(node, source, &["LLONG_MIN", "if"])
-    }
-
-    /// Check if a binary operation is part of a comparison expression (used in overflow checking)
-    fn is_part_of_comparison(&self, node: &Node, source: &str) -> bool {
-        let mut current = node.parent();
-
-        while let Some(parent) = current {
-            // If we find a binary_expression parent, check if it's a comparison operator
-            if parent.kind() == "binary_expression" {
-                // Get the operator
-                for i in 0..parent.child_count() {
-                    if let Some(child) = parent.child(i) {
-                        let text = get_node_text(&child, source);
-                        // Check if this is a comparison operator
-                        if matches!(text, ">" | "<" | ">=" | "<=" | "==" | "!=") {
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            // Stop at statement boundaries to avoid going too far up the tree
-            if matches!(
-                parent.kind(),
-                "expression_statement"
-                    | "return_statement"
-                    | "declaration"
-                    | "function_definition"
-                    | "compound_statement"
-            ) {
-                break;
-            }
-
-            current = parent.parent();
-        }
-
-        false
     }
 
     /// Check if the function containing this node has overflow checking code (all patterns must match).

@@ -347,35 +347,85 @@ pub fn is_pointer_arithmetic_in<'a>(
     struct_field_types: &StructFieldTypes,
     facts: &PointerFacts,
 ) -> bool {
-    if pointer_value(root, node, source, type_map, struct_field_types, facts) {
-        return true;
-    }
-    let recurse = |n: &Node<'a>| {
-        is_pointer_arithmetic_in(root, n, source, type_map, struct_field_types, facts)
+    pointer_walk(root, node, source, type_map, struct_field_types, facts).arithmetic
+}
+
+/// What one walk of an expression establishes for [`is_pointer_arithmetic_in`].
+struct PointerWalk {
+    /// [`pointer_value`] of the node.
+    value: bool,
+    /// [`is_pointer_arithmetic_in`] of the node.
+    arithmetic: bool,
+}
+
+/// Both answers for `node` in one walk of its subtree. A `+`/`-` node's value
+/// follows from its operands' values, so each operand is walked once for both
+/// questions; asking [`pointer_value`] at every level of the recursion instead
+/// walks the whole subtree again per level, which made a long `a + b + ...`
+/// chain cost the cube of its length across a rule's per-operator calls.
+fn pointer_walk<'a>(
+    root: Option<&Node<'a>>,
+    node: &Node<'a>,
+    source: &str,
+    type_map: &std::collections::HashMap<String, String>,
+    struct_field_types: &StructFieldTypes,
+    facts: &PointerFacts,
+) -> PointerWalk {
+    let walk = |n: &Node<'a>| pointer_walk(root, n, source, type_map, struct_field_types, facts);
+    let neither = PointerWalk {
+        value: false,
+        arithmetic: false,
     };
     match node.kind() {
         "binary_expression" => {
-            if !matches!(
-                operator_text(node, source).as_deref(),
-                Some("+") | Some("-")
-            ) {
-                return false;
+            let op = operator_text(node, source);
+            if !matches!(op.as_deref(), Some("+") | Some("-")) {
+                return neither;
             }
-            node.child_by_field_name("left")
-                .is_some_and(|l| recurse(&l))
-                || node
-                    .child_by_field_name("right")
-                    .is_some_and(|r| recurse(&r))
+            let (l, r) = match (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) {
+                (Some(left), Some(right)) => (walk(&left), walk(&right)),
+                // A damaged tree can drop an operand: the node has no value
+                // then, but the operand it kept can still be arithmetic.
+                (Some(only), None) | (None, Some(only)) => {
+                    return PointerWalk {
+                        value: false,
+                        arithmetic: walk(&only).arithmetic,
+                    };
+                }
+                (None, None) => return neither,
+            };
+            // As in `pointer_value`: `ptr + int` either way round is a
+            // pointer, and `ptr - int` is, but `ptr - ptr` is a ptrdiff_t.
+            let value = match op.as_deref() {
+                Some("+") => l.value != r.value,
+                _ => l.value && !r.value,
+            };
+            PointerWalk {
+                value,
+                arithmetic: value || l.arithmetic || r.arithmetic,
+            }
         }
         "assignment_expression" => {
-            node.child_by_field_name("left")
-                .is_some_and(|l| recurse(&l))
-                || node
-                    .child_by_field_name("right")
-                    .is_some_and(|r| recurse(&r))
+            let side = |f: &str| {
+                node.child_by_field_name(f)
+                    .is_some_and(|n| walk(&n).arithmetic)
+            };
+            PointerWalk {
+                value: false,
+                arithmetic: side("left") || side("right"),
+            }
         }
-        "parenthesized_expression" => node.named_child(0).is_some_and(|c| recurse(&c)),
-        _ => false,
+        "parenthesized_expression" => node.named_child(0).map_or(neither, |c| walk(&c)),
+        _ => {
+            let value = pointer_value(root, node, source, type_map, struct_field_types, facts);
+            PointerWalk {
+                value,
+                arithmetic: value,
+            }
+        }
     }
 }
 

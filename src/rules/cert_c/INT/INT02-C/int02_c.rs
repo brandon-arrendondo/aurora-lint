@@ -133,14 +133,20 @@ impl CertRule for Int02C {
     // rule's own fixture made the identical defect invisible. All 431
     // real-world findings ever adjudicated against that version were false.
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        // Given the tree's root, the environment resolves each operand by
+        // one descent from it, not a `parent()` climb per identifier, which
+        // in an `else if` ladder costs the cube of its length.
+        let visible = self.visible.borrow();
+        let env = TypeEnv::visible(&visible, self.data_model.get()).in_tree(*node);
         for expr in query::find_descendants_of_kind(*node, "binary_expression") {
+            crate::analyze::containment::checkpoint();
             let Some(op) = expr.child_by_field_name("operator") else {
                 continue;
             };
             match get_node_text(&op, source) {
-                "*" => self.check_narrow_multiplication(&expr, source, violations),
+                "*" => self.check_narrow_multiplication(&expr, source, &env, violations),
                 "<" | ">" | "<=" | ">=" | "==" | "!=" => {
-                    self.check_mixed_sign_comparison(&expr, source, violations)
+                    self.check_mixed_sign_comparison(&expr, source, &env, violations)
                 }
                 _ => {}
             }
@@ -171,12 +177,13 @@ impl Int02C {
         &self,
         expr: &Node,
         source: &str,
+        env: &TypeEnv,
         violations: &mut Vec<RuleViolation>,
     ) {
         let model = self.data_model.get();
         let (Some(left), Some(right)) = (
-            self.operand_int_type(&expr.child_by_field_name("left"), source),
-            self.operand_int_type(&expr.child_by_field_name("right"), source),
+            self.operand_int_type(&expr.child_by_field_name("left"), source, env),
+            self.operand_int_type(&expr.child_by_field_name("right"), source, env),
         ) else {
             return;
         };
@@ -264,12 +271,13 @@ impl Int02C {
         &self,
         expr: &Node,
         source: &str,
+        env: &TypeEnv,
         violations: &mut Vec<RuleViolation>,
     ) {
         let model = self.data_model.get();
         let (Some(left), Some(right)) = (
-            self.operand_int_type(&expr.child_by_field_name("left"), source),
-            self.operand_int_type(&expr.child_by_field_name("right"), source),
+            self.operand_int_type(&expr.child_by_field_name("left"), source, env),
+            self.operand_int_type(&expr.child_by_field_name("right"), source, env),
         ) else {
             return;
         };
@@ -328,22 +336,25 @@ impl Int02C {
 /// the operand's type is not in reach here, and guessing is what produced
 /// this rule's previous false-positive population.
 impl Int02C {
-    fn operand_int_type(&self, node: &Option<Node>, source: &str) -> Option<IntType> {
+    fn operand_int_type(
+        &self,
+        node: &Option<Node>,
+        source: &str,
+        env: &TypeEnv,
+    ) -> Option<IntType> {
         let mut node = (*node)?;
         while node.kind() == "parenthesized_expression" {
             node = node.named_child(0)?;
         }
-        let visible = self.visible.borrow();
-        let env = TypeEnv::visible(&visible, self.data_model.get());
         let declared = match node.kind() {
             // The type the name, the struct field, or the indexed array's
             // element is declared with, at this occurrence.
             "identifier" | "field_expression" | "subscript_expression" => {
-                expr_type::expr_type(&node, source, &env)
+                expr_type::expr_type(&node, source, env)
             }
             "call_expression" => return self.call_result_int_type(&node, source),
             // `sizeof x` is size_t by definition, whatever x is.
-            "sizeof_expression" => expr_type::expr_type(&node, source, &env),
+            "sizeof_expression" => expr_type::expr_type(&node, source, env),
             // A cast states the conversion, which is what INT02-C asks for.
             // A literal, a compound expression or anything else is not a type
             // this rule can name, and guessing is what produced its previous

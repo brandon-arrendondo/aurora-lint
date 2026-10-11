@@ -85,41 +85,36 @@ pub fn is_float_literal(text: &str) -> bool {
 /// arms of `?:` (6.5.15p5) and for unary `+`/`-`. `%` and the shifts take
 /// integer operands only, so the rule does not apply to them.
 pub fn expr_is_float(node: &Node, source: &str, env: &TypeEnv) -> bool {
-    if expr_type::expr_type(node, source, env).is_some_and(|t| t.is_float()) {
-        return true;
-    }
     let either = |a: Option<Node>, b: Option<Node>| {
         a.is_some_and(|n| expr_is_float(&n, source, env))
             || b.is_some_and(|n| expr_is_float(&n, source, env))
     };
+    let operator = || {
+        node.child_by_field_name("operator")
+            .map(|o| ast_utils::get_node_text(&o, source))
+    };
+    // Where the recursion below decides the answer, `expr_type` of the node
+    // itself is not asked: each of these is floating by `expr_type` only
+    // when an operand is, and the operand's own call asks `expr_type` first.
+    // Asking it here too would walk the whole subtree at every level, which
+    // made a long `a + b + ...` chain cost the cube of its length across a
+    // rule's per-operator calls.
     match node.kind() {
         "parenthesized_expression" => node
             .named_child(0)
             .is_some_and(|c| expr_is_float(&c, source, env)),
-        "binary_expression" => {
-            let op = node
-                .child_by_field_name("operator")
-                .map(|o| ast_utils::get_node_text(&o, source));
-            matches!(op, Some("+" | "-" | "*" | "/"))
-                && either(
-                    node.child_by_field_name("left"),
-                    node.child_by_field_name("right"),
-                )
-        }
+        "binary_expression" if matches!(operator(), Some("+" | "-" | "*" | "/")) => either(
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ),
         "conditional_expression" => either(
             node.child_by_field_name("consequence"),
             node.child_by_field_name("alternative"),
         ),
-        "unary_expression" => {
-            let op = node
-                .child_by_field_name("operator")
-                .map(|o| ast_utils::get_node_text(&o, source));
-            matches!(op, Some("+" | "-"))
-                && node
-                    .child_by_field_name("argument")
-                    .is_some_and(|a| expr_is_float(&a, source, env))
-        }
-        _ => false,
+        "unary_expression" if matches!(operator(), Some("+" | "-")) => node
+            .child_by_field_name("argument")
+            .is_some_and(|a| expr_is_float(&a, source, env)),
+        _ => expr_type::expr_type(node, source, env).is_some_and(|t| t.is_float()),
     }
 }
 

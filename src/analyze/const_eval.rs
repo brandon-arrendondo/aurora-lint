@@ -1677,12 +1677,21 @@ pub fn file_scope_written_names(root: &Node, source: &str) -> std::collections::
     };
     let mut out = define_body_identifiers(source);
     let function_macros = function_macro_names(source);
-    for id in lang_parsing_substrate::query::find_descendants_of_kind(*root, "identifier") {
+    // Whether each identifier is a function-like macro's argument is carried
+    // down the walk rather than climbed to per identifier, which costs the
+    // cube of an `else if` ladder's length.
+    let ids = crate::utility::cert_c::ast_utils::descendants_of_kinds_with(
+        *root,
+        &["identifier"],
+        MacroArgumentWalk::default(),
+        |walk, parent| walk.step(parent, source, &function_macros),
+    );
+    for (id, walk) in ids {
         let name = id.utf8_text(source.as_bytes()).unwrap_or("");
         if name.is_empty() || out.contains(name) {
             continue;
         }
-        if !is_write_context(&id) && !is_function_macro_argument(&id, source, &function_macros) {
+        if !is_write_context(&id) && !walk.in_arguments {
             continue;
         }
         match resolve_identifier_binding(&id, name, source) {
@@ -1829,6 +1838,9 @@ fn is_function_macro_argument(
     source: &str,
     function_macros: &std::collections::HashSet<String>,
 ) -> bool {
+    if function_macros.is_empty() {
+        return false;
+    }
     let mut node = *id;
     while let Some(parent) = node.parent() {
         if parent.kind() == "argument_list" {
@@ -1851,6 +1863,49 @@ fn is_function_macro_argument(
         node = parent;
     }
     false
+}
+
+/// [`is_function_macro_argument`] carried down a walk: the answer for a node
+/// follows from its parent's, so each node pays one step instead of a climb.
+#[derive(Clone, Copy, Default)]
+struct MacroArgumentWalk {
+    /// The answer [`is_function_macro_argument`] gives for this node.
+    in_arguments: bool,
+    /// This node's parent is a call to a function-like macro.
+    parent_is_macro_call: bool,
+}
+
+impl MacroArgumentWalk {
+    /// The state of a child of `parent`, given `parent`'s own.
+    fn step(
+        &self,
+        parent: Node,
+        source: &str,
+        function_macros: &std::collections::HashSet<String>,
+    ) -> Self {
+        match parent.kind() {
+            // The climb stops here, so nothing above reaches the child.
+            "expression_statement" | "compound_statement" | "function_definition" => {
+                Self::default()
+            }
+            "argument_list" if self.parent_is_macro_call => Self {
+                in_arguments: true,
+                parent_is_macro_call: false,
+            },
+            "call_expression" => Self {
+                in_arguments: self.in_arguments,
+                parent_is_macro_call: parent
+                    .child_by_field_name("function")
+                    .filter(|f| f.kind() == "identifier")
+                    .and_then(|f| f.utf8_text(source.as_bytes()).ok())
+                    .is_some_and(|c| function_macros.contains(c)),
+            },
+            _ => Self {
+                in_arguments: self.in_arguments,
+                parent_is_macro_call: false,
+            },
+        }
+    }
 }
 
 /// Whether the expression `id` (looking through parentheses) is written or
@@ -2854,8 +2909,36 @@ pub fn extract_loop_var_ranges(
     source: &str,
     macros: &MacroConstantMap,
 ) -> VarRangeMap {
+    loop_var_ranges_from(node.parent(), source, macros)
+}
+
+/// [`extract_loop_var_ranges`] for a node whose innermost enclosing loop the
+/// caller already knows: `innermost_loop`, the nearest `for`/`while`/`do`
+/// ancestor below the node's function, or `None` when there is none. Only
+/// loops contribute, so the climb starts there; a caller that carries the
+/// loop down its walk pays nothing for a node in no loop, where
+/// [`extract_loop_var_ranges`] climbs every level to the function. The same
+/// answer.
+pub fn loop_var_ranges_within(
+    innermost_loop: Option<&Node>,
+    source: &str,
+    macros: &MacroConstantMap,
+) -> VarRangeMap {
+    match innermost_loop {
+        Some(innermost) => loop_var_ranges_from(Some(*innermost), source, macros),
+        None => VarRangeMap::new(),
+    }
+}
+
+/// The loop ranges `start` and its ancestors contribute, innermost first, up
+/// to the function or the translation unit.
+fn loop_var_ranges_from(
+    start: Option<Node>,
+    source: &str,
+    macros: &MacroConstantMap,
+) -> VarRangeMap {
     let mut ranges = VarRangeMap::new();
-    let mut current = node.parent();
+    let mut current = start;
     while let Some(parent) = current {
         match parent.kind() {
             "while_statement" | "do_statement" => {
@@ -3505,6 +3588,18 @@ pub fn expression_fits_in_signed(
     bits: u32,
 ) -> bool {
     let loop_ranges = extract_loop_var_ranges(node, source, macros);
+    expression_fits_in_signed_given(node, source, macros, bits, loop_ranges)
+}
+
+/// [`expression_fits_in_signed`] given the node's loop ranges
+/// ([`loop_var_ranges_within`]).
+fn expression_fits_in_signed_given(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    bits: u32,
+    loop_ranges: VarRangeMap,
+) -> bool {
     let mut var_ranges = loop_ranges.clone();
     resolve_identifiers_in_expr(node, source, macros, &loop_ranges, &mut var_ranges);
 
@@ -3556,6 +3651,35 @@ pub fn expression_fits_in_signed_vra(
     bits: u32,
     vra_var_ranges: Option<&VarRangeMap>,
 ) -> bool {
+    expression_fits_in_signed_vra_within(node, source, macros, bits, vra_var_ranges, || {
+        extract_loop_var_ranges(node, source, macros)
+    })
+}
+
+/// [`expression_fits_in_signed_vra`] for a caller that knows the node's
+/// innermost enclosing loop (see [`loop_var_ranges_within`]). The same
+/// answer.
+pub fn expression_fits_in_signed_vra_at(
+    node: &Node,
+    innermost_loop: Option<&Node>,
+    source: &str,
+    macros: &MacroConstantMap,
+    bits: u32,
+    vra_var_ranges: Option<&VarRangeMap>,
+) -> bool {
+    expression_fits_in_signed_vra_within(node, source, macros, bits, vra_var_ranges, || {
+        loop_var_ranges_within(innermost_loop, source, macros)
+    })
+}
+
+fn expression_fits_in_signed_vra_within(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    bits: u32,
+    vra_var_ranges: Option<&VarRangeMap>,
+    loop_ranges: impl FnOnce() -> VarRangeMap,
+) -> bool {
     // Try VRA-provided ranges first
     if let Some(var_ranges) = vra_var_ranges {
         if let Some(range) = try_evaluate_range(node, source, macros, var_ranges) {
@@ -3576,7 +3700,7 @@ pub fn expression_fits_in_signed_vra(
         }
     }
     // Fallback to syntactic analysis
-    expression_fits_in_signed(node, source, macros, bits)
+    expression_fits_in_signed_given(node, source, macros, bits, loop_ranges())
 }
 
 /// Returns true only when the expression *definitely* overflows the signed
