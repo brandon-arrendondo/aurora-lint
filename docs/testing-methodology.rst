@@ -583,8 +583,11 @@ only thing incomplete is a file the input guard was meant to refuse):
   tests run that rule alone, so they never show one rule crashing on another
   rule's fixtures, nor what only a many-file scan reaches.
 
-The first two run in every ``cargo test``. The third runs in CI's release
-robustness job, with a larger mutant pass. A fourth, ignored test generates
+The first two run in every ``cargo test``. The third, ten minutes or more
+in a debug build, runs in CI's release robustness job, with a larger mutant
+pass. Only that run scans the fixtures written for each fixed crash under
+every rule, so it, not the default ``cargo test``, is what catches those
+crashes coming back. A fourth, ignored test generates
 inputs too large or too deep for CI (a file over the size limit, 200 MiB of
 random bytes, a 16 MiB line, nesting and operator chains up to a million
 deep); run it by hand with

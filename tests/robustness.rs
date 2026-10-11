@@ -10,8 +10,11 @@
 //!
 //! Every case is scanned by the real binary with every rule enabled
 //! (`rules_templates/rules-all.toml`), and must end with exit 0 or 1 and no
-//! crash, step-limit or time-limit failure. A file refused by the input guard
-//! (not source text) is allowed only for the cases built to be refused.
+//! line marking the scan incomplete -- a crash, a step or time limit, an
+//! analysis cap, the watchdog's hang, or any cause not yet known here
+//! ([`classify`] is an allowlist). A file refused by the input guard (not
+//! source text) is allowed only for the cases built to be refused, and exit 3
+//! only when such a refusal is all that is incomplete.
 //!
 //! The cases come from two generators, not from a list of hand-picked files:
 //!
@@ -29,7 +32,9 @@
 //! `AURORA_LINT_ROBUSTNESS_MUTANTS` choose the seed and how many mutants a
 //! run builds, so a longer run is the same test with a larger number; a
 //! failure prints both, and keeps every failing input under
-//! `target/robustness-failures/` with the recipe that built it.
+//! `robustness-failures/` in the target directory (`CARGO_TARGET_DIR` when
+//! set) with the recipe that built it. `AURORA_LINT_ROBUSTNESS_WALL_SECS`
+//! overrides how long one scan may run before the test calls it a hang.
 //!
 //! The suite raises confidence and catches regressions. It cannot show that
 //! no input crashes or hangs the scan, and nothing should claim it does.
@@ -67,10 +72,24 @@ const DEFAULT_SEED: u64 = 0x5eed_c0de;
 /// How many mutants a plain `cargo test` builds.
 const DEFAULT_MUTANTS: usize = 120;
 
-/// How long one scan may take, wall clock, before the test calls it a hang.
-/// Far above what any case here takes; the scan's own `--rule-time-limit`
-/// fires first for a single runaway rule.
+/// How long one scan may take, wall clock, before the test calls it a hang,
+/// unless `AURORA_LINT_ROBUSTNESS_WALL_SECS` says otherwise. Far above what
+/// the table and the mutants take; the scan's own `--rule-time-limit` fires
+/// first for a single runaway rule.
 const SCAN_WALL_LIMIT: Duration = Duration::from_secs(900);
+
+/// The wall limit for the scan of every rule fixture, which in a debug
+/// build on a loaded machine has come within a minute of
+/// [`SCAN_WALL_LIMIT`] and grows with every fixture added.
+const FIXTURES_WALL_LIMIT: Duration = Duration::from_secs(3600);
+
+/// `default`, or `AURORA_LINT_ROBUSTNESS_WALL_SECS` when it is set.
+fn wall_limit(default: Duration) -> Duration {
+    std::env::var("AURORA_LINT_ROBUSTNESS_WALL_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .map_or(default, Duration::from_secs)
+}
 
 fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
     std::env::var(name)
@@ -213,7 +232,8 @@ fn noise(rng: &mut Rng, n: usize) -> Vec<u8> {
     (0..n).map(|_| rng.next() as u8).collect()
 }
 
-/// The fixed table: every malformation the task names, on the base files.
+/// The fixed table: every malformation class this suite covers, on the base
+/// files.
 fn table_cases(rng: &mut Rng) -> Vec<Case> {
     let b = BASE_FUNCTION;
     let h = BASE_HEADER;
@@ -645,8 +665,8 @@ enum End {
     /// A signal ended it: a stack overflow aborts the process (SIGABRT)
     /// before containment can see it.
     Signalled(String),
-    /// It ran past [`SCAN_WALL_LIMIT`] and the test killed it.
-    TimedOut,
+    /// It ran past its wall limit and the test killed it.
+    TimedOut(Duration),
 }
 
 /// The all-rules manifest as the scan can read it: copied next to the cases,
@@ -656,8 +676,8 @@ fn manifest_arg(dir: &Path) -> &'static str {
     "rules-all.toml"
 }
 
-/// Scan `dir` with every rule, killing the scan at [`SCAN_WALL_LIMIT`].
-fn scan_dir(dir: &Path) -> Scan {
+/// Scan `dir` with every rule, killing the scan at `limit`.
+fn scan_dir(dir: &Path, limit: Duration) -> Scan {
     let started = Instant::now();
     // The scan runs from inside the directory and scans `.`: from inside a
     // git checkout (this repository) it would analyse that repository, and
@@ -686,10 +706,10 @@ fn scan_dir(dir: &Path) -> Scan {
                 None => End::Signalled(status.to_string()),
             };
         }
-        if started.elapsed() > SCAN_WALL_LIMIT {
+        if started.elapsed() > limit {
             let _ = child.kill();
             let _ = child.wait();
-            break End::TimedOut;
+            break End::TimedOut(limit);
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -700,21 +720,35 @@ fn scan_dir(dir: &Path) -> Scan {
     }
 }
 
-/// The failure lines ADR-0017's containment prints for a crash or a runaway:
-/// `rule failure (crashed): ...`, `file failure (step limit): ...`, and so on.
-fn is_bug_line(line: &str) -> bool {
-    let line = line.trim_start_matches("Error: ");
-    // The watchdog's line for a unit of work that never reaches a
-    // checkpoint: it ends the whole scan.
-    if line.starts_with("hang: ") {
-        return true;
+/// What one line of a scan's stderr says about whether the scan finished.
+#[derive(PartialEq, Eq)]
+enum Line {
+    /// The input guard refused a file: `input skipped (CAUSE): FILE: ...`.
+    Refused,
+    /// The closing `scan INCOMPLETE` summary, which follows any failure.
+    Summary,
+    /// Anything else that marks the scan incomplete or failed: a crash, a
+    /// step or time limit, an analysis cap, the watchdog's `hang:`, a cause
+    /// word this suite does not know yet, or any other `Error:` line.
+    Failure,
+    /// Progress, warnings and notes.
+    Other,
+}
+
+/// Classify a stderr line. Every incomplete-scan line is a [`Line::Failure`]
+/// unless it is listed here as tolerated: this is an allowlist, so a new
+/// cause or message fails the suite until someone decides it is benign.
+fn classify(line: &str) -> Line {
+    let Some(error) = line.strip_prefix("Error: ") else {
+        return Line::Other;
+    };
+    if error.starts_with("input skipped (") {
+        Line::Refused
+    } else if error.starts_with("scan INCOMPLETE") {
+        Line::Summary
+    } else {
+        Line::Failure
     }
-    ["rule failure (", "file failure (", "prescan failure ("]
-        .iter()
-        .any(|p| line.starts_with(p))
-        && ["(crashed)", "(step limit)", "(time limit)"]
-            .iter()
-            .any(|c| line.contains(c))
 }
 
 /// Which case a stderr line names: the longest case path the line holds,
@@ -735,7 +769,10 @@ fn case_named<'a>(cases: &'a [Case], line: &str) -> Option<&'a Case> {
 
 /// Keep the inputs that failed, with their recipes, and say where.
 fn keep_failures(label: &str, failed: &[&Case]) -> PathBuf {
-    let keep = repo().join("target/robustness-failures").join(label);
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(|d| repo().join(d))
+        .unwrap_or_else(|| repo().join("target"));
+    let keep = target.join("robustness-failures").join(label);
     let _ = std::fs::remove_dir_all(&keep);
     std::fs::create_dir_all(&keep).unwrap();
     let mut index = String::new();
@@ -749,7 +786,7 @@ fn keep_failures(label: &str, failed: &[&Case]) -> PathBuf {
 
 /// Write `cases` to a fresh directory, scan it, and fail with every bug line,
 /// the case and recipe behind each, and how to reproduce the run.
-fn assert_scans_cleanly(label: &str, cases: &[Case], how: &str) {
+fn assert_scans_cleanly(label: &str, cases: &[Case], how: &str, limit: Duration) {
     let dir = tempfile::tempdir().unwrap();
     let mut names = BTreeMap::new();
     for c in cases {
@@ -762,13 +799,14 @@ fn assert_scans_cleanly(label: &str, cases: &[Case], how: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, &c.bytes).unwrap();
     }
-    let scan = scan_dir(dir.path());
+    let scan = scan_dir(dir.path(), limit);
 
     let mut problems: Vec<String> = Vec::new();
     let mut failed: Vec<&Case> = Vec::new();
     match &scan.end {
-        End::TimedOut => problems.push(format!(
-            "the scan did not finish within {SCAN_WALL_LIMIT:?} and was killed"
+        End::TimedOut(limit) => problems.push(format!(
+            "the scan did not finish within {limit:?} and was killed \
+             (AURORA_LINT_ROBUSTNESS_WALL_SECS raises the limit)"
         )),
         End::Signalled(how) => problems.push(format!(
             "the scan was ended by a signal ({how}); a stack overflow aborts \
@@ -780,28 +818,33 @@ fn assert_scans_cleanly(label: &str, cases: &[Case], how: &str) {
         }
         End::Exited(_) => {}
     }
+    let mut refusals = 0;
     for line in scan.stderr.lines() {
         let case = case_named(cases, line);
-        if is_bug_line(line) {
-            problems.push(line.to_string());
-            failed.extend(case);
-        } else if line.contains("input skipped (") && case.is_none_or(|c| c.refuse == Refuse::Never)
-        {
-            problems.push(format!("refused a source file: {line}"));
-            failed.extend(case);
+        match classify(line) {
+            Line::Refused if case.is_some_and(|c| c.refuse != Refuse::Never) => refusals += 1,
+            Line::Refused => {
+                problems.push(format!("refused a source file: {line}"));
+                failed.extend(case);
+            }
+            Line::Failure => {
+                problems.push(line.to_string());
+                failed.extend(case);
+            }
+            Line::Summary | Line::Other => {}
         }
     }
     for c in cases.iter().filter(|c| c.refuse == Refuse::Must) {
         if !scan.stderr.lines().any(|l| {
-            l.contains("input skipped (") && case_named(cases, l).is_some_and(|x| x.name == c.name)
+            classify(l) == Line::Refused && case_named(cases, l).is_some_and(|x| x.name == c.name)
         }) {
             problems.push(format!("{} ({}) was not refused", c.name, c.recipe));
         }
     }
-    // Exit 3 is right only when the one thing incomplete is a refused file.
-    if scan.end == End::Exited(3) && problems.is_empty() && !scan.stderr.contains("input skipped (")
-    {
-        problems.push("exit 3 with no failure line".into());
+    // Exit 3 is right only when the one thing incomplete is a file the
+    // input guard was meant to refuse.
+    if scan.end == End::Exited(3) && problems.is_empty() && refusals == 0 {
+        problems.push("exit 3 with no failure line this suite recognises".into());
     }
     if problems.is_empty() {
         return;
@@ -847,6 +890,7 @@ fn malformed_input_table_scans_without_a_crash() {
         "table",
         &cases,
         &format!("AURORA_LINT_ROBUSTNESS_SEED={seed}"),
+        wall_limit(SCAN_WALL_LIMIT),
     );
 }
 
@@ -860,6 +904,7 @@ fn mutated_rule_fixtures_scan_without_a_crash() {
         "mutants",
         &cases,
         &format!("AURORA_LINT_ROBUSTNESS_SEED={seed} AURORA_LINT_ROBUSTNESS_MUTANTS={count}"),
+        wall_limit(SCAN_WALL_LIMIT),
     );
 }
 
@@ -868,8 +913,11 @@ fn mutated_rule_fixtures_scan_without_a_crash() {
 /// showed one rule crashing on another rule's fixtures, nor what only a
 /// many-file scan reaches (the cross-file prescan, the worker pool).
 ///
-/// About ten minutes in a debug build, so it runs in CI's release
-/// robustness job rather than in every `cargo test`.
+/// Ten minutes or more in a debug build, and growing with every fixture
+/// added, so it runs in CI's release robustness job rather than in every
+/// `cargo test`. It is also the only run that scans the fixtures written
+/// for fixed crashes under every rule, so it is what catches those
+/// regressions.
 #[test]
 #[ignore = "every fixture under every rule: run in release with --ignored (CI robustness job)"]
 fn every_rule_fixture_scans_under_every_rule() {
@@ -884,7 +932,12 @@ fn every_rule_fixture_scans_under_every_rule() {
             Case::new(name, std::fs::read(&p).unwrap(), "fixture, unchanged")
         })
         .collect();
-    assert_scans_cleanly("fixtures", &cases, "every rule fixture");
+    assert_scans_cleanly(
+        "fixtures",
+        &cases,
+        "every rule fixture",
+        wall_limit(FIXTURES_WALL_LIMIT),
+    );
 }
 
 /// Inputs too large or too deep for every `cargo test`: generated at test
@@ -992,7 +1045,12 @@ fn large_and_deep_inputs_are_refused_or_analysed_within_budget() {
     for c in cases {
         let name = c.name.clone();
         let result = std::panic::catch_unwind(|| {
-            assert_scans_cleanly("large", std::slice::from_ref(&c), "large case")
+            assert_scans_cleanly(
+                "large",
+                std::slice::from_ref(&c),
+                "large case",
+                wall_limit(SCAN_WALL_LIMIT),
+            )
         });
         if let Err(e) = result {
             let msg = e
