@@ -1138,6 +1138,11 @@ fn one_rule_manifest(dir: &Path, rule_id: &str) -> &'static str {
 /// loaded runner, not for growth.
 const SIZE_SERIES_MAX_RATIO: f64 = 14.0;
 
+/// Scans per size in the size series, of which the fastest counts. Other
+/// tests share the runner while this one runs, and the fastest of several
+/// scans is the one least slowed by them.
+const SIZE_SERIES_RUNS: usize = 3;
+
 /// A file of `bytes` bytes of one-line functions.
 fn one_line_functions(bytes: usize) -> Vec<u8> {
     let mut out = String::new();
@@ -1159,24 +1164,30 @@ fn define_chain(depth: usize) -> Vec<u8> {
     out.into_bytes()
 }
 
-/// Scan one generated file alone under one rule, and return how long it
-/// took. A scan that does not finish cleanly fails the test outright.
+/// Scan one generated file alone under one rule [`SIZE_SERIES_RUNS`] times,
+/// and return the fastest scan's time. A scan that does not finish cleanly
+/// fails the test outright.
 fn time_one_file(name: &str, bytes: Vec<u8>, rule_id: &str) -> Duration {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(name), bytes).unwrap();
     let manifest = one_rule_manifest(dir.path(), rule_id);
-    let scan = scan_dir_with(dir.path(), manifest, wall_limit(SCAN_WALL_LIMIT));
-    assert!(
-        matches!(scan.end, End::Exited(0 | 1)),
-        "{name} under {rule_id} did not finish cleanly; stderr tail:\n{}",
-        scan.stderr
-            .lines()
-            .rev()
-            .take(10)
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-    scan.elapsed
+    (0..SIZE_SERIES_RUNS)
+        .map(|_| {
+            let scan = scan_dir_with(dir.path(), manifest, wall_limit(SCAN_WALL_LIMIT));
+            assert!(
+                matches!(scan.end, End::Exited(0 | 1)),
+                "{name} under {rule_id} did not finish cleanly; stderr tail:\n{}",
+                scan.stderr
+                    .lines()
+                    .rev()
+                    .take(10)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            scan.elapsed
+        })
+        .min()
+        .unwrap()
 }
 
 /// Generated inputs at two sizes, the larger eight times the smaller, each
