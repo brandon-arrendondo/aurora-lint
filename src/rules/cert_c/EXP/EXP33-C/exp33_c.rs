@@ -24,6 +24,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
 
+/// Callee name to the parameter indices it dereferences without writing.
+type ReadOnlyDerefFns = HashMap<String, HashSet<usize>>;
+
 pub struct Exp33C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     /// File-scope static variable init states (collected at translation_unit level).
@@ -184,6 +187,29 @@ impl Exp33C {
             .collect()
     }
 
+    /// The init-state configuration every function of the current file is
+    /// analysed with, and the read-only-dereference map it carries: built
+    /// from the per-file state `check` sets at the translation unit and the
+    /// project's summaries.
+    fn file_init_config(&self) -> (init_state::InitAnalysisConfig, ReadOnlyDerefFns) {
+        let read_only_fns = self.build_read_only_deref_fns();
+        let config = init_state::InitAnalysisConfig {
+            conditionally_init_fns: self.conditionally_init_fns.borrow().clone(),
+            read_only_deref_fns: read_only_fns.clone(),
+            file_scope_constants: self.file_scope_constants.borrow().clone(),
+            macro_output_params: self.macro_output_params.borrow().clone(),
+            macro_untouched_params: self.macro_untouched_params.borrow().clone(),
+            cross_file_output_params: self.build_cross_file_output_params(),
+            cross_file_conditional_output_params: self.build_cross_file_conditional_output_params(),
+            cross_file_conditional_output_return_correlation: self
+                .build_cross_file_conditional_output_return_correlation(),
+            static_storage_not_zeroed: !self.settings.borrow().flag("static_zero_init"),
+            macro_aliases: Arc::clone(&self.file_macro_aliases.borrow()),
+            function_macros: Arc::clone(&self.file_function_macros.borrow()),
+        };
+        (config, read_only_fns)
+    }
+
     /// Build the read-only dereference map from cross-file summaries.
     /// Returns functions that dereference a pointer param without modifying it.
     ///
@@ -212,7 +238,7 @@ impl Exp33C {
     /// be general points-to/alias analysis for function pointers, which the
     /// design doc explicitly declines (piece (c), same precedent as
     /// `docs/design/cfg-substrate-adoption-decision.md`).
-    fn build_read_only_deref_fns(&self) -> HashMap<String, HashSet<usize>> {
+    fn build_read_only_deref_fns(&self) -> ReadOnlyDerefFns {
         let summaries = self.cross_file_summaries.borrow();
         let mut result = HashMap::new();
         for (name, summary) in summaries.iter() {
@@ -380,12 +406,18 @@ impl CertRule for Exp33C {
         let cfgs = self.function_cfgs.borrow();
 
         let root = *node;
+        // What every function of the file is analysed with: built from the
+        // per-file state the translation_unit branch sets and the project's
+        // summaries, neither of which changes between two functions, so it
+        // is built at the first function after that branch and reused.
+        let mut file_config: Option<(init_state::InitAnalysisConfig, ReadOnlyDerefFns)> = None;
         for n in
             query::find_descendants_of_kinds(*node, &["translation_unit", "function_definition"])
         {
             let node = &n;
             // At translation_unit level: collect file-scope statics and pre-scan functions
             if node.kind() == "translation_unit" {
+                file_config = None;
                 let statics = init_state::collect_file_scope_statics(node, source);
                 *self.file_scope_statics.borrow_mut() = statics;
 
@@ -484,31 +516,10 @@ impl CertRule for Exp33C {
 
                     // Run CFG-based init-state dataflow
                     let statics = self.file_scope_statics.borrow();
-                    let cond_fns = self.conditionally_init_fns.borrow();
-                    let read_only_fns = self.build_read_only_deref_fns();
-                    let cross_file_output_params = self.build_cross_file_output_params();
-                    let cross_file_conditional_output_params =
-                        self.build_cross_file_conditional_output_params();
-                    let cross_file_conditional_output_return_correlation =
-                        self.build_cross_file_conditional_output_return_correlation();
-                    let file_constants = self.file_scope_constants.borrow();
-                    let macro_out = self.macro_output_params.borrow();
-                    let macro_untouched = self.macro_untouched_params.borrow();
-                    let config = init_state::InitAnalysisConfig {
-                        conditionally_init_fns: cond_fns.clone(),
-                        read_only_deref_fns: read_only_fns.clone(),
-                        file_scope_constants: file_constants.clone(),
-                        macro_output_params: macro_out.clone(),
-                        macro_untouched_params: macro_untouched.clone(),
-                        cross_file_output_params,
-                        cross_file_conditional_output_params,
-                        cross_file_conditional_output_return_correlation,
-                        static_storage_not_zeroed: !self.settings.borrow().flag("static_zero_init"),
-                        macro_aliases: Arc::clone(&self.file_macro_aliases.borrow()),
-                        function_macros: Arc::clone(&self.file_function_macros.borrow()),
-                    };
+                    let (config, read_only_fns) =
+                        &*file_config.get_or_insert_with(|| self.file_init_config());
                     let analysis = init_state::analyze_init_states_with_statics(
-                        cfg, node, source, &statics, &config,
+                        cfg, node, source, &statics, config,
                     );
 
                     // Walk AST for read sites and check each against dataflow result
@@ -522,7 +533,7 @@ impl CertRule for Exp33C {
                         &body,
                         &mut violations,
                         &mut reported,
-                        &config,
+                        config,
                     );
 
                     check_append_call_reads(
@@ -533,7 +544,7 @@ impl CertRule for Exp33C {
                         &body,
                         &mut violations,
                         &mut reported,
-                        &config,
+                        config,
                     );
 
                     // Check for cross-file calls passing &uninit_var to functions
@@ -545,7 +556,7 @@ impl CertRule for Exp33C {
                             &analysis,
                             cfg,
                             &body,
-                            &read_only_fns,
+                            read_only_fns,
                             &mut violations,
                             &mut reported,
                         );
