@@ -2887,6 +2887,7 @@ impl Int32C {
             &self.current_macros.borrow(),
             bits,
             ranges.as_ref(),
+            None,
         )
     }
 

@@ -2173,6 +2173,64 @@ fn try_evaluate_binary_text(text: &str, macros: &MacroConstantMap) -> Option<i64
 
 /// Try to evaluate an AST expression node to an exact integer value.
 pub fn try_evaluate_expr(node: &Node, source: &str, macros: &MacroConstantMap) -> Option<i64> {
+    try_evaluate_expr_with(node, source, macros, None)
+}
+
+/// Facts about the sub-expressions of one tree under one macro table,
+/// remembered by node id for a caller that evaluates every operator of an
+/// expression: each evaluation otherwise walks its operand's whole subtree
+/// again, so a long `1 + 1 + ...` chain costs the square of its length, and
+/// [`try_evaluate_range`], which tries [`try_evaluate_expr`] at every level
+/// of its own recursion, the cube.
+#[derive(Default)]
+pub struct ConstMemo {
+    values: std::cell::RefCell<HashMap<usize, Option<i64>>>,
+    has_identifier: std::cell::RefCell<HashMap<usize, bool>>,
+}
+
+impl ConstMemo {
+    /// Forget everything, before asking about another tree or macro table.
+    pub fn clear(&self) {
+        self.values.borrow_mut().clear();
+        self.has_identifier.borrow_mut().clear();
+    }
+
+    /// Whether an `identifier` is in `node`'s subtree (or is `node`).
+    fn has_identifier(&self, node: &Node) -> bool {
+        if let Some(&known) = self.has_identifier.borrow().get(&node.id()) {
+            return known;
+        }
+        let known =
+            node.kind() == "identifier" || node.child_nodes().any(|c| self.has_identifier(&c));
+        self.has_identifier.borrow_mut().insert(node.id(), known);
+        known
+    }
+}
+
+/// [`try_evaluate_expr`], remembering each node's value in `memo` when given.
+/// The same answer.
+fn try_evaluate_expr_with(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    memo: Option<&ConstMemo>,
+) -> Option<i64> {
+    if let Some(known) = memo.and_then(|m| m.values.borrow().get(&node.id()).copied()) {
+        return known;
+    }
+    let value = try_evaluate_expr_uncached(node, source, macros, memo);
+    if let Some(m) = memo {
+        m.values.borrow_mut().insert(node.id(), value);
+    }
+    value
+}
+
+fn try_evaluate_expr_uncached(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    memo: Option<&ConstMemo>,
+) -> Option<i64> {
     match node.kind() {
         "number_literal" => {
             let text = node.utf8_text(source.as_bytes()).ok()?;
@@ -2198,7 +2256,7 @@ pub fn try_evaluate_expr(node: &Node, source: &str, macros: &MacroConstantMap) -
         }
         "parenthesized_expression" => {
             let inner = node.child(1)?; // skip '('
-            try_evaluate_expr(&inner, source, macros)
+            try_evaluate_expr_with(&inner, source, macros, memo)
         }
         "binary_expression" => {
             let left = node.child_by_field_name("left")?;
@@ -2228,8 +2286,8 @@ pub fn try_evaluate_expr(node: &Node, source: &str, macros: &MacroConstantMap) -
                 None
             })?;
             let op_text = op.utf8_text(source.as_bytes()).ok()?;
-            let lv = try_evaluate_expr(&left, source, macros)?;
-            let rv = try_evaluate_expr(&right, source, macros)?;
+            let lv = try_evaluate_expr_with(&left, source, macros, memo)?;
+            let rv = try_evaluate_expr_with(&right, source, macros, memo)?;
             match op_text {
                 "+" => lv.checked_add(rv),
                 "-" => lv.checked_sub(rv),
@@ -2277,7 +2335,7 @@ pub fn try_evaluate_expr(node: &Node, source: &str, macros: &MacroConstantMap) -
                 .child_by_field_name("operator")
                 .or_else(|| node.child(0))?;
             let op_text = op.utf8_text(source.as_bytes()).ok()?;
-            let val = try_evaluate_expr(&arg, source, macros)?;
+            let val = try_evaluate_expr_with(&arg, source, macros, memo)?;
             match op_text {
                 "-" => val.checked_neg(),
                 "+" => Some(val),
@@ -2289,7 +2347,7 @@ pub fn try_evaluate_expr(node: &Node, source: &str, macros: &MacroConstantMap) -
         "cast_expression" => {
             // (type)expr — evaluate the inner expression
             let value = node.child_by_field_name("value")?;
-            try_evaluate_expr(&value, source, macros)
+            try_evaluate_expr_with(&value, source, macros, memo)
         }
         "sizeof_expression" => {
             // sizeof(type) or sizeof(expr)
@@ -2492,7 +2550,7 @@ pub fn try_evaluate_range(
     macros: &MacroConstantMap,
     var_ranges: &VarRangeMap,
 ) -> Option<ValueRange> {
-    try_evaluate_range_inner(node, source, macros, var_ranges, None)
+    try_evaluate_range_inner(node, source, macros, var_ranges, None, None)
 }
 
 /// A lower bound on the value of `node`, for the questions that need no upper
@@ -2514,7 +2572,21 @@ pub fn try_evaluate_lower_bound(
     macros: &MacroConstantMap,
     var_ranges: &VarRangeMap,
 ) -> Option<i64> {
-    if let Some(val) = try_evaluate_expr(node, source, macros) {
+    try_evaluate_lower_bound_with(node, source, macros, var_ranges, None)
+}
+
+/// [`try_evaluate_lower_bound`], remembering constant values in `memo` when
+/// given. The bound itself depends on `var_ranges` and is not remembered.
+/// The same answer.
+fn try_evaluate_lower_bound_with(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    var_ranges: &VarRangeMap,
+    memo: Option<&ConstMemo>,
+) -> Option<i64> {
+    let lower = |n: &Node| try_evaluate_lower_bound_with(n, source, macros, var_ranges, memo);
+    if let Some(val) = try_evaluate_expr_with(node, source, macros, memo) {
         return Some(val);
     }
     match node.kind() {
@@ -2523,27 +2595,15 @@ pub fn try_evaluate_lower_bound(
             .map(|range| range.min),
         // A complete type occupies at least one byte, whatever its width.
         "sizeof_expression" => Some(1),
-        "parenthesized_expression" => {
-            try_evaluate_lower_bound(&node.child(1)?, source, macros, var_ranges)
-        }
+        "parenthesized_expression" => lower(&node.child(1)?),
         // `x += n` and `x *= n` over operands whose lower ends are known.
         "assignment_expression" => {
             let op = assignment_operator_text(node, source);
-            let right = try_evaluate_lower_bound(
-                &node.child_by_field_name("right")?,
-                source,
-                macros,
-                var_ranges,
-            )?;
+            let right = lower(&node.child_by_field_name("right")?)?;
             if op == "=" {
                 return Some(right);
             }
-            let left = try_evaluate_lower_bound(
-                &node.child_by_field_name("left")?,
-                source,
-                macros,
-                var_ranges,
-            )?;
+            let left = lower(&node.child_by_field_name("left")?)?;
             if left < 0 || right < 0 {
                 return None;
             }
@@ -2556,18 +2616,8 @@ pub fn try_evaluate_lower_bound(
         "binary_expression" => {
             let op = node.child_by_field_name("operator")?;
             let op = op.utf8_text(source.as_bytes()).ok()?;
-            let left = try_evaluate_lower_bound(
-                &node.child_by_field_name("left")?,
-                source,
-                macros,
-                var_ranges,
-            )?;
-            let right = try_evaluate_lower_bound(
-                &node.child_by_field_name("right")?,
-                source,
-                macros,
-                var_ranges,
-            )?;
+            let left = lower(&node.child_by_field_name("left")?)?;
+            let right = lower(&node.child_by_field_name("right")?)?;
             if left < 0 || right < 0 {
                 return None;
             }
@@ -2597,7 +2647,14 @@ pub fn try_evaluate_range_expanding(
     var_ranges: &VarRangeMap,
     function_macros: &HashMap<String, FunctionMacro>,
 ) -> Option<ValueRange> {
-    try_evaluate_range_inner(node, source, macros, var_ranges, Some(function_macros))
+    try_evaluate_range_inner(
+        node,
+        source,
+        macros,
+        var_ranges,
+        Some(function_macros),
+        None,
+    )
 }
 
 fn try_evaluate_range_inner(
@@ -2606,9 +2663,10 @@ fn try_evaluate_range_inner(
     macros: &MacroConstantMap,
     var_ranges: &VarRangeMap,
     fmacros: Option<&HashMap<String, FunctionMacro>>,
+    memo: Option<&ConstMemo>,
 ) -> Option<ValueRange> {
     // First try exact evaluation
-    if let Some(val) = try_evaluate_expr(node, source, macros) {
+    if let Some(val) = try_evaluate_expr_with(node, source, macros, memo) {
         return Some(ValueRange::exact(val));
     }
 
@@ -2625,7 +2683,7 @@ fn try_evaluate_range_inner(
         }
         "parenthesized_expression" => {
             let inner = node.child(1)?;
-            try_evaluate_range_inner(&inner, source, macros, var_ranges, fmacros)
+            try_evaluate_range_inner(&inner, source, macros, var_ranges, fmacros, memo)
         }
         "binary_expression" => {
             let left = node.child_by_field_name("left")?;
@@ -2648,8 +2706,9 @@ fn try_evaluate_range_inner(
             // prove that `(SHA256_WORD_BITS - b) & SHA256_WORD_MASK` ∈ [0, 31]
             // when SHA256_WORD_MASK = 31.
             if op_text == "&" {
-                let lr = try_evaluate_range_inner(&left, source, macros, var_ranges, fmacros);
-                let rr = try_evaluate_range_inner(&right, source, macros, var_ranges, fmacros);
+                let lr = try_evaluate_range_inner(&left, source, macros, var_ranges, fmacros, memo);
+                let rr =
+                    try_evaluate_range_inner(&right, source, macros, var_ranges, fmacros, memo);
                 return match (lr, rr) {
                     (Some(l), Some(r)) => l.bitand(&r),
                     // One side unknown, other is a known non-negative constant mask.
@@ -2663,8 +2722,8 @@ fn try_evaluate_range_inner(
                 };
             }
 
-            let lr = try_evaluate_range_inner(&left, source, macros, var_ranges, fmacros)?;
-            let rr = try_evaluate_range_inner(&right, source, macros, var_ranges, fmacros)?;
+            let lr = try_evaluate_range_inner(&left, source, macros, var_ranges, fmacros, memo)?;
+            let rr = try_evaluate_range_inner(&right, source, macros, var_ranges, fmacros, memo)?;
             match op_text {
                 "+" => lr.add(&rr),
                 "-" => lr.sub(&rr),
@@ -2684,12 +2743,12 @@ fn try_evaluate_range_inner(
         "assignment_expression" => {
             let left = node.child_by_field_name("left")?;
             let right = node.child_by_field_name("right")?;
-            let rr = try_evaluate_range(&right, source, macros, var_ranges)?;
+            let rr = try_evaluate_range_inner(&right, source, macros, var_ranges, None, memo)?;
             let op_text = assignment_operator_text(node, source);
             if op_text == "=" {
                 return Some(rr);
             }
-            let lr = try_evaluate_range(&left, source, macros, var_ranges)?;
+            let lr = try_evaluate_range_inner(&left, source, macros, var_ranges, None, memo)?;
             match op_text.as_str() {
                 "+=" => lr.add(&rr),
                 "-=" => lr.sub(&rr),
@@ -2707,7 +2766,7 @@ fn try_evaluate_range_inner(
                 .child_by_field_name("operator")
                 .or_else(|| node.child(0))?;
             let op_text = op.utf8_text(source.as_bytes()).ok()?;
-            let r = try_evaluate_range_inner(&arg, source, macros, var_ranges, fmacros)?;
+            let r = try_evaluate_range_inner(&arg, source, macros, var_ranges, fmacros, memo)?;
             match op_text {
                 "-" => Some(ValueRange::new(r.max.checked_neg()?, r.min.checked_neg()?)),
                 "+" => Some(r),
@@ -2716,7 +2775,7 @@ fn try_evaluate_range_inner(
         }
         "cast_expression" => {
             let value = node.child_by_field_name("value")?;
-            try_evaluate_range_inner(&value, source, macros, var_ranges, fmacros)
+            try_evaluate_range_inner(&value, source, macros, var_ranges, fmacros, memo)
         }
         "sizeof_expression" => {
             let type_text = sizeof_node_type(node, source)?;
@@ -2762,7 +2821,7 @@ fn try_evaluate_range_inner(
                 None
             })?;
             let op_text = op.utf8_text(source.as_bytes()).ok()?;
-            let r = try_evaluate_range_inner(&arg, source, macros, var_ranges, fmacros)?;
+            let r = try_evaluate_range_inner(&arg, source, macros, var_ranges, fmacros, memo)?;
             let one = ValueRange::exact(1);
             match op_text {
                 "++" => r.add(&one),
@@ -2866,7 +2925,7 @@ fn evaluate_snippet_range(
         .named_child(0)?
         .child_by_field_name("declarator")?;
     let value = declarator.child_by_field_name("value")?;
-    try_evaluate_range_inner(&value, &snippet, macros, var_ranges, None)
+    try_evaluate_range_inner(&value, &snippet, macros, var_ranges, None, None)
 }
 
 /// Search the source for a struct field declaration matching `field_name` and
@@ -3295,7 +3354,7 @@ fn resolve_var_rhs(
     fmacros: Option<&HashMap<String, FunctionMacro>>,
     depth: u32,
 ) -> Option<ValueRange> {
-    if let Some(r) = try_evaluate_range_inner(rhs, source, macros, loop_ranges, fmacros) {
+    if let Some(r) = try_evaluate_range_inner(rhs, source, macros, loop_ranges, fmacros, None) {
         return Some(r);
     }
     if rhs.kind() == "identifier" && depth < 3 {
@@ -3597,7 +3656,7 @@ pub fn expression_fits_in_signed(
     bits: u32,
 ) -> bool {
     let loop_ranges = extract_loop_var_ranges(node, source, macros);
-    expression_fits_in_signed_given(node, source, macros, bits, loop_ranges)
+    expression_fits_in_signed_given(node, source, macros, bits, loop_ranges, None)
 }
 
 /// [`expression_fits_in_signed`] given the node's loop ranges
@@ -3608,11 +3667,15 @@ fn expression_fits_in_signed_given(
     macros: &MacroConstantMap,
     bits: u32,
     loop_ranges: VarRangeMap,
+    memo: Option<&ConstMemo>,
 ) -> bool {
+    let range_of = |n: &Node, var_ranges: &VarRangeMap| {
+        try_evaluate_range_inner(n, source, macros, var_ranges, None, memo)
+    };
     let mut var_ranges = loop_ranges.clone();
-    resolve_identifiers_in_expr(node, source, macros, &loop_ranges, &mut var_ranges);
+    resolve_identifiers_in_expr_with(node, source, macros, &loop_ranges, &mut var_ranges, memo);
 
-    if let Some(range) = try_evaluate_range(node, source, macros, &var_ranges) {
+    if let Some(range) = range_of(node, &var_ranges) {
         // For left shift: shifting negative values is UB even if result fits
         if node.kind() == "binary_expression" {
             if is_shift_operator(node, source) && range.min < 0 {
@@ -3621,7 +3684,7 @@ fn expression_fits_in_signed_given(
             // Also check if left operand of shift is negative
             if is_shift_operator(node, source) {
                 if let Some(left) = node.child_by_field_name("left") {
-                    if let Some(lr) = try_evaluate_range(&left, source, macros, &var_ranges) {
+                    if let Some(lr) = range_of(&left, &var_ranges) {
                         if lr.min < 0 {
                             return false;
                         }
@@ -3660,7 +3723,7 @@ pub fn expression_fits_in_signed_vra(
     bits: u32,
     vra_var_ranges: Option<&VarRangeMap>,
 ) -> bool {
-    expression_fits_in_signed_vra_within(node, source, macros, bits, vra_var_ranges, || {
+    expression_fits_in_signed_vra_within(node, source, macros, bits, vra_var_ranges, None, || {
         extract_loop_var_ranges(node, source, macros)
     })
 }
@@ -3675,8 +3738,9 @@ pub fn expression_fits_in_signed_vra_at(
     macros: &MacroConstantMap,
     bits: u32,
     vra_var_ranges: Option<&VarRangeMap>,
+    memo: Option<&ConstMemo>,
 ) -> bool {
-    expression_fits_in_signed_vra_within(node, source, macros, bits, vra_var_ranges, || {
+    expression_fits_in_signed_vra_within(node, source, macros, bits, vra_var_ranges, memo, || {
         loop_var_ranges_within(innermost_loop, source, macros)
     })
 }
@@ -3687,18 +3751,22 @@ fn expression_fits_in_signed_vra_within(
     macros: &MacroConstantMap,
     bits: u32,
     vra_var_ranges: Option<&VarRangeMap>,
+    memo: Option<&ConstMemo>,
     loop_ranges: impl FnOnce() -> VarRangeMap,
 ) -> bool {
     // Try VRA-provided ranges first
     if let Some(var_ranges) = vra_var_ranges {
-        if let Some(range) = try_evaluate_range(node, source, macros, var_ranges) {
+        if let Some(range) = try_evaluate_range_inner(node, source, macros, var_ranges, None, memo)
+        {
             // For left shift: shifting negative values is UB even if result fits
             if node.kind() == "binary_expression" && is_shift_operator(node, source) {
                 if range.min < 0 {
                     return false;
                 }
                 if let Some(left) = node.child_by_field_name("left") {
-                    if let Some(lr) = try_evaluate_range(&left, source, macros, var_ranges) {
+                    if let Some(lr) =
+                        try_evaluate_range_inner(&left, source, macros, var_ranges, None, memo)
+                    {
                         if lr.min < 0 {
                             return false;
                         }
@@ -3709,7 +3777,7 @@ fn expression_fits_in_signed_vra_within(
         }
     }
     // Fallback to syntactic analysis
-    expression_fits_in_signed_given(node, source, macros, bits, loop_ranges())
+    expression_fits_in_signed_given(node, source, macros, bits, loop_ranges(), memo)
 }
 
 /// Returns true only when the expression *definitely* overflows the signed
@@ -3731,6 +3799,22 @@ pub fn expression_overflows_signed_vra(
     bits: u32,
     vra_var_ranges: Option<&VarRangeMap>,
 ) -> bool {
+    expression_overflows_signed_vra_with(node, source, macros, bits, vra_var_ranges, None)
+}
+
+/// [`expression_overflows_signed_vra`], remembering constant values in `memo`
+/// when given. The same answer.
+pub fn expression_overflows_signed_vra_with(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    bits: u32,
+    vra_var_ranges: Option<&VarRangeMap>,
+    memo: Option<&ConstMemo>,
+) -> bool {
+    let range_of = |n: &Node, var_ranges: &VarRangeMap| {
+        try_evaluate_range_inner(n, source, macros, var_ranges, None, memo)
+    };
     if bits == 0 || bits > 63 {
         return false;
     }
@@ -3741,14 +3825,14 @@ pub fn expression_overflows_signed_vra(
         // band check below.
         if node.kind() == "binary_expression" && is_left_shift(node, source) {
             if let Some(left) = node.child_by_field_name("left") {
-                if let Some(lr) = try_evaluate_range(&left, source, macros, var_ranges) {
+                if let Some(lr) = range_of(&left, var_ranges) {
                     if lr.max < 0 {
                         return true;
                     }
                 }
             }
         }
-        if let Some(range) = try_evaluate_range(node, source, macros, var_ranges) {
+        if let Some(range) = range_of(node, var_ranges) {
             let signed_max = (1i64 << (bits - 1)) - 1;
             let signed_min = -(1i64 << (bits - 1));
             // Definite overflow: the whole range is above max or below min.
@@ -3757,7 +3841,7 @@ pub fn expression_overflows_signed_vra(
         // The range itself left `i64` (a type whose width the data model
         // leaves open), but the question is only whether the LOWER end is
         // already above the maximum.
-        if let Some(low) = try_evaluate_lower_bound(node, source, macros, var_ranges) {
+        if let Some(low) = try_evaluate_lower_bound_with(node, source, macros, var_ranges, memo) {
             return low > (1i64 << (bits - 1)) - 1;
         }
     }
@@ -3847,6 +3931,22 @@ pub fn resolve_identifiers_in_expr(
     loop_ranges: &VarRangeMap,
     var_ranges: &mut VarRangeMap,
 ) {
+    resolve_identifiers_in_expr_with(node, source, macros, loop_ranges, var_ranges, None)
+}
+
+/// [`resolve_identifiers_in_expr`], skipping a subtree `memo` knows holds no
+/// identifier. The same answer.
+fn resolve_identifiers_in_expr_with(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    loop_ranges: &VarRangeMap,
+    var_ranges: &mut VarRangeMap,
+    memo: Option<&ConstMemo>,
+) {
+    if memo.is_some_and(|m| !m.has_identifier(node)) {
+        return;
+    }
     if node.kind() == "identifier" {
         let name = node.utf8_text(source.as_bytes()).unwrap_or("");
         if !name.is_empty() && !macros.contains_key(name) && !var_ranges.contains_key(name) {
@@ -3856,7 +3956,7 @@ pub fn resolve_identifiers_in_expr(
         }
     }
     for child in node.child_nodes() {
-        resolve_identifiers_in_expr(&child, source, macros, loop_ranges, var_ranges);
+        resolve_identifiers_in_expr_with(&child, source, macros, loop_ranges, var_ranges, memo);
     }
 }
 
