@@ -7,7 +7,7 @@
 int size_of(int kind) {
   switch (kind) {
     case 1:
-      return 4;
+      return 4; /* the kind-1 size */
       break;
     default:
       return 8;

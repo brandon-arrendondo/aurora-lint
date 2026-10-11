@@ -333,6 +333,10 @@ impl Msc37C {
                     "while_statement" | "for_statement" | "do_statement" => {
                         values.push(loop_never_falls_through(&node, source));
                     }
+                    // A `goto` back to a label above it (`goto retry;`) runs
+                    // that code again instead of reaching the end; one that
+                    // jumps forward may land anywhere.
+                    "goto_statement" => values.push(goto_goes_back(&node, source)),
                     "compound_statement" => match last_statement_of_block(&node) {
                         Some(stmt)
                             if self.is_noreturn_call_statement(&stmt, source, noreturn_names) =>
@@ -392,7 +396,7 @@ impl Msc37C {
                         // else_clause wraps the actual statement (compound_statement or single stmt)
                         let inner = (0..node.child_count())
                             .filter_map(|i| node.child(i))
-                            .find(|child| child.kind() != "else");
+                            .find(|child| child.kind() != "else" && child.kind() != "comment");
                         match inner {
                             Some(child) => ops.push(Op::Eval(child)),
                             None => values.push(false),
@@ -692,16 +696,7 @@ fn leaves_other_than_by_return(construct: &Node, body: &Node, source: &str) -> b
                 continue;
             }
             "break_statement" => {
-                let dead = node.prev_named_sibling().is_some_and(|prev| {
-                    matches!(
-                        prev.kind(),
-                        "return_statement"
-                            | "goto_statement"
-                            | "continue_statement"
-                            | "break_statement"
-                    )
-                });
-                if !dead {
+                if !is_dead_break(&node, source) {
                     return true;
                 }
                 continue;
@@ -724,6 +719,60 @@ fn leaves_other_than_by_return(construct: &Node, body: &Node, source: &str) -> b
         }
     }
     false
+}
+
+/// A `break` that nothing reaches: the statement before it (comments aside)
+/// always jumps away, as in `return x; break;`, or is a conditional block
+/// whose every arm does (`#if A return 1; #else return 2; #endif break;`).
+fn is_dead_break(node: &Node, source: &str) -> bool {
+    let mut before = node.prev_named_sibling();
+    while before.is_some_and(|p| p.kind() == "comment") {
+        before = before.and_then(|p| p.prev_named_sibling());
+    }
+    before.is_some_and(|prev| ends_with_jump(&prev, source))
+}
+
+/// Whether control never continues past `node` to the statement after it.
+fn ends_with_jump(node: &Node, source: &str) -> bool {
+    match node.kind() {
+        "return_statement" | "goto_statement" | "continue_statement" | "break_statement" => true,
+        "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_else" => {
+            match preproc_arm_tail(node, source) {
+                ArmTail::Both(stmt, alt) => {
+                    ends_with_jump(&stmt, source) && ends_with_jump(&alt, source)
+                }
+                ArmTail::One(stmt) => {
+                    matches!(node.kind(), "preproc_else" | "preproc_elif")
+                        && ends_with_jump(&stmt, source)
+                }
+                ArmTail::Returns => true,
+                ArmTail::Empty => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Whether the `goto` jumps to a label that starts before it.
+fn goto_goes_back(goto: &Node, source: &str) -> bool {
+    let Some(label) = goto.child_by_field_name("label") else {
+        return false;
+    };
+    let name = get_node_text(&label, source);
+    let mut function = *goto;
+    while function.kind() != "function_definition" {
+        match function.parent() {
+            Some(p) => function = p,
+            None => return false,
+        }
+    }
+    query::find_descendants_of_kind(function, "labeled_statement")
+        .into_iter()
+        .any(|l| {
+            l.start_byte() < goto.start_byte()
+                && l.child_by_field_name("label")
+                    .is_some_and(|n| get_node_text(&n, source) == name)
+        })
 }
 
 /// Whether `goto` jumps to a label after `construct` (or to one the function
@@ -773,7 +822,11 @@ fn switch_last_arm_tail<'a>(node: &Node<'a>, source: &str) -> Option<Node<'a>> {
     let last = arms.last()?;
     (0..last.named_child_count())
         .filter_map(|i| last.named_child(i))
-        .rfind(|c| !matches!(c.kind(), "comment" | "preproc_call"))
+        .rfind(|c| match c.kind() {
+            "comment" | "preproc_call" => false,
+            "break_statement" => !is_dead_break(c, source),
+            _ => true,
+        })
         .filter(|c| {
             // The arm's own label value is not a statement.
             c.kind().ends_with("_statement") || c.kind() == "compound_statement"
