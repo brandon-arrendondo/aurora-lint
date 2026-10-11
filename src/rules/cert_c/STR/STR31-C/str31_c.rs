@@ -2027,18 +2027,22 @@ impl Str31C {
             return None;
         }
 
-        // Scan only the lines within this function body, not the entire file
+        // Scan only the lines within this function body, not the entire file:
+        // the text from the start of the function's first row, which
+        // `str::lines` splits as it splits the whole file (both break rows
+        // at '\n', as tree-sitter counts them), so row `func_start + i` is its
+        // line `i`.
         let func_start = node.start_position().row;
         let func_end = node.end_position().row;
-        let lines: Vec<&str> = source.lines().collect();
+        let first_row_start = node.start_byte() - node.start_position().column;
         let mut strcat_operations: Vec<(usize, String, String)> = Vec::new(); // (line_num, dest_var, src_var)
 
         // First pass: collect strcat operations within this function's line range
-        for (line_idx, line) in lines
-            .iter()
-            .enumerate()
-            .skip(func_start)
+        for (line_idx, line) in source[first_row_start..]
+            .lines()
             .take(func_end.saturating_sub(func_start) + 1)
+            .enumerate()
+            .map(|(i, line)| (func_start + i, line))
         {
             if line.contains("strcat") {
                 if let Some((dest, src)) = self.extract_strcat_arguments(line) {
