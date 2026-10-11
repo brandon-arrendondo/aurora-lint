@@ -4,12 +4,14 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
+use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::{
     declares_static, get_identifier_from_declarator, get_node_text, static_macro_names_in_scope,
 };
 use crate::utility::cert_c::signal_handlers::RegisteredHandlers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Sig34C {
@@ -17,12 +19,16 @@ pub struct Sig34C {
     /// handlers another file registers (see
     /// `ProjectContext::signal_handlers_registered_elsewhere`).
     project: RefCell<Option<ProjectContext>>,
+    /// The run's settings: whether the environment declares persistent
+    /// signal handlers (`signal_handlers_persistent`), which EX1 needs.
+    settings: RefCell<Arc<AnalysisSettings>>,
 }
 
 impl Sig34C {
     pub fn new() -> Self {
         Self {
             project: RefCell::new(None),
+            settings: RefCell::default(),
         }
     }
 }
@@ -48,6 +54,10 @@ impl CertRule for Sig34C {
 
     fn cert_id(&self) -> &'static str {
         self.rule_id()
+    }
+
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        *self.settings.borrow_mut() = Arc::clone(settings);
     }
 
     fn set_project_context(&self, context: &ProjectContext) {
@@ -117,16 +127,21 @@ impl Sig34C {
         handler_param: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
+        let persistent = self.settings.borrow().flag("signal_handlers_persistent");
         for n in query::find_descendants_of_kind(*node, "call_expression") {
             if let Some(func_node) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&func_node, source);
                 if func_name == "signal" {
                     // SIG34-C-EX1: "For implementations with persistent
                     // signal handlers, it is safe for a handler to modify
-                    // the behavior of its OWN signal" -- i.e. signal(sig, ...)
+                    // the behavior of its own signal" -- signal(sig, ...)
                     // where `sig` is this handler's own signal-number
-                    // parameter, not some other/unrelated signal.
-                    if self.is_self_signal_modification(&n, handler_param, source) {
+                    // parameter. Persistence is implementation-defined (C11
+                    // 7.14.1.1p3, and POSIX leaves it so too), so only a
+                    // declared environment establishes it: an `#if` around
+                    // the call, `!defined(_WIN32)` in CERT's example, names
+                    // a platform, not a persistent one.
+                    if persistent && self.is_self_signal_modification(&n, handler_param, source) {
                         continue;
                     }
                     violations.push(RuleViolation {
@@ -145,18 +160,8 @@ impl Sig34C {
         }
     }
 
-    /// True if `call` is `signal(handler_param, ...)` (the handler
-    /// modifying its OWN signal, not an unrelated one) AND that call is
-    /// guarded by a platform-conditional preprocessor block (e.g. `#if
-    /// !defined(_WIN32)`). EX1 is conditioned on "implementations with
-    /// persistent signal handlers" -- portable code can't assume that
-    /// unconditionally (ISO C / Windows reset to SIG_DFL before invoking
-    /// the handler, reopening the exact race this rule guards against), so
-    /// the preprocessor guard is what actually establishes the exception's
-    /// precondition. An unguarded self-modification (verified against this
-    /// codebase's own testcases_self_reregister.c/testcases_reset_
-    /// disposition.c, which explicitly test this as a violation) stays
-    /// flagged.
+    /// True if `call` is `signal(handler_param, ...)`: the handler
+    /// modifying its own signal, not an unrelated one.
     fn is_self_signal_modification(&self, call: &Node, handler_param: &str, source: &str) -> bool {
         let Some(args) = call.child_by_field_name("arguments") else {
             return false;
@@ -165,20 +170,6 @@ impl Sig34C {
         let Some(first_arg) = args.named_children(&mut cursor).next() else {
             return false;
         };
-        if get_node_text(&first_arg, source).trim() != handler_param {
-            return false;
-        }
-
-        let mut current = call.parent();
-        while let Some(n) = current {
-            if matches!(n.kind(), "preproc_if" | "preproc_ifdef") {
-                return true;
-            }
-            if n.kind() == "function_definition" {
-                break;
-            }
-            current = n.parent();
-        }
-        false
+        get_node_text(&first_arg, source).trim() == handler_param
     }
 }

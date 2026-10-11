@@ -421,6 +421,7 @@ const HASHED_ONLY_WHEN_OVERRIDDEN: &[&str] = &[
     "env33_exec_spawn_exempt",
     "flp36_constant_assert_is_guard",
     "pre31_listed_library_calls_pure",
+    "signal_handlers_persistent",
 ];
 
 /// The value `o` takes from its source before any override.
@@ -629,6 +630,24 @@ pub static OPTIONS: &[OptionSpec] = &[
                 declaration of an identifier with external linkage, in any translation \
                 unit, denotes the same object. Declared by the user, never assumed: a \
                 Juliet testcase set is a closed program; a library is not.",
+    },
+    OptionSpec {
+        name: "signal_handlers_persistent",
+        axis: Axis::Environment,
+        scope: Scope::Contract,
+        source: Source::Declared,
+        oracle_tag: "contract:signal_handlers_persistent",
+        summary: "A handler installed with signal() stays installed while it runs: the \
+                  implementation does not reset the signal's disposition to SIG_DFL before \
+                  calling it. Then a handler may call signal() on its own signal (SIG34-C \
+                  EX1). Undeclared, the reset is assumed under every preset, and that call \
+                  reopens the window in which a second signal takes the default action.",
+        basis: "CERT SIG34-C EX1 (\"implementations with persistent signal handlers\") and \
+                SIG01-C. C11 7.14.1.1p3: whether the equivalent of signal(sig, SIG_DFL) is \
+                executed before a handler is called is implementation-defined, and \
+                POSIX.1-2024's signal() leaves it implementation-defined too, so neither a \
+                POSIX environment nor the scanning host establishes it. Declared by the \
+                user, never assumed.",
     },
     OptionSpec {
         name: "free_null_is_noop",

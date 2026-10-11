@@ -3230,6 +3230,50 @@ fn crossfile_registration_does_not_reach_a_static_namesake() {
     assert!(sig34_lines("other.c").is_empty());
 }
 
+/// SIG34-C findings in CERT's EX1 example, with or without the declared
+/// persistent-handler environment.
+fn sig34_ex1_lines(persistent: bool) -> Vec<u64> {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let handler = fixtures().join("sig34_ex1").join("handler.c");
+    let manifest = manifest_sig34();
+    let mut args = vec![
+        handler.to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ];
+    if persistent {
+        args.extend(["--set", "signal_handlers_persistent=true"]);
+    }
+    let (code, _, _) = run_aurora_lint(&args);
+    assert_eq!(code, 0);
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    let mut lines: Vec<u64> = violations
+        .iter()
+        .filter(|v| v["rule_id"] == "SIG34-C")
+        .map(|v| v["line"].as_u64().unwrap())
+        .collect();
+    lines.sort_unstable();
+    lines
+}
+
+#[test]
+fn sig34_ex1_needs_declared_persistent_handlers() {
+    // Undeclared, the `#if !defined(_WIN32)` guard does not establish
+    // persistence: both calls are reported.
+    assert_eq!(sig34_ex1_lines(false), vec![5, 10]);
+}
+
+#[test]
+fn sig34_ex1_covers_only_the_handlers_own_signal() {
+    // Declared, the handler may reset its own signal (EX1), but changing
+    // SIGUSR2's disposition is still reported.
+    assert_eq!(sig34_ex1_lines(true), vec![10]);
+}
+
 fn manifest_sig30() -> PathBuf {
     fixtures().join("manifest_sig30.toml")
 }
