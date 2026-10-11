@@ -46,6 +46,10 @@ pub struct Int33C {
     /// The run's policy and environment settings: whether an
     /// NDEBUG-strippable assert guards a division (`assert_is_guard`).
     settings: RefCell<Arc<AnalysisSettings>>,
+    /// Per file: whether every caller of a closed function passes a non-zero
+    /// value at a parameter, keyed by the function's start byte and the
+    /// parameter's index (`every_caller_passes_nonzero`).
+    caller_proofs: RefCell<HashMap<(usize, usize), bool>>,
 }
 
 impl Int33C {
@@ -60,6 +64,7 @@ impl Int33C {
             noreturn_functions: RefCell::default(),
             file_noreturn_names: RefCell::default(),
             settings: RefCell::default(),
+            caller_proofs: RefCell::default(),
         }
     }
 }
@@ -148,6 +153,8 @@ impl CertRule for Int33C {
             source,
             &settings,
         );
+
+        self.caller_proofs.borrow_mut().clear();
 
         // First pass: find division macros and zero-initialized variables
         let division_macros = self.find_division_macros(source);
@@ -384,9 +391,10 @@ impl Int33C {
             return;
         }
 
-        // INT33-C concerns INTEGER divide-by-zero (UB). Floating-point division
-        // by zero is well-defined (yields inf/nan), so skip when either operand
-        // is float-typed — matching C's usual-arithmetic-conversion rules.
+        // INT33-C concerns INTEGER divide-by-zero. A floating division by zero
+        // is undefined too in ISO C (C11 6.5.5p5), but it is FLP03-C's, so
+        // skip when either operand is float-typed — matching C's
+        // usual-arithmetic-conversion rules.
         if self.division_is_floating(node, source, env) {
             return;
         }
@@ -508,10 +516,15 @@ impl Int33C {
         }
     }
 
-    /// Check if a divisor has been validated as non-zero
+    /// Check if a divisor has been validated as non-zero.
+    ///
+    /// Every credit is a proof about the divisor at the division: a constant,
+    /// a condition known to hold there (see [`Self::guard_facts`]), an
+    /// assert or check macro before it, a value range, every assignment in
+    /// the function, or every caller of a closed function. A condition that
+    /// merely mentions the divisor, or a check somewhere else in the file,
+    /// proves nothing (ADR-0005).
     fn is_divisor_checked(&self, div_node: &Node, divisor: &Node, source: &str) -> bool {
-        let divisor_text = ast_utils::get_node_text(divisor, source);
-
         // Fast path: compile-time constant expression — evaluate and check non-zero.
         // Covers macros like `BRIGHTNESS_MAX 255`, enum values, and numeric literals.
         {
@@ -521,66 +534,12 @@ impl Int33C {
             }
         }
 
-        // Extract base variable name from complex expressions
-        let base_var_name = Self::extract_base_variable(divisor, source);
+        let targets = Self::divisor_targets(divisor, source);
+        let facts = self.guard_facts(div_node, &targets, source);
 
-        // For struct field accesses like frac->denominator, check if there's validation
-        // in the struct's initialization or constructor function
-        if divisor.kind() == "field_expression" && self.is_struct_field_validated(divisor, source) {
-            return true;
-        }
-
-        // Find the containing function
-        if let Some(func) = ast_utils::find_containing_function(div_node) {
-            if let Some(body) = func.child_by_field_name("body") {
-                // Check if there's an early return or error handling for zero divisor
-                // Check both the full expression and the base variable
-                if self.has_early_return_for_zero(&body, divisor_text, source, div_node)
-                    || (base_var_name != divisor_text
-                        && self.has_early_return_for_zero(&body, &base_var_name, source, div_node))
-                {
-                    return true;
-                }
-            }
-        }
-
-        // Find the containing statement or block
-        let mut current = div_node.parent();
-        while let Some(node) = current {
-            // Look for if statements that check the divisor
-            if node.kind() == "if_statement" {
-                if let Some(condition) = node.child_by_field_name("condition") {
-                    if self.checks_for_zero(&condition, divisor_text, source)
-                        || (base_var_name != divisor_text
-                            && self.checks_for_zero(&condition, &base_var_name, source))
-                    {
-                        // Check if we're in the else branch or the consequence after a zero check
-                        if self.is_in_safe_branch(&node, div_node) {
-                            return true;
-                        }
-                    }
-                    // Also check for fabs/fabsf/fabsl magnitude guards
-                    // e.g., if(fabs(data) > 0.000001) { ... / data; }
-                    if Self::is_fabs_guard(&condition, divisor_text, source)
-                        || (base_var_name != divisor_text
-                            && Self::is_fabs_guard(&condition, &base_var_name, source))
-                    {
-                        if self.is_in_safe_branch(&node, div_node) {
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            current = node.parent();
-        }
-
-        // Guards the if-statement walk above cannot see: the
-        // condition of a `?:` whose guarded arm holds the division, the left
-        // operand of an `&&`/`||` whose right operand holds it, an enclosing
-        // condition that proves non-zero by ordering rather than equality
-        // (`n > 0 && x / n`), a preceding `if (n == 0) break;`, and an assert.
-        if self.guarded_nonzero_at(div_node, divisor, source) {
+        // A condition known true or false here that excludes zero for the
+        // divisor, an assert before the division, or a `fabs(x) > c` test.
+        if self.guarded_nonzero_at(div_node, &targets, &facts, source) {
             return true;
         }
 
@@ -590,57 +549,290 @@ impl Int33C {
             return true;
         }
 
-        // Guarded-difference divisor: `(A - B)` guarded by a relational check
-        // between the two operands (e.g. `if (high > low) { ... / (high - low) }`
-        // or an early-return `if (high <= low) return;`). This is distinct from
-        // divisor_provably_nonzero's range analysis, which only bounds a single
-        // variable against a constant/macro — here neither operand needs to be
-        // a compile-time constant, only relatively ordered.
+        // Guarded-difference divisor: `(A - B)` where a condition known here
+        // orders or separates the two operands (`if (high > low)`, an
+        // early-return `if (high <= low) return;`, `a != b`). Neither operand
+        // needs to be a compile-time constant, only distinct from the other.
         if let Some((a, b)) = Self::extract_diff_operands(divisor, source) {
-            if let Some(func) = ast_utils::find_containing_function(div_node) {
-                if let Some(body) = func.child_by_field_name("body") {
-                    if self.has_early_return_for_unordered_diff(&body, &a, &b, source, div_node) {
-                        return true;
-                    }
-                }
-            }
-
-            let mut current = div_node.parent();
-            while let Some(node) = current {
-                if node.kind() == "if_statement" {
-                    if let Some(condition) = node.child_by_field_name("condition") {
-                        if Self::is_relational_diff_guard(&condition, &a, &b, source)
-                            && self.is_in_safe_branch(&node, div_node)
-                        {
-                            return true;
-                        }
-                    }
-                }
-                current = node.parent();
+            let operands = [a.clone(), b.clone()];
+            let ordered = facts.iter().any(|(cond, truth)| {
+                Self::condition_separates(cond, &a, &b, *truth, source)
+                    && !Self::written_between(cond, div_node, &operands, source)
+            });
+            if ordered {
+                return true;
             }
         }
 
         // Check if ALL assignments to the divisor variable in the containing
         // function are provably non-zero constants.  This catches the common
         // Juliet "goodG2B" pattern: `data = -1; data = 7; 100 / data;`
-        if divisor.kind() == "identifier"
-            && self.all_assignments_nonzero(div_node, divisor_text, source)
+        if divisor.kind() == "identifier" && self.all_assignments_nonzero(div_node, divisor, source)
         {
             return true;
         }
 
-        false
+        // A parameter of a closed function every caller passes a value
+        // proven non-zero.
+        self.every_caller_passes_nonzero(divisor, source)
     }
 
-    /// Whether a condition already evaluated where the division executes, or
-    /// an assert on a statement before it, proves the divisor non-zero.
+    /// The spellings a guard on the divisor may use: the divisor itself, and
+    /// what it is once parentheses and a sign are peeled off (`(-step)` is
+    /// non-zero exactly when `step` is). Nothing else: `*p` is not `p`, a
+    /// non-null pointer, and `f->den` is not some other object's `den`.
+    fn divisor_targets(divisor: &Node, source: &str) -> Vec<String> {
+        let mut targets = vec![guard_dominance::squeeze_text(divisor, source)];
+        let mut node = *divisor;
+        loop {
+            let inner = match node.kind() {
+                "parenthesized_expression" => node.named_child(0),
+                "unary_expression"
+                    if node
+                        .child_by_field_name("operator")
+                        .is_some_and(|op| matches!(op.kind(), "-" | "+")) =>
+                {
+                    node.child_by_field_name("argument")
+                }
+                _ => None,
+            };
+            let Some(inner) = inner else {
+                break;
+            };
+            let text = guard_dominance::squeeze_text(&inner, source);
+            if !targets.contains(&text) {
+                targets.push(text);
+            }
+            node = inner;
+        }
+        targets
+    }
+
+    /// Every condition whose truth value is known where `site` runs, paired
+    /// with that value, and not stale: nothing between the condition and
+    /// `site` writes one of `targets` or a variable they read.
     ///
-    /// Conditions come from `guard_dominance::dominating_conditions_with_branches`
-    /// with the branch each one took, so a true `n > 0 && x / n`, a false
+    /// Two sources. `guard_dominance::dominating_conditions_with_branches`
+    /// gives the conditions enclosing the site (an `if` branch, a loop body,
+    /// a `?:` arm, the right of `&&`/`||`) and a preceding lone `if` whose
+    /// branch returns or jumps. [`Self::preceding_exit_facts`] adds what only
+    /// this rule's noreturn set can say -- `if (d == 0) exit(1);` -- and a
+    /// guard inside the same `case` of a `switch`.
+    fn guard_facts<'a>(
+        &self,
+        site: &Node<'a>,
+        targets: &[String],
+        source: &str,
+    ) -> Vec<(Node<'a>, bool)> {
+        let mut facts: Vec<(Node<'a>, bool)> =
+            guard_dominance::dominating_conditions_with_branches(site)
+                .into_iter()
+                .filter_map(|(cond, branch)| branch.map(|truth| (cond, truth)))
+                .collect();
+        facts.extend(self.preceding_exit_facts(site, source));
+        facts.retain(|(cond, _)| !Self::written_between(cond, site, targets, source));
+        facts
+    }
+
+    /// Conditions of statements before `site` in one of its enclosing blocks
+    /// that control can pass only one way: a lone `if` whose branch always
+    /// leaves ([`Self::has_return_or_exit`]) is false after it, an `if`/`else`
+    /// with exactly one arm that leaves holds the other arm's value, and a
+    /// `while` or `do` loop no `break` or `goto` leaves is false after it.
+    ///
+    /// The blocks are compound statements, preprocessor arms, and the `case`
+    /// holding the site: the statements of one `case` run in order, but an
+    /// earlier `case` is not looked into, since a jump to a later label skips
+    /// it. An `if` nested inside an earlier statement is not looked into
+    /// either: `if (v) { if (d == 0) return 0; }` leaves `d` unknown when `v`
+    /// is zero.
+    fn preceding_exit_facts<'a>(&self, site: &Node<'a>, source: &str) -> Vec<(Node<'a>, bool)> {
+        const BLOCKS: &[&str] = &[
+            "compound_statement",
+            "case_statement",
+            "preproc_if",
+            "preproc_ifdef",
+            "preproc_else",
+            "preproc_elif",
+        ];
+        let mut facts = Vec::new();
+        let mut current = *site;
+        while let Some(parent) = current.parent() {
+            if BLOCKS.contains(&parent.kind()) {
+                for stmt in parent.named_child_nodes() {
+                    if stmt.start_byte() >= current.start_byte() {
+                        break;
+                    }
+                    self.statement_exit_facts(&stmt, source, &mut facts);
+                }
+            }
+            if parent.kind() == "function_definition" {
+                break;
+            }
+            current = parent;
+        }
+        facts
+    }
+
+    /// [`Self::preceding_exit_facts`] for one statement, looking through
+    /// preprocessor wrappers to the statements they hold.
+    fn statement_exit_facts<'a>(
+        &self,
+        stmt: &Node<'a>,
+        source: &str,
+        out: &mut Vec<(Node<'a>, bool)>,
+    ) {
+        match stmt.kind() {
+            "preproc_if" | "preproc_ifdef" | "preproc_else" | "preproc_elif" => {
+                for inner in stmt.named_child_nodes() {
+                    self.statement_exit_facts(&inner, source, out);
+                }
+            }
+            "if_statement" => {
+                let Some(cond) = stmt.child_by_field_name("condition") else {
+                    return;
+                };
+                let leaves = |arm: Option<Node>| {
+                    arm.is_some_and(|arm| {
+                        let arm = if arm.kind() == "else_clause" {
+                            match arm.named_child(0) {
+                                Some(inner) => inner,
+                                None => return false,
+                            }
+                        } else {
+                            arm
+                        };
+                        self.has_return_or_exit(&arm, source)
+                    })
+                };
+                let consequence = leaves(stmt.child_by_field_name("consequence"));
+                let alternative = stmt.child_by_field_name("alternative");
+                let alternative_leaves = leaves(alternative);
+                if consequence && !alternative_leaves {
+                    out.push((cond, false));
+                } else if alternative.is_some() && alternative_leaves && !consequence {
+                    out.push((cond, true));
+                }
+            }
+            "while_statement" | "do_statement" => {
+                if let Some(cond) = stmt.child_by_field_name("condition") {
+                    if !Self::loop_can_leave_early(stmt) {
+                        out.push((cond, false));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether a loop can be left other than by its condition turning false:
+    /// a `break` that ends this loop (one in a nested loop or `switch` ends
+    /// only that), or a `goto`. A `return` or a call that never returns
+    /// leaves the whole function, so no statement after the loop runs.
+    fn loop_can_leave_early(stmt: &Node) -> bool {
+        query::find_first_descendant(*stmt, |n| match n.kind() {
+            "goto_statement" => true,
+            "break_statement" => query::find_ancestor(n, |a| {
+                matches!(
+                    a.kind(),
+                    "for_statement" | "while_statement" | "do_statement" | "switch_statement"
+                )
+            })
+            .is_some_and(|owner| owner.id() == stmt.id()),
+            _ => false,
+        })
+        .is_some()
+    }
+
+    /// Whether anything between `cond` and `site` may change one of
+    /// `targets`: an assignment, `++`/`--` or address-of whose operand is a
+    /// target or a variable a target reads. "Between" is the source after
+    /// the condition (after the whole loop, for the condition of a loop the
+    /// site follows) and before the site, plus the whole body of every loop
+    /// holding the site but not the condition, whose later statements run
+    /// again before the site on the next iteration.
+    fn written_between(cond: &Node, site: &Node, targets: &[String], source: &str) -> bool {
+        let Some(func) = ast_utils::find_containing_function(site) else {
+            return false;
+        };
+        // The targets, and the variables they read: `i` in `ds[i]`, `f` in
+        // `f->den` (a field name is never written on its own, so including
+        // it costs nothing).
+        let mut names: HashSet<String> = targets.iter().cloned().collect();
+        for target_text in targets {
+            for word in target_text
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|w| !w.is_empty() && !w.starts_with(|c: char| c.is_ascii_digit()))
+            {
+                names.insert(word.to_string());
+            }
+        }
+
+        // A loop's condition is known false after the whole loop, so the
+        // writes that count start where the loop ends.
+        let from = cond
+            .parent()
+            .filter(|owner| {
+                matches!(
+                    owner.kind(),
+                    "while_statement" | "do_statement" | "for_statement"
+                ) && !(site.start_byte() >= owner.start_byte()
+                    && site.end_byte() <= owner.end_byte())
+            })
+            .map_or(cond.end_byte(), |owner| owner.end_byte());
+        let mut spans = vec![(from, site.start_byte())];
+        let mut current = *site;
+        while let Some(parent) = current.parent() {
+            if parent.kind() == "function_definition" {
+                break;
+            }
+            let is_loop = matches!(
+                parent.kind(),
+                "for_statement" | "while_statement" | "do_statement"
+            );
+            if is_loop
+                && !(cond.start_byte() >= parent.start_byte()
+                    && cond.end_byte() <= parent.end_byte())
+            {
+                spans.push((parent.start_byte(), parent.end_byte()));
+            }
+            current = parent;
+        }
+        // A write holding the site, `b = a % b`, happens after the division.
+        let within = |n: &Node| {
+            let holds_site = n.start_byte() <= site.start_byte() && n.end_byte() >= site.end_byte();
+            !holds_site
+                && spans
+                    .iter()
+                    .any(|&(lo, hi)| n.start_byte() >= lo && n.start_byte() < hi)
+        };
+        let writes = |operand: Option<Node>| {
+            operand.is_some_and(|op| names.contains(&guard_dominance::squeeze_text(&op, source)))
+        };
+        query::find_first_descendant(func, |n| {
+            within(&n)
+                && match n.kind() {
+                    "assignment_expression" => writes(n.child_by_field_name("left")),
+                    "update_expression" => writes(n.child_by_field_name("argument")),
+                    "pointer_expression" => {
+                        n.child_by_field_name("operator")
+                            .is_some_and(|op| op.kind() == "&")
+                            && writes(n.child_by_field_name("argument"))
+                    }
+                    _ => false,
+                }
+        })
+        .is_some()
+    }
+
+    /// Whether a condition known where the division executes, or an assert
+    /// on a statement before it, proves the divisor non-zero.
+    ///
+    /// `facts` are [`Self::guard_facts`], so a true `n > 0 && x / n`, a false
     /// `n == 0 || x / n`, the guarded arm of `n ? x / n : 0`, and a preceding
-    /// `if (n == 0) return;` all read the same way. The divisor is matched by
-    /// its whitespace-stripped text and by its base variable (`*p` -> `p`), so
-    /// a field or call divisor is recognised as written.
+    /// `if (n == 0) return;` all read the same way, and a division in the
+    /// zero branch itself (`if (n == 0) { x / n; }`) reads the condition true
+    /// and is not credited.
     ///
     /// An assert is credited here on purpose. `guard_dominance` leaves
     /// `assert()` out because it compiles away under `NDEBUG`, but a division
@@ -648,22 +840,19 @@ impl Int33C {
     /// "without checking for zero" -- and a fifth of one corpus's findings were
     /// this shape (valkey). The check compiling out is the assert's
     /// own well-known caveat, not an unguarded division.
-    fn guarded_nonzero_at(&self, div_node: &Node, divisor: &Node, source: &str) -> bool {
-        let mut targets = vec![guard_dominance::squeeze_text(divisor, source)];
-        let base = Self::extract_base_variable(divisor, source);
-        if !base.is_empty() && base != targets[0] {
-            targets.push(base);
-        }
+    fn guarded_nonzero_at(
+        &self,
+        div_node: &Node,
+        targets: &[String],
+        facts: &[(Node, bool)],
+        source: &str,
+    ) -> bool {
         let macros = self.file_macros.borrow();
 
-        let dominated = guard_dominance::dominating_conditions_with_branches(div_node)
-            .into_iter()
-            .any(|(cond, branch)| match branch {
-                Some(truth) => guard_dominance::condition_excludes_zero(
-                    &cond, &targets, truth, source, &macros,
-                ),
-                None => false,
-            });
+        let dominated = facts.iter().any(|(cond, truth)| {
+            guard_dominance::condition_excludes_zero(cond, targets, *truth, source, &macros)
+                || Self::fabs_excludes_zero(cond, targets, *truth, source)
+        });
         if dominated {
             return true;
         }
@@ -674,7 +863,7 @@ impl Int33C {
             assert_is_guard: settings.flag("assert_is_guard"),
             checks: &checks,
         };
-        Self::asserted_nonzero_before(div_node, &targets, source, &macros, &credit)
+        Self::asserted_nonzero_before(div_node, targets, source, &macros, &credit)
     }
 
     /// Whether a check statement preceding `site` in one of its enclosing
@@ -800,104 +989,6 @@ impl Int33C {
         .is_some()
     }
 
-    /// Extract the base variable name from an expression
-    /// For example: (-step) -> step, (*ptr) -> ptr, frac->denominator -> denominator
-    fn extract_base_variable(node: &Node, source: &str) -> String {
-        match node.kind() {
-            "identifier" => ast_utils::get_node_text(node, source).to_string(),
-            "parenthesized_expression" => {
-                // Look inside parentheses
-                if let Some(child) = node.named_child(0) {
-                    Self::extract_base_variable(&child, source)
-                } else {
-                    ast_utils::get_node_text(node, source).to_string()
-                }
-            }
-            "unary_expression" | "pointer_expression" => {
-                // For unary like (-step) or (*ptr), extract the argument
-                if let Some(argument) = node.child_by_field_name("argument") {
-                    Self::extract_base_variable(&argument, source)
-                } else {
-                    ast_utils::get_node_text(node, source).to_string()
-                }
-            }
-            "field_expression" => {
-                // For field like frac->denominator, extract the field name
-                if let Some(field) = node.child_by_field_name("field") {
-                    ast_utils::get_node_text(&field, source).to_string()
-                } else {
-                    ast_utils::get_node_text(node, source).to_string()
-                }
-            }
-            _ => ast_utils::get_node_text(node, source).to_string(),
-        }
-    }
-
-    /// Check if there's an early return or exit when divisor is zero.
-    /// Walks into nested blocks (if-bodies, compound statements) to find
-    /// guards like `if (expr == 0) { return; }` at any nesting depth.
-    ///
-    /// Uses an explicit stack instead of recursion: an else-if chain nests
-    /// an `if_statement` inside every else clause, so a generated/
-    /// obfuscated chain thousands deep would blow the native call stack if
-    /// each link were a recursive call (the same hostap-style shape that
-    /// motivated an earlier fix). This is a pure existence check (true as soon as
-    /// any guard is found anywhere), so traversal order doesn't affect the
-    /// result.
-    fn has_early_return_for_zero(
-        &self,
-        scope: &Node,
-        var_name: &str,
-        source: &str,
-        div_node: &Node,
-    ) -> bool {
-        let div_line = div_node.start_position().row;
-        let mut stack = vec![*scope];
-
-        while let Some(cur_scope) = stack.pop() {
-            for child in cur_scope.named_child_nodes() {
-                let child_line = child.start_position().row;
-
-                // Only check statements before the division
-                if child_line >= div_line {
-                    break;
-                }
-
-                if child.kind() == "if_statement" {
-                    if let Some(condition) = child.child_by_field_name("condition") {
-                        if self.checks_for_zero(&condition, var_name, source) {
-                            if let Some(consequence) = child.child_by_field_name("consequence") {
-                                if self.has_return_or_exit(&consequence, source) {
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-                    // Queue if-body to find guards at deeper nesting
-                    if let Some(consequence) = child.child_by_field_name("consequence") {
-                        stack.push(consequence);
-                    }
-                }
-
-                // Queue bare compound statements
-                if child.kind() == "compound_statement" {
-                    stack.push(child);
-                }
-
-                // Check for do-while loops that validate input
-                if child.kind() == "do_statement" {
-                    if let Some(condition) = child.child_by_field_name("condition") {
-                        if self.checks_for_zero(&condition, var_name, source) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-
-        false
-    }
-
     /// Whether a guard's branch always leaves, so the statements after the
     /// guard run only when its condition was false: control cannot fall out
     /// of the branch ([`guard_dominance::always_diverges_with`]). Its last
@@ -944,79 +1035,13 @@ impl Int33C {
         guard_dominance::always_diverges_with(node, &|s| ends_path(s, source, &noreturn_names))
     }
 
-    /// Check if division node is in a safe branch (e.g., in the body after a zero check)
-    fn is_in_safe_branch(&self, if_node: &Node, div_node: &Node) -> bool {
-        // Check if div_node is a descendant of the if_statement's consequence
-        if let Some(consequence) = if_node.child_by_field_name("consequence") {
-            if Self::is_descendant(&consequence, div_node) {
-                return true;
-            }
-        }
-
-        // Check if there's an alternative (else) branch
-        if let Some(alternative) = if_node.child_by_field_name("alternative") {
-            if Self::is_descendant(&alternative, div_node) {
-                return true;
-            }
-        }
-
-        false
-    }
-
     /// Check if target is a descendant of node (O(1) via byte-range containment)
     fn is_descendant(node: &Node, target: &Node) -> bool {
         target.start_byte() >= node.start_byte() && target.end_byte() <= node.end_byte()
     }
 
-    /// Check if a condition expression checks for zero
-    fn checks_for_zero(&self, condition: &Node, var_name: &str, source: &str) -> bool {
-        let condition_text = ast_utils::get_node_text(condition, source);
-
-        // Look for patterns like:
-        // - var == 0
-        // - var != 0
-        // - 0 == var
-        // - !var
-        // - var (truthy check)
-
-        // Simple text-based check for common patterns
-        if condition_text.contains(&format!("{} == 0", var_name))
-            || condition_text.contains(&format!("{} != 0", var_name))
-            || condition_text.contains(&format!("0 == {}", var_name))
-            || condition_text.contains(&format!("0 != {}", var_name))
-            || condition_text.contains(&format!("!{}", var_name))
-        {
-            return true;
-        }
-
-        // Also recursively check child nodes
-        for child in condition.child_nodes() {
-            if child.kind() == "binary_expression" {
-                if let Some(operator) = ast_utils::get_binary_operator(&child, source) {
-                    if operator == "==" || operator == "!=" {
-                        let left = child.child_by_field_name("left");
-                        let right = child.child_by_field_name("right");
-
-                        if let (Some(l), Some(r)) = (left, right) {
-                            let left_text = ast_utils::get_node_text(&l, source);
-                            let right_text = ast_utils::get_node_text(&r, source);
-
-                            if (left_text == var_name && right_text == "0")
-                                || (right_text == var_name && left_text == "0")
-                            {
-                                return true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        false
-    }
-
     /// If `divisor` is (optionally parenthesized) a subtraction `A - B`,
-    /// return the two operands' source text. Used to recognize the common
+    /// return the two operands' whitespace-stripped text. Used to recognize the common
     /// "difference of two bounds" divisor idiom (e.g. `high - low`) so a
     /// relational guard between the operands (rather than a zero-check on
     /// the whole expression) can prove it non-zero.
@@ -1035,138 +1060,70 @@ impl Int33C {
         let left = inner.child_by_field_name("left")?;
         let right = inner.child_by_field_name("right")?;
         Some((
-            ast_utils::get_node_text(&left, source).to_string(),
-            ast_utils::get_node_text(&right, source).to_string(),
+            guard_dominance::squeeze_text(&left, source),
+            guard_dominance::squeeze_text(&right, source),
         ))
     }
 
-    /// Check whether `condition` establishes `a > b` (equivalently `b < a`),
-    /// which proves `a - b` is strictly positive. Recurses through `&&`
-    /// conjunctions, matching `extract_comparison_bounds`'s traversal style.
-    fn is_relational_diff_guard(condition: &Node, a: &str, b: &str, source: &str) -> bool {
-        let cond = if condition.kind() == "parenthesized_expression" {
-            match condition.named_child(0) {
-                Some(c) => c,
-                None => return false,
-            }
-        } else {
-            *condition
-        };
-
-        if cond.kind() != "binary_expression" {
-            return false;
-        }
-        let op = ast_utils::get_binary_operator(&cond, source).unwrap_or_default();
-
-        if op == "&&" {
-            if let (Some(left), Some(right)) = (
-                cond.child_by_field_name("left"),
-                cond.child_by_field_name("right"),
-            ) {
-                return Self::is_relational_diff_guard(&left, a, b, source)
-                    || Self::is_relational_diff_guard(&right, a, b, source);
-            }
-            return false;
-        }
-
-        let (left, right) = match (
-            cond.child_by_field_name("left"),
-            cond.child_by_field_name("right"),
-        ) {
-            (Some(l), Some(r)) => (l, r),
-            _ => return false,
-        };
-        let left_text = ast_utils::get_node_text(&left, source);
-        let right_text = ast_utils::get_node_text(&right, source);
-
-        match op {
-            ">" => left_text == a && right_text == b,
-            "<" => left_text == b && right_text == a,
-            _ => false,
-        }
-    }
-
-    /// Check for an early-return guard of the form `if (a <= b) { return/exit; }`
-    /// (or `b >= a`) preceding the division, which implies the safe path has
-    /// `a > b`. Mirrors `has_early_return_for_zero`'s recursive block walk.
-    fn has_early_return_for_unordered_diff(
-        &self,
-        scope: &Node,
+    /// Whether `condition`, known to have evaluated to `known_true`, proves
+    /// `a != b`, and so `a - b != 0`: true for `a < b`, `a > b` or `a != b`
+    /// (either operand order), false for `a == b`, `a <= b` or `a >= b`. A
+    /// true `&&` or a false `||` makes each side a fact, `!` flips the truth,
+    /// and parentheses are transparent, as in
+    /// `guard_dominance::condition_excludes_zero`.
+    fn condition_separates(
+        condition: &Node,
         a: &str,
         b: &str,
+        known_true: bool,
         source: &str,
-        div_node: &Node,
     ) -> bool {
-        let div_line = div_node.start_position().row;
-
-        for child in scope.named_child_nodes() {
-            let child_line = child.start_position().row;
-            if child_line >= div_line {
-                break;
-            }
-
-            if child.kind() == "if_statement" {
-                if let Some(condition) = child.child_by_field_name("condition") {
-                    if Self::is_unordered_diff_guard(&condition, a, b, source) {
-                        if let Some(consequence) = child.child_by_field_name("consequence") {
-                            if self.has_return_or_exit(&consequence, source) {
-                                return true;
-                            }
-                        }
-                    }
-                }
-                if let Some(consequence) = child.child_by_field_name("consequence") {
-                    if self.has_early_return_for_unordered_diff(
-                        &consequence,
-                        a,
-                        b,
-                        source,
-                        div_node,
-                    ) {
-                        return true;
-                    }
-                }
-            }
-
-            if child.kind() == "compound_statement"
-                && self.has_early_return_for_unordered_diff(&child, a, b, source, div_node)
-            {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    /// Check whether `condition` establishes `a <= b` (equivalently `b >= a`),
-    /// i.e. the *unsafe* ordering — used to recognize early-return guards that
-    /// bail out before an unguarded `a - b` division.
-    fn is_unordered_diff_guard(condition: &Node, a: &str, b: &str, source: &str) -> bool {
-        let cond = if condition.kind() == "parenthesized_expression" {
-            match condition.named_child(0) {
-                Some(c) => c,
+        let mut cond = *condition;
+        while cond.kind() == "parenthesized_expression" {
+            match cond.named_child(0) {
+                Some(inner) => cond = inner,
                 None => return false,
             }
-        } else {
-            *condition
-        };
-        if cond.kind() != "binary_expression" {
-            return false;
         }
-        let op = ast_utils::get_binary_operator(&cond, source).unwrap_or_default();
-        let (left, right) = match (
-            cond.child_by_field_name("left"),
-            cond.child_by_field_name("right"),
-        ) {
-            (Some(l), Some(r)) => (l, r),
-            _ => return false,
-        };
-        let left_text = ast_utils::get_node_text(&left, source);
-        let right_text = ast_utils::get_node_text(&right, source);
-
-        match op {
-            "<=" => left_text == a && right_text == b,
-            ">=" => left_text == b && right_text == a,
+        match cond.kind() {
+            "unary_expression" => {
+                let is_not = cond
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "!");
+                is_not
+                    && cond.child_by_field_name("argument").is_some_and(|arg| {
+                        Self::condition_separates(&arg, a, b, !known_true, source)
+                    })
+            }
+            "binary_expression" => {
+                let Some(op) = cond.child_by_field_name("operator").map(|o| o.kind()) else {
+                    return false;
+                };
+                let (Some(left), Some(right)) = (
+                    cond.child_by_field_name("left"),
+                    cond.child_by_field_name("right"),
+                ) else {
+                    return false;
+                };
+                match op {
+                    "&&" | "||" => {
+                        (op == "&&") == known_true
+                            && (Self::condition_separates(&left, a, b, known_true, source)
+                                || Self::condition_separates(&right, a, b, known_true, source))
+                    }
+                    _ => {
+                        let l = guard_dominance::squeeze_text(&left, source);
+                        let r = guard_dominance::squeeze_text(&right, source);
+                        let operands = (l == a && r == b) || (l == b && r == a);
+                        operands
+                            && if known_true {
+                                matches!(op, "<" | ">" | "!=")
+                            } else {
+                                matches!(op, "==" | "<=" | ">=")
+                            }
+                    }
+                }
+            }
             _ => false,
         }
     }
@@ -1226,25 +1183,241 @@ impl Int33C {
         value_range::eval_expr_range_at(vra, cfg, &body, source, &file_macros, divisor)
     }
 
-    /// Check if a condition is a floating-point magnitude guard like
-    /// `fabs(var) > 0.000001`.  This implies `var` is non-zero.
-    fn is_fabs_guard(condition: &Node, var_name: &str, source: &str) -> bool {
-        let cond_text = ast_utils::get_node_text(condition, source);
-        // Must contain fabs/fabsf/fabsl of the variable and a > comparison
-        let has_fabs = (cond_text.contains("fabs(")
-            || cond_text.contains("fabsf(")
-            || cond_text.contains("fabsl("))
-            && cond_text.contains(var_name)
-            && cond_text.contains('>');
-        if has_fabs {
-            return true;
+    /// Whether a `fabs(x) > c` test with `c >= 0`, known to have the given
+    /// truth value, proves `x` non-zero for some `x` in `targets`. A true
+    /// `&&` or a false `||` makes each side a fact, `!` flips the truth.
+    fn fabs_excludes_zero(
+        condition: &Node,
+        targets: &[String],
+        known_true: bool,
+        source: &str,
+    ) -> bool {
+        let mut cond = *condition;
+        while cond.kind() == "parenthesized_expression" {
+            match cond.named_child(0) {
+                Some(inner) => cond = inner,
+                None => return false,
+            }
         }
-        // Also handle compound conditions with &&
-        if condition.kind() == "binary_expression" || condition.kind() == "parenthesized_expression"
+        match cond.kind() {
+            "unary_expression" => {
+                cond.child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "!")
+                    && cond.child_by_field_name("argument").is_some_and(|arg| {
+                        Self::fabs_excludes_zero(&arg, targets, !known_true, source)
+                    })
+            }
+            "binary_expression" => {
+                let Some(op) = cond.child_by_field_name("operator").map(|o| o.kind()) else {
+                    return false;
+                };
+                let (Some(left), Some(right)) = (
+                    cond.child_by_field_name("left"),
+                    cond.child_by_field_name("right"),
+                ) else {
+                    return false;
+                };
+                match op {
+                    "&&" | "||" => {
+                        (op == "&&") == known_true
+                            && (Self::fabs_excludes_zero(&left, targets, known_true, source)
+                                || Self::fabs_excludes_zero(&right, targets, known_true, source))
+                    }
+                    // `fabs(x) > c` holds, or `fabs(x) <= c` fails.
+                    ">" | "<=" if (op == ">") == known_true => {
+                        let is_fabs_of_target = left.kind() == "call_expression"
+                            && left.child_by_field_name("function").is_some_and(|f| {
+                                matches!(
+                                    ast_utils::get_node_text(&f, source),
+                                    "fabs" | "fabsf" | "fabsl"
+                                )
+                            })
+                            && left
+                                .child_by_field_name("arguments")
+                                .filter(|args| args.named_child_count() == 1)
+                                .and_then(|args| args.named_child(0))
+                                .is_some_and(|arg| {
+                                    targets.contains(&guard_dominance::squeeze_text(&arg, source))
+                                });
+                        is_fabs_of_target
+                            && Self::try_parse_float_literal(&right, source)
+                                .is_some_and(|c| c >= 0.0)
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether `divisor` is a parameter of a function every call of which
+    /// passes, at that position, a value proven non-zero at the call the way
+    /// this rule proves a divisor non-zero ([`Self::is_divisor_checked`]).
+    ///
+    /// The caller set must be closed (ADR-0011): the function has internal
+    /// linkage, so every call is in this translation unit, and its name is
+    /// used nowhere but as the callee of a direct call and in its own
+    /// declarators -- not stored, passed, or named in a macro, through which
+    /// it could be called by code that does not name it. There must be at
+    /// least one call, and nothing in the function may write the parameter.
+    /// A caller forwarding its own parameter is judged the same way in turn;
+    /// a cycle proves nothing.
+    fn every_caller_passes_nonzero(&self, divisor: &Node, source: &str) -> bool {
+        let mut param = *divisor;
+        loop {
+            let inner = match param.kind() {
+                "parenthesized_expression" => param.named_child(0),
+                "unary_expression"
+                    if param
+                        .child_by_field_name("operator")
+                        .is_some_and(|op| matches!(op.kind(), "-" | "+")) =>
+                {
+                    param.child_by_field_name("argument")
+                }
+                _ => None,
+            };
+            match inner {
+                Some(inner) => param = inner,
+                None => break,
+            }
+        }
+        if param.kind() != "identifier" {
+            return false;
+        }
+        let name = ast_utils::get_node_text(&param, source);
+        if !matches!(
+            ast_utils::resolve_identifier_binding(&param, name, source),
+            Some(ast_utils::IdentifierBinding::Parameter(_))
+        ) {
+            return false;
+        }
+        let Some(func) = ast_utils::find_containing_function(&param) else {
+            return false;
+        };
+        let Some(index) = ast_utils::get_function_parameters(&func, source)
+            .and_then(|params| params.iter().position(|(n, _)| n == name))
+        else {
+            return false;
+        };
+        let key = (func.start_byte(), index);
+        if let Some(&known) = self.caller_proofs.borrow().get(&key) {
+            return known;
+        }
+        // Provisionally unproven, so a call cycle back to here proves nothing.
+        self.caller_proofs.borrow_mut().insert(key, false);
+        let proven = self.callers_pass_nonzero(&func, name, index, source);
+        self.caller_proofs.borrow_mut().insert(key, proven);
+        proven
+    }
+
+    /// The body of [`Self::every_caller_passes_nonzero`] for parameter
+    /// `index`, named `param`, of `func`.
+    fn callers_pass_nonzero(&self, func: &Node, param: &str, index: usize, source: &str) -> bool {
+        let Some(body) = func.child_by_field_name("body") else {
+            return false;
+        };
+        let names = [param.to_string()];
+        if Self::assigns_any_of(&body, &names, source)
+            || Self::takes_address_of(&body, param, source)
         {
-            for child in condition.named_child_nodes() {
-                if Self::is_fabs_guard(&child, var_name, source) {
-                    return true;
+            return false;
+        }
+        let Some(fname) = lang_parsing_substrate::calls::get_function_name(*func, source) else {
+            return false;
+        };
+        let mut root = *func;
+        while let Some(parent) = root.parent() {
+            root = parent;
+        }
+        if !Self::has_internal_linkage(&root, &fname, source) {
+            return false;
+        }
+
+        let mut calls = Vec::new();
+        for ident in query::find_descendants_of_kind(root, "identifier") {
+            if ast_utils::get_node_text(&ident, source) != fname {
+                continue;
+            }
+            let Some(parent) = ident.parent() else {
+                return false;
+            };
+            let is_field = |field: &str| {
+                parent
+                    .child_by_field_name(field)
+                    .is_some_and(|n| n.id() == ident.id())
+            };
+            match parent.kind() {
+                "call_expression" if is_field("function") => calls.push(parent),
+                "function_declarator" if is_field("declarator") => {}
+                _ => return false,
+            }
+        }
+        // A macro naming the function can call it, or take its address,
+        // wherever it is expanded.
+        let in_macro = query::find_first_descendant(root, |n| {
+            matches!(n.kind(), "preproc_def" | "preproc_function_def")
+                && n.child_by_field_name("value").is_some_and(|v| {
+                    ast_utils::get_node_text(&v, source)
+                        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                        .any(|word| word == fname)
+                })
+        });
+        if in_macro.is_some() || calls.is_empty() {
+            return false;
+        }
+        calls.iter().all(|call| {
+            call.child_by_field_name("arguments")
+                .and_then(|args| {
+                    args.named_child_nodes()
+                        .filter(|a| a.kind() != "comment")
+                        .nth(index)
+                })
+                .is_some_and(|arg| self.is_divisor_checked(call, &arg, source))
+        })
+    }
+
+    /// Whether `&name` appears anywhere under `node`.
+    fn takes_address_of(node: &Node, name: &str, source: &str) -> bool {
+        query::find_first_descendant(*node, |n| {
+            n.kind() == "pointer_expression"
+                && n.child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "&")
+                && n.child_by_field_name("argument")
+                    .is_some_and(|arg| guard_dominance::squeeze_text(&arg, source) == name)
+        })
+        .is_some()
+    }
+
+    /// Whether some file-scope declaration or definition of function `name`
+    /// in the translation unit under `root` says `static`, which gives every
+    /// declaration of it internal linkage (C11 6.2.2p3, p5).
+    fn has_internal_linkage(root: &Node, name: &str, source: &str) -> bool {
+        let names_it = |decl: &Node| {
+            query::find_first_descendant(*decl, |n| {
+                n.kind() == "function_declarator"
+                    && n.child_by_field_name("declarator").is_some_and(|d| {
+                        d.kind() == "identifier" && ast_utils::get_node_text(&d, source) == name
+                    })
+            })
+            .is_some()
+        };
+        let is_static = |decl: &Node| {
+            decl.named_child_nodes().any(|c| {
+                c.kind() == "storage_class_specifier"
+                    && ast_utils::get_node_text(&c, source) == "static"
+            })
+        };
+        let mut stack = vec![*root];
+        while let Some(scope) = stack.pop() {
+            for item in scope.named_child_nodes() {
+                match item.kind() {
+                    "function_definition" | "declaration"
+                        if is_static(&item) && names_it(&item) =>
+                    {
+                        return true;
+                    }
+                    kind if kind.starts_with("preproc_") => stack.push(item),
+                    _ => {}
                 }
             }
         }
@@ -1426,10 +1599,20 @@ impl Int33C {
         }
     }
 
-    /// Check if ALL assignments to `var_name` in the containing function are
-    /// provably non-zero constants.  Returns false if any assignment is unknown,
-    /// zero, or if the variable is a function parameter (no assignments found).
-    fn all_assignments_nonzero(&self, div_node: &Node, var_name: &str, source: &str) -> bool {
+    /// Check if ALL assignments to the local variable `divisor` names in the
+    /// containing function are provably non-zero constants. False if any
+    /// assignment is unknown or zero, if its address is taken (a callee may
+    /// store anything through it), or if it is not a local of this function:
+    /// a parameter or a global holds a value no assignment here set when
+    /// the path assigning it is not taken.
+    fn all_assignments_nonzero(&self, div_node: &Node, divisor: &Node, source: &str) -> bool {
+        let var_name = ast_utils::get_node_text(divisor, source);
+        if !matches!(
+            ast_utils::resolve_identifier_binding(divisor, var_name, source),
+            Some(ast_utils::IdentifierBinding::Local(_))
+        ) {
+            return false;
+        }
         let func = match ast_utils::find_containing_function(div_node) {
             Some(f) => f,
             None => return false,
@@ -1438,6 +1621,9 @@ impl Int33C {
             Some(b) => b,
             None => return false,
         };
+        if Self::takes_address_of(&body, var_name, source) {
+            return false;
+        }
         let file_macros = self.file_macros.borrow();
         let mut found_any = false;
         if !Self::collect_assignments_all_nonzero(
@@ -1449,9 +1635,7 @@ impl Int33C {
         ) {
             return false;
         }
-        // Also check the declaration initializer (e.g., `int data = -1;`)
-        // which is inside the body but might also be a parameter — check params
-        // If no assignments found at all (e.g., parameter), can't prove non-zero
+        // A declaration with no initializer and no assignment proves nothing.
         found_any
     }
 
@@ -1662,62 +1846,12 @@ impl Int33C {
         None
     }
 
-    /// Check if a struct field is validated for non-zero in a constructor/setter
-    /// This provides basic inter-procedural analysis for struct invariants
-    fn is_struct_field_validated(&self, field_expr: &Node, source: &str) -> bool {
-        // Extract the field name from expressions like frac->denominator or obj.field
-        if let Some(field) = field_expr.child_by_field_name("field") {
-            let field_name = ast_utils::get_node_text(&field, source);
-
-            // Look for validation patterns in the source file where this field (or abbreviated name) is checked for zero
-            // For example, parameter "denom" might represent field "denominator"
-            // Also check common abbreviations
-            let mut possible_names = vec![field_name.to_string()];
-
-            // Add common abbreviations (e.g., "denominator" -> "denom", "numerator" -> "num")
-            // Taken by character: a byte slice panics inside a multi-byte identifier.
-            if field_name.chars().count() > 5 {
-                possible_names.push(field_name.chars().take(4).collect()); // First 4 chars
-                possible_names.push(field_name.chars().take(5).collect()); // First 5 chars
-            }
-
-            // Search for any of these names being checked against zero with error handling
-            let lines: Vec<&str> = source.lines().collect();
-            for possible_name in &possible_names {
-                for (idx, line) in lines.iter().enumerate() {
-                    // Check if this line validates the name for zero
-                    if (line.contains(&format!("{} == 0", possible_name))
-                        || line.contains(&format!("{} != 0", possible_name))
-                        || line.contains(&format!("0 == {}", possible_name)))
-                        && (line.contains("if") || line.contains("IF"))
-                    {
-                        // Look in the next few lines for error handling (return/exit/abort)
-                        for check_line in lines.iter().skip(idx).take(10) {
-                            if check_line.contains("return false")
-                                || check_line.contains("return NULL")
-                                || check_line.contains("return -1")
-                                || check_line.contains("return 0")
-                                || check_line.contains("exit(")
-                                || check_line.contains("abort(")
-                                || check_line.contains("Error:")
-                                || check_line.contains("printf(\"Error")
-                            {
-                                return true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        false
-    }
-
     // ---- Floating-point operand typing (INT33-C applies only to integer div) ----
 
     /// True if the division/remainder operation `node` has at least one
-    /// float-typed operand, making it a floating-point operation (well-defined
-    /// for a zero divisor) rather than the integer divide-by-zero INT33-C covers.
+    /// float-typed operand, making it a floating-point operation (FLP03-C's
+    /// concern for a zero divisor) rather than the integer divide-by-zero
+    /// INT33-C covers.
     fn division_is_floating(&self, node: &Node, source: &str, env: &TypeEnv) -> bool {
         ["left", "right"].iter().any(|f| {
             node.child_by_field_name(f)
