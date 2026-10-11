@@ -989,6 +989,40 @@ pub fn is_in_preproc_condition(node: &Node) -> bool {
     false
 }
 
+/// [`is_in_preproc_condition`] carried down a walk instead of climbed to, as
+/// the state [`descendants_of_kinds_with`] threads: start from `default()` at
+/// the root, pass [`InPreprocCondition::step`] as the step, and ask
+/// [`InPreprocCondition::holds`] of each node with the state it was paired
+/// with. Same answer, without the per-node climb that makes a long `&&` or
+/// `+` chain cost the cube of its length.
+#[derive(Clone, Copy, Default)]
+pub struct InPreprocCondition {
+    /// This node's parent is in a preprocessor condition, or is one.
+    inherited: bool,
+    /// The condition child of this node's parent, when the parent is an
+    /// `#if` or `#elif`.
+    condition: Option<usize>,
+}
+
+impl InPreprocCondition {
+    /// The state `parent`'s children inherit, from `parent`'s own state.
+    pub fn step(&self, parent: Node) -> Self {
+        Self {
+            inherited: self.holds(parent),
+            condition: matches!(parent.kind(), "preproc_if" | "preproc_elif")
+                .then(|| parent.child_by_field_name("condition"))
+                .flatten()
+                .map(|c| c.id()),
+        }
+    }
+
+    /// Whether `node`, paired with this state, is inside a preprocessor
+    /// condition (or is one).
+    pub fn holds(&self, node: Node) -> bool {
+        self.inherited || self.condition == Some(node.id())
+    }
+}
+
 /// Whether `node` is a file-scope include guard: `#ifndef NAME` whose first
 /// directive is `#define NAME`, with no `#else`/`#elif` arm.
 ///

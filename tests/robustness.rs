@@ -992,8 +992,38 @@ fn long_chain_cases() -> Vec<Case> {
 /// refused with its depth. Analyses walk the tree recursively, and a stack
 /// overflow aborts the whole process before containment can report it, so
 /// before the guard ten thousand levels of any of these ended the scan.
+///
+/// Just under the limit each shape must still be analysed by every rule
+/// within its time limit: 4990 levels, or 2490 `else if` branches at two
+/// levels each. A rule that climbs `Node::parent()` (which costs the node's
+/// depth) from every node, or asks a whole-subtree question at each
+/// operator, is quadratic or cubic in the depth here, and several ran past
+/// the limit before this case was added. The operator chain is a file-scope
+/// initializer; in a function body several rules are still superlinear in
+/// its length, so that shape is not a case yet.
 fn deep_nesting_cases() -> Vec<Case> {
-    let mut out = Vec::new();
+    let mut out = vec![
+        Case::new(
+            "n_braces_4990_deep.c",
+            format!("void h(void) {}{}\n", "{".repeat(4_990), "}".repeat(4_990)),
+            "braces_4990_deep",
+        ),
+        Case::new(
+            "n_parens_4990_deep.c",
+            format!("int y = {}1{};\n", "(".repeat(4_990), ")".repeat(4_990)),
+            "parens_4990_deep",
+        ),
+        Case::new(
+            "n_binary_chain_4990_long.c",
+            binary_chain(4_990),
+            "binary_chain_4990_long",
+        ),
+        Case::new(
+            "n_else_if_2490_long.c",
+            else_if_ladder(2_490),
+            "else_if_2490_long",
+        ),
+    ];
     for depth in [1_000, 10_000, 100_000, 1_000_000] {
         let refuse = if depth > 1_000 {
             Refuse::Must

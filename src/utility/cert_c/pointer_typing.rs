@@ -23,6 +23,7 @@ use crate::analyze::argument_objects::declared_pointers;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::float_typing::StructFieldTypes;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
@@ -347,10 +348,57 @@ pub fn is_pointer_arithmetic_in<'a>(
     struct_field_types: &StructFieldTypes,
     facts: &PointerFacts,
 ) -> bool {
-    pointer_walk(root, node, source, type_map, struct_field_types, facts).arithmetic
+    pointer_walk(
+        root,
+        node,
+        source,
+        type_map,
+        struct_field_types,
+        facts,
+        None,
+    )
+    .arithmetic
+}
+
+/// Walks of [`is_pointer_arithmetic_in`] by node id, for one tree, `root`,
+/// `source`, `type_map`, `struct_field_types` and `facts`.
+#[derive(Default)]
+pub struct PointerMemo(RefCell<HashMap<usize, PointerWalk>>);
+
+impl PointerMemo {
+    /// Forget every walk, before asking about another tree or type map.
+    pub fn clear(&self) {
+        self.0.borrow_mut().clear();
+    }
+}
+
+/// [`is_pointer_arithmetic_in`], remembering each node's walk in `memo` for
+/// a caller that asks it of every operator of an expression: each call
+/// otherwise walks the operator's whole subtree again, so a long
+/// `a + b + ...` chain costs the square of its length. The same answer.
+pub fn is_pointer_arithmetic_with<'a>(
+    root: Option<&Node<'a>>,
+    node: &Node<'a>,
+    source: &str,
+    type_map: &std::collections::HashMap<String, String>,
+    struct_field_types: &StructFieldTypes,
+    facts: &PointerFacts,
+    memo: &PointerMemo,
+) -> bool {
+    pointer_walk(
+        root,
+        node,
+        source,
+        type_map,
+        struct_field_types,
+        facts,
+        Some(memo),
+    )
+    .arithmetic
 }
 
 /// What one walk of an expression establishes for [`is_pointer_arithmetic_in`].
+#[derive(Clone, Copy)]
 struct PointerWalk {
     /// [`pointer_value`] of the node.
     value: bool,
@@ -370,8 +418,37 @@ fn pointer_walk<'a>(
     type_map: &std::collections::HashMap<String, String>,
     struct_field_types: &StructFieldTypes,
     facts: &PointerFacts,
+    memo: Option<&PointerMemo>,
 ) -> PointerWalk {
-    let walk = |n: &Node<'a>| pointer_walk(root, n, source, type_map, struct_field_types, facts);
+    if let Some(known) = memo.and_then(|m| m.0.borrow().get(&node.id()).copied()) {
+        return known;
+    }
+    let walk = pointer_walk_uncached(
+        root,
+        node,
+        source,
+        type_map,
+        struct_field_types,
+        facts,
+        memo,
+    );
+    if let Some(m) = memo {
+        m.0.borrow_mut().insert(node.id(), walk);
+    }
+    walk
+}
+
+fn pointer_walk_uncached<'a>(
+    root: Option<&Node<'a>>,
+    node: &Node<'a>,
+    source: &str,
+    type_map: &std::collections::HashMap<String, String>,
+    struct_field_types: &StructFieldTypes,
+    facts: &PointerFacts,
+    memo: Option<&PointerMemo>,
+) -> PointerWalk {
+    let walk =
+        |n: &Node<'a>| pointer_walk(root, n, source, type_map, struct_field_types, facts, memo);
     let neither = PointerWalk {
         value: false,
         arithmetic: false,

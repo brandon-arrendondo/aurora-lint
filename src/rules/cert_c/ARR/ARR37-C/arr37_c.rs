@@ -10,6 +10,15 @@ use tree_sitter::Node;
 
 pub struct Arr37C;
 
+/// The node kinds the rule inspects for pointer arithmetic.
+const CHECKED_KINDS: &[&str] = &[
+    "binary_expression",
+    "update_expression",
+    "assignment_expression",
+    "subscript_expression",
+    "for_statement",
+];
+
 impl CertRule for Arr37C {
     fn rule_id(&self) -> &'static str {
         "ARR37-C"
@@ -33,25 +42,29 @@ impl CertRule for Arr37C {
         // File-scope (outside any function) declarations/assignments form a
         // base map visible to every function. Scoped strictly to nodes with
         // no enclosing function so a global's type never gets shadowed by
-        // some unrelated function's local of the same name.
+        // some unrelated function's local of the same name. Found by pruning
+        // at each function definition on the way down, not by climbing from
+        // every node to ask whether one encloses it.
         let mut global_analyzer = NonArrayPointerAnalyzer::new();
-        for decl in query::find_descendants_of_kind(*node, "declaration") {
-            if ast_utils::find_containing_function(&decl).is_none() {
-                global_analyzer.process_declaration(&decl, source);
-            }
+        for decl in ast_utils::file_scope_descendants_of_kinds(*node, &["declaration"]) {
+            crate::analyze::containment::checkpoint();
+            global_analyzer.process_declaration(&decl, source);
         }
-        for assign in query::find_descendants_of_kind(*node, "assignment_expression") {
-            if ast_utils::find_containing_function(&assign).is_none() {
-                global_analyzer.process_assignment(&assign, source);
-            }
+        for assign in ast_utils::file_scope_descendants_of_kinds(*node, &["assignment_expression"])
+        {
+            crate::analyze::containment::checkpoint();
+            global_analyzer.process_assignment(&assign, source);
         }
 
         // Check any file-scope code (rare) using only the global map, and
         // only for nodes that aren't inside a function (those are handled
         // per-function below).
-        self.check_node_filtered(node, source, &global_analyzer, &mut violations, &|n| {
-            ast_utils::find_containing_function(n).is_none()
-        });
+        self.check_matches(
+            ast_utils::file_scope_descendants_of_kinds(*node, CHECKED_KINDS),
+            source,
+            &global_analyzer,
+            &mut violations,
+        );
 
         // Analyze each function independently: a fresh variable-type map per
         // function (seeded with the file-scope globals) so that two
@@ -81,31 +94,23 @@ impl Arr37C {
         analyzer: &NonArrayPointerAnalyzer,
         violations: &mut Vec<RuleViolation>,
     ) {
-        self.check_node_filtered(node, source, analyzer, violations, &|_| true);
+        self.check_matches(
+            query::find_descendants_of_kinds(*node, CHECKED_KINDS),
+            source,
+            analyzer,
+            violations,
+        );
     }
 
-    fn check_node_filtered(
+    fn check_matches(
         &self,
-        node: &Node,
+        matches: Vec<Node>,
         source: &str,
         analyzer: &NonArrayPointerAnalyzer,
         violations: &mut Vec<RuleViolation>,
-        filter: &dyn Fn(&Node) -> bool,
     ) {
-        let matches = query::find_descendants_of_kinds(
-            *node,
-            &[
-                "binary_expression",
-                "update_expression",
-                "assignment_expression",
-                "subscript_expression",
-                "for_statement",
-            ],
-        );
         for n in matches {
-            if !filter(&n) {
-                continue;
-            }
+            crate::analyze::containment::checkpoint();
             let node_text = &source[n.start_byte()..n.end_byte()];
 
             match n.kind() {

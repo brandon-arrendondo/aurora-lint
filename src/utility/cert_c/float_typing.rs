@@ -10,6 +10,7 @@
 
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::expr_type::{self, TypeEnv};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -85,6 +86,49 @@ pub fn is_float_literal(text: &str) -> bool {
 /// arms of `?:` (6.5.15p5) and for unary `+`/`-`. `%` and the shifts take
 /// integer operands only, so the rule does not apply to them.
 pub fn expr_is_float(node: &Node, source: &str, env: &TypeEnv) -> bool {
+    expr_is_float_with(node, source, env, None)
+}
+
+/// Answers of [`expr_is_float`] by node id, for one tree, `source` and `env`.
+#[derive(Default)]
+pub struct FloatMemo(RefCell<HashMap<usize, bool>>);
+
+impl FloatMemo {
+    /// Forget every answer, before asking about another tree or `env`.
+    pub fn clear(&self) {
+        self.0.borrow_mut().clear();
+    }
+}
+
+/// [`expr_is_float`], remembering each node's answer in `memo` (when given)
+/// for a caller that asks it of every operator of an expression: each call
+/// otherwise walks its operand's whole subtree again, so a long `a + b + ...`
+/// chain costs the square of its length. The same answer.
+pub fn expr_is_float_with(
+    node: &Node,
+    source: &str,
+    env: &TypeEnv,
+    memo: Option<&FloatMemo>,
+) -> bool {
+    if let Some(known) = memo.and_then(|m| m.0.borrow().get(&node.id()).copied()) {
+        return known;
+    }
+    let answer = expr_is_float_uncached(node, source, env, memo);
+    if let Some(m) = memo {
+        m.0.borrow_mut().insert(node.id(), answer);
+    }
+    answer
+}
+
+fn expr_is_float_uncached(
+    node: &Node,
+    source: &str,
+    env: &TypeEnv,
+    memo: Option<&FloatMemo>,
+) -> bool {
+    // Every recursive question below goes through the memo.
+    let expr_is_float =
+        |n: &Node, source: &str, env: &TypeEnv| expr_is_float_with(n, source, env, memo);
     let either = |a: Option<Node>, b: Option<Node>| {
         a.is_some_and(|n| expr_is_float(&n, source, env))
             || b.is_some_and(|n| expr_is_float(&n, source, env))

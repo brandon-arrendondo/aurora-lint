@@ -2160,24 +2160,41 @@ pub(crate) fn collect_value_position_identifiers(
     source: &str,
     out: &mut HashSet<String>,
 ) {
-    if node.kind() == "identifier" && !is_direct_call_target(node) && !is_declarator_name(node) {
+    collect_value_position_identifiers_under(node, node.parent(), source, out);
+}
+
+/// [`collect_value_position_identifiers`] with `node`'s parent in hand. The
+/// walk passes each child its parent rather than asking `Node::parent()`,
+/// which costs the node's depth, of every identifier: on an `else if` ladder
+/// that made the prescan quadratic in the ladder's length.
+fn collect_value_position_identifiers_under(
+    node: &Node,
+    parent: Option<Node>,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    if node.kind() == "identifier"
+        && !is_direct_call_target(node, parent)
+        && !is_declarator_name(node, parent)
+    {
         if let Ok(name) = node.utf8_text(source.as_bytes()) {
             out.insert(name.to_string());
         }
     }
 
     for child in node.child_nodes() {
-        collect_value_position_identifiers(&child, source, out);
+        collect_value_position_identifiers_under(&child, Some(*node), source, out);
     }
 }
 
 /// Is this identifier the callee of a direct call -- the `f` of `f(x)`?
+/// `parent` is the identifier's parent.
 ///
 /// A call through a stored pointer (`ops->cb(x)`, `table[i](x)`) is not one:
 /// its `function` field is a `field_expression` or a `subscript_expression`,
 /// so the identifier inside it is reached as a value, which is exactly right.
-fn is_direct_call_target(node: &Node) -> bool {
-    node.parent().is_some_and(|parent| {
+fn is_direct_call_target(node: &Node, parent: Option<Node>) -> bool {
+    parent.is_some_and(|parent| {
         parent.kind() == "call_expression"
             && parent
                 .child_by_field_name("function")
@@ -2186,13 +2203,14 @@ fn is_direct_call_target(node: &Node) -> bool {
 }
 
 /// Is this identifier the name being declared, rather than a use of one?
+/// `parent` is the identifier's parent.
 ///
 /// Covers a function definition's own name and every prototype
 /// (`function_declarator`), plus a variable's declarator
 /// (`int x;` / `int *p;` / `int a[4];`) -- but NOT an `init_declarator`'s
 /// value, which is a use.
-fn is_declarator_name(node: &Node) -> bool {
-    node.parent().is_some_and(|parent| {
+fn is_declarator_name(node: &Node, parent: Option<Node>) -> bool {
+    parent.is_some_and(|parent| {
         matches!(
             parent.kind(),
             "function_declarator" | "array_declarator" | "pointer_declarator"

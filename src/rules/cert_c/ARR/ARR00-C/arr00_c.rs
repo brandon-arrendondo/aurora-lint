@@ -21,7 +21,7 @@ use crate::analyze::const_eval::{collect_macro_constants, MacroConstantMap};
 use crate::manifest::Severity;
 use crate::settings::IntFacts;
 use crate::utility::cert_c::ast_utils::{
-    find_containing_function, get_function_parameters, get_sanitized_node_text,
+    descendants_of_kinds_with, get_function_parameters, get_sanitized_node_text,
     is_array_parameter_type, is_function_parameter, is_inside_loop, is_pointer_type,
     is_write_context,
 };
@@ -34,7 +34,8 @@ use crate::utility::cert_c::variable_analysis::{
     is_user_input_variable,
 };
 use lang_parsing_substrate::query;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 #[derive(Default)]
@@ -72,10 +73,11 @@ impl CertRule for Arr00C {
         // (e.g. `arr[2*SPLINE_SEGMENT_DIVISIONS + 2]`). Built once per file.
         let macros = collect_macro_constants(node, source, self.data_model.get());
 
-        // Iterative pre-order traversal (via substrate::query): deeply nested
-        // ASTs (e.g. files with thousands of chained `else if` branches)
-        // overflow the stack if each node level adds a call frame.
-        let candidates = query::find_descendants_of_kinds(
+        // Iterative pre-order traversal: deeply nested ASTs (e.g. files with
+        // thousands of chained `else if` branches) overflow the stack if each
+        // node level adds a call frame. Each candidate's enclosing function
+        // is carried down the walk, not climbed to per candidate.
+        let candidates = descendants_of_kinds_with(
             *node,
             &[
                 "assignment_expression",
@@ -87,39 +89,48 @@ impl CertRule for Arr00C {
                 "return_statement",
                 "subscript_expression",
             ],
+            None,
+            |function: &Option<Node>, parent| match parent.kind() {
+                "function_definition" => Some(parent),
+                _ => *function,
+            },
         );
-        for current in candidates {
+        let arrays = ArrayNames::default();
+        for (current, function) in candidates {
+            crate::analyze::containment::checkpoint();
             let node = &current;
             match node.kind() {
                 "assignment_expression" => {
                     // Check for direct array assignment (arr1 = arr2)
-                    if let Some(violation) = check_array_assignment(node, source) {
+                    if let Some(violation) = check_array_assignment(node, function, &arrays, source)
+                    {
                         violations.push(violation);
                     }
                 }
                 "sizeof_expression" => {
                     // Check for sizeof misuse with array parameters
-                    if let Some(violation) = check_sizeof_misuse(node, source) {
+                    if let Some(violation) = check_sizeof_misuse(node, function, source) {
                         violations.push(violation);
                     }
                 }
                 "binary_expression" => {
                     // Check for array comparison with == or !=
-                    if let Some(violation) = check_array_comparison(node, source) {
+                    if let Some(violation) = check_array_comparison(node, function, &arrays, source)
+                    {
                         violations.push(violation);
                     }
                     // Also check for pointer arithmetic that exceeds bounds
-                    if let Some(violation) = check_pointer_arithmetic(node, source) {
+                    if let Some(violation) = check_pointer_arithmetic(node, function, source) {
                         violations.push(violation);
                     }
                     // Check for pointer subtraction between different arrays
-                    if let Some(violation) = check_pointer_subtraction(node, source) {
+                    if let Some(violation) = check_pointer_subtraction(node, function, source) {
                         violations.push(violation);
                     }
                 }
                 "declaration" => {
                     // Check for VLA with zero or invalid size
-                    if let Some(violation) = check_vla_declaration(node, source) {
+                    if let Some(violation) = check_vla_declaration(node, function, source) {
                         violations.push(violation);
                     }
                 }
@@ -129,35 +140,37 @@ impl CertRule for Arr00C {
                         violations.push(violation);
                     }
                     // Check for obviously wrong string operations (strcat/strcpy with literal too large)
-                    if let Some(violation) = check_obvious_string_overflow(node, source) {
+                    if let Some(violation) = check_obvious_string_overflow(node, function, source) {
                         violations.push(violation);
                     }
                     // Check for memcpy/memmove with wrong size
-                    if let Some(violation) = check_memcpy_size_mismatch(node, source) {
+                    if let Some(violation) = check_memcpy_size_mismatch(node, function, source) {
                         violations.push(violation);
                     }
                     // Check for memory operations with size exceeding buffer
-                    if let Some(violation) = check_memory_operation_overflow(node, source) {
+                    if let Some(violation) = check_memory_operation_overflow(node, function, source)
+                    {
                         violations.push(violation);
                     }
                 }
                 "for_statement" => {
                     // Check for loops exceeding malloc/realloc allocation size
-                    if let Some(violation) = check_loop_exceeds_allocation(node, source) {
+                    if let Some(violation) = check_loop_exceeds_allocation(node, function, source) {
                         violations.push(violation);
                     }
                     // Check for loops with bounds that exceed array size
-                    if let Some(violation) = check_loop_bound_exceeds_array(node, source) {
+                    if let Some(violation) = check_loop_bound_exceeds_array(node, function, source)
+                    {
                         violations.push(violation);
                     }
                     // Check for loops with unvalidated bounds accessing arrays
-                    if let Some(violation) = check_loop_array_access(node, source) {
+                    if let Some(violation) = check_loop_array_access(node, function, source) {
                         violations.push(violation);
                     }
                 }
                 "return_statement" => {
                     // Check for returning pointer to local array
-                    if let Some(violation) = check_return_local_array(node, source) {
+                    if let Some(violation) = check_return_local_array(node, function, source) {
                         violations.push(violation);
                     }
                 }
@@ -167,23 +180,28 @@ impl CertRule for Arr00C {
                         violations.push(violation);
                     }
                     // Check for reading from uninitialized array
-                    if let Some(violation) = check_uninitialized_array_read(node, source) {
+                    if let Some(violation) =
+                        check_uninitialized_array_read(node, function, &arrays, source)
+                    {
                         violations.push(violation);
                     }
                     // Check for array access after free
-                    if let Some(violation) = check_use_after_free(node, source) {
+                    if let Some(violation) = check_use_after_free(node, function, source) {
                         violations.push(violation);
                     }
                     // Check for array access with constant out-of-bounds index
-                    if let Some(violation) = check_constant_out_of_bounds(node, source, &macros) {
+                    if let Some(violation) =
+                        check_constant_out_of_bounds(node, function, &arrays, source, &macros)
+                    {
                         violations.push(violation);
                     }
                     // Check for array access with unvalidated index
-                    if let Some(violation) = check_subscript_bounds(node, source) {
+                    if let Some(violation) = check_subscript_bounds(node, function, &arrays, source)
+                    {
                         violations.push(violation);
                     }
                     // Check for array access with boundary value index
-                    if let Some(violation) = check_boundary_value_index(node, source) {
+                    if let Some(violation) = check_boundary_value_index(node, function, source) {
                         violations.push(violation);
                     }
                 }
@@ -199,7 +217,12 @@ impl CertRule for Arr00C {
 // Core Rule Checks
 // ============================================================================
 
-fn check_array_assignment(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_array_assignment(
+    node: &Node,
+    function: Option<Node>,
+    arrays: &ArrayNames,
+    source: &str,
+) -> Option<RuleViolation> {
     // Only flag plain '=' assignments, not compound assignments (+=, -=, etc.)
     // which are valid pointer arithmetic operations.
     if let Some(op) = node.child_by_field_name("operator") {
@@ -214,9 +237,9 @@ fn check_array_assignment(node: &Node, source: &str) -> Option<RuleViolation> {
     let right = node.child_by_field_name("right")?;
 
     // Check if left side is an array identifier (not a subscript)
-    if is_array_identifier(&left, source) && !is_subscript(&left) {
+    if is_array_identifier(&left, function, arrays, source) && !is_subscript(&left) {
         // Check if right side is also an array identifier
-        if is_array_identifier(&right, source) {
+        if is_array_identifier(&right, function, arrays, source) {
             let start_point = node.start_position();
             let left_text = &source[left.start_byte()..left.end_byte()];
             let right_text = &source[right.start_byte()..right.end_byte()];
@@ -240,7 +263,7 @@ fn check_array_assignment(node: &Node, source: &str) -> Option<RuleViolation> {
     None
 }
 
-fn check_sizeof_misuse(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_sizeof_misuse(node: &Node, function: Option<Node>, source: &str) -> Option<RuleViolation> {
     // For sizeof expressions, we need to look at the second child (index 1) which is typically the parenthesized expression
     if node.child_count() >= 2 {
         if let Some(arg_expr) = node.child(1) {
@@ -249,13 +272,13 @@ fn check_sizeof_misuse(node: &Node, source: &str) -> Option<RuleViolation> {
                 for i in 0..arg_expr.child_count() {
                     if let Some(child) = arg_expr.child(i) {
                         if child.kind() == "identifier" {
-                            return check_if_array_parameter(&child, node, source);
+                            return check_if_array_parameter(&child, node, function, source);
                         }
                     }
                 }
             } else if arg_expr.kind() == "identifier" {
                 // Direct identifier without parentheses
-                return check_if_array_parameter(&arg_expr, node, source);
+                return check_if_array_parameter(&arg_expr, node, function, source);
             }
         }
     }
@@ -266,12 +289,13 @@ fn check_sizeof_misuse(node: &Node, source: &str) -> Option<RuleViolation> {
 fn check_if_array_parameter(
     identifier_node: &Node,
     sizeof_node: &Node,
+    function: Option<Node>,
     source: &str,
 ) -> Option<RuleViolation> {
     let identifier_name = &source[identifier_node.start_byte()..identifier_node.end_byte()];
 
     // Find the containing function
-    let function_def = find_containing_function(identifier_node)?;
+    let function_def = function?;
 
     // Get the function's parameters
     let parameters = get_function_parameters(&function_def, source)?;
@@ -299,7 +323,11 @@ fn check_if_array_parameter(
     None
 }
 
-fn check_vla_declaration(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_vla_declaration(
+    node: &Node,
+    function: Option<Node>,
+    source: &str,
+) -> Option<RuleViolation> {
     // Look for array_declarator in the declaration
     let mut declarator = None;
     for i in 0..node.child_count() {
@@ -379,7 +407,8 @@ fn check_vla_declaration(node: &Node, source: &str) -> Option<RuleViolation> {
 
         // Check if this appears to be an unvalidated parameter or variable
         // Look for assignment of 0 or validation checks in the surrounding context
-        if let Some(violation) = check_vla_size_validation(node, size_var_name, source, &declarator)
+        if let Some(violation) =
+            check_vla_size_validation(node, function, size_var_name, source, &declarator)
         {
             return Some(violation);
         }
@@ -390,13 +419,14 @@ fn check_vla_declaration(node: &Node, source: &str) -> Option<RuleViolation> {
 
 fn check_vla_size_validation(
     decl_node: &Node,
+    function: Option<Node>,
     size_var: &str,
     source: &str,
     declarator: &Node,
 ) -> Option<RuleViolation> {
     // Look backwards in the source to find if size_var was assigned 0 or is unvalidated
     // First, try to find the containing function
-    let function_node = find_containing_function(decl_node)?;
+    let function_node = function?;
 
     // Get all variable declarations and assignments before this VLA declaration
     let vla_position = decl_node.start_byte();
@@ -641,7 +671,11 @@ fn check_dangerous_functions(node: &Node, source: &str) -> Option<RuleViolation>
     None
 }
 
-fn check_obvious_string_overflow(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_obvious_string_overflow(
+    node: &Node,
+    enclosing: Option<Node>,
+    source: &str,
+) -> Option<RuleViolation> {
     // Check for obviously wrong strcat/strcpy calls where the source is clearly too large
     // This indicates fundamental misunderstanding of arrays
     // Example: char buf[10]; strcat(buf, "This is way too long");
@@ -718,7 +752,7 @@ fn check_obvious_string_overflow(node: &Node, source: &str) -> Option<RuleViolat
     // Find the destination array declaration to get its size
     // Sanitized: a comment/string literal claiming a large buffer size could
     // otherwise spoof find_array_size() into missing a real overflow.
-    let function_node = find_containing_function(node)?;
+    let function_node = enclosing?;
     let function_start = function_node.start_byte();
     let call_position = node.start_byte();
     let sanitized_function_text = get_sanitized_node_text(&function_node, source);
@@ -766,7 +800,11 @@ fn check_obvious_string_overflow(node: &Node, source: &str) -> Option<RuleViolat
     None
 }
 
-fn check_memcpy_size_mismatch(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_memcpy_size_mismatch(
+    node: &Node,
+    enclosing: Option<Node>,
+    source: &str,
+) -> Option<RuleViolation> {
     // Check for memcpy/memmove where size argument uses wrong array
     // Pattern: memcpy(dest, source, sizeof(source)) where dest is smaller than source
     // This indicates misunderstanding of array bounds
@@ -817,7 +855,7 @@ fn check_memcpy_size_mismatch(node: &Node, source: &str) -> Option<RuleViolation
     // Find the containing function to look up array sizes
     // Sanitized so a comment/string literal can't spoof the array-size scan
     // and hide a real dest/src size mismatch.
-    let function_node = find_containing_function(node)?;
+    let function_node = enclosing?;
     let function_start = function_node.start_byte();
     let call_position = node.start_byte();
     let sanitized_function_text = get_sanitized_node_text(&function_node, source);
@@ -866,7 +904,11 @@ fn check_memcpy_size_mismatch(node: &Node, source: &str) -> Option<RuleViolation
     None
 }
 
-fn check_memory_operation_overflow(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_memory_operation_overflow(
+    node: &Node,
+    enclosing: Option<Node>,
+    source: &str,
+) -> Option<RuleViolation> {
     // Check for memory operations (memset, memcpy, memmove) where the size argument
     // exceeds the actual buffer size
     // Pattern: int arr[5]; memset(arr, 0, 100); // 100 bytes > 5*sizeof(int) = 20 bytes
@@ -922,7 +964,7 @@ fn check_memory_operation_overflow(node: &Node, source: &str) -> Option<RuleViol
     // Find the containing function to look up array size
     // Sanitized so a comment/string literal can't spoof the array-size or
     // element-size scan and hide a real buffer overflow.
-    let function_node = find_containing_function(node)?;
+    let function_node = enclosing?;
     let function_start = function_node.start_byte();
     let call_position = node.start_byte();
     let sanitized_function_text = get_sanitized_node_text(&function_node, source);
@@ -975,7 +1017,11 @@ fn check_memory_operation_overflow(node: &Node, source: &str) -> Option<RuleViol
 // - find_element_size()
 // - find_string_literal_length()
 
-fn check_loop_exceeds_allocation(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_loop_exceeds_allocation(
+    node: &Node,
+    function: Option<Node>,
+    source: &str,
+) -> Option<RuleViolation> {
     // Check for loops that exceed dynamically allocated memory size
     // Pattern: arr = malloc(5 * sizeof(int)); for (i = 0; i < 10; i++) { arr[i] = ...; }
     // or: arr = realloc(arr, 3 * sizeof(int)); for (i = 0; i < 5; i++) { arr[i] = ...; }
@@ -1026,7 +1072,7 @@ fn check_loop_exceeds_allocation(node: &Node, source: &str) -> Option<RuleViolat
     // Look for malloc/realloc calls for this pointer
     // Sanitized so a comment/string literal can't spoof the allocation-size
     // scan and hide a real out-of-bounds loop access.
-    let function_node = find_containing_function(node)?;
+    let function_node = function?;
     let function_start = function_node.start_byte();
     let loop_position = node.start_byte();
     let sanitized_function_text = get_sanitized_node_text(&function_node, source);
@@ -1072,7 +1118,11 @@ fn check_loop_exceeds_allocation(node: &Node, source: &str) -> Option<RuleViolat
 
 // find_allocation_size() - now imported from size_analysis module
 
-fn check_loop_bound_exceeds_array(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_loop_bound_exceeds_array(
+    node: &Node,
+    function: Option<Node>,
+    source: &str,
+) -> Option<RuleViolation> {
     // Check for loops where the bound allows accessing out-of-bounds indices
     // Pattern: for (int i = 0; i <= 10; i++) { arr[i] = ...; } where arr[10]
     // The <= allows i to reach 10, which is out of bounds
@@ -1132,7 +1182,7 @@ fn check_loop_bound_exceeds_array(node: &Node, source: &str) -> Option<RuleViola
     // Look for pattern: array_name[loop_var]
     // Sanitized so a comment/string literal can't spoof the array-size scan
     // and hide a real off-by-one loop bound.
-    let function_node = find_containing_function(node)?;
+    let function_node = function?;
     let function_start = function_node.start_byte();
     let loop_position = node.start_byte();
     let sanitized_function_text = get_sanitized_node_text(&function_node, source);
@@ -1206,7 +1256,11 @@ fn extract_array_name_from_subscript(body_text: &str, loop_var: &str) -> Option<
     None
 }
 
-fn check_loop_array_access(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_loop_array_access(
+    node: &Node,
+    function: Option<Node>,
+    source: &str,
+) -> Option<RuleViolation> {
     // Check for loops that use unvalidated/uninitialized variables as bounds when accessing arrays
     // Patterns:
     // 1. for (int i = 0; i < user_input; i++) { array[i] = ...; }
@@ -1228,7 +1282,7 @@ fn check_loop_array_access(node: &Node, source: &str) -> Option<RuleViolation> {
     // Look backwards in the function to see if bound_var was populated from user input or is uninitialized
     // Sanitized so a comment/string literal can't spoof user-input/validation
     // detection and suppress a real unvalidated-loop-bound violation.
-    let function_node = find_containing_function(node)?;
+    let function_node = function?;
     let loop_position = node.start_byte();
     let function_start = function_node.start_byte();
     let sanitized_function_text = get_sanitized_node_text(&function_node, source);
@@ -1336,7 +1390,12 @@ fn contains_array_access(node: &Node) -> bool {
 // - has_validation_before_loop()
 // - is_uninitialized_variable()
 
-fn check_subscript_bounds(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_subscript_bounds(
+    node: &Node,
+    function: Option<Node>,
+    arrays: &ArrayNames,
+    source: &str,
+) -> Option<RuleViolation> {
     // Check for array subscript with unvalidated index
     // Pattern: arr[index] where index comes from scanf or is a function parameter without validation
 
@@ -1344,8 +1403,8 @@ fn check_subscript_bounds(node: &Node, source: &str) -> Option<RuleViolation> {
     let array_node = node.child_by_field_name("argument")?;
     if array_node.kind() == "identifier" {
         let arr_name = &source[array_node.start_byte()..array_node.end_byte()];
-        if let Some(fn_node) = find_containing_function(node) {
-            if !has_array_declaration(&fn_node, arr_name, source) {
+        if let Some(fn_node) = function {
+            if !arrays.declares(&fn_node, arr_name, source) {
                 return None;
             }
         }
@@ -1362,7 +1421,7 @@ fn check_subscript_bounds(node: &Node, source: &str) -> Option<RuleViolation> {
     let index_var = &source[index_node.start_byte()..index_node.end_byte()];
 
     // Find the containing function to check context
-    let function_node = find_containing_function(node)?;
+    let function_node = function?;
 
     // Get the function body text up to this point
     // Sanitized so a comment/string literal can't spoof the loop-variable,
@@ -1430,7 +1489,12 @@ fn check_subscript_bounds(node: &Node, source: &str) -> Option<RuleViolation> {
     None
 }
 
-fn check_uninitialized_array_read(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_uninitialized_array_read(
+    node: &Node,
+    function: Option<Node>,
+    arrays: &ArrayNames,
+    source: &str,
+) -> Option<RuleViolation> {
     // Check for reading from an uninitialized array
     // Pattern: int arr[10]; ... printf("%d", arr[i]);
     // The array is declared but never written to before being read
@@ -1459,7 +1523,7 @@ fn check_uninitialized_array_read(node: &Node, source: &str) -> Option<RuleViola
     // Sanitized so a comment/string literal (e.g. mentioning "arr[" or a fake
     // "arr[i] = ..." write) can't spoof the initializer/write scan below and
     // suppress a real uninitialized-array-read violation.
-    let function_node = find_containing_function(node)?;
+    let function_node = function?;
     let function_start = function_node.start_byte();
     let subscript_position = node.start_byte();
     let sanitized_function_text = get_sanitized_node_text(&function_node, source);
@@ -1467,7 +1531,7 @@ fn check_uninitialized_array_read(node: &Node, source: &str) -> Option<RuleViola
         [..(subscript_position - function_start).min(sanitized_function_text.len())];
 
     // Only flag true array declarations (type name[SIZE]), not pointers
-    if !has_array_declaration(&function_node, array_name, source) {
+    if !arrays.declares(&function_node, array_name, source) {
         return None; // Not a local array — pointer or parameter
     }
 
@@ -1578,7 +1642,11 @@ fn array_passed_to_call_before(
 // is_inside_loop() - now imported from ast_utils
 // is_write_context() - now imported from ast_utils
 
-fn check_use_after_free(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_use_after_free(
+    node: &Node,
+    function: Option<Node>,
+    source: &str,
+) -> Option<RuleViolation> {
     // Check for array/pointer access after free()
     // Pattern: free(ptr); ... ptr[i] = value;
 
@@ -1593,7 +1661,7 @@ fn check_use_after_free(node: &Node, source: &str) -> Option<RuleViolation> {
     // Look backwards in the function to see if this pointer was freed
     // Sanitized so a comment/string literal containing "free(name)" text
     // can't spoof a use-after-free finding on an otherwise-safe access.
-    let function_node = find_containing_function(node)?;
+    let function_node = function?;
     let function_start = function_node.start_byte();
     let subscript_position = node.start_byte();
     let sanitized_function_text = get_sanitized_node_text(&function_node, source);
@@ -1700,6 +1768,8 @@ fn check_comma_in_subscript(node: &Node, source: &str) -> Option<RuleViolation> 
 
 fn check_constant_out_of_bounds(
     node: &Node,
+    function: Option<Node>,
+    arrays: &ArrayNames,
     source: &str,
     macros: &MacroConstantMap,
 ) -> Option<RuleViolation> {
@@ -1752,8 +1822,8 @@ fn check_constant_out_of_bounds(
     };
 
     // Only check true array declarations, not subscripted pointers
-    let function_node = find_containing_function(node)?;
-    if !has_array_declaration(&function_node, array_name, source) {
+    let function_node = function?;
+    if !arrays.declares(&function_node, array_name, source) {
         return None;
     }
 
@@ -1793,7 +1863,11 @@ fn check_constant_out_of_bounds(
 
 // has_bounds_validation() - now imported from variable_analysis module
 
-fn check_boundary_value_index(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_boundary_value_index(
+    node: &Node,
+    function: Option<Node>,
+    source: &str,
+) -> Option<RuleViolation> {
     // Check for array subscript using a variable initialized to boundary values
     // Pattern: unsigned int idx = UINT_MAX; ... arr[idx]
     // This indicates misunderstanding of safe array indexing
@@ -1811,7 +1885,7 @@ fn check_boundary_value_index(node: &Node, source: &str) -> Option<RuleViolation
     // Find the containing function to check context
     // Sanitized so a comment/string literal mentioning e.g. "idx = UINT_MAX"
     // can't spoof the boundary-value-initialization detection below.
-    let function_node = find_containing_function(node)?;
+    let function_node = function?;
     let function_start = function_node.start_byte();
     let subscript_position = node.start_byte();
     let sanitized_function_text = get_sanitized_node_text(&function_node, source);
@@ -1885,7 +1959,11 @@ fn is_initialized_to_boundary_value(var_name: &str, preceding_text: &str) -> Opt
     None
 }
 
-fn check_return_local_array(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_return_local_array(
+    node: &Node,
+    function: Option<Node>,
+    source: &str,
+) -> Option<RuleViolation> {
     // Check for returning pointer to local stack array
     // Pattern: return local_array; where local_array is declared in function
 
@@ -1915,7 +1993,7 @@ fn check_return_local_array(node: &Node, source: &str) -> Option<RuleViolation> 
     }
 
     // Find the containing function
-    let function_node = find_containing_function(node)?;
+    let function_node = function?;
 
     // Search for local array declaration with this name
     // Sanitized so a comment/string literal containing "name[" text can't
@@ -1991,7 +2069,11 @@ fn check_return_local_array(node: &Node, source: &str) -> Option<RuleViolation> 
     })
 }
 
-fn check_pointer_arithmetic(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_pointer_arithmetic(
+    node: &Node,
+    function: Option<Node>,
+    source: &str,
+) -> Option<RuleViolation> {
     // Check for pointer arithmetic that obviously exceeds array bounds
     // Pattern: ptr = arr + offset  where offset > array_size
 
@@ -2023,7 +2105,7 @@ fn check_pointer_arithmetic(node: &Node, source: &str) -> Option<RuleViolation> 
     };
 
     // Find the array declaration in the function body to get its size
-    let function_node = find_containing_function(node)?;
+    let function_node = function?;
 
     // Find the compound_statement (function body) within the function_definition
     let mut body_start = function_node.start_byte();
@@ -2089,7 +2171,11 @@ fn check_pointer_arithmetic(node: &Node, source: &str) -> Option<RuleViolation> 
     None
 }
 
-fn check_pointer_subtraction(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_pointer_subtraction(
+    node: &Node,
+    function: Option<Node>,
+    source: &str,
+) -> Option<RuleViolation> {
     // Check for pointer subtraction between pointers to different arrays
     // Pattern: p1 - p2 where p1 and p2 point to different array objects
     // This is undefined behavior in C
@@ -2119,7 +2205,7 @@ fn check_pointer_subtraction(node: &Node, source: &str) -> Option<RuleViolation>
     }
 
     // Find the containing function to look up pointer origins
-    let function_node = find_containing_function(node)?;
+    let function_node = function?;
 
     // Both operands must actually BE pointers. `find_pointer_source_array`
     // below is a backwards TEXT scan for `<name> = ` with no notion of type,
@@ -2389,7 +2475,12 @@ fn find_array_size(array_name: &str, preceding_text: &str) -> Option<usize> {
 // Array Comparison Checks
 // ============================================================================
 
-fn check_array_comparison(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_array_comparison(
+    node: &Node,
+    function: Option<Node>,
+    arrays: &ArrayNames,
+    source: &str,
+) -> Option<RuleViolation> {
     // Check for array comparisons using == or !=
     let operator = node.child_by_field_name("operator")?;
     let op_text = &source[operator.start_byte()..operator.end_byte()];
@@ -2412,7 +2503,9 @@ fn check_array_comparison(node: &Node, source: &str) -> Option<RuleViolation> {
 
     // Check if BOTH sides are arrays (comparing two arrays)
     // Comparing array with NULL or other values is fine
-    if is_array_identifier(&left, source) && is_array_identifier(&right, source) {
+    if is_array_identifier(&left, function, arrays, source)
+        && is_array_identifier(&right, function, arrays, source)
+    {
         let start_point = node.start_position();
         return Some(RuleViolation {
             rule_id: "ARR00-C".to_string(),
@@ -2434,7 +2527,6 @@ fn check_array_comparison(node: &Node, source: &str) -> Option<RuleViolation> {
 // ============================================================================
 // Function Navigation and Parameter Extraction
 // Now imported from ast_utils:
-// - find_containing_function()
 // - get_function_parameters()
 // - find_identifier_in_declarator()
 // - is_array_parameter_type()
@@ -2443,7 +2535,12 @@ fn check_array_comparison(node: &Node, source: &str) -> Option<RuleViolation> {
 // Type and Node Classification Helpers
 // ============================================================================
 
-fn is_array_identifier(node: &Node, source: &str) -> bool {
+fn is_array_identifier(
+    node: &Node,
+    function: Option<Node>,
+    arrays: &ArrayNames,
+    source: &str,
+) -> bool {
     // Check if identifier was declared as a true array (type name[SIZE]),
     // NOT a pointer (type *name) that happens to be subscripted.
 
@@ -2455,79 +2552,83 @@ fn is_array_identifier(node: &Node, source: &str) -> bool {
 
     // Walk up to the containing function and search its body for a declaration
     // of this identifier that uses array_declarator syntax.
-    if let Some(function_node) = find_containing_function(node) {
-        return has_array_declaration(&function_node, identifier_name, source);
+    if let Some(function_node) = function {
+        return arrays.declares(&function_node, identifier_name, source);
     }
 
     false
 }
 
-/// Check if a variable is declared as an array (with `[]` in the declarator)
-/// anywhere in the given scope node. Returns false for pointer declarations.
-fn has_array_declaration(scope: &Node, var_name: &str, source: &str) -> bool {
-    match scope.kind() {
-        "declaration"
-            // Check if this declaration declares var_name as an array
-            if declaration_is_array_for(scope, var_name, source) => {
-                return true;
-            }
-        "parameter_declaration"
-            // Array parameters (e.g., `int arr[]`) — check for array_declarator
-            if param_is_array_for(scope, var_name, source) => {
-                return true;
-            }
-        _ => {}
-    }
+/// The names each function declares as an array (with `[]` in the
+/// declarator, never a pointer), as a declaration or a parameter anywhere
+/// inside it. Each function is walked once, the first time it is asked
+/// about, rather than again for every identifier: an `else if` ladder asks
+/// once per comparison, which made the rule quadratic in the ladder's length.
+#[derive(Default)]
+struct ArrayNames {
+    by_function: RefCell<HashMap<usize, HashSet<String>>>,
+}
 
-    for i in 0..scope.child_count() {
-        if let Some(child) = scope.child(i) {
-            if has_array_declaration(&child, var_name, source) {
-                return true;
-            }
+impl ArrayNames {
+    /// Whether `function` declares `var_name` as an array.
+    fn declares(&self, function: &Node, var_name: &str, source: &str) -> bool {
+        self.by_function
+            .borrow_mut()
+            .entry(function.id())
+            .or_insert_with(|| array_declared_names(function, source))
+            .contains(var_name)
+    }
+}
+
+/// Every name a declaration or parameter declaration in `scope` declares as
+/// an array.
+fn array_declared_names(scope: &Node, source: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let mut stack = vec![*scope];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "declaration" => declaration_array_names(&node, source, &mut names),
+            // Array parameters (e.g., `int arr[]`) — direct array_declarator
+            "parameter_declaration" => param_array_names(&node, source, &mut names),
+            _ => {}
         }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
     }
-    false
+    names
 }
 
-/// Check if a declaration node declares `var_name` as an array (not a pointer).
-fn declaration_is_array_for(decl: &Node, var_name: &str, source: &str) -> bool {
+/// Add each name a declaration node declares as an array (not a pointer).
+fn declaration_array_names(decl: &Node, source: &str, names: &mut HashSet<String>) {
     for i in 0..decl.child_count() {
         if let Some(child) = decl.child(i) {
             // Direct array_declarator: `int data[10]`
             if child.kind() == "array_declarator" {
-                if declarator_names(&child, source) == var_name {
-                    return true;
-                }
+                names.insert(declarator_names(&child, source).to_string());
             }
             // init_declarator wrapping array_declarator: `int data[10] = {0}`
             if child.kind() == "init_declarator" {
                 for j in 0..child.child_count() {
                     if let Some(gc) = child.child(j) {
                         if gc.kind() == "array_declarator" {
-                            if declarator_names(&gc, source) == var_name {
-                                return true;
-                            }
+                            names.insert(declarator_names(&gc, source).to_string());
                         }
                     }
                 }
             }
         }
     }
-    false
 }
 
-/// Check if a parameter_declaration declares `var_name` as an array.
-fn param_is_array_for(param: &Node, var_name: &str, source: &str) -> bool {
+/// Add each name a parameter_declaration declares as an array.
+fn param_array_names(param: &Node, source: &str, names: &mut HashSet<String>) {
     for i in 0..param.child_count() {
         if let Some(child) = param.child(i) {
             if child.kind() == "array_declarator" {
-                if declarator_names(&child, source) == var_name {
-                    return true;
-                }
+                names.insert(declarator_names(&child, source).to_string());
             }
         }
     }
-    false
 }
 
 /// Extract the base identifier name from a declarator (which may be nested).

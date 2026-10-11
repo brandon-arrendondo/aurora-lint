@@ -25,7 +25,9 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::{get_node_text, is_in_preproc_condition};
+use crate::utility::cert_c::ast_utils::{
+    descendants_of_kinds_with, get_node_text, InPreprocCondition,
+};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -55,7 +57,15 @@ impl CertRule for Exp02C {
 
 impl Exp02C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        for bin_node in query::find_descendants_of_kind(*node, "binary_expression") {
+        // Whether each node is in a preprocessor condition is carried down
+        // the walk, not climbed to from every operator.
+        for (bin_node, preproc) in descendants_of_kinds_with(
+            *node,
+            &["binary_expression"],
+            InPreprocCondition::default(),
+            InPreprocCondition::step,
+        ) {
+            crate::analyze::containment::checkpoint();
             // `#if A && B` is evaluated by the preprocessor at translation
             // time, so there is no runtime short-circuit and nothing to skip:
             // a call there is a feature test (`__has_attribute(target)`,
@@ -63,7 +73,7 @@ impl Exp02C {
             // names a construct that is not present. Only the condition is
             // exempt -- code in the guarded body is ordinary runtime code and
             // stays checked.
-            if is_in_preproc_condition(&bin_node) {
+            if preproc.holds(bin_node) {
                 continue;
             }
             self.check_binary_expression(&bin_node, source, violations);

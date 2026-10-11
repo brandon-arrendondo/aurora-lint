@@ -104,6 +104,8 @@ pub struct Int32C {
     /// call operand can be classified instead of falling to "unknown"
     /// . Rebuilt per file.
     function_return_types: RefCell<HashMap<String, String>>,
+    /// Answers about sub-expressions within one scope's candidates.
+    memo: ScopeMemo,
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
     data_model: Cell<IntFacts>,
@@ -129,6 +131,7 @@ impl Int32C {
             pointer_facts: RefCell::new(PointerFacts::default()),
             project_arrays: RefCell::new(Arc::new(HashSet::new())),
             function_return_types: RefCell::new(HashMap::new()),
+            memo: ScopeMemo::default(),
             data_model: Cell::new(IntFacts::default()),
         }
     }
@@ -184,6 +187,76 @@ impl Int32C {
     }
 }
 
+/// Answers about the candidates of one scope, a function or file scope, that
+/// each ask about a whole sub-expression: [`Int32C::infer_type`], and
+/// whether an expression is floating, pointer arithmetic or a constant. Every operator of
+/// a long `1 + 1 + ...` chain asks them of its operands, and each answer walks
+/// the operand's whole subtree, so without them the rule cost the square (for
+/// the types, the cube) of the chain's length. Node ids are unique only within
+/// one parse tree and the answers depend on the scope's type map, so the memo
+/// answers only while the candidate loop is in a scope and empties when it
+/// moves to another.
+#[derive(Default)]
+struct ScopeMemo {
+    /// The function (`Some(None)` for file scope) the memo is for; `None`
+    /// outside the candidate loop, where nothing is memoized.
+    scope: Cell<Option<Option<usize>>>,
+    types: RefCell<HashMap<usize, String>>,
+    float: float_typing::FloatMemo,
+    pointer: pointer_typing::PointerMemo,
+    constant: const_eval::ConstMemo,
+}
+
+impl ScopeMemo {
+    fn enter(&self, function: Option<usize>) {
+        if self.scope.get() != Some(function) {
+            self.forget();
+            self.scope.set(Some(function));
+        }
+    }
+
+    fn leave(&self) {
+        self.forget();
+        self.scope.set(None);
+    }
+
+    fn forget(&self) {
+        self.types.borrow_mut().clear();
+        self.float.clear();
+        self.pointer.clear();
+        self.constant.clear();
+    }
+
+    fn active(&self) -> bool {
+        self.scope.get().is_some()
+    }
+
+    fn get_type(&self, node: &Node) -> Option<String> {
+        if !self.active() {
+            return None;
+        }
+        self.types.borrow().get(&node.id()).cloned()
+    }
+
+    fn put_type(&self, node: &Node, t: &str) {
+        if self.active() {
+            self.types.borrow_mut().insert(node.id(), t.to_string());
+        }
+    }
+
+    fn float(&self) -> Option<&float_typing::FloatMemo> {
+        self.active().then_some(&self.float)
+    }
+
+    fn pointer(&self) -> Option<&pointer_typing::PointerMemo> {
+        self.active().then_some(&self.pointer)
+    }
+
+    fn constant(&self) -> Option<&const_eval::ConstMemo> {
+        self.active().then_some(&self.constant)
+    }
+}
+
 /// What [`Int32C::check_node`] needs of a candidate's ancestors, carried down
 /// the walk by [`ast_utils::descendants_of_kinds_with`].
 #[derive(Clone, Copy, Default)]
@@ -202,11 +275,20 @@ struct AncestorFacts<'a> {
     /// The innermost `for`/`while`/`do` enclosing the node within its
     /// function, whose conditions bound the loop variables.
     innermost_loop: Option<Node<'a>>,
+    /// The node's nearest [`NEAR_ANCESTORS`] ancestors, its parent first,
+    /// for the guards [`Int32C::is_inside_bounds_checked_block`] looks for.
+    near: [Option<Node<'a>>; NEAR_ANCESTORS],
 }
+
+/// How far up [`Int32C::is_inside_bounds_checked_block`] looks for a guard.
+const NEAR_ANCESTORS: usize = 15;
 
 impl<'a> AncestorFacts<'a> {
     /// The facts for a child of `parent`, given `parent`'s own.
     fn step(&self, parent: Node<'a>, source: &str) -> Self {
+        let mut near = [None; NEAR_ANCESTORS];
+        near[0] = Some(parent);
+        near[1..].copy_from_slice(&self.near[..NEAR_ANCESTORS - 1]);
         let in_comparison = match parent.kind() {
             "expression_statement"
             | "return_statement"
@@ -222,10 +304,12 @@ impl<'a> AncestorFacts<'a> {
                 compile_time: false,
                 in_comparison,
                 innermost_loop: None,
+                near,
             },
             "for_statement" | "while_statement" | "do_statement" => AncestorFacts {
                 in_comparison,
                 innermost_loop: Some(parent),
+                near,
                 ..*self
             },
             "sizeof_expression"
@@ -234,13 +318,23 @@ impl<'a> AncestorFacts<'a> {
             | "array_declarator" => AncestorFacts {
                 compile_time: true,
                 in_comparison,
+                near,
                 ..*self
             },
             _ => AncestorFacts {
                 in_comparison,
+                near,
                 ..*self
             },
         }
+    }
+
+    /// The node's ancestors, nearest first: the ones carried down, then on
+    /// by `Node::parent()`.
+    fn ancestors(&self) -> impl Iterator<Item = Node<'a>> + '_ {
+        // Lazily: `parent()` costs the node's depth.
+        let beyond = std::iter::successors(self.near[NEAR_ANCESTORS - 1], |n| n.parent()).skip(1);
+        self.near.iter().map_while(|p| *p).chain(beyond)
     }
 
     /// Whether a `binary_expression` has a comparison operator among its
@@ -411,6 +505,9 @@ impl Int32C {
                     .or_insert_with(|| self.collect_variable_types(&func_node, source)),
                 None => type_map,
             };
+            // Every type asked for below is asked under `scoped_type_map`,
+            // which only the enclosing function decides.
+            self.memo.enter(facts.function.map(|f| f.id()));
 
             match candidate.kind() {
                 "binary_expression" => {
@@ -458,6 +555,7 @@ impl Int32C {
                 _ => {}
             }
         }
+        self.memo.leave();
     }
 
     /// For compound assignments (`x op= y`), check if `x op y` provably fits
@@ -587,7 +685,7 @@ impl Int32C {
                 // See check_binary_operation: `-x` on a float-typed operand
                 // isn't the -INT_MIN overflow INT32-C covers.
                 if let Some(argument) = node.child_by_field_name("argument") {
-                    if float_typing::expr_is_float(&argument, source, env) {
+                    if float_typing::expr_is_float_with(&argument, source, env, self.memo.float()) {
                         return;
                     }
                 }
@@ -608,7 +706,14 @@ impl Int32C {
     ) -> bool {
         let sft = self.struct_field_types.borrow();
         let facts = self.pointer_facts.borrow();
-        pointer_typing::is_pointer_arithmetic_in(root, node, source, type_map, &sft, &facts)
+        match self.memo.pointer() {
+            Some(memo) => pointer_typing::is_pointer_arithmetic_with(
+                root, node, source, type_map, &sft, &facts, memo,
+            ),
+            None => {
+                pointer_typing::is_pointer_arithmetic_in(root, node, source, type_map, &sft, &facts)
+            }
+        }
     }
 
     /// True if `node`'s left or right operand is float-typed, making this a
@@ -618,8 +723,9 @@ impl Int32C {
     /// fields.
     fn operands_are_floating(&self, node: &Node, source: &str, env: &TypeEnv) -> bool {
         ["left", "right"].iter().any(|f| {
-            node.child_by_field_name(f)
-                .is_some_and(|n| float_typing::expr_is_float(&n, source, env))
+            node.child_by_field_name(f).is_some_and(|n| {
+                float_typing::expr_is_float_with(&n, source, env, self.memo.float())
+            })
         })
     }
 
@@ -657,7 +763,7 @@ impl Int32C {
                 // Opt-in provenance gate: only flag when an operand derives
                 // from untrusted/unbounded input. Bounded local state (counters,
                 // indices, struct-field counts) cannot reach the type limit here.
-                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site) {
                     return;
                 }
 
@@ -669,8 +775,7 @@ impl Int32C {
                 }
 
                 // Skip if inside a block guarded by a type-limit bounds check
-                let op_names = self.extract_operand_names(node, source);
-                if self.is_inside_bounds_checked_block(node, source, &op_names) {
+                if self.is_inside_bounds_checked_block(node, source, site) {
                     return;
                 }
 
@@ -759,7 +864,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site) {
                     return;
                 }
 
@@ -769,8 +874,7 @@ impl Int32C {
                 }
 
                 // Skip if inside a block guarded by a type-limit bounds check
-                let op_names = self.extract_operand_names(node, source);
-                if self.is_inside_bounds_checked_block(node, source, &op_names) {
+                if self.is_inside_bounds_checked_block(node, source, site) {
                     return;
                 }
 
@@ -841,7 +945,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site) {
                     return;
                 }
 
@@ -858,8 +962,7 @@ impl Int32C {
                 }
 
                 // Skip if inside a block guarded by a type-limit bounds check
-                let op_names = self.extract_operand_names(node, source);
-                if self.is_inside_bounds_checked_block(node, source, &op_names) {
+                if self.is_inside_bounds_checked_block(node, source, site) {
                     return;
                 }
 
@@ -942,7 +1045,7 @@ impl Int32C {
                 let is_variable_division = left.kind() == "identifier"
                     && right.kind() == "identifier"
                     && !self.is_unsigned_type(&right_type)
-                    && self.has_risky_operand_provenance(node, source, type_map, site.function);
+                    && self.has_risky_operand_provenance(node, source, type_map, site);
 
                 if (has_explicit_risk || is_variable_division)
                     && !self.has_division_overflow_check(node, source)
@@ -1009,7 +1112,7 @@ impl Int32C {
                 let is_variable_modulo = left.kind() == "identifier"
                     && right.kind() == "identifier"
                     && !self.is_unsigned_type(&right_type)
-                    && self.has_risky_operand_provenance(node, source, type_map, site.function);
+                    && self.has_risky_operand_provenance(node, source, type_map, site);
 
                 if (has_explicit_risk || is_variable_modulo)
                     && !self.has_modulo_overflow_check(node, source)
@@ -1056,7 +1159,7 @@ impl Int32C {
             // Opt-in provenance gate: only INT_MIN negates to overflow, which a
             // bounded local operand cannot reach.
             if self.is_signed_type(&arg_type)
-                && self.has_risky_operand_provenance(node, source, type_map, site.function)
+                && self.has_risky_operand_provenance(node, source, type_map, site)
                 && !self.has_negation_overflow_check(node, source)
             {
                 let start_point = node.start_position();
@@ -1102,8 +1205,7 @@ impl Int32C {
 
             if self.is_signed_type(&left_type) {
                 // Skip if inside a block guarded by a type-limit bounds check
-                let op_names = self.extract_operand_names(node, source);
-                if self.is_inside_bounds_checked_block(node, source, &op_names) {
+                if self.is_inside_bounds_checked_block(node, source, site) {
                     return;
                 }
 
@@ -1115,7 +1217,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site) {
                     return;
                 }
 
@@ -1194,8 +1296,7 @@ impl Int32C {
 
             if self.is_signed_type(&left_type) {
                 // Skip if inside a block guarded by a type-limit bounds check
-                let op_names = self.extract_operand_names(node, source);
-                if self.is_inside_bounds_checked_block(node, source, &op_names) {
+                if self.is_inside_bounds_checked_block(node, source, site) {
                     return;
                 }
 
@@ -1212,7 +1313,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site) {
                     return;
                 }
 
@@ -1264,8 +1365,7 @@ impl Int32C {
 
             if self.is_signed_type(&left_type) {
                 // Skip if inside a block guarded by a type-limit bounds check
-                let op_names = self.extract_operand_names(node, source);
-                if self.is_inside_bounds_checked_block(node, source, &op_names) {
+                if self.is_inside_bounds_checked_block(node, source, site) {
                     return;
                 }
 
@@ -1282,7 +1382,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site) {
                     return;
                 }
 
@@ -1332,8 +1432,7 @@ impl Int32C {
 
             if self.is_signed_type(&left_type) {
                 // Skip if inside a block guarded by a type-limit bounds check
-                let op_names = self.extract_operand_names(node, source);
-                if self.is_inside_bounds_checked_block(node, source, &op_names) {
+                if self.is_inside_bounds_checked_block(node, source, site) {
                     return;
                 }
 
@@ -1350,7 +1449,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site) {
                     return;
                 }
 
@@ -1480,7 +1579,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site) {
                     return;
                 }
 
@@ -1525,7 +1624,7 @@ impl Int32C {
             if self.is_signed_type(&arg_type) {
                 // Opt-in provenance gate: a bounded counter cannot reach INT_MAX
                 // (++) or INT_MIN (--); only an untrusted/unbounded operand can.
-                if !self.has_risky_operand_provenance(node, source, type_map, site.function) {
+                if !self.has_risky_operand_provenance(node, source, type_map, site) {
                     return;
                 }
 
@@ -1535,8 +1634,7 @@ impl Int32C {
                 }
 
                 // Skip if inside a block guarded by a type-limit bounds check
-                let op_names = self.extract_operand_names(node, source);
-                if self.is_inside_bounds_checked_block(node, source, &op_names) {
+                if self.is_inside_bounds_checked_block(node, source, site) {
                     return;
                 }
 
@@ -2142,6 +2240,20 @@ impl Int32C {
     }
 
     fn infer_type(&self, node: &Node, source: &str, type_map: &HashMap<String, String>) -> String {
+        if let Some(t) = self.memo.get_type(node) {
+            return t;
+        }
+        let t = self.infer_type_uncached(node, source, type_map);
+        self.memo.put_type(node, &t);
+        t
+    }
+
+    fn infer_type_uncached(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> String {
         let text = get_node_text(node, source);
 
         // Check the type map FIRST — most reliable source of type info.
@@ -2823,8 +2935,8 @@ impl Int32C {
             source,
             type_map,
             site,
-            self.result_width_bits(node, source, type_map),
-            self.result_is_narrow_store(node, source, type_map),
+            self.result_width_bits(node, source, type_map, site),
+            self.result_is_narrow_store(node, source, type_map, site),
         )
     }
 
@@ -2887,7 +2999,7 @@ impl Int32C {
             &self.current_macros.borrow(),
             bits,
             ranges.as_ref(),
-            None,
+            self.memo.constant(),
         )
     }
 
@@ -3095,8 +3207,9 @@ impl Int32C {
         node: &Node,
         source: &str,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
     ) -> u32 {
-        self.result_destination_class(node, source, type_map)
+        self.result_destination_class(node, source, type_map, site)
             .map_or_else(
                 || self.promoted_bits(),
                 |class| self.stored_type_bits(&class),
@@ -3113,9 +3226,10 @@ impl Int32C {
         node: &Node,
         source: &str,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
     ) -> bool {
         matches!(
-            self.result_destination_class(node, source, type_map)
+            self.result_destination_class(node, source, type_map, site)
                 .as_deref(),
             Some("char" | "short")
         )
@@ -3123,15 +3237,16 @@ impl Int32C {
 
     /// The type class (`classify_declared_type`'s spelling) of what the
     /// result of `node` is stored into, or `None` when it is stored nowhere
-    /// narrow (see [`Self::result_width_bits`]).
+    /// narrow (see [`Self::result_width_bits`]). `site` is `node`'s.
     fn result_destination_class(
         &self,
         node: &Node,
         source: &str,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
     ) -> Option<String> {
         let mut child = *node;
-        while let Some(parent) = child.parent() {
+        for parent in site.ancestors() {
             match parent.kind() {
                 // Transparent: the value flows straight through.
                 "parenthesized_expression" | "comma_expression" => {}
@@ -3157,7 +3272,8 @@ impl Int32C {
                 // `return a + b` from a narrow-returning function truncates
                 // exactly like a narrow assignment does.
                 "return_statement" => {
-                    return ast_utils::find_containing_function(&parent)
+                    return site
+                        .function
                         .and_then(|func| self.declarator_destination_class(&func, source));
                 }
                 _ => return None,
@@ -3259,6 +3375,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         type_map: &HashMap<String, String>,
+        site: &AncestorFacts,
     ) -> u32 {
         let ty = |field: &str| {
             node.child_by_field_name(field)
@@ -3268,7 +3385,7 @@ impl Int32C {
             // A plain binary operation produces a value; what bounds it is
             // where that value is stored, not how wide its operands were
             // declared.
-            "binary_expression" => self.result_width_bits(node, source, type_map),
+            "binary_expression" => self.result_width_bits(node, source, type_map, site),
             // `-x` writes nothing back: its value has the operand's promoted
             // type, a cast to `long long` included.
             "unary_expression" => self.signed_arith_width_bits(node, source, type_map),
@@ -3293,25 +3410,26 @@ impl Int32C {
         node: &Node,
         source: &str,
         type_map: &HashMap<String, String>,
-        function: Option<Node>,
+        site: &AncestorFacts,
     ) -> bool {
         // VRA-concrete-overflow channel: a provably-overflowing expression
         // (e.g. INT_MAX + 1, width-sensitive for short/char) is risky regardless
         // of operand provenance. Value-based, so it works without cross-file
         // context too.
-        let vra_bits = self.operand_vra_bits(node, source, type_map);
-        if const_eval::expression_overflows_signed_vra(
+        let vra_bits = self.operand_vra_bits(node, source, type_map, site);
+        if const_eval::expression_overflows_signed_vra_with(
             node,
             source,
             &self.current_macros.borrow(),
             vra_bits,
             self.value_ranges_at(node, source, type_map).as_ref(),
+            self.memo.constant(),
         ) {
             return true;
         }
 
         let summaries = self.function_summaries.borrow();
-        let func = match function {
+        let func = match site.function {
             Some(f) => f,
             None => return true,
         };
@@ -3945,7 +4063,7 @@ impl Int32C {
         &self,
         node: &Node,
         source: &str,
-        op_names: &[String],
+        site: &AncestorFacts,
     ) -> bool {
         const SIGNED_LIMIT_MACROS: &[&str] = &[
             "INT_MAX",
@@ -3962,13 +4080,11 @@ impl Int32C {
             "SHRT_MIN",
         ];
 
-        let mut current = *node;
-        let mut depth = 0;
-        while let Some(parent) = current.parent() {
-            depth += 1;
-            if depth > 15 {
-                break;
-            }
+        // The operation's operand names, read only when a guard names a
+        // limit: collecting them walks the whole operation.
+        let op_names = std::cell::OnceCell::new();
+        let op_names = || op_names.get_or_init(|| self.extract_operand_names(node, source));
+        for parent in site.near.iter().map_while(|p| *p) {
             if parent.kind() == "function_definition" {
                 break;
             }
@@ -3982,10 +4098,10 @@ impl Int32C {
                         .iter()
                         .any(|m| self.contains_word(cond_text, m));
                     if has_limit {
-                        if op_names.is_empty() {
+                        if op_names().is_empty() {
                             return true;
                         }
-                        if op_names
+                        if op_names()
                             .iter()
                             .any(|name| self.contains_word(cond_text, name))
                         {
@@ -4005,7 +4121,6 @@ impl Int32C {
                     }
                 }
             }
-            current = parent;
         }
         false
     }

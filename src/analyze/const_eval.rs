@@ -1677,21 +1677,27 @@ pub fn file_scope_written_names(root: &Node, source: &str) -> std::collections::
     };
     let mut out = define_body_identifiers(source);
     let function_macros = function_macro_names(source);
-    // Whether each identifier is a function-like macro's argument is carried
-    // down the walk rather than climbed to per identifier, which costs the
-    // cube of an `else if` ladder's length.
+    // Whether each identifier is a function-like macro's argument, and
+    // whether it stands where it is written, are carried down the walk rather
+    // than climbed to per identifier, which costs the cube (the square, for
+    // the one-level climb) of an `else if` ladder's length.
     let ids = crate::utility::cert_c::ast_utils::descendants_of_kinds_with(
         *root,
         &["identifier"],
-        MacroArgumentWalk::default(),
-        |walk, parent| walk.step(parent, source, &function_macros),
+        (MacroArgumentWalk::default(), WriteContextWalk::default()),
+        |(walk, write), parent| {
+            (
+                walk.step(parent, source, &function_macros),
+                write.step(parent),
+            )
+        },
     );
-    for (id, walk) in ids {
+    for (id, (walk, write)) in ids {
         let name = id.utf8_text(source.as_bytes()).unwrap_or("");
         if name.is_empty() || out.contains(name) {
             continue;
         }
-        if !is_write_context(&id) && !walk.in_arguments {
+        if !write.holds(id) && !walk.in_arguments {
             continue;
         }
         match resolve_identifier_binding(&id, name, source) {
@@ -1905,6 +1911,49 @@ impl MacroArgumentWalk {
                 parent_is_macro_call: false,
             },
         }
+    }
+}
+
+/// [`is_write_context`] carried down a walk: start from `default()` at the
+/// root, step with [`WriteContextWalk::step`], and ask
+/// [`WriteContextWalk::holds`] of a node with the state it was paired with.
+#[derive(Clone, Copy, Default)]
+struct WriteContextWalk {
+    /// Every child of this node's parent stands where it is written.
+    all: bool,
+    /// The one child of this node's parent that does: an assignment's left.
+    child: Option<usize>,
+}
+
+impl WriteContextWalk {
+    /// The state `parent`'s children inherit, from `parent`'s own.
+    fn step(&self, parent: Node) -> Self {
+        match parent.kind() {
+            // Parentheses are looked through.
+            "parenthesized_expression" => Self {
+                all: self.holds(parent),
+                child: None,
+            },
+            "assignment_expression" => Self {
+                all: false,
+                child: parent.child_by_field_name("left").map(|l| l.id()),
+            },
+            "update_expression" => Self {
+                all: true,
+                child: None,
+            },
+            "pointer_expression" => Self {
+                all: parent.child(0).is_some_and(|op| op.kind() == "&"),
+                child: None,
+            },
+            _ => Self::default(),
+        }
+    }
+
+    /// Whether `node`, paired with this state, is written or has its address
+    /// taken where it stands.
+    fn holds(&self, node: Node) -> bool {
+        self.all || self.child == Some(node.id())
     }
 }
 

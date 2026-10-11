@@ -982,12 +982,16 @@ impl<'t> Collector<'_, 't> {
         if C_KEYWORDS.contains(&name) {
             return false;
         }
+        // The names first: `parent()` costs the identifier's depth.
+        if self.declared.contains(name) || self.scope.globals.contains_key(name) {
+            return false;
+        }
         let is_callee = ident.parent().is_some_and(|p| {
             p.kind() == "call_expression"
                 && p.child_by_field_name("function")
                     .is_some_and(|f| f.id() == ident.id())
         });
-        !is_callee && !self.declared.contains(name) && !self.scope.globals.contains_key(name)
+        !is_callee
     }
 
     /// [`is_volatile_read`], answered only for names some declaration in

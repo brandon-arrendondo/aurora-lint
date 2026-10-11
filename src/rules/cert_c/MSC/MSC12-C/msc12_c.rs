@@ -23,7 +23,8 @@ use crate::utility::cert_c::ast_utils::{
 };
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 use tree_sitter::Node;
 
@@ -69,13 +70,15 @@ impl Msc12C {
     }
 
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let mut chains = IfChains::default();
         for n in query::find_descendants(*node, |_| true) {
+            crate::analyze::containment::checkpoint();
             match n.kind() {
                 "expression_statement" => {
                     self.check_no_effect_expression(&n, source, violations);
                 }
                 "if_statement" => {
-                    self.check_duplicate_conditions(&n, source, violations);
+                    self.check_duplicate_conditions(&n, source, &mut chains, violations);
                     self.check_empty_control_flow(&n, source, violations);
                 }
                 "for_statement" | "while_statement" | "do_statement" => {
@@ -468,91 +471,38 @@ impl Msc12C {
 
     /// Check for duplicate conditions in if/else-if chains.
     /// `if (x == 1) ... else if (x == 1) ...` — second branch is dead code.
-    fn check_duplicate_conditions(
+    fn check_duplicate_conditions<'a>(
         &self,
-        node: &Node,
+        node: &Node<'a>,
         source: &str,
+        chains: &mut IfChains<'a>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Collect all conditions in the if/else-if chain
-        let mut conditions: Vec<(String, Node)> = Vec::new();
-
-        let mut current = Some(*node);
-        while let Some(if_node) = current {
-            if if_node.kind() != "if_statement" {
-                break;
+        let (chain, start) = chains.at(*node, source, |cond| self.contains_call(cond));
+        // A condition repeats one at or after `node` in the chain when the
+        // nearest earlier link with its text is at or after `node`. One with
+        // a call is never reported (getc() advances the stream, so identical
+        // text != identical result), but it still counts as an earlier one.
+        for (link, earlier) in chain.links.iter().zip(&chain.earlier).skip(start + 1) {
+            let Some(link) = link else { continue };
+            if link.has_call || !earlier.is_some_and(|e| e >= start) {
+                continue;
             }
-            if let Some(cond) = if_node.child_by_field_name("condition") {
-                let cond_text = get_node_text(&cond, source);
-                let trimmed = cond_text.trim().to_string();
-
-                // Skip conditions with function calls — they may have side effects
-                // (e.g., getc() advances the stream, so identical text != identical result)
-                if self.contains_call(&cond) {
-                    conditions.push((trimmed, cond));
-                    current = if_node.child_by_field_name("alternative").and_then(|alt| {
-                        if alt.kind() == "else_clause" {
-                            (0..alt.child_count()).find_map(|i| {
-                                let c = alt.child(i)?;
-                                if c.kind() == "if_statement" {
-                                    Some(c)
-                                } else {
-                                    None
-                                }
-                            })
-                        } else if alt.kind() == "if_statement" {
-                            Some(alt)
-                        } else {
-                            None
-                        }
-                    });
-                    continue;
-                }
-
-                // Check for duplicate against earlier conditions
-                for (prev_text, _) in &conditions {
-                    if *prev_text == trimmed {
-                        violations.push(RuleViolation {
-                            rule_id: self.rule_id().to_string(),
-                            severity: self.severity(),
-                            message: format!(
-                                "Duplicate condition '{}' in if/else-if chain. \
-                                 The second branch is dead code.",
-                                trimmed
-                            ),
-                            file_path: String::new(),
-                            line: cond.start_position().row + 1,
-                            column: cond.start_position().column + 1,
-                            suggestion: Some(
-                                "Check for the correct condition or remove the dead branch"
-                                    .to_string(),
-                            ),
-                            ..Default::default()
-                        });
-                        break;
-                    }
-                }
-
-                conditions.push((trimmed, cond));
-            }
-
-            // Follow else-if chain
-            current = if_node.child_by_field_name("alternative").and_then(|alt| {
-                if alt.kind() == "else_clause" {
-                    // The if_statement inside the else clause
-                    (0..alt.child_count()).find_map(|i| {
-                        let c = alt.child(i)?;
-                        if c.kind() == "if_statement" {
-                            Some(c)
-                        } else {
-                            None
-                        }
-                    })
-                } else if alt.kind() == "if_statement" {
-                    Some(alt)
-                } else {
-                    None
-                }
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                severity: self.severity(),
+                message: format!(
+                    "Duplicate condition '{}' in if/else-if chain. \
+                     The second branch is dead code.",
+                    link.text
+                ),
+                file_path: String::new(),
+                line: link.condition.start_position().row + 1,
+                column: link.condition.start_position().column + 1,
+                suggestion: Some(
+                    "Check for the correct condition or remove the dead branch".to_string(),
+                ),
+                ..Default::default()
             });
         }
     }
@@ -1145,6 +1095,13 @@ impl Msc12C {
         _source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
+        // Emptiness first: it reads only the block's own children, where
+        // `parent()` costs the node's depth, and asking it of every block of
+        // a deep nest made the rule quadratic in the nesting.
+        if !self.is_empty_body(node) {
+            return;
+        }
+
         // Only flag standalone blocks (parent is another compound_statement)
         // Skip function bodies, if/else/for/while/do bodies (handled elsewhere)
         if let Some(parent) = node.parent() {
@@ -1156,18 +1113,16 @@ impl Msc12C {
             return;
         }
 
-        if self.is_empty_body(node) {
-            violations.push(RuleViolation {
-                rule_id: self.rule_id().to_string(),
-                severity: self.severity(),
-                message: "Empty code block has no effect.".to_string(),
-                file_path: String::new(),
-                line: node.start_position().row + 1,
-                column: node.start_position().column + 1,
-                suggestion: Some("Add code to the block or remove it".to_string()),
-                ..Default::default()
-            });
-        }
+        violations.push(RuleViolation {
+            rule_id: self.rule_id().to_string(),
+            severity: self.severity(),
+            message: "Empty code block has no effect.".to_string(),
+            file_path: String::new(),
+            line: node.start_position().row + 1,
+            column: node.start_position().column + 1,
+            suggestion: Some("Add code to the block or remove it".to_string()),
+            ..Default::default()
+        });
     }
 
     /// Check for switch cases that only contain `break` (no real code)
@@ -1991,5 +1946,92 @@ impl CertRule for Msc12C {
             source,
         );
         self.check_node(node, source, violations);
+    }
+}
+
+/// An `if`/`else if` chain, read once for every `if` in it.
+/// [`Msc12C::check_duplicate_conditions`] asks from each `if` whether a later
+/// condition repeats one from that `if` on; walking the rest of the chain and
+/// comparing each condition with every earlier one, from every `if`, made a
+/// long ladder cost the cube of its length.
+struct IfChain<'a> {
+    /// Each `if` of the chain in order, with its condition when it has one.
+    links: Vec<Option<Link<'a>>>,
+    /// For each link, the position of the nearest earlier link whose
+    /// condition has the same text.
+    earlier: Vec<Option<usize>>,
+}
+
+struct Link<'a> {
+    condition: Node<'a>,
+    /// The condition's text, trimmed.
+    text: String,
+    has_call: bool,
+}
+
+/// Every chain read so far, by the id of each `if` in it.
+#[derive(Default)]
+struct IfChains<'a> {
+    position: HashMap<usize, (Rc<IfChain<'a>>, usize)>,
+}
+
+impl<'a> IfChains<'a> {
+    /// The chain `if_node` is in and its position there, reading the chain
+    /// from `if_node` on when no earlier `if` already has.
+    fn at(
+        &mut self,
+        if_node: Node<'a>,
+        source: &str,
+        has_call: impl Fn(&Node<'a>) -> bool,
+    ) -> (Rc<IfChain<'a>>, usize) {
+        if let Some((chain, at)) = self.position.get(&if_node.id()) {
+            return (chain.clone(), *at);
+        }
+        let mut ifs = Vec::new();
+        let mut current = Some(if_node);
+        while let Some(node) = current.filter(|n| n.kind() == "if_statement") {
+            ifs.push(node);
+            current = node.child_by_field_name("alternative").and_then(|alt| {
+                if alt.kind() == "else_clause" {
+                    // The if_statement inside the else clause
+                    (0..alt.child_count()).find_map(|i| {
+                        let c = alt.child(i)?;
+                        if c.kind() == "if_statement" {
+                            Some(c)
+                        } else {
+                            None
+                        }
+                    })
+                } else if alt.kind() == "if_statement" {
+                    Some(alt)
+                } else {
+                    None
+                }
+            });
+        }
+        let links: Vec<Option<Link<'a>>> = ifs
+            .iter()
+            .map(|n| {
+                n.child_by_field_name("condition").map(|condition| Link {
+                    condition,
+                    text: get_node_text(&condition, source).trim().to_string(),
+                    has_call: has_call(&condition),
+                })
+            })
+            .collect();
+        let mut last: HashMap<&str, usize> = HashMap::new();
+        let earlier = links
+            .iter()
+            .enumerate()
+            .map(|(i, link)| {
+                let link = link.as_ref()?;
+                last.insert(link.text.as_str(), i)
+            })
+            .collect();
+        let chain = Rc::new(IfChain { links, earlier });
+        for (i, n) in ifs.iter().enumerate() {
+            self.position.insert(n.id(), (chain.clone(), i));
+        }
+        (chain, 0)
     }
 }

@@ -79,7 +79,9 @@ Kinds:
 - macro rescans;
 - the unknown-identifier repair loop;
 - the per-expression loops of INT02-C, INT30-C and INT32-C (once per
-  candidate operator).
+  candidate operator);
+- the per-node loops of ARR00-C, ARR37-C, EXP02-C and MSC12-C (once per
+  candidate node).
 
 ## Scan level (ADR-0017)
 
