@@ -58,9 +58,8 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
-use crate::analyze::context::{IncludeClosure, ProjectContext};
-use crate::analyze::macro_expand;
-use crate::analyze::noreturn::{called_function_name, library_names_redefined_among};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::noreturn::{called_function_name, library_function_replaced};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
@@ -88,49 +87,15 @@ impl Msc30C {
     }
 
     /// Whether `rand` names something other than the library function
-    /// anywhere in this file (ADR-0006): the file defines a function by that
-    /// name or declares one `static`, or a macro by that name is in reach --
-    /// one this file `#define`s, a function-like one a header it includes
-    /// defines, or an object-like one the project defines. The object-like
-    /// table records no defining file, so a project-wide `#define rand` is
-    /// taken to reach every file. A project's external definition of `rand`
-    /// in another file is not seen: a `static` one there is a different
-    /// function, and the prescan keys a lone `static` definition as it keys
-    /// an external one.
+    /// anywhere in this file: see [`library_function_replaced`].
     fn rand_is_redefined(&self, root: &Node, source: &str) -> bool {
-        if library_names_redefined_among(root, source, |name| name == RAND).contains(RAND) {
-            return true;
-        }
-        let defines_here = ["preproc_def", "preproc_function_def"]
-            .into_iter()
-            .flat_map(|kind| query::find_descendants_of_kind(*root, kind))
-            .any(|def| {
-                def.child_by_field_name("name")
-                    .is_some_and(|name| get_node_text(&name, source) == RAND)
-            });
-        if defines_here {
-            return true;
-        }
-        let project = self.project.borrow();
-        let Some(project) = project.as_ref() else {
-            return false;
-        };
-        if project.macros_defined_outside_project.contains(RAND) {
-            return false;
-        }
-        if project.defined_macro_names.contains(RAND) {
-            return true;
-        }
-        if !project.function_macro_names.contains(RAND) {
-            return false;
-        }
-        let closure = self
-            .file_path
-            .borrow()
-            .as_deref()
-            .and_then(|path| IncludeClosure::of(&project.include_edges, path));
-        !macro_expand::reachable_arms(&project.function_macro_arms, RAND, closure.as_ref())
-            .is_empty()
+        library_function_replaced(
+            root,
+            source,
+            RAND,
+            self.project.borrow().as_ref(),
+            self.file_path.borrow().as_deref(),
+        )
     }
 
     /// Check if a function call is to rand()

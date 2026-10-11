@@ -21,7 +21,7 @@ use crate::analyze::const_eval::MacroConstantMap;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::dataflow::find_node_at_range;
 use crate::analyze::noreturn::{
-    called_function_name, library_names_redefined_among, noreturn_names_for_file, ByNoreturnTrust,
+    called_function_name, library_function_replaced, noreturn_names_for_file, ByNoreturnTrust,
 };
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
@@ -29,6 +29,7 @@ use crate::utility::cert_c::ast_utils::{get_node_text, stream_key};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tree_sitter::Node;
 
@@ -71,6 +72,11 @@ pub struct Fio46C {
     noreturn_functions: RefCell<ByNoreturnTrust<Arc<HashSet<String>>>>,
     /// The run's settings, which pick the noreturn set.
     settings: RefCell<Arc<AnalysisSettings>>,
+    /// The prescan's macro tables: a project macro named `fclose` replaces
+    /// the library function in the files that can see it.
+    project: RefCell<Option<ProjectContext>>,
+    /// The file being checked, for the headers it includes.
+    file_path: RefCell<Option<PathBuf>>,
 }
 
 impl Fio46C {
@@ -78,6 +84,8 @@ impl Fio46C {
         Self {
             noreturn_functions: RefCell::default(),
             settings: RefCell::default(),
+            project: RefCell::default(),
+            file_path: RefCell::default(),
         }
     }
 }
@@ -107,6 +115,11 @@ impl CertRule for Fio46C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.noreturn_functions.borrow_mut() = context.noreturn_functions.clone();
+        *self.project.borrow_mut() = Some(context.clone());
+    }
+
+    fn set_file_path(&self, path: &std::path::Path) {
+        *self.file_path.borrow_mut() = Some(path.to_path_buf());
     }
 
     fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
@@ -114,12 +127,19 @@ impl CertRule for Fio46C {
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // A file that defines its own `fclose` calls that, not the library's.
-        if library_names_redefined_among(node, source, |name| name == "fclose").contains("fclose") {
-            return;
-        }
         let functions = query::find_descendants_of_kind(*node, "function_definition");
         if !functions.iter().any(|f| closes_a_stream(f, source)) {
+            return;
+        }
+        // A file whose `fclose` is its own function or a macro calls that,
+        // not the library's.
+        if library_function_replaced(
+            node,
+            source,
+            "fclose",
+            self.project.borrow().as_ref(),
+            self.file_path.borrow().as_deref(),
+        ) {
             return;
         }
         let settings = Arc::clone(&self.settings.borrow());
