@@ -11,7 +11,7 @@ use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils;
-use crate::utility::cert_c::expr_type::TypeEnv;
+use crate::utility::cert_c::expr_type::{self, TypeEnv};
 use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::node_children::NodeChildren;
@@ -19,6 +19,7 @@ use crate::utility::cert_c::nonzero_facts;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tree_sitter::Node;
 
@@ -51,6 +52,9 @@ pub struct Int33C {
     /// value at a parameter, keyed by the function's start byte and the
     /// parameter's index (`every_caller_passes_nonzero`).
     caller_proofs: RefCell<HashMap<(usize, usize), bool>>,
+    /// The path of the file being checked: the caller proof holds only for
+    /// a `.c` file's own functions.
+    file_path: RefCell<Option<PathBuf>>,
 }
 
 impl Int33C {
@@ -66,6 +70,7 @@ impl Int33C {
             file_noreturn_names: RefCell::default(),
             settings: RefCell::default(),
             caller_proofs: RefCell::default(),
+            file_path: RefCell::default(),
         }
     }
 }
@@ -121,6 +126,10 @@ impl CertRule for Int33C {
 
     fn set_visible_types(&self, types: &VisibleTypes) {
         *self.visible.borrow_mut() = types.clone();
+    }
+
+    fn set_file_path(&self, path: &Path) {
+        *self.file_path.borrow_mut() = Some(path.to_path_buf());
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -563,7 +572,7 @@ impl Int33C {
             let operands = [a.clone(), b.clone()];
             let ordered = facts.iter().any(|(cond, truth)| {
                 Self::condition_separates(cond, &a, &b, *truth, source)
-                    && !nonzero_facts::written_between(cond, div_node, &operands, source)
+                    && nonzero_facts::fact_reaches(cond, div_node, &operands, source)
             });
             if ordered {
                 return true;
@@ -592,7 +601,8 @@ impl Int33C {
     /// Whether the last plain assignment to one of `targets` at statement
     /// level in a block holding `site` (an earlier statement of it) stores a
     /// value this rule proves non-zero at the assignment, and nothing between
-    /// the assignment and `site` writes the divisor again.
+    /// the assignment and `site` writes the divisor again or otherwise
+    /// separates the two (`nonzero_facts::fact_reaches`).
     fn assigned_nonzero_before(&self, site: &Node, targets: &[String], source: &str) -> bool {
         let mut current = *site;
         while let Some(parent) = current.parent() {
@@ -619,7 +629,7 @@ impl Int33C {
                     if !(plain && assigns_target) {
                         continue;
                     }
-                    return !nonzero_facts::written_between(&assignment, site, targets, source)
+                    return nonzero_facts::fact_reaches(&assignment, site, targets, source)
                         && assignment
                             .child_by_field_name("right")
                             .is_some_and(|value| {
@@ -713,7 +723,7 @@ impl Int33C {
                     let reassigned = preceding[i + 1..]
                         .iter()
                         .any(|later| Self::assigns_any_of(later, targets, source));
-                    if !reassigned {
+                    if !reassigned && nonzero_facts::fact_reaches(stmt, site, targets, source) {
                         return true;
                     }
                 }
@@ -895,6 +905,12 @@ impl Int33C {
     /// assignments, conditional narrowing through arbitrary paths, and
     /// early-return guard patterns. Falls back to syntactic ancestor walks.
     fn divisor_provably_nonzero(&self, div_node: &Node, divisor: &Node, source: &str) -> bool {
+        // Ranges are computed as if arithmetic never wrapped, which an
+        // unsigned sum, product or shift does: `d + 1` is zero for
+        // `d == UINT_MAX` however surely `d > 0`.
+        if self.unsigned_arithmetic_in(divisor, source) {
+            return false;
+        }
         let file_macros = self.file_macros.borrow();
 
         // Try CFG-based VRA first (more precise)
@@ -916,6 +932,37 @@ impl Int33C {
             }
         }
 
+        false
+    }
+
+    /// Whether `expr` holds a `+`, `*` or `<<` computed in an unsigned type,
+    /// outside a `sizeof` and short of a constant the file evaluates.
+    fn unsigned_arithmetic_in(&self, expr: &Node, source: &str) -> bool {
+        let visible = self.visible.borrow();
+        let mut root = *expr;
+        while let Some(parent) = root.parent() {
+            root = parent;
+        }
+        let env = TypeEnv::visible(&visible, self.settings.borrow().facts).in_tree(root);
+        let macros = self.file_macros.borrow();
+        let mut stack = vec![*expr];
+        while let Some(node) = stack.pop() {
+            match node.kind() {
+                "sizeof_expression" | "alignof_expression" => continue,
+                "binary_expression" => {
+                    let wraps = ast_utils::get_binary_operator(&node, source)
+                        .is_some_and(|op| matches!(op, "+" | "*" | "<<"))
+                        && const_eval::try_evaluate_expr(&node, source, &macros).is_none()
+                        && expr_type::expr_type(&node, source, &env).and_then(|t| t.is_unsigned())
+                            == Some(true);
+                    if wraps {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+            stack.extend(node.named_child_nodes());
+        }
         false
     }
 
@@ -1015,8 +1062,10 @@ impl Int33C {
     /// passes, at that position, a value proven non-zero at the call the way
     /// this rule proves a divisor non-zero ([`Self::is_divisor_checked`]).
     ///
-    /// The caller set must be closed (ADR-0011): the function has internal
-    /// linkage, so every call is in this translation unit, and its name is
+    /// The caller set must be closed (ADR-0011): the function is defined in
+    /// the `.c` file being checked and has internal linkage, so every call
+    /// is in this translation unit -- a `static` function in a header has
+    /// another set of callers in every file including it -- and its name is
     /// used nowhere but as the callee of a direct call and in its own
     /// declarators -- not stored, passed, or named in a macro, through which
     /// it could be called by code that does not name it. There must be at
@@ -1067,6 +1116,15 @@ impl Int33C {
         if Self::assigns_any_of(&body, &names, source)
             || Self::takes_address_of(&body, param, source)
         {
+            return false;
+        }
+        let in_c_file = self
+            .file_path
+            .borrow()
+            .as_ref()
+            .and_then(|p| p.extension())
+            .is_some_and(|ext| ext == "c");
+        if !in_c_file {
             return false;
         }
         let Some(fname) = lang_parsing_substrate::calls::get_function_name(*func, source) else {
@@ -1188,7 +1246,16 @@ impl Int33C {
                 if let Some(consequence) = parent.child_by_field_name("consequence") {
                     if Self::is_descendant(&consequence, node) {
                         if let Some(condition) = parent.child_by_field_name("condition") {
-                            Self::extract_comparison_bounds(&condition, source, macros, ranges);
+                            // A bound holds only while nothing since the
+                            // condition changed what it bounds.
+                            let names: Vec<String> =
+                                query::find_descendants_of_kind(condition, "identifier")
+                                    .iter()
+                                    .map(|i| ast_utils::get_node_text(i, source).to_string())
+                                    .collect();
+                            if nonzero_facts::fact_reaches(&condition, node, &names, source) {
+                                Self::extract_comparison_bounds(&condition, source, macros, ranges);
+                            }
                         }
                     }
                 }
