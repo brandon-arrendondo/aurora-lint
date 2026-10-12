@@ -857,8 +857,14 @@ fn strip_to_operand(node: Node) -> Node {
 /// variable, thread handle or key, identified by the declaration its name
 /// resolves to and the member path below it (ADR-0006). `&m`, `m`, `(m)` and
 /// `(&m)` are one object; `p->m` and `q->m` are two, and so are a global `m`
-/// and a local `m` that shadows it. Subscripts are not index-sensitive, as in
-/// [`LValue`]: `&locks[i]` and `&locks[j]` are one object.
+/// and a local `m` that shadows it.
+///
+/// An array element is keyed by its index too: `&locks[i]` twice is one
+/// object, while `&locks[i]` and `&locks[j]`, or `&locks[1]`, are different
+/// elements as far as the code shows. An index name is resolved like the
+/// root; a literal is its value. [`SyncObject::array`] drops the indices,
+/// for a question about the whole array (were the handles stored into
+/// `thr[i]` all joined, through `thr[j]` in another loop?).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SyncObject {
     /// Where the root name is declared: the declarator's start byte, or the
@@ -866,6 +872,8 @@ pub struct SyncObject {
     root: SyncRoot,
     /// The member path from the root, spelling-independent.
     path: LValue,
+    /// The subscripts along the path, outermost last.
+    indices: Vec<IndexKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -874,32 +882,84 @@ enum SyncRoot {
     Undeclared(String),
 }
 
+/// One subscript's index: a name by its declaration, or any other
+/// expression by its text without whitespace.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum IndexKey {
+    Name(SyncRoot),
+    Text(String),
+}
+
+impl SyncObject {
+    /// The same object with its subscripts dropped: the whole array an
+    /// element belongs to.
+    pub fn array(&self) -> SyncObject {
+        SyncObject {
+            indices: Vec::new(),
+            ..self.clone()
+        }
+    }
+}
+
 /// The object `operand` names, or `None` when it names none this file can
 /// pin down: a call's result, a literal, an arithmetic expression.
 pub fn sync_object(operand: &Node, source: &str) -> Option<SyncObject> {
     let path = lvalue_of(operand, source)?;
-    let root = root_identifier(*operand)?;
+    let mut indices = Vec::new();
+    let root = root_identifier(*operand, &mut indices)?;
     let name = get_node_text(&root, source);
-    let root = match resolve_identifier_declarator(&root, name, source) {
+    let indices = indices
+        .iter()
+        .rev()
+        .map(|index| index_key(*index, source))
+        .collect();
+    Some(SyncObject {
+        root: declared_at(&root, name, source),
+        path,
+        indices,
+    })
+}
+
+fn declared_at(ident: &Node, name: &str, source: &str) -> SyncRoot {
+    match resolve_identifier_declarator(ident, name, source) {
         Some((_, declarator)) => SyncRoot::Declared(declarator.start_byte()),
         None => SyncRoot::Undeclared(name.to_string()),
-    };
-    Some(SyncObject { root, path })
+    }
+}
+
+fn index_key(index: Node, source: &str) -> IndexKey {
+    let index = strip_to_operand(index);
+    if index.kind() == "identifier" {
+        let name = get_node_text(&index, source);
+        return IndexKey::Name(declared_at(&index, name, source));
+    }
+    IndexKey::Text(
+        get_node_text(&index, source)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect(),
+    )
 }
 
 /// The identifier an lvalue chain bottoms out at, along the same unwraps
-/// [`lvalue_of`] takes.
-fn root_identifier(node: Node) -> Option<Node> {
+/// [`lvalue_of`] takes, collecting each subscript's index on the way in.
+fn root_identifier<'a>(node: Node<'a>, indices: &mut Vec<Node<'a>>) -> Option<Node<'a>> {
     match node.kind() {
         "identifier" => Some(node),
-        "field_expression" | "pointer_expression" | "subscript_expression" => {
-            root_identifier(node.child_by_field_name("argument")?)
+        "subscript_expression" => {
+            if let Some(index) = node.child_by_field_name("index") {
+                indices.push(index);
+            }
+            root_identifier(node.child_by_field_name("argument")?, indices)
         }
-        "cast_expression" => root_identifier(node.child_by_field_name("value")?),
+        "field_expression" | "pointer_expression" => {
+            root_identifier(node.child_by_field_name("argument")?, indices)
+        }
+        "cast_expression" => root_identifier(node.child_by_field_name("value")?, indices),
         "parenthesized_expression" => node
             .child_nodes()
             .find(|c| c.is_named() && c.kind() != "comment")
-            .and_then(root_identifier),
+            .and_then(|c| root_identifier(c, indices)),
         _ => None,
     }
 }
@@ -939,6 +999,20 @@ mod tests {
         assert_eq!(o[0], o[2]);
         assert_ne!(o[3], o[4]);
         assert_eq!(o[3], o[5]);
+    }
+
+    #[test]
+    fn an_element_is_keyed_by_its_index() {
+        let o = objects(
+            "int m[4];\n\
+             void f(int i, int j) { use(&m[i]); use(&(m[ i ])); use(&m[j]); use(&m[1]); use(&m[ 1 ]); }",
+        );
+        assert_eq!(o[0], o[1]);
+        assert_ne!(o[0], o[2]);
+        assert_ne!(o[0], o[3]);
+        assert_eq!(o[3], o[4]);
+        let whole: Vec<_> = o.iter().map(|x| x.as_ref().unwrap().array()).collect();
+        assert!(whole.iter().all(|w| *w == whole[0]));
     }
 
     #[test]

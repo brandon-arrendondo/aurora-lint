@@ -34,8 +34,10 @@
 //!   thread-API contract (`thread_api::thread_op`): C11, POSIX and any
 //!   declared family
 //! - Identify each thread handle by declaration and member path
-//!   (`thread_api::sync_object`): two functions' same-named locals are two
-//!   handles, and a file-scope handle joined in another function is joined
+//!   (`thread_api::sync_object`, the whole array for an element): two
+//!   functions' same-named locals are two handles, a file-scope handle joined
+//!   in another function is joined, and handles stored into `thr[i]` are
+//!   joined by a loop over `thr[j]`
 //! - Report a created handle that this file never joins or detaches, unless
 //!   the thread's start routine detaches itself (`thrd_detach(thrd_current())`
 //!   and the like). A start routine this file defines counts only if it is
@@ -116,7 +118,8 @@ impl CertRule for Con04C {
             };
             match call.kind() {
                 ThreadOpKind::ThreadCreate => {
-                    let Some(object) = thread_api::sync_object(&handle, source) else {
+                    let Some(object) = thread_api::sync_object(&handle, source).map(|h| h.array())
+                    else {
                         continue;
                     };
                     creations.push(ThreadCreation {
@@ -138,7 +141,9 @@ impl CertRule for Con04C {
                     }
                 }
                 ThreadOpKind::ThreadJoin | ThreadOpKind::ThreadDetach => {
-                    if let Some(object) = thread_api::sync_object(&handle, source) {
+                    if let Some(object) =
+                        thread_api::sync_object(&handle, source).map(|h| h.array())
+                    {
                         released.insert(object);
                     }
                 }

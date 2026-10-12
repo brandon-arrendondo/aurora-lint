@@ -21,7 +21,8 @@
 //!   resolved by declaration (`ThreadCall::entry_function`), not by the
 //!   arguments' text
 //! - Report a creation whose start routine self-detaches when the same
-//!   handle (`thread_api::sync_object`) is joined anywhere in the file
+//!   handle (`thread_api::sync_object`, the whole array for an element) is
+//!   joined anywhere in the file
 //!
 //! A double join, or a detach then a join, of one handle in the creating
 //! code is not detected: telling them from joins on exclusive paths needs
@@ -95,14 +96,16 @@ impl CertRule for Con39C {
                     }
                 }
                 ThreadOpKind::ThreadJoin => {
-                    if let Some(object) = thread_api::sync_object(&handle, source) {
+                    if let Some(object) =
+                        thread_api::sync_object(&handle, source).map(|h| h.array())
+                    {
                         joined.insert(object);
                     }
                 }
                 ThreadOpKind::ThreadCreate => {
                     if let (Some(entry), Some(object)) = (
                         call.entry_function(source),
-                        thread_api::sync_object(&handle, source),
+                        thread_api::sync_object(&handle, source).map(|h| h.array()),
                     ) {
                         creations.push((call_node, entry, object));
                     }
