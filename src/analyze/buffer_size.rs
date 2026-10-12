@@ -565,14 +565,26 @@ pub fn resolve_strlen_based_alloc_size(
     fn_start: usize,
     fn_end: usize,
 ) -> Option<usize> {
+    // The three fixed patterns compile once per process: `\w` is the
+    // Unicode class, and compiling it at every call cost more than the scan.
+    static CALLOC_NARROW: std::sync::LazyLock<Option<regex::Regex>> =
+        std::sync::LazyLock::new(|| {
+            regex::Regex::new(
+                r"calloc\s*\(\s*(\w+)\s*\+\s*1\s*,\s*(?:1|sizeof\s*\(\s*char\s*\))\s*\)",
+            )
+            .ok()
+        });
+    static CALLOC_WIDE: std::sync::LazyLock<Option<regex::Regex>> =
+        std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"calloc\s*\(\s*(\w+)\s*\+\s*1\s*,\s*sizeof\s*\(\s*wchar_t\s*\)\s*\)")
+                .ok()
+        });
+    static MALLOC_INDIRECT: std::sync::LazyLock<Option<regex::Regex>> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"malloc\s*\(\s*(\w+)\s*\+\s*1\s*\)").ok());
     let assign_re = regex::Regex::new(&format!(r"\b{}\b\s*=[^=]", regex::escape(var_name))).ok()?;
-    let calloc_narrow_re =
-        regex::Regex::new(r"calloc\s*\(\s*(\w+)\s*\+\s*1\s*,\s*(?:1|sizeof\s*\(\s*char\s*\))\s*\)")
-            .ok();
-    let calloc_wide_re =
-        regex::Regex::new(r"calloc\s*\(\s*(\w+)\s*\+\s*1\s*,\s*sizeof\s*\(\s*wchar_t\s*\)\s*\)")
-            .ok();
-    let malloc_indirect_re = regex::Regex::new(r"malloc\s*\(\s*(\w+)\s*\+\s*1\s*\)").ok();
+    let calloc_narrow_re = &*CALLOC_NARROW;
+    let calloc_wide_re = &*CALLOC_WIDE;
+    let malloc_indirect_re = &*MALLOC_INDIRECT;
 
     let end = fn_end.min(lines.len().saturating_sub(1));
     if lines.is_empty() || fn_start > end {
