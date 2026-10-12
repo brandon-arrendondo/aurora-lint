@@ -190,8 +190,14 @@ impl IncludeReport {
 
     /// The `--report-headers` JSON: this report, each outside header given
     /// with the SHA-256 of its bytes so "same header, different version"
-    /// shows up as a diff line (unreadable now: `null`).
-    pub fn to_json_with_hashes(&self) -> serde_json::Value {
+    /// shows up as a diff line (unreadable now: `null`), and every input the
+    /// scan refused (`refused`: a header read only for its declarations and
+    /// macros, or a scanned file) with the cause, since what it holds was
+    /// not seen either.
+    pub fn to_json_with_hashes(
+        &self,
+        refused: &[crate::analyze::containment::ScanFailure],
+    ) -> serde_json::Value {
         use sha2::{Digest, Sha256};
         let outside: Vec<serde_json::Value> = self
             .outside_headers
@@ -208,6 +214,15 @@ impl IncludeReport {
             "forced_includes": self.forced_includes,
             "unresolved": self.unresolved,
             "outside_headers": outside,
+            "refused": refused
+                .iter()
+                .filter(|f| f.stage == crate::analyze::containment::Stage::Input)
+                .map(|f| serde_json::json!({
+                    "path": f.file,
+                    "cause": f.cause.word(),
+                    "detail": f.message,
+                }))
+                .collect::<Vec<_>>(),
         })
     }
 

@@ -1062,6 +1062,14 @@ fn load_project_context(
     context.retain_alias_call_arities();
     if let Some(mut outside) = outside {
         outside.retain_alias_call_arities();
+        // The second context resolves includes too. A header it could not
+        // read is this scan's to report (ADR-0017), and, like any other
+        // prescan failure, keeps the cache from being saved.
+        context
+            .prescan_failures
+            .append(&mut outside.prescan_failures);
+        context.prescan_failures.sort();
+        context.prescan_failures.dedup();
         context.outside_configuration = Some(Arc::new(outside));
     }
 

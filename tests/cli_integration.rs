@@ -6683,6 +6683,7 @@ fn an_included_header_nested_past_the_depth_limit_is_reported_not_dropped() {
     .unwrap();
     let inc = dir.path().join("inc");
     let sarif = dir.path().join("out.sarif");
+    let headers = dir.path().join("headers.json");
     let (code, _, stderr) = run_aurora_lint(&[
         main.to_str().unwrap(),
         "-I",
@@ -6691,6 +6692,8 @@ fn an_included_header_nested_past_the_depth_limit_is_reported_not_dropped() {
         "100",
         "-e",
         sarif.to_str().unwrap(),
+        "--report-headers",
+        headers.to_str().unwrap(),
     ]);
     assert_eq!(code, 3, "{stderr}");
     assert!(
@@ -6707,6 +6710,16 @@ fn an_included_header_nested_past_the_depth_limit_is_reported_not_dropped() {
     );
     let sarif = std::fs::read_to_string(&sarif).unwrap();
     assert!(sarif.contains("too-deep"), "{sarif}");
+    // The header report lists it with its cause.
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&headers).unwrap()).unwrap();
+    let refused = report["refused"].as_array().unwrap();
+    assert_eq!(refused.len(), 1, "{report}");
+    assert!(
+        refused[0]["path"].as_str().unwrap().ends_with("deep.h")
+            && refused[0]["cause"] == "too deep",
+        "{report}"
+    );
     // Under no limit the header is read and the free is seen.
     let (code, stdout, stderr) = run_aurora_lint(&[
         main.to_str().unwrap(),

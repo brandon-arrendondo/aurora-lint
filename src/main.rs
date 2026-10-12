@@ -352,7 +352,7 @@ fn run() -> Result<i32> {
         .arg(
             Arg::new("report_headers")
                 .long("report-headers")
-                .help("Write what #include resolution could and could not see to FILE as JSON: the header search path, every #include that resolved to no file (includer, line, whether in a never-compiled arm or named only by a system header), and every header read from outside the project with its SHA-256, so two hosts' reports diff to the cause of a header-driven difference. Never changes a finding")
+                .help("Write what #include resolution could and could not see to FILE as JSON: the header search path, every #include that resolved to no file (includer, line, whether in a never-compiled arm or named only by a system header), every header read from outside the project with its SHA-256, and every input refused with its cause, so two hosts' reports diff to the cause of a header-driven difference. Never changes a finding")
                 .value_name("JSON_FILE"),
         )
         .arg(
@@ -1079,7 +1079,7 @@ fn run() -> Result<i32> {
         eprint!("{}", include_report.render_verbose());
     }
     if let Some(json_path) = &report_headers {
-        let json = serde_json::to_string_pretty(&include_report.to_json_with_hashes())?;
+        let json = serde_json::to_string_pretty(&include_report.to_json_with_hashes(&failures))?;
         fs::write(json_path, json)
             .with_context(|| format!("Failed to write header report to {json_path}"))?;
         eprintln!("Wrote header report to: {json_path}");

@@ -117,7 +117,9 @@ pub enum Cause {
 }
 
 impl Cause {
-    fn word(self) -> &'static str {
+    /// The short cause word a report gives: `crashed`, `time limit`, `too
+    /// deep`, ...
+    pub fn word(self) -> &'static str {
         match self {
             Cause::Panic => "crashed",
             Cause::StepLimit => "step limit",

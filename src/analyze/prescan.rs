@@ -8449,7 +8449,20 @@ fn walk_beyond_search_path(
     let mut rows: Vec<super::context::UnresolvedInclude> = Vec::new();
     while let Some(file) = queue.pop() {
         let from = crate::analyze::compile_commands::real_path(&file);
-        let Ok((tree, source)) = parser.parse_file(&file.to_string_lossy()) else {
+        // A refused header's include edges are lost, and they decide which
+        // files reach a missing generated header: refused out loud.
+        let key = file
+            .canonicalize()
+            .unwrap_or_else(|_| file.clone())
+            .to_string_lossy()
+            .to_string();
+        let Some((tree, source)) = read_header_for_facts(
+            parser,
+            &file,
+            &file.to_string_lossy(),
+            &key,
+            &mut context.prescan_failures,
+        ) else {
             continue;
         };
         let dir = file.parent().map(Path::to_path_buf);
