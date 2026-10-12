@@ -49,7 +49,10 @@
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Configuration</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#manifest-file">Manifest File</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#custom-manifest-format">Custom Manifest Format</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#policy-and-environment-settings">Policy and Environment Settings</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#policy-and-environment-settings">Policy and Environment Settings</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#thread-api-families">Thread-API families</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#scope">Scope</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#supported-cert-c-rules">Supported CERT C Rules</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#strict-vs-relaxed-onboarding">Strict vs. Relaxed Onboarding</a></li>
@@ -509,6 +512,70 @@ expands to does, or it is declared here. A name such as <code class="docutils li
 handed to a library’s deallocator with no body in the scan is reported leaked
 until that deallocator is declared. <code class="docutils literal notranslate"><span class="pre">--report-deallocator-candidates</span></code> (see
 <a class="reference internal" href="cli-usage.html"><span class="doc">Advanced CLI Usage</span></a>) lists the callees worth declaring.</p>
+<section id="thread-api-families">
+<h3>Thread-API families<a class="headerlink" href="#thread-api-families" title="Link to this heading"></a></h3>
+<p>The concurrency rules read the hazard CERT names, not one API’s spelling
+(<code class="docutils literal notranslate"><span class="pre">docs/design/thread-api-families.md</span></code>). CON30-C and CON36-C ask which thread
+operation a call performs: thread create, mutex lock, condition wait, storing
+thread-specific data and so on. Each operation’s operands are placed by
+argument position. C11 <code class="docutils literal notranslate"><span class="pre">&lt;threads.h&gt;</span></code> is always read. POSIX threads are read
+too, unless <code class="docutils literal notranslate"><span class="pre">posix_version</span> <span class="pre">=</span> <span class="pre">&quot;none&quot;</span></code> or <code class="docutils literal notranslate"><span class="pre">posix</span> <span class="pre">=</span> <span class="pre">&quot;off&quot;</span></code> below says the
+target is not POSIX. A call counts when its callee resolves to the function;
+a parameter or a function pointer spelled like one is not it.</p>
+<p>An RTOS’s API is read only when the project declares it. <code class="docutils literal notranslate"><span class="pre">families</span></code> selects
+a profile shipped with aurora-lint. <code class="docutils literal notranslate"><span class="pre">freertos</span></code> is checked against
+FreeRTOS-Kernel V11.2.0 and covers task creation, the recursive-mutex calls,
+the thread-local storage pointers and the task delays. It also reads the
+kernel heap: <code class="docutils literal notranslate"><span class="pre">pvPortMalloc</span></code> allocates as <code class="docutils literal notranslate"><span class="pre">malloc</span></code> does and <code class="docutils literal notranslate"><span class="pre">vPortFree</span></code>
+frees. That holds for every memory rule, not only the thread-local storage
+check: selecting <code class="docutils literal notranslate"><span class="pre">freertos</span></code> makes the two an allocator and a deallocator
+everywhere, as declaring them under <code class="docutils literal notranslate"><span class="pre">[environment.allocators]</span></code> and
+<code class="docutils literal notranslate"><span class="pre">[environment.deallocators]</span></code> would. The project’s own
+wrappers go under <code class="docutils literal notranslate"><span class="pre">functions</span></code>, each with its operation and the 1-based
+positions of its operands:</p>
+<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="k">[environment.threads]</span>
+<span class="n">families</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;freertos&quot;</span><span class="p">]</span>
+
+<span class="k">[environment.threads.functions]</span>
+<span class="n">os_mutex_lock</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">op</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;mutex_lock&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">object</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="n">blocking</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;always&quot;</span><span class="w"> </span><span class="p">}</span>
+<span class="n">os_mutex_unlock</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">op</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;mutex_unlock&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">object</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="p">}</span>
+<span class="n">os_cond_wait</span><span class="w">    </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">op</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;cond_wait&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">cond</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="n">mutex</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="n">spurious</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">true</span><span class="w"> </span><span class="p">}</span>
+<span class="n">os_task_spawn</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">op</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;thread_create&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">entry</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="n">arg</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="n">arity</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">5</span><span class="w"> </span><span class="p">}</span>
+
+<span class="k">[environment.threads.types]</span>
+<span class="n">os_mutex_t</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;mutex&quot;</span>
+</pre></div>
+</div>
+<p>The operations are <code class="docutils literal notranslate"><span class="pre">thread_create</span></code>, <code class="docutils literal notranslate"><span class="pre">thread_join</span></code>, <code class="docutils literal notranslate"><span class="pre">thread_detach</span></code>,
+<code class="docutils literal notranslate"><span class="pre">thread_self</span></code>, <code class="docutils literal notranslate"><span class="pre">thread_exit</span></code>, <code class="docutils literal notranslate"><span class="pre">mutex_init</span></code>, <code class="docutils literal notranslate"><span class="pre">mutex_lock</span></code>,
+<code class="docutils literal notranslate"><span class="pre">mutex_unlock</span></code>, <code class="docutils literal notranslate"><span class="pre">mutex_destroy</span></code>, <code class="docutils literal notranslate"><span class="pre">cond_wait</span></code>, <code class="docutils literal notranslate"><span class="pre">cond_signal</span></code>,
+<code class="docutils literal notranslate"><span class="pre">cond_broadcast</span></code>, <code class="docutils literal notranslate"><span class="pre">tss_create</span></code>, <code class="docutils literal notranslate"><span class="pre">tss_set</span></code>, <code class="docutils literal notranslate"><span class="pre">tss_get</span></code>, <code class="docutils literal notranslate"><span class="pre">tss_delete</span></code>,
+<code class="docutils literal notranslate"><span class="pre">once</span></code> and <code class="docutils literal notranslate"><span class="pre">sleep</span></code>. Each takes only its own roles, and the scan refuses
+the manifest otherwise:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">thread_create</span></code> must give <code class="docutils literal notranslate"><span class="pre">entry</span></code>, and may give <code class="docutils literal notranslate"><span class="pre">arg</span></code> and <code class="docutils literal notranslate"><span class="pre">handle</span></code>.</p></li>
+<li><p>A <code class="docutils literal notranslate"><span class="pre">cond_wait</span></code> must state <code class="docutils literal notranslate"><span class="pre">spurious</span></code>, whether it can return without a
+signal. CON36-C reports only a wait that can.</p></li>
+<li><p>The thread-specific storage operations must give <code class="docutils literal notranslate"><span class="pre">key</span></code>. For a family
+with fixed slots instead of created keys, as FreeRTOS has, the key is the
+slot index.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">arity</span></code>, the exact argument count, is optional on every operation. A call
+with another count is a different function of the same name.</p></li>
+</ul>
+<p>A C11 or POSIX name the project defines itself, such as a
+<code class="docutils literal notranslate"><span class="pre">pthread_cond_wait</span></code> shim over another platform’s API, is the project’s
+function: its calls reach that body, in the same file or in any other scanned
+file, so they are not the library’s operation. A declaration of such a name
+under <code class="docutils literal notranslate"><span class="pre">functions</span></code> is in force for those calls alone. A call that reaches
+the library keeps the library’s contract, so declaring a library name the
+project does not define changes nothing. A function the selected profile
+already covers cannot be declared, nor can a C11 or POSIX type. When a
+manifest and the command line both declare one function, they must give it
+the same contract.</p>
+<p>These tables are facts about the project, so <code class="docutils literal notranslate"><span class="pre">--profile</span></code> keeps them and
+<code class="docutils literal notranslate"><span class="pre">--write-config</span></code> writes them. They enter the settings hash only when
+something differs from the default.</p>
+</section>
 </section>
 <section id="scope">
 <h2>Scope<a class="headerlink" href="#scope" title="Link to this heading"></a></h2>

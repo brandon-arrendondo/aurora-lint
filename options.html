@@ -52,6 +52,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#environment-contracts">Environment contracts</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#toolchain">Toolchain</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#declared-memory-functions">Declared memory functions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#declared-thread-api-families">Declared thread-API families</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="rule-presets.html">Rule readings by preset</a></li>
@@ -342,6 +343,29 @@ cannot be declared, since its contract is the library’s.</p>
 (default 1)</p></li>
 <li><p>Part of the settings hash only when something is declared</p></li>
 <li><p>Basis: the project’s own statement of its environment (ADR-0001, ADR-0015)</p></li>
+</ul>
+</dd>
+</dl>
+</section>
+<section id="declared-thread-api-families">
+<h2>Declared thread-API families<a class="headerlink" href="#declared-thread-api-families" title="Link to this heading"></a></h2>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">threads</span></code></dt><dd><p>The concurrency rules read a hazard, not one API’s spelling: CON30-C and
+CON36-C ask which thread operation a call performs (create, lock, wait,
+store thread-specific data, …). C11 <code class="docutils literal notranslate"><span class="pre">&lt;threads.h&gt;</span></code> is always read.
+POSIX threads are read unless <code class="docutils literal notranslate"><span class="pre">posix_version</span> <span class="pre">=</span> <span class="pre">&quot;none&quot;</span></code> or
+<code class="docutils literal notranslate"><span class="pre">posix</span> <span class="pre">=</span> <span class="pre">&quot;off&quot;</span></code> says the target is not POSIX. A call counts when its
+callee resolves to the function, not to an object of the same name. An
+RTOS’s API is read only when declared: <code class="docutils literal notranslate"><span class="pre">families</span></code> selects a shipped
+profile (<code class="docutils literal notranslate"><span class="pre">freertos</span></code>, checked against FreeRTOS-Kernel V11.2.0), and
+<code class="docutils literal notranslate"><span class="pre">functions</span></code> gives the project’s own, each as <code class="docutils literal notranslate"><span class="pre">{</span> <span class="pre">op</span> <span class="pre">=</span> <span class="pre">&quot;KIND&quot;,</span> <span class="pre">ROLE</span> <span class="pre">=</span> <span class="pre">N</span> <span class="pre">}</span></code>
+with 1-based argument positions. A C11 or POSIX function cannot be
+declared, since its contract is the library’s.</p>
+<ul class="simple">
+<li><p>Set with <code class="docutils literal notranslate"><span class="pre">[environment.threads]</span></code> (<code class="docutils literal notranslate"><span class="pre">families</span></code>, <code class="docutils literal notranslate"><span class="pre">posix</span></code>) and
+<code class="docutils literal notranslate"><span class="pre">[environment.threads.functions]</span></code> / <code class="docutils literal notranslate"><span class="pre">[environment.threads.types]</span></code></p></li>
+<li><p>Part of the settings hash only when something differs from the default</p></li>
+<li><p>Basis: <code class="docutils literal notranslate"><span class="pre">docs/design/thread-api-families.md</span></code> (ADR-0006, ADR-0015)</p></li>
 </ul>
 </dd>
 </dl>
