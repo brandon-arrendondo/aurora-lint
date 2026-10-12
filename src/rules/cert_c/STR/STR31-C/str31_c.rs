@@ -2,7 +2,7 @@
 // Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 use super::super::{CertRule, RuleViolation};
-use crate::analyze::array_size::resolve_declared_array_size;
+use crate::analyze::array_size::{resolve_declared_array_size_in_file, FileScopeArrays};
 use crate::analyze::buffer_size;
 use crate::analyze::const_eval::{collect_macro_constants, MacroConstantMap};
 use crate::analyze::context::ProjectContext;
@@ -72,6 +72,11 @@ pub struct Str31C {
     /// subscripts, for the buffer-size finders' whole-file questions. Built
     /// once per file in `check()`.
     line_index: RefCell<buffer_size::FileLineIndex>,
+    /// The file scope's array declarations for the AST size resolver, so a
+    /// use whose name no block declares costs a lookup rather than a pass
+    /// over every earlier top-level declaration. Built once per file in
+    /// `check()`, after `macros`.
+    file_arrays: RefCell<FileScopeArrays>,
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
     data_model: Cell<IntFacts>,
@@ -222,9 +227,13 @@ impl Str31C {
         }
 
         if let Some(node) = use_node {
-            if let Some(size) =
-                resolve_declared_array_size(node, var_name, source, &self.macros.borrow())
-            {
+            if let Some(size) = resolve_declared_array_size_in_file(
+                node,
+                var_name,
+                source,
+                &self.macros.borrow(),
+                &self.file_arrays.borrow(),
+            ) {
                 return Some(size);
             }
         }
@@ -2249,6 +2258,7 @@ impl CertRule for Str31C {
         // Pass it down to avoid re-finding root on every call.
         *self.macros.borrow_mut() = collect_macro_constants(node, source, self.data_model.get());
         *self.line_index.borrow_mut() = buffer_size::FileLineIndex::of(source);
+        *self.file_arrays.borrow_mut() = FileScopeArrays::of(node, source, &self.macros.borrow());
         let mut violations = Vec::new();
         for n in query::find_descendants(*node, |_| true) {
             self.check_node(&n, source, node, &mut violations);

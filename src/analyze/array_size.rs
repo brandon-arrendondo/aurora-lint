@@ -31,7 +31,97 @@ pub fn resolve_declared_array_size(
     macros: &MacroConstantMap,
 ) -> Option<usize> {
     let arr_decl = find_array_declarator_in_scope(use_node, var_name, source)?;
+    declared_size(&arr_decl, source, macros)
+}
 
+/// [`resolve_declared_array_size`] with the file scope answered from
+/// `file`, an index of the file `use_node` belongs to built with the same
+/// `macros`. Block scopes are still scanned; the file scope, which holds
+/// every top-level declaration, is a lookup. Any other tree or text is
+/// resolved by the scan.
+pub fn resolve_declared_array_size_in_file(
+    use_node: &Node,
+    var_name: &str,
+    source: &str,
+    macros: &MacroConstantMap,
+    file: &FileScopeArrays,
+) -> Option<usize> {
+    let before = use_node.start_byte();
+    let mut scope = use_node.parent();
+    while let Some(s) = scope {
+        if s.parent().is_none() && file.is_of(&s, source) {
+            let &(start, size) = file.first.get(var_name)?;
+            return if start < before { size } else { None };
+        }
+        if let Some(found) = scan_block_declarators(&s, var_name, source, before) {
+            return declared_size(&found, source, macros);
+        }
+        scope = s.parent();
+    }
+    None
+}
+
+/// For each name, the first `array_declarator` declaring it that the
+/// file-scope scan can see, by start byte and declared size.
+///
+/// The scan of the root visits nodes in preorder, which is start-byte
+/// order, and keeps to those starting before the use. So it finds the
+/// first declarator of the name in the whole preorder when that one starts
+/// before the use, and nothing otherwise: one lookup per use instead of a
+/// pass over every top-level declaration before it.
+#[derive(Debug, Default)]
+pub struct FileScopeArrays {
+    /// The root's node id and the text's address and length.
+    of: (usize, usize, usize),
+    first: std::collections::HashMap<String, (usize, Option<usize>)>,
+}
+
+impl FileScopeArrays {
+    /// Index the file scope of `root`, the root of `source`'s tree.
+    pub fn of(root: &Node, source: &str, macros: &MacroConstantMap) -> Self {
+        let mut first = std::collections::HashMap::new();
+        visit_scope_declarators(root, source, &mut |decl, name| {
+            first
+                .entry(name)
+                .or_insert_with(|| (decl.start_byte(), declared_size(decl, source, macros)));
+        });
+        Self {
+            of: (root.id(), source.as_ptr() as usize, source.len()),
+            first,
+        }
+    }
+
+    /// Whether this index was built from `root` of `source`.
+    fn is_of(&self, root: &Node, source: &str) -> bool {
+        self.of == (root.id(), source.as_ptr() as usize, source.len())
+    }
+}
+
+/// Every `array_declarator` [`scan_block_declarators`] would test in
+/// `scope`, in the order it tests them, with its declared name.
+fn visit_scope_declarators<'a>(
+    scope: &Node<'a>,
+    source: &str,
+    visit: &mut impl FnMut(&Node<'a>, String),
+) {
+    let mut cursor = scope.walk();
+    for child in scope.children(&mut cursor) {
+        if matches!(child.kind(), "compound_statement" | "function_definition") {
+            continue;
+        }
+        if child.kind() == "array_declarator" {
+            if let Some(name) = find_identifier_in_declarator(&child, source) {
+                visit(&child, name);
+            }
+        }
+        visit_scope_declarators(&child, source, visit);
+    }
+}
+
+/// The element count `arr_decl` declares: `max(evaluated-size-expression,
+/// initializer-element-count)`, or `None` when it cannot be determined (see
+/// [`resolve_declared_array_size`]).
+fn declared_size(arr_decl: &Node, source: &str, macros: &MacroConstantMap) -> Option<usize> {
     // Evaluate the explicit dimension expression, if any.
     let declared = match arr_decl.child_by_field_name("size") {
         Some(size_expr) => match try_evaluate_expr(&size_expr, source, macros) {
@@ -136,5 +226,53 @@ fn count_initializer_elements(list: &Node) -> Option<usize> {
         Some(count)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::c_language;
+
+    #[test]
+    fn file_scope_index_agrees_with_the_scan() {
+        let source = "#define N 8\nchar g[4];\nint h[N], *p;\n\
+                      void f(char *in, int k[3]) { char g[16]; strcpy(g, in); use(h, k, late); }\n\
+                      int late[2 * N];\nstruct s { char m[5]; } v[3];\n\
+                      int f2(void) { { int g[7]; use(g); } use(g, late, m, v, w); return x[1]; }\n\
+                      int w[] = {1, 2, 3}, g[99];\nint arr[2][9];\n\
+                      void f3(void) { use(arr, w, g, unknown, n2); }\nint n2[n];\n";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&c_language()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        let macros = crate::analyze::const_eval::collect_macro_constants(
+            &root,
+            source,
+            crate::settings::IntFacts::default(),
+        );
+        let file = FileScopeArrays::of(&root, source, &macros);
+        let mut uses = Vec::new();
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            if node.kind() == "identifier" {
+                uses.push(node);
+            }
+            let mut cursor = node.walk();
+            stack.extend(node.children(&mut cursor));
+        }
+        assert!(uses.len() > 30);
+        for use_node in uses {
+            for name in [
+                "g", "h", "p", "in", "k", "late", "m", "v", "w", "arr", "n2", "x", "f",
+            ] {
+                assert_eq!(
+                    resolve_declared_array_size_in_file(&use_node, name, source, &macros, &file),
+                    resolve_declared_array_size(&use_node, name, source, &macros),
+                    "{name:?} at byte {}",
+                    use_node.start_byte()
+                );
+            }
+        }
     }
 }
