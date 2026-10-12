@@ -276,9 +276,10 @@ The SARIF export records the same rows under the run's
 ``toolExecutionNotifications`` entry: a missing header is a difference in the
 scan's input, not an incomplete scan, so the run stays successful and the exit
 status is unaffected. ``--report-headers FILE`` writes everything as JSON,
-including each header read from outside the project with its SHA-256, so the
-reports of two hosts diff to the header that explains a difference in their
-findings::
+including each header read from outside the project with its SHA-256 and
+each input the scan refused with its cause (``refused``: a header too large,
+not text or nested too deep is not read either), so the reports of two hosts
+diff to the header that explains a difference in their findings::
 
     aurora-lint src/ -d src/ -I include/ -I /usr/include --report-headers headers.json
 

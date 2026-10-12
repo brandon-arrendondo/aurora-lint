@@ -755,9 +755,13 @@ ladder and a chain of identifiers. A rule that evaluates a whole subtree,
 or climbs to an ancestor, once per operator is cubic in the length of such
 a chain, and the 1000-term expression once ran past the watchdog.</p></li>
 <li><p><strong>Deep nesting</strong>: braces, parentheses, operator chains and <code class="docutils literal notranslate"><span class="pre">else</span> <span class="pre">if</span></code>
-ladders from a thousand to a million deep. A thousand is analysed; past
-<code class="docutils literal notranslate"><span class="pre">--max-nesting-depth</span></code> the file must be refused with its depth, since a
-stack overflow in a recursive walk aborts the whole process.</p></li>
+ladders from a thousand to a million deep. A thousand is analysed, and so
+is each shape just under <code class="docutils literal notranslate"><span class="pre">--max-nesting-depth</span></code>, by every rule within its
+time limit; past the limit the file must be refused with its depth, since
+a stack overflow in a recursive walk aborts the whole process. The operator
+chain just under the limit is a file-scope initializer: the same chain in a
+function body is still superlinear under several rules and is not yet a
+case.</p></li>
 </ul>
 <p>The first two run in every <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">test</span></code>. The third, ten minutes or more
 in a debug build, and the fourth and fifth run in CI’s release robustness

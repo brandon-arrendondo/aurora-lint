@@ -358,9 +358,10 @@ tree checked out alongside the project.</p>
 <code class="docutils literal notranslate"><span class="pre">toolExecutionNotifications</span></code> entry: a missing header is a difference in the
 scan’s input, not an incomplete scan, so the run stays successful and the exit
 status is unaffected. <code class="docutils literal notranslate"><span class="pre">--report-headers</span> <span class="pre">FILE</span></code> writes everything as JSON,
-including each header read from outside the project with its SHA-256, so the
-reports of two hosts diff to the header that explains a difference in their
-findings:</p>
+including each header read from outside the project with its SHA-256 and
+each input the scan refused with its cause (<code class="docutils literal notranslate"><span class="pre">refused</span></code>: a header too large,
+not text or nested too deep is not read either), so the reports of two hosts
+diff to the header that explains a difference in their findings:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">I</span> <span class="n">include</span><span class="o">/</span> <span class="o">-</span><span class="n">I</span> <span class="o">/</span><span class="n">usr</span><span class="o">/</span><span class="n">include</span> <span class="o">--</span><span class="n">report</span><span class="o">-</span><span class="n">headers</span> <span class="n">headers</span><span class="o">.</span><span class="n">json</span>
 </pre></div>
 </div>

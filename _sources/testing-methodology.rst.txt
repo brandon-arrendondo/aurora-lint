@@ -587,9 +587,13 @@ only thing incomplete is a file the input guard was meant to refuse):
   or climbs to an ancestor, once per operator is cubic in the length of such
   a chain, and the 1000-term expression once ran past the watchdog.
 - **Deep nesting**: braces, parentheses, operator chains and ``else if``
-  ladders from a thousand to a million deep. A thousand is analysed; past
-  ``--max-nesting-depth`` the file must be refused with its depth, since a
-  stack overflow in a recursive walk aborts the whole process.
+  ladders from a thousand to a million deep. A thousand is analysed, and so
+  is each shape just under ``--max-nesting-depth``, by every rule within its
+  time limit; past the limit the file must be refused with its depth, since
+  a stack overflow in a recursive walk aborts the whole process. The operator
+  chain just under the limit is a file-scope initializer: the same chain in a
+  function body is still superlinear under several rules and is not yet a
+  case.
 
 The first two run in every ``cargo test``. The third, ten minutes or more
 in a debug build, and the fourth and fifth run in CI's release robustness
