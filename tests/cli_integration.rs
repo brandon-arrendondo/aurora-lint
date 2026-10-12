@@ -10,7 +10,7 @@
 //! - Diff-only mode (--diff flag)
 //! - Policy and environment settings (--profile, --set, --list-options)
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn aurora_lint_bin() -> PathBuf {
@@ -3272,6 +3272,57 @@ fn sig34_ex1_covers_only_the_handlers_own_signal() {
     // Declared, the handler may reset its own signal (EX1), but changing
     // SIGUSR2's disposition is still reported.
     assert_eq!(sig34_ex1_lines(true), vec![10]);
+}
+
+/// FIO46-C findings, as `file:line`, for a directory where `fl.h` defines
+/// `fclose` as a macro and only `g.c` includes it.
+fn fio46_unreached_macro_findings(search_path: bool) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let tree = fixtures().join("fio46_unreached_macro").join("f");
+    let manifest = fixtures().join("manifest_fio46.toml");
+    let mut args = vec![
+        tree.to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ];
+    if search_path {
+        args.extend(["-I", tree.to_str().unwrap()]);
+    }
+    let (code, _, _) = run_aurora_lint(&args);
+    assert_eq!(code, 0);
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    let mut found: Vec<String> = violations
+        .iter()
+        .filter(|v| v["rule_id"] == "FIO46-C")
+        .map(|v| {
+            let file = v["file"].as_str().unwrap();
+            let name = Path::new(file).file_name().unwrap().to_str().unwrap();
+            format!("{name}:{}", v["line"])
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+#[test]
+fn fio46_macro_counts_only_where_its_header_is_included() {
+    // `g.c` includes `fl.h`, whose `fclose` macro calls `fl_fclose`; `f.c`
+    // does not, so its `fclose` is the library's.
+    assert_eq!(fio46_unreached_macro_findings(true), vec!["f.c:5"]);
+}
+
+#[test]
+fn fio46_macro_counts_nowhere_when_includes_are_unresolved() {
+    // With no search path the include graph is unknown, so no file is shown
+    // to see the macro, and both calls are taken as the library's.
+    assert_eq!(
+        fio46_unreached_macro_findings(false),
+        vec!["f.c:5", "g.c:5"]
+    );
 }
 
 fn manifest_sig30() -> PathBuf {

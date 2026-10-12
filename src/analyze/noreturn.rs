@@ -52,9 +52,9 @@
 //! [`ByNoreturnTrust::get`], which keeps a saved prescan valid under every
 //! setting.
 
+use crate::analyze::check_macros::{collect_conditional_macro_names, MacroDefinition};
 use crate::analyze::context::{IncludeClosure, ProjectContext};
 use crate::analyze::dead_regions::DeadRegions;
-use crate::analyze::macro_expand;
 use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
@@ -666,16 +666,28 @@ pub fn library_names_redefined_among(
 
 /// Whether `name`, a library function's, means something else anywhere in
 /// this file (ADR-0006): the file defines a function by that name or declares
-/// one `static` ([`library_names_redefined_among`]), or a macro by that name is in reach --
-/// one this file `#define`s, a function-like one a header in the file's
-/// include closure defines, or an object-like one the project defines. The
-/// object-like table records no defining file, so a project-wide `#define`
-/// is taken to reach every file, and a macro the prescan saw only outside the
-/// project (a system header's) is the library's own. A project's external
-/// definition in another file is not seen: a `static` one there is a
-/// different function, and the prescan keys a lone `static` definition as it
-/// keys an external one. MSC30-C asks it about `rand`, FIO46-C about
-/// `fclose`.
+/// one `static` ([`library_names_redefined_among`]), or a macro by that name
+/// replaces it in every configuration that compiles the file.
+///
+/// A macro counts when this file `#define`s it, when a project header in the
+/// file's include closure defines it function-like, or when the project
+/// defines it object-like anywhere (the prescan records no defining file for
+/// an object-like macro, so it is taken to reach every file). It does not
+/// count when:
+/// - its only definitions sit in a region the file's own conditionals prove
+///   dead ([`DeadRegions`]), such as `#if 0`;
+/// - it is defined only inside a live `#if`/`#ifdef` arm
+///   ([`crate::analyze::check_macros::collect_conditional_macro_names`] for
+///   the file, `ProjectContext::conditional_macro_names` for the project),
+///   since a build without that arm calls the library function;
+/// - it is function-like and the file's include closure does not reach a
+///   header that defines it, or the closure is unknown (no search path);
+/// - the prescan saw it only outside the project, in a system header.
+///
+/// A project's external definition in another file is not seen: a `static`
+/// one there is a different function, and the prescan keys a lone `static`
+/// definition as it keys an external one. MSC30-C asks it about `rand`,
+/// FIO46-C about `fclose`.
 pub fn library_function_replaced(
     root: &Node,
     source: &str,
@@ -686,30 +698,41 @@ pub fn library_function_replaced(
     if library_names_redefined_among(root, source, |n| n == name).contains(name) {
         return true;
     }
+    let dead = DeadRegions::of(source);
     let defines_here = ["preproc_def", "preproc_function_def"]
         .into_iter()
         .flat_map(|kind| query::find_descendants_of_kind(*root, kind))
+        .filter(|def| !dead.contains_node(def))
         .any(|def| {
             def.child_by_field_name("name")
                 .is_some_and(|n| get_node_text(&n, source) == name)
         });
     if defines_here {
-        return true;
+        return !collect_conditional_macro_names(source).contains(name);
     }
     let Some(project) = project else {
         return false;
     };
-    if project.macros_defined_outside_project.contains(name) {
+    if project.macros_defined_outside_project.contains(name)
+        || project.conditional_macro_names.contains(name)
+    {
         return false;
     }
-    if project.defined_macro_names.contains(name) {
+    let object_like = project.macro_definitions.get(name).is_some_and(|defs| {
+        defs.iter()
+            .any(|def| matches!(def, MacroDefinition::Object { .. }))
+    });
+    if object_like {
         return true;
     }
-    if !project.function_macro_names.contains(name) {
+    let Some(closure) = file_path.and_then(|path| IncludeClosure::of(&project.include_edges, path))
+    else {
         return false;
-    }
-    let closure = file_path.and_then(|path| IncludeClosure::of(&project.include_edges, path));
-    !macro_expand::reachable_arms(&project.function_macro_arms, name, closure.as_ref()).is_empty()
+    };
+    project.function_macro_arms.get(name).is_some_and(|arms| {
+        arms.iter()
+            .any(|arm| arm.files.iter().any(|file| closure.may_include(file)))
+    })
 }
 
 /// True if `node` is an `expression_statement` calling one of the C standard

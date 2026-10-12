@@ -1,0 +1,8 @@
+[metadata]
+name = "CLI Integration Test - FIO46-C only"
+version = "1.0.0"
+description = "Minimal manifest for FIO46-C cross-file macro tests"
+cert_version = "2016"
+
+[rules.cert_c.FIO46-C]
+enabled = true
