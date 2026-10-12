@@ -53,18 +53,30 @@
 //! ```
 //!
 //! ## Detection Strategy:
-//! - Track mutex lock/unlock calls within each function
-//! - Detect functions that unlock mutexes they didn't lock
-//! - Report violations when unlock is called without corresponding lock
+//! - Find mutex lock and unlock calls by their thread-API contract
+//!   (`thread_api::thread_op`): C11, POSIX and any declared family, with a
+//!   timed or try lock counting as an acquire
+//! - Identify the mutex by declaration and member path
+//!   (`thread_api::sync_object`), not by the argument's spelling
+//! - Report an unlock of a mutex the same function never locks
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
+use crate::settings::threads::{Role, ThreadOpKind};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::thread_api::{self, ProjectFunctions, SyncObject};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
-pub struct Con01C;
+#[derive(Default)]
+pub struct Con01C {
+    /// The project's function definitions in every scanned file, for a
+    /// library name the project defines itself.
+    project: RefCell<Option<ProjectFunctions>>,
+}
 
 impl CertRule for Con01C {
     fn rule_id(&self) -> &'static str {
@@ -81,6 +93,10 @@ impl CertRule for Con01C {
 
     fn cert_id(&self) -> &'static str {
         "CON01-C"
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = Some(context.function_summaries.clone());
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -112,15 +128,15 @@ impl Con01C {
         };
 
         // Track which mutexes are locked and unlocked in this function
-        let mut locked_mutexes: HashSet<String> = HashSet::new();
-        let mut unlocked_mutexes: Vec<(String, usize, usize)> = Vec::new();
+        let mut locked_mutexes: HashSet<SyncObject> = HashSet::new();
+        let mut unlocked_mutexes: Vec<(SyncObject, String, usize, usize)> = Vec::new();
 
         // Analyze the function body
         self.analyze_body(&body, source, &mut locked_mutexes, &mut unlocked_mutexes);
 
         // Check for unlocks without corresponding locks
-        for (mutex_name, line, column) in unlocked_mutexes {
-            if !locked_mutexes.contains(&mutex_name) {
+        for (mutex, mutex_name, line, column) in unlocked_mutexes {
+            if !locked_mutexes.contains(&mutex) {
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: Severity::High,
@@ -170,63 +186,35 @@ impl Con01C {
         &self,
         node: &Node,
         source: &str,
-        locked_mutexes: &mut HashSet<String>,
-        unlocked_mutexes: &mut Vec<(String, usize, usize)>,
+        locked_mutexes: &mut HashSet<SyncObject>,
+        unlocked_mutexes: &mut Vec<(SyncObject, String, usize, usize)>,
     ) {
-        // Look for function calls
+        let project = self.project.borrow();
         for call_node in query::find_descendants_of_kind(*node, "call_expression") {
-            if let Some(func_node) = call_node.child_by_field_name("function") {
-                let func_name = get_node_text(&func_node, source);
-
-                // Check if it's a lock function
-                if self.is_lock_function(&func_name) {
-                    if let Some(mutex_name) = self.get_mutex_argument(&call_node, source) {
-                        locked_mutexes.insert(mutex_name);
-                    }
+            let Some(call) = thread_api::thread_op(&call_node, source, project.as_ref()) else {
+                continue;
+            };
+            let Some(operand) = call.operand(Role::Object) else {
+                continue;
+            };
+            let Some(mutex) = thread_api::sync_object(&operand, source) else {
+                continue;
+            };
+            match call.kind() {
+                ThreadOpKind::MutexLock => {
+                    locked_mutexes.insert(mutex);
                 }
-                // Check if it's an unlock function
-                else if self.is_unlock_function(&func_name) {
-                    if let Some(mutex_name) = self.get_mutex_argument(&call_node, source) {
-                        let line = call_node.start_position().row + 1;
-                        let column = call_node.start_position().column + 1;
-                        unlocked_mutexes.push((mutex_name, line, column));
-                    }
+                ThreadOpKind::MutexUnlock => {
+                    let spelling = get_node_text(&operand, source)
+                        .trim()
+                        .trim_start_matches('&')
+                        .to_string();
+                    let line = call_node.start_position().row + 1;
+                    let column = call_node.start_position().column + 1;
+                    unlocked_mutexes.push((mutex, spelling, line, column));
                 }
+                _ => {}
             }
         }
-    }
-
-    fn is_lock_function(&self, func_name: &str) -> bool {
-        matches!(
-            func_name.trim(),
-            "mtx_lock"
-                | "pthread_mutex_lock"
-                | "mtx_trylock"
-                | "pthread_mutex_trylock"
-                | "mtx_timedlock"
-                | "pthread_mutex_timedlock"
-        )
-    }
-
-    fn is_unlock_function(&self, func_name: &str) -> bool {
-        matches!(func_name.trim(), "mtx_unlock" | "pthread_mutex_unlock")
-    }
-
-    fn get_mutex_argument(&self, call_node: &Node, source: &str) -> Option<String> {
-        // Get the arguments node
-        if let Some(args_node) = call_node.child_by_field_name("arguments") {
-            // Get the first argument (the mutex)
-            for i in 0..args_node.child_count() {
-                if let Some(child) = args_node.child(i) {
-                    if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
-                        let arg_text = get_node_text(&child, source);
-                        // Extract the mutex variable name (handle &mp, mp, etc.)
-                        let mutex_name = arg_text.trim().trim_start_matches('&').to_string();
-                        return Some(mutex_name);
-                    }
-                }
-            }
-        }
-        None
     }
 }

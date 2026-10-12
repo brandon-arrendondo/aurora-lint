@@ -32,12 +32,13 @@
 
 use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::points_to::{lvalue_of, LValue};
 use crate::settings::threads::{
     declared, Blocking, Profile, Role, ThreadOp, ThreadOpKind, ThreadTypeKind,
 };
 use crate::settings::AllocatorContract;
 use crate::utility::cert_c::ast_utils::{
-    get_node_text, resolve_identifier_binding, IdentifierBinding,
+    get_node_text, resolve_identifier_binding, resolve_identifier_declarator, IdentifierBinding,
 };
 use crate::utility::cert_c::node_children::NodeChildren;
 use std::fmt;
@@ -797,4 +798,105 @@ fn declares_function(decl: &Node, name: &str, source: &str) -> bool {
         stack.extend(node.child_nodes());
     }
     false
+}
+
+/// Which synchronization object an operand names: a mutex, condition
+/// variable, thread handle or key, identified by the declaration its name
+/// resolves to and the member path below it (ADR-0006). `&m`, `m`, `(m)` and
+/// `(&m)` are one object; `p->m` and `q->m` are two, and so are a global `m`
+/// and a local `m` that shadows it. Subscripts are not index-sensitive, as in
+/// [`LValue`]: `&locks[i]` and `&locks[j]` are one object.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SyncObject {
+    /// Where the root name is declared: the declarator's start byte, or the
+    /// name itself when no declaration in this file binds it.
+    root: SyncRoot,
+    /// The member path from the root, spelling-independent.
+    path: LValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum SyncRoot {
+    Declared(usize),
+    Undeclared(String),
+}
+
+/// The object `operand` names, or `None` when it names none this file can
+/// pin down: a call's result, a literal, an arithmetic expression.
+pub fn sync_object(operand: &Node, source: &str) -> Option<SyncObject> {
+    let path = lvalue_of(operand, source)?;
+    let root = root_identifier(*operand)?;
+    let name = get_node_text(&root, source);
+    let root = match resolve_identifier_declarator(&root, name, source) {
+        Some((_, declarator)) => SyncRoot::Declared(declarator.start_byte()),
+        None => SyncRoot::Undeclared(name.to_string()),
+    };
+    Some(SyncObject { root, path })
+}
+
+/// The identifier an lvalue chain bottoms out at, along the same unwraps
+/// [`lvalue_of`] takes.
+fn root_identifier(node: Node) -> Option<Node> {
+    match node.kind() {
+        "identifier" => Some(node),
+        "field_expression" | "pointer_expression" | "subscript_expression" => {
+            root_identifier(node.child_by_field_name("argument")?)
+        }
+        "cast_expression" => root_identifier(node.child_by_field_name("value")?),
+        "parenthesized_expression" => node
+            .child_nodes()
+            .find(|c| c.is_named() && c.kind() != "comment")
+            .and_then(root_identifier),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lang_parsing_substrate::query;
+
+    fn objects(source: &str) -> Vec<Option<SyncObject>> {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        query::find_descendants_of_kind(tree.root_node(), "call_expression")
+            .iter()
+            .filter(|c| {
+                c.child_by_field_name("function")
+                    .is_some_and(|f| get_node_text(&f, source) == "use")
+            })
+            .map(|c| {
+                let arg = c
+                    .child_by_field_name("arguments")
+                    .and_then(|a| a.named_child(0))
+                    .unwrap();
+                sync_object(&arg, source)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn one_object_however_it_is_spelled() {
+        let o = objects(
+            "int m; struct s { int a; } *p, *q;\n\
+             void f(void) { use(&m); use(m); use((&(m))); use(&p->a); use(&q->a); use(&(*p).a); }",
+        );
+        assert_eq!(o[0], o[1]);
+        assert_eq!(o[0], o[2]);
+        assert_ne!(o[3], o[4]);
+        assert_eq!(o[3], o[5]);
+    }
+
+    #[test]
+    fn a_shadowing_local_is_another_object() {
+        let o = objects("int m;\nvoid f(void) { use(&m); { int m; use(&m); } }");
+        assert_ne!(o[0], o[1]);
+    }
+
+    #[test]
+    fn a_call_result_names_no_object() {
+        let o = objects("int *get(void);\nvoid f(void) { use(get()); }");
+        assert_eq!(o[0], None);
+    }
 }
