@@ -12,11 +12,12 @@ use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 use tree_sitter::Node;
 
 thread_local! {
     /// Compiled patterns by their text, for [`compiled`].
-    static COMPILED: RefCell<HashMap<String, Option<regex::Regex>>> =
+    static COMPILED: RefCell<HashMap<String, Option<Rc<regex::Regex>>>> =
         RefCell::new(HashMap::new());
 }
 
@@ -25,13 +26,15 @@ thread_local! {
 /// per string call, and compiling them dominated the rule's cost. A pattern
 /// compiles to the same regex every time, so the cache changes no match.
 /// It is cleared once it holds a few thousand patterns, so a scan with many
-/// distinct variable names cannot grow it without bound.
-fn compiled(pattern: &str) -> Option<regex::Regex> {
+/// distinct variable names cannot grow it without bound. The regex is shared
+/// rather than cloned: a clone starts with an empty match cache, and
+/// rebuilding that cache at every line cost as much as the compile had.
+fn compiled(pattern: &str) -> Option<Rc<regex::Regex>> {
     COMPILED.with(|cache| {
         if let Some(found) = cache.borrow().get(pattern) {
             return found.clone();
         }
-        let built = regex::Regex::new(pattern).ok();
+        let built = regex::Regex::new(pattern).ok().map(Rc::new);
         let mut cache = cache.borrow_mut();
         if cache.len() >= 4096 {
             cache.clear();
