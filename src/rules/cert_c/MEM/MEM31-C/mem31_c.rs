@@ -15,6 +15,11 @@ use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
 use std::borrow::Cow;
 
+/// `ProjectContext::function_macro_arms`.
+type ProjectArms = HashMap<String, Vec<macro_expand::ProjectMacroArm>>;
+/// One file's own function-like macro arms, read on first use.
+type OwnArms = std::cell::OnceCell<HashMap<String, Vec<macro_expand::MacroArm>>>;
+
 /// Where a call sits: its source and 1-based line, which decide the `#if`
 /// arms its callee's definitions must share with it.
 type Site<'s> = (&'s str, usize);
@@ -664,6 +669,9 @@ pub struct Mem31C {
     /// Every `#define` across the scanned files
     /// (`ProjectContext::macro_definitions`), object-like ones included.
     macro_definitions: RefCell<Arc<HashMap<String, Vec<MacroDefinition>>>>,
+    /// Every arm of every function-like macro
+    /// (`ProjectContext::function_macro_arms`), variadic ones included.
+    function_macro_arms: RefCell<Arc<HashMap<String, Vec<macro_expand::ProjectMacroArm>>>>,
     /// Cross-file noreturn function names from the prescan, unioned in
     /// `check` with the ones this file declares for itself. Held under each
     /// noreturn setting (`ByNoreturnTrust`); `settings` picks one.
@@ -695,6 +703,7 @@ impl Mem31C {
             known_functions: RefCell::new(Arc::new(HashSet::new())),
             function_macros: RefCell::new(Arc::new(HashMap::new())),
             macro_definitions: RefCell::new(Arc::new(HashMap::new())),
+            function_macro_arms: RefCell::new(Arc::new(HashMap::new())),
             effects: RefCell::new(context::EffectView::default()),
             noreturn_functions: RefCell::default(),
             settings: RefCell::default(),
@@ -738,6 +747,7 @@ impl CertRule for Mem31C {
         *self.known_functions.borrow_mut() = context.known_functions.clone();
         *self.function_macros.borrow_mut() = context.function_macros.clone();
         *self.macro_definitions.borrow_mut() = context.macro_definitions.clone();
+        *self.function_macro_arms.borrow_mut() = context.function_macro_arms.clone();
         *self.effects.borrow_mut() = context.effects();
         *self.noreturn_functions.borrow_mut() = context.noreturn_functions.clone();
         *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
@@ -770,6 +780,9 @@ impl CertRule for Mem31C {
         let function_macros = self.function_macros.borrow();
         let effects = self.effects.borrow();
         let macro_definitions = self.macro_definitions.borrow();
+        let function_macro_arms = self.function_macro_arms.borrow();
+        // Read only when a macro whose definition is unreadable is invoked.
+        let own_macro_arms = std::cell::OnceCell::new();
         let mut conditional_macros = HashSet::clone(&self.project_conditional_macros.borrow());
         conditional_macros
             .extend(crate::analyze::check_macros::collect_conditional_macro_names(source));
@@ -865,6 +878,7 @@ impl CertRule for Mem31C {
             analyzer.realloc_in_one_build = Some(&realloc_in_one_build);
             analyzer.effects = Some(&effects);
             analyzer.macro_definitions = Some(&macro_definitions);
+            analyzer.function_macro_arms = Some((&function_macro_arms, &own_macro_arms));
             analyzer.analyze_function(&func, source, &mut violations);
         }
 
@@ -1060,6 +1074,10 @@ struct MemoryLeakAnalyzer<'a> {
     // Every `#define` across the scanned files, for the macros an element
     // store's array may be changed through (`array_events`).
     macro_definitions: Option<&'a HashMap<String, Vec<MacroDefinition>>>,
+    // Every function-like macro's arms, variadic ones with their bodies: what
+    // a definition `macro_definitions` cannot read expands to. The project's
+    // (headers), then this file's own, which the project's leaves out.
+    function_macro_arms: Option<(&'a ProjectArms, &'a OwnArms)>,
     // Where a call through one of `realloc_in_one_build` released each
     // variable, so a double free it causes says so rather than naming a
     // jump.
@@ -1451,6 +1469,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             realloc_in_one_build: None,
             effects: None,
             macro_definitions: None,
+            function_macro_arms: None,
             released_in_one_build: HashMap::new(),
             released_by_some_definition: HashMap::new(),
             realloc_in_some_builds: HashSet::new(),
@@ -1882,7 +1901,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         }) {
             let text = ast_utils::get_node_text(&occurrence, source);
             if text != name {
-                if self.macro_spells(text, name, &mut spelled) {
+                if self.macro_spells(text, name, &mut spelled, source) {
                     events.push(occurrence.start_byte());
                 }
                 continue;
@@ -1974,12 +1993,20 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
     /// Whether the definitions of the macro `macro_name` spell `name`, in
     /// their own text or through a macro they invoke; a parameter of the
-    /// same name does not count, and an unreadable definition (`##`,
-    /// variadic) does. `false` for a name no `#define` defines. `memo`
-    /// holds the answers so far for this `name`; a macro already being
-    /// expanded counts as not spelling it, as the preprocessor does not
-    /// expand it again inside itself.
-    fn macro_spells(&self, macro_name: &str, name: &str, memo: &mut HashMap<String, bool>) -> bool {
+    /// same name does not count. A variadic definition is read from its arm
+    /// (hostap's `#define wpa_printf(args...) do { } while (0)`); one that
+    /// pastes tokens (`##`) or that no arm holds counts as spelling it.
+    /// `false` for a name no `#define` defines. `source` is this file's, for
+    /// its own arms. `memo` holds the answers so far for this `name`; a
+    /// macro already being expanded counts as not spelling it, as the
+    /// preprocessor does not expand it again inside itself.
+    fn macro_spells(
+        &self,
+        macro_name: &str,
+        name: &str,
+        memo: &mut HashMap<String, bool>,
+        source: &str,
+    ) -> bool {
         if let Some(&known) = memo.get(macro_name) {
             return known;
         }
@@ -1987,16 +2014,44 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             return false;
         };
         memo.insert(macro_name.to_string(), false);
-        let spells = defs.iter().any(|def| {
-            let (params, body): (&[String], &str) = match def {
-                MacroDefinition::Function { params, body } => (params, body),
-                MacroDefinition::Object { body } => (&[], body),
-                MacroDefinition::Opaque => return true,
-            };
+        let mut spells_in = |params: &[String], body: &str| {
             body.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
                 .filter(|t| !t.is_empty() && !params.iter().any(|p| p == t))
-                .any(|t| t == name || self.macro_spells(t, name, memo))
-        });
+                .any(|t| t == name || self.macro_spells(t, name, memo, source))
+        };
+        let arms: Option<Vec<&macro_expand::MacroArm>> =
+            self.function_macro_arms.map(|(project, own)| {
+                let mut arms: Vec<&macro_expand::MacroArm> = project
+                    .get(macro_name)
+                    .into_iter()
+                    .flatten()
+                    .map(|a| &a.arm)
+                    .collect();
+                let own = own.get_or_init(|| macro_expand::collect_function_macro_arms(source));
+                for arm in own.get(macro_name).into_iter().flatten() {
+                    if !arms.contains(&arm) {
+                        arms.push(arm);
+                    }
+                }
+                arms
+            });
+        let function_defs = defs
+            .iter()
+            .filter(|d| !matches!(d, MacroDefinition::Object { .. }))
+            .count();
+        let spells = defs.iter().any(|def| match def {
+            MacroDefinition::Function { params, body } => spells_in(params, body),
+            MacroDefinition::Object { body } => spells_in(&[], body),
+            MacroDefinition::Opaque => false,
+        }) || (defs.iter().any(|d| matches!(d, MacroDefinition::Opaque))
+            && arms.is_none_or(|arms| {
+                arms.len() < function_defs
+                    || arms.iter().any(|a| {
+                        let mut params = a.params.clone();
+                        params.extend(a.variadic.iter().map(|(_, v)| v.clone()));
+                        a.body.contains("##") || spells_in(&params, &a.body)
+                    })
+            }));
         memo.insert(macro_name.to_string(), spells);
         spells
     }
