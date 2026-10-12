@@ -277,9 +277,10 @@ The last row says which entries ship in the first step.
    name. CON36-C also reports a spuriously-waking wait in no loop at all, not
    only one under an `if`, except a wrapper's: a function whose condition
    comes from its parameter and whose body only waits (with at most a lock
-   before and an unlock after, and a return of the result), whose loop is its
-   callers'. A function that uses what it waited for, such as CERT's `pop`,
-   is no wrapper and is reported.
+   before and an unlock after, and a return of the result, a parameter or
+   one of its own non-static locals), whose loop is its callers'. A function
+   that uses what it waited for, such as CERT's `pop` or one that returns a
+   global or a static local, is no wrapper and is reported.
 3. **A local A/B on the real-world corpora** with a frozen binary on each side.
    CON30 and CON36 should only gain findings, all at POSIX call sites. Any
    lost finding is a regression to explain. Adjudication stays held.

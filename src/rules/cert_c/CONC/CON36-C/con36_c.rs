@@ -17,9 +17,10 @@
 //! condition comes from one of its parameters and whose body does nothing
 //! but wait: its statements are the wait itself, at most a lock before it
 //! and an unlock after it (any mutex lock or unlock call), declarations, and
-//! a return of nothing, of the wait's result or of a name. A function that
-//! goes on to use what it waited for (CERT's `pop` that reads the queue
-//! after the wait) is not a wrapper, so its bare wait is reported.
+//! a return of nothing, of the wait's result, of a parameter or of one of its
+//! own locals. A function that goes on to use what it waited for (CERT's
+//! `pop` that reads the queue after the wait, or one that returns a global
+//! or a static local) is not a wrapper, so its bare wait is reported.
 //!
 //! ## Examples:
 //!
@@ -193,7 +194,8 @@ fn placement(node: &Node) -> Placement {
 /// Whether the function holding the wait `call` does nothing but wait: each
 /// statement of its body is the wait (bare, assigned, or as a declaration's
 /// initializer), a mutex lock or unlock call, a declaration with no other
-/// initializer, or a return of nothing, of the wait's result or of a name.
+/// initializer, or a return of nothing, of the wait's result or of a
+/// parameter or own local.
 fn only_waits(call: &Node, source: &str, project: Option<&ProjectFunctions>) -> bool {
     let Some(body) = std::iter::successors(call.parent(), |n| n.parent())
         .find(|n| n.kind() == "function_definition")
@@ -242,7 +244,7 @@ fn only_waits(call: &Node, source: &str, project: Option<&ProjectFunctions>) -> 
                     waited = true;
                     true
                 }
-                Some(v) => strip_arg_casts(&v).kind() == "identifier",
+                Some(v) => returns_its_own_name(&strip_arg_casts(&v), &body, source),
             },
             _ => false,
         };
@@ -251,6 +253,27 @@ fn only_waits(call: &Node, source: &str, project: Option<&ProjectFunctions>) -> 
         }
     }
     waited
+}
+
+/// Whether `value` names a parameter or one of the wrapper's own locals: a
+/// declaration among `body`'s statements (whose only initializer can be the
+/// wait) that is neither `static` nor `extern`. A global or a static local is
+/// state other threads share, so returning it reads what was waited for.
+fn returns_its_own_name(value: &Node, body: &Node, source: &str) -> bool {
+    if value.kind() != "identifier" {
+        return false;
+    }
+    match resolve_identifier_binding(value, get_node_text(value, source), source) {
+        Some(IdentifierBinding::Parameter(_)) => true,
+        Some(IdentifierBinding::Local(decl)) => {
+            decl.parent().is_some_and(|p| p.id() == body.id())
+                && !decl
+                    .children(&mut decl.walk())
+                    .filter(|c| c.kind() == "storage_class_specifier")
+                    .any(|c| matches!(get_node_text(&c, source), "static" | "extern"))
+        }
+        _ => false,
+    }
 }
 
 /// Whether the condition operand is reached through a parameter of the
