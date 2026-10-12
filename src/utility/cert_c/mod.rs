@@ -1,6 +1,9 @@
 // Utility modules for CERT C rules
 /// Reusable functions for navigating and extracting information from the C AST.
 pub mod ast_utils;
+/// Calls that can block made while a mutex is held on every path to them
+/// (the analysis CON05-C and POS52-C share).
+pub mod blocking_under_lock;
 /// Shared call-role classification (allocator/printf-family/scanf-family/etc.)
 /// on top of `std_functions` -- single source of truth so rules stop
 /// independently reinventing (and disagreeing on) these name lists.

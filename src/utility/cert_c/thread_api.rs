@@ -724,6 +724,28 @@ pub fn thread_op_of_kind<'a>(
     thread_op(call, source, project).filter(|c| c.kind() == kind)
 }
 
+/// The library function `call` (a `call_expression`) calls: its callee's
+/// name, when that is a plain name that resolves to a function (not an
+/// object holding a pointer, ADR-0006) and neither this file nor another
+/// scanned file defines a function of that name for this call to reach.
+/// `None` when the project supplies the function itself. The same test the
+/// thread-API contracts take, for a rule that asks what a standard function
+/// does (blocks, for instance).
+pub fn library_call<'a>(
+    call: &Node,
+    source: &'a str,
+    project: Option<&ProjectFunctions>,
+) -> Option<&'a str> {
+    let callee = call.child_by_field_name("function")?;
+    if callee.kind() != "identifier" {
+        return None;
+    }
+    let name = get_node_text(&callee, source);
+    let shadowed =
+        file_defines(call, name, source) || project.is_some_and(|p| defined_elsewhere(p, name));
+    (!shadowed && names_a_function(&callee, name, source)).then_some(name)
+}
+
 /// Whether another scanned file defines `name` with external linkage, so a
 /// call from this file can reach it. Another file's `static` definition is
 /// that file's alone: a call here still reaches the library (ADR-0006). This

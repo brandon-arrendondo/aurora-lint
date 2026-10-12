@@ -41,7 +41,7 @@ use crate::utility::cert_c::ast_utils::{
     declaration_has_storage_class, find_containing_function, get_node_text,
     resolve_identifier_binding, IdentifierBinding,
 };
-use crate::utility::cert_c::thread_api::{self, ProjectFunctions, SyncObject, ThreadCall};
+use crate::utility::cert_c::thread_api::{self, Family, ProjectFunctions, SyncObject, ThreadCall};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -84,6 +84,26 @@ pub struct MutexFinding<'a> {
     pub hazard: MutexHazard,
 }
 
+/// A mutex held where a call is made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldLock {
+    /// The mutex as its lock writes it, without `&`.
+    pub mutex: String,
+    /// The line of the lock.
+    pub line: usize,
+    /// The family of the lock call.
+    pub family: Family,
+}
+
+/// A call made while this function holds at least one mutex on every path
+/// to it.
+pub struct CallUnderLock<'a> {
+    /// The call expression.
+    pub node: Node<'a>,
+    /// The mutexes held, earliest lock first.
+    pub held: Vec<HeldLock>,
+}
+
 /// Every unsafe mutex operation in the file under `root`, in source order.
 /// A destroy that is unsafe in more than one way is reported once per way.
 pub fn mutex_findings<'a>(
@@ -91,8 +111,32 @@ pub fn mutex_findings<'a>(
     source: &str,
     project: Option<&ProjectFunctions>,
 ) -> Vec<MutexFinding<'a>> {
+    walk_file(root, source, project, false).0
+}
+
+/// Every call in the file under `root` made while its function holds a
+/// mutex on every path to it, in source order: the same walk as
+/// [`mutex_findings`] (only a lock that waits for the mutex counts; a
+/// returning branch drops out; a label forgets everything; a call handed the
+/// mutex ends what is known about it). Lock, unlock and other thread-API
+/// calls are included; a caller filters by what it asks about.
+pub fn calls_under_lock<'a>(
+    root: &Node<'a>,
+    source: &str,
+    project: Option<&ProjectFunctions>,
+) -> Vec<CallUnderLock<'a>> {
+    walk_file(root, source, project, true).1
+}
+
+fn walk_file<'a>(
+    root: &Node<'a>,
+    source: &str,
+    project: Option<&ProjectFunctions>,
+    record: bool,
+) -> (Vec<MutexFinding<'a>>, Vec<CallUnderLock<'a>>) {
     let threads = Threads::collect(root, source, project);
     let mut findings = Vec::new();
+    let mut under_lock = Vec::new();
     for func in query::find_descendants_of_kind(*root, "function_definition") {
         let Some(body) = func.child_by_field_name("body") else {
             continue;
@@ -103,11 +147,16 @@ pub fn mutex_findings<'a>(
             threads: &threads,
             function: func,
             exits: RefCell::new(Vec::new()),
+            under_lock: record.then(|| RefCell::new(Vec::new())),
         };
         walk.statement(body, Some(Known::default()), &mut findings);
+        if let Some(calls) = walk.under_lock {
+            under_lock.extend(calls.into_inner());
+        }
     }
     findings.sort_by_key(|f| f.node.start_byte());
-    findings
+    under_lock.sort_by_key(|c| c.node.start_byte());
+    (findings, under_lock)
 }
 
 /// What is known about the mutexes at one point of a function, on every
@@ -116,8 +165,8 @@ type State = Option<Known>;
 
 #[derive(Debug, Clone, Default)]
 struct Known {
-    /// Mutexes held, with the line that locked each.
-    held: HashMap<SyncObject, usize>,
+    /// Mutexes held, with the lock that took each.
+    held: HashMap<SyncObject, HeldLock>,
     /// Mutexes destroyed, with the line that destroyed each.
     destroyed: HashMap<SyncObject, usize>,
 }
@@ -127,7 +176,21 @@ fn meet(a: State, b: State) -> State {
     match (a, b) {
         (None, other) | (other, None) => other,
         (Some(a), Some(b)) => Some(Known {
-            held: intersect(a.held, &b.held),
+            held: a
+                .held
+                .into_iter()
+                .filter_map(|(k, lock)| {
+                    let other = b.held.get(&k)?;
+                    Some((
+                        k,
+                        if other.line < lock.line {
+                            other.clone()
+                        } else {
+                            lock
+                        },
+                    ))
+                })
+                .collect(),
             destroyed: intersect(a.destroyed, &b.destroyed),
         }),
     }
@@ -295,6 +358,8 @@ struct Walk<'s, 'a> {
     /// For each loop and `switch` the walk is inside, innermost last: what
     /// is known where a `break` or `continue` leaves it.
     exits: RefCell<Vec<Exit>>,
+    /// The calls made under a lock, when the walk records them.
+    under_lock: Option<RefCell<Vec<CallUnderLock<'a>>>>,
 }
 
 /// The states that leave one loop or `switch` early.
@@ -481,6 +546,16 @@ impl<'s, 'a> Walk<'s, 'a> {
         calls.sort_by_key(|c| c.start_byte());
         calls.dedup_by_key(|c| c.id());
         for call_node in calls {
+            if let Some(record) = &self.under_lock {
+                if !known.held.is_empty() {
+                    let mut held: Vec<HeldLock> = known.held.values().cloned().collect();
+                    held.sort_by(|a, b| (a.line, &a.mutex).cmp(&(b.line, &b.mutex)));
+                    record.borrow_mut().push(CallUnderLock {
+                        node: call_node,
+                        held,
+                    });
+                }
+            }
             match thread_api::thread_op(&call_node, self.source, self.project) {
                 Some(call) => self.operation(call, call_node, &mut known, out),
                 None => self.hand_off(call_node, &mut known),
@@ -529,13 +604,21 @@ impl<'s, 'a> Walk<'s, 'a> {
         }
         match kind {
             ThreadOpKind::MutexLock if call.op.blocking == Some(Blocking::Always) => {
-                known.held.entry(mutex).or_insert(line);
+                let family = call.family;
+                known.held.entry(mutex).or_insert(HeldLock {
+                    mutex: spelling.clone(),
+                    line,
+                    family,
+                });
             }
             ThreadOpKind::MutexUnlock => {
                 known.held.remove(&mutex);
             }
             ThreadOpKind::MutexDestroy => {
-                if let Some(lock_line) = known.held.remove(&mutex) {
+                if let Some(HeldLock {
+                    line: lock_line, ..
+                }) = known.held.remove(&mutex)
+                {
                     out.push(MutexFinding {
                         call: call.clone(),
                         node,
