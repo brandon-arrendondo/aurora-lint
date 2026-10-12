@@ -8117,6 +8117,17 @@ fn extract_include_directives_with_liveness(node: &Node, source: &str) -> Vec<In
         .collect()
 }
 
+/// The `"quoted"` `#include` spellings of `source` outside an arm the file
+/// proves is never compiled: what a compiler looks up in the including
+/// file's own directory first (C11 6.10.2p3).
+pub(crate) fn live_quoted_include_directives(node: &Node, source: &str) -> Vec<String> {
+    extract_include_directives_with_liveness(node, source)
+        .into_iter()
+        .filter(|d| !d.in_dead_arm && d.form == super::context::IncludeForm::Quoted)
+        .map(|d| d.path)
+        .collect()
+}
+
 /// One `#include` directive: [`extract_include_directives_with_liveness`].
 struct IncludeDirective {
     path: String,

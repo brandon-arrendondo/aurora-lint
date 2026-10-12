@@ -3275,7 +3275,8 @@ fn sig34_ex1_covers_only_the_handlers_own_signal() {
 }
 
 /// FIO46-C findings, as `file:line`, for a directory where `fl.h` defines
-/// `fclose` as a macro and only `g.c` includes it.
+/// `fclose` as a macro, `g.c` includes it, `h.c` includes it through `mid.h`,
+/// and `f.c` does not include it.
 fn fio46_unreached_macro_findings(search_path: bool) -> Vec<String> {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
@@ -3310,19 +3311,16 @@ fn fio46_unreached_macro_findings(search_path: bool) -> Vec<String> {
 
 #[test]
 fn fio46_macro_counts_only_where_its_header_is_included() {
-    // `g.c` includes `fl.h`, whose `fclose` macro calls `fl_fclose`; `f.c`
-    // does not, so its `fclose` is the library's.
+    // `fl.h`'s `fclose` macro calls `fl_fclose`; only `f.c`'s `fclose` is
+    // the library's.
     assert_eq!(fio46_unreached_macro_findings(true), vec!["f.c:5"]);
 }
 
 #[test]
-fn fio46_macro_counts_nowhere_when_includes_are_unresolved() {
-    // With no search path the include graph is unknown, so no file is shown
-    // to see the macro, and both calls are taken as the library's.
-    assert_eq!(
-        fio46_unreached_macro_findings(false),
-        vec!["f.c:5", "g.c:5"]
-    );
+fn fio46_macro_header_is_found_by_quoted_include_without_a_search_path() {
+    // With no -I the prescan resolves no includes, but `#include "fl.h"`
+    // and `#include "mid.h"` are found in the includer's own directory.
+    assert_eq!(fio46_unreached_macro_findings(false), vec!["f.c:5"]);
 }
 
 fn manifest_sig30() -> PathBuf {

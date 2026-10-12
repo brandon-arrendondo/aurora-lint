@@ -681,8 +681,14 @@ pub fn library_names_redefined_among(
 ///   the file, `ProjectContext::conditional_macro_names` for the project),
 ///   since a build without that arm calls the library function;
 /// - it is function-like and the file's include closure does not reach a
-///   header that defines it, or the closure is unknown (no search path);
+///   header that defines it, or there is no file path to start one from;
 /// - the prescan saw it only outside the project, in a system header.
+///
+/// With no search path the prescan resolves no includes, so the closure is
+/// rebuilt here from the file's `"quoted"` includes and theirs, looked up in
+/// each includer's own directory (C11 6.10.2p3), as a stopgap until the
+/// prescan resolves those itself. A header reached only through a search
+/// path is then not seen.
 ///
 /// A project's external definition in another file is not seen: a `static`
 /// one there is a different function, and the prescan keys a lone `static`
@@ -725,10 +731,11 @@ pub fn library_function_replaced(
     if object_like {
         return true;
     }
-    let Some(closure) = file_path.and_then(|path| IncludeClosure::of(&project.include_edges, path))
-    else {
+    let Some(path) = file_path else {
         return false;
     };
+    let closure = IncludeClosure::of(&project.include_edges, path)
+        .unwrap_or_else(|| IncludeClosure::of_quoted_includes(root, source, path, 32));
     project.function_macro_arms.get(name).is_some_and(|arms| {
         arms.iter()
             .any(|arm| arm.files.iter().any(|file| closure.may_include(file)))

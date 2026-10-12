@@ -2,8 +2,9 @@ use super::function_summary::FunctionSummary;
 use super::macro_expand::FunctionMacro;
 use super::null_state::NullState;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tree_sitter::Node;
 
 /// Marks an `include_edges` entry as an `#include` spelling that resolved to
 /// no file, rather than a file's real path.
@@ -499,6 +500,57 @@ impl IncludeClosure {
         let mut closure = Self::default();
         closure.walk(layers, vec![String::new()]);
         Some(closure)
+    }
+
+    /// The file whose parse is `root` and every header its `"quoted"`
+    /// includes reach through the including file's own directory, read from
+    /// disk, to `max_depth` levels: the closure a scan without a search path
+    /// still knows. A quoted include not found there, an `<angle>` include
+    /// and one in an arm the file proves dead add nothing, so the closure is
+    /// a lower bound. A stopgap for the prescan, which resolves includes only
+    /// when the scan has a search path or forced includes.
+    pub fn of_quoted_includes(root: &Node, source: &str, path: &Path, max_depth: usize) -> Self {
+        let mut closure = Self::default();
+        let file = crate::analyze::compile_commands::real_path(path);
+        closure.files.insert(file.clone());
+        let mut parser = crate::parser::CParser::new().ok();
+        let mut frontier: Vec<(PathBuf, Vec<String>)> = vec![(
+            PathBuf::from(&file),
+            crate::analyze::prescan::live_quoted_include_directives(root, source),
+        )];
+        for _ in 0..max_depth {
+            let mut next = Vec::new();
+            for (includer, spellings) in frontier {
+                let Some(dir) = includer.parent() else {
+                    continue;
+                };
+                for spelling in spellings {
+                    let header = dir.join(&spelling);
+                    if !header.is_file() {
+                        continue;
+                    }
+                    let real = crate::analyze::compile_commands::real_path(&header);
+                    if !closure.files.insert(real.clone()) {
+                        continue;
+                    }
+                    let Some(parser) = parser.as_mut() else {
+                        continue;
+                    };
+                    if let Ok((tree, text)) = parser.parse_file(&real) {
+                        let includes = crate::analyze::prescan::live_quoted_include_directives(
+                            &tree.root_node(),
+                            &text,
+                        );
+                        next.push((PathBuf::from(&real), includes));
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        closure
     }
 
     fn walk(&mut self, layers: &[&HashMap<String, Vec<String>>], mut stack: Vec<String>) {
