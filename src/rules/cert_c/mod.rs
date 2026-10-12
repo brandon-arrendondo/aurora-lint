@@ -1159,7 +1159,7 @@ impl RuleRegistry {
         registry.register(Box::new(pos50_c::Pos50C));
         registry.register(Box::new(pos51_c::Pos51C::new()));
         registry.register(Box::new(pos52_c::Pos52C));
-        registry.register(Box::new(pos53_c::Pos53C));
+        registry.register(Box::new(pos53_c::Pos53C::default()));
         registry.register(Box::new(pos54_c::Pos54C));
         registry.register(Box::new(pre01_c::Pre01C::new()));
         registry.register(Box::new(pre02_c::Pre02C::new()));
