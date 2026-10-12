@@ -891,6 +891,13 @@ impl SyncObject {
             ..self.clone()
         }
     }
+
+    /// Whether this object is `outer` or lies inside it: a member at any
+    /// depth, or any element when `outer` is spelled with other subscripts
+    /// or none. A call handed `&s` is handed `s.lock` too.
+    pub fn within(&self, outer: &SyncObject) -> bool {
+        self.root == outer.root && (self.path == outer.path || self.path.is_inside(&outer.path))
+    }
 }
 
 /// The object `operand` names, or `None` when it names none this file can

@@ -935,7 +935,7 @@ impl RuleRegistry {
         registry.register(Box::new(con07_c::Con07C::new()));
         registry.register(Box::new(con08_c::Con08C));
         registry.register(Box::new(con09_c::Con09C));
-        registry.register(Box::new(con31_c::Con31C));
+        registry.register(Box::new(con31_c::Con31C::default()));
         registry.register(Box::new(con32_c::Con32C));
         registry.register(Box::new(con33_c::Con33C));
         registry.register(Box::new(con34_c::Con34C::default()));
@@ -1155,7 +1155,7 @@ impl RuleRegistry {
         registry.register(Box::new(pos39_c::Pos39C));
         registry.register(Box::new(pos44_c::Pos44C::new()));
         registry.register(Box::new(pos47_c::Pos47C));
-        registry.register(Box::new(pos48_c::Pos48C));
+        registry.register(Box::new(pos48_c::Pos48C::default()));
         registry.register(Box::new(pos50_c::Pos50C::default()));
         registry.register(Box::new(pos51_c::Pos51C::new()));
         registry.register(Box::new(pos52_c::Pos52C));

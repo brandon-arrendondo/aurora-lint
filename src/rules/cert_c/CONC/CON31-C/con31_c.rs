@@ -52,88 +52,33 @@
 //! ```
 //!
 //! ## Detection Strategy:
-//! - Detect mutex destroy functions: mtx_destroy, pthread_mutex_destroy
-//! - Check if the destroy call is in a thread function (function passed to thrd_create/pthread_create)
-//! - Flag destroy calls in thread functions as violations
-//! - Allow destroy calls in main() or after thread joins
+//! One analysis shared with POS48-C (`mutex_lifetime`), reading mutex calls
+//! by their thread-API contract (C11, POSIX and any declared family) and each
+//! mutex by declaration. A mutex destroy is reported when:
+//! - the destroying function locked it and has not unlocked it on every path
+//!   to the destroy; or
+//! - a thread whose start routine (named in a thread creation in this file,
+//!   by declaration) locks it may still run: the destroy is in a start
+//!   routine and another thread locking the mutex may run beside it, or the
+//!   destroying function created such a thread into a local handle and has
+//!   not joined it.
+//!
+//! A destroy reached from a start routine through another call, and a start
+//! routine defined in another file, are not seen.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::{find_containing_function, get_node_text};
-use lang_parsing_substrate::query;
+use crate::utility::cert_c::mutex_lifetime::{self, MutexHazard};
+use crate::utility::cert_c::thread_api::ProjectFunctions;
+use std::cell::RefCell;
 use tree_sitter::Node;
 
-pub struct Con31C;
-
-impl Con31C {
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        Con31C
-    }
-
-    fn is_mutex_destroy_function(func_name: &str) -> bool {
-        matches!(
-            func_name,
-            "mtx_destroy" | "pthread_mutex_destroy" | "DeleteCriticalSection"
-        )
-    }
-
-    fn is_thread_function(&self, node: &Node, source: &str) -> bool {
-        // Check if this function is used as a thread function argument
-        // by looking for references in thrd_create or pthread_create calls
-
-        if let Some(func_node) = find_containing_function(node) {
-            let func_name_node = func_node.child_by_field_name("declarator");
-            if let Some(func_name_node) = func_name_node {
-                let func_name = get_node_text(&func_name_node, source);
-
-                // If function name is "main", it's not a thread function
-                if func_name.contains("main") {
-                    return false;
-                }
-
-                // Check if this function name appears as an argument to thrd_create or pthread_create
-                // For simplicity in this implementation, we'll flag any non-main function
-                // as potentially being a thread function if it destroys a mutex
-                // This is conservative but safe
-                return !func_name.contains("main");
-            }
-        }
-
-        false
-    }
-
-    fn check_function(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        for call in query::find_descendants_of_kind(*node, "call_expression") {
-            if let Some(func_node) = call.child_by_field_name("function") {
-                let func_name = get_node_text(&func_node, source);
-
-                if Self::is_mutex_destroy_function(&func_name) {
-                    // Check if we're in a thread function context
-                    if self.is_thread_function(&call, source) {
-                        let start = call.start_position();
-                        violations.push(RuleViolation {
-                            rule_id: self.rule_id().to_string(),
-                            severity: Severity::Medium,
-                            file_path: String::new(),
-                            line: start.row + 1,
-                            column: start.column + 1,
-                            message: format!(
-                                "Mutex destroyed in thread function with '{}()'. \
-                                Destroying a mutex while other threads may still be using it causes undefined behavior. \
-                                Destroy mutexes only after all threads have finished (e.g., after thread joins in main()).",
-                                func_name
-                            ),
-                            suggestion: Some(
-                                "Move mutex destruction to main() after all thread joins complete".to_string()
-                            ),
-                            ..Default::default()
-                        });
-                    }
-                }
-            }
-        }
-    }
+#[derive(Default)]
+pub struct Con31C {
+    /// The project's function definitions in every scanned file, for a
+    /// library name the project defines itself.
+    project: RefCell<Option<ProjectFunctions>>,
 }
 
 impl CertRule for Con31C {
@@ -153,7 +98,59 @@ impl CertRule for Con31C {
         "CON31-C"
     }
 
-    fn scan(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        self.check_function(root, source, violations);
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = Some(context.function_summaries.clone());
+    }
+
+    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
+        let project = self.project.borrow();
+        let mut violations = Vec::new();
+        for finding in mutex_lifetime::mutex_findings(node, source, project.as_ref()) {
+            let mutex = &finding.mutex;
+            let destroy = &finding.call.name;
+            let (message, suggestion) = match &finding.hazard {
+                MutexHazard::DestroyedWhileHeld { lock_line } => (
+                    format!(
+                        "Mutex '{mutex}' destroyed with {destroy}() while it is locked: \
+                         this function locks it at line {lock_line} and does not unlock it \
+                         on every path to the destroy."
+                    ),
+                    "Unlock the mutex before destroying it",
+                ),
+                MutexHazard::DestroyedWhileThreadsRun {
+                    entry,
+                    sibling: true,
+                } => (
+                    format!(
+                        "Mutex '{mutex}' destroyed with {destroy}() in a thread start routine \
+                         while other threads running {entry}(), which locks it, may still use it."
+                    ),
+                    "Destroy the mutex after every thread that uses it has been joined",
+                ),
+                MutexHazard::DestroyedWhileThreadsRun {
+                    entry,
+                    sibling: false,
+                } => (
+                    format!(
+                        "Mutex '{mutex}' destroyed with {destroy}() while the thread running \
+                         {entry}(), which locks it, may still run: it has not been joined."
+                    ),
+                    "Join the thread before destroying the mutex",
+                ),
+                MutexHazard::UsedAfterDestroy { .. } => continue,
+            };
+            let start = finding.node.start_position();
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                severity: self.severity(),
+                file_path: String::new(),
+                line: start.row + 1,
+                column: start.column + 1,
+                message,
+                suggestion: Some(suggestion.to_string()),
+                ..Default::default()
+            });
+        }
+        violations
     }
 }
