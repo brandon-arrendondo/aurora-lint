@@ -73,9 +73,11 @@ use crate::analyze::cfg;
 use crate::analyze::concurrency_roots;
 use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
+use crate::settings::threads::ThreadOpKind;
 use crate::utility::cert_c::ast_utils::{
     get_identifier_from_declarator, get_node_text, resolve_identifier_binding, IdentifierBinding,
 };
+use crate::utility::cert_c::thread_api::{self, ProjectFunctions};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -130,6 +132,9 @@ pub struct Con07C {
     /// `check()` ORs it with a same-file-only fallback so the rule still
     /// works (reduced recall) on a single-file run.
     concurrency_reachable: RefCell<HashSet<String>>,
+    /// The project's function definitions in every scanned file, for a
+    /// library name the project defines itself.
+    project: RefCell<Option<ProjectFunctions>>,
 }
 
 impl CertRule for Con07C {
@@ -153,6 +158,7 @@ impl CertRule for Con07C {
         self.concurrency_reachable
             .borrow_mut()
             .extend(context.concurrency_reachable.iter().cloned());
+        *self.project.borrow_mut() = Some(context.function_summaries.clone());
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -373,21 +379,29 @@ impl Con07C {
     }
 
     fn uses_mutex_lock(&self, node: &Node, source: &str) -> bool {
+        let project = self.project.borrow();
         query::find_first_descendant(*node, |n| {
             if n.kind() != "call_expression" {
                 return false;
+            }
+            // A lock or unlock by its thread-API contract: C11, POSIX and
+            // any declared family.
+            if thread_api::thread_op(&n, source, project.as_ref()).is_some_and(|call| {
+                matches!(
+                    call.kind(),
+                    ThreadOpKind::MutexLock | ThreadOpKind::MutexUnlock
+                )
+            }) {
+                return true;
             }
             let Some(func) = n.child_by_field_name("function") else {
                 return false;
             };
             let func_name = get_node_text(&func, source);
+            // Locks no thread-API family describes yet.
             matches!(
                 func_name,
-                "mtx_lock"
-                    | "mtx_unlock"
-                    | "pthread_mutex_lock"
-                    | "pthread_mutex_unlock"
-                    | "stdThreadLockAcquire"
+                "stdThreadLockAcquire"
                     | "stdThreadLockRelease"
                     // Zephyr RTOS: mutex, spinlock (the type is `struct
                     // k_spinlock`, the calls are `k_spin_*`), and the
