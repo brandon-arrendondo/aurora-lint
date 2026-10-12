@@ -800,6 +800,59 @@ fn declares_function(decl: &Node, name: &str, source: &str) -> bool {
     false
 }
 
+impl<'a> ThreadCall<'a> {
+    /// The function a thread-create call starts the thread in: its
+    /// [`Role::Entry`] operand, through casts, parentheses and `&`, when that
+    /// names a function (not a function pointer held in an object of that
+    /// name, ADR-0006). `None` for a call of any other kind, or an entry
+    /// this file cannot name.
+    pub fn entry_function(&self, source: &str) -> Option<String> {
+        let mut entry = strip_to_operand(self.operand(Role::Entry)?);
+        // `(thrd_start_t)&work` parses as `(thrd_start_t) & work` when the
+        // typedef is not visible to the parser: a bitwise AND, which a start
+        // routine can never be. Read it as the cast it is.
+        if entry.kind() == "binary_expression"
+            && entry
+                .child_by_field_name("operator")
+                .is_some_and(|op| op.kind() == "&")
+            && entry
+                .child_by_field_name("left")
+                .is_some_and(|l| l.kind() == "parenthesized_expression")
+        {
+            entry = strip_to_operand(entry.child_by_field_name("right")?);
+        } else if entry.kind() == "pointer_expression" {
+            entry = strip_to_operand(entry.child_by_field_name("argument")?);
+        }
+        if entry.kind() != "identifier" {
+            return None;
+        }
+        let name = get_node_text(&entry, source);
+        names_a_function(&entry, name, source).then(|| name.to_string())
+    }
+}
+
+/// Whether `operand` is a call that yields the calling thread's own handle
+/// (C11 `thrd_current()`, POSIX `pthread_self()`, a declared family's), so
+/// a join or detach of it acts on the thread that makes it.
+pub fn is_own_thread(operand: &Node, source: &str, project: Option<&ProjectFunctions>) -> bool {
+    let operand = strip_to_operand(*operand);
+    thread_op_of_kind(&operand, source, project, ThreadOpKind::ThreadSelf).is_some()
+}
+
+/// `node` without the casts and parentheses around it.
+fn strip_to_operand(node: Node) -> Node {
+    match node.kind() {
+        "cast_expression" => node
+            .child_by_field_name("value")
+            .map_or(node, strip_to_operand),
+        "parenthesized_expression" => node
+            .child_nodes()
+            .find(|c| c.is_named() && c.kind() != "comment")
+            .map_or(node, strip_to_operand),
+        _ => node,
+    }
+}
+
 /// Which synchronization object an operand names: a mutex, condition
 /// variable, thread handle or key, identified by the declaration its name
 /// resolves to and the member path below it (ADR-0006). `&m`, `m`, `(m)` and
@@ -892,6 +945,41 @@ mod tests {
     fn a_shadowing_local_is_another_object() {
         let o = objects("int m;\nvoid f(void) { use(&m); { int m; use(&m); } }");
         assert_ne!(o[0], o[1]);
+    }
+
+    fn parse(source: &str) -> tree_sitter::Tree {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        parser.parse(source, None).unwrap()
+    }
+
+    #[test]
+    fn a_thread_starts_in_the_function_its_entry_names() {
+        let source = "#include <threads.h>\nint work(void *a);\n\
+                      void f(thrd_t *t) { thrd_create(t, (thrd_start_t)&work, 0); }\n\
+                      void g(thrd_t *t, thrd_start_t work) { thrd_create(t, work, 0); }";
+        let tree = parse(source);
+        let calls = query::find_descendants_of_kind(tree.root_node(), "call_expression");
+        let entries: Vec<_> = calls
+            .iter()
+            .filter_map(|c| thread_op(c, source, None))
+            .map(|c| c.entry_function(source))
+            .collect();
+        assert_eq!(entries, vec![Some("work".to_string()), None]);
+    }
+
+    #[test]
+    fn the_own_handle_comes_from_a_thread_self_call() {
+        let source = "#include <pthread.h>\n\
+                      void f(pthread_t t) { pthread_detach((pthread_self())); pthread_detach(t); }";
+        let tree = parse(source);
+        let detaches: Vec<_> = query::find_descendants_of_kind(tree.root_node(), "call_expression")
+            .into_iter()
+            .filter_map(|c| thread_op(&c, source, None))
+            .filter(|c| c.kind() == ThreadOpKind::ThreadDetach)
+            .map(|c| is_own_thread(&c.operand(Role::Handle).unwrap(), source, None))
+            .collect();
+        assert_eq!(detaches, vec![true, false]);
     }
 
     #[test]

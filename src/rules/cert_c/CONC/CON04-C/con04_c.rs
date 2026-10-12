@@ -28,19 +28,45 @@
 //! }
 //! ```
 
+//!
+//! ## Detection Strategy:
+//! - Find thread creation, join, detach and self-handle calls by their
+//!   thread-API contract (`thread_api::thread_op`): C11, POSIX and any
+//!   declared family
+//! - Identify each thread handle by declaration and member path
+//!   (`thread_api::sync_object`): two functions' same-named locals are two
+//!   handles, and a file-scope handle joined in another function is joined
+//! - Report a created handle that this file never joins or detaches, unless
+//!   the thread's start routine detaches itself (`thrd_detach(thrd_current())`
+//!   and the like). A start routine this file defines counts only if it is
+//!   the one that self-detaches; one it cannot name (a function pointer, or
+//!   a function defined elsewhere) counts if any function here does
+
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::cfg::get_function_name;
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::settings::threads::{Role, ThreadOpKind};
+use crate::utility::cert_c::ast_utils::{find_containing_function, get_node_text};
+use crate::utility::cert_c::thread_api::{self, Family, ProjectFunctions, SyncObject};
 use lang_parsing_substrate::query;
-use std::collections::{HashMap, HashSet};
+use std::cell::RefCell;
+use std::collections::HashSet;
 use tree_sitter::Node;
 
-pub struct Con04C;
+#[derive(Default)]
+pub struct Con04C {
+    /// The project's function definitions in every scanned file, for a
+    /// library name the project defines itself.
+    project: RefCell<Option<ProjectFunctions>>,
+}
 
-/// Tracks thread creation information
-#[derive(Debug, Clone)]
+/// One thread creation.
 struct ThreadCreation {
-    variable_name: String,
+    handle: SyncObject,
+    spelling: String,
+    entry: Option<String>,
+    family: Family,
     line: usize,
     column: usize,
 }
@@ -62,239 +88,108 @@ impl CertRule for Con04C {
         "CON04-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = Some(context.function_summaries.clone());
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
+        let project = self.project.borrow();
+        let project = project.as_ref();
 
-        // A `thrd_t`/`pthread_t` local variable is scoped to the function it
-        // is declared in. Two different functions can each declare a local
-        // named e.g. `t` - those are distinct objects, so thread-creation and
-        // join/detach bookkeeping must not be shared across function bodies
-        // (that would let a join in one function mask a real leak of a
-        // same-named thread variable in another). Analyze each function
-        // definition independently. Mirrors the per-function scoping pattern
-        // used by EXP39-C.
-        // `thrd_detach(thrd_current())` / `pthread_detach(pthread_self())`
-        // is a self-detach: the *thread's own function* detaches itself,
-        // which is necessarily a different function than the one calling
-        // `thrd_create`/`pthread_create` (see this rule's own "Compliant"
-        // doc example above: `message_print` self-detaches, `main` creates
-        // the threads). So unlike thread-variable name tracking, whether
-        // *any* thread function in this translation unit self-detaches is
-        // legitimately a whole-file signal, not a per-function one. Compute
-        // it once globally; scope everything else (creations/joins, which
-        // are keyed by variable name and must not leak across functions)
-        // per function below.
-        let mut global_self_detach = false;
-        let mut discard_creations = HashMap::new();
-        let mut discard_joined = HashSet::new();
-        self.analyze_thread_operations(
-            node,
-            source,
-            &mut discard_creations,
-            &mut discard_joined,
-            &mut global_self_detach,
-        );
+        let mut creations: Vec<ThreadCreation> = Vec::new();
+        let mut released: HashSet<SyncObject> = HashSet::new();
+        let mut self_detaching: HashSet<String> = HashSet::new();
+        let mut defined: HashSet<String> = HashSet::new();
 
-        let functions = query::find_descendants_of_kind(*node, "function_definition");
-
-        if functions.is_empty() {
-            // No functions at all - fall back to treating the whole
-            // translation unit as a single scope (e.g. file-scope-only
-            // snippets), matching pre-fix behavior for this edge case.
-            self.check_scope(node, source, global_self_detach, &mut violations);
-        } else {
-            for func in functions {
-                self.check_scope(&func, source, global_self_detach, &mut violations);
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            if let Some(name) = get_function_name(&func, source) {
+                defined.insert(name.to_string());
             }
         }
 
+        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
+            let Some(call) = thread_api::thread_op(&call_node, source, project) else {
+                continue;
+            };
+            let Some(handle) = call.operand(Role::Handle) else {
+                continue;
+            };
+            match call.kind() {
+                ThreadOpKind::ThreadCreate => {
+                    let Some(object) = thread_api::sync_object(&handle, source) else {
+                        continue;
+                    };
+                    creations.push(ThreadCreation {
+                        handle: object,
+                        spelling: handle_spelling(&handle, source),
+                        entry: call.entry_function(source),
+                        family: call.family,
+                        line: call_node.start_position().row + 1,
+                        column: call_node.start_position().column + 1,
+                    });
+                }
+                ThreadOpKind::ThreadDetach
+                    if thread_api::is_own_thread(&handle, source, project) =>
+                {
+                    if let Some(name) = find_containing_function(&call_node)
+                        .and_then(|f| get_function_name(&f, source))
+                    {
+                        self_detaching.insert(name.to_string());
+                    }
+                }
+                ThreadOpKind::ThreadJoin | ThreadOpKind::ThreadDetach => {
+                    if let Some(object) = thread_api::sync_object(&handle, source) {
+                        released.insert(object);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut violations = Vec::new();
+        for creation in creations {
+            if released.contains(&creation.handle) {
+                continue;
+            }
+            let detaches_itself = match &creation.entry {
+                Some(entry) if defined.contains(entry) => self_detaching.contains(entry),
+                _ => !self_detaching.is_empty(),
+            };
+            if detaches_itself {
+                continue;
+            }
+            let join = creation
+                .family
+                .function_of(ThreadOpKind::ThreadJoin)
+                .unwrap_or_else(|| "a join".to_string());
+            let detach = creation
+                .family
+                .function_of(ThreadOpKind::ThreadDetach)
+                .unwrap_or_else(|| "a detach".to_string());
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                message: format!(
+                    "Thread '{}' created but never joined or detached. \
+                     Call {join}() or {detach}() to reclaim resources.",
+                    creation.spelling
+                ),
+                severity: self.severity(),
+                line: creation.line,
+                column: creation.column,
+                file_path: String::new(),
+                suggestion: Some(format!("Call {join}() or {detach}() on the thread")),
+                requires_manual_review: None,
+            });
+        }
         violations
     }
 }
 
-impl Con04C {
-    /// Run the thread-creation/join/detach analysis over a single scope
-    /// (one function body, or the whole translation unit as a fallback) and
-    /// append any violations found within that scope.
-    fn check_scope(
-        &self,
-        scope: &Node,
-        source: &str,
-        global_self_detach: bool,
-        violations: &mut Vec<RuleViolation>,
-    ) {
-        let mut thread_creations: HashMap<String, Vec<ThreadCreation>> = HashMap::new();
-        let mut joined_or_detached: HashSet<String> = HashSet::new();
-        let mut local_self_detach = false;
-
-        self.analyze_thread_operations(
-            scope,
-            source,
-            &mut thread_creations,
-            &mut joined_or_detached,
-            &mut local_self_detach,
-        );
-
-        let detach_current_found = global_self_detach || local_self_detach;
-
-        // Check for violations: threads created but not joined or detached
-        // within this scope.
-        for (var_name, creations) in &thread_creations {
-            // If thrd_detach(thrd_current()) is found, assume threads self-detach
-            if !detach_current_found && !joined_or_detached.contains(var_name) {
-                // Report violation for each creation of this thread variable
-                for creation in creations {
-                    violations.push(RuleViolation {
-                        rule_id: self.rule_id().to_string(),
-                        message: format!(
-                            "Thread '{}' created but never joined or detached. \
-                             Call thrd_join() or thrd_detach() to reclaim resources.",
-                            creation.variable_name
-                        ),
-                        severity: self.severity(),
-                        line: creation.line,
-                        column: creation.column,
-                        file_path: String::new(),
-                        suggestion: Some(
-                            "Call thrd_join() or thrd_detach() on the thread".to_string(),
-                        ),
-                        requires_manual_review: None,
-                    });
-                }
-            }
-        }
-    }
-
-    /// Analyze the AST for thread operations
-    fn analyze_thread_operations(
-        &self,
-        node: &Node,
-        source: &str,
-        creations: &mut HashMap<String, Vec<ThreadCreation>>,
-        joined_or_detached: &mut HashSet<String>,
-        detach_current_found: &mut bool,
-    ) {
-        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
-            if let Some(function) = call_node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-
-                // Check for thread creation
-                if self.is_thread_create_function(func_name) {
-                    if let Some(thread_var) = self.extract_thread_variable(&call_node, source) {
-                        let creation = ThreadCreation {
-                            variable_name: thread_var.clone(),
-                            line: call_node.start_position().row + 1,
-                            column: call_node.start_position().column + 1,
-                        };
-                        creations.entry(thread_var).or_default().push(creation);
-                    }
-                }
-
-                // Check for thread join
-                if self.is_thread_join_function(func_name) {
-                    if let Some(thread_var) = self.extract_thread_argument(&call_node, source) {
-                        joined_or_detached.insert(thread_var);
-                    }
-                }
-
-                // Check for thread detach
-                if self.is_thread_detach_function(func_name) {
-                    if let Some(arg) = self.extract_thread_argument(&call_node, source) {
-                        if arg == "thrd_current()" || arg.contains("thrd_current") {
-                            // Thread detaches itself - this is valid pattern
-                            *detach_current_found = true;
-                        } else {
-                            joined_or_detached.insert(arg);
-                        }
-                    }
-                }
-
-                // Check for pthread_detach(pthread_self())
-                if func_name == "pthread_detach" {
-                    if let Some(args) = call_node.child_by_field_name("arguments") {
-                        let args_text = get_node_text(&args, source);
-                        if args_text.contains("pthread_self") {
-                            *detach_current_found = true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Check if function name is a thread creation function
-    fn is_thread_create_function(&self, name: &str) -> bool {
-        matches!(name, "thrd_create" | "pthread_create")
-    }
-
-    /// Check if function name is a thread join function
-    fn is_thread_join_function(&self, name: &str) -> bool {
-        matches!(name, "thrd_join" | "pthread_join")
-    }
-
-    /// Check if function name is a thread detach function
-    fn is_thread_detach_function(&self, name: &str) -> bool {
-        matches!(name, "thrd_detach" | "pthread_detach")
-    }
-
-    /// Extract the thread variable name from a thrd_create/pthread_create call
-    /// For thrd_create(&thr, func, arg) - first argument is the thread
-    /// For pthread_create(&thr, attr, func, arg) - first argument is the thread
-    fn extract_thread_variable(&self, call_node: &Node, source: &str) -> Option<String> {
-        if let Some(args) = call_node.child_by_field_name("arguments") {
-            // Get first argument
-            for i in 0..args.child_count() {
-                if let Some(child) = args.child(i) {
-                    let kind = child.kind();
-                    if kind != "," && kind != "(" && kind != ")" {
-                        let arg_text = get_node_text(&child, source).trim().to_string();
-
-                        // Handle &var or &var[i]
-                        if let Some(var_name) = arg_text.strip_prefix('&').map(str::trim_start) {
-                            // Handle array indexing: &thr[i] -> thr
-                            if let Some(bracket_pos) = var_name.find('[') {
-                                return Some(var_name[..bracket_pos].to_string());
-                            }
-                            // Handle parentheses: &(thr[i]) -> thr
-                            let clean_name = var_name.trim_start_matches('(').trim_end_matches(')');
-                            if let Some(bracket_pos) = clean_name.find('[') {
-                                return Some(clean_name[..bracket_pos].to_string());
-                            }
-                            return Some(clean_name.to_string());
-                        }
-
-                        return Some(arg_text);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Extract thread variable from join/detach call
-    /// For thrd_join(thr, res) - first argument
-    /// For thrd_detach(thr) - first argument
-    /// For pthread_join(thr, res) - first argument
-    /// For pthread_detach(thr) - first argument
-    fn extract_thread_argument(&self, call_node: &Node, source: &str) -> Option<String> {
-        if let Some(args) = call_node.child_by_field_name("arguments") {
-            // Get first argument
-            for i in 0..args.child_count() {
-                if let Some(child) = args.child(i) {
-                    let kind = child.kind();
-                    if kind != "," && kind != "(" && kind != ")" {
-                        let arg_text = get_node_text(&child, source).trim().to_string();
-
-                        // Handle array indexing: thr[i] -> thr
-                        if let Some(bracket_pos) = arg_text.find('[') {
-                            return Some(arg_text[..bracket_pos].to_string());
-                        }
-
-                        return Some(arg_text);
-                    }
-                }
-            }
-        }
-        None
-    }
+/// The handle as the creation writes it, without `&` and the parentheses
+/// and subscript around the variable: `&(thr[i])` is `thr`.
+fn handle_spelling(handle: &Node, source: &str) -> String {
+    let text = get_node_text(handle, source).trim();
+    let text = text.strip_prefix('&').map_or(text, str::trim_start);
+    let text = text.trim_start_matches('(').trim_end_matches(')');
+    text.split('[').next().unwrap_or(text).trim().to_string()
 }
