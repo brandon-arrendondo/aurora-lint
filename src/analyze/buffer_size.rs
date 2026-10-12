@@ -473,22 +473,37 @@ pub fn resolve_bare_alias_in_range(
 }
 
 /// [`resolve_bare_alias_in_range`] over rows already cut to the range, as
-/// [`FileLineIndex::rows`] returns them. The pattern compiles only once a
-/// row mentions `var_name`, which any match must.
+/// [`FileLineIndex::rows`] returns them.
+///
+/// The pattern `\bVAR\s*=\s*(?:\([^)]*\)\s*)?(\w+)\s*;` is not compiled per
+/// name: its `VAR` part is a literal, so its leftmost match on a line is
+/// the first occurrence of `var_name` at a word boundary from which the
+/// fixed remainder matches. Compiling the Unicode `\w` class once per call
+/// cost more than the lookup.
 pub fn resolve_bare_alias_in_rows(var_name: &str, rows: &[&str]) -> Option<String> {
-    let mut re: Option<regex::Regex> = None;
+    static REMAINDER: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\A\s*=\s*(?:\([^)]*\)\s*)?(\w+)\s*;").unwrap()
+    });
+    let Some(first) = var_name.chars().next() else {
+        // An empty name leaves just `\b`, which no literal search mirrors.
+        return bare_alias_by_pattern(var_name, rows);
+    };
     for line in rows {
-        if !line.contains(var_name) {
-            continue;
+        let mut from = 0;
+        let mut found = None;
+        while let Some(at) = line[from..].find(var_name).map(|i| from + i) {
+            let boundary =
+                line[..at].chars().next_back().is_some_and(is_word_char) != is_word_char(first);
+            if boundary {
+                if let Some(caps) = REMAINDER.captures(&line[at + var_name.len()..]) {
+                    found = Some(caps);
+                    break;
+                }
+            }
+            // Occurrences may overlap, as the pattern's may.
+            from = at + first.len_utf8();
         }
-        if re.is_none() {
-            let pattern = format!(
-                r"\b{}\s*=\s*(?:\([^)]*\)\s*)?(\w+)\s*;",
-                regex::escape(var_name)
-            );
-            re = Some(regex::Regex::new(&pattern).ok()?);
-        }
-        if let Some(caps) = re.as_ref().and_then(|re| re.captures(line)) {
+        if let Some(caps) = found {
             let target = &caps[1];
             if target == var_name || target == "NULL" || target == "0" {
                 continue;
@@ -497,6 +512,35 @@ pub fn resolve_bare_alias_in_rows(var_name: &str, rows: &[&str]) -> Option<Strin
         }
     }
     None
+}
+
+/// [`resolve_bare_alias_in_rows`] by compiling its pattern for `var_name`.
+fn bare_alias_by_pattern(var_name: &str, rows: &[&str]) -> Option<String> {
+    let pattern = format!(
+        r"\b{}\s*=\s*(?:\([^)]*\)\s*)?(\w+)\s*;",
+        regex::escape(var_name)
+    );
+    let re = regex::Regex::new(&pattern).ok()?;
+    for line in rows {
+        if let Some(caps) = re.captures(line) {
+            let target = &caps[1];
+            if target == var_name || target == "NULL" || target == "0" {
+                continue;
+            }
+            return Some(target.to_string());
+        }
+    }
+    None
+}
+
+/// Whether `c` is a word character as the regex `\w` and `\b` read it.
+fn is_word_char(c: char) -> bool {
+    static WORD: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\A\w\z").unwrap());
+    let mut buf = [0u8; 4];
+    c.is_ascii_alphanumeric()
+        || c == '_'
+        || (!c.is_ascii() && WORD.is_match(c.encode_utf8(&mut buf)))
 }
 
 /// Element-count buffer size of the largest `malloc`/`calloc`/`realloc`/
@@ -1046,6 +1090,56 @@ mod tests {
                 array_declaration_size_scan(name, &lines),
                 "array_declaration_size({name:?})"
             );
+        }
+    }
+
+    #[test]
+    fn bare_alias_lookup_agrees_with_its_pattern() {
+        let rows = [
+            "p = q;",
+            "xp = r; p=(char *) s ;",
+            "p = p; p = t;",
+            "p = NULL;",
+            "p = 0;",
+            "p = 1;",
+            "p == q;",
+            "p = q + 1; p = u;",
+            "-a-a- = v;",
+            "-a- = w;",
+            "a.b = x;",
+            "d\u{e9}j\u{e0} = y; \u{e9}p = z;",
+            "pp = aa; ppp = bb;",
+            "*p = c;",
+            "p=(int)(x);",
+            "p\t=\t( T * )\tdd ;",
+            "fp = e; p = f;",
+            "p",
+            "",
+        ];
+        for var in [
+            "p",
+            "xp",
+            "pp",
+            "ppp",
+            "-a-",
+            "a",
+            "a.b",
+            "d\u{e9}j\u{e0}",
+            "\u{e9}p",
+            "j\u{e0}",
+            "*p",
+            "fp",
+            "q",
+            "",
+            "zz",
+        ] {
+            for start in 0..rows.len() {
+                assert_eq!(
+                    resolve_bare_alias_in_rows(var, &rows[start..]),
+                    bare_alias_by_pattern(var, &rows[start..]),
+                    "resolve_bare_alias_in_rows({var:?}) from row {start}"
+                );
+            }
         }
     }
 
