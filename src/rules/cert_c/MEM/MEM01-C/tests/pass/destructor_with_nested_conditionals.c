@@ -12,13 +12,13 @@ struct reader {
   void *blob;
 };
 
-extern int root_only(struct reader *);
+extern int root_only(int level);
 extern void blob_close(void *);
 
 void reader_free(struct reader *r) {
   if (r) {
     free(r->term);
-    if (!root_only(r)) {
+    if (!root_only(0)) {
       free(r->node);
     }
     blob_close(r->blob);

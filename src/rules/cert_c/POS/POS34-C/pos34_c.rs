@@ -56,7 +56,8 @@
 //! Two named options withhold a report CERT's page would make:
 //! `pos34_main_frame_exempt` (the call is in `main`) and
 //! `pos34_exit_path_exempt` (every path after the call ends in
-//! `exit`/`_exit`/`_Exit`/`quick_exit`/`abort`/an `exec*` call).
+//! `exit`/`_exit`/`_Exit`/`quick_exit`/`abort`; an `exec*` call can return
+//! when it fails, so it counts only where an exit follows it on every path).
 //!
 //! **Preferred (Use setenv):**
 //! ```c
@@ -81,22 +82,10 @@ const MAIN_FRAME_OPTION: &str = "pos34_main_frame_exempt";
 /// The option that exempts a call every path after which ends the process.
 const EXIT_PATH_OPTION: &str = "pos34_exit_path_exempt";
 
-/// Calls after which the process no longer runs this function's caller.
-const PROCESS_ENDING_CALLS: &[&str] = &[
-    "exit",
-    "_exit",
-    "_Exit",
-    "quick_exit",
-    "abort",
-    "execl",
-    "execle",
-    "execlp",
-    "execv",
-    "execve",
-    "execvp",
-    "execvpe",
-    "fexecve",
-];
+/// Calls that end the process. The `exec*` family is not among them: it
+/// returns -1 when it fails, so a path continues past it unless an exit
+/// follows.
+const PROCESS_ENDING_CALLS: &[&str] = &["exit", "_exit", "_Exit", "quick_exit", "abort"];
 
 /// How far a pointer's value is followed through copies (`q = p; r = q;`).
 const MAX_COPY_DEPTH: usize = 4;
@@ -256,6 +245,18 @@ fn points_to_automatic(expr: &Node, source: &str, depth: usize) -> bool {
                     .is_some_and(|operand| address_is_automatic(&operand, source))
         }
         "field_expression" => automatic_array_member(expr, source),
+        // `k ? env : "B=2"`: one automatic arm is enough to dangle.
+        "conditional_expression" => ["consequence", "alternative"].iter().any(|arm| {
+            expr.child_by_field_name(arm)
+                .is_some_and(|inner| points_to_automatic(&inner, source, depth))
+        }),
+        // `env[0]` of `char env[2][16]` is itself an array, so it decays to
+        // a pointer into the automatic object.
+        "subscript_expression" => {
+            expr.child_by_field_name("argument")
+                .is_some_and(|base| is_automatic_array_expr(&base, source))
+                && subscript_yields_array(expr, source)
+        }
         "compound_literal_expression" => {
             inside_function(expr)
                 && expr.child_by_field_name("type").is_some_and(|t| {
@@ -297,8 +298,32 @@ fn is_automatic_array_expr(expr: &Node, source: &str) -> bool {
     }
 }
 
+/// Whether `base[i]` has array type: `base` is declared with more dimensions
+/// than the subscripts applied to it.
+fn subscript_yields_array(subscript: &Node, source: &str) -> bool {
+    let mut applied = 0;
+    let mut current = *subscript;
+    while current.kind() == "subscript_expression" {
+        applied += 1;
+        match current.child_by_field_name("argument") {
+            Some(inner) => current = inner,
+            None => return false,
+        }
+    }
+    while current.kind() == "parenthesized_expression" {
+        match current.named_child(0) {
+            Some(inner) => current = inner,
+            None => return false,
+        }
+    }
+    current.kind() == "identifier"
+        && resolve_object(&current, source).is_some_and(|o| o.dimensions > applied)
+}
+
 struct Object<'a> {
     declarator: Node<'a>,
+    /// How many array dimensions the declarator has.
+    dimensions: usize,
     /// A block-scope declaration with no `static`/`extern`/thread storage.
     automatic: bool,
     array: bool,
@@ -309,11 +334,14 @@ struct Object<'a> {
 fn resolve_object<'a>(ident: &Node<'a>, source: &str) -> Option<Object<'a>> {
     let name = get_node_text(ident, source);
     let (decl, declarator) = resolve_identifier_declarator(ident, name, source)?;
-    let (mut array, mut pointer) = (false, false);
+    let (mut array, mut pointer, mut dimensions) = (false, false, 0);
     let mut d = declarator;
     loop {
         match d.kind() {
-            "array_declarator" => array = true,
+            "array_declarator" => {
+                array = true;
+                dimensions += 1;
+            }
             "pointer_declarator" => pointer = true,
             "parenthesized_declarator" => {}
             _ => break,
@@ -331,6 +359,7 @@ fn resolve_object<'a>(ident: &Node<'a>, source: &str) -> Option<Object<'a>> {
             .any(|class| declaration_has_storage_class(&decl, class, source));
     Some(Object {
         declarator,
+        dimensions,
         automatic,
         array,
         pointer,
@@ -489,16 +518,7 @@ fn member_is_array(expr: &Node, source: &str) -> bool {
     if argument.kind() != "identifier" {
         return false;
     }
-    let body = if type_node.kind() == "struct_specifier" || type_node.kind() == "union_specifier" {
-        match type_node.child_by_field_name("body") {
-            Some(body) => Some(body),
-            None => type_node
-                .child_by_field_name("name")
-                .and_then(|tag| struct_body_named(&type_node, get_node_text(&tag, source), source)),
-        }
-    } else {
-        None
-    };
+    let body = struct_body_of_type(&type_node, source, 0);
     let Some(body) = body else {
         return false;
     };
@@ -510,6 +530,36 @@ fn member_is_array(expr: &Node, source: &str) -> bool {
                 .collect::<Vec<_>>()
         })
         .any(|d| d.kind() == "array_declarator" && member_name(&d, source) == field_name)
+}
+
+/// The body of the struct or union a type specifier names: written there, by
+/// tag, or through a `typedef` of either (ADR-0006: the typedef is found by
+/// its declared name in this file).
+fn struct_body_of_type<'a>(type_node: &Node<'a>, source: &str, depth: usize) -> Option<Node<'a>> {
+    match type_node.kind() {
+        "struct_specifier" | "union_specifier" => match type_node.child_by_field_name("body") {
+            Some(body) => Some(body),
+            None => type_node
+                .child_by_field_name("name")
+                .and_then(|tag| struct_body_named(type_node, get_node_text(&tag, source), source)),
+        },
+        "type_identifier" if depth < MAX_COPY_DEPTH => {
+            let name = get_node_text(type_node, source);
+            let mut root = *type_node;
+            while let Some(parent) = root.parent() {
+                root = parent;
+            }
+            query::find_descendants_of_kind(root, "type_definition")
+                .into_iter()
+                .find(|td| {
+                    td.child_by_field_name("declarator")
+                        .is_some_and(|d| member_name(&d, source) == name)
+                })
+                .and_then(|td| td.child_by_field_name("type"))
+                .and_then(|t| struct_body_of_type(&t, source, depth + 1))
+        }
+        _ => None,
+    }
 }
 
 /// The member a field declarator names (`field_identifier`, which
@@ -626,7 +676,7 @@ fn contains_jump_out(node: &Node) -> bool {
     .is_some()
 }
 
-/// `exit(1);`, `execv(...);`, `(void)abort();`
+/// `exit(1);`, `(void)abort();`
 fn ends_process_statement(stmt: &Node, source: &str) -> bool {
     if stmt.kind() != "expression_statement" {
         return false;

@@ -1153,6 +1153,11 @@ fn prescan_file_list(
         unused_attribute_macros.extend(r.unused_attribute_macros);
         attribute_noreturn_macros.extend(r.attribute_noreturn_macros);
         for (name, tokens) in r.attribute_candidates {
+            // A `.c` file's `static` function is that file's own; each file
+            // adds its own when it is checked.
+            if is_c_file && r.local_static_functions.contains(&name) {
+                continue;
+            }
             attribute_candidates.entry(name).or_default().extend(tokens);
         }
         initializer_function_refs.extend(r.initializer_function_refs);

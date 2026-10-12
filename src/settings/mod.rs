@@ -551,7 +551,8 @@ pub static OPTIONS: &[OptionSpec] = &[
                   never to return proves it.",
         basis: "C11 6.7.4p8, 7.23; C23 6.7.13.7. CERT MSC37-C-EX2 exempts a path that \
                 calls a function marked _Noreturn. A GNU noreturn attribute, [[gnu::noreturn]] \
-                included, is proof under no policy.",
+                included, is not proof under this option; only MSC37-C credits it, through \
+                its own option msc37_attribute_noreturn.",
     },
     OptionSpec {
         name: "pre31_unknown_call_pure",
@@ -668,9 +669,10 @@ pub static OPTIONS: &[OptionSpec] = &[
         oracle_tag: "putenv-exit-path",
         summary: "POS34-C: putenv() of an automatic object is not reported when \
                   every path after the call ends in exit(), _exit(), _Exit(), \
-                  quick_exit(), abort() or an exec* call, so the function never returns \
-                  while the entry is live (the usual fork-then-exec shape). Off, it is \
-                  reported as CERT's rule is written.",
+                  quick_exit() or abort(), so the entry is never live in a returning \
+                  function. An exec* call counts only where an exit follows it on every \
+                  path (execv(...); _exit(127);), because exec returns when it fails. \
+                  Off, it is reported as CERT's rule is written.",
         basis: "Clang's security.PutenvStackArray documents the exit and exec path as a \
                 known false positive. CERT POS34-C gives no such exemption.",
     },

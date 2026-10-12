@@ -4157,7 +4157,9 @@ fn parse_char_literal(text: &str) -> Option<u8> {
     }
 }
 
-fn parse_integer_literal(text: &str) -> Option<i64> {
+/// The value of a C integer literal's text: decimal, `0x`, `0b` or octal,
+/// with any `u`/`l` suffix, and an optional leading `-`.
+pub(crate) fn parse_integer_literal(text: &str) -> Option<i64> {
     let text = text.trim();
     if text.is_empty() {
         return None;

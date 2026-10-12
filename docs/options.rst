@@ -47,7 +47,7 @@ Policy options
    - Default preset: ``true``; strict preset: ``true``; pedantic preset: ``false``
    - Scope: cross-cutting
    - Oracle tag: ``noreturn-trusted``
-   - Basis: C11 6.7.4p8, 7.23; C23 6.7.13.7. CERT MSC37-C-EX2 exempts a path that calls a function marked _Noreturn. A GNU noreturn attribute, [[gnu::noreturn]] included, is proof under no policy.
+   - Basis: C11 6.7.4p8, 7.23; C23 6.7.13.7. CERT MSC37-C-EX2 exempts a path that calls a function marked _Noreturn. A GNU noreturn attribute, [[gnu::noreturn]] included, is not proof under this option; only MSC37-C credits it, through its own option msc37_attribute_noreturn.
 
 ``pre31_unknown_call_pure``
    PRE31-C: an unproven call, in an argument an unsafe macro may evaluate other than once, is not treated as a side effect: a call to a function with no definition in the scanned files and no library contract, a call through a pointer, strerror, inet_ntoa, strsignal, gai_strerror, getenv, gmtime and asctime (whose only effect is the static buffer they return), or a call to a scanned function that reaches one of these and nothing shown to have a side effect. A callee shown to have a side effect, in whichever scanned file it is defined, is reported either way.
@@ -90,7 +90,7 @@ Policy options
    - Basis: The Clang Static Analyzer's security.PutenvStackArray skips main. CERT POS34-C states the rule for any function and gives no exemption; C23 6.2.4p2 ends an automatic object's lifetime when its block ends, and main's block ends when main returns.
 
 ``pos34_exit_path_exempt``
-   POS34-C: putenv() of an automatic object is not reported when every path after the call ends in exit(), _exit(), _Exit(), quick_exit(), abort() or an exec* call, so the function never returns while the entry is live (the usual fork-then-exec shape). Off, it is reported as CERT's rule is written.
+   POS34-C: putenv() of an automatic object is not reported when every path after the call ends in exit(), _exit(), _Exit(), quick_exit() or abort(), so the entry is never live in a returning function. An exec* call counts only where an exit follows it on every path (execv(...); _exit(127);), because exec returns when it fails. Off, it is reported as CERT's rule is written.
 
    - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
    - Scope: POS34-C

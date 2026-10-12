@@ -197,21 +197,38 @@ impl Msc37C {
             ),
             &macros,
         ));
-        let mut alternatives = collect_function_macro_alternatives(source);
-        for (name, m) in self.project_function_macros.borrow().iter() {
-            alternatives
-                .entry(name.clone())
-                .or_insert_with(|| vec![m.clone()]);
-        }
-        let ends_in_attribute_call = |alts: &Vec<FunctionMacro>| {
-            !alts.is_empty()
-                && alts
-                    .iter()
-                    .all(|m| single_call_callee(&m.body).is_some_and(|c| names.contains(c)))
-        };
-        let credited: Vec<String> = alternatives
+        // Every live definition of a macro name counts: the project's (all
+        // arms, in any header) and this file's own.
+        let mut definitions: HashMap<String, FunctionMacro> = self
+            .project_function_macros
+            .borrow()
             .iter()
-            .filter(|(_, alts)| ends_in_attribute_call(alts))
+            .map(|(name, m)| (name.clone(), m.clone()))
+            .collect();
+        for (name, alts) in collect_function_macro_alternatives(source) {
+            for alt in alts {
+                match definitions.get_mut(&name) {
+                    Some(existing) => existing.absorb(alt),
+                    None => {
+                        definitions.insert(name.clone(), alt);
+                    }
+                }
+            }
+        }
+        let credited: Vec<String> = definitions
+            .iter()
+            .filter(|(_, m)| {
+                let ends_in_attribute_call = |d: &FunctionMacro| {
+                    single_call_callee(&d.body).is_some_and(|c| names.contains(c))
+                };
+                if m.alternatives.is_empty() {
+                    ends_in_attribute_call(m)
+                } else {
+                    m.alternatives
+                        .iter()
+                        .all(|d| d.as_ref().is_some_and(ends_in_attribute_call))
+                }
+            })
             .map(|(name, _)| name.clone())
             .collect();
         names.extend(credited);
@@ -729,8 +746,8 @@ fn is_constant_true(condition: &Node, source: &str) -> bool {
     match c.kind() {
         "true" => true,
         "number_literal" => {
-            let text = get_node_text(&c, source).trim_end_matches(['u', 'U', 'l', 'L']);
-            text.parse::<u64>().map(|v| v != 0).unwrap_or(false)
+            crate::analyze::const_eval::parse_integer_literal(get_node_text(&c, source))
+                .is_some_and(|v| v != 0)
         }
         "identifier" => get_node_text(&c, source) == "true",
         _ => false,

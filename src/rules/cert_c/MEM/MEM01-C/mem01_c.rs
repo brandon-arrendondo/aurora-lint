@@ -51,6 +51,9 @@ pub struct Mem01C {
     /// [`Mem01C::build_freeing_wrappers`] of `cross_file_summaries`, built
     /// with `read_only_params` for the same reason.
     freeing_wrappers: RefCell<Arc<HashMap<String, HashSet<usize>>>>,
+    /// The functions the project defines (those with a summary), built with
+    /// `read_only_params` for the same reason.
+    defined_functions: RefCell<Arc<HashSet<String>>>,
 }
 
 /// Per-callee parameter indices confirmed to be read-only-dereferenced,
@@ -67,6 +70,10 @@ struct AddressOfCallContext {
     /// entry names. The destructor idiom ends with one of these as often as
     /// with `free`.
     freeing_wrappers: Arc<HashMap<String, HashSet<usize>>>,
+    /// The functions the project defines (those with a summary): a call to
+    /// one can read a global or `static` that still holds a freed address,
+    /// where a library function cannot.
+    defined_functions: Arc<HashSet<String>>,
 }
 
 impl Mem01C {
@@ -76,6 +83,7 @@ impl Mem01C {
             cross_file_summaries: RefCell::default(),
             read_only_params: RefCell::default(),
             freeing_wrappers: RefCell::default(),
+            defined_functions: RefCell::default(),
         }
     }
 
@@ -191,6 +199,13 @@ impl CertRule for Mem01C {
         *self.cross_file_summaries.borrow_mut() = context.function_summaries.clone();
         *self.read_only_params.borrow_mut() = Arc::new(self.build_read_only_params());
         *self.freeing_wrappers.borrow_mut() = Arc::new(self.build_freeing_wrappers());
+        *self.defined_functions.borrow_mut() = Arc::new(
+            self.cross_file_summaries
+                .borrow()
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect(),
+        );
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
@@ -218,6 +233,7 @@ impl Mem01C {
         let addr_ctx = AddressOfCallContext {
             read_only_params: Arc::clone(&self.read_only_params.borrow()),
             freeing_wrappers: Arc::clone(&self.freeing_wrappers.borrow()),
+            defined_functions: Arc::clone(&self.defined_functions.borrow()),
         };
 
         // Get pre-built CFG or build one on the fly
@@ -401,6 +417,10 @@ struct FreeSite {
     /// The lvalue outlives the function: a global, a `static`, or a member
     /// reached through a pointer. A path that ends with it unset escapes.
     persists: bool,
+    /// The lvalue is a global or `static` object itself (or a `.` member of
+    /// one), not reached through a pointer: any function the project defines
+    /// can read it.
+    global: bool,
     /// The objects a member path lives in, innermost first (`s->buf` lives in
     /// `s`). Freeing one of them ends the member too (the destructor idiom).
     containers: Vec<String>,
@@ -434,8 +454,10 @@ impl FreeSite {
         if let Some(root) = containers.last().cloned() {
             containers.extend(initializer_aliases(&arg, &root, source));
         }
+        let global = persists && !key.contains("->");
         Some(Self {
             key,
+            global,
             free_byte: call.start_byte(),
             line: pos.row + 1,
             column: pos.column + 1,
@@ -699,7 +721,49 @@ fn classify_stmt_on_path(
             return PtrAction::Reassigned;
         }
     }
-    classify_stmt_for_ptr(node, source, &site.key, addr_ctx)
+    let action = classify_stmt_for_ptr(node, source, &site.key, addr_ctx);
+    if action == PtrAction::Irrelevant
+        && site.persists
+        && call_can_read_dangling(node, source, site, addr_ctx)
+    {
+        return PtrAction::Used;
+    }
+    action
+}
+
+/// Whether `node` calls a function that can read the freed value without
+/// naming it: one handed the object the member lives in (`log_state(s)` after
+/// `free(s->buf)`), or, for a global or `static`, any function the project
+/// defines. A deallocator is no such call.
+fn call_can_read_dangling(
+    node: &Node,
+    source: &str,
+    site: &FreeSite,
+    addr_ctx: &AddressOfCallContext,
+) -> bool {
+    query::find_descendants_of_kind(*node, "call_expression")
+        .into_iter()
+        .chain((node.kind() == "call_expression").then_some(*node))
+        .any(|call| {
+            if freed_argument(&call, source).is_some()
+                || wrapper_freed_arguments(&call, source, addr_ctx).is_some_and(|f| !f.is_empty())
+            {
+                return false;
+            }
+            let hands_container = call.child_by_field_name("arguments").is_some_and(|args| {
+                args.named_children(&mut args.walk()).any(|arg| {
+                    site.containers.contains(&compact(get_node_text(
+                        &strip_parens_and_casts(&arg),
+                        source,
+                    )))
+                })
+            });
+            let callee = call
+                .child_by_field_name("function")
+                .map(|f| get_node_text(&f, source).to_string())
+                .unwrap_or_default();
+            hands_container || (site.global && addr_ctx.defined_functions.contains(&callee))
+        })
 }
 
 // ---------------------------------------------------------------------------
