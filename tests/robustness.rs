@@ -1213,6 +1213,21 @@ fn one_line_functions(bytes: usize) -> Vec<u8> {
     out.into_bytes()
 }
 
+/// A file of `bytes` bytes of one-line functions, each copying its pointer
+/// parameter into a local array.
+fn one_line_string_copies(bytes: usize) -> Vec<u8> {
+    let mut out = String::from("#include <string.h>\n");
+    let mut i = 0;
+    while out.len() < bytes {
+        let _ = writeln!(
+            out,
+            "void f{i}(char *in) {{ char buf{i}[16]; strcpy(buf{i}, in); }}"
+        );
+        i += 1;
+    }
+    out.into_bytes()
+}
+
 /// A chain of `depth` object-like macros, each defined from the one before.
 fn define_chain(depth: usize) -> Vec<u8> {
     let mut out = String::new();
@@ -1253,8 +1268,10 @@ fn time_one_file(name: &str, bytes: Vec<u8>, rule_id: &str) -> Duration {
 /// scanned under the one rule that exercises what grows: the prescan runs
 /// whatever rule is enabled, so a file of one-line functions under MSC04-C
 /// times the per-function prescan steps, the same file under INT34-C times
-/// the per-function value-range analysis the integer rules share, and a
-/// deep `#define` chain under PRE32-C times that rule's per-directive work.
+/// the per-function value-range analysis the integer rules share, a file of
+/// one-line `strcpy` functions under STR31-C times that rule's per-call
+/// buffer-size lookups, and a deep `#define` chain under PRE32-C times that
+/// rule's per-directive work.
 /// Each pair must cost under
 /// [`SIZE_SERIES_MAX_RATIO`] times as much, so a step that rescans the
 /// whole file per item fails here rather than as a watchdog hang on a large
@@ -1263,7 +1280,7 @@ fn time_one_file(name: &str, bytes: Vec<u8>, rule_id: &str) -> Duration {
 #[ignore = "size series: run in release with --ignored (CI robustness job)"]
 fn generated_size_series_scale_near_linearly() {
     type Generate = fn(usize) -> Vec<u8>;
-    let series: [(&str, &str, Generate, usize); 3] = [
+    let series: [(&str, &str, Generate, usize); 4] = [
         (
             "one_line_functions",
             "MSC04-C",
@@ -1275,6 +1292,12 @@ fn generated_size_series_scale_near_linearly() {
             "INT34-C",
             one_line_functions,
             128 * 1024,
+        ),
+        (
+            "one_line_string_copies",
+            "STR31-C",
+            one_line_string_copies,
+            8 * 1024,
         ),
         ("define_chain", "PRE32-C", define_chain, 10_000),
     ];
