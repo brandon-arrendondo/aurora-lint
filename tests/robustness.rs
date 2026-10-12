@@ -1222,8 +1222,10 @@ fn time_one_file(name: &str, bytes: Vec<u8>, rule_id: &str) -> Duration {
 /// Generated inputs at two sizes, the larger eight times the smaller, each
 /// scanned under the one rule that exercises what grows: the prescan runs
 /// whatever rule is enabled, so a file of one-line functions under MSC04-C
-/// times the per-function prescan steps, and a deep `#define` chain under
-/// PRE32-C times that rule's per-directive work. Each pair must cost under
+/// times the per-function prescan steps, the same file under INT34-C times
+/// the per-function value-range analysis the integer rules share, and a
+/// deep `#define` chain under PRE32-C times that rule's per-directive work.
+/// Each pair must cost under
 /// [`SIZE_SERIES_MAX_RATIO`] times as much, so a step that rescans the
 /// whole file per item fails here rather than as a watchdog hang on a large
 /// real file.
@@ -1231,12 +1233,18 @@ fn time_one_file(name: &str, bytes: Vec<u8>, rule_id: &str) -> Duration {
 #[ignore = "size series: run in release with --ignored (CI robustness job)"]
 fn generated_size_series_scale_near_linearly() {
     type Generate = fn(usize) -> Vec<u8>;
-    let series: [(&str, &str, Generate, usize); 2] = [
+    let series: [(&str, &str, Generate, usize); 3] = [
         (
             "one_line_functions",
             "MSC04-C",
             one_line_functions,
             256 * 1024,
+        ),
+        (
+            "one_line_functions",
+            "INT34-C",
+            one_line_functions,
+            128 * 1024,
         ),
         ("define_chain", "PRE32-C", define_chain, 10_000),
     ];
