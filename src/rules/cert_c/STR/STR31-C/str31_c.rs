@@ -14,6 +14,33 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use tree_sitter::Node;
 
+thread_local! {
+    /// Compiled patterns by their text, for [`compiled`].
+    static COMPILED: RefCell<HashMap<String, Option<regex::Regex>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// `regex::Regex::new(pattern).ok()`, compiled once per pattern per thread.
+/// The finders build per-variable patterns and test them line by line once
+/// per string call, and compiling them dominated the rule's cost. A pattern
+/// compiles to the same regex every time, so the cache changes no match.
+/// It is cleared once it holds a few thousand patterns, so a scan with many
+/// distinct variable names cannot grow it without bound.
+fn compiled(pattern: &str) -> Option<regex::Regex> {
+    COMPILED.with(|cache| {
+        if let Some(found) = cache.borrow().get(pattern) {
+            return found.clone();
+        }
+        let built = regex::Regex::new(pattern).ok();
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= 4096 {
+            cache.clear();
+        }
+        cache.insert(pattern.to_string(), built.clone());
+        built
+    })
+}
+
 /// STR31-C bounds-string-copy rule.
 ///
 /// `callsite_param_buffer_size` is seeded from the prescan: for each function it
@@ -268,7 +295,7 @@ impl Str31C {
             }
             // Try simple numeric size first: var_name[N]
             let pattern = format!(r"\b{}\s*\[\s*(\d+)\s*\]", regex::escape(var_name));
-            if let Ok(re) = regex::Regex::new(&pattern) {
+            if let Some(re) = compiled(&pattern) {
                 if let Some(captures) = re.captures(line) {
                     let match_end = captures.get(0).unwrap().end();
                     let after = line[match_end..].trim_start();
@@ -284,7 +311,7 @@ impl Str31C {
                 r"\b{}\s*\[\s*(\d+)\s*([*+\-])\s*(\d+)\s*\]",
                 regex::escape(var_name)
             );
-            if let Ok(re) = regex::Regex::new(&arith_pattern) {
+            if let Some(re) = compiled(&arith_pattern) {
                 if let Some(captures) = re.captures(line) {
                     let match_end = captures.get(0).unwrap().end();
                     let after = line[match_end..].trim_start();
@@ -329,9 +356,7 @@ impl Str31C {
     /// `find_buffer_size`'s alias-chasing paths.
     fn line_assigns_to(line: &str, var_name: &str) -> bool {
         let pattern = format!(r"\b{}\b\s*=[^=]", regex::escape(var_name));
-        regex::Regex::new(&pattern)
-            .map(|re| re.is_match(line))
-            .unwrap_or(false)
+        compiled(&pattern).is_some_and(|re| re.is_match(line))
     }
 
     /// Look for malloc/calloc assignments with specific numeric sizes.
@@ -346,19 +371,16 @@ impl Str31C {
         fn_start: usize,
         fn_end: usize,
     ) -> Option<usize> {
-        let malloc_sizeof_re =
-            regex::Regex::new(r"(?:malloc|calloc)\s*\(\s*(\d+)\s*[*,]\s*sizeof").ok();
-        let malloc_paren_sizeof_re = regex::Regex::new(
+        let malloc_sizeof_re = compiled(r"(?:malloc|calloc)\s*\(\s*(\d+)\s*[*,]\s*sizeof");
+        let malloc_paren_sizeof_re = compiled(
             r"(?:malloc|calloc)\s*\(\s*\(\s*(\d+)\s*(?:([+*\-])\s*(\d+))?\s*\)\s*\*\s*sizeof",
-        )
-        .ok();
-        let malloc_plain_re = regex::Regex::new(r"(?:malloc|calloc)\s*\(\s*(\d+)\s*[,)]").ok();
+        );
+        let malloc_plain_re = compiled(r"(?:malloc|calloc)\s*\(\s*(\d+)\s*[,)]");
         // Bare single-element allocation with no leading count, e.g.
         // `malloc(sizeof(struct foo))` — deliberately `malloc`-only (not
         // `calloc`), since a `calloc` with a `sizeof` argument always has a
         // leading nmemb argument already covered by `malloc_sizeof_re`.
-        let malloc_bare_sizeof_re =
-            regex::Regex::new(r"malloc\s*\(\s*(sizeof\s*\([^()]*\))\s*\)").ok();
+        let malloc_bare_sizeof_re = compiled(r"malloc\s*\(\s*(sizeof\s*\([^()]*\))\s*\)");
 
         for (idx, line) in lines.iter().enumerate() {
             if idx < fn_start || idx > fn_end {
@@ -435,16 +457,14 @@ impl Str31C {
         fn_start: usize,
         fn_end: usize,
     ) -> Option<usize> {
-        let assign_re = regex::Regex::new(&format!(r"\b{}\s*=", regex::escape(var_name))).ok()?;
-        let alloca_sizeof_re =
-            regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*(\d+)\s*\*\s*sizeof\s*\(").ok();
+        let assign_re = compiled(&format!(r"\b{}\s*=", regex::escape(var_name)))?;
+        let alloca_sizeof_re = compiled(r"(?:ALLOCA|alloca)\s*\(\s*(\d+)\s*\*\s*sizeof\s*\(");
         // ALLOCA((N)*sizeof(type)) or ALLOCA((N+M)*sizeof(type)) — parenthesized arithmetic.
-        let alloca_paren_sizeof_re = regex::Regex::new(
+        let alloca_paren_sizeof_re = compiled(
             r"(?:ALLOCA|alloca)\s*\(\s*\(\s*(\d+)\s*(?:([+*\-])\s*(\d+))?\s*\)\s*\*\s*sizeof\s*\(",
-        )
-        .ok();
-        let alloca_simple_re = regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*(\d+)\s*\)").ok();
-        let alloca_ident_re = regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*\(?(\w+)").ok();
+        );
+        let alloca_simple_re = compiled(r"(?:ALLOCA|alloca)\s*\(\s*(\d+)\s*\)");
+        let alloca_ident_re = compiled(r"(?:ALLOCA|alloca)\s*\(\s*\(?(\w+)");
 
         for (idx, line) in lines.iter().enumerate() {
             if idx < fn_start || idx > fn_end {
@@ -494,7 +514,7 @@ impl Str31C {
                 if !skip {
                     let strlen_pat =
                         format!(r"\b{}\s*=\s*(?:w?)strlen\s*\(", regex::escape(first_ident));
-                    if let Ok(strlen_re) = regex::Regex::new(&strlen_pat) {
+                    if let Some(strlen_re) = compiled(&strlen_pat) {
                         if lines.iter().any(|l| strlen_re.is_match(l)) {
                             return Some(usize::MAX);
                         }
@@ -512,7 +532,7 @@ impl Str31C {
         for line in &lines {
             if line.contains(var_name) && line.contains("[") {
                 let pattern = format!(r"\b{}\s*\[\s*(\d+)\s*\]", regex::escape(var_name));
-                if let Ok(re) = regex::Regex::new(&pattern) {
+                if let Some(re) = compiled(&pattern) {
                     if let Some(captures) = re.captures(line) {
                         if let Ok(size) = captures[1].parse::<usize>() {
                             if size > dest_size {
@@ -625,7 +645,7 @@ impl Str31C {
             r"\b{}\s*=\s*(\w+)\s*\(([^;]*)\)\s*;",
             regex::escape(var_name)
         );
-        let re = regex::Regex::new(&pattern).ok()?;
+        let re = compiled(&pattern)?;
         let end = fn_range.1.min(lines.len().saturating_sub(1));
 
         lines[fn_range.0..=end].iter().find_map(|line| {
@@ -1369,7 +1389,7 @@ impl Str31C {
     /// Check for dangerous scanf patterns
     fn check_scanf_format(&self, arguments: &Node, source: &str) -> bool {
         // Look for %s without width specifier
-        let re = regex::Regex::new(r"%\d+s").unwrap();
+        let re = compiled(r"%\d+s").unwrap();
         for i in 0..arguments.child_count() {
             if let Some(arg) = arguments.child(i) {
                 if arg.kind() == "string_literal" {
@@ -1849,7 +1869,7 @@ impl Str31C {
 
             if line.contains("free") && line.contains(var_name) {
                 let pattern = format!(r"free\s*\(\s*{}\s*\)", regex::escape(var_name));
-                if let Ok(re) = regex::Regex::new(&pattern) {
+                if let Some(re) = compiled(&pattern) {
                     if re.is_match(line) {
                         was_freed = true;
                         freed_row = idx;
