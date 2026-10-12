@@ -987,6 +987,14 @@ actually consumes:
   undefined, INT32-C's to report). A compound assignment whose operator is
   not modelled or whose right side has no range widens the variable too,
   rather than keeping the range it had before.
+- A `do` loop's condition narrows its back edge as a `while` condition
+  narrows the edge into the body, and the loop is widened at its condition
+  block, so `do { i -= 1; x >> i; } while (i)` keeps the shift amount in
+  [0, 3]. Two limits stay. Ranges are intervals with no stride: `i -= 8`
+  from 32 under `while (i)` can, by interval, go below zero and wrap, so it
+  is not proved. And the CFG sends a `continue` in a `do` body back to the
+  body rather than to the condition, so the state a `continue` carries is
+  never narrowed by the condition, and the body stays a widening point.
 - **"No range" can mean "never runs".** A block whose every incoming edge
   is dead — the branch condition contradicts the incoming value
   (`data = 127; if (data < 127)`), or contradicts itself

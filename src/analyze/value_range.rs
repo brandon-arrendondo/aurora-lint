@@ -968,6 +968,35 @@ struct RangeConditionInfo {
     false_range: Option<ValueRange>,
 }
 
+/// The predecessor's condition and the truth value it has along `edge_kind`:
+/// a `TrueBranch` or `FalseBranch` of an `if`, `while` or `for`, and the back
+/// edge of a `do` loop, which the CFG wires from the condition block to the
+/// body. `do { ... } while (c)` re-enters the body only when `c` holds, so
+/// that edge narrows as `while (c)` narrows on entry; a `continue` reaches
+/// the body by its own edge and is not narrowed. Any other edge has none.
+fn edge_condition<'a>(
+    pred_id: BlockId,
+    edge_kind: &CfgEdge,
+    cfg: &FunctionCfg,
+    body: &Node<'a>,
+) -> Option<(Node<'a>, bool)> {
+    let (start, end) = cfg.get_block(pred_id)?.condition_range?;
+    let cond_node = find_node_at_range(body, start, end)?;
+    match edge_kind {
+        CfgEdge::TrueBranch => Some((cond_node, true)),
+        CfgEdge::FalseBranch => Some((cond_node, false)),
+        // `find_node_at_range` falls back to the nearest enclosing node, so
+        // the do loop's own condition is asked for by exact span.
+        CfgEdge::BackEdge => {
+            let exact = cond_node.start_byte() == start && cond_node.end_byte() == end;
+            let loop_node = cond_node.parent().filter(|p| p.kind() == "do_statement")?;
+            let own = loop_node.child_by_field_name("condition") == Some(cond_node);
+            (exact && own).then_some((cond_node, true))
+        }
+        _ => None,
+    }
+}
+
 /// Return true if this branch edge is provably dead because the predecessor's
 /// condition evaluates to a compile-time constant that contradicts the edge
 /// direction. Uses only macro/literal evaluation (empty VarRangeMap) so that
@@ -981,23 +1010,10 @@ fn is_dead_constant_edge(
     source: &str,
     macros: &MacroConstantMap,
 ) -> bool {
-    let is_true = matches!(edge_kind, CfgEdge::TrueBranch);
-    let is_false = matches!(edge_kind, CfgEdge::FalseBranch);
-    if !is_true && !is_false {
+    let Some((cond_node, is_true)) = edge_condition(pred_id, edge_kind, cfg, body) else {
         return false;
-    }
-    let pred_block = match cfg.get_block(pred_id) {
-        Some(b) => b,
-        None => return false,
     };
-    let (cond_start, cond_end) = match pred_block.condition_range {
-        Some(r) => r,
-        None => return false,
-    };
-    let cond_node = match find_node_at_range(body, cond_start, cond_end) {
-        Some(n) => n,
-        None => return false,
-    };
+    let is_false = !is_true;
     // Evaluate with empty var-ranges: only compile-time constants are resolved
     let empty = VarRangeMap::new();
     if let Some(val) = const_eval::try_evaluate_range(&cond_node, source, macros, &empty) {
@@ -1028,24 +1044,8 @@ fn apply_range_edge_refinement(
 ) -> Option<RangeMap> {
     let mut state = pred_exit.clone();
 
-    let is_true = matches!(edge_kind, CfgEdge::TrueBranch);
-    let is_false = matches!(edge_kind, CfgEdge::FalseBranch);
-    if !is_true && !is_false {
+    let Some((cond_node, is_true)) = edge_condition(pred_id, edge_kind, cfg, body) else {
         return Some(state);
-    }
-
-    let pred_block = match cfg.get_block(pred_id) {
-        Some(b) => b,
-        None => return Some(state),
-    };
-    let (cond_start, cond_end) = match pred_block.condition_range {
-        Some(r) => r,
-        None => return Some(state),
-    };
-
-    let cond_node = match find_node_at_range(body, cond_start, cond_end) {
-        Some(n) => n,
-        None => return Some(state),
     };
 
     let infos = parse_range_conditions(&cond_node, source, macros, &state);
@@ -1606,16 +1606,39 @@ fn analyze_value_ranges_capped(
     // value per iteration toward its type bound, which no iteration cap
     // reaches. The CFG's edge kinds stay as they are: the other analyses and
     // the rules read BackEdge as a loop the source wrote.
-    let back_edge_targets: HashSet<BlockId> = cfg
-        .edges
-        .iter()
-        .filter(|(from, to, e)| match e {
-            CfgEdge::BackEdge => true,
-            CfgEdge::Goto => cfg.blocks[*to].byte_range.0 <= cfg.blocks[*from].byte_range.0,
-            _ => false,
-        })
-        .map(|(_, to, _)| *to)
-        .collect();
+    //
+    // A `do` loop is widened at its condition block, not at the body its back
+    // edge enters. Every trip round passes the condition, and widening there
+    // leaves the back edge's narrowing between the widened range and the
+    // body: `do { i -= 1; x >> i; } while (i)` keeps `i` in [1, 4] on entry,
+    // as `while (i)` does, where widening the body pushed `i` to 0 before the
+    // step and `i -= 1` then wrapped. A `continue` enters the body without
+    // passing the condition, so a body some `continue` enters stays a
+    // widening point too. Ranges are intervals with no stride, so a count
+    // stepped by more than one (`i -= 8` from 32, `while (i)`) can still
+    // reach below zero by interval and wrap: that loop is not proved.
+    let mut widening_points: HashSet<BlockId> = HashSet::new();
+    for (from, to, e) in &cfg.edges {
+        match e {
+            CfgEdge::BackEdge if edge_condition(*from, e, cfg, &body).is_some() => {
+                widening_points.insert(*from);
+                let continued = cfg
+                    .predecessors(*to)
+                    .iter()
+                    .any(|(_, kind)| matches!(kind, CfgEdge::Continue));
+                if continued {
+                    widening_points.insert(*to);
+                }
+            }
+            CfgEdge::BackEdge => {
+                widening_points.insert(*to);
+            }
+            CfgEdge::Goto if cfg.blocks[*to].byte_range.0 <= cfg.blocks[*from].byte_range.0 => {
+                widening_points.insert(*to);
+            }
+            _ => {}
+        }
+    }
 
     let mut total_iterations = 0;
 
@@ -1655,8 +1678,8 @@ fn analyze_value_ranges_capped(
             continue;
         };
 
-        // Apply widening for back-edge targets after threshold
-        if back_edge_targets.contains(&block_id) {
+        // Apply widening at a loop head after the threshold
+        if widening_points.contains(&block_id) {
             new_entry = maybe_widen(block_id, new_entry, &entry_ranges, &mut block_iterations);
         }
 
@@ -2931,6 +2954,47 @@ int r = 100 / i;
         get_all_var_ranges_at(&result, &function_cfg, &body, &source, &macros, offset)?
             .get(var)
             .copied()
+    }
+
+    /// `do { ... } while (i)` re-enters the body only when `i` is non-zero,
+    /// so the count stepped down by one before the shift stays in [0, 3],
+    /// the range `while (i)` gives. Widening the body itself pushed `i` to 0
+    /// before the step, and `i -= 1` then wrapped to the full range.
+    #[test]
+    fn a_do_loop_narrows_its_back_edge_by_its_condition() {
+        for cond in ["i", "i != 0", "i > 0"] {
+            let code = format!(
+                "unsigned f(unsigned x) {{ unsigned i = 4; unsigned r = 0; \
+                 do {{ i -= 1; r |= x >> i; }} while ({cond}); return r; }}"
+            );
+            assert_eq!(
+                range_at_expr(&code, "i", "x >> i"),
+                Some(ValueRange::new(0, 3)),
+                "while ({cond})"
+            );
+        }
+    }
+
+    /// The back edge narrows only by what its condition proves: a condition
+    /// on another variable says nothing about `i`, which wraps.
+    #[test]
+    fn a_do_loop_condition_on_another_variable_narrows_nothing() {
+        let code = "unsigned f(unsigned x, unsigned j) { unsigned i = 4; unsigned r = 0; \
+                    do { i -= 1; r |= x >> i; } while (j); return r; }";
+        assert_eq!(
+            range_at_expr(code, "i", "x >> i"),
+            Some(ValueRange::new(0, i64::from(u32::MAX)))
+        );
+    }
+
+    /// A `continue` enters a do body without passing the condition, so that
+    /// body stays a widening point and the loop still converges.
+    #[test]
+    fn a_do_body_a_continue_enters_still_converges() {
+        let code = "int f(int *p) { int i = 0; \
+                    do { if (p[i]) continue; i++; p[i] = 0; } while (i < 100); return i; }";
+        let r = range_at_expr(code, "i", "p[i] = 0").expect("the analysis converges");
+        assert!(r.min <= 1 && r.max >= 100, "{r:?}");
     }
 
     /// A branch whose condition contradicts the incoming range cannot execute,
