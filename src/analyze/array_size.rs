@@ -82,27 +82,34 @@ fn find_array_declarator_in_scope<'a>(
 /// Search one scope for an `array_declarator` of `var_name` declared textually
 /// before byte offset `before`, without crossing into nested block scopes
 /// (their declarations are not visible here).
+///
+/// Children are visited with a cursor, since `Node::child(i)` walks from the
+/// first child each time, and the walk stops at the first child starting at
+/// or after `before`: children are in source order and a node's descendants
+/// never start before it, so nothing from there on can qualify. At file
+/// scope that keeps a lookup from touching every later top-level declaration.
 fn scan_block_declarators<'a>(
     scope: &Node<'a>,
     var_name: &str,
     source: &str,
     before: usize,
 ) -> Option<Node<'a>> {
-    for i in 0..scope.child_count() {
-        if let Some(child) = scope.child(i) {
-            // A nested block / function body is a separate scope — skip it.
-            if matches!(child.kind(), "compound_statement" | "function_definition") {
-                continue;
-            }
-            if child.kind() == "array_declarator"
-                && child.start_byte() < before
-                && find_identifier_in_declarator(&child, source).as_deref() == Some(var_name)
-            {
-                return Some(child);
-            }
-            if let Some(found) = scan_block_declarators(&child, var_name, source, before) {
-                return Some(found);
-            }
+    let mut cursor = scope.walk();
+    for child in scope.children(&mut cursor) {
+        if child.start_byte() >= before {
+            break;
+        }
+        // A nested block / function body is a separate scope — skip it.
+        if matches!(child.kind(), "compound_statement" | "function_definition") {
+            continue;
+        }
+        if child.kind() == "array_declarator"
+            && find_identifier_in_declarator(&child, source).as_deref() == Some(var_name)
+        {
+            return Some(child);
+        }
+        if let Some(found) = scan_block_declarators(&child, var_name, source, before) {
+            return Some(found);
         }
     }
     None
