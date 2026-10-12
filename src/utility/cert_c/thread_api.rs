@@ -861,8 +861,8 @@ fn strip_to_operand(node: Node) -> Node {
 ///
 /// An array element is keyed by its index too: `&locks[i]` twice is one
 /// object, while `&locks[i]` and `&locks[j]`, or `&locks[1]`, are different
-/// elements as far as the code shows. An index name is resolved like the
-/// root; a literal is its value. [`SyncObject::array`] drops the indices,
+/// elements as far as the code shows. An index is keyed by its spelling
+/// (see [`index_key`]). [`SyncObject::array`] drops the indices,
 /// for a question about the whole array (were the handles stored into
 /// `thr[i]` all joined, through `thr[j]` in another loop?).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -873,21 +873,13 @@ pub struct SyncObject {
     /// The member path from the root, spelling-independent.
     path: LValue,
     /// The subscripts along the path, outermost last.
-    indices: Vec<IndexKey>,
+    indices: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum SyncRoot {
     Declared(usize),
     Undeclared(String),
-}
-
-/// One subscript's index: a name by its declaration, or any other
-/// expression by its text without whitespace.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum IndexKey {
-    Name(SyncRoot),
-    Text(String),
 }
 
 impl SyncObject {
@@ -927,18 +919,16 @@ fn declared_at(ident: &Node, name: &str, source: &str) -> SyncRoot {
     }
 }
 
-fn index_key(index: Node, source: &str) -> IndexKey {
-    let index = strip_to_operand(index);
-    if index.kind() == "identifier" {
-        let name = get_node_text(&index, source);
-        return IndexKey::Name(declared_at(&index, name, source));
-    }
-    IndexKey::Text(
-        get_node_text(&index, source)
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect(),
-    )
+/// An index is a value, not an object: two loops that each declare their
+/// own `i` walk the same elements as far as the code shows, so a lock loop
+/// and an unlock loop over `m[i]` pair up. The index is therefore keyed by
+/// its spelling without whitespace (casts and parentheses dropped), never by
+/// the declaration a counter resolves to.
+fn index_key(index: Node, source: &str) -> String {
+    get_node_text(&strip_to_operand(index), source)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect()
 }
 
 /// The identifier an lvalue chain bottoms out at, along the same unwraps
@@ -1005,8 +995,10 @@ mod tests {
     fn an_element_is_keyed_by_its_index() {
         let o = objects(
             "int m[4];\n\
-             void f(int i, int j) { use(&m[i]); use(&(m[ i ])); use(&m[j]); use(&m[1]); use(&m[ 1 ]); }",
+             void f(int i, int j) { use(&m[i]); use(&(m[ i ])); use(&m[j]); use(&m[1]); use(&m[ 1 ]); \
+               for (int k = 0; k < 4; k++) use(&m[k]); for (int k = 0; k < 4; k++) use(&m[k]); }",
         );
+        assert_eq!(o[5], o[6]);
         assert_eq!(o[0], o[1]);
         assert_ne!(o[0], o[2]);
         assert_ne!(o[0], o[3]);
