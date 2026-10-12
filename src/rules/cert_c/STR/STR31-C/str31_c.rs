@@ -146,24 +146,14 @@ impl Str31C {
         var_name: Option<&str>,
         source: &str,
     ) -> Option<usize> {
-        if let Some(name) = var_name {
-            // Look for variable assignments like: char name[] = "string";
-            let lines: Vec<&str> = source.lines().collect();
-            for line in &lines {
-                if line.contains(name) && line.contains("=") && line.contains("\"") {
-                    // Extract string literal from the line
-                    if let Some(start) = line.find('"') {
-                        if let Some(end) = line.rfind('"') {
-                            if end > start {
-                                let literal = &line[start + 1..end];
-                                return Some(literal.len());
-                            }
-                        }
-                    }
-                }
-            }
+        // Look for variable assignments like: char name[] = "string";
+        let name = var_name?;
+        let index = self.line_index.borrow();
+        if index.is_of(source) {
+            index.quoted_literal_length(name)
+        } else {
+            buffer_size::quoted_literal_length_scan(name, source)
         }
-        None
     }
 
     /// Get content length from memset/wmemset initialization pattern.
@@ -181,7 +171,18 @@ impl Str31C {
         source: &str,
         call_node: &Node,
     ) -> Option<usize> {
-        buffer_size::memset_content_length(var_name, source, call_node)
+        let index = self.line_index.borrow();
+        if !index.is_of(source) {
+            return buffer_size::memset_content_length(var_name, source, call_node);
+        }
+        let (fn_start, fn_end) = buffer_size::enclosing_function_lines(call_node)?;
+        let call_line = call_node.start_position().row;
+        index.memset_content_length_in_range(
+            var_name,
+            source,
+            fn_start,
+            std::cmp::min(call_line, fn_end + 1),
+        )
     }
 
     /// The numeric `#define` sizing the first bracketed line that mentions
@@ -569,18 +570,38 @@ impl Str31C {
     /// name and the argument position `var_name` occupies. Excludes direct
     /// calls to known allocation functions, which `find_buffer_size` already
     /// resolves without this indirection.
-    fn find_relay_call(var_name: &str, source: &str, call_node: &Node) -> Option<(String, usize)> {
+    fn find_relay_call(
+        &self,
+        var_name: &str,
+        source: &str,
+        call_node: &Node,
+    ) -> Option<(String, usize)> {
+        // `\bVAR\s*=\s*(\w+)\s*\(([^;]*)\)\s*;`, matched as the literal name
+        // followed by the fixed remainder rather than compiled per name.
+        static REMAINDER: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"\A\s*=\s*(\w+)\s*\(([^;]*)\)\s*;").unwrap()
+        });
         let fn_range = Self::find_enclosing_function_lines(call_node)?;
-        let lines: Vec<&str> = source.lines().collect();
-        let pattern = format!(
-            r"\b{}\s*=\s*(\w+)\s*\(([^;]*)\)\s*;",
-            regex::escape(var_name)
-        );
-        let re = compiled(&pattern)?;
-        let end = fn_range.1.min(lines.len().saturating_sub(1));
+        let index = self.line_index.borrow();
+        let lines: Vec<&str> = if index.is_of(source) {
+            index.rows(source, fn_range.0, fn_range.1)
+        } else {
+            let all: Vec<&str> = source.lines().collect();
+            let end = fn_range.1.min(all.len().saturating_sub(1));
+            all[fn_range.0..=end].to_vec()
+        };
+        // An empty name leaves just `\b`, which no literal search mirrors.
+        let by_name = if var_name.is_empty() {
+            Some(compiled(r"\b\s*=\s*(\w+)\s*\(([^;]*)\)\s*;")?)
+        } else {
+            None
+        };
 
-        lines[fn_range.0..=end].iter().find_map(|line| {
-            let caps = re.captures(line)?;
+        lines.iter().find_map(|line| {
+            let caps = match &by_name {
+                Some(re) => re.captures(line)?,
+                None => buffer_size::captures_after_name(line, var_name, &REMAINDER)?,
+            };
             let callee = caps[1].to_string();
             if buffer_size::ALLOC_FUNCTIONS.contains(&callee.as_str()) {
                 return None;
@@ -620,7 +641,7 @@ impl Str31C {
         source: &str,
         call_node: &Node,
     ) -> Option<usize> {
-        let (callee_name, arg_idx) = Self::find_relay_call(var_name, source, call_node)?;
+        let (callee_name, arg_idx) = self.find_relay_call(var_name, source, call_node)?;
 
         if let Some(callee_fn) = query::find_descendants_of_kind(*root, "function_definition")
             .into_iter()
@@ -638,12 +659,16 @@ impl Str31C {
             {
                 return Some(size);
             }
-            if let Some(size) = buffer_size::memset_content_length_in_range(
-                param_name,
-                source,
-                callee_range.0,
-                callee_range.1 + 1,
-            ) {
+            let filled = {
+                let index = self.line_index.borrow();
+                let (start, end) = (callee_range.0, callee_range.1 + 1);
+                if index.is_of(source) {
+                    index.memset_content_length_in_range(param_name, source, start, end)
+                } else {
+                    buffer_size::memset_content_length_in_range(param_name, source, start, end)
+                }
+            };
+            if let Some(size) = filled {
                 return Some(size);
             }
             // The relay function itself allocates through a local alias
@@ -771,27 +796,13 @@ impl Str31C {
 
     /// Check if there was a prior safe realloc for this variable
     fn has_prior_safe_realloc(&self, var_name: &str, source: &str) -> bool {
-        let lines: Vec<&str> = source.lines().collect();
-        let mut found_realloc = false;
-
-        for line in lines {
-            if line.contains(var_name)
-                && line.contains("realloc")
-                && (line.contains("strlen") || line.contains("new_size"))
-            {
-                found_realloc = true;
-            }
-
-            // If we find the realloc before the strcpy/strcat, it's likely safe
-            if found_realloc
-                && (line.contains("strcpy") || line.contains("strcat"))
-                && line.contains(var_name)
-            {
-                return true;
-            }
+        // If we find the realloc before the strcpy/strcat, it's likely safe
+        let index = self.line_index.borrow();
+        if index.is_of(source) {
+            index.prior_safe_realloc(var_name)
+        } else {
+            buffer_size::prior_safe_realloc_scan(var_name, source)
         }
-
-        false
     }
 
     /// Check if strcpy is safe based on buffer analysis
@@ -1078,13 +1089,12 @@ impl Str31C {
 
     /// Check if a variable comes from a getenv() call
     fn is_variable_from_getenv(&self, var_name: &str, source: &str) -> bool {
-        let lines: Vec<&str> = source.lines().collect();
-        for line in lines {
-            if line.contains(var_name) && line.contains("=") && line.contains("getenv") {
-                return true;
-            }
+        let index = self.line_index.borrow();
+        if index.is_of(source) {
+            index.assigned_from_getenv(var_name)
+        } else {
+            buffer_size::assigned_from_getenv_scan(var_name, source)
         }
-        false
     }
 
     /// Find a line containing a specific function call with the given variable
@@ -1340,63 +1350,24 @@ impl Str31C {
 
     /// Check if a variable traces back to argv (unbounded string source)
     fn traces_to_argv(&self, var_name: &str, source: &str) -> bool {
-        let lines: Vec<&str> = source.lines().collect();
-        for line in lines {
-            // Look for: char *name = argv[...] or const char *name = ... argv[...] ...
-            if line.contains(var_name)
-                && line.contains("argv")
-                && (line.contains("=") || line.contains("?"))
-            {
-                // Check if var_name appears before argv in assignment
-                if let Some(var_pos) = line.find(var_name) {
-                    if let Some(argv_pos) = line.find("argv") {
-                        if var_pos < argv_pos {
-                            return true; // var_name is assigned from argv
-                        }
-                    }
-                }
-            }
+        // Look for: char *name = argv[...] or const char *name = ... argv[...] ...
+        let index = self.line_index.borrow();
+        if index.is_of(source) {
+            index.assigned_from_argv(var_name)
+        } else {
+            buffer_size::assigned_from_argv_scan(var_name, source)
         }
-        false
     }
 
     /// Check if a variable name is a function parameter (makes sprintf %s unsafe)
     fn is_function_parameter(&self, var_name: &str, source: &str) -> bool {
-        let lines: Vec<&str> = source.lines().collect();
-        for line in lines {
-            // Look for function signatures like: void func(const char *name) or int main(int argc, char *argv[])
-            if line.contains("(") && line.contains(var_name) && line.contains(")") {
-                // Check if this looks like a function declaration/definition
-                if (line.contains("void ")
-                    || line.contains("int ")
-                    || line.contains("char ")
-                    || line.contains("const ")
-                    || line.contains("*")
-                    || line.contains("[]"))
-                    && !line.trim().starts_with("//")
-                {
-                    // Extract the part between ( and )
-                    if let Some(start) = line.find('(') {
-                        if let Some(end) = line.rfind(')') {
-                            if end > start {
-                                let params = &line[start + 1..end];
-                                // Check if var_name appears in the parameter list
-                                if params.contains(var_name) {
-                                    // Make sure it's a word boundary (not part of another word)
-                                    let words: Vec<&str> = params
-                                        .split(|c: char| !c.is_alphanumeric() && c != '_')
-                                        .collect();
-                                    if words.contains(&var_name) {
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        // Look for function signatures like: void func(const char *name) or int main(int argc, char *argv[])
+        let index = self.line_index.borrow();
+        if index.is_of(source) {
+            index.parameter_list_names(var_name)
+        } else {
+            buffer_size::parameter_list_names_scan(var_name, source)
         }
-        false
     }
 
     /// Unwrap a `parenthesized_expression` down to its inner expression
@@ -1785,19 +1756,22 @@ impl Str31C {
         source: &str,
         fn_range: Option<(usize, usize)>,
     ) -> bool {
-        let lines: Vec<&str> = source.lines().collect();
-        let (scan_start, scan_end) = match fn_range {
-            Some((s, e)) => (s, e.min(lines.len().saturating_sub(1))),
-            None => (0, lines.len().saturating_sub(1)),
+        // Only rows in the range are read, and only their order matters, so
+        // they are numbered from the range's start.
+        let (scan_start, scan_end) = fn_range.unwrap_or((0, usize::MAX));
+        let index = self.line_index.borrow();
+        let lines: Vec<&str> = if index.is_of(source) {
+            index.rows(source, scan_start, scan_end)
+        } else {
+            let all: Vec<&str> = source.lines().collect();
+            let end = scan_end.min(all.len().saturating_sub(1));
+            all.get(scan_start..=end).unwrap_or_default().to_vec()
         };
+        drop(index);
         let mut was_freed = false;
         let mut freed_row = 0;
 
         for (idx, line) in lines.iter().enumerate() {
-            if idx < scan_start || idx > scan_end {
-                continue;
-            }
-
             if line.contains("free") && line.contains(var_name) {
                 let pattern = format!(r"free\s*\(\s*{}\s*\)", regex::escape(var_name));
                 if let Some(re) = compiled(&pattern) {

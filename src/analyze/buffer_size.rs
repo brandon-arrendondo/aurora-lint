@@ -398,9 +398,23 @@ pub fn memset_content_length_in_range(
     end: usize,
 ) -> Option<usize> {
     let lines: Vec<&str> = source.lines().collect();
+    let upto = end.saturating_add(3).min(lines.len());
+    let count = end.min(lines.len()).saturating_sub(start);
+    memset_content_length_in_rows(var_name, lines.get(start..upto).unwrap_or_default(), count)
+}
+
+/// [`memset_content_length_in_range`] over the range's rows as
+/// [`FileLineIndex::rows`] returns them: `rows` runs from the range's first
+/// row through up to three rows past its end (the null terminator may
+/// follow the last fill), and `count` is how many of them are in the range.
+pub fn memset_content_length_in_rows(
+    var_name: &str,
+    lines: &[&str],
+    count: usize,
+) -> Option<usize> {
     let mut best_size: Option<usize> = None;
 
-    for i in start..std::cmp::min(end, lines.len()) {
+    for i in 0..std::cmp::min(count, lines.len()) {
         let trimmed = lines[i].trim();
 
         // Find wmemset( or memset( call
@@ -484,32 +498,45 @@ pub fn resolve_bare_alias_in_rows(var_name: &str, rows: &[&str]) -> Option<Strin
     static REMAINDER: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r"\A\s*=\s*(?:\([^)]*\)\s*)?(\w+)\s*;").unwrap()
     });
-    let Some(first) = var_name.chars().next() else {
+    if var_name.is_empty() {
         // An empty name leaves just `\b`, which no literal search mirrors.
         return bare_alias_by_pattern(var_name, rows);
-    };
+    }
     for line in rows {
-        let mut from = 0;
-        let mut found = None;
-        while let Some(at) = line[from..].find(var_name).map(|i| from + i) {
-            let boundary =
-                line[..at].chars().next_back().is_some_and(is_word_char) != is_word_char(first);
-            if boundary {
-                if let Some(caps) = REMAINDER.captures(&line[at + var_name.len()..]) {
-                    found = Some(caps);
-                    break;
-                }
-            }
-            // Occurrences may overlap, as the pattern's may.
-            from = at + first.len_utf8();
-        }
-        if let Some(caps) = found {
+        if let Some(caps) = captures_after_name(line, var_name, &REMAINDER) {
             let target = &caps[1];
             if target == var_name || target == "NULL" || target == "0" {
                 continue;
             }
             return Some(target.to_string());
         }
+    }
+    None
+}
+
+/// The leftmost match in `line` of `\b` + the literal `name` + `remainder`,
+/// as the captures of `remainder`, which must start with `\A`. This is the
+/// match a pattern compiled from `\b{regex::escape(name)}` and the rest
+/// would find, without compiling one per name: it is the first occurrence
+/// of `name` at a word boundary from which `remainder` matches. `name`
+/// must not be empty.
+pub fn captures_after_name<'h>(
+    line: &'h str,
+    name: &str,
+    remainder: &regex::Regex,
+) -> Option<regex::Captures<'h>> {
+    let first = name.chars().next()?;
+    let mut from = 0;
+    while let Some(at) = line[from..].find(name).map(|i| from + i) {
+        let boundary =
+            line[..at].chars().next_back().is_some_and(is_word_char) != is_word_char(first);
+        if boundary {
+            if let Some(caps) = remainder.captures(&line[at + name.len()..]) {
+                return Some(caps);
+            }
+        }
+        // Occurrences may overlap, as the pattern's may.
+        from = at + first.len_utf8();
     }
     None
 }
@@ -720,6 +747,16 @@ pub struct FileLineIndex {
     array_declaration_sizes: std::collections::HashMap<String, usize>,
     /// Byte offset of each line `source.lines()` yields.
     row_starts: Vec<usize>,
+    /// The only lines each text heuristic below can accept, in file order;
+    /// see the scan each answers for what it asks of a line.
+    quoted_assignment_lines: Vec<String>,
+    safe_realloc_lines: Vec<(usize, String)>,
+    string_copy_lines: Vec<(usize, String)>,
+    getenv_assignment_lines: Vec<String>,
+    argv_lines: Vec<String>,
+    /// Every piece [`parameter_list_names_scan`] splits a candidate line's
+    /// parameter text into.
+    parameter_list_names: std::collections::HashSet<String>,
 }
 
 impl FileLineIndex {
@@ -740,6 +777,32 @@ impl FileLineIndex {
         for piece in source.split_inclusive('\n') {
             row_starts.push(offset);
             offset += piece.len();
+        }
+        let mut quoted_assignment_lines = Vec::new();
+        let mut safe_realloc_lines = Vec::new();
+        let mut string_copy_lines = Vec::new();
+        let mut getenv_assignment_lines = Vec::new();
+        let mut argv_lines = Vec::new();
+        let mut parameter_list_names = std::collections::HashSet::new();
+        for (row, line) in source.lines().enumerate() {
+            if is_quoted_assignment_line(line) {
+                quoted_assignment_lines.push(line.to_string());
+            }
+            if is_safe_realloc_line(line) {
+                safe_realloc_lines.push((row, line.to_string()));
+            }
+            if is_string_copy_line(line) {
+                string_copy_lines.push((row, line.to_string()));
+            }
+            if is_getenv_assignment_line(line) {
+                getenv_assignment_lines.push(line.to_string());
+            }
+            if is_argv_line(line) {
+                argv_lines.push(line.to_string());
+            }
+            if let Some(names) = parameter_list_pieces(line) {
+                parameter_list_names.extend(names.map(str::to_string));
+            }
         }
         for line in source.lines() {
             if line.contains('[') && line.contains(']') {
@@ -795,7 +858,69 @@ impl FileLineIndex {
             largest_numeric_subscript,
             array_declaration_sizes,
             row_starts,
+            quoted_assignment_lines,
+            safe_realloc_lines,
+            string_copy_lines,
+            getenv_assignment_lines,
+            argv_lines,
+            parameter_list_names,
         }
+    }
+
+    /// [`memset_content_length_in_range`] of the indexed `source`, splitting
+    /// only the range and the three rows after it.
+    pub fn memset_content_length_in_range(
+        &self,
+        var_name: &str,
+        source: &str,
+        start: usize,
+        end: usize,
+    ) -> Option<usize> {
+        let rows = self.rows(source, start, end.saturating_add(2));
+        let count = end.min(self.row_starts.len()).saturating_sub(start);
+        memset_content_length_in_rows(var_name, &rows, count)
+    }
+
+    /// [`quoted_literal_length_scan`] of the indexed file.
+    pub fn quoted_literal_length(&self, name: &str) -> Option<usize> {
+        self.quoted_assignment_lines
+            .iter()
+            .filter(|line| line.contains(name))
+            .find_map(|line| quoted_literal_length_on(line))
+    }
+
+    /// [`prior_safe_realloc_scan`] of the indexed file.
+    pub fn prior_safe_realloc(&self, var_name: &str) -> bool {
+        let Some(realloc_row) = self
+            .safe_realloc_lines
+            .iter()
+            .find(|(_, line)| line.contains(var_name))
+            .map(|&(row, _)| row)
+        else {
+            return false;
+        };
+        self.string_copy_lines
+            .iter()
+            .any(|(row, line)| *row >= realloc_row && line.contains(var_name))
+    }
+
+    /// [`assigned_from_getenv_scan`] of the indexed file.
+    pub fn assigned_from_getenv(&self, var_name: &str) -> bool {
+        self.getenv_assignment_lines
+            .iter()
+            .any(|line| line.contains(var_name))
+    }
+
+    /// [`assigned_from_argv_scan`] of the indexed file.
+    pub fn assigned_from_argv(&self, var_name: &str) -> bool {
+        self.argv_lines
+            .iter()
+            .any(|line| names_before_argv(line, var_name))
+    }
+
+    /// [`parameter_list_names_scan`] of the indexed file.
+    pub fn parameter_list_names(&self, var_name: &str) -> bool {
+        self.parameter_list_names.contains(var_name)
     }
 
     /// The lines of the indexed `source` from row `start` to row `end`
@@ -885,6 +1010,126 @@ fn first_define_token<'d>(
 ) -> Option<&'d usize> {
     line.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .find_map(|token| defines.get(token))
+}
+
+/// A line with `=` and `"`: one [`quoted_literal_length_scan`] reads.
+fn is_quoted_assignment_line(line: &str) -> bool {
+    line.contains('=') && line.contains('"')
+}
+
+/// The length of the text between the first and last `"` on `line`.
+fn quoted_literal_length_on(line: &str) -> Option<usize> {
+    let start = line.find('"')?;
+    let end = line.rfind('"')?;
+    (end > start).then(|| line[start + 1..end].len())
+}
+
+/// The length of the quoted text on the first line of `source` that
+/// mentions `name`, holds `=`, and has two `"` to measure between: a crude
+/// reading of `char name[] = "string";`. Scans the whole file;
+/// [`FileLineIndex`] answers the same from one pass.
+pub fn quoted_literal_length_scan(name: &str, source: &str) -> Option<usize> {
+    source
+        .lines()
+        .filter(|line| line.contains(name) && is_quoted_assignment_line(line))
+        .find_map(quoted_literal_length_on)
+}
+
+/// A `realloc` line sized off `strlen` or a `new_size`.
+fn is_safe_realloc_line(line: &str) -> bool {
+    line.contains("realloc") && (line.contains("strlen") || line.contains("new_size"))
+}
+
+/// A line calling `strcpy` or `strcat`.
+fn is_string_copy_line(line: &str) -> bool {
+    line.contains("strcpy") || line.contains("strcat")
+}
+
+/// Whether, from the first line of `source` that mentions `var_name` in a
+/// `strlen`/`new_size`-sized `realloc`, some line on or after it mentions
+/// `var_name` in a `strcpy`/`strcat`. Scans the whole file;
+/// [`FileLineIndex`] answers the same from one pass.
+pub fn prior_safe_realloc_scan(var_name: &str, source: &str) -> bool {
+    let mut found_realloc = false;
+    for line in source.lines() {
+        if line.contains(var_name) && is_safe_realloc_line(line) {
+            found_realloc = true;
+        }
+        if found_realloc && is_string_copy_line(line) && line.contains(var_name) {
+            return true;
+        }
+    }
+    false
+}
+
+/// A line with `=` and `getenv`.
+fn is_getenv_assignment_line(line: &str) -> bool {
+    line.contains('=') && line.contains("getenv")
+}
+
+/// Whether some line of `source` mentions `var_name` with `=` and
+/// `getenv`. Scans the whole file; [`FileLineIndex`] answers the same from
+/// one pass.
+pub fn assigned_from_getenv_scan(var_name: &str, source: &str) -> bool {
+    source
+        .lines()
+        .any(|line| line.contains(var_name) && is_getenv_assignment_line(line))
+}
+
+/// A line with `argv` and `=` or `?`.
+fn is_argv_line(line: &str) -> bool {
+    line.contains("argv") && (line.contains('=') || line.contains('?'))
+}
+
+/// Whether `var_name` first occurs on `line` before `argv` first does.
+fn names_before_argv(line: &str, var_name: &str) -> bool {
+    match (line.find(var_name), line.find("argv")) {
+        (Some(var_pos), Some(argv_pos)) => var_pos < argv_pos,
+        _ => false,
+    }
+}
+
+/// Whether some `argv` line of `source` with `=` or `?` mentions `var_name`
+/// before `argv`, read as `var_name` being assigned from it. Scans the
+/// whole file; [`FileLineIndex`] answers the same from one pass.
+pub fn assigned_from_argv_scan(var_name: &str, source: &str) -> bool {
+    source
+        .lines()
+        .any(|line| is_argv_line(line) && names_before_argv(line, var_name))
+}
+
+/// The pieces of `line`'s text between its first `(` and last `)`, split
+/// at every character that is neither alphanumeric nor `_`, when the line
+/// looks like a function signature: it has both parentheses, a type-ish
+/// token (`void `, `int `, `char `, `const `, `*` or `[]`), and is not a
+/// `//` comment.
+fn parameter_list_pieces(line: &str) -> Option<impl Iterator<Item = &str>> {
+    if !(line.contains('(') && line.contains(')')) {
+        return None;
+    }
+    let typed = line.contains("void ")
+        || line.contains("int ")
+        || line.contains("char ")
+        || line.contains("const ")
+        || line.contains('*')
+        || line.contains("[]");
+    if !typed || line.trim().starts_with("//") {
+        return None;
+    }
+    let start = line.find('(')?;
+    let end = line.rfind(')')?;
+    (end > start).then(|| line[start + 1..end].split(|c: char| !c.is_alphanumeric() && c != '_'))
+}
+
+/// Whether `var_name` is one of the names in the parameter text of some
+/// signature-like line of `source` (see [`parameter_list_pieces`]). Scans
+/// the whole file; [`FileLineIndex`] answers the same from one pass.
+pub fn parameter_list_names_scan(var_name: &str, source: &str) -> bool {
+    source.lines().any(|line| {
+        line.contains(var_name)
+            && parameter_list_pieces(line)
+                .is_some_and(|mut pieces| pieces.any(|piece| piece == var_name))
+    })
 }
 
 /// Whether the text after a `var[...]` match makes it an element
@@ -1139,6 +1384,142 @@ mod tests {
                     bare_alias_by_pattern(var, &rows[start..]),
                     "resolve_bare_alias_in_rows({var:?}) from row {start}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn file_line_index_text_heuristics_agree_with_the_scans() {
+        let source = "void f(const char *src, int n) {\n\
+                      // void g(char *commented)\n\
+                      char name[] = \"hello\"; char other = \"x;\n\
+                      char *one = \"; char *one2 = \"abc\";\n\
+                      buf = realloc(buf, strlen(s) + 1);\n\
+                      strcpy(buf, s);\n\
+                      strcat(late, s); late = realloc(late, new_size);\n\
+                      p = realloc(p, new_size); strcpy(p, q);\n\
+                      char *env = getenv(\"HOME\");\n\
+                      char *arg = argc > 1 ? argv[1] : def;\n\
+                      argv_copy = argv; x = 1 ? argv : y;\n\
+                      int main(int argc, char *argv[]) {\n\
+                      int h(d\u{e9}j\u{e0} *w_1, char (*fp)(void)) {\n\
+                      call(a, b);\n\
+                      )( char *backwards\n\
+                      }\n";
+        let index = FileLineIndex::of(source);
+        let names = [
+            "name",
+            "other",
+            "one",
+            "one2",
+            "buf",
+            "late",
+            "p",
+            "q",
+            "env",
+            "arg",
+            "argv_copy",
+            "x",
+            "y",
+            "src",
+            "n",
+            "f",
+            "commented",
+            "argc",
+            "argv",
+            "w_1",
+            "d\u{e9}j\u{e0}",
+            "fp",
+            "void",
+            "a",
+            "b",
+            "backwards",
+            "s",
+            "",
+            "missing",
+        ];
+        for name in names {
+            assert_eq!(
+                index.quoted_literal_length(name),
+                quoted_literal_length_scan(name, source),
+                "quoted_literal_length({name:?})"
+            );
+            assert_eq!(
+                index.prior_safe_realloc(name),
+                prior_safe_realloc_scan(name, source),
+                "prior_safe_realloc({name:?})"
+            );
+            assert_eq!(
+                index.assigned_from_getenv(name),
+                assigned_from_getenv_scan(name, source),
+                "assigned_from_getenv({name:?})"
+            );
+            assert_eq!(
+                index.assigned_from_argv(name),
+                assigned_from_argv_scan(name, source),
+                "assigned_from_argv({name:?})"
+            );
+            assert_eq!(
+                index.parameter_list_names(name),
+                parameter_list_names_scan(name, source),
+                "parameter_list_names({name:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn file_line_index_memset_lengths_agree_with_the_scan() {
+        let source = "memset(a, 'A', 10);\na[10] = '\\0';\n\
+                      memset(b, 'B', 20 - 1);\n\n\nb[19] = '\\0';\n\
+                      wmemset(c, L'C', 5);\n\nc[5] = L'\\0';\n\
+                      memset(a, 'A', 30);\na[30] = '\\0';\n\
+                      memset(b, 'B', 7);\nb[7] = '\\0';";
+        let index = FileLineIndex::of(source);
+        let rows = source.lines().count();
+        for name in ["a", "b", "c", "d", ""] {
+            for start in 0..rows + 2 {
+                for end in (0..rows + 3).chain([usize::MAX]) {
+                    assert_eq!(
+                        index.memset_content_length_in_range(name, source, start, end),
+                        memset_content_length_in_range(name, source, start, end),
+                        "memset_content_length_in_range({name:?}, {start}, {end})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn name_then_remainder_matches_the_compiled_pattern() {
+        let remainder = regex::Regex::new(r"\A\s*=\s*(\w+)\s*\(([^;]*)\)\s*;").unwrap();
+        let lines = [
+            "data = relay(data);",
+            "xdata = a(b); data=src ( x , data ) ;",
+            "data = 5; data = f(g(data));",
+            "-a-a- = h(i);",
+            "d\u{e9}j\u{e0} = k(l); \u{e9}data = m(n);",
+            "data == f(x);",
+            "data = f(x)",
+            "",
+        ];
+        for name in [
+            "data",
+            "xdata",
+            "-a-",
+            "a",
+            "d\u{e9}j\u{e0}",
+            "\u{e9}data",
+            "j\u{e0}",
+        ] {
+            let pattern = format!(r"\b{}\s*=\s*(\w+)\s*\(([^;]*)\)\s*;", regex::escape(name));
+            let compiled = regex::Regex::new(&pattern).unwrap();
+            for line in lines {
+                let expected = compiled
+                    .captures(line)
+                    .map(|caps| (caps[1].to_string(), caps[2].to_string()));
+                let found = captures_after_name(line, name, &remainder)
+                    .map(|caps| (caps[1].to_string(), caps[2].to_string()));
+                assert_eq!(found, expected, "captures_after_name({line:?}, {name:?})");
             }
         }
     }
