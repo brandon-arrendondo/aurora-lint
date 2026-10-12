@@ -2,6 +2,7 @@
 // Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::check_macros::MacroDefinition;
 use crate::analyze::const_eval;
 use crate::analyze::context::{self, ProjectContext, ScopedTable};
 use crate::analyze::deallocator_candidates;
@@ -232,6 +233,133 @@ fn statement_in_block<'t>(node: &Node<'t>) -> Option<Node<'t>> {
             _ => stmt = parent,
         }
     }
+}
+
+/// Whether a call's `function` is a name that resolves to a function
+/// (ADR-0006): not a function pointer, a parameter, or a block-scope object
+/// that shadows a function of the same name. A name nothing in the file
+/// declares is a header's function or macro.
+fn names_a_function(function: &Node, source: &str) -> bool {
+    if function.kind() != "identifier" {
+        return false;
+    }
+    let name = ast_utils::get_node_text(function, source);
+    match ast_utils::resolve_identifier_binding(function, name, source) {
+        None => true,
+        Some(ast_utils::IdentifierBinding::Parameter(_)) => false,
+        Some(
+            ast_utils::IdentifierBinding::Local(decl) | ast_utils::IdentifierBinding::Global(decl),
+        ) => ast_utils::declaration_declarator_for(&decl, name, source)
+            .is_none_or(|d| declarator_utils::declares_function(&d)),
+    }
+}
+
+/// Whether no pointer can come out of a call's value: it is discarded
+/// (through a `(void)` cast), only tested (an operand of a comparison, `&&`,
+/// `||` or `!`, or a condition), or stored whole into an object declared
+/// with an arithmetic type (`ret = build(p, n);`, `int ret = ...`). Getting
+/// a pointer back out of an integer would take an explicit conversion,
+/// which is implementation-defined (C11 6.3.2.3p5).
+fn value_holds_no_pointer(call: &Node, source: &str) -> bool {
+    let mut n = *call;
+    while let Some(up) = n.parent() {
+        let is = |field: &str| {
+            up.child_by_field_name(field)
+                .is_some_and(|c| c.id() == n.id())
+        };
+        let operator = up
+            .child_by_field_name("operator")
+            .map(|o| ast_utils::get_node_text(&o, source));
+        match up.kind() {
+            "parenthesized_expression" => n = up,
+            "cast_expression"
+                if up
+                    .child_by_field_name("type")
+                    .is_some_and(|t| ast_utils::get_node_text(&t, source).trim() == "void") =>
+            {
+                n = up
+            }
+            "expression_statement" => return true,
+            "binary_expression" => {
+                return operator.is_some_and(|o| {
+                    matches!(o, "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||")
+                })
+            }
+            "unary_expression" => return operator == Some("!"),
+            "condition_clause" => return true,
+            "if_statement" | "while_statement" | "do_statement" => return is("condition"),
+            "assignment_expression" if operator == Some("=") && is("right") => {
+                return up
+                    .child_by_field_name("left")
+                    .is_some_and(|l| declared_arithmetic(&l, source))
+            }
+            "init_declarator" if is("value") => {
+                return up
+                    .child_by_field_name("declarator")
+                    .is_some_and(|d| declared_arithmetic(&d, source))
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Whether `ident` is a name declared as a plain object of a built-in
+/// arithmetic type (`int ret`, `unsigned long n`): not a pointer, an array,
+/// or a typedef that may hide one.
+fn declared_arithmetic(ident: &Node, source: &str) -> bool {
+    if ident.kind() != "identifier" {
+        return false;
+    }
+    let name = ast_utils::get_node_text(ident, source);
+    ast_utils::resolve_identifier_declarator(ident, name, source).is_some_and(|(decl, d)| {
+        let plain = d.kind() == "identifier"
+            || (d.kind() == "init_declarator"
+                && d.child_by_field_name("declarator")
+                    .is_some_and(|i| i.kind() == "identifier"));
+        plain
+            && decl
+                .child_by_field_name("type")
+                .is_some_and(|t| matches!(t.kind(), "primitive_type" | "sized_type_specifier"))
+    })
+}
+
+/// Whether control can enter or leave the byte range `[from, to)` of
+/// `func` other than at its ends or by `return`, or come back to its start
+/// once past its end: a `goto` inside it to a label outside it, one outside
+/// it to a label inside it, one after it back to a label before it (a loop
+/// around the whole range), a computed or unresolved `goto`, or a `case`
+/// label inside it of a `switch` that starts before it.
+fn jumps_cross(func: &Node, from: usize, to: usize, source: &str) -> bool {
+    let inside = |at: usize| at >= from && at < to;
+    let labels: HashMap<String, usize> =
+        query::find_descendants_of_kind(*func, "labeled_statement")
+            .into_iter()
+            .filter_map(|l| {
+                let label = l.child_by_field_name("label")?;
+                Some((
+                    ast_utils::get_node_text_owned(&label, source),
+                    l.start_byte(),
+                ))
+            })
+            .collect();
+    let gotos = query::find_descendants_of_kind(*func, "goto_statement");
+    let goto_crosses = gotos.iter().any(|goto| {
+        goto_target(goto, source)
+            .and_then(|label| labels.get(&label))
+            .is_none_or(|&target| {
+                inside(goto.start_byte()) != inside(target)
+                    || (target < from && goto.start_byte() >= to)
+            })
+    });
+    goto_crosses
+        || query::find_descendants_of_kind(*func, "case_statement")
+            .into_iter()
+            .filter(|case| inside(case.start_byte()))
+            .any(|case| {
+                query::find_ancestor(case, |a| a.kind() == "switch_statement")
+                    .is_none_or(|switch| switch.start_byte() < from)
+            })
 }
 
 /// What a function does to the object `ident` (declared at `decl_id`)
@@ -533,6 +661,9 @@ pub struct Mem31C {
     struct_typedef_aliases: RefCell<Arc<HashMap<String, String>>>,
     known_functions: RefCell<Arc<HashSet<String>>>,
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
+    /// Every `#define` across the scanned files
+    /// (`ProjectContext::macro_definitions`), object-like ones included.
+    macro_definitions: RefCell<Arc<HashMap<String, Vec<MacroDefinition>>>>,
     /// Cross-file noreturn function names from the prescan, unioned in
     /// `check` with the ones this file declares for itself. Held under each
     /// noreturn setting (`ByNoreturnTrust`); `settings` picks one.
@@ -563,6 +694,7 @@ impl Mem31C {
             struct_typedef_aliases: RefCell::new(Arc::new(HashMap::new())),
             known_functions: RefCell::new(Arc::new(HashSet::new())),
             function_macros: RefCell::new(Arc::new(HashMap::new())),
+            macro_definitions: RefCell::new(Arc::new(HashMap::new())),
             effects: RefCell::new(context::EffectView::default()),
             noreturn_functions: RefCell::default(),
             settings: RefCell::default(),
@@ -605,6 +737,7 @@ impl CertRule for Mem31C {
         *self.struct_typedef_aliases.borrow_mut() = context.struct_typedef_aliases.clone();
         *self.known_functions.borrow_mut() = context.known_functions.clone();
         *self.function_macros.borrow_mut() = context.function_macros.clone();
+        *self.macro_definitions.borrow_mut() = context.macro_definitions.clone();
         *self.effects.borrow_mut() = context.effects();
         *self.noreturn_functions.borrow_mut() = context.noreturn_functions.clone();
         *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
@@ -636,6 +769,7 @@ impl CertRule for Mem31C {
         let known_functions = self.known_functions.borrow();
         let function_macros = self.function_macros.borrow();
         let effects = self.effects.borrow();
+        let macro_definitions = self.macro_definitions.borrow();
         let mut conditional_macros = HashSet::clone(&self.project_conditional_macros.borrow());
         conditional_macros
             .extend(crate::analyze::check_macros::collect_conditional_macro_names(source));
@@ -730,6 +864,7 @@ impl CertRule for Mem31C {
             );
             analyzer.realloc_in_one_build = Some(&realloc_in_one_build);
             analyzer.effects = Some(&effects);
+            analyzer.macro_definitions = Some(&macro_definitions);
             analyzer.analyze_function(&func, source, &mut violations);
         }
 
@@ -922,6 +1057,9 @@ struct MemoryLeakAnalyzer<'a> {
     realloc_in_one_build: Option<&'a HashSet<String>>,
     // See `Mem31C::effects`; `None` with no project context.
     effects: Option<&'a context::EffectView>,
+    // Every `#define` across the scanned files, for the macros an element
+    // store's array may be changed through (`array_events`).
+    macro_definitions: Option<&'a HashMap<String, Vec<MacroDefinition>>>,
     // Where a call through one of `realloc_in_one_build` released each
     // variable, so a double free it causes says so rather than naming a
     // jump.
@@ -1312,6 +1450,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             conditional_macros,
             realloc_in_one_build: None,
             effects: None,
+            macro_definitions: None,
             released_in_one_build: HashMap::new(),
             released_by_some_definition: HashMap::new(),
             realloc_in_some_builds: HashSet::new(),
@@ -1677,20 +1816,30 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// the store's window and the end of the freeing loop.
     ///
     /// Occurrences are matched by declarator (ADR-0006) and read as:
-    /// - `A[x]` read: nothing.
+    /// - `A[x]` where its value is only read (an operand, an argument, a
+    ///   condition, an initializer, `A[x]->f`, `*A[x]`): nothing.
     /// - `A[x] = ...`, `A[x]++` other than this store: a change.
-    /// - `&A[x]`: refuses (the element's address can be written through).
+    /// - `A[x]` anywhere else (`&A[x]`, an `asm` operand): refuses, since
+    ///   the element can be written there or through what is handed on.
     /// - `sizeof A`: nothing.
     /// - `&A`, for an array object, as the destination of a zeroing call
     ///   (`memset`, `bzero`, `explicit_bzero`, or a function-like macro whose
-    ///   every definition forwards straight to one, as hostap's `os_memset`
-    ///   does): a change. Any other `&A` refuses: a callee handed it may keep
-    ///   it (`q = id(&p)`, `stash(&p)`) and write the elements later.
-    /// - `A` itself, decayed: allowed only as a call argument whose callee is
-    ///   proven to leave it alone (it does not store that parameter, and its
-    ///   effects are known and write nothing through it); otherwise refuses.
-    ///   That covers `memset(p, ...)`, `memcpy(p, ...)`, `clear_all(p)`,
+    ///   every definition is one such call on its own first parameter, as
+    ///   hostap's `os_memset` is): a change. Any other `&A` refuses: a
+    ///   callee handed it may keep it (`q = id(&p)`, `stash(&p)`) and write
+    ///   the elements later.
+    /// - `A` itself, decayed: allowed only as an argument of a call whose
+    ///   value holds no pointer (`value_holds_no_pointer`), to a function
+    ///   the name resolves to (not an object that shadows it) that provably
+    ///   leaves it alone ([`Self::leaves_argument_alone`]); otherwise
+    ///   refuses. That covers
+    ///   `memset(p, ...)`, `memcpy(p, ...)`, `clear_all(p)`, `q = id(p)`,
     ///   `p + 0`, `q = p` and a second store spelled `*(p + n)`.
+    ///
+    /// A macro invoked in the function whose definition spells `A`
+    /// (`#define CLR() (p[0] = NULL)`), directly or through another macro,
+    /// is a change where it is invoked: what it expands to is not in the
+    /// tree.
     fn array_events(&self, assign: &Node, left: &Node, source: &str) -> Option<Vec<usize>> {
         let array = peel_casts_and_parens(left.child_by_field_name("argument")?);
         let array_id = declarator_id(&array, source)?;
@@ -1715,9 +1864,30 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
             n
         }
+        let is_field = |node: &Node, field: &str, child: &Node| {
+            node.child_by_field_name(field)
+                .is_some_and(|c| c.id() == child.id())
+        };
+        let operator_is = |node: &Node, op: &str| {
+            node.child_by_field_name("operator")
+                .is_some_and(|o| ast_utils::get_node_text(&o, source) == op)
+        };
         let mut events = Vec::new();
-        for occurrence in query::find_descendants_of_kind(func, "identifier") {
-            if ast_utils::get_node_text(&occurrence, source) != name
+        let mut spelled = HashMap::new();
+        for occurrence in query::find_descendants(func, |n| {
+            matches!(
+                n.kind(),
+                "identifier" | "type_identifier" | "field_identifier"
+            )
+        }) {
+            let text = ast_utils::get_node_text(&occurrence, source);
+            if text != name {
+                if self.macro_spells(text, name, &mut spelled) {
+                    events.push(occurrence.start_byte());
+                }
+                continue;
+            }
+            if occurrence.kind() != "identifier"
                 || declarator_id(&occurrence, source) != Some(array_id)
             {
                 continue;
@@ -1728,25 +1898,40 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
             let at = climb(occurrence);
             let up = at.parent()?;
-            let is_field = |node: &Node, field: &str, child: &Node| {
-                node.child_by_field_name(field)
-                    .is_some_and(|c| c.id() == child.id())
-            };
             if up.kind() == "subscript_expression" && is_field(&up, "argument", &at) {
                 let element = climb(up);
                 let holder = element.parent()?;
-                if holder.kind() == "assignment_expression" && is_field(&holder, "left", &element) {
-                    if holder.id() != assign.id() {
-                        events.push(holder.start_byte());
+                match holder.kind() {
+                    "assignment_expression" if is_field(&holder, "left", &element) => {
+                        if holder.id() != assign.id() {
+                            events.push(holder.start_byte());
+                        }
                     }
-                } else if holder.kind() == "update_expression" {
-                    events.push(holder.start_byte());
-                } else if holder.kind() == "pointer_expression"
-                    && holder
-                        .child_by_field_name("operator")
-                        .is_some_and(|o| ast_utils::get_node_text(&o, source) == "&")
-                {
-                    return None;
+                    "update_expression" => events.push(holder.start_byte()),
+                    "pointer_expression" if operator_is(&holder, "*") => {}
+                    "assignment_expression"
+                    | "argument_list"
+                    | "binary_expression"
+                    | "unary_expression"
+                    | "cast_expression"
+                    | "conditional_expression"
+                    | "comma_expression"
+                    | "init_declarator"
+                    | "initializer_list"
+                    | "initializer_pair"
+                    | "return_statement"
+                    | "expression_statement"
+                    | "field_expression"
+                    | "subscript_expression"
+                    | "call_expression"
+                    | "sizeof_expression"
+                    | "condition_clause"
+                    | "if_statement"
+                    | "while_statement"
+                    | "do_statement"
+                    | "for_statement"
+                    | "switch_statement" => {}
+                    _ => return None,
                 }
                 continue;
             }
@@ -1755,10 +1940,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
             // `&A` or a decayed `A`: the expression handed on, then the call
             // it is an argument of, through casts and parentheses.
-            let address = up.kind() == "pointer_expression"
-                && up
-                    .child_by_field_name("operator")
-                    .is_some_and(|o| ast_utils::get_node_text(&o, source) == "&");
+            let address = up.kind() == "pointer_expression" && operator_is(&up, "&");
             let mut arg = if address { up } else { at };
             while let Some(next) = arg
                 .parent()
@@ -1772,24 +1954,59 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 .and_then(|l| l.parent())?;
             let index = Self::call_args(call).position(|a| a.id() == arg.id())?;
             let function = call.child_by_field_name("function")?;
+            if !names_a_function(&function, source) {
+                return None;
+            }
             let callee = self.callee_name(&function, source);
             if address {
                 if !is_array_object || index != 0 || !self.is_zeroing_call(&callee) {
                     return None;
                 }
                 events.push(call.start_byte());
-            } else if !self.leaves_argument_alone(&callee, index, site_of(&call, source)) {
+            } else if !value_holds_no_pointer(&call, source)
+                || !self.leaves_argument_alone(&callee, index, site_of(&call, source))
+            {
                 return None;
             }
         }
         Some(events)
     }
 
+    /// Whether the definitions of the macro `macro_name` spell `name`, in
+    /// their own text or through a macro they invoke; a parameter of the
+    /// same name does not count, and an unreadable definition (`##`,
+    /// variadic) does. `false` for a name no `#define` defines. `memo`
+    /// holds the answers so far for this `name`; a macro already being
+    /// expanded counts as not spelling it, as the preprocessor does not
+    /// expand it again inside itself.
+    fn macro_spells(&self, macro_name: &str, name: &str, memo: &mut HashMap<String, bool>) -> bool {
+        if let Some(&known) = memo.get(macro_name) {
+            return known;
+        }
+        let Some(defs) = self.macro_definitions.and_then(|d| d.get(macro_name)) else {
+            return false;
+        };
+        memo.insert(macro_name.to_string(), false);
+        let spells = defs.iter().any(|def| {
+            let (params, body): (&[String], &str) = match def {
+                MacroDefinition::Function { params, body } => (params, body),
+                MacroDefinition::Object { body } => (&[], body),
+                MacroDefinition::Opaque => return true,
+            };
+            body.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|t| !t.is_empty() && !params.iter().any(|p| p == t))
+                .any(|t| t == name || self.macro_spells(t, name, memo))
+        });
+        memo.insert(macro_name.to_string(), spells);
+        spells
+    }
+
     /// Whether a call to `callee` only zeroes the object its first argument
     /// points to and keeps no pointer: `memset`, `bzero`, `explicit_bzero`,
-    /// or a function-like macro whose every definition is a call to one of
-    /// them on its own first parameter (`#define os_memset(s, c, n)
-    /// memset(s, c, n)`).
+    /// or a function-like macro whose every definition is exactly one call
+    /// to one of them, its own first parameter the first argument and named
+    /// nowhere else (`#define os_memset(s, c, n) memset(s, c, n)`, not
+    /// `memset(s, c, n), stash(s)`).
     fn is_zeroing_call(&self, callee: &str) -> bool {
         const ZEROING: &[&str] = &["memset", "bzero", "explicit_bzero"];
         if ZEROING.contains(&callee) {
@@ -1803,12 +2020,24 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             let Some(first) = m.params.first() else {
                 return false;
             };
+            let names_first = body
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|t| t == first)
+                .count();
             ZEROING.iter().any(|z| {
                 body.strip_prefix(&format!("{z}("))
                     .and_then(|rest| rest.strip_suffix(')'))
                     .is_some_and(|args| {
+                        // The call's own `(` closes only at the final `)`.
+                        let balanced = args.chars().try_fold(0usize, |depth, c| match c {
+                            '(' => Some(depth + 1),
+                            ')' => depth.checked_sub(1),
+                            _ => Some(depth),
+                        }) == Some(0);
                         let lead = args.split(',').next().unwrap_or("");
-                        lead == first.as_str() || lead == format!("({first})")
+                        balanced
+                            && names_first == 1
+                            && (lead == first.as_str() || lead == format!("({first})"))
                     })
             })
         };
@@ -1820,9 +2049,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     }
 
     /// Whether `callee`, handed an array as argument `index`, provably leaves
-    /// its elements alone: its summary does not store that parameter, and
-    /// its closed effects are known, not opaque, and write nothing through
-    /// it.
+    /// its elements alone and keeps no way to reach them. Its summary does
+    /// not store that parameter, and its closed effects are known (not
+    /// opaque) and write nothing at all: no location, not even one in a
+    /// caller's frame, and no library call with a side effect (`memset`,
+    /// `memcpy`), whose writes through its arguments the effects do not
+    /// record. Nothing written means no pointer derived from the argument
+    /// (`v + 0`, a local copy) is stored anywhere; the caller checks that
+    /// none comes back as the call's value.
     fn leaves_argument_alone(&self, callee: &str, index: usize, site: Site) -> bool {
         let (Some(summary), Some(effects)) = (
             self.summary_at(callee, site),
@@ -1832,9 +2066,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         };
         !summary.stores_params.contains(&index)
             && !effects.opaque
-            && !effects
-                .writes
-                .contains(&crate::analyze::side_effects::Loc::ParamPointee(index))
+            && !effects.lib_side_effect
+            && !effects.writes_any
+            && effects.writes.is_empty()
     }
 
     /// `for (i = 0; i < K; i++) dealloc(A[i]);` releases every element an
@@ -1856,6 +2090,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// credits nothing. hostap's `sme.c` fills `hlp[num_hlp]` with
     /// `wpabuf_alloc` and frees with `for (i = 0; i < num_hlp; i++)
     /// wpabuf_free(hlp[i]);`.
+    ///
+    /// Nothing from the store's window to the end of the loop (or of an
+    /// outer loop around the freeing loop but not the store) may change the
+    /// array (`array_events`), and control may enter or leave that stretch
+    /// only through its ends (`jumps_cross`): otherwise a path from the store
+    /// to the free can run a change outside it.
     ///
     /// Run after the loop's exits are merged, which keeps only what holds
     /// on every path out.
@@ -1964,6 +2204,27 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         }
         let loop_start = loop_node.start_byte();
         let loop_end = loop_node.end_byte();
+        // The loops around the freeing loop. One that does not also hold the
+        // store runs what follows the freeing loop before it frees again.
+        let mut around: Vec<(usize, usize)> = Vec::new();
+        let mut up = loop_node.parent();
+        while let Some(n) = up.filter(|n| n.id() != func.id()) {
+            if matches!(
+                n.kind(),
+                "for_statement" | "while_statement" | "do_statement"
+            ) {
+                around.push((n.start_byte(), n.end_byte()));
+            }
+            up = n.parent();
+        }
+        // Where the stretch a store's credit depends on ends.
+        let covered_end = |store_start: usize| {
+            around
+                .iter()
+                .filter(|&&(start, end)| !(start <= store_start && store_start < end))
+                .map(|&(_, end)| end)
+                .fold(loop_end, usize::max)
+        };
         freed.retain(|(array_id, _)| !written_arrays.contains(array_id));
         for (array_id, at) in freed {
             let keys: Vec<String> = self
@@ -1977,7 +2238,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         && !store
                             .array_events
                             .iter()
-                            .any(|&e| e >= store.window && e < loop_end)
+                            .any(|&e| e >= store.window && e < covered_end(store.store_start))
+                        && !jumps_cross(&func, store.window, covered_end(store.store_start), source)
                         && self.allocated_memory.contains_key(*key)
                 })
                 .map(|(key, _)| key.clone())
