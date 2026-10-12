@@ -7,16 +7,47 @@
 //! 1. A thread detaches itself (thrd_detach(thrd_current())) and is later joined
 //! 2. A thread is joined or detached multiple times
 //!
+//! Detected form: a thread whose start routine detaches itself
+//! (`thrd_detach(thrd_current())`, `pthread_detach(pthread_self())`) and
+//! whose handle is later joined.
+//!
+//! ## Detection Strategy:
+//! - Find thread creation, join and detach calls and the self handle by
+//!   their thread-API contract (`thread_api::thread_op`): C11, POSIX and any
+//!   declared family
+//! - The self-detaching functions are those this file defines that detach
+//!   the calling thread's own handle (`thread_api::is_own_thread`)
+//! - A creation starts its thread in the function its entry operand names,
+//!   resolved by declaration (`ThreadCall::entry_function`), not by the
+//!   arguments' text
+//! - Report a creation whose start routine self-detaches when the same
+//!   handle (`thread_api::sync_object`) is joined anywhere in the file
+//!
+//! A double join, or a detach then a join, of one handle in the creating
+//! code is not detected: telling them from joins on exclusive paths needs
+//! the control-flow graph.
+//!
 //! References:
 //! - <https://wiki.sei.cmu.edu/confluence/display/c/CON39-C.+Do+not+join+or+detach+a+thread+that+was+previously+joined+or+detached>
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::cfg::get_function_name;
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::settings::threads::{Role, ThreadOpKind};
+use crate::utility::cert_c::ast_utils::find_containing_function;
+use crate::utility::cert_c::thread_api::{self, ProjectFunctions, SyncObject};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::HashSet;
 use tree_sitter::Node;
 
-pub struct Con39C;
+#[derive(Default)]
+pub struct Con39C {
+    /// The project's function definitions in every scanned file, for a
+    /// library name the project defines itself.
+    project: RefCell<Option<ProjectFunctions>>,
+}
 
 impl CertRule for Con39C {
     fn rule_id(&self) -> &'static str {
@@ -35,162 +66,70 @@ impl CertRule for Con39C {
         "CON39-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = Some(context.function_summaries.clone());
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
+        let project = self.project.borrow();
+        let project = project.as_ref();
 
-        // Check for self-detaching threads
-        check_for_self_detach(node, source, &mut violations);
-
-        violations
-    }
-}
-
-/// Check for threads that detach themselves using thrd_detach(thrd_current())
-///
-/// This is problematic because the main thread or another thread may attempt to join
-/// this thread, which would result in undefined behavior.
-fn check_for_self_detach(node: &Node, file_content: &str, violations: &mut Vec<RuleViolation>) {
-    let mut cursor = node.walk();
-
-    // First pass: find all function definitions
-    for func_node in node.children(&mut cursor) {
-        if func_node.kind() == "function_definition" {
-            // Check if this function contains thrd_detach(thrd_current())
-            if contains_self_detach(&func_node, file_content) {
-                // This is a thread function that detaches itself
-                // Look for any thrd_create calls that might create this thread
-                check_thread_usage(&func_node, file_content, violations);
-            }
-        }
-    }
-}
-
-/// Check if a function contains a call to thrd_detach(thrd_current())
-fn contains_self_detach(func_node: &Node, file_content: &str) -> bool {
-    check_node_for_self_detach(func_node, file_content)
-}
-
-/// Recursively check a node and its children for thrd_detach(thrd_current())
-fn check_node_for_self_detach(node: &Node, file_content: &str) -> bool {
-    query::find_first_descendant(*node, |n| {
-        if n.kind() != "call_expression" {
-            return false;
-        }
-        let Some(func_name_node) = n.child_by_field_name("function") else {
-            return false;
-        };
-        let fn_name = get_node_text(&func_name_node, file_content);
-        if fn_name != "thrd_detach" && fn_name != "pthread_detach" {
-            return false;
-        }
-        let Some(args_node) = n.child_by_field_name("arguments") else {
-            return false;
-        };
-        let args_text = get_node_text(&args_node, file_content);
-        args_text.contains("thrd_current()") || args_text.contains("pthread_self()")
-    })
-    .is_some()
-}
-
-/// Check if a thread function that self-detaches is being used with thrd_create and thrd_join
-fn check_thread_usage(func_node: &Node, file_content: &str, violations: &mut Vec<RuleViolation>) {
-    // Get the function name
-    let func_name = if let Some(declarator) = func_node.child_by_field_name("declarator") {
-        get_function_name(&declarator, file_content)
-    } else {
-        return;
-    };
-
-    if func_name.is_empty() {
-        return;
-    }
-
-    // Now search the entire file for thrd_create calls using this function
-    let root = func_node.parent().unwrap_or(*func_node);
-    search_for_thread_create(&root, &func_name, file_content, violations);
-}
-
-/// Recursively search for thrd_create calls
-fn search_for_thread_create(
-    node: &Node,
-    func_name: &str,
-    file_content: &str,
-    violations: &mut Vec<RuleViolation>,
-) {
-    for n in query::find_descendants_of_kind(*node, "call_expression") {
-        if let Some(fn_node) = n.child_by_field_name("function") {
-            let fn_name = get_node_text(&fn_node, file_content);
-            if fn_name == "thrd_create" || fn_name == "pthread_create" {
-                // Check if this creates the thread with our function
-                if let Some(args) = n.child_by_field_name("arguments") {
-                    let args_text = get_node_text(&args, file_content);
-                    if args_text.contains(func_name) {
-                        // Found a thrd_create for this function
-                        // Now check if there's a thrd_join in the same function scope
-                        if check_for_join_after_create(&n, file_content) {
-                            let start_pos = n.start_position();
-                            let line = start_pos.row + 1;
-                            let column = start_pos.column + 1;
-
-                            violations.push(RuleViolation {
-                                rule_id: "CON39-C".to_string(),
-                                severity: Severity::Low,
-                                file_path: String::new(),
-                                line,
-                                column,
-                                message: format!(
-                                    "Thread created with function '{}' that detaches itself, but is later joined, causing undefined behavior",
-                                    func_name
-                                ),
-                                suggestion: None,
-                                requires_manual_review: None,
-                            });
-                        }
+        let mut self_detaching: HashSet<String> = HashSet::new();
+        let mut joined: HashSet<SyncObject> = HashSet::new();
+        let mut creations = Vec::new();
+        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
+            let Some(call) = thread_api::thread_op(&call_node, source, project) else {
+                continue;
+            };
+            let Some(handle) = call.operand(Role::Handle) else {
+                continue;
+            };
+            match call.kind() {
+                ThreadOpKind::ThreadDetach
+                    if thread_api::is_own_thread(&handle, source, project) =>
+                {
+                    if let Some(name) = find_containing_function(&call_node)
+                        .and_then(|f| get_function_name(&f, source))
+                    {
+                        self_detaching.insert(name.to_string());
                     }
                 }
+                ThreadOpKind::ThreadJoin => {
+                    if let Some(object) = thread_api::sync_object(&handle, source) {
+                        joined.insert(object);
+                    }
+                }
+                ThreadOpKind::ThreadCreate => {
+                    if let (Some(entry), Some(object)) = (
+                        call.entry_function(source),
+                        thread_api::sync_object(&handle, source),
+                    ) {
+                        creations.push((call_node, entry, object));
+                    }
+                }
+                _ => {}
             }
         }
-    }
-}
 
-/// Extract function name from a declarator node
-fn get_function_name(declarator: &Node, file_content: &str) -> String {
-    find_identifier_in_node(declarator, file_content).unwrap_or_default()
-}
-
-/// Recursively search for an identifier node
-fn find_identifier_in_node(node: &Node, file_content: &str) -> Option<String> {
-    query::find_first_descendant(*node, |n| n.kind() == "identifier")
-        .map(|n| get_node_text(&n, file_content).to_string())
-}
-
-/// Check if there's a thrd_join call in the same scope as the thrd_create
-fn check_for_join_after_create(create_node: &Node, file_content: &str) -> bool {
-    // Navigate up to find the containing function
-    let mut parent = create_node.parent();
-
-    while let Some(p) = parent {
-        if p.kind() == "function_definition" {
-            // Found the containing function, now search for thrd_join
-            return find_thrd_join_in_node(&p, file_content);
+        let mut violations = Vec::new();
+        for (call_node, entry, handle) in creations {
+            if !self_detaching.contains(&entry) || !joined.contains(&handle) {
+                continue;
+            }
+            let start_pos = call_node.start_position();
+            violations.push(RuleViolation {
+                rule_id: "CON39-C".to_string(),
+                severity: Severity::Low,
+                file_path: String::new(),
+                line: start_pos.row + 1,
+                column: start_pos.column + 1,
+                message: format!(
+                    "Thread created with function '{entry}' that detaches itself, but is later joined, causing undefined behavior"
+                ),
+                suggestion: None,
+                requires_manual_review: None,
+            });
         }
-        parent = p.parent();
+        violations
     }
-
-    false
-}
-
-/// Recursively search for thrd_join calls
-fn find_thrd_join_in_node(node: &Node, file_content: &str) -> bool {
-    query::find_first_descendant(*node, |n| {
-        if n.kind() != "call_expression" {
-            return false;
-        }
-        let Some(fn_node) = n.child_by_field_name("function") else {
-            return false;
-        };
-        let fn_name = get_node_text(&fn_node, file_content);
-        fn_name == "thrd_join" || fn_name == "pthread_join"
-    })
-    .is_some()
 }
