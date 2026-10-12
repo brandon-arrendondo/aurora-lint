@@ -228,16 +228,28 @@ impl Str31C {
             }
         }
 
-        let lines: Vec<&str> = source.lines().collect();
-
-        if let Some(size) = Self::find_array_declaration_size(var_name, &lines) {
-            return Some(size);
-        }
-
         // Restrict dynamic-allocation scans to the enclosing function to prevent cross-function
         // pollution (e.g. bad-section malloc(50) bleeding into good-section analysis).
-        let fn_start = fn_range.map_or(0, |(s, _)| s);
-        let fn_end = fn_range.map_or(lines.len().saturating_sub(1), |(_, e)| e);
+        // The finders below read only rows `fn_start..=fn_end`, so they are
+        // handed just those rows, numbered from 0; with the file's index
+        // nothing else of the file is split.
+        let (fn_start, fn_end) = fn_range.unwrap_or((0, usize::MAX));
+        let index = self.line_index.borrow();
+        let lines: Vec<&str> = if index.is_of(source) {
+            if let Some(size) = index.array_declaration_size(var_name, source) {
+                return Some(size);
+            }
+            index.rows(source, fn_start, fn_end)
+        } else {
+            let lines: Vec<&str> = source.lines().collect();
+            if let Some(size) = buffer_size::array_declaration_size_scan(var_name, &lines) {
+                return Some(size);
+            }
+            let end = fn_end.min(lines.len().saturating_sub(1));
+            lines.get(fn_start..=end).unwrap_or_default().to_vec()
+        };
+        drop(index);
+        let (fn_start, fn_end) = (0, lines.len().saturating_sub(1));
 
         if let Some(size) = Self::find_strlen_based_alloc_size(var_name, &lines, fn_start, fn_end) {
             return Some(size);
@@ -249,68 +261,6 @@ impl Str31C {
             return Some(size);
         }
         Self::find_alloca_size(var_name, &lines, fn_start, fn_end)
-    }
-
-    /// Look for array declarations like `char var_name[SIZE]` or
-    /// `char var_name[N*M]`. Skips element-assignment lines like
-    /// `data[0] = '\0'` — those are subscript writes, not declarations, and
-    /// the captured index (0) is not the buffer size.
-    fn find_array_declaration_size(var_name: &str, lines: &[&str]) -> Option<usize> {
-        /// Scalar RHS after `]=` = char/wide-char literal, number, or NULL —
-        /// signals an element assignment rather than a declaration initializer.
-        fn is_element_assign_rhs(after: &str) -> bool {
-            after.starts_with('=') && {
-                let rhs = after[1..].trim_start();
-                rhs.starts_with('\'')
-                    || rhs.starts_with("L'")
-                    || rhs.starts_with("u'")
-                    || rhs.starts_with("U'")
-                    || rhs.chars().next().is_some_and(|c| c.is_ascii_digit())
-                    || rhs.starts_with("NULL")
-                    || rhs.starts_with("nullptr")
-            }
-        }
-
-        for line in lines {
-            if !(line.contains(var_name) && line.contains('[') && line.contains(']')) {
-                continue;
-            }
-            // Try simple numeric size first: var_name[N]
-            let pattern = format!(r"\b{}\s*\[\s*(\d+)\s*\]", regex::escape(var_name));
-            if let Some(re) = compiled(&pattern) {
-                if let Some(captures) = re.captures(line) {
-                    let match_end = captures.get(0).unwrap().end();
-                    let after = line[match_end..].trim_start();
-                    if !is_element_assign_rhs(after) {
-                        if let Ok(size) = captures[1].parse::<usize>() {
-                            return Some(size);
-                        }
-                    }
-                }
-            }
-            // Try arithmetic expression: var_name[N*M] or var_name[N+M] or var_name[N-M]
-            let arith_pattern = format!(
-                r"\b{}\s*\[\s*(\d+)\s*([*+\-])\s*(\d+)\s*\]",
-                regex::escape(var_name)
-            );
-            if let Some(re) = compiled(&arith_pattern) {
-                if let Some(captures) = re.captures(line) {
-                    let match_end = captures.get(0).unwrap().end();
-                    let after = line[match_end..].trim_start();
-                    if !is_element_assign_rhs(after) {
-                        let size = buffer_size::eval_arith(
-                            captures[1].parse().ok(),
-                            Some(&captures[2]),
-                            captures[3].parse().ok(),
-                        );
-                        if let Some(s) = size {
-                            return Some(s);
-                        }
-                    }
-                }
-            }
-        }
-        None
     }
 
     /// Look for malloc/calloc assignments with `strlen`/`wcslen` + 1 →
@@ -534,12 +484,13 @@ impl Str31C {
     /// Matches `var_name = otherIdentifier;` (no arithmetic/pointer offset).
     /// Returns the alias target name if found.
     fn resolve_pointer_alias_in_function(
+        &self,
         call_node: &Node,
         var_name: &str,
         source: &str,
     ) -> Option<String> {
         let fn_range = Self::find_enclosing_function_lines(call_node)?;
-        Self::resolve_pointer_alias_in_range(var_name, fn_range, source)
+        self.resolve_pointer_alias_in_range(var_name, fn_range, source)
     }
 
     /// Line-range-based core of [`Self::resolve_pointer_alias_in_function`],
@@ -550,13 +501,21 @@ impl Str31C {
     ///
     /// Delegates to [`buffer_size::resolve_bare_alias_in_range`]:
     /// this used to be an independent, near-identical regex re-implementation
-    /// of that shared helper.
+    /// of that shared helper. The rows come from the file's index when
+    /// `source` is the file being checked, so only the range is split.
     fn resolve_pointer_alias_in_range(
+        &self,
         var_name: &str,
         (start_line, end_line): (usize, usize),
         source: &str,
     ) -> Option<String> {
-        buffer_size::resolve_bare_alias_in_range(var_name, source, start_line, end_line)
+        let index = self.line_index.borrow();
+        if index.is_of(source) {
+            let rows = index.rows(source, start_line, end_line);
+            buffer_size::resolve_bare_alias_in_rows(var_name, &rows)
+        } else {
+            buffer_size::resolve_bare_alias_in_range(var_name, source, start_line, end_line)
+        }
     }
 
     /// Try find_buffer_size for a variable, falling back to alias resolution.
@@ -575,7 +534,7 @@ impl Str31C {
         }
         // Try alias resolution (one level)
         if let Some(alias_target) =
-            Self::resolve_pointer_alias_in_function(call_node, var_name, source)
+            self.resolve_pointer_alias_in_function(call_node, var_name, source)
         {
             if let Some(size) =
                 self.find_buffer_size(&alias_target, root, source, fn_range, Some(call_node))
@@ -694,7 +653,7 @@ impl Str31C {
             // reassignment (`data = buf - 8;`, the Juliet CWE-124
             // underwrite flaw) does not match this alias regex, so the
             // flawed branch correctly stays unresolved here.
-            let alias = Self::resolve_pointer_alias_in_range(param_name, callee_range, source)?;
+            let alias = self.resolve_pointer_alias_in_range(param_name, callee_range, source)?;
             return self.find_buffer_size(&alias, root, source, Some(callee_range), None);
         }
 
@@ -733,7 +692,7 @@ impl Str31C {
             let size = match self.find_buffer_size(&target, root, source, Some(fn_range), None) {
                 Some(size) => size,
                 None => {
-                    let alias2 = Self::resolve_pointer_alias_in_range(&target, fn_range, source)?;
+                    let alias2 = self.resolve_pointer_alias_in_range(&target, fn_range, source)?;
                     self.find_buffer_size(&alias2, root, source, Some(fn_range), None)?
                 }
             };

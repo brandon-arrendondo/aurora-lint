@@ -468,14 +468,27 @@ pub fn resolve_bare_alias_in_range(
     end: usize,
 ) -> Option<String> {
     let lines: Vec<&str> = source.lines().collect();
-    let pattern = format!(
-        r"\b{}\s*=\s*(?:\([^)]*\)\s*)?(\w+)\s*;",
-        regex::escape(var_name)
-    );
-    let re = regex::Regex::new(&pattern).ok()?;
     let end = end.min(lines.len().saturating_sub(1));
-    for line in lines.get(start..=end).unwrap_or_default() {
-        if let Some(caps) = re.captures(line) {
+    resolve_bare_alias_in_rows(var_name, lines.get(start..=end).unwrap_or_default())
+}
+
+/// [`resolve_bare_alias_in_range`] over rows already cut to the range, as
+/// [`FileLineIndex::rows`] returns them. The pattern compiles only once a
+/// row mentions `var_name`, which any match must.
+pub fn resolve_bare_alias_in_rows(var_name: &str, rows: &[&str]) -> Option<String> {
+    let mut re: Option<regex::Regex> = None;
+    for line in rows {
+        if !line.contains(var_name) {
+            continue;
+        }
+        if re.is_none() {
+            let pattern = format!(
+                r"\b{}\s*=\s*(?:\([^)]*\)\s*)?(\w+)\s*;",
+                regex::escape(var_name)
+            );
+            re = Some(regex::Regex::new(&pattern).ok()?);
+        }
+        if let Some(caps) = re.as_ref().and_then(|re| re.captures(line)) {
             let target = &caps[1];
             if target == var_name || target == "NULL" || target == "0" {
                 continue;
@@ -658,6 +671,11 @@ pub struct FileLineIndex {
     /// For each word, the largest `N` among lines whose first `word[N]` has
     /// a decimal `N` that fits a `usize`.
     largest_numeric_subscript: std::collections::HashMap<String, usize>,
+    /// For each word, what [`array_declaration_size_scan`] returns for it,
+    /// where that is a size.
+    array_declaration_sizes: std::collections::HashMap<String, usize>,
+    /// Byte offset of each line `source.lines()` yields.
+    row_starts: Vec<usize>,
 }
 
 impl FileLineIndex {
@@ -665,22 +683,46 @@ impl FileLineIndex {
     pub fn of(source: &str) -> Self {
         static SUBSCRIPT: std::sync::LazyLock<regex::Regex> =
             std::sync::LazyLock::new(|| regex::Regex::new(r"\b(\w+)\s*\[\s*(\d+)\s*\]").unwrap());
+        static ARITH_SUBSCRIPT: std::sync::LazyLock<regex::Regex> =
+            std::sync::LazyLock::new(|| {
+                regex::Regex::new(r"\b(\w+)\s*\[\s*(\d+)\s*([*+\-])\s*(\d+)\s*\]").unwrap()
+            });
         let defines = numeric_defines(source);
         let mut define_sized_lines = Vec::new();
         let mut largest_numeric_subscript = std::collections::HashMap::new();
+        let mut array_declaration_sizes = std::collections::HashMap::new();
+        let mut row_starts = Vec::new();
+        let mut offset = 0;
+        for piece in source.split_inclusive('\n') {
+            row_starts.push(offset);
+            offset += piece.len();
+        }
         for line in source.lines() {
             if line.contains('[') && line.contains(']') {
                 if let Some(&value) = first_define_token(line, &defines) {
                     define_sized_lines.push((line.to_string(), value));
                 }
             }
-            let mut seen = std::collections::HashSet::new();
+            // A word's first `word[N]` and first `word[N op M]` on the line,
+            // as the per-word patterns' leftmost matches would find them.
+            // Inside either match only a digit run starts a word, and it is
+            // never followed by `[`, so no match hides another word's.
+            let mut first_numeric: Vec<(&str, regex::Captures)> = Vec::new();
             for caps in SUBSCRIPT.captures_iter(line) {
                 let word = caps.get(1).unwrap().as_str();
-                // Only a word's first subscript on a line counts.
-                if !seen.insert(word) {
-                    continue;
+                if first_numeric.iter().all(|(seen, _)| *seen != word) {
+                    first_numeric.push((word, caps));
                 }
+            }
+            let mut first_arith: Vec<(&str, regex::Captures)> = Vec::new();
+            for caps in ARITH_SUBSCRIPT.captures_iter(line) {
+                let word = caps.get(1).unwrap().as_str();
+                if first_arith.iter().all(|(seen, _)| *seen != word) {
+                    first_arith.push((word, caps));
+                }
+            }
+            for (word, caps) in &first_numeric {
+                // Only a word's first subscript on a line counts.
                 if let Ok(size) = caps[2].parse::<usize>() {
                     let largest = largest_numeric_subscript
                         .entry(word.to_string())
@@ -688,11 +730,57 @@ impl FileLineIndex {
                     *largest = (*largest).max(size);
                 }
             }
+            let words = first_numeric.iter().chain(&first_arith).map(|(w, _)| *w);
+            for word in words {
+                if array_declaration_sizes.contains_key(word) {
+                    continue;
+                }
+                let numeric = first_numeric.iter().find(|(w, _)| *w == word);
+                let arith = first_arith.iter().find(|(w, _)| *w == word);
+                let size = numeric
+                    .and_then(|(_, caps)| numeric_declaration_size(line, caps))
+                    .or_else(|| arith.and_then(|(_, caps)| arith_declaration_size(line, caps)));
+                if let Some(size) = size {
+                    array_declaration_sizes.insert(word.to_string(), size);
+                }
+            }
         }
         Self {
             source_id: (source.as_ptr() as usize, source.len()),
             define_sized_lines,
             largest_numeric_subscript,
+            array_declaration_sizes,
+            row_starts,
+        }
+    }
+
+    /// The lines of the indexed `source` from row `start` to row `end`
+    /// (clamped to the last row), as `source.lines()` would give them,
+    /// without splitting the rest of the file. Empty when `start` is past
+    /// `end` or the file.
+    pub fn rows<'s>(&self, source: &'s str, start: usize, end: usize) -> Vec<&'s str> {
+        let end = end.min(self.row_starts.len().saturating_sub(1));
+        if start > end || start >= self.row_starts.len() {
+            return Vec::new();
+        }
+        let from = self.row_starts[start];
+        let to = self
+            .row_starts
+            .get(end + 1)
+            .copied()
+            .unwrap_or(source.len());
+        source[from..to].lines().collect()
+    }
+
+    /// [`array_declaration_size_scan`] of the indexed file. A name that is
+    /// not a single word is answered by the scan itself over `source`.
+    pub fn array_declaration_size(&self, var_name: &str, source: &str) -> Option<usize> {
+        static WORD: std::sync::LazyLock<regex::Regex> =
+            std::sync::LazyLock::new(|| regex::Regex::new(r"^\w+$").unwrap());
+        if WORD.is_match(var_name) {
+            self.array_declaration_sizes.get(var_name).copied()
+        } else {
+            array_declaration_size_scan(var_name, &source.lines().collect::<Vec<_>>())
         }
     }
 
@@ -753,6 +841,79 @@ fn first_define_token<'d>(
 ) -> Option<&'d usize> {
     line.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .find_map(|token| defines.get(token))
+}
+
+/// Whether the text after a `var[...]` match makes it an element
+/// assignment rather than a declaration: `=` then a character or wide
+/// character literal, a number, or `NULL`/`nullptr`.
+fn is_element_assign_rhs(after: &str) -> bool {
+    after.starts_with('=') && {
+        let rhs = after[1..].trim_start();
+        rhs.starts_with('\'')
+            || rhs.starts_with("L'")
+            || rhs.starts_with("u'")
+            || rhs.starts_with("U'")
+            || rhs.chars().next().is_some_and(|c| c.is_ascii_digit())
+            || rhs.starts_with("NULL")
+            || rhs.starts_with("nullptr")
+    }
+}
+
+/// The size a `var[N]` match on `line` declares, unless it is an element
+/// assignment or `N` does not fit a `usize`.
+fn numeric_declaration_size(line: &str, caps: &regex::Captures) -> Option<usize> {
+    let after = line[caps.get(0)?.end()..].trim_start();
+    if is_element_assign_rhs(after) {
+        return None;
+    }
+    caps[caps.len() - 1].parse::<usize>().ok()
+}
+
+/// The size a `var[N op M]` match on `line` declares, unless it is an
+/// element assignment or the arithmetic does not evaluate.
+fn arith_declaration_size(line: &str, caps: &regex::Captures) -> Option<usize> {
+    let after = line[caps.get(0)?.end()..].trim_start();
+    if is_element_assign_rhs(after) {
+        return None;
+    }
+    let n = caps.len();
+    eval_arith(
+        caps[n - 3].parse().ok(),
+        Some(&caps[n - 2]),
+        caps[n - 1].parse().ok(),
+    )
+}
+
+/// The declared size of array `var_name` from the first of `lines` that
+/// declares it as `var_name[N]` or `var_name[N op M]`. A line whose match
+/// is an element assignment (`data[0] = '\0'`) is not a declaration.
+/// Scans every line; [`FileLineIndex`] answers the same from one pass.
+pub fn array_declaration_size_scan(var_name: &str, lines: &[&str]) -> Option<usize> {
+    let escaped = regex::escape(var_name);
+    let numeric = regex::Regex::new(&format!(r"\b{escaped}\s*\[\s*(\d+)\s*\]")).ok();
+    let arith = regex::Regex::new(&format!(
+        r"\b{escaped}\s*\[\s*(\d+)\s*([*+\-])\s*(\d+)\s*\]"
+    ))
+    .ok();
+    for line in lines {
+        if !(line.contains(var_name) && line.contains('[') && line.contains(']')) {
+            continue;
+        }
+        let size = numeric
+            .as_ref()
+            .and_then(|re| re.captures(line))
+            .and_then(|caps| numeric_declaration_size(line, &caps))
+            .or_else(|| {
+                arith
+                    .as_ref()
+                    .and_then(|re| re.captures(line))
+                    .and_then(|caps| arith_declaration_size(line, &caps))
+            });
+        if size.is_some() {
+            return size;
+        }
+    }
+    None
 }
 
 /// The value of the numeric `#define` used in the first line of `source`
@@ -843,6 +1004,76 @@ mod tests {
                     larger_numeric_subscript_scan(name, size, source),
                     "has_larger_numeric_subscript({name:?}, {size})"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn file_line_index_array_sizes_agree_with_the_scan() {
+        let source = "data[0] = '\\0'; char data[100];\nchar data[7];\n\
+                      x[3] = 5; x[2+3];\ny[1-2]; y[ 4 * 2 ]=L'a';\ny[7]\n\
+                      z[ 2 * 3 ] = NULL; z[9] = nullptr;\nz[ 8 ]=u'q'; z[4]=U'q';\n\
+                      w[3] = -1; w[6]=x;\np[1], q[2*2]; q[5];\n\
+                      big[99999999999999999999999]; big[3*99999999999999999999];\nbig[2];\n\
+                      k [ 5 ]=x;\ns.in[20]; xin[90]; in [ 30 ];\n\
+                      char d\u{e9}j\u{e0}[40];\r\nr[3] =7;\nlast[2-1]";
+        let lines: Vec<&str> = source.lines().collect();
+        let index = FileLineIndex::of(source);
+        let names = [
+            "data",
+            "x",
+            "y",
+            "z",
+            "w",
+            "p",
+            "q",
+            "big",
+            "k",
+            "in",
+            "xin",
+            "s",
+            "s.in",
+            "d\u{e9}j\u{e0}",
+            "r",
+            "last",
+            "a b",
+            "",
+            "missing",
+        ];
+        for name in names {
+            assert_eq!(
+                index.array_declaration_size(name, source),
+                array_declaration_size_scan(name, &lines),
+                "array_declaration_size({name:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn file_line_index_rows_match_split_lines() {
+        for source in [
+            "",
+            "\n",
+            "\n\n",
+            "a",
+            "a\nb",
+            "a\nb\n",
+            "a\r\nb\r\n\r\nc",
+            "one\n\ntwo\r\nthree\n",
+            "x\r",
+        ] {
+            let lines: Vec<&str> = source.lines().collect();
+            let index = FileLineIndex::of(source);
+            for start in 0..lines.len() + 2 {
+                for end in (0..lines.len() + 3).chain([usize::MAX]) {
+                    let clamped = end.min(lines.len().saturating_sub(1));
+                    let expected = lines.get(start..=clamped).unwrap_or_default();
+                    assert_eq!(
+                        index.rows(source, start, end),
+                        expected,
+                        "rows({source:?}, {start}, {end})"
+                    );
+                }
             }
         }
     }
