@@ -82,13 +82,30 @@ offered to the parser. Before parsing, each file is checked:
   Files with a UTF-16 byte-order mark are text and are read normally, and
   empty files are fine.
 
-A refused file is **skipped and reported**, never parsed, and the scan exits
-``3``:
+After parsing, one more check:
+
+- **too deep**: the file's syntax tree nests more than
+  ``--max-nesting-depth`` levels (default 5000; ``0`` removes the limit).
+  Many analyses walk the tree recursively, one level at a time, and a stack
+  overflow ends the whole process before it can be reported, so a file too
+  deep to walk is refused instead. A level is one node of the tree: a block,
+  a parenthesis or an operator in a chain is about one, an ``else if`` two.
+  Hand-written C stays in the hundreds; the limit is for generated code,
+  such as an expression or ``else if`` ladder thousands of terms long.
+  Raising it far past the default can crash the scan.
+
+The same checks apply to a header a scanned file includes, which is read
+only for its declarations and macros: leaving one out changes what the
+scanned files' findings rest on.
+
+A refused file is **skipped and reported**, never analysed, and the scan
+exits ``3``:
 
 .. code-block:: text
 
     Error: input skipped (not source text): build/blob.c: looks like binary data (Elf, application/x-executable)
     Error: input skipped (too large): gen/table.c: 80 MiB is over --max-file-size 64 MiB
+    Error: input skipped (too deep): gen/parser.c: its syntax tree nests 12004 levels deep, over --max-nesting-depth 5000
 
 If the file belongs in the tree but is not source, leave it out of the scan
 with ``--exclude-all``. Excluded files are not reported. Files over 8 MiB are

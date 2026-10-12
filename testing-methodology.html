@@ -754,16 +754,19 @@ rule’s fixtures, nor what only a many-file scan reaches.</p></li>
 ladder and a chain of identifiers. A rule that evaluates a whole subtree,
 or climbs to an ancestor, once per operator is cubic in the length of such
 a chain, and the 1000-term expression once ran past the watchdog.</p></li>
+<li><p><strong>Deep nesting</strong>: braces, parentheses, operator chains and <code class="docutils literal notranslate"><span class="pre">else</span> <span class="pre">if</span></code>
+ladders from a thousand to a million deep. A thousand is analysed; past
+<code class="docutils literal notranslate"><span class="pre">--max-nesting-depth</span></code> the file must be refused with its depth, since a
+stack overflow in a recursive walk aborts the whole process.</p></li>
 </ul>
 <p>The first two run in every <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">test</span></code>. The third, ten minutes or more
-in a debug build, and the fourth run in CI’s release robustness job, with a
-larger mutant pass. Only that run scans the fixtures written for each fixed
-crash under every rule, so it, not the default <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">test</span></code>, is what
-catches those crashes coming back. A fifth, ignored test generates
-inputs too large or too deep for CI (a file over the size limit, 200 MiB of
-random bytes, a 16 MiB line, nesting and operator chains from ten thousand
-up to a million deep); run it by hand with
-<code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">test</span> <span class="pre">--release</span> <span class="pre">--test</span> <span class="pre">robustness</span> <span class="pre">--</span> <span class="pre">--ignored</span></code>.
+in a debug build, and the fourth and fifth run in CI’s release robustness
+job, with a larger mutant pass. Only that run scans the fixtures written for
+each fixed crash under every rule, so it, not the default <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">test</span></code>, is
+what catches those crashes coming back. A sixth, ignored test generates
+inputs too large for CI (a file over the size limit, 200 MiB of random
+bytes, a 16 MiB line, macro chains up to a million definitions long); run it
+by hand with <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">test</span> <span class="pre">--release</span> <span class="pre">--test</span> <span class="pre">robustness</span> <span class="pre">--</span> <span class="pre">--ignored</span></code>.
 <code class="docutils literal notranslate"><span class="pre">AURORA_LINT_ROBUSTNESS_BIN</span></code> points the suite at another build, such as a
 Windows <code class="docutils literal notranslate"><span class="pre">aurora-lint.exe</span></code> run through WSL on cases written under
 <code class="docutils literal notranslate"><span class="pre">/mnt/c</span></code>.</p>

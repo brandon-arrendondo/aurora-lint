@@ -586,16 +586,19 @@ only thing incomplete is a file the input guard was meant to refuse):
   ladder and a chain of identifiers. A rule that evaluates a whole subtree,
   or climbs to an ancestor, once per operator is cubic in the length of such
   a chain, and the 1000-term expression once ran past the watchdog.
+- **Deep nesting**: braces, parentheses, operator chains and ``else if``
+  ladders from a thousand to a million deep. A thousand is analysed; past
+  ``--max-nesting-depth`` the file must be refused with its depth, since a
+  stack overflow in a recursive walk aborts the whole process.
 
 The first two run in every ``cargo test``. The third, ten minutes or more
-in a debug build, and the fourth run in CI's release robustness job, with a
-larger mutant pass. Only that run scans the fixtures written for each fixed
-crash under every rule, so it, not the default ``cargo test``, is what
-catches those crashes coming back. A fifth, ignored test generates
-inputs too large or too deep for CI (a file over the size limit, 200 MiB of
-random bytes, a 16 MiB line, nesting and operator chains from ten thousand
-up to a million deep); run it by hand with
-``cargo test --release --test robustness -- --ignored``.
+in a debug build, and the fourth and fifth run in CI's release robustness
+job, with a larger mutant pass. Only that run scans the fixtures written for
+each fixed crash under every rule, so it, not the default ``cargo test``, is
+what catches those crashes coming back. A sixth, ignored test generates
+inputs too large for CI (a file over the size limit, 200 MiB of random
+bytes, a 16 MiB line, macro chains up to a million definitions long); run it
+by hand with ``cargo test --release --test robustness -- --ignored``.
 ``AURORA_LINT_ROBUSTNESS_BIN`` points the suite at another build, such as a
 Windows ``aurora-lint.exe`` run through WSL on cases written under
 ``/mnt/c``.

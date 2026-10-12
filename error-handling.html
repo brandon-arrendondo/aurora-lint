@@ -189,10 +189,26 @@ the same way, since reading it could block.
 Files with a UTF-16 byte-order mark are text and are read normally, and
 empty files are fine.</p></li>
 </ul>
-<p>A refused file is <strong>skipped and reported</strong>, never parsed, and the scan exits
-<code class="docutils literal notranslate"><span class="pre">3</span></code>:</p>
+<p>After parsing, one more check:</p>
+<ul class="simple">
+<li><p><strong>too deep</strong>: the file’s syntax tree nests more than
+<code class="docutils literal notranslate"><span class="pre">--max-nesting-depth</span></code> levels (default 5000; <code class="docutils literal notranslate"><span class="pre">0</span></code> removes the limit).
+Many analyses walk the tree recursively, one level at a time, and a stack
+overflow ends the whole process before it can be reported, so a file too
+deep to walk is refused instead. A level is one node of the tree: a block,
+a parenthesis or an operator in a chain is about one, an <code class="docutils literal notranslate"><span class="pre">else</span> <span class="pre">if</span></code> two.
+Hand-written C stays in the hundreds; the limit is for generated code,
+such as an expression or <code class="docutils literal notranslate"><span class="pre">else</span> <span class="pre">if</span></code> ladder thousands of terms long.
+Raising it far past the default can crash the scan.</p></li>
+</ul>
+<p>The same checks apply to a header a scanned file includes, which is read
+only for its declarations and macros: leaving one out changes what the
+scanned files’ findings rest on.</p>
+<p>A refused file is <strong>skipped and reported</strong>, never analysed, and the scan
+exits <code class="docutils literal notranslate"><span class="pre">3</span></code>:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Error: input skipped (not source text): build/blob.c: looks like binary data (Elf, application/x-executable)
 Error: input skipped (too large): gen/table.c: 80 MiB is over --max-file-size 64 MiB
+Error: input skipped (too deep): gen/parser.c: its syntax tree nests 12004 levels deep, over --max-nesting-depth 5000
 </pre></div>
 </div>
 <p>If the file belongs in the tree but is not source, leave it out of the scan
