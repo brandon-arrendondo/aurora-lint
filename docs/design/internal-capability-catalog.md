@@ -1644,8 +1644,9 @@ API-neutrally, with C11 and POSIX built in and RTOS families declarable
 (`docs/design/thread-api-families.md`). **Ask this module which operation a
 call performs instead of comparing names.** The families in force are
 process-wide, installed before the scan (`settings::threads::declare`).
-CON30-C and CON36-C read it so far. The other CON/POS rules, and
-`concurrency_roots`'s spawn table, have not moved yet.
+CON01, CON04, CON30, CON34, CON36, CON38, CON39, POS50 and POS53 read it
+so far. The remaining CON/POS rules, and `concurrency_roots`'s spawn table,
+have not moved yet.
 
 | Function | Signature | Description |
 |---|---|---|
@@ -1659,6 +1660,16 @@ CON30-C and CON36-C read it so far. The other CON/POS rules, and
 | `Family::creates_storage_keys` / `Family::function_of` | `(self) -> bool` / `(self, kind) -> Option<String>` | Whether the family's thread-specific storage has created keys that can carry a destructor (C11, POSIX), as opposed to fixed slots (FreeRTOS). And the family's first function of a kind, for a message's suggestion. |
 
 ## Text slicing on character boundaries
+
+### `src/utility/cert_c/thread_storage.rs`
+**Problem solved:** which storage a thread creation hands its new thread,
+the one analysis CON34-C (every family) and POS50-C (POSIX) share. Each
+used to answer it its own way, by argument text and a name search that took
+a block-scope `static` for automatic.
+
+| Function | Signature | Description |
+|---|---|---|
+| `passed_object` | `(create: &ThreadCall, source) -> Option<PassedObject>` | The automatic or thread-local object a thread-create call's `Role::Arg` names, resolved by declaration: `&x`, `&x.m`, `&arr[i]`, or a local array by name, through casts and parentheses. `None` for static or allocated storage, a pointer's pointee (`&p->m`, `&p[i]`), a value, or a thread handle (CERT's own compliant example hands one back this way). `PassedObject { name, storage: SharedStorage::{Automatic, ThreadLocal} }`. A `_Thread_local`-keyword declaration is misparsed by the grammar and does not resolve. |
 
 ### `src/utility/cert_c/text_bounds.rs`
 **Problem solved:** the scanner also reads code that does not compile, so a

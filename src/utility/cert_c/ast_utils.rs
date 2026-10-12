@@ -903,6 +903,24 @@ pub fn declaration_has_storage_class(decl: &Node, storage_class: &str, source: &
     })
 }
 
+/// Whether `decl` (a `declaration`) gives its objects thread storage
+/// duration: `_Thread_local`, `thread_local`, `__thread` or
+/// `__declspec(thread)`. The grammar does not know `_Thread_local` in every
+/// position and may read it as a type name, so a type identifier spelled that
+/// way counts.
+pub fn declaration_is_thread_local(decl: &Node, source: &str) -> bool {
+    decl.child_nodes().any(|c| {
+        let text = get_node_text(&c, source);
+        match c.kind() {
+            "storage_class_specifier" | "type_identifier" => {
+                matches!(text, "_Thread_local" | "thread_local" | "__thread")
+            }
+            "ms_declspec_modifier" => text.contains("thread"),
+            _ => false,
+        }
+    })
+}
+
 /// True if `node` is a `*p`-style dereference. `*p` and `&p` both parse as
 /// `pointer_expression` in this grammar, disambiguated only by the
 /// `operator` field's text -- conflating them is a real FP source (an

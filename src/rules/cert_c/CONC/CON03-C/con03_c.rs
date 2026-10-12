@@ -529,22 +529,9 @@ impl Con03C {
     }
 
     /// Whether the declaration gives its objects thread storage duration
-    /// (`_Thread_local`, `thread_local`, `__thread`, `__declspec(thread)`).
-    /// The grammar does not know `_Thread_local` in every position and may
-    /// read it as a type name, so a type identifier spelled that way counts.
+    /// (`ast_utils::declaration_is_thread_local`).
     fn is_thread_local(decl: &Node, source: &str) -> bool {
-        let mut cursor = decl.walk();
-        let found = decl.children(&mut cursor).any(|c| {
-            let text = get_node_text(&c, source);
-            match c.kind() {
-                "storage_class_specifier" | "type_identifier" => {
-                    matches!(text, "_Thread_local" | "thread_local" | "__thread")
-                }
-                "ms_declspec_modifier" => text.contains("thread"),
-                _ => false,
-            }
-        });
-        found
+        crate::utility::cert_c::ast_utils::declaration_is_thread_local(decl, source)
     }
 
     /// What the declaration's type is: its specifier, resolved through

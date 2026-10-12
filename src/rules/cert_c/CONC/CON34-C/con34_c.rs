@@ -62,22 +62,41 @@
 //! ```
 //!
 //! ## Detection Strategy:
-//! - Find thrd_create() calls
-//! - Check if the argument passed is an address of a local variable (&local_var)
-//! - Find tss_set() calls within functions that create threads
-//! - Detect if thread-specific storage is set in a parent thread but accessed by child
+//! - Find thread creations by their thread-API contract
+//!   (`thread_api::thread_op`): C11, POSIX and any declared family
+//! - Report one whose argument is the address of an automatic or
+//!   thread-local object (`thread_storage::passed_object`, the analysis
+//!   POS50-C shares), however the thread is joined afterwards: CERT reports
+//!   the sharing itself, not a lifetime overrun
+//! - For C11 `thrd_create()`, also presume that a pointer parameter or a
+//!   non-static name not allocated in the function may reference automatic
+//!   storage
+//! - Find `tss_set()` (or a declared family's) in a function that also
+//!   creates a thread and reads no value back with `tss_get()`
+//! - OpenMP parallel regions sharing a local without `private`, and calls to
+//!   library functions with internal static storage
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
+use crate::settings::threads::{Role, ThreadOpKind};
 use crate::utility::cert_c::ast_utils::{
     self, find_containing_function, get_function_parameters, get_identifier_from_declarator,
-    get_node_text, is_function_parameter, is_pointer_type,
+    get_node_text, is_pointer_type,
 };
 use crate::utility::cert_c::call_roles;
+use crate::utility::cert_c::thread_api::{self, Family, ProjectFunctions, ThreadCall};
+use crate::utility::cert_c::thread_storage::{self, SharedStorage};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use tree_sitter::Node;
 
-pub struct Con34C;
+#[derive(Default)]
+pub struct Con34C {
+    /// The project's function definitions in every scanned file, for a
+    /// library name the project defines itself.
+    project: RefCell<Option<ProjectFunctions>>,
+}
 
 impl CertRule for Con34C {
     fn rule_id(&self) -> &'static str {
@@ -94,6 +113,10 @@ impl CertRule for Con34C {
 
     fn cert_id(&self) -> &'static str {
         "CON34-C"
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = Some(context.function_summaries.clone());
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
@@ -135,18 +158,24 @@ fn declarator_identifier(declarator: &Node, source: &str) -> Option<String> {
 
 impl Con34C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let project = self.project.borrow();
+        let project = project.as_ref();
         for n in query::find_descendants_of_kinds(*node, &["call_expression", "compound_statement"])
         {
-            // Check for thrd_create() calls and thread-unsafe function calls
             if n.kind() == "call_expression" {
-                if let Some(func) = n.child_by_field_name("function") {
-                    let func_name = get_node_text(&func, source);
-                    if func_name == "thrd_create" {
-                        self.check_thrd_create_call(&n, source, violations);
-                    } else if func_name == "tss_set" {
-                        self.check_tss_set_call(&n, source, violations);
-                    } else {
-                        self.check_thread_unsafe_call(&func_name, &n, violations);
+                match thread_api::thread_op(&n, source, project) {
+                    Some(call) if call.kind() == ThreadOpKind::ThreadCreate => {
+                        self.check_thread_create_call(&n, &call, source, violations);
+                    }
+                    Some(call) if call.kind() == ThreadOpKind::TssSet => {
+                        self.check_tss_set_call(&n, source, project, violations);
+                    }
+                    Some(_) => {}
+                    None => {
+                        if let Some(func) = n.child_by_field_name("function") {
+                            let func_name = get_node_text(&func, source);
+                            self.check_thread_unsafe_call(func_name, &n, violations);
+                        }
                     }
                 }
             }
@@ -158,75 +187,67 @@ impl Con34C {
         }
     }
 
-    fn check_thrd_create_call(
+    fn check_thread_create_call(
         &self,
         call_node: &Node,
+        create: &ThreadCall,
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // thrd_create(thrd_t *thr, thrd_start_t func, void *arg)
-        // We need to check the third argument (arg) - the data pointer, NOT the function pointer
-
-        if let Some(args) = call_node.child_by_field_name("arguments") {
-            let mut arg_list = Vec::new();
-
-            // Collect all non-comma arguments
-            for i in 0..args.child_count() {
-                if let Some(child) = args.child(i) {
-                    if child.kind() != "," && child.kind() != "(" && child.kind() != ")" {
-                        arg_list.push(child);
-                    }
-                }
+        let message = if let Some(passed) = thread_storage::passed_object(create, source) {
+            let storage = match passed.storage {
+                SharedStorage::Automatic => "automatic (local)",
+                SharedStorage::ThreadLocal => "thread-local",
+            };
+            format!(
+                "Passing address of {storage} variable '{}' to {}()",
+                passed.name, create.name
+            )
+        } else if create.family == Family::C11 {
+            // The presumptive form: a pointer whose storage this function
+            // cannot see.
+            let Some(arg_node) = create.operand(Role::Arg) else {
+                return;
+            };
+            let arg_text = get_node_text(&arg_node, source);
+            let presumed = (self.is_pointer_parameter(&arg_node, source, call_node)
+                && !self.is_allocated_pointer(arg_text, call_node, source)
+                && !self.is_likely_allocated_param(arg_text))
+                || (arg_node.kind() == "identifier"
+                    && !self.is_static_variable(&arg_node, arg_text, source)
+                    && !self.is_allocated_pointer(arg_text, call_node, source)
+                    && !self.is_likely_allocated_param(arg_text)
+                    && !arg_text.starts_with('&'));
+            if !presumed {
+                return;
             }
+            format!(
+                "Passing '{}' to {}() may reference automatic storage",
+                arg_text, create.name
+            )
+        } else {
+            return;
+        };
 
-            // We want the 3rd argument (index 2) - the data pointer
-            if arg_list.len() >= 3 {
-                let arg_node = arg_list[2];
-                let arg_text = get_node_text(&arg_node, source);
-
-                // Check various problematic patterns
-                let is_violation = self.is_address_of_local_var(&arg_node, source, call_node)
-                    || (self.is_pointer_parameter(&arg_node, source, call_node)
-                        && !self.is_allocated_pointer(arg_text, call_node, source)
-                        && !self.is_likely_allocated_param(arg_text))
-                    || (arg_node.kind() == "identifier"
-                        && !self.is_static_variable(&arg_node, arg_text, source)
-                        && !self.is_allocated_pointer(arg_text, call_node, source)
-                        && !self.is_likely_allocated_param(arg_text)
-                        && !arg_text.starts_with("&"));
-
-                if is_violation {
-                    let message = if self.is_address_of_local_var(&arg_node, source, call_node) {
-                        "Passing address of automatic (local) variable to thrd_create()".to_string()
-                    } else {
-                        format!(
-                            "Passing '{}' to thrd_create() may reference automatic storage",
-                            arg_text
-                        )
-                    };
-
-                    violations.push(RuleViolation {
-                        rule_id: self.rule_id().to_string(),
-                        severity: Severity::Medium,
-                        message,
-                        file_path: String::new(),
-                        line: call_node.start_position().row + 1,
-                        column: call_node.start_position().column + 1,
-                        suggestion: Some(
-                            "Use static or heap-allocated storage for data shared between threads"
-                                .to_string(),
-                        ),
-                        ..Default::default()
-                    });
-                }
-            }
-        }
+        violations.push(RuleViolation {
+            rule_id: self.rule_id().to_string(),
+            severity: Severity::Medium,
+            message,
+            file_path: String::new(),
+            line: call_node.start_position().row + 1,
+            column: call_node.start_position().column + 1,
+            suggestion: Some(
+                "Use static or heap-allocated storage for data shared between threads".to_string(),
+            ),
+            ..Default::default()
+        });
     }
 
     fn check_tss_set_call(
         &self,
         call_node: &Node,
         source: &str,
+        project: Option<&ProjectFunctions>,
         violations: &mut Vec<RuleViolation>,
     ) {
         // tss_set() within a function that also calls thrd_create() is problematic
@@ -235,10 +256,10 @@ impl Con34C {
         // Find the enclosing function
         if let Some(function) = find_containing_function(call_node) {
             // Check if this function also creates threads
-            if self.function_creates_threads(&function, source) {
+            if Self::performs(&function, source, project, ThreadOpKind::ThreadCreate) {
                 // Check if there's a tss_get between tss_set and thrd_create
                 // If tss_get is used to retrieve the value before passing to thread, it's compliant
-                if self.has_tss_get_before_thread_create(&function, source) {
+                if Self::performs(&function, source, project, ThreadOpKind::TssGet) {
                     // This is compliant - using tss_get to retrieve allocated storage
                     return;
                 }
@@ -257,41 +278,6 @@ impl Con34C {
                 });
             }
         }
-    }
-
-    fn is_address_of_local_var(&self, node: &Node, source: &str, context: &Node) -> bool {
-        // Address-of (`&x`) is a "pointer_expression" in this tree-sitter-c
-        // grammar (distinct from "unary_expression", which covers !, -, ~,
-        // etc.) — check both so this doesn't silently break again if the
-        // grammar version changes.
-        if matches!(node.kind(), "unary_expression" | "pointer_expression") {
-            if let Some(operator) = node.child_by_field_name("operator") {
-                if get_node_text(&operator, source) == "&" {
-                    if let Some(argument) = node.child_by_field_name("argument") {
-                        let var_name = get_node_text(&argument, source).to_string();
-
-                        // A local thrd_t (thread-handle) variable passed
-                        // this way is the standard, unavoidable idiom for
-                        // tracking a nested thread's ID -- thrd_create is
-                        // the only way to obtain one, and CERT's own
-                        // compliant example does exactly this (main joins
-                        // on it before returning, so the storage is
-                        // guaranteed live for as long as it matters). This
-                        // is categorically different from sharing ordinary
-                        // local DATA (e.g. `int val`) across the thread
-                        // boundary, which is what this rule targets.
-                        if self.is_thrd_t_variable(&var_name, context, source) {
-                            return false;
-                        }
-
-                        // Check if this variable is a local (automatic) variable
-                        return self.is_local_variable(&argument, &var_name, source);
-                    }
-                }
-            }
-        }
-
-        false
     }
 
     fn is_pointer_parameter(&self, node: &Node, source: &str, context: &Node) -> bool {
@@ -454,111 +440,18 @@ impl Con34C {
         false
     }
 
-    /// True if `var_name` is declared with type `thrd_t` in the function
-    /// enclosing `context`.
-    fn is_thrd_t_variable(&self, var_name: &str, context: &Node, source: &str) -> bool {
-        let Some(function) = find_containing_function(context) else {
-            return false;
-        };
-        let Some(body) = function.child_by_field_name("body") else {
-            return false;
-        };
-
-        query::find_first_descendant(body, |n| {
-            if n.kind() != "declaration" {
-                return false;
-            }
-
-            let declares_var = (0..n.child_count()).any(|i| {
-                n.child(i)
-                    .map(|c| match c.kind() {
-                        "identifier" => get_node_text(&c, source) == var_name,
-                        "init_declarator" => c
-                            .child_by_field_name("declarator")
-                            .and_then(|d| declarator_identifier(&d, source))
-                            .map(|name| name == var_name)
-                            .unwrap_or(false),
-                        _ => false,
-                    })
-                    .unwrap_or(false)
-            });
-            if !declares_var {
-                return false;
-            }
-
-            (0..n.child_count()).any(|i| {
-                n.child(i)
-                    .map(|c| c.kind() == "type_identifier" && get_node_text(&c, source) == "thrd_t")
-                    .unwrap_or(false)
-            })
+    /// Whether `function`'s body performs a thread operation of `kind`.
+    fn performs(
+        function: &Node,
+        source: &str,
+        project: Option<&ProjectFunctions>,
+        kind: ThreadOpKind,
+    ) -> bool {
+        function.child_by_field_name("body").is_some_and(|body| {
+            query::find_descendants_of_kind(body, "call_expression")
+                .iter()
+                .any(|call| thread_api::thread_op_of_kind(call, source, project, kind).is_some())
         })
-        .is_some()
-    }
-
-    /// True if `ident_node` (occurrence of `var_name`) has automatic
-    /// (local/stack) storage duration: declared without `static` in the
-    /// enclosing function, or a plain function parameter. Uses
-    /// `ast_utils::find_enclosing_declaration_for_identifier`
-    /// (scope/shadowing-aware) rather than a flat function-body scan --
-    /// this rule's entire purpose is telling automatic-duration objects
-    /// apart from static/heap ones, so scope-correctness here matters more
-    /// than almost anywhere else in the codebase.
-    fn is_local_variable(&self, ident_node: &Node, var_name: &str, source: &str) -> bool {
-        if let Some(decl) =
-            ast_utils::find_enclosing_declaration_for_identifier(ident_node, var_name, source)
-        {
-            return !Self::declaration_is_static(&decl, source);
-        }
-
-        if let Some(function) = find_containing_function(ident_node) {
-            if is_function_parameter(&function, var_name, source) {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    fn function_creates_threads(&self, function: &Node, source: &str) -> bool {
-        if let Some(body) = function.child_by_field_name("body") {
-            return self.has_thrd_create(&body, source);
-        }
-        false
-    }
-
-    fn has_thrd_create(&self, node: &Node, source: &str) -> bool {
-        query::find_first_descendant(*node, |n| {
-            if n.kind() != "call_expression" {
-                return false;
-            }
-            n.child_by_field_name("function")
-                .map(|func| {
-                    let name = get_node_text(&func, source);
-                    name == "thrd_create" || name == "pthread_create"
-                })
-                .unwrap_or(false)
-        })
-        .is_some()
-    }
-
-    fn has_tss_get_before_thread_create(&self, function: &Node, source: &str) -> bool {
-        // Check if the function uses tss_get() to retrieve the value before thrd_create
-        if let Some(body) = function.child_by_field_name("body") {
-            return self.has_tss_get(&body, source);
-        }
-        false
-    }
-
-    fn has_tss_get(&self, node: &Node, source: &str) -> bool {
-        query::find_first_descendant(*node, |n| {
-            if n.kind() != "call_expression" {
-                return false;
-            }
-            n.child_by_field_name("function")
-                .map(|func| get_node_text(&func, source) == "tss_get")
-                .unwrap_or(false)
-        })
-        .is_some()
     }
 
     fn check_openmp_parallel_region(
