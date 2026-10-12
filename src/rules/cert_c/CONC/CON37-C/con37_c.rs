@@ -11,15 +11,34 @@
 //! - Signal handlers execute in an unpredictable thread context
 //! - Race conditions and data corruption can occur
 //! - POSIX implementations provide defined behavior but are still discouraged
+//!
+//! ## Detection Strategy:
+//! - A file is multithreaded when it creates or joins a thread or initializes
+//!   a mutex, read by thread-API contract (C11, POSIX and any declared
+//!   family), or calls a Win32 thread-spawn function
+//! - Report each call that reaches the standard `signal()` there (not a
+//!   project's own function of that name)
 
 use tree_sitter::Node;
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
+use crate::settings::threads::ThreadOpKind;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::thread_api::{self, ProjectFunctions};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 
-pub struct Con37C;
+/// Win32 thread-spawn functions, which no thread-API family describes yet.
+const WIN32_SPAWNS: &[&str] = &["CreateThread", "_beginthread", "_beginthreadex"];
+
+#[derive(Default)]
+pub struct Con37C {
+    /// The project's function definitions in every scanned file, for a
+    /// library name the project defines itself.
+    project: RefCell<Option<ProjectFunctions>>,
+}
 
 impl CertRule for Con37C {
     fn rule_id(&self) -> &'static str {
@@ -38,75 +57,45 @@ impl CertRule for Con37C {
         "CON37-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = Some(context.function_summaries.clone());
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-
-        // First pass: check if the code uses threading functions
-        let has_threading = self.has_threading_functions(node, source);
-
-        // Second pass: find signal() calls
-        if has_threading {
-            self.check_signal_calls(node, source, &mut violations);
-        }
-
-        violations
-    }
-}
-
-impl Con37C {
-    /// Check if the code uses threading functions
-    fn has_threading_functions(&self, node: &Node, source: &str) -> bool {
-        query::find_first_descendant(*node, |n| {
-            if n.kind() != "call_expression" {
-                return false;
+        let project = self.project.borrow();
+        let project = project.as_ref();
+        let calls = query::find_descendants_of_kind(*node, "call_expression");
+        let threaded = calls.iter().any(|call| {
+            if let Some(op) = thread_api::thread_op(call, source, project) {
+                return matches!(
+                    op.kind(),
+                    ThreadOpKind::ThreadCreate | ThreadOpKind::ThreadJoin | ThreadOpKind::MutexInit
+                );
             }
-            let Some(func) = n.child_by_field_name("function") else {
-                return false;
-            };
-            let func_name = get_node_text(&func, source).trim();
-
-            // Check for C11 thread functions, POSIX thread functions, and Windows thread functions
-            matches!(
-                func_name,
-                "thrd_create"
-                    | "pthread_create"
-                    | "CreateThread"
-                    | "_beginthread"
-                    | "_beginthreadex"
-                    | "thrd_join"
-                    | "pthread_join"
-                    | "mtx_init"
-                    | "pthread_mutex_init"
-            )
-        })
-        .is_some()
-    }
-
-    /// Find and flag signal() calls in multithreaded context
-    fn check_signal_calls(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        for n in query::find_descendants_of_kind(*node, "call_expression") {
-            if let Some(func) = n.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source).trim();
-
-                if func_name == "signal" {
-                    let line = n.start_position().row + 1;
-                    let column = n.start_position().column + 1;
-                    violations.push(RuleViolation {
-                        rule_id: self.rule_id().to_string(),
-                        severity: self.severity(),
-                        message: "Calling signal() in a multithreaded program causes undefined behavior."
-                            .to_string(),
-                        file_path: String::new(),
-                        line,
-                        column,
-                        suggestion: Some(
-                            "Use sigaction() on POSIX systems or platform-specific thread-safe alternatives."
-                                .to_string(),
-                        ),
-                        requires_manual_review: None,
-                    });
-                }
-            }
+            call.child_by_field_name("function")
+                .is_some_and(|f| WIN32_SPAWNS.contains(&get_node_text(&f, source).trim()))
+        });
+        if !threaded {
+            return Vec::new();
         }
+        calls
+            .iter()
+            .filter(|call| thread_api::library_call(call, source, project) == Some("signal"))
+            .map(|call| RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                severity: self.severity(),
+                message: "Calling signal() in a multithreaded program causes undefined behavior."
+                    .to_string(),
+                file_path: String::new(),
+                line: call.start_position().row + 1,
+                column: call.start_position().column + 1,
+                suggestion: Some(
+                    "Use sigaction() on POSIX systems or platform-specific thread-safe \
+                     alternatives."
+                        .to_string(),
+                ),
+                requires_manual_review: None,
+            })
+            .collect()
     }
 }
