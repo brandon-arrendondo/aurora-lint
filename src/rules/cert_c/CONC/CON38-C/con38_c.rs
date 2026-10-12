@@ -37,18 +37,30 @@
 //! ```
 //!
 //! ## Detection Strategy:
-//! - Find all `cnd_signal()` calls
-//! - Report violations recommending `cnd_broadcast()` for safer thread coordination
-//! - Note: Using `cnd_signal()` is only safe when each thread has its own unique
-//!   condition variable, which is difficult to verify statically
+//! - Find condition-variable signals by their thread-API contract
+//!   (`thread_api::thread_op`): C11 `cnd_signal()`, POSIX
+//!   `pthread_cond_signal()` and any declared family's signal
+//! - Report each one, recommending the same family's broadcast
+//! - Note: Using a signal is only safe when each thread has its own unique
+//!   condition variable, which is difficult to verify statically; a
+//!   condition variable selected by subscript is taken as one per thread
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
+use crate::settings::threads::{Role, ThreadOpKind};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::thread_api::{self, ProjectFunctions, ThreadCall};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use tree_sitter::Node;
 
-pub struct Con38C;
+#[derive(Default)]
+pub struct Con38C {
+    /// The project's function definitions in every scanned file, for a
+    /// library name the project defines itself.
+    project: RefCell<Option<ProjectFunctions>>,
+}
 
 impl CertRule for Con38C {
     fn rule_id(&self) -> &'static str {
@@ -67,6 +79,10 @@ impl CertRule for Con38C {
         "CON38-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = Some(context.function_summaries.clone());
+    }
+
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.check_node(node, source, violations);
     }
@@ -74,30 +90,32 @@ impl CertRule for Con38C {
 
 impl Con38C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for call expressions that might be cnd_signal()
-        for call in query::find_descendants_of_kind(*node, "call_expression") {
-            if let Some(func_node) = call.child_by_field_name("function") {
-                let func_name = get_node_text(&func_node, source);
-
-                if self.is_signal_function(&func_name) {
-                    self.report_violation(&call, source, violations);
-                }
+        let project = self.project.borrow();
+        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(signal) = thread_api::thread_op_of_kind(
+                &call_node,
+                source,
+                project.as_ref(),
+                ThreadOpKind::CondSignal,
+            ) {
+                self.report_violation(&call_node, &signal, source, violations);
             }
         }
     }
 
-    fn is_signal_function(&self, func_name: &str) -> bool {
-        // Match both C11 (cnd_signal) and POSIX (pthread_cond_signal)
-        matches!(func_name.trim(), "cnd_signal" | "pthread_cond_signal")
-    }
-
-    fn report_violation(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn report_violation(
+        &self,
+        node: &Node,
+        signal: &ThreadCall,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         let line = node.start_position().row + 1;
         let column = node.start_position().column + 1;
 
-        // Get the condition variable being signaled
-        let (cond_var, is_array_access) = self
-            .get_condition_variable(node, source)
+        let (cond_var, is_array_access) = signal
+            .operand(Role::Cond)
+            .map(|cond| self.condition_variable(&cond, source))
             .unwrap_or_else(|| ("condition variable".to_string(), false));
 
         // Don't flag if the condition variable is accessed via array subscript
@@ -106,48 +124,38 @@ impl Con38C {
             return;
         }
 
+        let broadcast = signal
+            .family
+            .function_of(ThreadOpKind::CondBroadcast)
+            .map_or_else(|| "a broadcast".to_string(), |name| format!("{name}()"));
         violations.push(RuleViolation {
             rule_id: self.rule_id().to_string(),
             severity: self.severity(),
             message: format!(
-                "Use of cnd_signal() with '{}' may cause deadlock if multiple threads wait with different predicates",
-                cond_var
+                "Use of {}() with '{}' may cause deadlock if multiple threads wait with different predicates",
+                signal.name, cond_var
             ),
             file_path: String::new(),
             line,
             column,
-            suggestion: Some(
-                "Consider using cnd_broadcast() to wake all waiting threads and ensure liveness. \
-                Alternatively, use unique condition variables per thread if signaling specific threads.".to_string()
-            ),
+            suggestion: Some(format!(
+                "Consider using {broadcast} to wake all waiting threads and ensure liveness. \
+                Alternatively, use unique condition variables per thread if signaling specific threads."
+            )),
             ..Default::default()
         });
     }
 
-    fn get_condition_variable(&self, call_node: &Node, source: &str) -> Option<(String, bool)> {
-        // Get the arguments node
-        if let Some(args_node) = call_node.child_by_field_name("arguments") {
-            // Get the first argument (the condition variable)
-            for i in 0..args_node.child_count() {
-                if let Some(child) = args_node.child(i) {
-                    if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
-                        let arg_text = get_node_text(&child, source);
-
-                        // Check if this is an array access (subscript_expression)
-                        let is_array_access = child.kind() == "subscript_expression"
-                            || self.contains_subscript(&child);
-
-                        // Extract the variable name (handle &cond, &cond[i], etc.)
-                        let var_name = arg_text.trim().trim_start_matches('&').to_string();
-                        return Some((var_name, is_array_access));
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn contains_subscript(&self, node: &Node) -> bool {
-        query::find_first_descendant(*node, |n| n.kind() == "subscript_expression").is_some()
+    /// The condition variable's spelling (without a leading `&`) and whether
+    /// it is selected by subscript.
+    fn condition_variable(&self, cond: &Node, source: &str) -> (String, bool) {
+        let is_array_access = cond.kind() == "subscript_expression"
+            || query::find_first_descendant(*cond, |n| n.kind() == "subscript_expression")
+                .is_some();
+        let var_name = get_node_text(cond, source)
+            .trim()
+            .trim_start_matches('&')
+            .to_string();
+        (var_name, is_array_access)
     }
 }
