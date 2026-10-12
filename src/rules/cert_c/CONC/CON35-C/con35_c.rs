@@ -2,12 +2,21 @@
 // Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
+use crate::settings::threads::{Blocking, ThreadOpKind};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::thread_api::{self, ProjectFunctions};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use tree_sitter::Node;
 
-pub struct Con35C;
+#[derive(Default)]
+pub struct Con35C {
+    /// The project's function definitions in every scanned file, for a
+    /// library name the project defines itself.
+    project: RefCell<Option<ProjectFunctions>>,
+}
 
 impl CertRule for Con35C {
     fn rule_id(&self) -> &'static str {
@@ -24,6 +33,10 @@ impl CertRule for Con35C {
 
     fn cert_id(&self) -> &'static str {
         "CON35-C"
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = Some(context.function_summaries.clone());
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -100,17 +113,14 @@ impl Con35C {
         None
     }
 
-    /// Find all mtx_lock calls within a function
+    /// Every call within a function that waits to acquire a mutex, read by
+    /// its thread-API contract (C11, POSIX, declared families). A try or
+    /// timed lock gives up instead of waiting, so it cannot deadlock.
     fn find_lock_calls<'a>(&self, func_node: Node<'a>, source: &str) -> Vec<Node<'a>> {
+        let project = self.project.borrow();
         query::find_descendants(func_node, |node| {
-            if node.kind() != "call_expression" {
-                return false;
-            }
-            let Some(func_name_node) = node.child_by_field_name("function") else {
-                return false;
-            };
-            let func_name = get_node_text(&func_name_node, source);
-            func_name == "mtx_lock" || func_name == "pthread_mutex_lock"
+            thread_api::thread_op_of_kind(&node, source, project.as_ref(), ThreadOpKind::MutexLock)
+                .is_some_and(|call| call.op.blocking == Some(Blocking::Always))
         })
     }
 
