@@ -1947,6 +1947,7 @@ pub(crate) fn build_file_analysis(
         &context.macro_constants,
         Some(context),
         context.settings.facts,
+        file_path.extension().is_some_and(|ext| ext == "h"),
     );
 
     FileAnalysis {
@@ -1972,6 +1973,7 @@ pub(crate) fn compute_vra_if_needed(
     project_macros: &const_eval::MacroConstantMap,
     project: Option<&context::ProjectContext>,
     data_model: crate::settings::IntFacts,
+    in_header: bool,
 ) -> HashMap<usize, value_range::RangeAnalysisResult> {
     if !needs_vra || function_cfgs.is_empty() {
         return HashMap::new();
@@ -2039,6 +2041,14 @@ pub(crate) fn compute_vra_if_needed(
             &mut file_summaries,
             &std::collections::HashSet::new(),
         );
+        // A function a header defines, even `static`, has another set of
+        // callers in every file that includes the header: the calls the
+        // header makes itself do not close it (ADR-0011).
+        if in_header {
+            for summary in file_summaries.values_mut() {
+                summary.callsite_param_int_range.clear();
+            }
+        }
     }
 
     // Same-file summaries in front of the prescan's (cross-file) ones, by
@@ -2292,6 +2302,7 @@ mod tests {
             &const_eval::MacroConstantMap::new(),
             None,
             Default::default(),
+            false,
         );
         assert!(results.is_empty());
     }
@@ -2311,6 +2322,7 @@ mod tests {
             &const_eval::MacroConstantMap::new(),
             None,
             Default::default(),
+            false,
         );
         assert!(results.is_empty());
     }

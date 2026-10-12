@@ -576,11 +576,19 @@ fn apply_unsigned_wrapping(range: ValueRange, vt: &VarType) -> ValueRange {
 /// amount, so the loop never reaches the `max_iterations` -bounded exit any
 /// other way, and only the hard cap ends it. Clamping here keeps a
 /// type-saturated range a fixed point of the transfer, not just of widening.
+///
+/// An unsigned type does not saturate: arithmetic past its bounds wraps
+/// (C11 6.2.5p9), so `d + 1` for `d` in `[1, UINT_MAX]` may be zero. A range
+/// that leaves an unsigned type's bounds becomes the type's full range,
+/// which is still a fixed point.
 fn clamp_to_type_range(range: ValueRange, var_type: &Option<VarType>) -> ValueRange {
     let Some(vt) = var_type else {
         return range;
     };
     let bounds = vt.full_range();
+    if !vt.is_signed && (range.min < bounds.min || range.max > bounds.max) {
+        return bounds;
+    }
     ValueRange::new(
         range.min.clamp(bounds.min, bounds.max),
         range.max.clamp(bounds.min, bounds.max),
@@ -814,8 +822,10 @@ fn process_simple_assignment_range(
     );
 }
 
-/// `var += expr` (and `-=`/`*=`/`<<=`/`>>=`) case: only updates state when
-/// both the current range and an evaluable RHS range are available.
+/// `var += expr` (and `-=`/`*=`/`<<=`) case: computed when the variable
+/// has a range and the RHS evaluates; an RHS that does not, any other
+/// operator, or a result past what i64 holds widens the variable to its
+/// type.
 fn process_compound_assignment_range(
     var_name: &str,
     op: &str,
@@ -829,6 +839,8 @@ fn process_compound_assignment_range(
         return;
     };
     let Some(rhs_range) = const_eval::try_evaluate_range(right, source, macros, var_ranges) else {
+        let var_type = cur.var_type.clone();
+        widen_to_type(state, var_name, var_type);
         return;
     };
     let new_range = match op {
@@ -838,11 +850,28 @@ fn process_compound_assignment_range(
         "<<=" => cur.range.shl(&rhs_range),
         _ => None,
     };
-    if let Some(range) = new_range {
-        let var_type = cur.var_type.clone();
-        let range = clamp_to_type_range(range, &var_type);
-        state.insert(var_name.to_string(), TypedRange { range, var_type });
+    let var_type = cur.var_type.clone();
+    match new_range {
+        Some(range) => {
+            let range = clamp_to_type_range(range, &var_type);
+            state.insert(var_name.to_string(), TypedRange { range, var_type });
+        }
+        // Past what i64 holds, or an operator not modelled (`/=`, `&=`,
+        // `>>=`): the old range no longer bounds the value, which may be
+        // anything its type holds.
+        None => widen_to_type(state, var_name, var_type),
     }
+}
+
+/// Forget what is known of `var_name` beyond its type: its type's full
+/// range, or every i64 when the type is unknown. Never no entry, which a
+/// join would read as "no say" and fill from the other side
+/// ([`join_range_maps`]).
+fn widen_to_type(state: &mut RangeMap, var_name: &str, var_type: Option<VarType>) {
+    let range = var_type
+        .as_ref()
+        .map_or(ValueRange::new(i64::MIN, i64::MAX), |vt| vt.full_range());
+    state.insert(var_name.to_string(), TypedRange { range, var_type });
 }
 
 /// `"update_expression"` case of [`process_expression_range`]: `x++` / `x--`
@@ -858,10 +887,13 @@ fn process_update_range(node: &Node, source: &str, state: &mut RangeMap) {
     } else {
         ValueRange::exact(-1)
     };
-    if let Some(range) = cur.range.add(&delta) {
-        let var_type = cur.var_type.clone();
-        let range = clamp_to_type_range(range, &var_type);
-        state.insert(var_name, TypedRange { range, var_type });
+    let var_type = cur.var_type.clone();
+    match cur.range.add(&delta) {
+        Some(range) => {
+            let range = clamp_to_type_range(range, &var_type);
+            state.insert(var_name, TypedRange { range, var_type });
+        }
+        None => widen_to_type(state, &var_name, var_type),
     }
 }
 
