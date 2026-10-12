@@ -1,7 +1,14 @@
 /*
  * Rule: CON34-C
  * Source: wiki
- * Status: FAIL - Should trigger CON34-C violation
+ * Status: PASS - Should NOT trigger CON34-C violation
+ *
+ * CERT's noncompliant example. main() hands &val to create_thread(), whose
+ * thrd_create() receives it as the pointer parameter val: the address of an
+ * automatic object reaches the thread through another function, which a
+ * reading of one call cannot see. It was reported only by a presumption that
+ * any pointer parameter may hold automatic storage, and that presumption is
+ * not the ruled form, so it is not reported.
  */
 
 #include <threads.h>

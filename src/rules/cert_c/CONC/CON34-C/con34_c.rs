@@ -68,9 +68,8 @@
 //!   thread-local object (`thread_storage::passed_object`, the analysis
 //!   POS50-C shares), however the thread is joined afterwards: CERT reports
 //!   the sharing itself, not a lifetime overrun
-//! - For C11 `thrd_create()`, also presume that a pointer parameter or a
-//!   non-static name not allocated in the function may reference automatic
-//!   storage
+//! - A pointer whose pointee this file cannot see (a parameter, a name
+//!   assigned elsewhere) is not reported: what it points to is unknown
 //! - Find `tss_set()` (or a declared family's) in a function that also
 //!   creates a thread and reads no value back with `tss_get()`
 //! - OpenMP parallel regions sharing a local without `private`, and calls to
@@ -79,13 +78,11 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
-use crate::settings::threads::{Role, ThreadOpKind};
+use crate::settings::threads::ThreadOpKind;
 use crate::utility::cert_c::ast_utils::{
-    self, find_containing_function, get_function_parameters, get_identifier_from_declarator,
-    get_node_text, is_pointer_type,
+    find_containing_function, get_identifier_from_declarator, get_node_text,
 };
-use crate::utility::cert_c::call_roles;
-use crate::utility::cert_c::thread_api::{self, Family, ProjectFunctions, ThreadCall};
+use crate::utility::cert_c::thread_api::{self, ProjectFunctions, ThreadCall};
 use crate::utility::cert_c::thread_storage::{self, SharedStorage};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -194,40 +191,17 @@ impl Con34C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        let message = if let Some(passed) = thread_storage::passed_object(create, source) {
-            let storage = match passed.storage {
-                SharedStorage::Automatic => "automatic (local)",
-                SharedStorage::ThreadLocal => "thread-local",
-            };
-            format!(
-                "Passing address of {storage} variable '{}' to {}()",
-                passed.name, create.name
-            )
-        } else if create.family == Family::C11 {
-            // The presumptive form: a pointer whose storage this function
-            // cannot see.
-            let Some(arg_node) = create.operand(Role::Arg) else {
-                return;
-            };
-            let arg_text = get_node_text(&arg_node, source);
-            let presumed = (self.is_pointer_parameter(&arg_node, source, call_node)
-                && !self.is_allocated_pointer(arg_text, call_node, source)
-                && !self.is_likely_allocated_param(arg_text))
-                || (arg_node.kind() == "identifier"
-                    && !self.is_static_variable(&arg_node, arg_text, source)
-                    && !self.is_allocated_pointer(arg_text, call_node, source)
-                    && !self.is_likely_allocated_param(arg_text)
-                    && !arg_text.starts_with('&'));
-            if !presumed {
-                return;
-            }
-            format!(
-                "Passing '{}' to {}() may reference automatic storage",
-                arg_text, create.name
-            )
-        } else {
+        let Some(passed) = thread_storage::passed_object(create, source) else {
             return;
         };
+        let storage = match passed.storage {
+            SharedStorage::Automatic => "automatic (local)",
+            SharedStorage::ThreadLocal => "thread-local",
+        };
+        let message = format!(
+            "Passing address of {storage} variable '{}' to {}()",
+            passed.name, create.name
+        );
 
         violations.push(RuleViolation {
             rule_id: self.rule_id().to_string(),
@@ -278,166 +252,6 @@ impl Con34C {
                 });
             }
         }
-    }
-
-    fn is_pointer_parameter(&self, node: &Node, source: &str, context: &Node) -> bool {
-        // Extract the base identifier from the node (might be wrapped in casts, etc.)
-        let var_name = self.extract_base_identifier(node, source);
-
-        if let Some(var_name) = var_name {
-            // Find the enclosing function
-            if let Some(function) = find_containing_function(context) {
-                // Check if this is a pointer parameter
-                if let Some(params) = get_function_parameters(&function, source) {
-                    return params
-                        .iter()
-                        .any(|(name, ptype)| name == &var_name && is_pointer_type(ptype));
-                }
-            }
-        }
-
-        false
-    }
-
-    #[allow(clippy::only_used_in_recursion)]
-    fn extract_base_identifier(&self, node: &Node, source: &str) -> Option<String> {
-        // Handle direct identifiers
-        if node.kind() == "identifier" {
-            return Some(get_node_text(node, source).to_string());
-        }
-
-        // Handle cast expressions: (type)var
-        if node.kind() == "cast_expression" {
-            if let Some(value) = node.child_by_field_name("value") {
-                return self.extract_base_identifier(&value, source);
-            }
-        }
-
-        // Handle parenthesized expressions: (var)
-        if node.kind() == "parenthesized_expression" {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() != "(" && child.kind() != ")" {
-                        return self.extract_base_identifier(&child, source);
-                    }
-                }
-            }
-        }
-
-        // Recursively search for identifier in child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "identifier" {
-                    return Some(get_node_text(&child, source).to_string());
-                }
-            }
-        }
-
-        None
-    }
-
-    fn is_allocated_pointer(&self, var_name: &str, context: &Node, source: &str) -> bool {
-        // Check if this pointer was assigned from malloc/calloc in the current function
-        if let Some(function) = find_containing_function(context) {
-            if let Some(body) = function.child_by_field_name("body") {
-                return self.find_malloc_assignment(&body, var_name, source);
-            }
-        }
-        false
-    }
-
-    /// True if `ident_node` (occurrence of `var_name`) resolves to a `static`
-    /// declaration -- either the enclosing function's local static, or a
-    /// file-scope global. Uses `ast_utils::find_enclosing_declaration_for_identifier`
-    /// (scope/shadowing-aware) instead of a raw text search, which could
-    /// match an unrelated declaration of the same name in a different
-    /// function, or an ordinary comment/string mentioning "static name".
-    fn is_static_variable(&self, ident_node: &Node, var_name: &str, source: &str) -> bool {
-        if let Some(decl) =
-            ast_utils::find_enclosing_declaration_for_identifier(ident_node, var_name, source)
-        {
-            return Self::declaration_is_static(&decl, source);
-        }
-        // Fallback for file-scope (global) declarations, which
-        // `find_enclosing_declaration_for_identifier` intentionally does not
-        // resolve to (it only walks enclosing `compound_statement` blocks).
-        ast_utils::find_global_declaration_for_identifier(ident_node, var_name, source)
-            .is_some_and(|decl| Self::declaration_is_static(&decl, source))
-    }
-
-    /// True if a `declaration` node carries the `static` storage-class specifier.
-    fn declaration_is_static(decl: &Node, source: &str) -> bool {
-        ast_utils::declaration_has_storage_class(decl, "static", source)
-    }
-
-    fn is_likely_allocated_param(&self, var_name: &str) -> bool {
-        // Heuristic: parameters named 'value', 'v', 'data', 'buffer', 'mem' are often heap-allocated
-        // This is a pragmatic workaround for lack of inter-procedural analysis
-        matches!(
-            var_name,
-            "value" | "v" | "data" | "buffer" | "mem" | "ptr" | "p"
-        )
-    }
-
-    fn find_malloc_assignment(&self, node: &Node, var_name: &str, source: &str) -> bool {
-        // Find the first node that either assigns to var_name or declares it with
-        // an initializer, matching the same node exactly like the original
-        // recursive walk (which stopped the entire search at the first such node,
-        // regardless of whether that particular node turned out to be an
-        // allocation call).
-        let candidate = query::find_first_descendant(*node, |n| {
-            if n.kind() == "assignment_expression" {
-                if let Some(left) = n.child_by_field_name("left") {
-                    if get_node_text(&left, source) == var_name {
-                        return true;
-                    }
-                }
-                return false;
-            }
-
-            if n.kind() == "init_declarator" {
-                if let Some(declarator) = n.child_by_field_name("declarator") {
-                    if let Some(name) = declarator_identifier(&declarator, source) {
-                        if name == var_name {
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            false
-        });
-
-        match candidate {
-            Some(n) if n.kind() == "assignment_expression" => n
-                .child_by_field_name("right")
-                .map(|right| self.is_allocation_call(&right, source))
-                .unwrap_or(false),
-            Some(n) => n
-                .child_by_field_name("value")
-                .map(|value| self.is_allocation_call(&value, source))
-                .unwrap_or(false),
-            None => false,
-        }
-    }
-
-    #[allow(clippy::only_used_in_recursion)]
-    fn is_allocation_call(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source);
-                return call_roles::is_allocator_call(func_name);
-            }
-        }
-
-        // Handle cast expressions: (type*)malloc(...)
-        if node.kind() == "cast_expression" {
-            if let Some(value) = node.child_by_field_name("value") {
-                return self.is_allocation_call(&value, source);
-            }
-        }
-
-        false
     }
 
     /// Whether `function`'s body performs a thread operation of `kind`.
