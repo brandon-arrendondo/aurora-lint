@@ -28,5 +28,6 @@ default = "narrowed"
 strict = "as_written"
 pedantic = "as_written"
 differs = true
+options = ["msc37_attribute_noreturn"]
 basis = "only through the named option msc37_attribute_noreturn: the default credits a call to a function declared noreturn by a GNU attribute, strict and pedantic accept only the ISO spellings and verified bodies. C23 unreachable() ends a path only where the edition is declared, under every preset. Pedantic's trust in the C library follows P/facts."
 ruling = "MSC37-C/2026-10-07/noreturn, MSC37-C/2026-10-11/options, P/facts"

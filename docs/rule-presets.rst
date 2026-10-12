@@ -1449,7 +1449,7 @@ behind a departure.
      - narrowed
      - as_written
      - as_written
-     - 
+     - ``msc37_attribute_noreturn``
      - MSC37-C/2026-10-07/noreturn, MSC37-C/2026-10-11/options, P/facts
    * - MSC38-C
      - as_written
