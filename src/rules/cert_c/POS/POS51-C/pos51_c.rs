@@ -43,27 +43,36 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
+use crate::settings::threads::{Blocking, ThreadOpKind};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::thread_api::{self, Family, ProjectFunctions};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use tree_sitter::Node;
 
-pub struct Pos51C;
+#[derive(Default)]
+pub struct Pos51C {
+    /// The project's function definitions in every scanned file, for a
+    /// library name the project defines itself.
+    project: RefCell<Option<ProjectFunctions>>,
+}
 
 impl Pos51C {
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 
-    /// Check if a node is a pthread_mutex_lock() call
+    /// Whether a node is a POSIX call that waits to acquire a mutex, read by
+    /// its thread-API contract (resolved by declaration, so a project's own
+    /// function of that name is not one).
     fn is_mutex_lock_call(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source).trim();
-                return func_name == "pthread_mutex_lock";
-            }
-        }
-        false
+        let project = self.project.borrow();
+        thread_api::thread_op_of_kind(node, source, project.as_ref(), ThreadOpKind::MutexLock)
+            .is_some_and(|call| {
+                call.family == Family::Posix && call.op.blocking == Some(Blocking::Always)
+            })
     }
 
     /// Extract the mutex argument from pthread_mutex_lock() call
@@ -216,6 +225,10 @@ impl CertRule for Pos51C {
 
     fn cert_id(&self) -> &'static str {
         "POS51-C"
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = Some(context.function_summaries.clone());
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
