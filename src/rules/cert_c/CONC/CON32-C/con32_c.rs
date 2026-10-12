@@ -69,13 +69,22 @@
 //! - Flag unprotected bit-field accesses in potential thread functions
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
+use crate::settings::threads::ThreadOpKind;
 use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declared_type};
+use crate::utility::cert_c::thread_api::{self, ProjectFunctions};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use tree_sitter::Node;
 
-pub struct Con32C;
+#[derive(Default)]
+pub struct Con32C {
+    /// The project's function definitions in every scanned file, for a
+    /// library name the project defines itself.
+    project: RefCell<Option<ProjectFunctions>>,
+}
 
 impl CertRule for Con32C {
     fn rule_id(&self) -> &'static str {
@@ -92,6 +101,10 @@ impl CertRule for Con32C {
 
     fn cert_id(&self) -> &'static str {
         "CON32-C"
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = Some(context.function_summaries.clone());
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -327,19 +340,17 @@ impl Con32C {
         false
     }
 
+    /// Whether `node` contains a lock or unlock call, read by its thread-API
+    /// contract (C11, POSIX, declared families) and resolved by declaration.
     fn uses_mutex_lock(&self, node: &Node, source: &str) -> bool {
+        let project = self.project.borrow();
         query::find_first_descendant(*node, |n| {
-            if n.kind() != "call_expression" {
-                return false;
-            }
-            let Some(func) = n.child_by_field_name("function") else {
-                return false;
-            };
-            let func_name = get_node_text(&func, source);
-            matches!(
-                func_name,
-                "mtx_lock" | "mtx_unlock" | "pthread_mutex_lock" | "pthread_mutex_unlock"
-            )
+            thread_api::thread_op(&n, source, project.as_ref()).is_some_and(|call| {
+                matches!(
+                    call.kind(),
+                    ThreadOpKind::MutexLock | ThreadOpKind::MutexUnlock
+                )
+            })
         })
         .is_some()
     }
