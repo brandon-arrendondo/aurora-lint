@@ -2,12 +2,22 @@
 // Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
+use crate::settings::threads::ThreadOpKind;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::thread_api::{self, ProjectFunctions};
+use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
-pub struct Pos49C;
+#[derive(Default)]
+pub struct Pos49C {
+    /// The project's function definitions in every scanned file, for a
+    /// library name the project defines itself.
+    project: RefCell<Option<ProjectFunctions>>,
+}
 
 impl CertRule for Pos49C {
     fn rule_id(&self) -> &'static str {
@@ -24,6 +34,10 @@ impl CertRule for Pos49C {
 
     fn cert_id(&self) -> &'static str {
         self.rule_id()
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = Some(context.function_summaries.clone());
     }
 
     fn check(&self, root: &Node, source: &str) -> Vec<RuleViolation> {
@@ -128,23 +142,21 @@ impl Pos49C {
         }
     }
 
+    /// Whether a block around `node` makes a lock call before it and an
+    /// unlock call after it. Calls, not text: a comment naming a lock is not
+    /// one.
     fn is_within_critical_section(&self, node: &Node, source: &str) -> bool {
+        let at = node.start_byte();
         let mut current = node.parent();
         while let Some(parent) = current {
             if parent.kind() == "compound_statement" {
-                let node_pos = node.start_byte();
-                let before_text = &source[parent.start_byte()..node_pos];
-                let after_text = &source[node_pos..parent.end_byte()];
-
-                let has_lock_before = before_text.contains("pthread_mutex_lock")
-                    || before_text.contains("mutex_lock")
-                    || before_text.contains("EnterCriticalSection")
-                    || before_text.contains("AcquireSRWLock");
-                let has_unlock_after = after_text.contains("pthread_mutex_unlock")
-                    || after_text.contains("mutex_unlock")
-                    || after_text.contains("LeaveCriticalSection")
-                    || after_text.contains("ReleaseSRWLock");
-
+                let calls = query::find_descendants_of_kind(parent, "call_expression");
+                let has_lock_before = calls
+                    .iter()
+                    .any(|c| c.start_byte() < at && self.is_lock_call(c, source, true));
+                let has_unlock_after = calls
+                    .iter()
+                    .any(|c| c.start_byte() > at && self.is_lock_call(c, source, false));
                 if has_lock_before && has_unlock_after {
                     return true;
                 }
@@ -152,5 +164,35 @@ impl Pos49C {
             current = parent.parent();
         }
         false
+    }
+
+    /// Whether `call` locks (`lock`) or unlocks a mutex: by its thread-API
+    /// contract (C11, POSIX, declared families), or, for a callee no family
+    /// describes, a project wrapper whose name ends in `mutex_lock` /
+    /// `mutex_unlock`, or a Win32 critical section or slim reader/writer
+    /// lock.
+    fn is_lock_call(&self, call: &Node, source: &str, lock: bool) -> bool {
+        let project = self.project.borrow();
+        if let Some(op) = thread_api::thread_op(call, source, project.as_ref()) {
+            let kind = if lock {
+                ThreadOpKind::MutexLock
+            } else {
+                ThreadOpKind::MutexUnlock
+            };
+            return op.kind() == kind;
+        }
+        let Some(callee) = call.child_by_field_name("function") else {
+            return false;
+        };
+        let name = get_node_text(&callee, source).trim();
+        if lock {
+            name.ends_with("mutex_lock")
+                || name == "EnterCriticalSection"
+                || name.starts_with("AcquireSRWLock")
+        } else {
+            name.ends_with("mutex_unlock")
+                || name == "LeaveCriticalSection"
+                || name.starts_with("ReleaseSRWLock")
+        }
     }
 }
