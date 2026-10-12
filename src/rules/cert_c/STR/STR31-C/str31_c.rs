@@ -65,6 +65,10 @@ pub struct Str31C {
     /// resolver (see [`crate::analyze::array_size::resolve_declared_array_size`],
     /// an earlier fix). Built once per file in `check()`.
     macros: RefCell<MacroConstantMap>,
+    /// The file's `#define`-sized array lines and largest numeric
+    /// subscripts, for the buffer-size finders' whole-file questions. Built
+    /// once per file in `check()`.
+    line_index: RefCell<buffer_size::FileLineIndex>,
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
     data_model: Cell<IntFacts>,
@@ -177,41 +181,16 @@ impl Str31C {
         buffer_size::memset_content_length(var_name, source, call_node)
     }
 
-    /// Find #define constants used in array declarations
+    /// The numeric `#define` sizing the first bracketed line that mentions
+    /// `var_name` ([`buffer_size::define_constant_scan`]), from the file's
+    /// index when `source` is the file being checked.
     fn find_define_constant(&self, var_name: &str, _root: &Node, source: &str) -> Option<usize> {
-        let lines: Vec<&str> = source.lines().collect();
-        let mut defines = HashMap::new();
-
-        // First pass: collect all #define constants
-        for line in &lines {
-            let trimmed = line.trim();
-            if trimmed.starts_with("#define") {
-                let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                if parts.len() >= 3 {
-                    if let Ok(value) = parts[2].parse::<usize>() {
-                        defines.insert(parts[1], value);
-                    }
-                }
-            }
+        let index = self.line_index.borrow();
+        if index.is_of(source) {
+            index.define_constant(var_name)
+        } else {
+            buffer_size::define_constant_scan(var_name, source)
         }
-
-        // Second pass: check if var_name uses any of these constants in array
-        // declaration. A constant counts as a whole identifier, first in the
-        // line wins: matching names as substrings let `BUF` match a line
-        // declaring `buf[BUF_LEN]`, and which of the two sizes came back
-        // depended on the hash map's order.
-        for line in &lines {
-            if line.contains(var_name) && line.contains("[") && line.contains("]") {
-                let const_value = line
-                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                    .find_map(|token| defines.get(token));
-                if let Some(&const_value) = const_value {
-                    return Some(const_value);
-                }
-            }
-        }
-
-        None
     }
 
     /// Find buffer size by tracing variable definitions using simpler line-based approach.
@@ -528,22 +507,12 @@ impl Str31C {
     /// Check if source is a variable that represents a larger array than destination
     fn is_larger_array_variable(&self, var_name: &str, dest_size: usize, source: &str) -> bool {
         // Check if var_name is declared as an array larger than dest_size
-        let lines: Vec<&str> = source.lines().collect();
-        for line in &lines {
-            if line.contains(var_name) && line.contains("[") {
-                let pattern = format!(r"\b{}\s*\[\s*(\d+)\s*\]", regex::escape(var_name));
-                if let Some(re) = compiled(&pattern) {
-                    if let Some(captures) = re.captures(line) {
-                        if let Ok(size) = captures[1].parse::<usize>() {
-                            if size > dest_size {
-                                return true; // Source array is larger
-                            }
-                        }
-                    }
-                }
-            }
+        let index = self.line_index.borrow();
+        if index.is_of(source) {
+            index.has_larger_numeric_subscript(var_name, dest_size, source)
+        } else {
+            buffer_size::larger_numeric_subscript_scan(var_name, dest_size, source)
         }
-        false
     }
 
     /// Find the line range (0-based) of the enclosing function_definition for a node.
@@ -2343,6 +2312,7 @@ impl CertRule for Str31C {
         // node is always the translation_unit root when called by the framework.
         // Pass it down to avoid re-finding root on every call.
         *self.macros.borrow_mut() = collect_macro_constants(node, source, self.data_model.get());
+        *self.line_index.borrow_mut() = buffer_size::FileLineIndex::of(source);
         let mut violations = Vec::new();
         for n in query::find_descendants(*node, |_| true) {
             self.check_node(&n, source, node, &mut violations);

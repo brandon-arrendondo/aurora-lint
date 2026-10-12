@@ -630,9 +630,210 @@ pub fn eval_arith(a: Option<usize>, op: Option<&str>, b: Option<usize>) -> Optio
     }
 }
 
+/// Per-file answers to two whole-file line scans STR31-C makes for every
+/// string call, built in one pass so each call costs a lookup instead of a
+/// pass over the file. Each query returns what its reference scan
+/// ([`define_constant_scan`], [`larger_numeric_subscript_scan`]) returns for
+/// the same file.
+#[derive(Debug, Default)]
+pub struct FileLineIndex {
+    /// Address and length of the text this was built from, so a query can
+    /// tell it is being asked about that text and not another.
+    source_id: (usize, usize),
+    /// Lines holding `[` and `]` and a token some numeric `#define` names,
+    /// in file order, each with the first such token's value.
+    define_sized_lines: Vec<(String, usize)>,
+    /// For each word, the largest `N` among lines whose first `word[N]` has
+    /// a decimal `N` that fits a `usize`.
+    largest_numeric_subscript: std::collections::HashMap<String, usize>,
+}
+
+impl FileLineIndex {
+    /// Index `source`.
+    pub fn of(source: &str) -> Self {
+        static SUBSCRIPT: std::sync::LazyLock<regex::Regex> =
+            std::sync::LazyLock::new(|| regex::Regex::new(r"\b(\w+)\s*\[\s*(\d+)\s*\]").unwrap());
+        let defines = numeric_defines(source);
+        let mut define_sized_lines = Vec::new();
+        let mut largest_numeric_subscript = std::collections::HashMap::new();
+        for line in source.lines() {
+            if line.contains('[') && line.contains(']') {
+                if let Some(&value) = first_define_token(line, &defines) {
+                    define_sized_lines.push((line.to_string(), value));
+                }
+            }
+            let mut seen = std::collections::HashSet::new();
+            for caps in SUBSCRIPT.captures_iter(line) {
+                let word = caps.get(1).unwrap().as_str();
+                // Only a word's first subscript on a line counts.
+                if !seen.insert(word) {
+                    continue;
+                }
+                if let Ok(size) = caps[2].parse::<usize>() {
+                    let largest = largest_numeric_subscript
+                        .entry(word.to_string())
+                        .or_insert(size);
+                    *largest = (*largest).max(size);
+                }
+            }
+        }
+        Self {
+            source_id: (source.as_ptr() as usize, source.len()),
+            define_sized_lines,
+            largest_numeric_subscript,
+        }
+    }
+
+    /// Whether this index was built from `source`.
+    pub fn is_of(&self, source: &str) -> bool {
+        self.source_id == (source.as_ptr() as usize, source.len())
+    }
+
+    /// [`define_constant_scan`] of the indexed file.
+    pub fn define_constant(&self, var_name: &str) -> Option<usize> {
+        self.define_sized_lines
+            .iter()
+            .find(|(line, _)| line.contains(var_name))
+            .map(|&(_, value)| value)
+    }
+
+    /// [`larger_numeric_subscript_scan`] of the indexed file. A name that is
+    /// not a single word can never be a whole word in the index, so it is
+    /// answered by the scan itself over `source`.
+    pub fn has_larger_numeric_subscript(&self, var_name: &str, size: usize, source: &str) -> bool {
+        static WORD: std::sync::LazyLock<regex::Regex> =
+            std::sync::LazyLock::new(|| regex::Regex::new(r"^\w+$").unwrap());
+        if WORD.is_match(var_name) {
+            self.largest_numeric_subscript
+                .get(var_name)
+                .is_some_and(|&largest| largest > size)
+        } else {
+            larger_numeric_subscript_scan(var_name, size, source)
+        }
+    }
+}
+
+/// Every `#define NAME N` in `source` whose third whitespace-separated
+/// token parses as a `usize`, the last definition of a name winning.
+fn numeric_defines(source: &str) -> std::collections::HashMap<&str, usize> {
+    let mut defines = std::collections::HashMap::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("#define") {
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() >= 3 {
+                if let Ok(value) = parts[2].parse::<usize>() {
+                    defines.insert(parts[1], value);
+                }
+            }
+        }
+    }
+    defines
+}
+
+/// The value of the first identifier token in `line` that `defines` names.
+/// A constant counts as a whole identifier and the first in the line wins:
+/// matching names as substrings let `BUF` match a line declaring
+/// `buf[BUF_LEN]`.
+fn first_define_token<'d>(
+    line: &str,
+    defines: &'d std::collections::HashMap<&str, usize>,
+) -> Option<&'d usize> {
+    line.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .find_map(|token| defines.get(token))
+}
+
+/// The value of the numeric `#define` used in the first line of `source`
+/// that mentions `var_name` between brackets: a size like
+/// `char var_name[BUF_LEN]`. Scans the whole file; [`FileLineIndex`]
+/// answers the same from one pass.
+pub fn define_constant_scan(var_name: &str, source: &str) -> Option<usize> {
+    let defines = numeric_defines(source);
+    for line in source.lines() {
+        if line.contains(var_name) && line.contains('[') && line.contains(']') {
+            if let Some(&value) = first_define_token(line, &defines) {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+/// Whether some line of `source` declares `var_name` with a decimal
+/// subscript larger than `size`, taking the first `var_name[N]` on each
+/// line. Scans the whole file; [`FileLineIndex`] answers the same from one
+/// pass.
+pub fn larger_numeric_subscript_scan(var_name: &str, size: usize, source: &str) -> bool {
+    let pattern = format!(r"\b{}\s*\[\s*(\d+)\s*\]", regex::escape(var_name));
+    let Ok(re) = regex::Regex::new(&pattern) else {
+        return false;
+    };
+    source.lines().any(|line| {
+        line.contains(var_name)
+            && line.contains('[')
+            && re
+                .captures(line)
+                .and_then(|caps| caps[1].parse::<usize>().ok())
+                .is_some_and(|found| found > size)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_line_index_agrees_with_the_scans() {
+        let source = "#define BUF_LEN 32\n#define SMALL 4\n  #define  SPACED   9 \n\
+                      #define NOTNUM foo\n#define BUF_LEN 64\n\
+                      char buf[BUF_LEN];\nchar bufx[SMALL];\nint big[100], big[2];\n\
+                      int a [ 7 ] ; int b[3]; a[50] = 0;\nint pair[2][300];\n\
+                      int huge[99999999999999999999999]; int huge[12];\n\
+                      s.in[20]; xin[90]; in [ 30 ];\nchar d\u{e9}j\u{e0}[40];\n\
+                      arr[SPACED]; buf[ SMALL ] = 1;\nnone[];\r\nlast[5]\r\n";
+        let index = FileLineIndex::of(source);
+        assert!(index.is_of(source));
+        let names = [
+            "buf",
+            "bufx",
+            "big",
+            "a",
+            "b",
+            "pair",
+            "huge",
+            "in",
+            "xin",
+            "s",
+            "d\u{e9}j\u{e0}",
+            "arr",
+            "none",
+            "last",
+            "SMALL",
+            "BUF",
+            "uf",
+            "s.in",
+            "a b",
+            "",
+            "missing",
+        ];
+        for name in names {
+            assert_eq!(
+                index.define_constant(name),
+                define_constant_scan(name, source),
+                "define_constant({name:?})"
+            );
+            for size in [
+                0, 1, 2, 3, 4, 5, 6, 7, 11, 12, 19, 20, 29, 30, 39, 40, 49, 50, 89, 90, 99, 100,
+                299, 300,
+            ] {
+                assert_eq!(
+                    index.has_larger_numeric_subscript(name, size, source),
+                    larger_numeric_subscript_scan(name, size, source),
+                    "has_larger_numeric_subscript({name:?}, {size})"
+                );
+            }
+        }
+    }
 
     #[test]
     fn simple_arithmetic_two_operands_only() {
