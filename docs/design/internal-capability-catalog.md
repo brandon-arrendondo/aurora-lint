@@ -991,12 +991,11 @@ actually consumes:
 - A `do` loop's condition narrows its back edge as a `while` condition
   narrows the edge into the body, and the loop is widened at its condition
   block, so `do { i -= 1; x >> i; } while (i)` keeps the shift amount in
-  [0, 3]. Two limits stay. Ranges are intervals with no stride: `i -= 8`
-  from 32 under `while (i)` can, by interval, go below zero and wrap, so it
-  is not proved and INT34-C still reports the shift: a known false positive
-  that no fixture pins. And the CFG sends a `continue` in a `do` body back to the
-  body rather than to the condition, so the state a `continue` carries is
-  never narrowed by the condition, and the body stays a widening point.
+  [0, 3]. A `continue` in the body reaches the condition, so its state is
+  narrowed there too. One limit stays. Ranges are intervals with no stride:
+  `i -= 8` from 32 under `while (i)` can, by interval, go below zero and
+  wrap, so it is not proved and INT34-C still reports the shift: a known
+  false positive that no fixture pins.
 - **"No range" can mean "never runs".** A block whose every incoming edge
   is dead — the branch condition contradicts the incoming value
   (`data = 127; if (data < 127)`), or contradicts itself
@@ -1065,7 +1064,10 @@ condition is a compile-time constant (`if(STATIC_CONST_TRUE)`).
 `FunctionCfg`/`BasicBlock`/`CfgEdge` are the consumed types (blocks are
 straight-line statement sequences; edges are typed — see `CfgEdge`
 variants in the source for the exact set, e.g.
-fallthrough/branch-true/branch-false/loop-back).
+fallthrough/branch-true/branch-false/loop-back). A `continue` edge goes
+where C sends it: a `while` loop's header, a `for` loop's update clause, a
+`do` loop's condition block (C11 6.8.6.2), so the condition is tested on
+that path and the loop's exit sees the state every `continue` carries.
 
 **Wiring pattern:** Build once per function analyzed
 (`build_function_cfg[_with_constants]`), then walk `FunctionCfg`'s

@@ -972,8 +972,8 @@ struct RangeConditionInfo {
 /// a `TrueBranch` or `FalseBranch` of an `if`, `while` or `for`, and the back
 /// edge of a `do` loop, which the CFG wires from the condition block to the
 /// body. `do { ... } while (c)` re-enters the body only when `c` holds, so
-/// that edge narrows as `while (c)` narrows on entry; a `continue` reaches
-/// the body by its own edge and is not narrowed. Any other edge has none.
+/// that edge narrows as `while (c)` narrows on entry. Any other edge has
+/// none.
 fn edge_condition<'a>(
     pred_id: BlockId,
     edge_kind: &CfgEdge,
@@ -1612,9 +1612,9 @@ fn analyze_value_ranges_capped(
     // leaves the back edge's narrowing between the widened range and the
     // body: `do { i -= 1; x >> i; } while (i)` keeps `i` in [1, 4] on entry,
     // as `while (i)` does, where widening the body pushed `i` to 0 before the
-    // step and `i -= 1` then wrapped. A `continue` enters the body without
-    // passing the condition, so a body some `continue` enters stays a
-    // widening point too. Ranges are intervals with no stride, so a count
+    // step and `i -= 1` then wrapped. A `continue` in the body goes to the
+    // condition block, so it passes the widening point and the condition as
+    // the fallthrough does. Ranges are intervals with no stride, so a count
     // stepped by more than one (`i -= 8` from 32, `while (i)`) can still
     // reach below zero by interval and wrap: that loop is not proved.
     let mut widening_points: HashSet<BlockId> = HashSet::new();
@@ -1622,13 +1622,6 @@ fn analyze_value_ranges_capped(
         match e {
             CfgEdge::BackEdge if edge_condition(*from, e, cfg, &body).is_some() => {
                 widening_points.insert(*from);
-                let continued = cfg
-                    .predecessors(*to)
-                    .iter()
-                    .any(|(_, kind)| matches!(kind, CfgEdge::Continue));
-                if continued {
-                    widening_points.insert(*to);
-                }
             }
             CfgEdge::BackEdge => {
                 widening_points.insert(*to);
@@ -2987,8 +2980,8 @@ int r = 100 / i;
         );
     }
 
-    /// A `continue` enters a do body without passing the condition, so that
-    /// body stays a widening point and the loop still converges.
+    /// A `continue` in a do body reaches the condition block, the loop's
+    /// widening point, so the loop still converges.
     #[test]
     fn a_do_body_a_continue_enters_still_converges() {
         let code = "int f(int *p) { int i = 0; \

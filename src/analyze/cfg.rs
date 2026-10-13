@@ -42,7 +42,8 @@ pub enum CfgEdge {
     Return,
     /// Break out of a loop.
     Break,
-    /// Continue to loop header.
+    /// `continue`: to a `while` loop's header, a `for` loop's update, or a
+    /// `do` loop's condition block.
     Continue,
     /// Goto jump to a labeled statement.
     Goto,
@@ -121,8 +122,14 @@ struct CfgBuilder {
     blocks: Vec<BasicBlock>,
     edges: Vec<(BlockId, BlockId, CfgEdge)>,
     current_block: BlockId,
-    /// Stack of (loop_header, loop_exit) for break/continue targets.
-    loop_stack: Vec<(BlockId, BlockId)>,
+    /// Stack of (continue target, loop_exit), innermost last. A `do` loop's
+    /// continue target is its condition block, which does not exist until
+    /// the body is built, so its entry is `None` and its `continue`s wait in
+    /// `do_continues`.
+    loop_stack: Vec<(Option<BlockId>, BlockId)>,
+    /// One list per open `do` loop, innermost last: the blocks a `continue`
+    /// leaves, wired to the condition block once it is created.
+    do_continues: Vec<Vec<BlockId>>,
     /// Stack of break targets, pushed by both loops and switch statements.
     /// `continue` always targets the innermost *loop* (via `loop_stack`), but
     /// `break` targets the innermost loop-or-switch, whichever is nearer
@@ -172,6 +179,7 @@ impl CfgBuilder {
             edges: Vec::new(),
             current_block: 0,
             loop_stack: Vec::new(),
+            do_continues: Vec::new(),
             break_stack: Vec::new(),
             label_blocks: HashMap::new(),
             case_block_stack: Vec::new(),
@@ -271,8 +279,16 @@ impl CfgBuilder {
             }
             "continue_statement" => {
                 self.add_statement(node.start_byte(), node.end_byte());
-                if let Some(&(loop_header, _)) = self.loop_stack.last() {
-                    self.add_edge(self.current_block, loop_header, CfgEdge::Continue);
+                match self.loop_stack.last() {
+                    Some(&(Some(target), _)) => {
+                        self.add_edge(self.current_block, target, CfgEdge::Continue);
+                    }
+                    Some(&(None, _)) => {
+                        if let Some(pending) = self.do_continues.last_mut() {
+                            pending.push(self.current_block);
+                        }
+                    }
+                    None => {}
                 }
                 self.current_block = self.new_block(); // Unreachable block after continue
             }
@@ -456,7 +472,7 @@ impl CfgBuilder {
         }
 
         // Process body
-        self.loop_stack.push((header_block, exit_block));
+        self.loop_stack.push((Some(header_block), exit_block));
         self.break_stack.push(exit_block);
         self.current_block = body_block;
         if let Some(body) = node.child_by_field_name("body") {
@@ -502,7 +518,7 @@ impl CfgBuilder {
         }
 
         // Process body
-        self.loop_stack.push((update_block, exit_block));
+        self.loop_stack.push((Some(update_block), exit_block));
         self.break_stack.push(exit_block);
         self.current_block = body_block;
         if let Some(body) = node.child_by_field_name("body") {
@@ -528,8 +544,12 @@ impl CfgBuilder {
 
         let exit_block = self.new_block();
 
-        // Process body first (do-while executes body before checking condition)
-        self.loop_stack.push((body_block, exit_block));
+        // Process body first (do-while executes body before checking
+        // condition). A `continue` in the body jumps to the end of the body,
+        // so it reaches the condition as the fallthrough does (C11 6.8.6.2):
+        // those edges are wired once the condition block exists.
+        self.loop_stack.push((None, exit_block));
+        self.do_continues.push(Vec::new());
         self.break_stack.push(exit_block);
         self.current_block = body_block;
         if let Some(body) = node.child_by_field_name("body") {
@@ -537,10 +557,14 @@ impl CfgBuilder {
         }
         self.loop_stack.pop();
         self.break_stack.pop();
+        let continues = self.do_continues.pop().unwrap_or_default();
 
         // Condition block
         let cond_block = self.new_block();
         self.add_edge(self.current_block, cond_block, CfgEdge::Fallthrough);
+        for from in continues {
+            self.add_edge(from, cond_block, CfgEdge::Continue);
+        }
         self.current_block = cond_block;
 
         if let Some(condition) = node.child_by_field_name("condition") {
@@ -1381,6 +1405,134 @@ mod tests {
                 .any(|&(s, e)| code[s..e].trim() == "int pX = pDb;"),
             "the read of pDb should be in the same block as its preceding assignment: {:?}",
             assign_block.statements
+        );
+    }
+
+    /// The blocks whose condition is `cond` as written (parentheses
+    /// included), in the order they were built.
+    fn blocks_with_condition(cfg: &FunctionCfg, code: &str, cond: &str) -> Vec<BlockId> {
+        cfg.blocks
+            .iter()
+            .filter(|b| b.condition_range.is_some_and(|(s, e)| &code[s..e] == cond))
+            .map(|b| b.id)
+            .collect()
+    }
+
+    /// The only block whose condition is `cond`.
+    fn block_with_condition(cfg: &FunctionCfg, code: &str, cond: &str) -> BlockId {
+        let found = blocks_with_condition(cfg, code, cond);
+        assert_eq!(
+            found.len(),
+            1,
+            "one block has condition {cond}: {:?}",
+            cfg.blocks
+        );
+        found[0]
+    }
+
+    /// The block holding the statement `stmt`, the only one so written.
+    fn block_with_statement(cfg: &FunctionCfg, code: &str, stmt: &str) -> BlockId {
+        cfg.blocks
+            .iter()
+            .find(|b| b.statements.iter().any(|&(s, e)| code[s..e].trim() == stmt))
+            .unwrap_or_else(|| panic!("no block holds {stmt}: {:?}", cfg.blocks))
+            .id
+    }
+
+    /// Where the `n`th `continue;` in the source (from 0) sends control.
+    fn continue_target(cfg: &FunctionCfg, code: &str, n: usize) -> BlockId {
+        let at = code
+            .match_indices("continue;")
+            .nth(n)
+            .expect("that many continues")
+            .0;
+        let from = cfg
+            .blocks
+            .iter()
+            .find(|b| b.statements.iter().any(|&(s, _)| s == at))
+            .expect("the continue is in a block")
+            .id;
+        let targets: Vec<BlockId> = cfg
+            .edges
+            .iter()
+            .filter(|(f, _, e)| *f == from && *e == CfgEdge::Continue)
+            .map(|(_, t, _)| *t)
+            .collect();
+        assert_eq!(
+            targets.len(),
+            1,
+            "one continue edge from {from}: {:?}",
+            cfg.edges
+        );
+        targets[0]
+    }
+
+    /// A `continue` in a `do` body goes to the condition (C11 6.8.6.2), so
+    /// the condition is tested on that path and the loop exit is reached
+    /// from it, not to the body.
+    #[test]
+    fn a_continue_in_a_do_body_goes_to_the_condition() {
+        let code = "void f(int c, int k) { do { if (c) continue; g(); } while (k); h(); }";
+        let cfg = parse_and_build_cfg(code).unwrap();
+        let cond = block_with_condition(&cfg, code, "(k)");
+        assert_eq!(continue_target(&cfg, code, 0), cond);
+        let body = block_with_condition(&cfg, code, "(c)");
+        assert!(
+            cfg.edges.contains(&(cond, body, CfgEdge::BackEdge)),
+            "the back edge still enters the body: {:?}",
+            cfg.edges
+        );
+        assert!(
+            !cfg.edges
+                .iter()
+                .any(|(_, t, e)| *t == body && *e == CfgEdge::Continue),
+            "no continue enters the body: {:?}",
+            cfg.edges
+        );
+    }
+
+    /// Each `continue` targets its own innermost loop, and a `break` in a
+    /// `switch` inside the `do` leaves only the switch.
+    #[test]
+    fn continues_in_nested_loops_and_a_switch_target_their_own_loop() {
+        let code = "void f(int a, int b, int k, int x) {
+            do {
+                for (int i = 0; i < a; i++) { if (b) continue; g(); }
+                while (a) { if (b) continue; a--; }
+                switch (x) { case 1: continue; case 2: break; }
+                h();
+            } while (k);
+            while (x) { do { continue; } while (a); x--; continue; }
+        }";
+        let cfg = parse_and_build_cfg(code).unwrap();
+        let do_cond = block_with_condition(&cfg, code, "(k)");
+        let for_update = block_with_statement(&cfg, code, "i++");
+        // `while (a)` is built before the inner `do ... while (a)`.
+        let [while_a, inner_do_cond] = blocks_with_condition(&cfg, code, "(a)")[..] else {
+            panic!("two blocks test (a): {:?}", cfg.blocks)
+        };
+        let while_x = block_with_condition(&cfg, code, "(x)");
+        assert_eq!(continue_target(&cfg, code, 0), for_update);
+        assert_eq!(continue_target(&cfg, code, 1), while_a);
+        assert_eq!(
+            continue_target(&cfg, code, 2),
+            do_cond,
+            "case 1 continues the do loop"
+        );
+        assert_eq!(continue_target(&cfg, code, 3), inner_do_cond);
+        assert_eq!(continue_target(&cfg, code, 4), while_x);
+        let do_exit = cfg
+            .edges
+            .iter()
+            .find(|(f, _, e)| *f == do_cond && *e == CfgEdge::FalseBranch)
+            .map(|(_, t, _)| *t)
+            .expect("the do loop exits from its condition");
+        assert!(
+            cfg.edges
+                .iter()
+                .all(|(_, t, e)| *e != CfgEdge::Break || *t != do_exit),
+            "the switch's break leaves the switch, not the do loop: {:?}",
+            cfg.edges
         );
     }
 }
