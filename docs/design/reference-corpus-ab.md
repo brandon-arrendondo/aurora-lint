@@ -56,18 +56,33 @@ Tiers are cumulative: `quick` (small codebases, cheap enough for every change),
 `standard`, and `large` (kernels, interpreters, databases; opt in). Every
 codebase is scanned whole under `rules_templates/rules-all.toml`. There is no
 per-codebase manifest, include path or scope exclusion, because that tuning is
-what makes the oracle set non-neutral.
+what makes the oracle set non-neutral. Every codebase gets the same include
+configuration instead (below).
 
 ## Where it runs
 
 Shadow scans run on the host, outside the benchmark container, deliberately
-(`docs/adr/0018`, Decision 6). There is no compile database, no dependency
-set, and no system headers are required: a node scans with whatever headers
-it has, and warnings and partial scans are accepted. That noise is welcome,
-because it is code the oracle setup never sees. A missing header is never
-fixed for, but it is always reported. The A/B summary ends with a `HEADERS`
-block naming every codebase whose scan did not see all its includes, and
-every scan where include resolution was not attempted at all.
+(`docs/adr/0018`, Decision 6). There is no compile database and no
+dependency set. Each scan is configured with the codebase's own headers and
+allows the host's system headers, and assumes no other dependency:
+
+- **Its own headers:** every directory of the checkout that holds a header is
+  passed as `-I`, shallowest first, so a header found in two places resolves
+  to the shallower one. Nothing records which directories a build would
+  really use, so the same rule applies to every codebase.
+- **System headers:** `--system-includes`, the host compiler's own
+  directories, whatever the node has installed.
+- **Nothing else:** no third-party library a codebase depends on is
+  installed or pointed at.
+
+Warnings and partial scans are accepted. That noise is welcome, because it is
+code the oracle setup never sees. A missing header is never fixed for, but it
+is always reported. The A/B summary ends with a `HEADERS` block naming each
+codebase whose project files include headers the scan did not find, with the
+most-included ones first, and every scan where include resolution was not
+attempted at all. Expect the misses to be other platforms' headers, test
+fixtures and absent dependencies; how much that degrades analysis is what
+running it shows.
 
 Machines are provisioned with `playbooks/setup-shadow-corpus.yml`, which runs
 `bench reference-fetch` for a tier. The pins live only in

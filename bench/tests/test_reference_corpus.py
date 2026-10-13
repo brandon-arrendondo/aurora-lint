@@ -83,9 +83,13 @@ class TestHeaders(unittest.TestCase):
         self.assertEqual(h, {"attempted": False, "unresolved": None})
 
     def test_unresolved_counted_when_attempted(self):
+        rows = [{"spelling": "a.h", "includer_outside_project": False},
+                {"spelling": "a.h", "includer_outside_project": False},
+                {"spelling": "b.h", "includer_outside_project": False},
+                {"spelling": "gnu/stubs-32.h", "includer_outside_project": True}]
         h = reference._headers(self._report(
-            {"search_paths": ["/x"], "forced_includes": [], "unresolved": [{}, {}]}))
-        self.assertEqual(h, {"attempted": True, "unresolved": 2})
+            {"search_paths": ["/x"], "forced_includes": [], "unresolved": rows}))
+        self.assertEqual(h, {"attempted": True, "unresolved": 2, "top": ["a.h", "b.h"]})
 
     def test_a_binary_without_the_report_records_nothing(self):
         self.assertEqual(reference._headers(Path("/nonexistent/h.json")), {})
@@ -93,14 +97,26 @@ class TestHeaders(unittest.TestCase):
     def test_summary_names_every_scan_that_missed_headers(self):
         report = {"codebases": {
             "a": {"headers": {"attempted": False, "unresolved": None}},
-            "b": {"headers": {"attempted": True, "unresolved": 3}},
+            "b": {"headers": {"attempted": True, "unresolved": 3, "top": ["x.h", "y.h", "z.h"]}},
             "c": {"headers": {"attempted": True, "unresolved": 0}}}}
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             reference._print_headers(report)
         self.assertIn("not attempted (no search path): 1 codebase", out.getvalue())
-        self.assertIn("b: 3 #include(s) not found", out.getvalue())
+        self.assertIn("b: 3 header(s) not found (x.h, y.h, z.h)", out.getvalue())
         self.assertNotIn("c:", out.getvalue())
+
+
+class TestOwnIncludes(unittest.TestCase):
+    def test_header_directories_shallowest_first_and_nothing_else(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            for rel in ("x.h", "include/a/b.h", "include/c.h", "src/only.c", ".git/x.h"):
+                f = root / rel
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text("")
+            dirs = [str(p.relative_to(root)) for p in reference.own_include_dirs(root)]
+            self.assertEqual(dirs, [".", "include", "include/a"])
 
 
 class TestCacheKey(unittest.TestCase):

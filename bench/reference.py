@@ -25,6 +25,10 @@ CORPUS_FILE = PROJECT_DIR / "data" / "reference_corpus.json"
 MANIFEST = PROJECT_DIR / "rules_templates" / "rules-all.toml"
 OUT_DIR = PROJECT_DIR / "data" / "reference_ab"
 TIERS = ("quick", "standard", "large")
+# What a shadow scan may read besides the checkout's own sources: its own
+# headers and the host's system headers, and no other dependency (Brandon,
+# 2026-10-13). Part of the cache key, so changing it never reuses a scan.
+INCLUDES = "own+system"
 
 
 def default_root() -> Path:
@@ -92,10 +96,11 @@ def binary_id(binary: Path) -> str:
 
 def settings_id() -> str:
     """What a scan read besides the binary and the checkout: the manifest's
-    content and the profile. A cached scan made under other settings is not
+    content, the profile and the include configuration. A cached scan made under other settings is not
     the same measurement, even from the same binary at the same pin."""
     h = hashlib.sha256(MANIFEST.read_bytes())
     h.update(DEFAULT_PROFILE.encode())
+    h.update(INCLUDES.encode())
     return h.hexdigest()[:12]
 
 
@@ -112,7 +117,10 @@ def scan(binary: Path, bid: str, repo: dict, root: Path, jobs: int,
     headers = out.with_suffix(".headers.json")
     cmd = [str(binary), str(path), "--manifest", str(MANIFEST),
            "--export", str(export), "--jobs", str(jobs),
-           "--profile", DEFAULT_PROFILE, "-d", str(path)]
+           "--profile", DEFAULT_PROFILE, "-d", str(path),
+           "--system-includes"]
+    for d in own_include_dirs(path):
+        cmd += ["-I", str(d)]
     if _reports_headers(binary):
         cmd += ["--report-headers", str(headers)]
     start = time.monotonic()
@@ -133,6 +141,25 @@ def scan(binary: Path, bid: str, repo: dict, root: Path, jobs: int,
     return result
 
 
+def own_include_dirs(path: Path) -> list[Path]:
+    """Every directory of the checkout that holds a header, shallowest first.
+
+    A shadow codebase gets no build recipe or compile database, so nothing
+    says which of its directories are include roots. Searching all of them
+    gives every codebase the same configuration: its own headers, found
+    wherever they are, and nothing from outside it but the host's system
+    headers (--system-includes). Where two directories hold a header of the
+    same name, the shallower one wins, which is what a top-level -I usually
+    means. A miss is reported, never fixed for.
+    """
+    dirs = set()
+    for root, subdirs, files in os.walk(path):
+        subdirs[:] = [d for d in subdirs if d != ".git"]
+        if any(f.endswith((".h", ".H", ".hh", ".hpp")) for f in files):
+            dirs.add(Path(root))
+    return sorted(dirs, key=lambda d: (len(d.relative_to(path).parts), str(d)))
+
+
 def _reports_headers(binary: Path) -> bool:
     """Whether this binary has --report-headers. A base built at an older
     release may not, and passing it an unknown flag would fail the scan."""
@@ -150,8 +177,14 @@ def _headers(report: Path) -> dict:
         return {}
     data = json.loads(report.read_text())
     attempted = bool(data.get("search_paths") or data.get("forced_includes"))
-    return {"attempted": attempted,
-            "unresolved": len(data.get("unresolved", [])) if attempted else None}
+    if not attempted:
+        return {"attempted": False, "unresolved": None}
+    # Distinct headers a project file names, as the scan's own "Headers:"
+    # line counts them; one named only inside a system header is the host's.
+    sites = Counter(u["spelling"] for u in data.get("unresolved", [])
+                    if not u.get("includer_outside_project"))
+    return {"attempted": True, "unresolved": len(sites),
+            "top": [name for name, _ in sites.most_common(5)]}
 
 
 def _normalize(v: dict, root: Path) -> dict:
@@ -279,4 +312,5 @@ def _print_headers(report: dict) -> None:
         print(f"  include resolution not attempted (no search path): "
               f"{len(skipped)} codebase(s)")
     for name, n in sorted(missing, key=lambda m: -m[1]):
-        print(f"  {name}: {n} #include(s) not found")
+        top = ", ".join((report["codebases"][name].get("headers") or {}).get("top", []))
+        print(f"  {name}: {n} header(s) not found" + (f" ({top}, ...)" if n > 5 else f" ({top})" if top else ""))
