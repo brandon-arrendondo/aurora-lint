@@ -5,8 +5,9 @@
  * Reason: Every operand here is declared `int`, so each sum and product is
  *         signed arithmetic (INT32-C's concern), not an unsigned wrap. An
  *         operand's type comes from its declaration, not from its spelling:
- *         a variable named `u` is not a literal with a `u` suffix, and a
- *         name containing `size_t`, `uint` or `unsigned` is not that type.
+ *         a variable named `u` (or `iMul`) is not a literal with a `u` (or
+ *         `ul`) suffix, and a name containing `size_t`, `uint` or
+ *         `unsigned` is not that type.
  */
 
 struct grid {
@@ -35,4 +36,11 @@ int names_that_look_unsigned(int lu, int count_uints, int is_unsigned, int buf_s
 int field_named_like_a_literal(struct grid *g, int n)
 {
     return g->mu * n + g->buf_size_total;
+}
+
+long long reverse_delta(long long iDocid, long long iDelta, int bDescIdx)
+{
+    int iMul = (bDescIdx ? -1 : 1);
+    iDocid += (iMul * iDelta);
+    return iDocid;
 }

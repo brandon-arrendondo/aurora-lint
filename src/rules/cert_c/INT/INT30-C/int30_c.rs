@@ -1889,7 +1889,7 @@ impl Int30C {
             }
         }
 
-        if Self::spells_out_unsigned(node, source) {
+        if self.spells_out_unsigned(node, source) {
             return "unsigned".to_string();
         }
 
@@ -2012,23 +2012,32 @@ impl Int30C {
     }
 
     /// Whether the expression's own text says it is unsigned: a type it spells
-    /// out (a cast, `sizeof(type)`) names an unsigned type, or it ends in a
+    /// out (a cast, `sizeof(type)`, a type argument to a casting macro such
+    /// as `cast(l_uint32, st)`) names an unsigned type, or it ends in a
     /// `u`-suffixed literal. An identifier or member is typed by its
     /// declaration instead, never by its spelling (ADR-0006): an `int` named
-    /// `u` is not a `u`-suffixed literal, and one named `buf_size_t` is not a
-    /// `size_t`.
-    fn spells_out_unsigned(node: &Node, source: &str) -> bool {
+    /// `u` or `iMul` is not a `u`- or `ul`-suffixed literal, and one named
+    /// `buf_size_t` is not a `size_t`.
+    fn spells_out_unsigned(&self, node: &Node, source: &str) -> bool {
         if matches!(node.kind(), "identifier" | "field_expression") {
             return false;
         }
         let names_unsigned_type = query::find_descendants_of_kinds(
             *node,
-            &["primitive_type", "sized_type_specifier", "type_identifier"],
+            &[
+                "primitive_type",
+                "sized_type_specifier",
+                "type_identifier",
+                "identifier",
+            ],
         )
         .iter()
         .any(|t| {
-            let t = get_node_text(t, source);
-            t.contains("unsigned") || t.contains("size_t") || t.contains("uint")
+            let text = get_node_text(t, source);
+            if t.kind() == "identifier" {
+                return self.macro_argument_names_unsigned_type(t, text);
+            }
+            text.contains("unsigned") || text.contains("size_t") || text.contains("uint")
         });
         let last = Self::rightmost_leaf(*node);
         let unsigned_literal = last.kind() == "number_literal" && {
@@ -2039,6 +2048,19 @@ impl Int30C {
                 || last.ends_with("ul")
         };
         names_unsigned_type || unsigned_literal
+    }
+
+    /// Whether `ident`, an argument of a call, is a type name the parser read
+    /// as an expression because a function-like macro takes it (`cast(T, x)`,
+    /// `va_arg(ap, T)`) and that type is unsigned. It counts as a type only if
+    /// it resolves to one: a typedef the scan declared, or a standard unsigned
+    /// type name. An object of the same spelling is not a type.
+    fn macro_argument_names_unsigned_type(&self, ident: &Node, name: &str) -> bool {
+        if ident.parent().is_none_or(|p| p.kind() != "argument_list") {
+            return false;
+        }
+        let declared_typedef = self.typedef_types.borrow().contains_key(name);
+        (declared_typedef || ast_utils::is_unsigned_type(name)) && self.is_unsigned_type(name)
     }
 
     /// The last token of `node`, the one whose text ends `node`'s text.
