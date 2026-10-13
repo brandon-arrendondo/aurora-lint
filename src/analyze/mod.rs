@@ -1010,10 +1010,12 @@ fn load_project_context(
     let withholding = generated.map(|g| header_lookup.withholding(Arc::clone(&g.files)));
     let mut members: Option<generated_headers::Membership> = None;
 
-    // Resolve #include directives against include search paths, and the
-    // build's forced includes, which need resolving even with no search path.
+    // Resolve #include directives: a "quoted" one against its includer's
+    // directory, then the search paths, and the build's forced includes.
+    // Always, since the includer's directory needs no flag: a plain scan of
+    // a directory still knows which of its headers each file reaches.
     let forced_includes: &[String] = compile_db.map_or(&[], |db| &db.forced_includes);
-    if !include_paths.is_empty() || !forced_includes.is_empty() {
+    {
         let mut c_files = if diff_only {
             project_source.get_modified_c_files()?
         } else {

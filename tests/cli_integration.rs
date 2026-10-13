@@ -5535,11 +5535,40 @@ fn pre31_lines(found: &[(u64, String)]) -> Vec<u64> {
 }
 
 #[test]
-fn with_no_search_path_every_definition_of_a_project_macro_counts() {
-    // No -I, so no include graph: which header geometry.c compiles with is
-    // unknown, and math_util.h's definition may be it.
-    let found = pre31_findings_searching("pre31_include_closure", "geometry.c", &[]);
-    assert_eq!(pre31_lines(&found), vec![5], "{found:?}");
+fn with_no_search_path_a_quoted_include_still_decides_the_macro() {
+    // No -I, but a "quoted" include is looked up beside its includer first,
+    // which needs no flag: geometry.c still reaches only shapes.h's SQ, and
+    // stats.c math_util.h's.
+    let geometry = pre31_findings_searching("pre31_include_closure", "geometry.c", &[]);
+    assert!(geometry.is_empty(), "{geometry:?}");
+    let stats = pre31_findings_searching("pre31_include_closure", "stats.c", &[]);
+    assert_eq!(pre31_lines(&stats), vec![7], "{stats:?}");
+}
+
+#[test]
+fn with_no_search_path_only_a_quoted_include_is_found_beside_its_includer() {
+    // A compiler looks a "quoted" include up in the includer's directory
+    // first; an <angle> one only on the search path, of which there is none.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("cfg.h"), "#define CFG 1\n").unwrap();
+    std::fs::write(
+        dir.path().join("a.c"),
+        "#include \"cfg.h\"\n#include <cfg.h>\nint f(void) { return CFG; }\n",
+    )
+    .unwrap();
+    let headers = dir.path().join("headers.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        dir.path().join("a.c").to_str().unwrap(),
+        "--report-headers",
+        headers.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&headers).unwrap()).unwrap();
+    let rows = report["unresolved"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{report}");
+    assert_eq!(rows[0]["spelling"], "cfg.h", "{report}");
+    assert_eq!(rows[0]["line"], 2, "{report}");
 }
 
 #[test]

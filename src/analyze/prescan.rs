@@ -7784,9 +7784,13 @@ pub fn resolve_includes_scoped(
         form,
     }) = queue.pop()
     {
-        if let Some(found) =
-            find_header(&include_path, source_dir.as_deref(), include_paths, lookup)
-        {
+        if let Some(found) = find_header_of_form(
+            &include_path,
+            form,
+            source_dir.as_deref(),
+            include_paths,
+            lookup,
+        ) {
             if found.case_differs && case_seen.insert((include_path.clone(), includer.clone())) {
                 context
                     .macro_gaps
@@ -8206,6 +8210,28 @@ fn extract_includes_recursive(
     }
 }
 
+/// [`find_header`] for an include of `form`. Only a `"quoted"` (or
+/// computed) include is looked up in its includer's directory when there is
+/// no search path: an `<angle>` include is searched for only on the search
+/// paths (C11 6.10.2p2), so with none it resolves to no file unless it is
+/// an absolute path. With a search path, both forms try the includer's
+/// directory first, as before.
+fn find_header_of_form(
+    include_path: &str,
+    form: super::context::IncludeForm,
+    source_dir: Option<&Path>,
+    include_search_paths: &[String],
+    lookup: &HeaderLookup,
+) -> Option<HeaderMatch> {
+    if include_search_paths.is_empty()
+        && form == super::context::IncludeForm::Angle
+        && !Path::new(include_path).is_absolute()
+    {
+        return None;
+    }
+    find_header(include_path, source_dir, include_search_paths, lookup)
+}
+
 /// Resolve an include path against search directories under `lookup`'s
 /// name-matching rule.
 ///
@@ -8507,7 +8533,13 @@ fn walk_beyond_search_path(
                 continue;
             }
             let include = directive.path;
-            if let Some(found) = find_header(&include, dir.as_deref(), include_paths, lookup) {
+            if let Some(found) = find_header_of_form(
+                &include,
+                directive.form,
+                dir.as_deref(),
+                include_paths,
+                lookup,
+            ) {
                 let real = crate::analyze::compile_commands::real_path(&found.path);
                 add(&from, real.clone());
                 // A header the main pass resolved has its own edges there.

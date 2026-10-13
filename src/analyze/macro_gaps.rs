@@ -444,9 +444,10 @@ pub struct MacroGapReport {
     pub expandable_macros: usize,
     /// Files the invocation audit walked.
     pub files_audited: usize,
-    /// Whether `#include` resolution ran at all (it needs at least one
-    /// search path); without it, every angle-bracket include is unreachable
-    /// by construction and the unresolved-include rows say so.
+    /// Whether the scan had a search path: without one only `"quoted"`
+    /// includes resolve (beside their includer), every angle-bracket include
+    /// is unreachable by construction, and the unresolved-include rows say
+    /// so.
     pub include_resolution_enabled: bool,
 }
 
@@ -486,8 +487,8 @@ impl MacroGapReport {
             if self.include_resolution_enabled {
                 "on"
             } else {
-                "off (no -I / --compile-commands / --system-includes: angle-bracket includes are \
-                 never searched)"
+                "for \"quoted\" includes only (no -I / --compile-commands / --system-includes: \
+                 angle-bracket includes are never searched)"
             }
         );
         if self.gaps.is_empty() {
@@ -677,8 +678,7 @@ fn audit_file(
     for inc in super::prescan::extract_include_directives(&root, &source) {
         if let Some(found) = super::prescan::find_header(&inc, source_dir, include_paths, lookup) {
             // The same row `resolve_includes` records when it walked this
-            // file; the two collapse in `dedupe_and_sort`. Recorded here too
-            // because that walk runs only with a search path.
+            // file; the two collapse in `dedupe_and_sort`.
             if found.case_differs {
                 gaps.extend(include_case_gaps(&inc, Some(file), &found));
             }
