@@ -8174,6 +8174,32 @@ fn mem01_a_macro_counts_only_where_the_file_includes_it() {
     assert_eq!(mem01_macro_scope_findings("sibling_c"), 1);
 }
 
+/// MSC37-C findings for `a.c` in one `msc37_macro_scope` project.
+fn msc37_macro_scope_findings(case: &str) -> usize {
+    let project = fixtures().join("msc37_macro_scope").join(case);
+    let project = project.to_str().unwrap();
+    let manifest = fixtures().join("manifest_msc37.toml");
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        &format!("{project}/a.c"),
+        "-m",
+        manifest.to_str().unwrap(),
+        "-d",
+        project,
+    ]);
+    assert!(code == 0 || code == 1, "{stderr}");
+    stdout.matches("MSC37-C:").count()
+}
+
+/// A project macro defines the callee only where the file may include it:
+/// one in an included header ends the arm (`stop()` is `return -1`), while
+/// another `.c` file's private `#define stop()` leaves `stop()` the real
+/// function, which returns, so the `break` after it is reachable.
+#[test]
+fn msc37_a_macro_counts_only_where_the_file_includes_it() {
+    assert_eq!(msc37_macro_scope_findings("included_header"), 0);
+    assert_eq!(msc37_macro_scope_findings("sibling_c"), 1);
+}
+
 /// The directive in force at the call decides: a macro `#undef`ed before the
 /// call is the project function again, and a header's macro used before the
 /// file `#undef`s and redefines it is still a macro at the call.

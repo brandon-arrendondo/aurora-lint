@@ -72,8 +72,8 @@
 //!   ends this way.
 
 use super::super::{CertRule, RuleViolation};
-use crate::analyze::context::ProjectContext;
-use crate::analyze::macro_expand::{collect_function_macro_alternatives, FunctionMacro};
+use crate::analyze::context::{IncludeClosure, ProjectContext};
+use crate::analyze::macro_expand::{collect_function_macro_alternatives, ProjectMacroArm};
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::get_node_text;
@@ -87,7 +87,10 @@ pub struct Msc37C {
     /// Function-like macros the prescan collected project-wide, so a
     /// `RETURN`-style macro defined in a header is known when a file's
     /// function ends with it.
-    project_function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
+    project_function_macros: RefCell<Arc<HashMap<String, Vec<ProjectMacroArm>>>>,
+    /// The include graph: a project macro defined in a file this one cannot
+    /// include is not a definition here (ADR-0006).
+    include_edges: RefCell<Arc<HashMap<String, Vec<String>>>>,
     /// Functions the project declares noreturn by GNU attribute, and the
     /// macros defined as that attribute, for `msc37_attribute_noreturn`.
     attribute_functions: RefCell<Arc<HashSet<String>>>,
@@ -101,6 +104,9 @@ pub struct Msc37C {
     /// path for the check that a function returns, but a `break` after one
     /// is still reachable.
     sometimes_returning: RefCell<HashSet<String>>,
+    /// `macro_body_always_returns` by body text: it parses the body, and the
+    /// same macro is met in file after file.
+    always_returns_memo: RefCell<HashMap<String, bool>>,
     /// The run's policy and environment settings: whether a `_Noreturn`
     /// declaration is trusted (`trust_noreturn_keyword`).
     settings: RefCell<Arc<AnalysisSettings>>,
@@ -116,6 +122,8 @@ impl Msc37C {
     pub fn new() -> Self {
         Self {
             project_function_macros: RefCell::default(),
+            include_edges: RefCell::default(),
+            always_returns_memo: RefCell::default(),
             attribute_functions: RefCell::default(),
             attribute_macros: RefCell::default(),
             keyword_functions: RefCell::default(),
@@ -164,22 +172,76 @@ impl Msc37C {
     /// mps_reader.c returns, and the body shows no `return_statement` at
     /// all. A call to one is a return for this rule's purposes.
     /// This file's own definitions first, then the project's.
-    fn collect_returning_macros(&self, source: &str) -> HashSet<String> {
+    ///
+    /// Second, of those, the ones that return on only some path
+    /// (`if (!(x)) return -1;`): a definition that does not return on every
+    /// path, or another arm that has no `return` at all.
+    fn returning_macros(
+        &self,
+        bodies: &HashMap<String, Vec<String>>,
+    ) -> (HashSet<String>, HashSet<String>) {
         fn returns(body: &str) -> bool {
             body.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
                 .any(|tok| tok == "return")
         }
-        let mut names: HashSet<String> = collect_function_macro_alternatives(source)
-            .into_iter()
-            .filter(|(_, alts)| alts.iter().any(|m| returns(&m.body)))
-            .map(|(name, _)| name)
+        let returning: HashSet<String> = bodies
+            .iter()
+            .filter(|(_, defs)| defs.iter().any(|b| returns(b)))
+            .map(|(name, _)| name.clone())
             .collect();
-        for (name, m) in self.project_function_macros.borrow().iter() {
-            if returns(&m.body) {
-                names.insert(name.clone());
+        let sometimes = returning
+            .iter()
+            .filter(|name| !bodies[*name].iter().all(|b| self.always_returns(b)))
+            .cloned()
+            .collect();
+        (returning, sometimes)
+    }
+
+    fn always_returns(&self, body: &str) -> bool {
+        if let Some(known) = self.always_returns_memo.borrow().get(body) {
+            return *known;
+        }
+        let known = macro_body_always_returns(body);
+        self.always_returns_memo
+            .borrow_mut()
+            .insert(body.to_string(), known);
+        known
+    }
+
+    /// Every live definition of each function-like macro the file sees, as
+    /// replacement-list text: its own (any arm), the project's from any
+    /// header, and the project's from the `.c` files it may include. A macro
+    /// another `.c` file keeps private defines nothing in this file.
+    fn visible_macro_bodies(&self, source: &str) -> HashMap<String, Vec<String>> {
+        let mut bodies: HashMap<String, Vec<String>> = HashMap::new();
+        for (name, alts) in collect_function_macro_alternatives(source) {
+            bodies
+                .entry(name)
+                .or_default()
+                .extend(alts.into_iter().map(|m| m.body));
+        }
+        // A macro a header defines counts whether or not the closure reaches
+        // the header: the closure is a lower bound, since a header that
+        // includes a generated one the scan cannot read hides what follows
+        // (seL4's `fail()` wrapper is reached that way). Only a `.c` file's
+        // macro, which no other file includes, is scoped by the closure.
+        let closure = IncludeClosure::of_scan(
+            &self.include_edges.borrow(),
+            std::path::Path::new(&*self.file_path.borrow()),
+        );
+        for (name, entries) in self.project_function_macros.borrow().iter() {
+            for e in entries.iter().filter(|e| {
+                e.files
+                    .iter()
+                    .any(|f| !f.ends_with(".c") || closure.may_include(f))
+            }) {
+                bodies
+                    .entry(name.clone())
+                    .or_default()
+                    .push(e.arm.body.clone());
             }
         }
-        names
+        bodies
     }
 
     /// The functions this file's calls reach that are declared noreturn by
@@ -189,7 +251,12 @@ impl Msc37C {
     /// A function the file defines `static` is its own, so another file's
     /// same-named attribute declaration does not reach it; the file's own
     /// declarations are read with the project's attribute macros.
-    fn attribute_noreturn_names(&self, root: &Node, source: &str) -> HashSet<String> {
+    fn attribute_noreturn_names(
+        &self,
+        root: &Node,
+        source: &str,
+        bodies: &HashMap<String, Vec<String>>,
+    ) -> HashSet<String> {
         use crate::analyze::noreturn as nr;
         let mut macros: HashSet<String> = self.attribute_macros.borrow().as_ref().clone();
         nr::collect_attribute_noreturn_macro_names(source, &mut macros);
@@ -199,14 +266,19 @@ impl Msc37C {
             &self.attribute_functions.borrow(),
             |candidates| nr::attribute_noreturn_declared_in(candidates, &macros),
         );
-        self.with_wrapping_macros(source, names)
+        Self::with_wrapping_macros(bodies, names)
     }
 
     /// The functions this file's calls reach that are declared noreturn by an
     /// ISO spelling written through a macro (`#define NR [[noreturn]]`;
     /// `NR void die(void);`), and the macros that wrap a call to one. The
     /// keyword is credited under every preset, as when written directly.
-    fn keyword_noreturn_names(&self, root: &Node, source: &str) -> HashSet<String> {
+    fn keyword_noreturn_names(
+        &self,
+        root: &Node,
+        source: &str,
+        bodies: &HashMap<String, Vec<String>>,
+    ) -> HashSet<String> {
         use crate::analyze::noreturn as nr;
         let mut macros: HashSet<String> = self.keyword_macros.borrow().as_ref().clone();
         nr::collect_keyword_noreturn_macro_names(source, &mut macros);
@@ -216,7 +288,7 @@ impl Msc37C {
             &self.keyword_functions.borrow(),
             |candidates| nr::keyword_noreturn_declared_in(candidates, &macros),
         );
-        self.with_wrapping_macros(source, names)
+        Self::with_wrapping_macros(bodies, names)
     }
 
     /// `project` less the functions this file defines `static`, plus the
@@ -240,39 +312,19 @@ impl Msc37C {
         names
     }
 
-    /// `names` plus every function-like macro whose every live definition (the
-    /// project's, in any header and any arm, and this file's own) is one call
-    /// to a function in `names`.
-    fn with_wrapping_macros(&self, source: &str, mut names: HashSet<String>) -> HashSet<String> {
-        let mut definitions: HashMap<String, FunctionMacro> = self
-            .project_function_macros
-            .borrow()
+    /// `names` plus every function-like macro whose every live definition
+    /// (`bodies`) is one call to a function in `names`.
+    fn with_wrapping_macros(
+        bodies: &HashMap<String, Vec<String>>,
+        mut names: HashSet<String>,
+    ) -> HashSet<String> {
+        let credited: Vec<String> = bodies
             .iter()
-            .map(|(name, m)| (name.clone(), m.clone()))
-            .collect();
-        for (name, alts) in collect_function_macro_alternatives(source) {
-            for alt in alts {
-                match definitions.get_mut(&name) {
-                    Some(existing) => existing.absorb(alt),
-                    None => {
-                        definitions.insert(name.clone(), alt);
-                    }
-                }
-            }
-        }
-        let credited: Vec<String> = definitions
-            .iter()
-            .filter(|(_, m)| {
-                let ends_in_noreturn_call = |d: &FunctionMacro| {
-                    single_call_callee(&d.body).is_some_and(|c| names.contains(c))
-                };
-                if m.alternatives.is_empty() {
-                    ends_in_noreturn_call(m)
-                } else {
-                    m.alternatives
+            .filter(|(_, defs)| {
+                !defs.is_empty()
+                    && defs
                         .iter()
-                        .all(|d| d.as_ref().is_some_and(ends_in_noreturn_call))
-                }
+                        .all(|d| single_call_callee(d).is_some_and(|c| names.contains(c)))
             })
             .map(|(name, _)| name.clone())
             .collect();
@@ -889,6 +941,19 @@ fn ends_with_jump(node: &Node, source: &str, jumps: &dyn Fn(&Node) -> bool) -> b
         "compound_statement" => {
             last_statement_of_block(node).is_some_and(|last| ends_with_jump(&last, source, jumps))
         }
+        // An `if`/`else` chain whose every path jumps.
+        "if_statement" => match (
+            node.child_by_field_name("consequence"),
+            node.child_by_field_name("alternative"),
+        ) {
+            (Some(c), Some(a)) => {
+                ends_with_jump(&c, source, jumps) && ends_with_jump(&a, source, jumps)
+            }
+            _ => false,
+        },
+        "else_clause" => node
+            .named_child(0)
+            .is_some_and(|c| ends_with_jump(&c, source, jumps)),
         "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_else" => {
             match preproc_arm_tail(node, source) {
                 ArmTail::Both(stmt, alt) => {
@@ -1016,7 +1081,8 @@ impl CertRule for Msc37C {
     }
 
     fn set_project_context(&self, context: &ProjectContext) {
-        *self.project_function_macros.borrow_mut() = context.function_macros.clone();
+        *self.project_function_macros.borrow_mut() = Arc::clone(&context.function_macro_arms);
+        *self.include_edges.borrow_mut() = Arc::clone(&context.include_edges);
         *self.attribute_functions.borrow_mut() = Arc::clone(&context.attribute_noreturn_functions);
         *self.attribute_macros.borrow_mut() = Arc::clone(&context.attribute_noreturn_macros);
         *self.keyword_functions.borrow_mut() = Arc::clone(&context.keyword_noreturn_functions);
@@ -1043,7 +1109,8 @@ impl Msc37C {
         // policy that does not trust the keyword keeps only the `_Noreturn`
         // functions whose bodies are verified never to return.
         let mut noreturn_names = Self::collect_noreturn_function_names(node, source);
-        noreturn_names.extend(self.keyword_noreturn_names(node, source));
+        let bodies = self.visible_macro_bodies(source);
+        noreturn_names.extend(self.keyword_noreturn_names(node, source, &bodies));
         let settings = self.settings.borrow();
         if !settings.flag("trust_noreturn_keyword") {
             let verified =
@@ -1051,17 +1118,17 @@ impl Msc37C {
             noreturn_names.retain(|name| verified.contains(name));
         }
         if settings.flag("msc37_attribute_noreturn") {
-            noreturn_names.extend(self.attribute_noreturn_names(node, source));
+            noreturn_names.extend(self.attribute_noreturn_names(node, source, &bodies));
         }
         // A macro that only sometimes returns ends the function's path, not
         // the arm that calls it: `break;` after `CHECK(x);` is reachable. A
         // name that also ends a path for another reason keeps doing so.
-        *self.sometimes_returning.borrow_mut() = self
-            .collect_returning_macros(source)
+        let (returning, sometimes) = self.returning_macros(&bodies);
+        *self.sometimes_returning.borrow_mut() = sometimes
             .into_iter()
             .filter(|name| !noreturn_names.contains(name))
             .collect();
-        noreturn_names.extend(self.sometimes_returning.borrow().iter().cloned());
+        noreturn_names.extend(returning);
         // C23 `unreachable()` (C23 7.21.1) ends a path, where the edition is
         // declared and the file does not define a function or macro of that
         // name itself: CERT's EX2 helper named `unreachable` is that case.
@@ -1073,6 +1140,163 @@ impl Msc37C {
             self.check_function_definition(&func, source, &noreturn_names, violations);
         }
     }
+}
+
+/// Whether a macro's replacement list returns on every path:
+/// `return -1`, `do { log(); return -1; } while (0)`, or an `if`/`else` that
+/// returns on both sides. `CHECK(x)` as `if (!(x)) return -1;` does not, and
+/// neither does a body that can `break`, `continue` or `goto` past its
+/// `return`. A body nested deeper than [`MACRO_BODY_DEPTH`] is read as not
+/// always returning, so a pathological macro cannot overflow the stack.
+fn macro_body_always_returns(body: &str) -> bool {
+    /// Nesting beyond which a macro body is not followed.
+    const MACRO_BODY_DEPTH: usize = 64;
+
+    /// Whether a `break`, `continue` or `goto` under `node` leaves the
+    /// enclosing block. A `break` aimed at a loop or `switch` nested inside
+    /// `node` stays inside it, as does a `continue` aimed at a nested loop and
+    /// a `goto` to a label the body itself defines.
+    fn leaves_early(node: &Node, source: &str, depth: usize) -> bool {
+        if depth > MACRO_BODY_DEPTH {
+            return true;
+        }
+        let mut cursor = node.walk();
+        let mut found = false;
+        for child in node.named_children(&mut cursor) {
+            found |= escapes(&child, source, false, false, depth + 1);
+        }
+        found
+    }
+
+    fn escapes(
+        node: &Node,
+        source: &str,
+        break_caught: bool,
+        continue_caught: bool,
+        depth: usize,
+    ) -> bool {
+        if depth > MACRO_BODY_DEPTH {
+            return true;
+        }
+        let (break_caught, continue_caught) = match node.kind() {
+            "break_statement" => return !break_caught,
+            "continue_statement" => return !continue_caught,
+            "goto_statement" => return !goto_target_is_inside(node, source, depth),
+            "while_statement" | "for_statement" | "do_statement" => (true, true),
+            "switch_statement" => (true, continue_caught),
+            _ => (break_caught, continue_caught),
+        };
+        let mut cursor = node.walk();
+        let mut found = false;
+        for child in node.named_children(&mut cursor) {
+            found |= escapes(&child, source, break_caught, continue_caught, depth + 1);
+        }
+        found
+    }
+
+    /// Whether a `goto` stays inside the parsed body without skipping a
+    /// return: its label precedes it (a backward jump), or the statement the
+    /// label marks itself returns on every path.
+    fn goto_target_is_inside(goto: &Node, source: &str, depth: usize) -> bool {
+        let Some(label) = goto.child_by_field_name("label") else {
+            return false;
+        };
+        let name = get_node_text(&label, source);
+        let mut root = *goto;
+        while let Some(p) = root.parent() {
+            root = p;
+        }
+        query::find_descendants_of_kind(root, "labeled_statement")
+            .into_iter()
+            .filter(|l| {
+                l.child_by_field_name("label")
+                    .is_some_and(|n| get_node_text(&n, source) == name)
+            })
+            .any(|l| l.start_byte() < goto.start_byte() || always(&l, source, depth + 1))
+    }
+
+    fn leaves_early_stmt(node: &Node, source: &str, depth: usize) -> bool {
+        escapes(node, source, false, false, depth + 1)
+    }
+
+    fn always(node: &Node, source: &str, depth: usize) -> bool {
+        if depth > MACRO_BODY_DEPTH {
+            return false;
+        }
+        match node.kind() {
+            "return_statement" => true,
+            "compound_statement" => {
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    if always(&child, source, depth + 1) {
+                        return true;
+                    }
+                    // A jump out of the block skips the return after it.
+                    if leaves_early_stmt(&child, source, depth) {
+                        return false;
+                    }
+                }
+                false
+            }
+            // The body of a `do` runs at least once.
+            "do_statement" => node
+                .child_by_field_name("body")
+                .is_some_and(|b| always(&b, source, depth + 1)),
+            "if_statement" => match (
+                node.child_by_field_name("consequence"),
+                node.child_by_field_name("alternative"),
+            ) {
+                (Some(c), Some(a)) => {
+                    always(&c, source, depth + 1) && always(&a, source, depth + 1)
+                }
+                _ => false,
+            },
+            // `done: return -1;`
+            "labeled_statement" => node
+                .named_child(node.named_child_count().saturating_sub(1))
+                .is_some_and(|c| always(&c, source, depth + 1)),
+            "else_clause" => node
+                .named_child(0)
+                .is_some_and(|c| always(&c, source, depth + 1)),
+            // `switch (x) { default: return -1; }`: a `default` label, no
+            // `break` aimed at the switch, and the last group returns.
+            "switch_statement" => {
+                let Some(body) = node.child_by_field_name("body") else {
+                    return false;
+                };
+                let groups: Vec<Node> = {
+                    let mut c = body.walk();
+                    body.named_children(&mut c)
+                        .filter(|k| k.kind() == "case_statement")
+                        .collect()
+                };
+                let has_default = groups
+                    .iter()
+                    .any(|g| g.child_by_field_name("value").is_none());
+                has_default
+                    && !leaves_early(&body, source, depth)
+                    && groups.last().is_some_and(|g| {
+                        let mut c = g.walk();
+                        let r = g
+                            .named_children(&mut c)
+                            .any(|k| always(&k, source, depth + 1));
+                        r
+                    })
+            }
+            _ => false,
+        }
+    }
+    let text = format!("void f(void) {{ {body}\n; }}");
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&crate::parser::c_language()).is_err() {
+        return false;
+    }
+    let Some(tree) = parser.parse(&text, None) else {
+        return false;
+    };
+    query::find_first_descendant(tree.root_node(), |n| n.kind() == "function_definition")
+        .and_then(|f| f.child_by_field_name("body"))
+        .is_some_and(|b| always(&b, &text, 0))
 }
 
 /// The callee of `body` (a macro's replacement list) when the whole of it is
