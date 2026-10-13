@@ -94,7 +94,7 @@ cross-cutting rulings decided once and applied to many:
   gated on that fact, not cut. The gate is `AnalysisSettings::posix_for` (recorded per unit) and
   `posix_holds_project`, which is what the rules read today: the configuration's
   answer for every file, or a compile database's only when every unit of it
-  declares POSIX. Per-unit `c_standard` is recorded but no rule reads it yet.
+  declares POSIX. Per-unit `c_standard` is recorded; only MSC37-C reads it so far.
   Today the gate governs the POSIX-only entries
   of the `stdlib_noreturn` and `stdlib_call_effects` contracts; the rules below
   that name the POSIX fact in their rows (FIO08-C, FIO14-C, FIO19-C, FIO24-C,

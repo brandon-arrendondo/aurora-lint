@@ -54,6 +54,10 @@ pub struct Mem01C {
     /// The functions the project defines (those with a summary), built with
     /// `read_only_params` for the same reason.
     defined_functions: RefCell<Arc<HashSet<String>>>,
+    /// The function-like macros the file being scanned defines: a call spelled
+    /// as one is a macro expansion, not a call to a project function that
+    /// shares the name.
+    file_function_macros: RefCell<Arc<HashSet<String>>>,
 }
 
 /// Per-callee parameter indices confirmed to be read-only-dereferenced,
@@ -74,6 +78,8 @@ struct AddressOfCallContext {
     /// one can read a global or `static` that still holds a freed address,
     /// where a library function cannot.
     defined_functions: Arc<HashSet<String>>,
+    /// The scanned file's function-like macros (`Mem01C::file_function_macros`).
+    file_function_macros: Arc<HashSet<String>>,
 }
 
 impl Mem01C {
@@ -84,6 +90,7 @@ impl Mem01C {
             read_only_params: RefCell::default(),
             freeing_wrappers: RefCell::default(),
             defined_functions: RefCell::default(),
+            file_function_macros: RefCell::default(),
         }
     }
 
@@ -209,6 +216,11 @@ impl CertRule for Mem01C {
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        *self.file_function_macros.borrow_mut() = Arc::new(
+            crate::analyze::macro_expand::collect_function_macros(node, source)
+                .into_keys()
+                .collect(),
+        );
         self.check_node(node, source, violations);
     }
 }
@@ -234,6 +246,7 @@ impl Mem01C {
             read_only_params: Arc::clone(&self.read_only_params.borrow()),
             freeing_wrappers: Arc::clone(&self.freeing_wrappers.borrow()),
             defined_functions: Arc::clone(&self.defined_functions.borrow()),
+            file_function_macros: Arc::clone(&self.file_function_macros.borrow()),
         };
 
         // Get pre-built CFG or build one on the fly
@@ -758,11 +771,17 @@ fn call_can_read_dangling(
                     )))
                 })
             });
-            let callee = call
-                .child_by_field_name("function")
-                .map(|f| get_node_text(&f, source).to_string())
-                .unwrap_or_default();
-            hands_container || (site.global && addr_ctx.defined_functions.contains(&callee))
+            // A callee that designates an object (a function-pointer
+            // parameter) or a function-like macro of this file is not the
+            // project function of the same spelling (ADR-0006).
+            hands_container
+                || (site.global
+                    && crate::analyze::noreturn::called_function_name(&call, source).is_some_and(
+                        |callee| {
+                            addr_ctx.defined_functions.contains(&callee)
+                                && !addr_ctx.file_function_macros.contains(&callee)
+                        },
+                    ))
         })
 }
 

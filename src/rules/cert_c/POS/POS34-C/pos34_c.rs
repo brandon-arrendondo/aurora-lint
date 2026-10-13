@@ -143,7 +143,7 @@ impl Pos34C {
             if self.exempted(&call, source) {
                 continue;
             }
-            let arg_text = get_node_text(&arg, source);
+            let arg_text = automatic_object_name(&arg, source);
             violations.push(RuleViolation {
                 rule_id: self.rule_id().to_string(),
                 message: format!(
@@ -267,6 +267,36 @@ fn points_to_automatic(expr: &Node, source: &str, depth: usize) -> bool {
                 })
         }
         _ => false,
+    }
+}
+
+/// The spelling the report names for an argument that points to an automatic
+/// object: the object itself (`env` for `k ? env : "B=2"`, `&env[1]`, `s.buf`),
+/// or the whole expression when no single object stands out.
+fn automatic_object_name(expr: &Node, source: &str) -> String {
+    let named = match expr.kind() {
+        "parenthesized_expression" => expr.named_child(0),
+        "cast_expression" => expr.child_by_field_name("value"),
+        "conditional_expression" => ["consequence", "alternative"]
+            .iter()
+            .filter_map(|arm| expr.child_by_field_name(arm))
+            .find(|inner| points_to_automatic(inner, source, 0)),
+        "pointer_expression" | "subscript_expression" | "field_expression" => {
+            let base = if expr.kind() == "pointer_expression" {
+                expr.child_by_field_name("argument")
+            } else {
+                Some(*expr)
+            };
+            return base
+                .and_then(|b| path_root(&b))
+                .map(|root| get_node_text(&root, source).to_string())
+                .unwrap_or_else(|| get_node_text(expr, source).to_string());
+        }
+        _ => None,
+    };
+    match named {
+        Some(inner) => automatic_object_name(&inner, source),
+        None => get_node_text(expr, source).to_string(),
     }
 }
 
@@ -545,21 +575,57 @@ fn struct_body_of_type<'a>(type_node: &Node<'a>, source: &str, depth: usize) -> 
         },
         "type_identifier" if depth < MAX_COPY_DEPTH => {
             let name = get_node_text(type_node, source);
-            let mut root = *type_node;
-            while let Some(parent) = root.parent() {
-                root = parent;
-            }
-            query::find_descendants_of_kind(root, "type_definition")
-                .into_iter()
-                .find(|td| {
-                    td.child_by_field_name("declarator")
-                        .is_some_and(|d| member_name(&d, source) == name)
-                })
+            visible_typedef(type_node, name, source)
                 .and_then(|td| td.child_by_field_name("type"))
                 .and_then(|t| struct_body_of_type(&t, source, depth + 1))
         }
         _ => None,
     }
+}
+
+/// The `typedef` that gives `name` its meaning at `from`: the nearest one in
+/// an enclosing block or the file, declared before the use. A block-scope
+/// typedef in another function is not in scope, and an inner one shadows an
+/// outer one (ADR-0006).
+fn visible_typedef<'a>(from: &Node<'a>, name: &str, source: &str) -> Option<Node<'a>> {
+    let mut scope = from.parent();
+    while let Some(block) = scope {
+        if let Some(found) = last_typedef_before(&block, name, source, from.start_byte()) {
+            return Some(found);
+        }
+        scope = block.parent();
+    }
+    None
+}
+
+/// The last `typedef` of `name` that is a direct child of `scope` (looking
+/// through preprocessor branches) and ends before `before`.
+fn last_typedef_before<'a>(
+    scope: &Node<'a>,
+    name: &str,
+    source: &str,
+    before: usize,
+) -> Option<Node<'a>> {
+    let mut found = None;
+    for child in scope.named_children(&mut scope.walk()) {
+        if child.start_byte() >= before {
+            break;
+        }
+        if child.kind() == "type_definition" {
+            if child.end_byte() <= before
+                && child
+                    .child_by_field_name("declarator")
+                    .is_some_and(|d| member_name(&d, source) == name)
+            {
+                found = Some(child);
+            }
+        } else if child.kind().starts_with("preproc_") {
+            if let Some(inner) = last_typedef_before(&child, name, source, before) {
+                found = Some(inner);
+            }
+        }
+    }
+    found
 }
 
 /// The member a field declarator names (`field_identifier`, which
