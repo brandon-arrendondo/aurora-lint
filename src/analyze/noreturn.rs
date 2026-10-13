@@ -684,12 +684,8 @@ pub fn library_names_redefined_among(
 ///   header that defines it, or there is no file path to start one from;
 /// - the prescan saw it only outside the project, in a system header.
 ///
-/// The closure is built only when a function-like project macro has the
-/// name. When the prescan resolved no includes at all (`include_edges` is
-/// empty, as in a scan with no search path), it is rebuilt here from the
-/// file's `"quoted"` includes and theirs, looked up in each includer's own
-/// directory (C11 6.10.2p3), as a stopgap until the prescan resolves those
-/// itself. A header reached only through a search path is then not seen.
+/// The closure ([`IncludeClosure::of`] over `include_edges`) is built only
+/// when a function-like project macro has the name.
 ///
 /// A project's external definition in another file is not seen: a `static`
 /// one there is a different function, and the prescan keys a lone `static`
@@ -738,11 +734,7 @@ pub fn library_function_replaced(
     let Some(path) = file_path else {
         return false;
     };
-    let closure = if project.include_edges.is_empty() {
-        IncludeClosure::of_quoted_includes(root, source, path, 32, &project.quoted_include_walk)
-    } else {
-        IncludeClosure::of(&project.include_edges, path).unwrap_or_default()
-    };
+    let closure = IncludeClosure::of(&project.include_edges, path).unwrap_or_default();
     arms.iter()
         .any(|arm| arm.files.iter().any(|file| closure.may_include(file)))
 }

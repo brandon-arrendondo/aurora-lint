@@ -4,7 +4,6 @@ use super::null_state::NullState;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
-use tree_sitter::Node;
 
 /// Marks an `include_edges` entry as an `#include` spelling that resolved to
 /// no file, rather than a file's real path.
@@ -455,72 +454,6 @@ impl HeaderDependence {
     }
 }
 
-/// Each header read by [`IncludeClosure::of_quoted_includes`], keyed by its
-/// real path: the real paths of the headers it includes, or why it added
-/// nothing (`Err(Some(_))` when [`input_guard::admit`] refused it, which the
-/// scan reports through [`ProjectContext::quoted_include_refusals`];
-/// `Err(None)` when it could not be read or parsed).
-///
-/// [`input_guard::admit`]: crate::analyze::input_guard::admit
-pub type QuotedIncludeCache = Arc<
-    std::sync::Mutex<
-        HashMap<String, Result<Arc<[String]>, Option<crate::analyze::input_guard::Refusal>>>,
-    >,
->;
-
-/// The real paths of the headers `spellings` name beside `includer`, in its
-/// own directory (C11 6.10.2p3); a spelling with no file there is dropped.
-fn quoted_headers_beside(includer: &Path, spellings: Vec<String>) -> Vec<String> {
-    let Some(dir) = includer.parent() else {
-        return Vec::new();
-    };
-    spellings
-        .into_iter()
-        .map(|spelling| dir.join(spelling))
-        .filter(|header| header.is_file())
-        .map(|header| crate::analyze::compile_commands::real_path(&header))
-        .collect()
-}
-
-/// What `header` (a real path) includes by [`quoted_headers_beside`], from
-/// `cache`, or read, admitted and parsed once and then cached. `parser` is
-/// made on first need. `None` when the header adds nothing.
-fn quoted_headers_of(
-    header: &str,
-    cache: &QuotedIncludeCache,
-    parser: &mut Option<Option<crate::parser::CParser>>,
-) -> Option<Arc<[String]>> {
-    if let Some(hit) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(header) {
-        return hit.clone().ok();
-    }
-    let path = Path::new(header);
-    let read = crate::analyze::input_guard::admit(path)
-        .map_err(anyhow::Error::from)
-        .and_then(|()| {
-            let parser = parser
-                .get_or_insert_with(|| crate::parser::CParser::new().ok())
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("no parser"))?;
-            parser.parse_file(header)
-        })
-        .map(|(tree, text)| {
-            let spellings =
-                crate::analyze::prescan::live_quoted_include_directives(&tree.root_node(), &text);
-            Arc::from(quoted_headers_beside(path, spellings))
-        })
-        .map_err(|err| {
-            err.downcast_ref::<crate::analyze::input_guard::Refusal>()
-                .cloned()
-        });
-    cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .entry(header.to_string())
-        .or_insert(read)
-        .clone()
-        .ok()
-}
-
 /// What one translation unit may include: [`IncludeClosure::of`].
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct IncludeClosure {
@@ -566,53 +499,6 @@ impl IncludeClosure {
         let mut closure = Self::default();
         closure.walk(layers, vec![String::new()]);
         Some(closure)
-    }
-
-    /// The file whose parse is `root` and every header its `"quoted"`
-    /// includes reach through the including file's own directory, read from
-    /// disk, to `max_depth` levels: the closure a scan without a search path
-    /// still knows. A quoted include not found there, an `<angle>` include
-    /// and one in an arm the file proves dead add nothing, so the closure is
-    /// a lower bound, and so does a header [`input_guard::admit`] refuses,
-    /// which is never parsed but is recorded in `cache` for the scan to
-    /// report ([`ProjectContext::quoted_include_refusals`], ADR-0017). Each
-    /// header is read once per scan: what it includes is kept in `cache`
-    /// ([`ProjectContext::quoted_include_walk`]). A stopgap for the prescan, which
-    /// resolves includes only when the scan has a search path or forced
-    /// includes.
-    ///
-    /// [`input_guard::admit`]: crate::analyze::input_guard::admit
-    pub fn of_quoted_includes(
-        root: &Node,
-        source: &str,
-        path: &Path,
-        max_depth: usize,
-        cache: &QuotedIncludeCache,
-    ) -> Self {
-        let mut closure = Self::default();
-        let file = crate::analyze::compile_commands::real_path(path);
-        closure.files.insert(file.clone());
-        let mut parser = None;
-        let mut frontier = quoted_headers_beside(
-            Path::new(&file),
-            crate::analyze::prescan::live_quoted_include_directives(root, source),
-        );
-        for _ in 0..max_depth {
-            let mut next = Vec::new();
-            for header in frontier {
-                if !closure.files.insert(header.clone()) {
-                    continue;
-                }
-                if let Some(headers) = quoted_headers_of(&header, cache, &mut parser) {
-                    next.extend(headers.iter().cloned());
-                }
-            }
-            if next.is_empty() {
-                break;
-            }
-            frontier = next;
-        }
-        closure
     }
 
     fn walk(&mut self, layers: &[&HashMap<String, Vec<String>>], mut stack: Vec<String>) {
@@ -1230,13 +1116,6 @@ pub struct ProjectContext {
     /// been built must call [`Self::invalidate_side_effects`].
     #[serde(skip)]
     pub(crate) side_effects: Arc<std::sync::OnceLock<SideEffectCell>>,
-    /// What each header [`IncludeClosure::of_quoted_includes`] has read
-    /// includes, or why it was refused, shared by every clone so a scan
-    /// reads a header once and its refusals reach the scan's report
-    /// ([`Self::quoted_include_refusals`]). Never serialized: it is read from
-    /// disk at rule time, not a prescan fact.
-    #[serde(skip)]
-    pub(crate) quoted_include_walk: QuotedIncludeCache,
 }
 
 impl ProjectContext {
@@ -1313,28 +1192,6 @@ impl ProjectContext {
             (Arc::new(table), members)
         });
         view(Arc::clone(table), Arc::clone(members))
-    }
-
-    /// The headers the rules' quoted-include walk
-    /// ([`IncludeClosure::of_quoted_includes`]) refused so far, as failures
-    /// under their real paths, sorted. Leaving one out can change a finding,
-    /// so the scan reports them like any refused input (ADR-0017).
-    pub fn quoted_include_refusals(&self) -> Vec<crate::analyze::containment::ScanFailure> {
-        let cache = self
-            .quoted_include_walk
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let mut refused: Vec<_> = cache
-            .iter()
-            .filter_map(|(header, read)| match read {
-                Err(Some(refusal)) => Some(crate::analyze::containment::ScanFailure::refused(
-                    header, refusal,
-                )),
-                _ => None,
-            })
-            .collect();
-        refused.sort();
-        refused
     }
 
     /// Drop a side-effect table built before `function_summaries` changed.

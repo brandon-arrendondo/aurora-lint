@@ -511,7 +511,6 @@ pub fn analyze_project(
             failures.extend(f);
         }
 
-        add_quoted_include_refusals(&mut failures, &context);
         let abandoned_rules =
             withhold_abandoned(&escalation, &mut violations, &mut suppressed, &mut failures);
         sort_for_deterministic_output(&mut violations, &mut suppressed);
@@ -627,7 +626,6 @@ pub fn analyze_project(
         failures.extend(file_failures);
     }
 
-    add_quoted_include_refusals(&mut failures, &context);
     let abandoned_rules =
         withhold_abandoned(&escalation, &mut violations, &mut suppressed, &mut failures);
     sort_for_deterministic_output(&mut violations, &mut suppressed);
@@ -657,31 +655,6 @@ pub fn analyze_project(
         include_report: include_report_split(&context, &context_for, &c_files),
         header_dependence,
     })
-}
-
-/// Add to `failures` the headers the rules' quoted-include walk refused,
-/// in `context` and in its context for files outside the configuration
-/// ([`context::ProjectContext::quoted_include_refusals`]): a refused header's macros
-/// are left out, which can change a finding, so it is reported like any
-/// other refused input (ADR-0017). Once per file, as
-/// `prescan::read_header_for_facts` does: a header the scan already refused
-/// under its own path is not added again.
-fn add_quoted_include_refusals(
-    failures: &mut Vec<containment::ScanFailure>,
-    context: &context::ProjectContext,
-) {
-    let contexts = std::iter::once(context).chain(context.outside_configuration.as_deref());
-    for refused in contexts.flat_map(context::ProjectContext::quoted_include_refusals) {
-        let reported = failures.iter().any(|f| {
-            f.stage == containment::Stage::Input
-                && std::path::Path::new(&f.file)
-                    .canonicalize()
-                    .is_ok_and(|c| c.to_string_lossy() == refused.file)
-        });
-        if !reported {
-            failures.push(refused);
-        }
-    }
 }
 
 /// [`context::HeaderDependence`] for this scan: the enabled rules that read

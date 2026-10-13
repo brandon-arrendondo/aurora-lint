@@ -7073,12 +7073,12 @@ fn an_included_header_nested_past_the_depth_limit_is_reported_not_dropped() {
 }
 
 #[test]
-fn a_header_refused_by_the_quoted_include_walk_is_reported_not_dropped() {
-    // With no search path the prescan resolves no includes, so MSC30-C
-    // follows `a.c`'s quoted includes itself to learn whether `rand` is the
-    // project's macro. `ext/big.h`, outside the scanned tree, is over the
-    // size ceiling: the walk stops there and never reaches `src/rng.h`, so
-    // the call reads as the library's. That must be refused out loud.
+fn a_header_refused_on_the_way_to_a_macro_is_reported_not_dropped() {
+    // With no search path `a.c`'s quoted includes still resolve beside it,
+    // which is how MSC30-C learns whether `rand` is the project's macro.
+    // `ext/big.h`, outside the scanned tree, is over the size ceiling:
+    // resolution stops there and never reaches `src/rng.h`, so the call
+    // reads as the library's. That must be refused out loud.
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("ext")).unwrap();
     std::fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -7126,7 +7126,7 @@ fn a_header_refused_by_the_quoted_include_walk_is_reported_not_dropped() {
             && refused[0]["cause"] == "too large",
         "{report}"
     );
-    // Under no ceiling the walk reaches the macro: `rand` is the project's.
+    // Under no ceiling resolution reaches the macro: `rand` is the project's.
     let (code, stdout, stderr) = run_aurora_lint(&[src.to_str().unwrap(), "--max-file-size", "0"]);
     assert_eq!(code, 0, "{stderr}");
     assert!(!stdout.contains("MSC30-C"), "{stdout}");
