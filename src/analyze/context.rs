@@ -482,6 +482,12 @@ pub struct IncludeClosure {
 }
 
 impl IncludeClosure {
+    /// What the scan of the file at `path` may include: [`IncludeClosure::of`]
+    /// the include graph. Unknown is empty.
+    pub fn of_scan(edges: &HashMap<String, Vec<String>>, path: &Path) -> Self {
+        Self::of(edges, path).unwrap_or_default()
+    }
+
     /// The file at `path`, the build's forced includes and everything those
     /// transitively `#include`, by `edges` ([`ProjectContext::include_edges`]);
     /// `None` when the graph has no edge out of the file, so which files it

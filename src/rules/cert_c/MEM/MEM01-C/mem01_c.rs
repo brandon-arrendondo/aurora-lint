@@ -24,8 +24,8 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self as cfg_mod, FunctionCfg};
-use crate::analyze::context::ProjectContext;
 use crate::analyze::context::ScopedTable;
+use crate::analyze::context::{IncludeClosure, ProjectContext};
 use crate::analyze::dataflow::find_node_at_range;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::points_to::{lvalue_of, LValue};
@@ -54,10 +54,18 @@ pub struct Mem01C {
     /// The functions the project defines (those with a summary), built with
     /// `read_only_params` for the same reason.
     defined_functions: RefCell<Arc<HashSet<String>>>,
-    /// The function-like macros any scanned file defines, headers included:
-    /// a call spelled as one is a macro expansion, not a call to a project
-    /// function that shares the name.
-    function_macro_names: RefCell<Arc<HashSet<String>>>,
+    /// Every scanned file's function-like macro definitions, by name, with the
+    /// files that make them: a call spelled as one the translation unit
+    /// includes is a macro expansion, not a call to a project function that
+    /// shares the name.
+    function_macro_arms:
+        RefCell<Arc<HashMap<String, Vec<crate::analyze::macro_expand::ProjectMacroArm>>>>,
+    /// The include graph, to find what the file may include.
+    include_edges: RefCell<Arc<HashMap<String, Vec<String>>>>,
+    /// The file being scanned.
+    file_path: RefCell<std::path::PathBuf>,
+    /// The files the scanned file may include (`scan` builds it).
+    include_closure: RefCell<Arc<IncludeClosure>>,
     /// The function-like macros the file being scanned defines, with the byte
     /// offset of the first definition: a macro defined after a call is not
     /// the call's callee.
@@ -82,19 +90,27 @@ struct AddressOfCallContext {
     /// one can read a global or `static` that still holds a freed address,
     /// where a library function cannot.
     defined_functions: Arc<HashSet<String>>,
-    /// `Mem01C::function_macro_names` and `Mem01C::own_function_macros`.
-    function_macro_names: Arc<HashSet<String>>,
+    /// `Mem01C::function_macro_arms`, `Mem01C::include_closure` and
+    /// `Mem01C::own_function_macros`.
+    function_macro_arms: Arc<HashMap<String, Vec<crate::analyze::macro_expand::ProjectMacroArm>>>,
+    include_closure: Arc<IncludeClosure>,
     own_function_macros: Arc<HashMap<String, usize>>,
 }
 
 impl AddressOfCallContext {
     /// Whether a call at byte `at` spelled `callee` is a function-like macro
-    /// invocation: defined in this file before the call, or in some other
-    /// scanned file (a header) and not redefined here after it.
+    /// invocation: defined in this file before the call, or, when this file
+    /// defines no macro of that name, in a file it may include. A header the
+    /// translation unit never reaches, or another `.c` file's private macro,
+    /// is no definition of the callee here (ADR-0006).
     fn is_macro_call(&self, callee: &str, at: usize) -> bool {
         match self.own_function_macros.get(callee) {
             Some(&defined_at) => defined_at < at,
-            None => self.function_macro_names.contains(callee),
+            None => self.function_macro_arms.get(callee).is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|e| e.files.iter().any(|f| self.include_closure.may_include(f)))
+            }),
         }
     }
 }
@@ -107,7 +123,10 @@ impl Mem01C {
             read_only_params: RefCell::default(),
             freeing_wrappers: RefCell::default(),
             defined_functions: RefCell::default(),
-            function_macro_names: RefCell::default(),
+            function_macro_arms: RefCell::default(),
+            include_edges: RefCell::default(),
+            file_path: RefCell::default(),
+            include_closure: RefCell::default(),
             own_function_macros: RefCell::default(),
         }
     }
@@ -216,6 +235,10 @@ impl CertRule for Mem01C {
         "MEM01-C"
     }
 
+    fn set_file_path(&self, path: &std::path::Path) {
+        *self.file_path.borrow_mut() = path.to_path_buf();
+    }
+
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
         *self.function_cfgs.borrow_mut() = cfgs.clone();
     }
@@ -224,7 +247,8 @@ impl CertRule for Mem01C {
         *self.cross_file_summaries.borrow_mut() = context.function_summaries.clone();
         *self.read_only_params.borrow_mut() = Arc::new(self.build_read_only_params());
         *self.freeing_wrappers.borrow_mut() = Arc::new(self.build_freeing_wrappers());
-        *self.function_macro_names.borrow_mut() = Arc::clone(&context.function_macro_names);
+        *self.function_macro_arms.borrow_mut() = Arc::clone(&context.function_macro_arms);
+        *self.include_edges.borrow_mut() = Arc::clone(&context.include_edges);
         *self.defined_functions.borrow_mut() = Arc::new(
             self.cross_file_summaries
                 .borrow()
@@ -236,6 +260,10 @@ impl CertRule for Mem01C {
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         *self.own_function_macros.borrow_mut() = Arc::new(function_macro_offsets(source));
+        *self.include_closure.borrow_mut() = Arc::new(IncludeClosure::of_scan(
+            &self.include_edges.borrow(),
+            &self.file_path.borrow(),
+        ));
         self.check_node(node, source, violations);
     }
 }
@@ -261,7 +289,8 @@ impl Mem01C {
             read_only_params: Arc::clone(&self.read_only_params.borrow()),
             freeing_wrappers: Arc::clone(&self.freeing_wrappers.borrow()),
             defined_functions: Arc::clone(&self.defined_functions.borrow()),
-            function_macro_names: Arc::clone(&self.function_macro_names.borrow()),
+            function_macro_arms: Arc::clone(&self.function_macro_arms.borrow()),
+            include_closure: Arc::clone(&self.include_closure.borrow()),
             own_function_macros: Arc::clone(&self.own_function_macros.borrow()),
         };
 

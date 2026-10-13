@@ -8136,3 +8136,40 @@ fn a_written_config_keeps_the_declared_thread_api_families() {
     ]);
     assert!(text.contains("\nfamilies = [\"freertos\"]\n"), "{text}");
 }
+
+/// MEM01-C findings for `a.c` in one `mem01_macro_scope` project, which calls
+/// `log_it()` while a static still holds a freed address.
+fn mem01_macro_scope_findings(case: &str) -> usize {
+    let project = fixtures().join("mem01_macro_scope").join(case);
+    let project = project.to_str().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let manifest = fixtures().join("manifest_mem01.toml");
+    let (code, _, stderr) = run_aurora_lint(&[
+        &format!("{project}/a.c"),
+        "-m",
+        manifest.to_str().unwrap(),
+        "-d",
+        project,
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let findings: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    findings
+        .iter()
+        .filter(|f| f["rule_id"] == "MEM01-C")
+        .count()
+}
+
+/// A call is a macro expansion only where the file can see the macro: one in
+/// a header it includes is, one in a header no file includes, or private to
+/// another `.c` file, is not, so `log_it()` still calls the project function
+/// that can read the dangling static.
+#[test]
+fn mem01_a_macro_counts_only_where_the_file_includes_it() {
+    assert_eq!(mem01_macro_scope_findings("included_header"), 0);
+    assert_eq!(mem01_macro_scope_findings("unrelated_header"), 1);
+    assert_eq!(mem01_macro_scope_findings("sibling_c"), 1);
+}
