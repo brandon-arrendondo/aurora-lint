@@ -556,6 +556,23 @@ impl ThreadDeclarations {
             .join(",")
     }
 
+    /// Every thread-creation function in force, by name and the argument
+    /// its entry function is passed at, sorted and comma-separated: what a
+    /// prescan cache records its concurrency roots were found with.
+    pub fn spawn_key(&self) -> String {
+        use crate::utility::cert_c::thread_api;
+        let mut spawns: Vec<String> =
+            thread_api::functions_of_kind(self, ThreadOpKind::ThreadCreate)
+                .into_iter()
+                .map(|(name, _, op)| match op.entry {
+                    Some(entry) => format!("{name}:{entry}"),
+                    None => name,
+                })
+                .collect();
+        spawns.sort();
+        spawns.join(",")
+    }
+
     /// The `[environment.threads]` table that resolves to these
     /// declarations, with `posix_version` resolving as it does: what a
     /// written config carries.
@@ -774,5 +791,26 @@ mod tests {
         assert!(ThreadDeclarations::resolve(None, None)
             .unwrap()
             .is_default());
+    }
+
+    #[test]
+    fn the_spawn_key_names_every_thread_creation_in_force() {
+        let default = ThreadDeclarations::resolve(None, None).unwrap();
+        assert_eq!(default.spawn_key(), "pthread_create:3,thrd_create:2");
+        assert_eq!(
+            resolve("posix = \"off\"\n").unwrap().spawn_key(),
+            "thrd_create:2"
+        );
+        let declared = resolve(
+            "families = [\"freertos\"]\n\
+             [functions]\n\
+             os_spawn = { op = \"thread_create\", entry = 2, arg = 3, arity = 5 }\n\
+             pthread_create = { op = \"thread_create\", entry = 1 }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            declared.spawn_key(),
+            "os_spawn:2,pthread_create:3,thrd_create:2,xTaskCreate:1,xTaskCreateStatic:1"
+        );
     }
 }

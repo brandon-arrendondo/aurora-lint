@@ -897,6 +897,12 @@ fn load_project_context(
             "thread_profiles".to_string(),
             crate::settings::threads::declared().profile_key(),
         ),
+        // The thread-creation functions in force decide which entry
+        // functions root the concurrency-reachable set.
+        (
+            "thread_spawns".to_string(),
+            crate::settings::threads::declared().spawn_key(),
+        ),
     ]);
 
     let mut context = if let Some(cache_path) = load_prescan {

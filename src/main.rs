@@ -906,12 +906,14 @@ fn run() -> Result<i32> {
     if detect_relevance {
         let mut corpus = vec![path.clone()];
         corpus.extend(directories.iter().cloned());
-        let profile = analyze::relevance::detect(&corpus)?;
         let base_manifest = load_manifest(manifest_path)?;
         // The settings are only written out, never run, so an invalid
         // combination would otherwise surface in the later scan that reads
         // the manifest. Refuse it here, as that scan would.
-        resolve_settings(&base_manifest, &settings_cli, compile_db.as_ref())?;
+        let resolved = resolve_settings(&base_manifest, &settings_cli, compile_db.as_ref())?;
+        // Threading evidence is a call or name of a thread-API family that
+        // scan would read.
+        let profile = analyze::relevance::detect(&corpus, &resolved.threads)?;
         println!(
             "Detected: threading={} (thread or atomic APIs only; interrupt or signal handlers \
              are not detected), windows={}, max_c_standard={:?}",

@@ -2,7 +2,10 @@
 //!
 //! Identifies function names that seed a "reachable from a real concurrent
 //! execution context" set: ISR handlers, thread-spawn entry points, and
-//! signal handlers. Combined with `ProjectContext::call_graph` (forward
+//! signal handlers. A thread creation is any the thread-API families in
+//! force declare (`thread_api::functions_of_kind`), so a project that
+//! declares its own spawn function, or selects an RTOS profile, roots its
+//! threads' entry functions too. Combined with `ProjectContext::call_graph` (forward
 //! reachability from these roots), this is what lets CON03-C/CON07-C stop
 //! firing on code that is never reachable from anything concurrent at all
 //! (e.g. a single-threaded broker's main loop) — see
@@ -31,21 +34,23 @@
 
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::{self, FunctionMacro};
+use crate::settings::threads::{declared, Role, ThreadOpKind};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::signal_handlers::RegisteredHandlers;
+use crate::utility::cert_c::thread_api;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
-/// `(api name, 0-indexed position of the thread-entry-point argument, exact
-/// argument count)`. The argument count is checked so an unrelated
-/// same-named function (a project's own `signal` wrapper, say) with a
-/// different arity doesn't get misread as the libc API.
-const THREAD_SPAWN_APIS: &[(&str, usize, usize)] = &[
-    // pthread_create(pthread_t *, const pthread_attr_t *, start_routine, arg)
-    ("pthread_create", 2, 4),
-    // thrd_create(thrd_t *, thrd_start_t func, void *arg)
-    ("thrd_create", 1, 3),
+/// Thread-creation APIs that no thread-API family declares, as `(api name,
+/// 0-indexed position of the thread-entry-point argument, exact argument
+/// count)`. The argument count is checked so an unrelated same-named
+/// function with a different arity doesn't get misread as the API. Every
+/// other thread creation comes from the families in force
+/// ([`thread_api::functions_of_kind`]): C11 `thrd_create`, POSIX
+/// `pthread_create` when POSIX is read, a selected profile's (FreeRTOS's
+/// `xTaskCreate`), and the project's own declared `thread_create` functions.
+const UNDECLARED_SPAWN_APIS: &[(&str, usize, usize)] = &[
     // CreateThread(attrs, stackSize, lpStartAddress, param, flags, threadId)
     ("CreateThread", 2, 6),
     // Zephyr RTOS. k_thread_create(thread, stack, stack_size, entry, p1, p2,
@@ -61,6 +66,40 @@ const THREAD_SPAWN_APIS: &[(&str, usize, usize)] = &[
     ("k_work_init", 1, 2),
     ("k_work_init_delayable", 1, 2),
 ];
+
+/// One way a call names a thread's entry function: the API, the 0-indexed
+/// argument the entry is at, and the argument count, when the contract
+/// fixes one.
+struct Spawn {
+    name: String,
+    entry: usize,
+    arity: Option<usize>,
+}
+
+/// Every thread-creation API in force: the declared families' and
+/// [`UNDECLARED_SPAWN_APIS`].
+fn spawns_in_force() -> Vec<Spawn> {
+    let declared = thread_api::functions_of_kind(declared(), ThreadOpKind::ThreadCreate)
+        .into_iter()
+        .filter_map(|(name, _, op)| {
+            Some(Spawn {
+                name,
+                entry: op.position(Role::Entry)? - 1,
+                arity: op.arity,
+            })
+        });
+    declared
+        .chain(
+            UNDECLARED_SPAWN_APIS
+                .iter()
+                .map(|&(name, entry, arity)| Spawn {
+                    name: name.to_string(),
+                    entry,
+                    arity: Some(arity),
+                }),
+        )
+        .collect()
+}
 
 /// Collect every function name that seeds a concurrent-execution root: an
 /// ISR handler (real syntactic evidence, via `lang-parsing-substrate`), a
@@ -90,6 +129,19 @@ pub fn collect_concurrency_roots(
             continue;
         };
         if function.kind() != "identifier" {
+            continue;
+        }
+        // A thread creation of a family in force, resolved by declaration:
+        // a local or a pointer of that name creates no thread.
+        if let Some(spawn) =
+            thread_api::thread_op_of_kind(&call, source, None, ThreadOpKind::ThreadCreate)
+        {
+            if let Some(name) = spawn
+                .operand(Role::Entry)
+                .and_then(|entry| extract_identifier(get_node_text(&entry, source)))
+            {
+                out.insert(name);
+            }
             continue;
         }
         let callee = get_node_text(&function, source);
@@ -127,8 +179,9 @@ fn call_argument_texts(args_node: &Node, source: &str) -> Vec<String> {
         .collect()
 }
 
+/// The entry function a call to one of [`UNDECLARED_SPAWN_APIS`] names.
 fn thread_entry_from_call(callee: &str, args: &[String]) -> Option<String> {
-    let &(_, idx, _) = THREAD_SPAWN_APIS
+    let &(_, idx, _) = UNDECLARED_SPAWN_APIS
         .iter()
         .find(|(name, _, arity)| *name == callee && args.len() == *arity)?;
     extract_identifier(args.get(idx)?)
@@ -139,10 +192,10 @@ fn thread_entry_from_call(callee: &str, args: &[String]) -> Option<String> {
 /// thread-spawn APIs and extract the start-routine argument, the same way
 /// `thread_entry_from_call` would for a literal call site.
 fn thread_entry_from_expansion(expansion: &str) -> Option<String> {
-    for &(name, idx, arity) in THREAD_SPAWN_APIS {
-        if let Some(args) = find_call_args_in_text(expansion, name) {
-            if args.len() == arity {
-                if let Some(id) = extract_identifier(&args[idx]) {
+    for spawn in spawns_in_force() {
+        if let Some(args) = find_call_args_in_text(expansion, &spawn.name) {
+            if spawn.arity.is_none_or(|arity| args.len() == arity) {
+                if let Some(id) = args.get(spawn.entry).and_then(|a| extract_identifier(a)) {
                     return Some(id);
                 }
             }
@@ -345,16 +398,25 @@ mod tests {
 
     #[test]
     fn thread_entry_direct_pthread_create() {
-        let args = vec![
-            "&t".to_string(),
-            "NULL".to_string(),
-            "worker".to_string(),
-            "arg".to_string(),
-        ];
-        assert_eq!(
-            thread_entry_from_call("pthread_create", &args),
-            Some("worker".to_string())
-        );
+        let src = "#include <pthread.h>\nvoid *worker(void *a) { return a; }\n\
+                   void f(void) { pthread_t t; pthread_create(&t, NULL, worker, NULL); }\n";
+        assert!(roots_of(src).contains("worker"));
+    }
+
+    #[test]
+    fn thread_entry_direct_thrd_create() {
+        let src = "#include <threads.h>\nint worker(void *a) { return 0; }\n\
+                   void f(void) { thrd_t t; thrd_create(&t, &worker, NULL); }\n";
+        assert!(roots_of(src).contains("worker"));
+    }
+
+    #[test]
+    fn a_pointer_named_like_a_spawn_creates_no_thread() {
+        let src = "void *worker(void *a) { return a; }\n\
+                   void f(int (*pthread_create)(void *, void *, void *(*)(void *), void *)) {\n\
+                     pthread_create(0, 0, worker, 0);\n\
+                   }\n";
+        assert!(!roots_of(src).contains("worker"));
     }
 
     #[test]

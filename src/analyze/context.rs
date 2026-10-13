@@ -1428,7 +1428,9 @@ impl ProjectContext {
 /// Before `closed_program` was recorded no caller set was closed by
 /// declaration. Before `generated_headers` was recorded no context was split
 /// around build-generated headers. Before `thread_profiles` was recorded no
-/// thread-API profile's kernel heap was read.
+/// thread-API profile's kernel heap was read. Before `thread_spawns` was
+/// recorded the C11 and POSIX thread creations were the only declared ones
+/// that rooted the concurrency-reachable set.
 pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
     ("include_names", "exact"),
     ("prescan_scope", ""),
@@ -1438,6 +1440,7 @@ pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
     // could be set, so a cache that does not record it is refused.
     ("max_nesting_depth", "none"),
     ("thread_profiles", ""),
+    ("thread_spawns", "pthread_create:3,thrd_create:2"),
 ];
 
 /// Version of the prescan cache's serialized layout. Bump it with any change

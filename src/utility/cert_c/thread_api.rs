@@ -34,7 +34,7 @@ use crate::analyze::context::ScopedTable;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::points_to::{lvalue_of, LValue};
 use crate::settings::threads::{
-    declared, Blocking, Profile, Role, ThreadOp, ThreadOpKind, ThreadTypeKind,
+    declared, Blocking, Profile, Role, ThreadDeclarations, ThreadOp, ThreadOpKind, ThreadTypeKind,
 };
 use crate::settings::AllocatorContract;
 use crate::utility::cert_c::ast_utils::{
@@ -617,6 +617,48 @@ pub fn op_named(
         .functions
         .get(name)
         .map(|op| (Family::Project, *op))
+}
+
+/// Every function `declarations` give a contract, by name, in the order
+/// [`op_named`] reads the families: C11, POSIX when read, the selected
+/// profiles, then the project's own declarations. A project declaration of a
+/// C11 or POSIX name is left out: it is in force only for a call that
+/// reaches the project's own definition, which a name alone does not show.
+pub fn functions_in_force(declarations: &ThreadDeclarations) -> Vec<(String, Family, ThreadOp)> {
+    let posix: &[(&str, ThreadOp)] = if declarations.posix { POSIX_OPS } else { &[] };
+    let builtin = C11_OPS
+        .iter()
+        .map(|(n, op)| (*n, Family::C11, *op))
+        .chain(posix.iter().map(|(n, op)| (*n, Family::Posix, *op)));
+    let profiles = declarations.families.iter().flat_map(|profile| {
+        let table = match profile {
+            Profile::Freertos => FREERTOS_OPS,
+        };
+        table
+            .iter()
+            .map(move |(n, op)| (*n, Family::Profile(*profile), *op))
+    });
+    let project = declarations
+        .functions
+        .iter()
+        .filter(|(n, _)| builtin_family_of(n).is_none())
+        .map(|(n, op)| (n.as_str(), Family::Project, *op));
+    builtin
+        .chain(profiles)
+        .chain(project)
+        .map(|(n, family, op)| (n.to_string(), family, op))
+        .collect()
+}
+
+/// [`functions_in_force`] of `kind`.
+pub fn functions_of_kind(
+    declarations: &ThreadDeclarations,
+    kind: ThreadOpKind,
+) -> Vec<(String, Family, ThreadOp)> {
+    functions_in_force(declarations)
+        .into_iter()
+        .filter(|(_, _, op)| op.op == kind)
+        .collect()
 }
 
 /// What the type named `name` (after typedefs, if the caller resolved them)

@@ -594,7 +594,9 @@ Project-Relevance Detection
 
 For a codebase with no tailored manifest, ``--detect-relevance`` scans PATH
 (and any ``-d`` directories) for evidence of thread or atomic APIs
-(``pthread``, ``<threads.h>``, ``_Atomic``) and Windows API usage, then
+(``<threads.h>``, ``_Atomic``, ``pthread`` unless the project is declared not
+POSIX, and the functions and types of a selected ``[environment.threads]``
+profile or the project's own declarations) and Windows API usage, then
 generates a manifest with the categorically-inapplicable ``WIN*`` rule class
 disabled when there is no Windows API evidence. The ``CON*`` rules are never
 disabled: no thread or atomic API does not mean no concurrency, since

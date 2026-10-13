@@ -19,6 +19,8 @@
 
 use crate::manifest::RuleManifest;
 use crate::parser::CParser;
+use crate::settings::threads::ThreadDeclarations;
+use crate::utility::cert_c::thread_api::{self, Family};
 use lang_parsing_substrate::{detect_min_c_standard, query, CStandard};
 
 use anyhow::Result;
@@ -95,10 +97,12 @@ pub const C11_TANGLED_RULE_IDS: &[&str] = &[
 /// corpus (input path + `-d` directories).
 #[derive(Debug, Default, Clone)]
 pub struct ProjectProfile {
-    /// Any evidence of POSIX thread or C11 thread or atomic APIs
-    /// (`pthread.h`, `pthread_*`, `threads.h`, `thrd_*`/`mtx_*`/`cnd_*`,
-    /// `atomic_*`/`_Atomic`). Says nothing about interrupt or signal
-    /// handlers, which are not looked for. Reporting only.
+    /// Any evidence of a thread-API family in force or of atomics: C11
+    /// (`threads.h`, `thrd_*`/`mtx_*`/`cnd_*`, `atomic_*`/`_Atomic`), POSIX
+    /// (`pthread.h`, `pthread_*`) unless it is not read, and a selected
+    /// profile's or the project's declared functions and types by name. Says
+    /// nothing about interrupt or signal handlers, which are not looked for.
+    /// Reporting only.
     pub has_threading: bool,
     /// Any evidence of the Win32 API (`windows.h`/`winsock2.h`/`windef.h`
     /// includes, or `Win32`/`HANDLE`/`LPCSTR` identifiers).
@@ -122,9 +126,59 @@ pub struct ProjectProfile {
     pub has_annex_k: bool,
 }
 
-const THREADING_INCLUDE_MARKERS: &[&str] = &["pthread.h", "threads.h"];
-const THREADING_IDENTIFIER_MARKERS: &[&str] =
-    &["pthread_", "mtx_", "cnd_", "thrd_", "atomic_", "_Atomic"];
+/// Text that shows a thread or atomic API in use, by the thread-API families
+/// a scan would read (`settings::threads`): C11 threads and atomics always,
+/// POSIX threads unless the project says it is not POSIX, and the functions
+/// and types of the selected profiles and the project's own declarations.
+struct ThreadingMarkers {
+    /// Headers whose inclusion counts.
+    includes: Vec<&'static str>,
+    /// Identifier prefixes that count anywhere in the text.
+    prefixes: Vec<&'static str>,
+    /// Declared names that count as a whole word.
+    names: Vec<String>,
+}
+
+impl ThreadingMarkers {
+    fn of(declarations: &ThreadDeclarations) -> Self {
+        let mut includes = vec!["threads.h"];
+        let mut prefixes = vec!["mtx_", "cnd_", "thrd_", "atomic_", "_Atomic"];
+        if declarations.posix {
+            includes.push("pthread.h");
+            prefixes.push("pthread_");
+        }
+        let names = thread_api::functions_in_force(declarations)
+            .into_iter()
+            .filter(|(_, family, _)| matches!(family, Family::Profile(_) | Family::Project))
+            .map(|(name, _, _)| name)
+            .chain(declarations.types.keys().cloned())
+            .collect();
+        Self {
+            includes,
+            prefixes,
+            names,
+        }
+    }
+
+    fn found_in(&self, source: &str) -> bool {
+        contains_any(source, &self.includes)
+            || contains_any(source, &self.prefixes)
+            || self.names.iter().any(|name| contains_word(source, name))
+    }
+}
+
+/// Whether `name` occurs in `haystack` with no identifier character on
+/// either side.
+fn contains_word(haystack: &str, name: &str) -> bool {
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    haystack.match_indices(name).any(|(at, _)| {
+        !haystack[..at].chars().next_back().is_some_and(is_ident)
+            && !haystack[at + name.len()..]
+                .chars()
+                .next()
+                .is_some_and(is_ident)
+    })
+}
 const WINDOWS_INCLUDE_MARKERS: &[&str] = &["windows.h", "winsock2.h", "windef.h"];
 const WINDOWS_IDENTIFIER_MARKERS: &[&str] = &["Win32", "HANDLE", "LPCSTR"];
 
@@ -132,7 +186,7 @@ const WINDOWS_IDENTIFIER_MARKERS: &[&str] = &["Win32", "HANDLE", "LPCSTR"];
 /// syntax marker `detect_min_c_standard` can see -- e.g. `<stdatomic.h>`
 /// used only through its typedefs (`atomic_bool`, `atomic_int`), which
 /// parse as ordinary `type_identifier` nodes with nothing to key a query
-/// off. `<threads.h>` overlaps with [`THREADING_INCLUDE_MARKERS`] (both
+/// off. `<threads.h>` overlaps with [`ThreadingMarkers`] (both
 /// exist because they answer different questions: "is CON* relevant" vs
 /// "is this project's language level at least C11").
 const C11_HEADER_MARKERS: &[&str] = &["stdatomic.h", "threads.h"];
@@ -229,8 +283,9 @@ fn contains_annex_k_call(root: tree_sitter::Node, source: &[u8]) -> bool {
 
 /// Walk `dirs` (`.c`/`.h` files only) and detect project-wide relevance
 /// signals. A file that fails to parse is skipped (contributes no evidence).
-pub fn detect(dirs: &[String]) -> Result<ProjectProfile> {
+pub fn detect(dirs: &[String], threads: &ThreadDeclarations) -> Result<ProjectProfile> {
     let mut profile = ProjectProfile::default();
+    let markers = ThreadingMarkers::of(threads);
 
     let mut files: Vec<PathBuf> = Vec::new();
     for dir in dirs {
@@ -250,13 +305,13 @@ pub fn detect(dirs: &[String]) -> Result<ProjectProfile> {
     }
 
     for file in &files {
-        detect_file(file, &mut profile);
+        detect_file(file, &markers, &mut profile);
     }
 
     Ok(profile)
 }
 
-fn detect_file(path: &Path, profile: &mut ProjectProfile) {
+fn detect_file(path: &Path, threading: &ThreadingMarkers, profile: &mut ProjectProfile) {
     let mut parser = match CParser::new() {
         Ok(p) => p,
         Err(_) => return,
@@ -266,10 +321,7 @@ fn detect_file(path: &Path, profile: &mut ProjectProfile) {
         Err(_) => return,
     };
 
-    if !profile.has_threading
-        && (contains_any(&source, THREADING_INCLUDE_MARKERS)
-            || contains_any(&source, THREADING_IDENTIFIER_MARKERS))
-    {
+    if !profile.has_threading && threading.found_in(&source) {
         profile.has_threading = true;
     }
 
@@ -402,7 +454,7 @@ fn gate_rule(
     // Reporting only: the rule stays as the base manifest has it.
     let info = (base_enabled && CON_RULE_IDS.contains(&rule_id) && !profile.has_threading)
         .then_some(
-            "info: no thread or atomic APIs (pthread.h, threads.h, mtx_/thrd_/atomic_) found; \
+            "info: no thread or atomic APIs of the thread-API families in force found; \
              interrupt or signal handlers are not looked for, so this rule stays enabled",
         );
 
@@ -450,7 +502,11 @@ mod tests {
             "a.c",
             "int add(int a, int b) { return a + b; }\n",
         );
-        let profile = detect(&[dir.path().to_string_lossy().to_string()]).unwrap();
+        let profile = detect(
+            &[dir.path().to_string_lossy().to_string()],
+            &ThreadDeclarations::default(),
+        )
+        .unwrap();
         assert!(!profile.has_threading);
         assert!(!profile.has_windows);
         assert_eq!(profile.max_c_standard, None);
@@ -460,15 +516,54 @@ mod tests {
     fn detects_pthread_usage_via_include() {
         let dir = tempfile::tempdir().unwrap();
         write_file(dir.path(), "a.c", "#include <pthread.h>\nvoid f(void) {}\n");
-        let profile = detect(&[dir.path().to_string_lossy().to_string()]).unwrap();
+        let profile = detect(
+            &[dir.path().to_string_lossy().to_string()],
+            &ThreadDeclarations::default(),
+        )
+        .unwrap();
         assert!(profile.has_threading);
+    }
+
+    fn declarations(toml_text: &str) -> ThreadDeclarations {
+        let config: crate::settings::threads::ThreadsConfig = toml::from_str(toml_text).unwrap();
+        ThreadDeclarations::resolve(Some(&config), None).unwrap()
+    }
+
+    #[test]
+    fn threading_is_a_family_in_force() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(
+            dir.path(),
+            "a.c",
+            "void start(void) { xTaskCreate(task, \"t\", 128, 0, 1, 0); pthread_mutex_lock(&m); }\n",
+        );
+        let corpus = [dir.path().to_string_lossy().to_string()];
+        let not_posix = declarations("posix = \"off\"\n");
+        assert!(!detect(&corpus, &not_posix).unwrap().has_threading);
+        let freertos = declarations("posix = \"off\"\nfamilies = [\"freertos\"]\n");
+        assert!(detect(&corpus, &freertos).unwrap().has_threading);
+    }
+
+    #[test]
+    fn a_declared_function_counts_as_a_whole_word() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(dir.path(), "a.c", "void f(void) { my_os_spawn(g); }\n");
+        let corpus = [dir.path().to_string_lossy().to_string()];
+        let spawn = declarations("[functions]\nos_spawn = { op = \"thread_create\", entry = 1 }\n");
+        assert!(!detect(&corpus, &spawn).unwrap().has_threading);
+        write_file(dir.path(), "b.c", "void g(void) { os_spawn(h); }\n");
+        assert!(detect(&corpus, &spawn).unwrap().has_threading);
     }
 
     #[test]
     fn detects_windows_usage_via_include() {
         let dir = tempfile::tempdir().unwrap();
         write_file(dir.path(), "a.c", "#include <windows.h>\nvoid f(void) {}\n");
-        let profile = detect(&[dir.path().to_string_lossy().to_string()]).unwrap();
+        let profile = detect(
+            &[dir.path().to_string_lossy().to_string()],
+            &ThreadDeclarations::default(),
+        )
+        .unwrap();
         assert!(profile.has_windows);
     }
 
@@ -480,7 +575,11 @@ mod tests {
             "a.c",
             "int f(int x) { return _Generic(x, int: 1, default: 0); }\n",
         );
-        let profile = detect(&[dir.path().to_string_lossy().to_string()]).unwrap();
+        let profile = detect(
+            &[dir.path().to_string_lossy().to_string()],
+            &ThreadDeclarations::default(),
+        )
+        .unwrap();
         assert_eq!(profile.max_c_standard, Some(CStandard::C11));
     }
 
@@ -495,7 +594,11 @@ mod tests {
             "a.c",
             "#include <stdatomic.h>\natomic_bool ready;\n",
         );
-        let profile = detect(&[dir.path().to_string_lossy().to_string()]).unwrap();
+        let profile = detect(
+            &[dir.path().to_string_lossy().to_string()],
+            &ThreadDeclarations::default(),
+        )
+        .unwrap();
         assert_eq!(profile.max_c_standard, Some(CStandard::C11));
     }
 
@@ -503,7 +606,11 @@ mod tests {
     fn does_not_promote_standard_without_c11_header_or_syntax() {
         let dir = tempfile::tempdir().unwrap();
         write_file(dir.path(), "a.c", "#include <stdio.h>\nvoid f(void) {}\n");
-        let profile = detect(&[dir.path().to_string_lossy().to_string()]).unwrap();
+        let profile = detect(
+            &[dir.path().to_string_lossy().to_string()],
+            &ThreadDeclarations::default(),
+        )
+        .unwrap();
         assert_eq!(profile.max_c_standard, None);
     }
 
@@ -515,7 +622,11 @@ mod tests {
             "a.c",
             "void f(char *dst, const char *src) { strcpy_s(dst, 10, src); }\n",
         );
-        let profile = detect(&[dir.path().to_string_lossy().to_string()]).unwrap();
+        let profile = detect(
+            &[dir.path().to_string_lossy().to_string()],
+            &ThreadDeclarations::default(),
+        )
+        .unwrap();
         assert!(profile.has_annex_k);
     }
 
@@ -531,7 +642,11 @@ mod tests {
             "a.c",
             "int validate_s(int x) { return x; }\nint g(void) { return validate_s(1); }\n",
         );
-        let profile = detect(&[dir.path().to_string_lossy().to_string()]).unwrap();
+        let profile = detect(
+            &[dir.path().to_string_lossy().to_string()],
+            &ThreadDeclarations::default(),
+        )
+        .unwrap();
         assert!(!profile.has_annex_k);
     }
 
@@ -546,7 +661,11 @@ mod tests {
             "a.c",
             "struct Ops { int (*encode_s)(int); };\nint g(struct Ops *o) { return o->encode_s(1); }\n",
         );
-        let profile = detect(&[dir.path().to_string_lossy().to_string()]).unwrap();
+        let profile = detect(
+            &[dir.path().to_string_lossy().to_string()],
+            &ThreadDeclarations::default(),
+        )
+        .unwrap();
         assert!(!profile.has_annex_k);
     }
 

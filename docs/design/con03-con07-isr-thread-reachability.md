@@ -162,8 +162,11 @@ fn collect_concurrency_roots(root: &Node, source: &str, out: &mut HashSet<String
     //     Zephyr support was added later; the table also carries Zephyr's
     //     k_thread_create (entry 4th of 10) and k_work_init /
     //     k_work_init_delayable (handler 2nd of 2): a work handler runs on a
-    //     workqueue thread, never the submitter's. The exact list lives in
-    //     src/analyze/concurrency_roots.rs::THREAD_SPAWN_APIS, not here.
+    //     workqueue thread, never the submitter's. Thread creations now
+    //     come from the thread-API families in force (a selected RTOS
+    //     profile's or a project-declared spawn roots its entry too); the
+    //     Win32 and Zephyr names no family declares stay in
+    //     src/analyze/concurrency_roots.rs::UNDECLARED_SPAWN_APIS.
     // (c) Signal handlers: signal(SIG, handler) -- extract the 2nd argument.
 }
 ```
