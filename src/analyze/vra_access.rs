@@ -45,7 +45,7 @@ pub fn var_ranges_replay_at(
 
 /// Variable ranges at `expr_node` read directly from the containing block's
 /// entry ranges (no intra-block replay, no macro resolution). Matches the
-/// historical inline lookup in ARR30-C / INT31-C: prefer statement-level
+/// historical inline lookup in INT31-C: prefer statement-level
 /// containment, falling back to block byte-range containment.
 pub fn var_ranges_entry_at(
     function_cfgs: &HashMap<usize, FunctionCfg>,

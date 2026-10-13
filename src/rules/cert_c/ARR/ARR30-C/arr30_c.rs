@@ -413,12 +413,21 @@ impl Arr30C {
         )
     }
 
-    /// Get VRA-derived variable ranges at a specific expression node.
-    fn vra_var_ranges_at(&self, expr_node: &Node) -> Option<VarRangeMap> {
-        vra_access::var_ranges_entry_at(
+    /// VRA-derived variable ranges at `expr_node`: its block's entry ranges
+    /// carried through the block's statements before it, so `i--; a[i]`
+    /// reads `i` after the step.
+    fn vra_var_ranges_at(
+        &self,
+        expr_node: &Node,
+        source: &str,
+        macros: &HashMap<String, i64>,
+    ) -> Option<VarRangeMap> {
+        vra_access::var_ranges_replay_at(
             &self.function_cfgs.borrow(),
             &self.vra_results.borrow(),
             expr_node,
+            source,
+            macros,
         )
     }
 
@@ -1461,6 +1470,7 @@ impl Arr30C {
         }
 
         let mut last_value_expr: Option<Node> = None;
+        let mut last_store_end = decl.end_byte();
         if let Some(init) = Self::declaration_initializer_for(&decl, name, source) {
             last_value_expr = Some(init);
         }
@@ -1475,7 +1485,30 @@ impl Arr30C {
             }
             if let Some(value) = Self::plain_assignment_value(&stmt, name, source) {
                 last_value_expr = Some(value);
+                last_store_end = stmt.end_byte();
             }
+        }
+
+        // A step or compound assignment after that store changes the value
+        // it gave (`i = 6; i -= 1; a[i]` indexes 5), and so does one anywhere
+        // in a loop holding the access, which runs again before it.
+        let access = position_node.start_byte();
+        let stepped_between = query::find_first_descendant(block, |n| {
+            n.start_byte() >= last_store_end
+                && n.start_byte() < access
+                && is_step_of_identifier(&n, source, name)
+        })
+        .is_some();
+        let stepped_in_loop = std::iter::successors(position_node.parent(), |n| n.parent())
+            .take_while(|n| n.id() != block.id())
+            .any(|n| {
+                matches!(
+                    n.kind(),
+                    "while_statement" | "do_statement" | "for_statement"
+                ) && subtree_steps_identifier(n, source, name)
+            });
+        if stepped_between || stepped_in_loop {
+            return None;
         }
 
         last_value_expr
@@ -1596,7 +1629,11 @@ impl Arr30C {
             return None;
         }
         let assign = stmt.child(0)?;
-        if assign.kind() != "assignment_expression" {
+        if assign.kind() != "assignment_expression"
+            || assign
+                .child_by_field_name("operator")
+                .is_none_or(|op| op.kind() != "=")
+        {
             return None;
         }
         let left = assign.child_by_field_name("left")?;
@@ -2570,6 +2607,14 @@ impl Arr30C {
                     // Calculate effective buffer size for cast pointers
                     let effective_size =
                         Self::effective_buffer_size(buffer_info, element_size_bytes);
+                    let index = self.stepped_constant_as_variable(
+                        node,
+                        source,
+                        index,
+                        buffer_info,
+                        effective_size,
+                        macro_constants,
+                    );
 
                     let is_violation = self.is_subscript_violation(
                         node,
@@ -2595,6 +2640,57 @@ impl Arr30C {
         }
 
         violations
+    }
+
+    /// A constant out of bounds that is only the last `name = N;` of an index
+    /// the function also steps (`i--`, `i -= 1`) is not the value at the
+    /// access: `i = 4; while (i > 0) { i--; a[i] = 0; }` indexes 3 at most.
+    /// Such an index is judged as the variable it is, by its range at the
+    /// access, and when that range is one value out of bounds, it is reported
+    /// as that index (`i = 4; i++; a[i]` names 5). An in-bounds constant is
+    /// left as it was, and so is any constant for a buffer of no known size.
+    fn stepped_constant_as_variable(
+        &self,
+        node: &Node,
+        source: &str,
+        index: IndexValue,
+        buffer_info: &BufferInfo,
+        effective_size: usize,
+        macro_constants: &HashMap<String, i64>,
+    ) -> IndexValue {
+        let IndexValue::Constant(idx) = index else {
+            return index;
+        };
+        if !matches!(
+            buffer_info.size,
+            BufferSize::Static(_) | BufferSize::DynamicCalculated(_)
+        ) {
+            return index;
+        }
+        if idx >= 0 && (idx as usize) < effective_size {
+            return index;
+        }
+        let Some(ident) = node
+            .child_by_field_name("index")
+            .filter(|i| i.kind() == "identifier")
+        else {
+            return index;
+        };
+        let name = &source[ident.start_byte()..ident.end_byte()];
+        if !find_containing_function(node)
+            .is_some_and(|f| subtree_steps_identifier(f, source, name))
+        {
+            return index;
+        }
+        let at_access = self
+            .vra_var_ranges_at(node, source, macro_constants)
+            .and_then(|ranges| ranges.get(name).copied());
+        match at_access {
+            Some(r) if r.min == r.max && (r.min < 0 || (r.min as usize) >= effective_size) => {
+                IndexValue::Constant(r.min as isize)
+            }
+            _ => IndexValue::Variable(name.to_string()),
+        }
     }
 
     /// If `index` is a bare variable that is an unvalidated function
@@ -3359,7 +3455,7 @@ impl Arr30C {
         // keeps no state (a block unreachable under the entry facts), an
         // index parameter the body never writes still has its entry range.
         let vra_safe = self
-            .vra_var_ranges_at(node)
+            .vra_var_ranges_at(node, source, macro_constants)
             .and_then(|ranges| ranges.get(var).copied())
             .or_else(|| {
                 let ident = node
@@ -7819,6 +7915,28 @@ fn subtree_assigns_identifier(root: Node, source: &str, name: &str) -> bool {
         operand_text(&n, field, source) == name
     })
     .is_some()
+}
+
+/// True when `root`'s subtree steps `name` (`i++`, `--i`) or assigns it with
+/// a compound operator (`i -= 1`): writes after which the last `name = N;`
+/// no longer gives its value.
+fn subtree_steps_identifier(root: Node, source: &str, name: &str) -> bool {
+    query::find_first_descendant(root, |n| is_step_of_identifier(&n, source, name)).is_some()
+}
+
+/// True when `n` itself steps `name` or assigns it with a compound operator.
+fn is_step_of_identifier(n: &Node, source: &str, name: &str) -> bool {
+    let field = match n.kind() {
+        "assignment_expression"
+            if n.child_by_field_name("operator")
+                .is_some_and(|op| op.kind() != "=") =>
+        {
+            "left"
+        }
+        "update_expression" => "argument",
+        _ => return false,
+    };
+    operand_text(n, field, source) == name
 }
 
 /// True when `root`'s subtree stores into `buffer_name` at any index other
