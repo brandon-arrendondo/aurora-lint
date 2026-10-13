@@ -75,7 +75,8 @@ use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
 use crate::settings::threads::ThreadOpKind;
 use crate::utility::cert_c::ast_utils::{
-    get_identifier_from_declarator, get_node_text, resolve_identifier_binding, IdentifierBinding,
+    declaration_is_thread_local, get_identifier_from_declarator, get_node_text,
+    resolve_identifier_binding, IdentifierBinding,
 };
 use crate::utility::cert_c::thread_api::{self, ProjectFunctions};
 use lang_parsing_substrate::query;
@@ -241,7 +242,12 @@ impl Con07C {
                 }
             }
 
-            // Collect static variables AND file-scope globals (non-mutex types)
+            // Collect static variables AND file-scope globals (non-mutex
+            // types). An object with thread storage duration is each
+            // thread's own, so no other thread shares it.
+            if declaration_is_thread_local(&decl_node, source) {
+                continue;
+            }
             if is_static || (is_file_scope && !is_mutex_or_thread_type) {
                 for name in var_names {
                     static_vars.record(name, decl_node.start_byte());
