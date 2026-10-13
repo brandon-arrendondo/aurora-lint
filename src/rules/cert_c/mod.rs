@@ -937,7 +937,7 @@ impl RuleRegistry {
         registry.register(Box::new(con09_c::Con09C));
         registry.register(Box::new(con31_c::Con31C::default()));
         registry.register(Box::new(con32_c::Con32C::default()));
-        registry.register(Box::new(con33_c::Con33C));
+        registry.register(Box::new(con33_c::Con33C::default()));
         registry.register(Box::new(con34_c::Con34C::default()));
         registry.register(Box::new(con35_c::Con35C::default()));
         registry.register(Box::new(con37_c::Con37C::default()));
