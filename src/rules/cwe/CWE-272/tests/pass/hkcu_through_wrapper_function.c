@@ -1,5 +1,5 @@
 /*
- * Rule: CWE-428
+ * Rule: CWE-272
  * Status: PASS - the same wrapper fed HKEY_CURRENT_USER: following the
  *         handle through the wrapper must not turn every caller into a
  *         finding, only the ones that hand it HKLM/HKCR

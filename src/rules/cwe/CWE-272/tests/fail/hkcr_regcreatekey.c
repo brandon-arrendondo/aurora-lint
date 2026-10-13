@@ -1,5 +1,5 @@
 /*
- * Rule: CWE-428
+ * Rule: CWE-272
  * Status: FAIL - RegCreateKeyExW with HKEY_CLASSES_ROOT
  */
 

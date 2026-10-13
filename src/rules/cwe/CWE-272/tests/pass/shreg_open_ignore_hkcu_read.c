@@ -1,6 +1,7 @@
 /*
- * Rule: CWE-428
- * Status: FAIL - SHRegOpenUSKeyA with fIgnoreHKCU=TRUE
+ * Rule: CWE-272
+ * Status: PASS - SHRegOpenUSKeyA with fIgnoreHKCU=TRUE and KEY_READ only
+ *         reads the HKLM key
  */
 
 typedef void *HUSKEY;
@@ -9,6 +10,7 @@ typedef long LONG;
 typedef const char *LPCSTR;
 
 #define TRUE 1
+#define KEY_READ 0x20019
 
 LONG SHRegOpenUSKeyA(LPCSTR, DWORD, HUSKEY, HUSKEY*, BOOL);
 
@@ -16,9 +18,9 @@ void f(void) {
     HUSKEY key;
     SHRegOpenUSKeyA(
         "Software\\MyApp",
-        0,
+        KEY_READ,
         0,
         &key,
-        TRUE  /* VIOLATION: fIgnoreHKCU=TRUE means HKLM only */
+        TRUE  /* Compliant: HKLM, but read access */
     );
 }

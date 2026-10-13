@@ -1,7 +1,9 @@
 /*
- * Rule: CWE-428
- * Status: FAIL - HKEY_LOCAL_MACHINE routed into RegOpenKeyExA through a
- *         one-hop wrapper's parameter (ventoy's GetRegDwordValue)
+ * Rule: CWE-272
+ * Status: PASS - HKEY_LOCAL_MACHINE routed into RegOpenKeyExA through a
+ *         one-hop wrapper's parameter (ventoy's GetRegDwordValue), which
+ *         opens it with KEY_QUERY_VALUE: a read, which needs no
+ *         administrator rights
  */
 
 typedef void *HKEY;
@@ -32,7 +34,7 @@ int GetRegDwordValue(HKEY Key, LPCSTR SubKey, LPCSTR ValueName, DWORD *pValue)
 int count_disks(void)
 {
     DWORD Value = 0;
-    if (GetRegDwordValue(HKEY_LOCAL_MACHINE,  /* VIOLATION */
+    if (GetRegDwordValue(HKEY_LOCAL_MACHINE,  /* Compliant: the wrapper reads */
                          "SYSTEM\\CurrentControlSet\\Services\\disk\\Enum",
                          "Count", &Value) == 0)
         return (int)Value;

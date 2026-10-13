@@ -1228,6 +1228,10 @@ enabled = true
 enabled = true
 
 
+[rules.cwe.CWE-272]
+enabled = true
+
+
 [rules.cwe.CWE-327]
 enabled = true
 

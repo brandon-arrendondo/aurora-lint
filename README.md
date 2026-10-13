@@ -4,7 +4,7 @@
 [![Latest Release](https://img.shields.io/github/v/release/brandon-arrendondo/aurora-lint)](https://github.com/brandon-arrendondo/aurora-lint/releases/latest)
 [![License](https://img.shields.io/github/license/brandon-arrendondo/aurora-lint)](LICENSE)
 
-A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). aurora-lint tracks 306 CERT C rules across 17 categories (302 implemented and enabled by default), plus a CWE ruleset of 3 rules for weaknesses CERT C has no identifier for, with a CI/CD-ready command-line interface and an optional interactive terminal UI.
+A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). aurora-lint tracks 306 CERT C rules across 17 categories (302 implemented and enabled by default), plus a CWE ruleset of 4 rules for weaknesses CERT C has no identifier for, with a CI/CD-ready command-line interface and an optional interactive terminal UI.
 
 ## Does It Find Real Bugs?
 
@@ -76,10 +76,11 @@ standards that could be added and why they were not needed first.
 A small CWE ruleset ships too, enabled by default: checks for a weakness
 CERT C has no identifier for, reported under the weakness's own CWE id.
 `CWE-327` flags a weak cipher (DES, 3DES, RC2, RC4, RC5) selected through
-Windows CryptoAPI or OpenSSL, `CWE-428` an unquoted `CreateProcess*` command
-path containing a space (and, for now, registry access through
-`HKEY_LOCAL_MACHINE`), and `CWE-666` socket calls out of order on one
-socket. They were shipped under CERT-shaped ids before v0.7.0 (see Rules
+Windows CryptoAPI or OpenSSL, `CWE-272` a registry write under
+`HKEY_LOCAL_MACHINE` or `HKEY_CLASSES_ROOT` that needs administrator
+rights, `CWE-428` an unquoted `CreateProcess*` command path containing a
+space, and `CWE-666` socket calls out of order on one socket. They were
+shipped under CERT-shaped ids before v0.7.0 (see Rules
 Not Shipped below).
 
 ## What Makes It Different
@@ -154,7 +155,7 @@ configuration that still names one loads with a warning, and
 | FIO51-C | v0.7.0 | not a CERT C guideline (C++ id): CERT C has no FIO51-C; it is CERT C++'s FIO51-CPP. FIO42-C reports the same file left open | covered by FIO42-C |
 | MSC42-C | v0.7.0 | moved to CWE ruleset: MSC42-C is not a CERT C identifier; the weak-cipher check is unchanged | reported as CWE-327 in the CWE ruleset |
 | POS55-C | v0.7.0 | moved to CWE ruleset: CERT C never published a POS55-C; the socket-ordering check is unchanged | reported as CWE-666 in the CWE ruleset |
-| WIN05-C | v0.7.0 | moved to CWE ruleset: CERT C never published a WIN05-C; the check is unchanged | reported as CWE-428 in the CWE ruleset |
+| WIN05-C | v0.7.0 | moved to CWE ruleset: CERT C never published a WIN05-C; its unquoted CreateProcess path check is unchanged, and its registry check now reports only a write under HKEY_LOCAL_MACHINE or HKEY_CLASSES_ROOT, as CWE-272 | reported as CWE-428 in the CWE ruleset |
 
 <!-- REMOVED-RULES:END -->
 
@@ -349,7 +350,7 @@ directories for cross-file context and never restricts what gets analyzed.
 aurora-lint /path/to/project --manifest my-rules.toml
 ```
 
-The default manifest (`rules_templates/rules-all.toml`) enables 302 of the 306 tracked rules, and the 3 CWE-ruleset rules; the other 4 are tracked but not yet implemented (2 parked on incomplete upstream CERT content) — see [Configuration](docs/configuration.rst). See the [Developer Guide](docs/index.rst) for the manifest format.
+The default manifest (`rules_templates/rules-all.toml`) enables 302 of the 306 tracked rules, and the 4 CWE-ruleset rules; the other 4 are tracked but not yet implemented (2 parked on incomplete upstream CERT content) — see [Configuration](docs/configuration.rst). See the [Developer Guide](docs/index.rst) for the manifest format.
 
 First run against an existing codebase surfacing more findings than your team can triage at once? `--min-severity`/`--fail-on-severity` and `--exclude-all` are the fastest levers; [Configuration's "Strict vs. Relaxed Onboarding"](docs/configuration.rst) has the full discipline for building your own scoped-down manifest, and why this project doesn't ship a one-size-fits-all "relaxed" one.
 

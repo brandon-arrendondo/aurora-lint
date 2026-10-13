@@ -2,6 +2,11 @@
 #[path = "CWE-327/cwe327.rs"]
 pub mod cwe327;
 
+/// CWE-272: least privilege violation (a registry write that needs
+/// administrator rights).
+#[path = "CWE-272/cwe272.rs"]
+pub mod cwe272;
+
 /// CWE-428: unquoted search path or element.
 #[path = "CWE-428/cwe428.rs"]
 pub mod cwe428;

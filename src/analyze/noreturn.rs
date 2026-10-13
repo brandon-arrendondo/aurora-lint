@@ -950,9 +950,87 @@ pub fn library_function_replaced(
     project: Option<&ProjectContext>,
     file_path: Option<&Path>,
 ) -> bool {
-    if library_names_redefined_among(root, source, |n| n == name).contains(name) {
-        return true;
+    library_names_redefined_among(root, source, |n| n == name).contains(name)
+        || library_macro_replaces(root, source, name, project, file_path)
+}
+
+/// [`library_function_replaced`] where the file's own definition counts only
+/// if every build compiles it: a definition (or `static` declaration) in a
+/// region the file proves dead (`#if 0`) or inside an `#if`/`#ifdef` arm
+/// (`#ifdef _WIN32_WCE`) leaves the library function in the builds without
+/// it, as a macro defined in one arm does (ADR-0010). The macro half is the
+/// same. CWE-272 asks it about the Win32 registry calls.
+pub fn library_function_replaced_in_every_build(
+    root: &Node,
+    source: &str,
+    name: &str,
+    project: Option<&ProjectContext>,
+    file_path: Option<&Path>,
+) -> bool {
+    file_redefines_in_every_build(root, source, name)
+        || library_macro_replaces(root, source, name, project, file_path)
+}
+
+/// Whether `root` defines `name` as a function, or declares it `static`, at a
+/// place every build compiles: outside the file's dead regions and outside
+/// any `#if` arm ([`crate::analyze::dead_regions::arm_assumptions`]).
+fn file_redefines_in_every_build(root: &Node, source: &str, name: &str) -> bool {
+    let mut dead: Option<DeadRegions> = None;
+    let mut stack = vec![*root];
+    while let Some(node) = stack.pop() {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            let redefines = match child.kind() {
+                "function_definition" => definition_name(&child, source).as_deref() == Some(name),
+                "declaration" => {
+                    let mut specs = child.walk();
+                    let is_static = child.children(&mut specs).any(|c| {
+                        c.kind() == "storage_class_specifier"
+                            && get_node_text(&c, source).trim() == "static"
+                    });
+                    let mut decls = child.walk();
+                    is_static
+                        && child
+                            .children_by_field_name("declarator", &mut decls)
+                            .any(|d| {
+                                let d = if d.kind() == "init_declarator" {
+                                    d.child_by_field_name("declarator").unwrap_or(d)
+                                } else {
+                                    d
+                                };
+                                crate::utility::cert_c::declarator_utils::declares_function(&d)
+                                    && crate::utility::cert_c::ast_utils::get_identifier_from_declarator(
+                                        &d, source,
+                                    ) == name
+                            })
+                }
+                _ => {
+                    stack.push(child);
+                    false
+                }
+            };
+            if redefines
+                && !dead
+                    .get_or_insert_with(|| DeadRegions::of(source))
+                    .contains_node(&child)
+                && crate::analyze::dead_regions::arm_assumptions(&child, source).is_empty()
+            {
+                return true;
+            }
+        }
     }
+    false
+}
+
+/// The macro half of [`library_function_replaced`]: a macro named `name`
+/// replaces the library function for this file.
+fn library_macro_replaces(
+    root: &Node,
+    source: &str,
+    name: &str,
+    project: Option<&ProjectContext>,
+    file_path: Option<&Path>,
+) -> bool {
     let dead = DeadRegions::of(source);
     let defines_here = ["preproc_def", "preproc_function_def"]
         .into_iter()

@@ -139,50 +139,8 @@ pub fn collect_conditional_macro_names(source: &str) -> HashSet<String> {
         .into_iter()
         .map(|r| (r.start_line, r.end_line))
         .collect();
-    // Each directive's logical text, with its first physical line.
-    let lines: Vec<&str> = source.lines().collect();
-    let mut directives: Vec<(usize, String)> = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let first_line = i + 1;
-        let mut logical = String::new();
-        while i < lines.len() {
-            let te = lines[i].trim_end();
-            i += 1;
-            if let Some(stripped) = te.strip_suffix('\\') {
-                logical.push_str(stripped);
-                logical.push(' ');
-            } else {
-                logical.push_str(te);
-                break;
-            }
-        }
-        if let Some(d) = logical.trim_start().strip_prefix('#') {
-            directives.push((first_line, d.trim_start().to_string()));
-        }
-    }
-
-    let keyword = |d: &str| -> String {
-        d.chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect()
-    };
-    // The name an `#ifndef X` / `#if !defined(X)` tests, for guard detection.
-    let guard_name = |d: &str| -> Option<String> {
-        let rest = if let Some(r) = d.strip_prefix("ifndef") {
-            r
-        } else {
-            let r = d.strip_prefix("if")?.trim_start().strip_prefix('!')?;
-            let r = r.trim_start().strip_prefix("defined")?.trim_start();
-            r.strip_prefix('(').unwrap_or(r)
-        };
-        let name: String = rest
-            .trim_start()
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect();
-        (!name.is_empty()).then_some(name)
-    };
+    let directives = logical_directives(source);
+    let keyword = directive_keyword;
 
     let is_dead = |line: usize| dead.iter().any(|&(s, e)| line >= s && line <= e);
     // One entry per open conditional: whether it is a file-level include
@@ -212,20 +170,7 @@ pub fn collect_conditional_macro_names(source: &str) -> HashSet<String> {
     for (k, (line, d)) in directives.iter().enumerate() {
         match keyword(d).as_str() {
             "if" | "ifdef" | "ifndef" => {
-                let is_guard = open.is_empty()
-                    && guard_name(d).is_some_and(|g| {
-                        directives.get(k + 1).is_some_and(|(_, next)| {
-                            next.strip_prefix("define")
-                                .map(str::trim_start)
-                                .is_some_and(|n| {
-                                    n.strip_prefix(g.as_str()).is_some_and(|r| {
-                                        !r.starts_with(|c: char| {
-                                            c.is_ascii_alphanumeric() || c == '_'
-                                        })
-                                    })
-                                })
-                        })
-                    });
+                let is_guard = open.is_empty() && opens_include_guard(&directives, k);
                 open.push(Group {
                     guard: is_guard,
                     has_else: false,
@@ -283,6 +228,441 @@ pub fn collect_conditional_macro_names(source: &str) -> HashSet<String> {
     }
     inside.retain(|n| !everywhere.contains(n));
     inside
+}
+
+/// Each directive of `source` (a logical line, continuations joined, whose
+/// first non-blank character is `#`): its first physical line, from 1, and
+/// its text after the `#`.
+fn logical_directives(source: &str) -> Vec<(usize, String)> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut directives: Vec<(usize, String)> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let first_line = i + 1;
+        let mut logical = String::new();
+        while i < lines.len() {
+            let te = lines[i].trim_end();
+            i += 1;
+            if let Some(stripped) = te.strip_suffix('\\') {
+                logical.push_str(stripped);
+                logical.push(' ');
+            } else {
+                logical.push_str(te);
+                break;
+            }
+        }
+        if let Some(d) = logical.trim_start().strip_prefix('#') {
+            directives.push((first_line, d.trim_start().to_string()));
+        }
+    }
+    directives
+}
+
+/// A directive's keyword: `ifdef` of `ifdef X`.
+fn directive_keyword(d: &str) -> String {
+    d.chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect()
+}
+
+/// Whether the conditional `directives[k]` opens an include guard: an
+/// `#ifndef X` / `#if !defined(X)` whose next directive is `#define X`.
+/// Only a conditional at file level can be one; the caller checks that.
+fn opens_include_guard(directives: &[(usize, String)], k: usize) -> bool {
+    let d = directives[k].1.as_str();
+    let rest = if let Some(r) = d.strip_prefix("ifndef") {
+        r
+    } else {
+        let Some(r) = d
+            .strip_prefix("if")
+            .and_then(|r| r.trim_start().strip_prefix('!'))
+            .and_then(|r| r.trim_start().strip_prefix("defined"))
+        else {
+            return false;
+        };
+        let r = r.trim_start();
+        r.strip_prefix('(').unwrap_or(r)
+    };
+    let guard: String = rest
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    !guard.is_empty()
+        && directives.get(k + 1).is_some_and(|(_, next)| {
+            next.strip_prefix("define")
+                .map(str::trim_start)
+                .and_then(|n| n.strip_prefix(guard.as_str()))
+                .is_some_and(|r| !r.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+        })
+}
+
+/// Whether the include guard `directives[k]` opens ([`opens_include_guard`])
+/// is only a guard for [`ObjectMacroTimeline`]: the conditional encloses the
+/// whole file, its `#ifndef` the first directive and its `#endif` the last,
+/// with nothing but blank lines and comments (a licence block) outside them.
+/// What its `#define` gives the name does not matter. A default-value block
+/// anywhere else -- `#ifndef NULL` / `#define NULL (void *)0`, `#ifndef M` /
+/// `#define M 1`, an empty feature flag -- supplies its definition only
+/// where nothing defined the name before, so it stays a build alternative.
+fn only_guards(source: &str, directives: &[(usize, String)], k: usize) -> bool {
+    if k != 0 {
+        return false;
+    }
+    let mut depth = 0usize;
+    let Some(end_at) = directives.iter().position(|(_, d)| {
+        match directive_keyword(d).as_str() {
+            "if" | "ifdef" | "ifndef" => depth += 1,
+            "endif" => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        depth == 0
+    }) else {
+        return false;
+    };
+    if end_at + 1 != directives.len() {
+        return false;
+    }
+    let (start, end) = (directives[0].0, directives[end_at].0);
+    crate::utility::cert_c::pp_tokens::mask_source(source)
+        .lines()
+        .enumerate()
+        .all(|(i, l)| (start..=end).contains(&(i + 1)) || l.trim().is_empty())
+}
+
+/// One file's `#define`s and `#undef`s of object-like macros, in order, for
+/// asking what a name stands for at a given line.
+///
+/// A later directive replaces an earlier one only in the builds that reach
+/// both: one at the same or an outer level of conditionals (`#define M
+/// KEY_WRITE`, `#undef M`, `#define M KEY_READ` leaves only `KEY_READ`),
+/// while the arms of an `#if` ... `#else` group, or an arm and the code
+/// around it, are different builds whose definitions are alternatives
+/// (ADR-0010 D1). A group with an `#else` whose every arm replaces the name
+/// (or that the file proves dead) leaves only its arms' definitions: every
+/// build that reaches its `#endif` took one of them. An include guard is not
+/// a build alternative ([`only_guards`]), and a region the file proves dead
+/// holds nothing.
+///
+/// Each name's alternatives are built once, in one pass, as a persistent
+/// stack with one head per directive, so a lookup is a binary search for the
+/// line and a walk of the alternatives in force there.
+///
+/// **Limitation:** where `#include` lines fall is not read. An included
+/// header's definitions are taken as standing before the file's first
+/// directive, so a header included after the file's own `#define` is read
+/// as if the file's definition replaced it.
+#[derive(Debug, Default)]
+pub struct ObjectMacroTimeline {
+    names: HashMap<String, NameTimeline>,
+}
+
+/// One directive of a name, as [`ObjectMacroTimeline::of`] reads it.
+#[derive(Debug)]
+enum MacroStep {
+    /// A `#define` (`body` is its object-like replacement list, `None` when
+    /// it is not object-like) or an `#undef` (`None`), in the conditional
+    /// arms `arms`, outermost first, each a number unique within the file
+    /// and increasing in file order.
+    Set {
+        body: Option<String>,
+        arms: Vec<usize>,
+    },
+    /// The `#endif` of a group with an `#else` that every arm replaces the
+    /// name in: the group sits in `arms`, and its arms are numbered from
+    /// `first_arm` on.
+    GroupReplaces { arms: Vec<usize>, first_arm: usize },
+}
+
+/// One alternative on a name's persistent stack.
+#[derive(Debug)]
+struct Alternative {
+    /// The replacement list; `None` for the definition from before the file.
+    body: Option<String>,
+    /// The conditional arms it sits in.
+    arms: Vec<usize>,
+    /// The alternative below it.
+    below: Option<usize>,
+}
+
+/// One name's alternatives after each of its directives.
+#[derive(Debug, Default)]
+struct NameTimeline {
+    /// Every alternative ever pushed; index 0 is the definition from before
+    /// the file.
+    alternatives: Vec<Alternative>,
+    /// Each directive's first physical line, in file order.
+    lines: Vec<usize>,
+    /// The top of the stack after each directive.
+    heads: Vec<Option<usize>>,
+}
+
+impl NameTimeline {
+    fn build(steps: Vec<(usize, MacroStep)>) -> Self {
+        let mut timeline = NameTimeline {
+            alternatives: vec![Alternative {
+                body: None,
+                arms: Vec::new(),
+                below: None,
+            }],
+            lines: Vec::with_capacity(steps.len()),
+            heads: Vec::with_capacity(steps.len()),
+        };
+        let mut head = Some(0);
+        for (line, step) in steps {
+            head = match step {
+                // A directive replaces what the builds reaching it saw since
+                // its innermost arm opened, which is the top of the stack:
+                // each alternative is popped at most once along the file.
+                MacroStep::Set { body, arms } => {
+                    let mut top = head;
+                    while let Some(i) =
+                        top.filter(|&i| timeline.alternatives[i].arms.starts_with(&arms))
+                    {
+                        top = timeline.alternatives[i].below;
+                    }
+                    // An `#undef` in an arm leaves the name undefined in the
+                    // builds that take it, and an undefined name stands for
+                    // nothing.
+                    match body {
+                        Some(body) => timeline.push(body.into(), arms, top),
+                        None => top,
+                    }
+                }
+                // The group's own alternatives are on top; under them, those
+                // from before the group within its enclosing arm, which every
+                // arm replaced; under those, ones other builds still see.
+                MacroStep::GroupReplaces { arms, first_arm } => {
+                    let in_group = |a: &Alternative| {
+                        a.arms.len() > arms.len() && a.arms[arms.len()] >= first_arm
+                    };
+                    let mut kept = Vec::new();
+                    let mut top = head;
+                    while let Some(i) = top.filter(|&i| in_group(&timeline.alternatives[i])) {
+                        kept.push(i);
+                        top = timeline.alternatives[i].below;
+                    }
+                    while let Some(i) =
+                        top.filter(|&i| timeline.alternatives[i].arms.starts_with(&arms))
+                    {
+                        top = timeline.alternatives[i].below;
+                    }
+                    for i in kept.into_iter().rev() {
+                        let (body, arms) = (
+                            timeline.alternatives[i].body.clone(),
+                            timeline.alternatives[i].arms.clone(),
+                        );
+                        top = timeline.push(body, arms, top);
+                    }
+                    top
+                }
+            };
+            timeline.lines.push(line);
+            timeline.heads.push(head);
+        }
+        timeline
+    }
+
+    fn push(
+        &mut self,
+        body: Option<String>,
+        arms: Vec<usize>,
+        below: Option<usize>,
+    ) -> Option<usize> {
+        self.alternatives.push(Alternative { body, arms, below });
+        Some(self.alternatives.len() - 1)
+    }
+}
+
+/// What [`ObjectMacroTimeline::in_force`] finds for one name.
+#[derive(Debug, PartialEq, Eq)]
+pub struct InForce {
+    /// Every object-like replacement list the name may have, each once,
+    /// sorted.
+    pub bodies: Vec<String>,
+    /// Whether some build reaches the line with none of this file's
+    /// directives of the name applying, so a definition from before the file
+    /// (an included header's) still stands there.
+    pub inherits: bool,
+}
+
+/// One open conditional, as [`ObjectMacroTimeline::of`] reads the file.
+struct OpenGroup {
+    /// An include guard: its arms are not build alternatives.
+    guard: bool,
+    /// The number of the arm being read, and of the group's first.
+    arm: usize,
+    first_arm: usize,
+    has_else: bool,
+    /// The names a directive at the current arm's own level replaces, and
+    /// whether the file proves the arm dead.
+    replaced: HashSet<String>,
+    dead: bool,
+    /// The names every finished arm replaced; `None` while no live arm has
+    /// finished.
+    every_arm: Option<HashSet<String>>,
+}
+
+impl OpenGroup {
+    fn finish_arm(&mut self) {
+        let replaced = std::mem::take(&mut self.replaced);
+        if self.dead {
+            return;
+        }
+        self.every_arm = Some(match self.every_arm.take() {
+            None => replaced,
+            Some(every) => every.intersection(&replaced).cloned().collect(),
+        });
+    }
+}
+
+impl ObjectMacroTimeline {
+    /// The timeline of `source`.
+    pub fn of(source: &str) -> Self {
+        let dead: Vec<(usize, usize)> = lang_parsing_substrate::dead_code_ranges(source)
+            .into_iter()
+            .map(|r| (r.start_line, r.end_line))
+            .collect();
+        let is_dead = |line: usize| dead.iter().any(|&(s, e)| line >= s && line <= e);
+        // The arm a directive on `line` opens is dead when a dead region
+        // starts right after it.
+        let opens_dead = |line: usize| {
+            dead.iter()
+                .any(|&(s, e)| s == line + 1 || (line + 1 >= s && line < e))
+        };
+        let directives = logical_directives(source);
+        let mut open: Vec<OpenGroup> = Vec::new();
+        let mut next_arm = 0;
+        let mut steps: HashMap<String, Vec<(usize, MacroStep)>> = HashMap::new();
+        let arms_of = |open: &[OpenGroup]| -> Vec<usize> {
+            open.iter().filter(|g| !g.guard).map(|g| g.arm).collect()
+        };
+        for (k, (line, d)) in directives.iter().enumerate() {
+            let (name, body) = match directive_keyword(d).as_str() {
+                "if" | "ifdef" | "ifndef" => {
+                    let guard = open.is_empty()
+                        && opens_include_guard(&directives, k)
+                        && only_guards(source, &directives, k);
+                    next_arm += 1;
+                    open.push(OpenGroup {
+                        guard,
+                        arm: next_arm,
+                        first_arm: next_arm,
+                        has_else: false,
+                        replaced: HashSet::new(),
+                        dead: opens_dead(*line),
+                        every_arm: None,
+                    });
+                    continue;
+                }
+                kw @ ("elif" | "elifdef" | "elifndef" | "else") => {
+                    next_arm += 1;
+                    if let Some(group) = open.last_mut() {
+                        group.finish_arm();
+                        group.arm = next_arm;
+                        group.has_else |= kw == "else";
+                        group.dead = opens_dead(*line);
+                    }
+                    continue;
+                }
+                "endif" => {
+                    let Some(mut group) = open.pop() else {
+                        continue;
+                    };
+                    group.finish_arm();
+                    if group.guard || !group.has_else {
+                        continue;
+                    }
+                    let arms = arms_of(&open);
+                    for name in group.every_arm.into_iter().flatten() {
+                        if let Some(outer) = open.last_mut().filter(|g| !g.guard) {
+                            outer.replaced.insert(name.clone());
+                        }
+                        steps.entry(name).or_default().push((
+                            *line,
+                            MacroStep::GroupReplaces {
+                                arms: arms.clone(),
+                                first_arm: group.first_arm,
+                            },
+                        ));
+                    }
+                    continue;
+                }
+                "define" => match parse_define(&format!("#{d}")) {
+                    Some((name, MacroDefinition::Object { body })) => (name, Some(body)),
+                    Some((name, _)) => (name, None),
+                    None => continue,
+                },
+                "undef" => {
+                    let name: String = d["undef".len()..]
+                        .trim_start()
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                        .collect();
+                    if name.is_empty() {
+                        continue;
+                    }
+                    (name, None)
+                }
+                _ => continue,
+            };
+            if is_dead(*line) {
+                continue;
+            }
+            if let Some(group) = open.last_mut().filter(|g| !g.guard) {
+                group.replaced.insert(name.clone());
+            }
+            steps.entry(name).or_default().push((
+                *line,
+                MacroStep::Set {
+                    body,
+                    arms: arms_of(&open),
+                },
+            ));
+        }
+        Self {
+            names: steps
+                .into_iter()
+                .map(|(name, steps)| (name, NameTimeline::build(steps)))
+                .collect(),
+        }
+    }
+
+    /// Every name the file defines or undefines.
+    pub fn names(&self) -> impl Iterator<Item = &String> {
+        self.names.keys()
+    }
+
+    /// What `name` may stand for on `line` (from 1): the directives before
+    /// it, each replacing the alternatives it overrides. A line past the end
+    /// gives what the file leaves in force for whoever includes it.
+    pub fn in_force(&self, name: &str, line: usize) -> InForce {
+        let Some(timeline) = self.names.get(name) else {
+            return InForce {
+                bodies: Vec::new(),
+                inherits: true,
+            };
+        };
+        let before = timeline.lines.partition_point(|&l| l < line);
+        let mut top = if before == 0 {
+            Some(0)
+        } else {
+            timeline.heads[before - 1]
+        };
+        let mut inherits = false;
+        let mut bodies = Vec::new();
+        while let Some(i) = top {
+            let alternative = &timeline.alternatives[i];
+            match &alternative.body {
+                Some(body) => bodies.push(body.clone()),
+                None => inherits = true,
+            }
+            top = alternative.below;
+        }
+        bodies.sort();
+        bodies.dedup();
+        InForce { bodies, inherits }
+    }
 }
 
 /// Whether an invocation of `name` is one `{ ... }` block in every
@@ -1064,5 +1444,123 @@ mod tests {
     fn if_with_else_is_not_a_check() {
         let src = "#define M(x) if (!(x)) abort(); else log()\n";
         assert!(checks(src).is_empty());
+    }
+
+    /// The bodies `name` may have on `line` of `src`, and whether a
+    /// definition from before the file still stands there.
+    fn in_force(src: &str, name: &str, line: usize) -> (Vec<String>, bool) {
+        let found = ObjectMacroTimeline::of(src).in_force(name, line);
+        (found.bodies, found.inherits)
+    }
+
+    fn bodies(list: &[&str]) -> Vec<String> {
+        list.iter().map(|b| b.to_string()).collect()
+    }
+
+    #[test]
+    fn a_sequential_redefinition_replaces_the_earlier_body() {
+        let src = "#define M KEY_WRITE\n#undef M\n#define M KEY_READ\nuse(M);\n";
+        assert_eq!(in_force(src, "M", 4), (bodies(&["KEY_READ"]), false));
+        assert_eq!(in_force(src, "M", 3), (bodies(&[]), false));
+        assert_eq!(in_force(src, "M", 2), (bodies(&["KEY_WRITE"]), false));
+        assert_eq!(in_force(src, "M", 1), (bodies(&[]), true));
+    }
+
+    #[test]
+    fn the_arms_of_a_conditional_are_alternatives() {
+        let src =
+            "#ifdef X\n#define M A\n#elif Y\n#define M B\n#else\n#define M C\n#endif\nuse(M);\n";
+        assert_eq!(in_force(src, "M", 8), (bodies(&["A", "B", "C"]), false));
+        // Without an `#else`, a build takes no arm and keeps what came before.
+        let src = "#ifdef X\n#define M A\n#elif Y\n#define M B\n#endif\nuse(M);\n";
+        assert_eq!(in_force(src, "M", 6), (bodies(&["A", "B"]), true));
+        // An arm that leaves the name alone keeps what came before too.
+        let src = "#define M W\n#ifdef X\n#undef M\n#define M R\n#else\nint y;\n#endif\nuse(M);\n";
+        assert_eq!(in_force(src, "M", 8), (bodies(&["R", "W"]), false));
+        let src = "#define M A\n#ifdef X\n#undef M\n#define M B\n#endif\nuse(M);\n";
+        assert_eq!(in_force(src, "M", 7), (bodies(&["A", "B"]), false));
+        let src = "#ifdef X\n#define M B\n#endif\n#define M A\nuse(M);\n";
+        assert_eq!(in_force(src, "M", 5), (bodies(&["A"]), false));
+    }
+
+    #[test]
+    fn an_include_guard_is_not_a_build_alternative() {
+        let src = "#ifndef H\n#define H\n#define M A\n#undef M\n#define M B\n#endif\n";
+        assert_eq!(in_force(src, "M", usize::MAX), (bodies(&["B"]), false));
+    }
+
+    #[test]
+    fn a_group_whose_every_arm_replaces_the_name_ends_what_came_before() {
+        let src = "#ifdef X\n#undef M\n#define M KEY_READ\n#else\n#undef M\n#define M KEY_READ\n#endif\nuse(M);\n";
+        assert_eq!(in_force(src, "M", 8), (bodies(&["KEY_READ"]), false));
+        // Inside an outer arm, only the builds that take that arm lose it.
+        let src = "#define M W\n#ifdef O\n#ifdef X\n#define M A\n#else\n#define M B\n#endif\nuse(M);\n#endif\nuse(M);\n";
+        assert_eq!(in_force(src, "M", 8), (bodies(&["A", "B", "W"]), false));
+        let src = "#ifdef O\n#ifdef X\n#define M A\n#else\n#define M B\n#endif\n#endif\nuse(M);\n";
+        assert_eq!(in_force(src, "M", 8), (bodies(&["A", "B"]), true));
+        // A nested group that replaces in every arm replaces for its arm.
+        let src = "#ifdef X\n#ifdef Y\n#define M A\n#else\n#define M B\n#endif\n#else\n#define M C\n#endif\nuse(M);\n";
+        assert_eq!(in_force(src, "M", 10), (bodies(&["A", "B", "C"]), false));
+        // An arm the file proves dead is taken by no build.
+        let src = "#if 0\nint z;\n#else\n#define M A\n#endif\nuse(M);\n";
+        assert_eq!(in_force(src, "M", 6), (bodies(&["A"]), false));
+    }
+
+    #[test]
+    fn a_default_value_block_is_not_an_include_guard() {
+        let src =
+            "int x;\n#ifndef APP_ACCESS\n#define APP_ACCESS KEY_READ\n#endif\nuse(APP_ACCESS);\n";
+        assert_eq!(
+            in_force(src, "APP_ACCESS", 5),
+            (bodies(&["KEY_READ"]), true)
+        );
+        // Whatever the default is: a number, a null pointer, nothing.
+        for (default, body) in [("1", "1"), ("(void *)0", "(void *)0"), ("", "")] {
+            let src =
+                format!("#include \"h.h\"\n#ifndef M\n#define M {default}\n#endif\nuse(M);\n");
+            assert_eq!(in_force(&src, "M", 5), (bodies(&[body]), true), "{default}");
+            // Even as the file's first directive, with code after it.
+            let src = format!("#ifndef M\n#define M {default}\n#endif\nuse(M);\n");
+            assert_eq!(in_force(&src, "M", 4), (bodies(&[body]), true), "{default}");
+        }
+        // A guard encloses the whole file, whatever its define gives the
+        // name, and a licence comment before it changes nothing.
+        let src = "#ifndef H\n#define H 1\n#define M A\n#endif\n";
+        assert_eq!(in_force(src, "M", usize::MAX), (bodies(&["A"]), false));
+        let src = "/* Copyright\n   Licence text\n*/\n// more\n#ifndef H\n#define H something\n#define M A\n#endif\n\n/* end */\n";
+        assert_eq!(in_force(src, "M", usize::MAX), (bodies(&["A"]), false));
+        let src = "#ifndef H\n#define H 1\n#define M A\n#endif\nint x;\n";
+        assert_eq!(in_force(src, "M", usize::MAX), (bodies(&["A"]), true));
+    }
+
+    #[test]
+    fn many_conditional_definitions_are_read_in_bounded_time() {
+        let mut src = String::new();
+        for i in 0..20_000 {
+            src.push_str(&format!(
+                "#ifdef Z{i}\n#define M K{i}\n#endif\nvoid g{i}(void) {{ f(M); }}\n"
+            ));
+        }
+        let start = std::time::Instant::now();
+        let timeline = ObjectMacroTimeline::of(&src);
+        let mut total = 0;
+        for i in (0..20_000).step_by(1000) {
+            total += timeline.in_force("M", 4 * i + 4).bodies.len();
+        }
+        assert_eq!(
+            total,
+            (0..20_000).step_by(1000).map(|i| i + 1).sum::<usize>()
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_definition_after_the_line_leaves_the_earlier_one() {
+        let src = "use(M);\n#undef M\n#define M KEY_READ\n";
+        assert_eq!(in_force(src, "M", 1), (bodies(&[]), true));
     }
 }

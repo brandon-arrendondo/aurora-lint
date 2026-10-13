@@ -1,15 +1,16 @@
 /*
- * Rule: CWE-428
- * Status: PASS - SHRegOpenUSKeyA with fIgnoreHKCU=FALSE
+ * Rule: CWE-272
+ * Status: FAIL - SHRegOpenUSKeyA with fIgnoreHKCU=TRUE and KEY_WRITE opens
+ *         the HKLM key for writing
  */
 
 typedef void *HUSKEY;
 typedef unsigned long DWORD;
 typedef long LONG;
 typedef const char *LPCSTR;
-typedef int BOOL;
 
-#define FALSE 0
+#define TRUE 1
+#define KEY_WRITE 0x20006
 
 LONG SHRegOpenUSKeyA(LPCSTR, DWORD, HUSKEY, HUSKEY*, BOOL);
 
@@ -17,9 +18,9 @@ void f(void) {
     HUSKEY key;
     SHRegOpenUSKeyA(
         "Software\\MyApp",
-        0,
+        KEY_WRITE,
         0,
         &key,
-        FALSE  /* Compliant: tries HKCU first */
+        TRUE  /* VIOLATION: fIgnoreHKCU=TRUE means HKLM only */
     );
 }

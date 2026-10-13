@@ -1,9 +1,10 @@
 /*
- * Rule: CWE-428
+ * Rule: CWE-272
  * Status: FAIL - HKLM behind an object-like alias, routed through a
  *         function -> forwarding macro -> function chain into RegOpenKeyExA
  *         (ventoy's REGKEY_HKLM / ReadRegistryKey32 / GetRegistryKey32 /
- *         _GetRegistryKey)
+ *         _GetRegistryKey), where one path opens the root with
+ *         KEY_CREATE_SUB_KEY: a write on some path is a write
  */
 
 typedef void *HKEY;
@@ -19,6 +20,7 @@ typedef HKEY *PHKEY;
 #define REGKEY_HKLM HKEY_LOCAL_MACHINE
 #define ERROR_SUCCESS 0L
 #define KEY_READ 0x20019
+#define KEY_CREATE_SUB_KEY 0x0004
 #define REG_DWORD 4
 #define TRUE 1
 #define FALSE 0
@@ -32,8 +34,12 @@ static BOOL _GetRegistryKey(HKEY key_root, const char *key_name, DWORD reg_type,
 {
     HKEY hApp = 0;
     DWORD dwType = reg_type, dwSize = dest_size;
-    if (RegOpenKeyExA(key_root, "SOFTWARE", 0, KEY_READ, &hApp) != ERROR_SUCCESS)
+    if (key_name[0] == '\\') {
+        if (RegOpenKeyExA(key_root, "SOFTWARE", 0, KEY_READ | KEY_CREATE_SUB_KEY, &hApp) != ERROR_SUCCESS)
+            return FALSE;
+    } else if (RegOpenKeyExA(key_root, "SOFTWARE", 0, KEY_READ, &hApp) != ERROR_SUCCESS) {
         return FALSE;
+    }
     RegQueryValueExA(hApp, key_name, 0, &dwType, dest, &dwSize);
     RegCloseKey(hApp);
     return TRUE;

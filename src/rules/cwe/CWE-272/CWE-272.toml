@@ -1,0 +1,27 @@
+[metadata]
+id = "CWE-272"
+type = "weakness"
+category = "CWE"
+number = 272
+title = "Least privilege violation"
+description = """
+A program that writes registry keys only an administrator may write needs
+administrator rights to run, so every user runs it elevated. On Windows,
+writing under HKEY_LOCAL_MACHINE or HKEY_CLASSES_ROOT (creating a key,
+setting or deleting a value, or opening a key with a write right) is such a
+write. Per-user settings belong under HKEY_CURRENT_USER. Reading under
+HKEY_LOCAL_MACHINE needs no elevated rights and is not reported.
+"""
+severity = "High"
+likelihood = "Probable"
+priority = "P6"
+level = "L2"
+cert_version = "Custom"
+last_modified = "Oct 13, 2026"
+
+[rules.cwe.CWE-272]
+enabled = true
+
+[references]
+wiki = "https://cwe.mitre.org/data/definitions/272.html"
+cwe = ["CWE-272"]

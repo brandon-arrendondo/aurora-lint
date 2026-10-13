@@ -920,7 +920,8 @@ impl RuleRegistry {
         registry.register(Box::new(super::brules::brule060::Brule060));
         registry.register(Box::new(super::brules::brule065::Brule065));
         registry.register(Box::new(super::cwe::cwe327::Cwe327::new()));
-        registry.register(Box::new(super::cwe::cwe428::Cwe428::new()));
+        registry.register(Box::new(super::cwe::cwe272::Cwe272::new()));
+        registry.register(Box::new(super::cwe::cwe428::Cwe428));
         registry.register(Box::new(super::cwe::cwe666::Cwe666));
         registry.register(Box::new(con39_c::Con39C::default()));
         registry.register(Box::new(con43_c::Con43C));

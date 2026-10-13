@@ -8247,3 +8247,326 @@ fn mem01_the_macro_definition_in_force_at_the_call_decides() {
     assert_eq!(mem01_macro_scope_findings("undefined_before_the_call"), 1);
     assert_eq!(mem01_macro_scope_findings("redefined_after_the_call"), 0);
 }
+
+/// CWE-272 reads a mask or root key spelled as a macro from the scanned
+/// file's own definition first, then only from headers the file can reach,
+/// and never by which of several definitions was read first: (a) the file's
+/// own `APP_ACCESS (KEY_READ)` wins over an unrelated header's KEY_WRITE;
+/// (b) an unrelated header that disagrees with the included one changes
+/// nothing, whichever directory it sits in; (c) a header the file never
+/// includes does not apply. An included write mask or root still reports.
+/// (d) A redefinition counts from its line; (e) one in every arm of a
+/// conditional with an `#else` replaces the header's; (f) a default-value
+/// `#ifndef` block, numeric or null-pointer, is not an include guard, while
+/// one enclosing the whole file is.
+#[test]
+fn cwe272_macro_masks_and_roots_come_from_the_file_and_its_includes() {
+    const HEAD: &str = "typedef void *HKEY; typedef long LONG; typedef unsigned long DWORD;\n\
+         #define HKEY_LOCAL_MACHINE ((HKEY)(unsigned long)0x80000002)\n\
+         #define HKEY_CURRENT_USER ((HKEY)(unsigned long)0x80000001)\n\
+         #define KEY_READ 0x20019\n\
+         #define KEY_WRITE 0x20006\n\
+         #define KEY_SET_VALUE 0x0002\n\
+         LONG RegOpenKeyExA(HKEY, const char *, DWORD, DWORD, HKEY *);\n";
+    // (relative path, contents) per file; returns the findings' lines in a.c.
+    let scan = |files: &[(&str, String)]| -> Vec<u64> {
+        let dir = tempfile::tempdir().unwrap();
+        for (path, text) in files {
+            let path = dir.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        let out = dir.path().join("out.json");
+        let root = dir.path().to_str().unwrap();
+        let (code, _, stderr) =
+            run_aurora_lint(&[root, "--rules", "CWE-272", "-e", out.to_str().unwrap()]);
+        assert!(code == 0 || code == 1, "stderr: {stderr}");
+        let found: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        let mut lines: Vec<u64> = found.iter().map(|v| v["line"].as_u64().unwrap()).collect();
+        lines.sort_unstable();
+        lines
+    };
+    let call = |head: &str, mask: &str, root: &str| {
+        format!(
+            "{HEAD}{head}void f(void) {{ HKEY k; RegOpenKeyExA({root}, \"S\", 0, {mask}, &k); }}\n"
+        )
+    };
+    let line_of_call = HEAD.lines().count() as u64 + 2;
+
+    // (a) The file's own definition wins.
+    let own = call(
+        "#define APP_ACCESS (KEY_READ)\n",
+        "APP_ACCESS",
+        "HKEY_LOCAL_MACHINE",
+    );
+    assert!(scan(&[
+        ("a.c", own),
+        ("zzz/u.h", "#define APP_ACCESS KEY_WRITE\n".into())
+    ])
+    .is_empty());
+    let own_root = call("#define ROOTK (HKEY_CURRENT_USER)\n", "KEY_WRITE", "ROOTK");
+    assert!(scan(&[
+        ("a.c", own_root),
+        ("zzz/u.h", "#define ROOTK HKEY_LOCAL_MACHINE\n".into())
+    ])
+    .is_empty());
+
+    // (b) An unrelated, disagreeing header changes nothing, wherever it sits.
+    for unrelated in ["aaa/u.h", "other/u.h"] {
+        let a = call(
+            "#include \"inc/app.h\"\n",
+            "APP_ACCESS",
+            "HKEY_LOCAL_MACHINE",
+        );
+        let found = scan(&[
+            ("a.c", a),
+            ("inc/app.h", "#define APP_ACCESS (KEY_READ)\n".into()),
+            (
+                unrelated,
+                "#define APP_ACCESS (KEY_READ | KEY_SET_VALUE)\n".into(),
+            ),
+        ]);
+        assert!(found.is_empty(), "{unrelated}: {found:?}");
+    }
+
+    // (c) A header the file never includes does not apply.
+    let bare = call("", "APP_ACCESS", "HKEY_LOCAL_MACHINE");
+    assert!(scan(&[
+        ("a.c", bare),
+        ("zzz/u.h", "#define APP_ACCESS KEY_WRITE\n".into())
+    ])
+    .is_empty());
+
+    // An included write mask, or root key, reports.
+    let a = call(
+        "#include \"inc/app.h\"\n",
+        "APP_ACCESS",
+        "HKEY_LOCAL_MACHINE",
+    );
+    assert_eq!(
+        scan(&[
+            ("a.c", a),
+            ("inc/app.h", "#define APP_ACCESS KEY_WRITE\n".into())
+        ]),
+        vec![line_of_call]
+    );
+    let a = call("#include \"inc/app.h\"\n", "KEY_WRITE", "APP_ROOT");
+    assert_eq!(
+        scan(&[
+            ("a.c", a),
+            (
+                "inc/app.h",
+                "#define APP_ROOT (HKEY_LOCAL_MACHINE)\n".into()
+            )
+        ]),
+        vec![line_of_call]
+    );
+
+    // (d) The file's own redefinition counts only from where it is: after
+    // the call the header's write mask is still in force there, before it
+    // the file's read replaces it.
+    let after = format!(
+        "{}#undef APP_ACCESS\n#define APP_ACCESS KEY_READ\n",
+        call(
+            "#include \"inc/app.h\"\n",
+            "APP_ACCESS",
+            "HKEY_LOCAL_MACHINE"
+        )
+    );
+    assert_eq!(
+        scan(&[
+            ("a.c", after),
+            ("inc/app.h", "#define APP_ACCESS KEY_WRITE\n".into())
+        ]),
+        vec![line_of_call]
+    );
+    let before = call(
+        "#include \"inc/app.h\"\n#undef APP_ACCESS\n#define APP_ACCESS KEY_READ\n",
+        "APP_ACCESS",
+        "HKEY_LOCAL_MACHINE",
+    );
+    assert!(scan(&[
+        ("a.c", before),
+        ("inc/app.h", "#define APP_ACCESS KEY_WRITE\n".into())
+    ])
+    .is_empty());
+
+    // (e) A conditional whose every arm, `#else` included, redefines the
+    // name leaves the header's definition in no build; without the `#else`
+    // a build that takes no arm keeps it.
+    let header = "#define APP_ACCESS KEY_WRITE\n#define APP_ROOT HKEY_LOCAL_MACHINE\n";
+    let redefine = |name: &str, body: &str, with_else: bool| {
+        let arm = format!("#undef {name}\n#define {name} {body}\n");
+        let other = if with_else {
+            format!("#else\n{arm}")
+        } else {
+            String::new()
+        };
+        format!("#include \"inc/app.h\"\n#ifdef X\n{arm}{other}#endif\n")
+    };
+    for (name, body, mask, root) in [
+        ("APP_ACCESS", "KEY_READ", "APP_ACCESS", "HKEY_LOCAL_MACHINE"),
+        ("APP_ROOT", "HKEY_CURRENT_USER", "KEY_WRITE", "APP_ROOT"),
+    ] {
+        for (with_else, reports) in [(true, false), (false, true)] {
+            let a = call(&redefine(name, body, with_else), mask, root);
+            let found = scan(&[("a.c", a), ("inc/app.h", header.into())]);
+            assert_eq!(
+                found.len(),
+                usize::from(reports),
+                "{name}, #else {with_else}"
+            );
+        }
+    }
+
+    // (f) A file-level `#ifndef` that supplies a default is not an include
+    // guard: where the header defined the name, its write still stands.
+    let default = call(
+        "#include \"inc/app.h\"\n#ifndef APP_ACCESS\n#define APP_ACCESS KEY_READ\n#endif\n",
+        "APP_ACCESS",
+        "HKEY_LOCAL_MACHINE",
+    );
+    assert_eq!(
+        scan(&[("a.c", default), ("inc/app.h", header.into())]).len(),
+        1
+    );
+    // Nor is one whose default is a number or a null pointer.
+    for default in ["1", "(void *)0"] {
+        let block = call(
+            &format!(
+                "#include \"inc/app.h\"\n#ifndef APP_ACCESS\n#define APP_ACCESS {default}\n#endif\n"
+            ),
+            "APP_ACCESS",
+            "HKEY_LOCAL_MACHINE",
+        );
+        assert_eq!(
+            scan(&[("a.c", block), ("inc/app.h", header.into())]).len(),
+            1,
+            "{default}"
+        );
+    }
+    // A guard enclosing the whole file, after a licence comment and with a
+    // numeric define, is still a guard: the redefinition inside it replaces
+    // the header's write in every build. With code after its `#endif` it is
+    // a conditional like any other, and the header's write stands.
+    for (tail, reports) in [("", 0), ("int after;\n", 1)] {
+        let guarded = format!(
+            "/* Copyright\n   Licence text\n */\n#ifndef A_C\n#define A_C 1\n{HEAD}\
+             #include \"inc/app.h\"\n#undef APP_ACCESS\n#define APP_ACCESS KEY_READ\n\
+             void f(void) {{ HKEY k; RegOpenKeyExA(HKEY_LOCAL_MACHINE, \"S\", 0, APP_ACCESS, &k); }}\n\
+             #endif\n{tail}"
+        );
+        assert_eq!(
+            scan(&[("a.c", guarded), ("inc/app.h", header.into())]).len(),
+            reports,
+            "{tail:?}"
+        );
+    }
+}
+
+/// CWE-272 reads a mask or root key through macros whose definitions name
+/// each other in a cycle, fan out into many `#if` alternatives at every
+/// level, or define one name in many conditionals, in time linear in the
+/// definitions: each finishes well inside the bound, and a cycle that never reaches a write or a privileged key accuses
+/// nothing.
+#[test]
+fn cwe272_cyclic_and_fanned_out_macros_finish_quickly() {
+    const HEAD: &str = "typedef void *HKEY; typedef long LONG; typedef unsigned long DWORD;\n\
+         #define HKEY_LOCAL_MACHINE ((HKEY)(unsigned long)0x80000002)\n\
+         #define KEY_READ 0x20019\n\
+         #define KEY_WRITE 0x20006\n\
+         LONG RegOpenKeyExA(HKEY, const char *, DWORD, DWORD, HKEY *);\n";
+    let call = |root: &str, mask: &str| {
+        format!("void f(void) {{ HKEY k; RegOpenKeyExA({root}, \"S\", 0, {mask}, &k); }}\n")
+    };
+    let mut fan = String::new();
+    for i in 0..12 {
+        for j in 0..6 {
+            let directive = if j == 0 {
+                format!("#if C{i}")
+            } else {
+                format!("#elif C{i}_{j}")
+            };
+            fan.push_str(&format!("{directive}\n#define X{i} (X{} | Y{j})\n", i + 1));
+        }
+        fan.push_str("#endif\n");
+    }
+    // One name defined in many conditionals, used after each.
+    let mut conditional = String::new();
+    for i in 0..1500 {
+        conditional.push_str(&format!(
+            "#ifdef Z{i}\n#define M K{i}\n#endif\nvoid g{i}(void) {{ use(M); }}\n"
+        ));
+    }
+    let cases = [
+        (
+            "#ifdef X\n#define A B\n#else\n#define A (B)\n#endif\n\
+             #ifdef Y\n#define B A\n#else\n#define B (A)\n#endif\n"
+                .to_string(),
+            call("HKEY_LOCAL_MACHINE", "A"),
+            false,
+        ),
+        (
+            "#ifdef X\n#define A B\n#else\n#define A B | (B|A)\n#endif\n\
+             #ifdef Y\n#define B A\n#else\n#define B (A|B)\n#endif\n"
+                .to_string(),
+            call("HKEY_LOCAL_MACHINE", "A"),
+            false,
+        ),
+        (
+            "#ifdef X\n#define R S\n#else\n#define R (S)\n#endif\n\
+             #ifdef Y\n#define S R\n#else\n#define S ((HKEY)R)\n#endif\n"
+                .to_string(),
+            call("R", "KEY_WRITE"),
+            false,
+        ),
+        (
+            format!("{fan}#define X12 KEY_READ\n"),
+            call("HKEY_LOCAL_MACHINE", "X0"),
+            false,
+        ),
+        (
+            format!("{fan}#define X12 KEY_WRITE\n"),
+            call("HKEY_LOCAL_MACHINE", "X0"),
+            true,
+        ),
+        (
+            format!("{conditional}#ifdef W\n#define M KEY_WRITE\n#endif\n"),
+            call("HKEY_LOCAL_MACHINE", "M"),
+            true,
+        ),
+    ];
+    for (macros, body, reports) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.c"), format!("{HEAD}{macros}{body}")).unwrap();
+        let out = dir.path().join("out.json");
+        let mut child = Command::new(aurora_lint_bin())
+            .args([
+                dir.path().to_str().unwrap(),
+                "--rules",
+                "CWE-272",
+                "-e",
+                out.to_str().unwrap(),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if started.elapsed() > std::time::Duration::from_secs(30) {
+                child.kill().unwrap();
+                panic!("no answer in 30 s for:\n{macros}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(matches!(status.code(), Some(0 | 1)), "{macros}");
+        let found: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        assert_eq!(!found.is_empty(), reports, "{macros}");
+    }
+}

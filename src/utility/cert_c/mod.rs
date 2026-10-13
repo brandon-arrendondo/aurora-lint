@@ -67,6 +67,9 @@ pub mod pointer_typing;
 /// comments told apart from code, with `#`/`##`-operand and
 /// unevaluated-operand marks.
 pub mod pp_tokens;
+/// Win32 registry calls that take a root key, and whether a call asks for
+/// write access, so a least-privilege rule tells an HKLM write from a read.
+pub mod registry_access;
 /// Whether a stored function result is tested against the value that
 /// signals the function's failure, by resolved identity and in a test
 /// context -- the question ERR33-C asks of every assigned result.

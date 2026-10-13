@@ -36,6 +36,9 @@ pub type ArmSets = Vec<Vec<(String, bool)>>;
 pub struct DefinitionFacts {
     /// The definition's `#if` arm assumptions; empty when no arm constrains it.
     pub arms: Vec<(String, bool)>,
+    /// The definition is `static`: only its own file can call it.
+    #[serde(default)]
+    pub internal_linkage: bool,
     /// This definition's share of [`FunctionSummary::frees_params`], as its
     /// own body establishes it.
     pub frees: HashSet<usize>,
@@ -79,6 +82,7 @@ impl DefinitionFacts {
     fn own(summary: &FunctionSummary, arms: Vec<(String, bool)>) -> Self {
         Self {
             arms,
+            internal_linkage: summary.has_internal_linkage,
             frees: summary.frees_params.clone(),
             unconditional_frees: summary.unconditional_frees_params.clone(),
             pointee_frees: summary.frees_param_pointees.clone(),
@@ -811,6 +815,19 @@ pub struct FunctionSummary {
     /// what MEM06-C calls sensitive.
     #[serde(default)]
     pub credential_sink_params: HashSet<usize>,
+    /// Parameter indices the body hands, as the root key, to a Win32
+    /// registry call that asks for write access
+    /// (`registry_access::root_key_call`), each with the call's name: a
+    /// callee spelled as a function, not a local or parameter, that this
+    /// file does not define or replace (`credit_registry_write_params`). The
+    /// rule re-checks the name against the project's own definitions at each
+    /// hop. A wrapper whose parameter only reaches a read
+    /// (`RegOpenKeyExA(root, ..., KEY_READ, ...)`) has no entry. Direct calls only: a least-privilege
+    /// rule walks the wrapper chain itself, through `param_passthroughs` and
+    /// forwarding macros, and asks each hop this. A MAY fact: one call that
+    /// writes on some path is enough.
+    #[serde(default)]
+    pub registry_write_root_params: HashMap<usize, String>,
     /// Parameter indices whose pages this function locks into memory on
     /// every path: the parameter is handed unconditionally to `mlock`/
     /// `VirtualLock` at argument 0, or to another function that locks it.
@@ -1233,6 +1250,7 @@ pub fn compute_summaries(
         arms: crate::analyze::macro_expand::collect_function_macro_arms(source),
         scope: crate::analyze::side_effects::FileScope::of(root, source),
         defined_macros: crate::utility::cert_c::ast_utils::DefinedMacroNames::of(source),
+        registry: RegistryFileFacts::default(),
     };
 
     collect_function_summaries(
@@ -1258,6 +1276,7 @@ struct EffectContext<'t> {
     arms: HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>,
     scope: crate::analyze::side_effects::FileScope<'t>,
     defined_macros: crate::utility::cert_c::ast_utils::DefinedMacroNames<'t>,
+    registry: RegistryFileFacts,
 }
 
 /// The callee names that overwrite their first argument's pointee in this
@@ -1351,6 +1370,7 @@ fn collect_function_summaries(
                     &effect_ctx.arms,
                     &effect_ctx.defined_macros,
                     clearing_names,
+                    &effect_ctx.registry,
                 );
                 summary.effects = crate::analyze::side_effects::collect_direct_effects(
                     &current,
@@ -1481,6 +1501,7 @@ fn analyze_function(
     macro_arms: &HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>,
     defined_macros: &crate::utility::cert_c::ast_utils::DefinedMacroNames<'_>,
     clearing_names: &HashSet<String>,
+    registry: &RegistryFileFacts,
 ) -> FunctionSummary {
     // Internal linkage: `static` storage class at file scope. A direct-child
     // scan, not a text one, so a `static` in the body or in a parameter type
@@ -1694,6 +1715,7 @@ fn analyze_function(
         }
         credit_clears_params(&sweep.calls, source, &params, clearing_names, &mut summary);
         credit_credential_facts(func_node, &body, &sweep.calls, source, &mut summary);
+        credit_registry_write_params(func_node, &sweep.calls, source, registry, &mut summary);
         summary.definitions = vec![DefinitionFacts::own(&summary, arms)];
 
         // Compute return value range for integer-returning functions (only when VRA is needed)
@@ -5093,6 +5115,12 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, mut summary: Functi
     existing
         .credential_sink_params
         .extend(summary.credential_sink_params);
+    for (idx, call) in summary.registry_write_root_params {
+        existing
+            .registry_write_root_params
+            .entry(idx)
+            .or_insert(call);
+    }
     // MUST facts, intersected: a lock or a process-wide protection is a
     // guarantee MEM06-C credits against a finding, so it holds for the name
     // only if every definition offers it. A definition that skips the lock
@@ -5437,6 +5465,126 @@ fn credit_clears_params(
         let arg_name = target.utf8_text(source.as_bytes()).unwrap_or("");
         if let Some(idx) = params.iter().position(|p| !p.is_empty() && p == arg_name) {
             summary.clears_params.insert(idx);
+        }
+    }
+}
+
+/// What `credit_registry_write_params` reads from the whole file, found the
+/// first time any body in it calls a registry API and shared by every later
+/// one: the file's own object-like macros in order, and each callee name's
+/// replacement answer. Per function, both would cost a pass over the file
+/// for every function that calls the API.
+#[derive(Default)]
+struct RegistryFileFacts {
+    macros: std::cell::OnceCell<crate::analyze::check_macros::ObjectMacroTimeline>,
+    replaced: std::cell::RefCell<HashMap<String, bool>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many whole-file reads `credit_registry_write_params` made on this
+    /// thread: the macro timeline built, or a callee name's replacement
+    /// answer found. A test counts them, since what must hold is one read
+    /// per file and name however many functions call the API.
+    static REGISTRY_FILE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Credit `registry_write_root_params`: each parameter the body hands, as
+/// argument 0, to a Win32 registry call that asks for write access. The
+/// callee is the Win32 API only when its spelling names the function, not a
+/// local or parameter of that name (`noreturn::called_function_name`), and
+/// this file neither defines it in every build nor replaces it with a macro
+/// (`noreturn::library_function_replaced_in_every_build`, ADR-0006). What the prescan cannot
+/// see from one file -- the project defining the name elsewhere, or an
+/// object-like project macro of that name -- is checked by the rule at each
+/// hop, against the recorded name. A mask term resolves through the file's
+/// own macros in force at the call: an alias (`#define APP_ACCESS
+/// KEY_WRITE`) or an object-like replacement list (`#define M (KEY_READ |
+/// KEY_SET_VALUE)`), each alternative an `#if` arm leaves counting.
+fn credit_registry_write_params(
+    func_node: &Node,
+    calls: &[Node],
+    source: &str,
+    facts: &RegistryFileFacts,
+    summary: &mut FunctionSummary,
+) {
+    use crate::analyze::noreturn::{
+        called_function_name, library_function_replaced_in_every_build,
+    };
+    use crate::utility::cert_c::registry_access;
+
+    let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("");
+    // Found once a registry call is in the body: the tree root and the
+    // parameter keys.
+    let mut body: Option<(Node, Vec<Option<String>>)> = None;
+    for call in calls {
+        let Some(function) = call.child_by_field_name("function") else {
+            continue;
+        };
+        // The spelling first: resolving the callee walks its scopes.
+        if registry_access::root_key_call(text(&function)).is_none() {
+            continue;
+        }
+        let Some(name) = called_function_name(call, source) else {
+            continue;
+        };
+        let Some(access) = registry_access::root_key_call(&name) else {
+            continue;
+        };
+        let (root, param_keys) = body.get_or_insert_with(|| {
+            let root = crate::utility::cert_c::ast_utils::tree_root(func_node);
+            let keys = parameter_identifiers(func_node)
+                .iter()
+                .map(|id| id.map(|id| object_key(&root, &id, source)))
+                .collect();
+            (root, keys)
+        });
+        let is_replaced = *facts
+            .replaced
+            .borrow_mut()
+            .entry(name.clone())
+            .or_insert_with(|| {
+                #[cfg(test)]
+                REGISTRY_FILE_READS.with(|n| n.set(n.get() + 1));
+                library_function_replaced_in_every_build(root, source, &name, None, None)
+            });
+        if is_replaced {
+            continue;
+        }
+        let Some(arguments) = call.child_by_field_name("arguments") else {
+            continue;
+        };
+        let args: Vec<Node> = arguments
+            .named_child_nodes()
+            .filter(|a| a.kind() != "comment")
+            .collect();
+        let arg_texts: Vec<&str> = args.iter().map(|a| text(a).trim()).collect();
+        let line = call.start_position().row + 1;
+        let macros = facts.macros.get_or_init(|| {
+            #[cfg(test)]
+            REGISTRY_FILE_READS.with(|n| n.set(n.get() + 1));
+            crate::analyze::check_macros::ObjectMacroTimeline::of(source)
+        });
+        let expand = |t: &str| macros.in_force(t, line).bodies;
+        if !registry_access::call_writes(access, &arg_texts, &expand) {
+            continue;
+        }
+        let Some(root_arg) = args
+            .get(registry_access::ROOT_KEY_ARG)
+            .map(init_state::strip_arg_casts)
+            .filter(|a| a.kind() == "identifier")
+        else {
+            continue;
+        };
+        let arg_key = object_key(root, &root_arg, source);
+        if let Some(idx) = param_keys
+            .iter()
+            .position(|p| p.as_deref() == Some(arg_key.as_str()))
+        {
+            summary
+                .registry_write_root_params
+                .entry(idx)
+                .or_insert(name);
         }
     }
 }
@@ -10541,5 +10689,47 @@ void *extra_leak_marker(void){
             summaries["wipe_second"].clears_params,
             HashSet::from([1usize])
         );
+    }
+
+    /// The registry facts are read once per file, not once per function that
+    /// calls the API: one timeline and one replacement answer per callee name
+    /// however many functions call it, and each function that writes through
+    /// its parameter is still credited. Counted rather than timed, so the
+    /// bound holds on any machine and a per-function read still fails it.
+    #[test]
+    fn many_registry_callers_read_the_file_once() {
+        let mut code = String::from(
+            "typedef void *HKEY; typedef long LONG; typedef unsigned long DWORD;\n\
+             #define HKEY_LOCAL_MACHINE ((HKEY)(unsigned long)0x80000002)\n\
+             #define KEY_READ 0x20019\n#define KEY_WRITE 0x20006\n\
+             LONG RegOpenKeyExA(HKEY, const char *, DWORD, DWORD, HKEY *);\n\
+             LONG RegCreateKeyA(HKEY, const char *, HKEY *);\n",
+        );
+        for i in 0..300 {
+            code.push_str(&format!(
+                "void g{i}(HKEY *h) {{ RegOpenKeyExA(HKEY_LOCAL_MACHINE, \"S\", 0, KEY_READ, h); }}\n"
+            ));
+            if i % 30 == 0 {
+                code.push_str(&format!(
+                    "void w{i}(HKEY r) {{ HKEY k; RegOpenKeyExA(r, \"S\", 0, KEY_WRITE, &k); }}\n\
+                     void c{i}(HKEY r) {{ HKEY k; RegCreateKeyA(r, \"S\", &k); }}\n"
+                ));
+            }
+        }
+        REGISTRY_FILE_READS.with(|n| n.set(0));
+        let summaries = parse_and_summarize(&code);
+        // The timeline, then one answer for each of the two callee names.
+        assert_eq!(REGISTRY_FILE_READS.with(|n| n.get()), 3);
+        for i in (0..300).step_by(30) {
+            assert_eq!(
+                summaries[&format!("w{i}")].registry_write_root_params,
+                HashMap::from([(0usize, "RegOpenKeyExA".to_string())])
+            );
+            assert_eq!(
+                summaries[&format!("c{i}")].registry_write_root_params,
+                HashMap::from([(0usize, "RegCreateKeyA".to_string())])
+            );
+        }
+        assert!(summaries["g0"].registry_write_root_params.is_empty());
     }
 }

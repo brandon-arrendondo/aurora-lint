@@ -3,6 +3,10 @@
 # To modify, edit the individual TOML files and rebuild
 # Full metadata is in individual rule TOML files
 
+[rules.cwe.CWE-272]
+enabled = true
+
+
 [rules.cwe.CWE-327]
 enabled = true
 
