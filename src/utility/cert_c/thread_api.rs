@@ -30,7 +30,9 @@
 //! profile's names are not shadowed this way: a project that carries the
 //! RTOS kernel's source defines them as the profile describes.
 
+use crate::analyze::check_macros::collect_conditional_macro_names;
 use crate::analyze::context::ScopedTable;
+use crate::analyze::dead_regions::DeadRegions;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::points_to::{lvalue_of, LValue};
 use crate::settings::threads::{
@@ -41,6 +43,8 @@ use crate::utility::cert_c::ast_utils::{
     get_node_text, resolve_identifier_binding, resolve_identifier_declarator, IdentifierBinding,
 };
 use crate::utility::cert_c::node_children::NodeChildren;
+use crate::utility::cert_c::pp_tokens;
+use lang_parsing_substrate::query;
 use std::fmt;
 use tree_sitter::Node;
 
@@ -802,11 +806,15 @@ fn defined_elsewhere(project: &ProjectFunctions, name: &str) -> bool {
 /// definition by that name, with any linkage, or a `static` declaration of
 /// one (whose definition must follow in this file). A plain prototype still
 /// declares the library's function. File-scope declarations only, through
-/// preprocessor groups, never into a body.
+/// preprocessor groups, never into a body. A macro of that name in force
+/// at `node` is the project's own definition too ([`macro_replaces`]).
 fn file_defines(node: &Node, name: &str, source: &str) -> bool {
     let mut root = *node;
     while let Some(parent) = root.parent() {
         root = parent;
+    }
+    if macro_replaces(&root, node, name, source) {
+        return true;
     }
     let mut stack = vec![root];
     while let Some(scope) = stack.pop() {
@@ -834,6 +842,70 @@ fn file_defines(node: &Node, name: &str, source: &str) -> bool {
         }
     }
     false
+}
+
+/// Whether a macro named `name`, `#define`d in this file before `node` and
+/// not `#undef`ined since, replaces `name` at `node` with something other
+/// than the library's function: `#define write(fd, b, n) nb_write(fd, b, n)`
+/// is the project's own definition, the same as a function it defines
+/// (ADR-0006). A replacement list that names `name` itself
+/// (`#define write(fd, b, n) (count++, write(fd, b, n))`) still reaches the
+/// library, since the preprocessor does not expand a macro inside its own
+/// replacement. The last directive before `node` decides, and an `#undef` in
+/// any arm ends the replacement. It counts only when every build that
+/// compiles the file defines it, as for
+/// [`library_function_replaced`](crate::analyze::noreturn::library_function_replaced)
+/// (ADR-0010): not in a region the file proves dead ([`DeadRegions`]), and
+/// not when the file defines the name only inside a live `#if`/`#ifdef` arm
+/// ([`collect_conditional_macro_names`]), since a build without that arm
+/// calls the library function.
+fn macro_replaces(root: &Node, node: &Node, name: &str, source: &str) -> bool {
+    // Most files never define the name: settle that from the text before
+    // walking the tree for directives. White space and line continuations
+    // may separate `define` from the name.
+    let named_after_define = source.match_indices("define").any(|(at, _)| {
+        let rest = source[at + "define".len()..]
+            .trim_start_matches(|c: char| c.is_ascii_whitespace() || c == '\\');
+        rest.strip_prefix(name)
+            .is_some_and(|after| !after.starts_with(|c: char| c == '_' || c.is_alphanumeric()))
+    });
+    if !named_after_define {
+        return false;
+    }
+    let dead = DeadRegions::of(source);
+    let mut replaces = false;
+    for directive in query::find_descendants_of_kinds(
+        *root,
+        &["preproc_def", "preproc_function_def", "preproc_call"],
+    ) {
+        if directive.start_byte() >= node.start_byte() {
+            break;
+        }
+        if dead.contains_node(&directive) {
+            continue;
+        }
+        if directive.kind() == "preproc_call" {
+            let undefines = directive
+                .child_by_field_name("directive")
+                .is_some_and(|d| get_node_text(&d, source).trim() == "#undef")
+                && directive
+                    .child_by_field_name("argument")
+                    .is_some_and(|a| get_node_text(&a, source).trim() == name);
+            if undefines {
+                replaces = false;
+            }
+            continue;
+        }
+        if let Some(define) = pp_tokens::define_at(&directive, source) {
+            if define.name == name {
+                replaces = !define
+                    .tokens()
+                    .iter()
+                    .any(|t| t.kind == pp_tokens::PpKind::Identifier && t.text == name);
+            }
+        }
+    }
+    replaces && !collect_conditional_macro_names(source).contains(name)
 }
 
 /// The function `call` (a `call_expression`) calls, by name: its callee
@@ -1137,5 +1209,73 @@ mod tests {
     fn a_call_result_names_no_object() {
         let o = objects("int *get(void);\nvoid f(void) { use(get()); }");
         assert_eq!(o[0], None);
+    }
+
+    /// What `library_call` reads at each call in `source`, in order.
+    fn library_calls(source: &str) -> Vec<Option<String>> {
+        let tree = parse(source);
+        query::find_descendants_of_kind(tree.root_node(), "call_expression")
+            .iter()
+            .map(|c| library_call(c, source, None).map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn a_macro_of_the_name_is_the_projects_definition() {
+        let calls = library_calls(
+            "void a(int fd) { write(fd, 0, 0); }\n\
+             #define write(fd, b, n) nb_write(fd, b, n)\n\
+             void b(int fd) { write(fd, 0, 0); }\n\
+             #undef write\n\
+             void c(int fd) { write(fd, 0, 0); }\n\
+             #define write nb_write\n\
+             void d(int fd) { write(fd, 0, 0); }",
+        );
+        let write = Some("write".to_string());
+        assert_eq!(calls, [write.clone(), None, write, None]);
+    }
+
+    #[test]
+    fn a_macro_only_some_builds_define_does_not_replace() {
+        let calls = library_calls(
+            "#if 0\n#define write(fd, b, n) nb_write(fd, b, n)\n#endif\n\
+             void a(int fd) { write(fd, 0, 0); }\n\
+             #ifdef USE_NB\n#define write(fd, b, n) nb_write(fd, b, n)\n#endif\n\
+             void b(int fd) { write(fd, 0, 0); }",
+        );
+        let write = Some("write".to_string());
+        assert_eq!(calls, [write.clone(), write]);
+    }
+
+    #[test]
+    fn a_macro_every_build_defines_replaces() {
+        let calls = library_calls(
+            "#ifdef USE_NB\n#define write(fd, b, n) nb_write(fd, b, n)\n\
+             #else\n#define write(fd, b, n) slow_write(fd, b, n)\n#endif\n\
+             void a(int fd) { write(fd, 0, 0); }\n\
+             #  define \\\n  read(fd, b, n) nb_read(fd, b, n)\n\
+             void b(int fd) { read(fd, 0, 0); }",
+        );
+        assert_eq!(calls, [None, None]);
+    }
+
+    #[test]
+    fn a_macro_naming_itself_still_reaches_the_library() {
+        let calls = library_calls(
+            "extern int count;\n\
+             #define write(fd, b, n) (count++, write(fd, b, n))\n\
+             void f(int fd) { write(fd, 0, 0); }",
+        );
+        assert!(calls.contains(&Some("write".to_string())));
+    }
+
+    #[test]
+    fn a_macro_of_a_thread_api_name_performs_no_operation() {
+        let source = "#include <pthread.h>\n\
+                      #define pthread_mutex_lock(m) my_lock(m)\n\
+                      void f(pthread_mutex_t *m) { pthread_mutex_lock(m); }";
+        let tree = parse(source);
+        let calls = query::find_descendants_of_kind(tree.root_node(), "call_expression");
+        assert!(calls.iter().all(|c| thread_op(c, source, None).is_none()));
     }
 }
