@@ -146,6 +146,29 @@ pub struct Con07C {
     /// The project's function definitions in every scanned file, for a
     /// library name the project defines itself.
     project: RefCell<Option<ProjectFunctions>>,
+    /// Per translation unit: what each pointer is proven to point into,
+    /// worked out once per pointer however many writes go through it.
+    pointers: RefCell<PointerFacts>,
+}
+
+/// What [`proven_pointees`] needs about one translation unit beyond the
+/// pointer itself, built once per file.
+#[derive(Debug, Default)]
+struct PointerFacts {
+    /// Every identifier token in a `#define` body: a pointer named in one
+    /// may be retargeted where the tree does not show it.
+    macro_tokens: HashSet<String>,
+    /// [`proven_pointees`] by the pointer's declaration start byte.
+    pointees: HashMap<usize, Option<Vec<String>>>,
+}
+
+/// What [`compound_writes_through_pointers`] found in a function body.
+#[derive(Debug, Default)]
+struct ThroughPointers {
+    /// The shared objects written through a pointer.
+    pointees: Vec<String>,
+    /// The pointers those writes went through.
+    pointers: Vec<String>,
 }
 
 impl CertRule for Con07C {
@@ -177,6 +200,10 @@ impl CertRule for Con07C {
 
         // First pass: collect static variables
         let static_vars = self.collect_static_variables(node, source);
+        *self.pointers.borrow_mut() = PointerFacts {
+            macro_tokens: macro_body_tokens(node, source),
+            pointees: HashMap::new(),
+        };
 
         // Same-file fallback, OR'd with whatever a `-d` prescan already
         // populated via set_project_context (see that method's docs).
@@ -297,7 +324,15 @@ impl Con07C {
         // Check for compound operations on static variables, and on the
         // shared objects a pointer is proven to point into
         let mut static_var_accesses = self.find_static_var_accesses(&body, source, static_vars);
-        let through_pointers = compound_writes_through_pointers(&body, source);
+        let through =
+            compound_writes_through_pointers(&body, source, &mut self.pointers.borrow_mut());
+        // A shared pointer that is only read through is not itself an
+        // object the operation is on
+        static_var_accesses.retain(|name| {
+            !through.pointers.contains(name)
+                || !only_dereferenced_in(&body, name, source, static_vars)
+        });
+        let through_pointers = through.pointees;
         static_var_accesses.extend(through_pointers.iter().cloned());
         static_var_accesses.sort();
         static_var_accesses.dedup();
@@ -649,9 +684,14 @@ fn declaration_is_shared(decl: &Node, source: &str) -> bool {
 /// The shared objects `body` performs a compound operation on through a
 /// pointer: a compound assignment, an increment or decrement, or
 /// `*p = *p + n`, whose target is `*p`, `p[i]`, `p->f` or `*(p + k)`, where
-/// `p` is proven to point into shared objects ([`proven_pointees`]).
-fn compound_writes_through_pointers(body: &Node, source: &str) -> Vec<String> {
-    let mut pointees = Vec::new();
+/// `p` is proven to point into shared objects ([`proven_pointees`]), and
+/// the pointers they went through.
+fn compound_writes_through_pointers(
+    body: &Node,
+    source: &str,
+    facts: &mut PointerFacts,
+) -> ThroughPointers {
+    let mut found = ThroughPointers::default();
     for op in
         query::find_descendants_of_kinds(*body, &["assignment_expression", "update_expression"])
     {
@@ -664,13 +704,72 @@ fn compound_writes_through_pointers(body: &Node, source: &str) -> Vec<String> {
         let Some(pointer) = target.and_then(|t| pointer_through(&t, source)) else {
             continue;
         };
-        if let Some(objects) = proven_pointees(&pointer, source) {
-            pointees.extend(objects);
+        let name = get_node_text(&pointer, source);
+        let Some((decl, declarator)) = resolve_identifier_declarator(&pointer, name, source) else {
+            continue;
+        };
+        let pointees = facts.pointees.entry(decl.start_byte()).or_insert_with(|| {
+            proven_pointees(&decl, &declarator, name, source, &facts.macro_tokens)
+        });
+        if let Some(objects) = pointees {
+            found.pointees.extend(objects.iter().cloned());
+            found.pointers.push(name.to_string());
         }
     }
-    pointees.sort();
-    pointees.dedup();
-    pointees
+    for list in [&mut found.pointees, &mut found.pointers] {
+        list.sort();
+        list.dedup();
+    }
+    found
+}
+
+/// Whether every occurrence of the shared variable `name` in `body` is a
+/// pointer being dereferenced (`*name`, `name[i]`, `name->f`), never the
+/// pointer itself being read or written.
+fn only_dereferenced_in(body: &Node, name: &str, source: &str, static_vars: &StaticVars) -> bool {
+    query::find_descendants_of_kind(*body, "identifier")
+        .into_iter()
+        .filter(|id| get_node_text(id, source) == name && static_vars.resolves(id, name, source))
+        .all(|id| {
+            let mut child = id;
+            while let Some(parent) = child.parent() {
+                match parent.kind() {
+                    "parenthesized_expression" | "cast_expression" => child = parent,
+                    "binary_expression" if parent.child_by_field_name("left") == Some(child) => {
+                        child = parent
+                    }
+                    _ => return pointer_through(&parent, source) == Some(id),
+                }
+            }
+            false
+        })
+}
+
+/// Every identifier token in the body of a `#define` in `root`, apart from
+/// a function-like macro's own parameters.
+fn macro_body_tokens(root: &Node, source: &str) -> HashSet<String> {
+    let tokens = |text: &str| -> Vec<String> {
+        text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .filter(|token| !token.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let mut found = HashSet::new();
+    for def in query::find_descendants_of_kinds(*root, &["preproc_def", "preproc_function_def"]) {
+        let Some(value) = def.child_by_field_name("value") else {
+            continue;
+        };
+        let params = def
+            .child_by_field_name("parameters")
+            .map(|p| tokens(get_node_text(&p, source)))
+            .unwrap_or_default();
+        found.extend(
+            tokens(get_node_text(&value, source))
+                .into_iter()
+                .filter(|token| !params.contains(token)),
+        );
+    }
+    found
 }
 
 /// Whether the assignment `op` to `left` reads what it writes: a compound
@@ -726,42 +825,65 @@ fn pointer_through<'a>(target: &Node<'a>, source: &str) -> Option<Node<'a>> {
     (base.kind() == "identifier").then_some(base)
 }
 
-/// The shared objects `pointer` (an occurrence of a pointer variable) is
-/// proven to point into: every value its declaration (resolved by
-/// declaration, ADR-0006) is ever given -- its initializer and each plain
-/// assignment, pointer arithmetic keeping the object -- is the address of,
-/// or into, a shared object. `None` when the pointer is a parameter, its
-/// address is taken, it has no origin, or any origin is something else
-/// (a thread-local object, another pointer, a call).
-fn proven_pointees(pointer: &Node, source: &str) -> Option<Vec<String>> {
-    let name = get_node_text(pointer, source);
-    let (decl, declarator) = resolve_identifier_declarator(pointer, name, source)?;
-    if decl.kind() != "declaration" || declarator.kind() != "pointer_declarator" {
+/// The shared objects the pointer `name`, declared by `declarator` in
+/// `decl`, is proven to point into: every value it is ever given -- its
+/// initializer and each plain assignment, pointer arithmetic keeping the
+/// object -- is the address of, or into, a shared object. Occurrences are
+/// matched by declaration (ADR-0006), within the declaring block for a
+/// block-scope pointer. `None` when the pointer is a parameter, has external
+/// linkage (another file may retarget it), is named in a macro body, has
+/// its address taken, has no origin, or any origin is something else (a
+/// thread-local object, another pointer, a call).
+fn proven_pointees(
+    decl: &Node,
+    declarator: &Node,
+    name: &str,
+    source: &str,
+    macro_tokens: &HashSet<String>,
+) -> Option<Vec<String>> {
+    if decl.kind() != "declaration"
+        || pointer_derivations(declarator).first() != Some(&"pointer_declarator")
+        || macro_tokens.contains(name)
+    {
         return None;
     }
+    let scope = decl.parent()?;
+    let storage: Vec<&str> = decl
+        .child_nodes()
+        .filter(|c| c.kind() == "storage_class_specifier")
+        .map(|c| get_node_text(&c, source))
+        .collect();
+    let file_scope = scope.kind() == "translation_unit";
+    if storage.contains(&"extern") || (file_scope && !storage.contains(&"static")) {
+        return None;
+    }
+    let declared = declarator_name(declarator)?;
     let mut origins: Vec<Node> = declarator
         .parent()
         .filter(|p| p.kind() == "init_declarator")
         .and_then(|p| p.child_by_field_name("value"))
         .into_iter()
         .collect();
-    let mut root = decl;
-    while let Some(parent) = root.parent() {
-        root = parent;
-    }
-    for occurrence in query::find_descendants_of_kind(root, "identifier") {
-        if get_node_text(&occurrence, source) != name
-            || occurrence == declarator_name(&declarator)?
+    for occurrence in query::find_descendants_of_kind(scope, "identifier") {
+        if occurrence == declared
+            || get_node_text(&occurrence, source) != name
             || resolve_identifier_declarator(&occurrence, name, source)
-                .is_none_or(|(d, _)| d != decl)
+                .is_none_or(|(d, _)| d != *decl)
         {
             continue;
         }
-        let Some(parent) = occurrence.parent() else {
+        // `(p) = ...` and `&(p)` name the pointer as surely as `p` does
+        let mut child = occurrence;
+        let mut parent = occurrence.parent();
+        while let Some(p) = parent.filter(|p| p.kind() == "parenthesized_expression") {
+            child = p;
+            parent = p.parent();
+        }
+        let Some(parent) = parent else {
             continue;
         };
         match parent.kind() {
-            "assignment_expression" if parent.child_by_field_name("left") == Some(occurrence) => {
+            "assignment_expression" if parent.child_by_field_name("left") == Some(child) => {
                 match parent
                     .child_by_field_name("operator")
                     .map(|o| get_node_text(&o, source))
@@ -793,6 +915,29 @@ fn proven_pointees(pointer: &Node, source: &str) -> Option<Vec<String>> {
     Some(objects)
 }
 
+/// The kinds of declarator `declarator` derives its identifier's type by,
+/// the one applied to the identifier first: `[pointer_declarator,
+/// array_declarator]` for `(*p)[4]`, a pointer to an array, and the reverse
+/// for `*p[4]`, an array of pointers.
+fn pointer_derivations(declarator: &Node) -> Vec<&'static str> {
+    let mut kinds = Vec::new();
+    let mut node = *declarator;
+    while node.kind() != "identifier" {
+        let inner = if node.kind() == "parenthesized_declarator" {
+            node.named_child(0)
+        } else {
+            kinds.push(node.kind());
+            node.child_by_field_name("declarator")
+        };
+        let Some(inner) = inner else {
+            break;
+        };
+        node = inner;
+    }
+    kinds.reverse();
+    kinds
+}
+
 /// The identifier a declarator declares.
 fn declarator_name<'a>(declarator: &Node<'a>) -> Option<Node<'a>> {
     let mut node = *declarator;
@@ -800,17 +945,26 @@ fn declarator_name<'a>(declarator: &Node<'a>) -> Option<Node<'a>> {
         if node.kind() == "identifier" {
             return Some(node);
         }
-        node = node.child_by_field_name("declarator")?;
+        node = if node.kind() == "parenthesized_declarator" {
+            node.named_child(0)?
+        } else {
+            node.child_by_field_name("declarator")?
+        };
     }
 }
 
 /// The shared object `value` is the address of or into: `&x`, `&x[i]`,
 /// `&x.f`, an array `x` (which decays to its first element's address), or
 /// any of these plus or minus an offset, `x` resolving by declaration to a
-/// shared object ([`declaration_is_shared`]).
+/// shared object ([`declaration_is_shared`]). Each subscript, and a
+/// decaying `x`, must be of an array `x` is declared as: subscripting a
+/// pointer reaches its pointee, not `x`, and a member's type is not known,
+/// so `&x.f[i]` is not proven.
 fn shared_object_addressed(value: &Node, source: &str) -> Option<String> {
     let value = strip_parens_and_casts(*value);
-    let (object, decays) = match value.kind() {
+    // Each step from `x` to the addressed object, outermost first
+    let mut steps = Vec::new();
+    let object = match value.kind() {
         "binary_expression" => {
             return shared_object_addressed(&value.child_by_field_name("left")?, source)
         }
@@ -828,11 +982,15 @@ fn shared_object_addressed(value: &Node, source: &str) -> Option<String> {
                 {
                     return None;
                 }
+                steps.push(object.kind());
                 object = strip_parens_and_casts(object.child_by_field_name("argument")?);
             }
-            (object, false)
+            object
         }
-        "identifier" => (value, true),
+        "identifier" => {
+            steps.push("subscript_expression");
+            value
+        }
         _ => return None,
     };
     if object.kind() != "identifier" {
@@ -843,8 +1001,14 @@ fn shared_object_addressed(value: &Node, source: &str) -> Option<String> {
     if decl.kind() != "declaration" || !declaration_is_shared(&decl, source) {
         return None;
     }
-    if decays && declarator.kind() != "array_declarator" {
-        return None;
+    let mut derivations = pointer_derivations(&declarator).into_iter();
+    let mut in_member = false;
+    for step in steps.into_iter().rev() {
+        if step == "field_expression" {
+            in_member = true;
+        } else if in_member || derivations.next() != Some("array_declarator") {
+            return None;
+        }
     }
     Some(name.to_string())
 }

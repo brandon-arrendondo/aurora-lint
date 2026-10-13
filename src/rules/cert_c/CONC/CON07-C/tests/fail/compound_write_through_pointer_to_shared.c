@@ -22,8 +22,6 @@ void step(void) { (*cursor)++; }
 
 void bump(int i) { cursor[i] += 2; }
 
-void advance(void) { cursor += 1; }
-
 void count(void) {
   struct stats *s = &counters;
   s->n++;
