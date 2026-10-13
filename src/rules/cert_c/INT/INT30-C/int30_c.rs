@@ -20,6 +20,7 @@ use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
 use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
 use crate::utility::cert_c::std_functions;
+use lang_parsing_substrate::query;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -1888,17 +1889,7 @@ impl Int30C {
             }
         }
 
-        // Look for explicit unsigned indicators in the text
-        if text.contains("unsigned") || text.contains("size_t") || text.contains("uint") {
-            return "unsigned".to_string();
-        }
-
-        // Look for unsigned literals (suffix U or u)
-        if text.ends_with("u")
-            || text.ends_with("U")
-            || text.ends_with("UL")
-            || text.ends_with("ul")
-        {
+        if Self::spells_out_unsigned(node, source) {
             return "unsigned".to_string();
         }
 
@@ -2018,6 +2009,45 @@ impl Int30C {
         }
 
         "unknown".to_string()
+    }
+
+    /// Whether the expression's own text says it is unsigned: a type it spells
+    /// out (a cast, `sizeof(type)`) names an unsigned type, or it ends in a
+    /// `u`-suffixed literal. An identifier or member is typed by its
+    /// declaration instead, never by its spelling (ADR-0006): an `int` named
+    /// `u` is not a `u`-suffixed literal, and one named `buf_size_t` is not a
+    /// `size_t`.
+    fn spells_out_unsigned(node: &Node, source: &str) -> bool {
+        if matches!(node.kind(), "identifier" | "field_expression") {
+            return false;
+        }
+        let names_unsigned_type = query::find_descendants_of_kinds(
+            *node,
+            &["primitive_type", "sized_type_specifier", "type_identifier"],
+        )
+        .iter()
+        .any(|t| {
+            let t = get_node_text(t, source);
+            t.contains("unsigned") || t.contains("size_t") || t.contains("uint")
+        });
+        let last = Self::rightmost_leaf(*node);
+        let unsigned_literal = last.kind() == "number_literal" && {
+            let last = get_node_text(&last, source);
+            last.ends_with('u')
+                || last.ends_with('U')
+                || last.ends_with("UL")
+                || last.ends_with("ul")
+        };
+        names_unsigned_type || unsigned_literal
+    }
+
+    /// The last token of `node`, the one whose text ends `node`'s text.
+    fn rightmost_leaf(node: Node) -> Node {
+        let mut leaf = node;
+        while let Some(last) = leaf.child(leaf.child_count().saturating_sub(1)) {
+            leaf = last;
+        }
+        leaf
     }
 
     /// Check if a variable is declared as unsigned in the containing function
