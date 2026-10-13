@@ -2,7 +2,7 @@ use super::function_summary::FunctionSummary;
 use super::macro_expand::FunctionMacro;
 use super::null_state::NullState;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use tree_sitter::Node;
 
@@ -455,6 +455,56 @@ impl HeaderDependence {
     }
 }
 
+/// Real paths of the headers each header read by
+/// [`IncludeClosure::of_quoted_includes`] includes, keyed by its real path;
+/// `None` for a header refused or unreadable.
+pub type QuotedIncludeCache = Arc<std::sync::Mutex<HashMap<String, Option<Arc<[String]>>>>>;
+
+/// The real paths of the headers `spellings` name beside `includer`, in its
+/// own directory (C11 6.10.2p3); a spelling with no file there is dropped.
+fn quoted_headers_beside(includer: &Path, spellings: Vec<String>) -> Vec<String> {
+    let Some(dir) = includer.parent() else {
+        return Vec::new();
+    };
+    spellings
+        .into_iter()
+        .map(|spelling| dir.join(spelling))
+        .filter(|header| header.is_file())
+        .map(|header| crate::analyze::compile_commands::real_path(&header))
+        .collect()
+}
+
+/// What `header` (a real path) includes by [`quoted_headers_beside`], from
+/// `cache`, or read, admitted and parsed once and then cached. `parser` is
+/// made on first need.
+fn quoted_headers_of(
+    header: &str,
+    cache: &QuotedIncludeCache,
+    parser: &mut Option<Option<crate::parser::CParser>>,
+) -> Option<Arc<[String]>> {
+    if let Some(hit) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(header) {
+        return hit.clone();
+    }
+    let path = Path::new(header);
+    let read = crate::analyze::input_guard::admit(path)
+        .ok()
+        .and_then(|()| {
+            let parser = parser
+                .get_or_insert_with(|| crate::parser::CParser::new().ok())
+                .as_mut()?;
+            let (tree, text) = parser.parse_file(header).ok()?;
+            let spellings =
+                crate::analyze::prescan::live_quoted_include_directives(&tree.root_node(), &text);
+            Some(Arc::from(quoted_headers_beside(path, spellings)))
+        });
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(header.to_string())
+        .or_insert(read)
+        .clone()
+}
+
 /// What one translation unit may include: [`IncludeClosure::of`].
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct IncludeClosure {
@@ -507,42 +557,38 @@ impl IncludeClosure {
     /// disk, to `max_depth` levels: the closure a scan without a search path
     /// still knows. A quoted include not found there, an `<angle>` include
     /// and one in an arm the file proves dead add nothing, so the closure is
-    /// a lower bound. A stopgap for the prescan, which resolves includes only
-    /// when the scan has a search path or forced includes.
-    pub fn of_quoted_includes(root: &Node, source: &str, path: &Path, max_depth: usize) -> Self {
+    /// a lower bound, and so does a header [`input_guard::admit`] refuses,
+    /// which is never parsed. Each header is read once per scan: what it
+    /// includes is kept in `cache` ([`ProjectContext::quoted_include_walk`]).
+    /// A refusal here is not reported; a header the scan itself covers is
+    /// refused and reported by the scan. A stopgap for the prescan, which
+    /// resolves includes only when the scan has a search path or forced
+    /// includes.
+    ///
+    /// [`input_guard::admit`]: crate::analyze::input_guard::admit
+    pub fn of_quoted_includes(
+        root: &Node,
+        source: &str,
+        path: &Path,
+        max_depth: usize,
+        cache: &QuotedIncludeCache,
+    ) -> Self {
         let mut closure = Self::default();
         let file = crate::analyze::compile_commands::real_path(path);
         closure.files.insert(file.clone());
-        let mut parser = crate::parser::CParser::new().ok();
-        let mut frontier: Vec<(PathBuf, Vec<String>)> = vec![(
-            PathBuf::from(&file),
+        let mut parser = None;
+        let mut frontier = quoted_headers_beside(
+            Path::new(&file),
             crate::analyze::prescan::live_quoted_include_directives(root, source),
-        )];
+        );
         for _ in 0..max_depth {
             let mut next = Vec::new();
-            for (includer, spellings) in frontier {
-                let Some(dir) = includer.parent() else {
+            for header in frontier {
+                if !closure.files.insert(header.clone()) {
                     continue;
-                };
-                for spelling in spellings {
-                    let header = dir.join(&spelling);
-                    if !header.is_file() {
-                        continue;
-                    }
-                    let real = crate::analyze::compile_commands::real_path(&header);
-                    if !closure.files.insert(real.clone()) {
-                        continue;
-                    }
-                    let Some(parser) = parser.as_mut() else {
-                        continue;
-                    };
-                    if let Ok((tree, text)) = parser.parse_file(&real) {
-                        let includes = crate::analyze::prescan::live_quoted_include_directives(
-                            &tree.root_node(),
-                            &text,
-                        );
-                        next.push((PathBuf::from(&real), includes));
-                    }
+                }
+                if let Some(headers) = quoted_headers_of(&header, cache, &mut parser) {
+                    next.extend(headers.iter().cloned());
                 }
             }
             if next.is_empty() {
@@ -1168,6 +1214,11 @@ pub struct ProjectContext {
     /// been built must call [`Self::invalidate_side_effects`].
     #[serde(skip)]
     pub(crate) side_effects: Arc<std::sync::OnceLock<SideEffectCell>>,
+    /// What each header [`IncludeClosure::of_quoted_includes`] has read
+    /// includes, shared by every clone so a scan reads a header once. Never
+    /// serialized: it is read from disk at rule time, not a prescan fact.
+    #[serde(skip)]
+    pub(crate) quoted_include_walk: QuotedIncludeCache,
 }
 
 impl ProjectContext {

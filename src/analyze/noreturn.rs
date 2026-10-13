@@ -684,11 +684,12 @@ pub fn library_names_redefined_among(
 ///   header that defines it, or there is no file path to start one from;
 /// - the prescan saw it only outside the project, in a system header.
 ///
-/// With no search path the prescan resolves no includes, so the closure is
-/// rebuilt here from the file's `"quoted"` includes and theirs, looked up in
-/// each includer's own directory (C11 6.10.2p3), as a stopgap until the
-/// prescan resolves those itself. A header reached only through a search
-/// path is then not seen.
+/// The closure is built only when a function-like project macro has the
+/// name. When the prescan resolved no includes at all (`include_edges` is
+/// empty, as in a scan with no search path), it is rebuilt here from the
+/// file's `"quoted"` includes and theirs, looked up in each includer's own
+/// directory (C11 6.10.2p3), as a stopgap until the prescan resolves those
+/// itself. A header reached only through a search path is then not seen.
 ///
 /// A project's external definition in another file is not seen: a `static`
 /// one there is a different function, and the prescan keys a lone `static`
@@ -731,15 +732,19 @@ pub fn library_function_replaced(
     if object_like {
         return true;
     }
+    let Some(arms) = project.function_macro_arms.get(name) else {
+        return false;
+    };
     let Some(path) = file_path else {
         return false;
     };
-    let closure = IncludeClosure::of(&project.include_edges, path)
-        .unwrap_or_else(|| IncludeClosure::of_quoted_includes(root, source, path, 32));
-    project.function_macro_arms.get(name).is_some_and(|arms| {
-        arms.iter()
-            .any(|arm| arm.files.iter().any(|file| closure.may_include(file)))
-    })
+    let closure = if project.include_edges.is_empty() {
+        IncludeClosure::of_quoted_includes(root, source, path, 32, &project.quoted_include_walk)
+    } else {
+        IncludeClosure::of(&project.include_edges, path).unwrap_or_default()
+    };
+    arms.iter()
+        .any(|arm| arm.files.iter().any(|file| closure.may_include(file)))
 }
 
 /// True if `node` is an `expression_statement` calling one of the C standard

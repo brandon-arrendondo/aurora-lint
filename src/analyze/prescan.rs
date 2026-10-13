@@ -1608,6 +1608,7 @@ fn prescan_file_list(
         built_under: Default::default(),
         memory_declarations: crate::settings::memory::declared().clone(),
         side_effects: Default::default(),
+        quoted_include_walk: Default::default(),
         global_object_names: Arc::new(file_scope_names),
         volatile_globals: Arc::new(volatile_globals),
         non_volatile_globals: Arc::new(non_volatile_globals),
