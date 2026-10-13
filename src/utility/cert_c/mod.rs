@@ -1,6 +1,9 @@
 // Utility modules for CERT C rules
 /// Reusable functions for navigating and extracting information from the C AST.
 pub mod ast_utils;
+/// Which automatic object an expression addresses, and the automatic object a
+/// local pointer's value addresses (DCL30-C, TS 17961 addrescape).
+pub mod automatic_storage;
 /// Calls that can block made while a mutex is held on every path to them
 /// (the analysis CON05-C and POS52-C share).
 pub mod blocking_under_lock;

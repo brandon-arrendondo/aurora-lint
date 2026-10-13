@@ -3,23 +3,35 @@
 
 //! DCL30-C: Declare objects with appropriate storage durations
 //!
-//! This rule detects when pointers to automatic storage (local variables) are
-//! returned or assigned to longer-lived storage, causing dangling pointer issues.
+//! Reports the address of an object with automatic storage duration escaping
+//! the call that owns it (TS 17961 5.2, addrescape): returned, or stored in
+//! an object that outlives the call. What is reported is the POINTEE, an
+//! automatic object, never a pointer variable for its name.
 //!
 //! VIOLATIONS:
-//! - return local_array;              // Returning pointer to local
-//! - *ptr_param = local;              // Assigning local to output parameter
-//! - global_ptr = local_array;        // Assigning local to global
+//! - `return buf;` / `return &x;` / `return &s.m;` / `return (int[]){1};`
+//! - `char *p = &buf[1]; return p;`   -- the pointer's value is known
+//! - `global = buf;` / `global = &param;` / `file_static.p = &x;`
+//! - `*out = local;` / `out->p = &x;` -- storage the caller owns
 //!
 //! COMPLIANT:
-//! - void init_array(char *array)    // Pass array as parameter instead
-//! - return malloc(...);              // Return allocated memory
-//! - static char array[10];           // Use static storage for long-lived data
+//! - `return p;` where `p` holds heap, static, a parameter's value, or
+//!   anything the function's body does not decide
+//! - `static char buf[10]; return buf;`
+//! - `global = &x; use(); global = NULL;` -- reset before every return
+//!
+//! The object questions are `utility::cert_c::automatic_storage`'s.
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils;
-use crate::utility::cert_c::node_children::NodeChildren;
+use crate::utility::cert_c::ast_utils::{
+    declaration_has_storage_class, declaration_is_thread_local, get_node_text,
+    resolve_identifier_binding, resolve_identifier_declarator, IdentifierBinding,
+};
+use crate::utility::cert_c::automatic_storage::{
+    automatic_address, names_array_object, pointer_value_origin, AutomaticKind, AutomaticObject,
+};
+use crate::utility::cert_c::guard_dominance::WriteIndex;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -44,853 +56,269 @@ impl CertRule for Dcl30C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-
-        for found in
-            query::find_descendants_of_kinds(*node, &["return_statement", "assignment_expression"])
-        {
-            match found.kind() {
-                // Check return statements for local variable pointers
-                "return_statement" => {
-                    if let Some(violation) = self.check_return_local(&found, source) {
-                        violations.push(violation);
-                    }
-                }
-                // Check assignments for local variables assigned to globals or output params
-                "assignment_expression" => {
-                    if let Some(violation) = self.check_assignment_storage_duration(&found, source)
-                    {
-                        violations.push(violation);
-                    }
-                }
-                _ => {}
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            let Some(body) = func.child_by_field_name("body") else {
+                continue;
+            };
+            let index = WriteIndex::new(&body, source);
+            for found in query::find_descendants_of_kinds(
+                body,
+                &["return_statement", "assignment_expression"],
+            ) {
+                let violation = match found.kind() {
+                    "return_statement" => check_return(&found, source, &index),
+                    _ => check_store(&found, &body, source, &index),
+                };
+                violations.extend(violation);
             }
         }
-
         violations
     }
 }
 
-impl Dcl30C {
-    /// Recursively collect file-scope declarations, including inside preprocessor blocks.
-    fn collect_file_scope_declarations<'a>(node: &Node<'a>, decls: &mut Vec<Node<'a>>) {
-        for child in node.child_nodes() {
-            if child.kind() == "declaration" {
-                decls.push(child);
-            } else if child.kind().starts_with("preproc_") {
-                Self::collect_file_scope_declarations(&child, decls);
-            }
-        }
+/// The automatic object whose address `value` is when `site` executes: read
+/// from the expression, or, for a pointer variable, from the value its body
+/// last stored in it on every path to `site`.
+fn escaping_object<'a>(
+    value: &Node<'a>,
+    site: &Node<'a>,
+    source: &str,
+    index: &WriteIndex,
+) -> Option<AutomaticObject<'a>> {
+    automatic_address(value, source).or_else(|| pointer_value_origin(value, site, source, index))
+}
+
+/// `return E;` where E is the address of an automatic object of this call.
+fn check_return(ret: &Node, source: &str, index: &WriteIndex) -> Option<RuleViolation> {
+    let value = ret
+        .named_children(&mut ret.walk())
+        .find(|c| c.kind() != "comment")?;
+    let object = escaping_object(&value, ret, source, index)?;
+    Some(violation(
+        ret,
+        format!(
+            "Function returns the address of {}, whose lifetime ends when the function returns",
+            describe(&object)
+        ),
+    ))
+}
+
+/// `T = E;` where E is the address of an automatic object of this call and T
+/// outlives it, unless T is reset to something else before every return.
+fn check_store(
+    assign: &Node,
+    body: &Node,
+    source: &str,
+    index: &WriteIndex,
+) -> Option<RuleViolation> {
+    let op = assign.child_by_field_name("operator")?;
+    if get_node_text(&op, source) != "=" {
+        return None;
     }
-
-    /// Check if a return statement returns a pointer to a local variable
-    fn check_return_local(&self, return_node: &Node, source: &str) -> Option<RuleViolation> {
-        // Get the returned expression
-        for child in return_node.child_nodes() {
-            if child.kind() == "identifier" {
-                let var_name = ast_utils::get_node_text(&child, source).to_string();
-
-                // Only flag if the local is a pointer or array type.
-                // Returning a scalar by value copies the value — it is safe and
-                // is NOT what DCL30-C is about.
-                if self.is_local_variable(&child, source)
-                    && self.local_var_is_pointer_or_array(&child, &var_name, source)
-                {
-                    // Don't flag if the pointer was assigned from heap allocation
-                    // (malloc, calloc, realloc, or wrapper functions). Returning
-                    // a heap pointer via a local variable is safe — the allocated
-                    // memory outlives the function scope. This is the standard
-                    // factory/constructor pattern in C.
-                    if self.local_var_is_heap_allocated(&child, &var_name, source) {
-                        return None;
-                    }
-
-                    // Don't flag if the pointer was assigned from a static
-                    // variable's address (e.g., ptrCharString = &staticArray[1]).
-                    // Static storage outlives the function scope.
-                    if self.local_ptr_points_to_static(&child, &var_name, source) {
-                        return None;
-                    }
-
-                    let start_point = return_node.start_position();
-
-                    return Some(RuleViolation {
-                        rule_id: "DCL30-C".to_string(),
-                        severity: Severity::High,
-                        message: format!(
-                            "Function returns pointer to local variable '{}' with automatic storage duration",
-                            var_name
-                        ),
-                        file_path: String::new(),
-                        line: start_point.row + 1,
-                        column: start_point.column + 1,
-                        suggestion: Some(
-                            "Use static storage, allocated memory, or pass output buffer as parameter".to_string()
-                        ),
-                        ..Default::default()
-                    });
-                }
-            }
-        }
-        None
+    let left = assign.child_by_field_name("left")?;
+    let right = assign.child_by_field_name("right")?;
+    let target = outliving_target(&left, source)?;
+    let object = escaping_object(&right, assign, source, index)?;
+    if reset_before_every_return(assign, &left, body, source, index) {
+        return None;
     }
+    Some(violation(
+        assign,
+        format!(
+            "The address of {} is stored in '{}' ({}), which outlives it",
+            describe(&object),
+            compact(get_node_text(&left, source)),
+            target
+        ),
+    ))
+}
 
-    /// Returns true if the local variable named `var_name` is declared as a pointer
-    /// or array type in the enclosing function body.
-    fn local_var_is_pointer_or_array(&self, var_node: &Node, var_name: &str, source: &str) -> bool {
-        // Walk up to the function body
-        let mut current = var_node.parent();
-        let mut function_body: Option<Node> = None;
-        while let Some(node) = current {
-            if node.kind() == "compound_statement" {
-                if let Some(parent) = node.parent() {
-                    if parent.kind() == "function_definition" {
-                        function_body = Some(node);
-                        break;
-                    }
-                }
-            }
-            current = node.parent();
-        }
-        let body = match function_body {
-            Some(b) => b,
-            None => return false,
-        };
-        self.find_pointer_or_array_declaration(&body, var_name, source)
-    }
-
-    /// Check if a local pointer variable was initialized from a heap allocation
-    /// (malloc, calloc, realloc, or wrapper functions). Returning such a pointer
-    /// is safe because the heap memory outlives the function scope.
-    fn local_var_is_heap_allocated(&self, var_node: &Node, var_name: &str, source: &str) -> bool {
-        // Walk up to the function body
-        let mut current = var_node.parent();
-        let mut function_body: Option<Node> = None;
-        while let Some(node) = current {
-            if node.kind() == "compound_statement" {
-                if let Some(parent) = node.parent() {
-                    if parent.kind() == "function_definition" {
-                        function_body = Some(node);
-                        break;
-                    }
-                }
-            }
-            current = node.parent();
-        }
-        let body = match function_body {
-            Some(b) => b,
-            None => return false,
-        };
-        self.find_heap_allocation_for_var(&body, var_name, source)
-    }
-
-    /// Check if a local pointer variable was assigned from the address of a
-    /// `static` local variable (e.g., `ptr = &static_array[i]`). Returning
-    /// such a pointer is safe because static storage outlives the function.
-    fn local_ptr_points_to_static(&self, var_node: &Node, var_name: &str, source: &str) -> bool {
-        let mut current = var_node.parent();
-        let mut function_body: Option<Node> = None;
-        while let Some(node) = current {
-            if node.kind() == "compound_statement" {
-                if let Some(parent) = node.parent() {
-                    if parent.kind() == "function_definition" {
-                        function_body = Some(node);
-                        break;
-                    }
-                }
-            }
-            current = node.parent();
-        }
-        let body = match function_body {
-            Some(b) => b,
-            None => return false,
-        };
-        self.find_static_address_assignment(&body, var_name, source)
-    }
-
-    /// Scan function body for assignments like `var = &something` or
-    /// `var = &something[i]` where `something` is declared `static`.
-    ///
-    /// Uses an explicit stack instead of recursion: an else-if chain nests
-    /// an `if_statement` inside every else clause, so a generated/obfuscated
-    /// chain thousands deep would blow the native call stack if each link
-    /// were a recursive call (the same hostap-style shape that motivated
-    /// an earlier fix). Each stack entry is a "current body" context, mirroring
-    /// the `body` parameter the recursive version rebound on each call.
-    fn find_static_address_assignment(&self, body: &Node, var_name: &str, source: &str) -> bool {
-        let mut stack = vec![*body];
-        while let Some(cur_body) = stack.pop() {
-            for child in cur_body.child_nodes() {
-                if child.kind() == "expression_statement" {
-                    if let Some(expr) = child.child(0) {
-                        if expr.kind() == "assignment_expression" {
-                            if let (Some(left), Some(right)) = (
-                                expr.child_by_field_name("left"),
-                                expr.child_by_field_name("right"),
-                            ) {
-                                let left_text = ast_utils::get_node_text(&left, source);
-                                if left_text == var_name {
-                                    if let Some(src_var) =
-                                        self.extract_address_of_target(&right, source)
-                                    {
-                                        if self.is_static_local(&cur_body, &src_var, source) {
-                                            return true;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if child.kind() == "compound_statement" || child.kind() == "if_statement" {
-                    stack.push(child);
-                }
-            }
-        }
-        false
-    }
-
-    /// Extract the base variable name from an address-of expression.
-    /// `&charString` → Some("charString"), `&charString[1]` → Some("charString")
-    fn extract_address_of_target(&self, node: &Node, source: &str) -> Option<String> {
-        if node.kind() == "pointer_expression" {
-            // &expr — get the operand
-            let text = ast_utils::get_node_text(node, source);
-            if text.starts_with('&') {
-                if let Some(operand) = node.child(1) {
-                    return self.extract_base_identifier(&operand, source);
-                }
-            }
-        }
-        None
-    }
-
-    /// Extract the base identifier from an expression.
-    /// `charString` → Some("charString"), `charString[1]` → Some("charString")
-    fn extract_base_identifier(&self, node: &Node, source: &str) -> Option<String> {
+/// Why `lvalue` outlives this call, or `None` when it does not or is not
+/// known to: it lies in a file-scope, `static`, `extern` or thread-storage
+/// object, or it is reached through a dereference of a parameter (storage
+/// the caller owns). A path through a local pointer reaches storage nothing
+/// here can name, and a local or parameter object itself dies with the call.
+fn outliving_target(lvalue: &Node, source: &str) -> Option<&'static str> {
+    let mut node = strip(*lvalue);
+    let mut through_pointer = false;
+    loop {
         match node.kind() {
-            "identifier" => Some(ast_utils::get_node_text(node, source).to_string()),
-            "subscript_expression" => {
-                // array[index] — get the array part
-                if let Some(arr) = node.child(0) {
-                    self.extract_base_identifier(&arr, source)
-                } else {
-                    None
-                }
-            }
+            "identifier" => break,
             "field_expression" => {
-                // struct.field — get the struct part
-                if let Some(obj) = node.child(0) {
-                    self.extract_base_identifier(&obj, source)
-                } else {
-                    None
-                }
-            }
-            "parenthesized_expression" => {
-                if let Some(inner) = node.child(1) {
-                    self.extract_base_identifier(&inner, source)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-
-    /// Check if `var_name` is declared with `static` storage in the function body.
-    fn is_static_local(&self, body: &Node, var_name: &str, source: &str) -> bool {
-        for child in body.child_nodes() {
-            if child.kind() == "declaration" {
-                if self.declaration_contains_var_by_name(&child, var_name, source) {
-                    let decl_text = ast_utils::get_node_text(&child, source);
-                    return decl_text.contains("static");
-                }
-            }
-            if child.kind() == "compound_statement" {
-                if self.is_static_local(&child, var_name, source) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Search a function body for evidence that `var_name` holds a heap pointer
-    /// or a pointer copied from another (non-local-address) source.
-    fn find_heap_allocation_for_var(&self, body: &Node, var_name: &str, source: &str) -> bool {
-        for child in body.child_nodes() {
-            if child.kind() == "declaration" {
-                if self.declaration_contains_var_by_name(&child, var_name, source) {
-                    // Check initializer for alloc
-                    if self.declaration_has_alloc_initializer(&child, source) {
-                        return true;
-                    }
-                    // If left uninitialized or initialized to NULL, the variable's
-                    // real value comes from a later assignment — check that instead.
-                    // "No initializer at all" must be treated the same as "NULL"
-                    // here: `char **nnames;` declared bare and only ever set via
-                    // `nnames = os_realloc_array(...)` inside a loop is the standard
-                    // realloc-into-local idiom and is just as heap-derived as an
-                    // explicit `= NULL` placeholder.
-                    if self.declaration_var_uninitialized_or_null(&child, var_name, source) {
-                        if self.has_alloc_assignment_in_body(body, var_name, source) {
-                            return true;
-                        }
-                        // Also safe: pointer assigned from struct member access or function call
-                        // (not address-of local). If only assigned from field_expression or
-                        // call_expression, it holds a non-local pointer.
-                        if self.only_assigned_safe_sources(body, var_name, source) {
-                            return true;
-                        }
-                    }
-                }
-            }
-            if child.kind() == "compound_statement" {
-                if self.find_heap_allocation_for_var(&child, var_name, source) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Check whether `var_name`'s own declarator in `decl` (a declaration may
-    /// comma-list several, e.g. `char *if_name, *tmp, **nnames;`) has either
-    /// no initializer at all, or a NULL initializer. Both leave the variable's
-    /// real provenance to a later assignment, which the caller checks next.
-    fn declaration_var_uninitialized_or_null(
-        &self,
-        decl: &Node,
-        var_name: &str,
-        source: &str,
-    ) -> bool {
-        for child in decl.child_nodes() {
-            match child.kind() {
-                "init_declarator" if self.contains_identifier_by_name(&child, var_name, source) => {
-                    return match child.child_by_field_name("value") {
-                        Some(value) => {
-                            let text = ast_utils::get_node_text(&value, source);
-                            text == "NULL" || text == "0" || text == "nullptr"
-                        }
-                        None => true,
-                    };
-                }
-                "pointer_declarator" | "array_declarator" | "identifier"
-                    if self.contains_identifier_by_name(&child, var_name, source) =>
+                if node
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| get_node_text(&op, source) == "->")
                 {
-                    // Plain declarator, no initializer at all.
-                    return true;
+                    through_pointer = true;
                 }
-                _ => {}
+                node = strip(node.child_by_field_name("argument")?);
             }
-        }
-        false
-    }
-
-    /// Scan function body for `var_name = alloc(...)` assignments.
-    ///
-    /// Uses an explicit stack instead of recursion (same hostap-style
-    /// else-if-chain overflow risk as [`Self::find_static_address_assignment`]).
-    /// Each stack entry is a "current body" context, mirroring the `body`
-    /// parameter the recursive version rebound on each call — including the
-    /// consequence/alternative branches, which get queued directly since
-    /// they aren't always a `compound_statement`/`if_statement` themselves
-    /// (e.g. a brace-less `else stmt;`).
-    fn has_alloc_assignment_in_body(&self, body: &Node, var_name: &str, source: &str) -> bool {
-        let mut stack = vec![*body];
-        while let Some(cur_body) = stack.pop() {
-            for child in cur_body.child_nodes() {
-                if child.kind() == "expression_statement" {
-                    if let Some(expr) = child.child(0) {
-                        if expr.kind() == "assignment_expression" {
-                            if let (Some(left), Some(right)) = (
-                                expr.child_by_field_name("left"),
-                                expr.child_by_field_name("right"),
-                            ) {
-                                let left_text = ast_utils::get_node_text(&left, source);
-                                if left_text == var_name && self.is_alloc_expression(&right, source)
-                                {
-                                    return true;
-                                }
-                            }
-                        }
-                    }
+            "subscript_expression" => {
+                let base = strip(node.child_by_field_name("argument")?);
+                if !(base.kind() == "identifier" && names_array_object(&base, source)) {
+                    through_pointer = true;
                 }
-                // Queue if-blocks, etc.
-                if child.kind() == "if_statement" || child.kind() == "compound_statement" {
-                    stack.push(child);
-                }
-                if let Some(consequence) = child.child_by_field_name("consequence") {
-                    stack.push(consequence);
-                }
-                if let Some(alternative) = child.child_by_field_name("alternative") {
-                    stack.push(alternative);
-                }
+                node = base;
             }
-        }
-        false
-    }
-
-    /// Check if all assignments to `var_name` in the body are from safe sources
-    /// (struct member access, function call, NULL) — not from address-of-local.
-    fn only_assigned_safe_sources(&self, body: &Node, var_name: &str, source: &str) -> bool {
-        let mut found_any_assignment = false;
-        for stmt in query::find_descendants_of_kind(*body, "expression_statement") {
-            if let Some(expr) = stmt.child(0) {
-                if expr.kind() == "assignment_expression" {
-                    if let (Some(left), Some(right)) = (
-                        expr.child_by_field_name("left"),
-                        expr.child_by_field_name("right"),
-                    ) {
-                        let left_text = ast_utils::get_node_text(&left, source);
-                        if left_text == var_name {
-                            found_any_assignment = true;
-                            // Unsafe: address-of expression
-                            if right.kind() == "pointer_expression" {
-                                return false;
-                            }
-                            let rt = ast_utils::get_node_text(&right, source);
-                            if rt.starts_with('&') {
-                                return false;
-                            }
-                            // Safe sources: field_expression, call_expression,
-                            // subscript_expression, identifier, NULL
-                        }
-                    }
+            "pointer_expression" => {
+                let op = node.child_by_field_name("operator")?;
+                if get_node_text(&op, source) != "*" {
+                    return None;
                 }
+                through_pointer = true;
+                node = strip(node.child_by_field_name("argument")?);
             }
-        }
-        found_any_assignment
-    }
-
-    /// Check if a declaration has an initializer that is a heap allocation call.
-    fn declaration_has_alloc_initializer(&self, decl: &Node, source: &str) -> bool {
-        for child in decl.child_nodes() {
-            if child.kind() == "init_declarator" {
-                if let Some(value) = child.child_by_field_name("value") {
-                    return self.is_alloc_expression(&value, source);
-                }
-            }
-        }
-        false
-    }
-
-    /// Check if an expression is a heap allocation (malloc, calloc, realloc, or
-    /// wrapper). Handles cast expressions like `(Type *)malloc(...)`.
-    fn is_alloc_expression(&self, node: &Node, source: &str) -> bool {
-        match node.kind() {
-            "call_expression" => {
-                if let Some(func) = node.child_by_field_name("function") {
-                    let func_name = ast_utils::get_node_text(&func, source);
-                    let upper = func_name.to_uppercase();
-                    return func_name == "malloc"
-                        || func_name == "calloc"
-                        || func_name == "realloc"
-                        || func_name == "strdup"
-                        || func_name == "strndup"
-                        || upper.contains("MALLOC")
-                        || upper.contains("CALLOC")
-                        || upper.contains("REALLOC")
-                        || (upper.contains("ALLOC") && !upper.contains("DEALLOC"))
-                        || upper.contains("STRDUP");
-                }
-                false
-            }
-            "cast_expression" => {
-                // (Type *)malloc(...) — unwrap the cast
-                if let Some(value) = node.child_by_field_name("value") {
-                    self.is_alloc_expression(&value, source)
-                } else {
-                    false
-                }
-            }
-            "parenthesized_expression" => {
-                if let Some(inner) = node.child(1) {
-                    self.is_alloc_expression(&inner, source)
-                } else {
-                    false
-                }
-            }
-            "conditional_expression" => {
-                // (cond) ? alloc_expr : NULL — check both branches
-                if let Some(consequence) = node.child_by_field_name("consequence") {
-                    if self.is_alloc_expression(&consequence, source) {
-                        return true;
-                    }
-                }
-                if let Some(alternative) = node.child_by_field_name("alternative") {
-                    if self.is_alloc_expression(&alternative, source) {
-                        return true;
-                    }
-                }
-                false
-            }
-            _ => false,
+            _ => return None,
         }
     }
-
-    /// Search a compound statement for a declaration of `var_name` that is a
-    /// pointer (`*`) or array (`[`) declarator.
-    fn find_pointer_or_array_declaration(&self, body: &Node, var_name: &str, source: &str) -> bool {
-        for child in body.child_nodes() {
-            if child.kind() == "declaration" {
-                if self.declaration_contains_var_by_name(&child, var_name, source) {
-                    // Check the declarator kind: pointer_declarator or array_declarator
-                    // means it is a pointer/array type.
-                    return self.declaration_has_pointer_or_array_declarator(&child);
-                }
-            }
-            if child.kind() == "compound_statement" {
-                if self.find_pointer_or_array_declaration(&child, var_name, source) {
-                    return true;
-                }
-            }
-        }
-        false
+    let name = get_node_text(&node, source);
+    let (decl, declarator) = resolve_identifier_declarator(&node, name, source)?;
+    if declarator.kind() == "function_declarator" {
+        return None;
     }
-
-    /// Check if a declaration declares `var_name` by comparing actual identifier text.
-    fn declaration_contains_var_by_name(
-        &self,
-        decl_node: &Node,
-        var_name: &str,
-        source: &str,
-    ) -> bool {
-        for child in decl_node.child_nodes() {
-            if matches!(
-                child.kind(),
-                "init_declarator" | "array_declarator" | "pointer_declarator" | "identifier"
-            ) {
-                if self.contains_identifier_by_name(&child, var_name, source) {
-                    return true;
-                }
-            }
+    match resolve_identifier_binding(&node, name, source)? {
+        IdentifierBinding::Global(_) => Some("file scope"),
+        IdentifierBinding::Local(_)
+            if declaration_has_storage_class(&decl, "static", source)
+                || declaration_has_storage_class(&decl, "extern", source)
+                || declaration_is_thread_local(&decl, source) =>
+        {
+            Some("static storage")
         }
-        false
+        IdentifierBinding::Parameter(_) if through_pointer => Some("the caller's storage"),
+        _ => None,
     }
+}
 
-    /// True if the declaration node contains a pointer_declarator or array_declarator,
-    /// indicating the declared variable is a pointer or array.
-    fn declaration_has_pointer_or_array_declarator(&self, decl_node: &Node) -> bool {
-        for child in decl_node.child_nodes() {
-            match child.kind() {
-                "pointer_declarator" | "array_declarator" => return true,
-                "init_declarator" => {
-                    // init_declarator wraps the actual declarator
-                    for inner in child.child_nodes() {
-                        if matches!(inner.kind(), "pointer_declarator" | "array_declarator") {
-                            return true;
-                        }
-                    }
-                }
-                _ => {}
-            }
+/// Whether, after the store `assign`, the same target is assigned a value
+/// that is not an automatic address by a statement at the top of the
+/// function body that every return after the store must pass. Then the
+/// address never outlives the call: `g = &x; use(); g = NULL;`. A later
+/// store of another automatic address is no reset.
+fn reset_before_every_return(
+    assign: &Node,
+    left: &Node,
+    body: &Node,
+    source: &str,
+    index: &WriteIndex,
+) -> bool {
+    // The top-level statement holding the store.
+    let mut top = *assign;
+    while let Some(parent) = top.parent() {
+        if parent.id() == body.id() {
+            break;
         }
-        false
+        top = parent;
     }
-
-    /// Check if an assignment assigns a local variable to global or output parameter
-    fn check_assignment_storage_duration(
-        &self,
-        assignment_node: &Node,
-        source: &str,
-    ) -> Option<RuleViolation> {
-        // Get left and right sides of assignment
-        let left = assignment_node.child_by_field_name("left")?;
-        let right = assignment_node.child_by_field_name("right")?;
-
-        // Check if right side is a local variable
-        if right.kind() == "identifier" {
-            let right_var = ast_utils::get_node_text(&right, source).to_string();
-
-            if !self.is_local_variable(&right, source) {
-                return None;
-            }
-
-            // Check if left side is a pointer dereference or global
-            match left.kind() {
-                "pointer_expression" => {
-                    // *ptr_param = local; pattern — only flag if local is a pointer/array
-                    // Assigning a scalar value (e.g., *sock = sockfd where sockfd is int)
-                    // just copies the value, not the address. Only pointer assignments escape.
-                    if !self.local_var_is_pointer_or_array(&right, &right_var, source) {
-                        return None;
-                    }
-                    // Same heap/static exemptions as the return-statement case: copying
-                    // a heap-derived or static-derived pointer VALUE through the
-                    // out-param doesn't escape any local's storage.
-                    if self.local_var_is_heap_allocated(&right, &right_var, source) {
-                        return None;
-                    }
-                    if self.local_ptr_points_to_static(&right, &right_var, source) {
-                        return None;
-                    }
-                    let start_point = assignment_node.start_position();
-                    return Some(RuleViolation {
-                        rule_id: "DCL30-C".to_string(),
-                        severity: Severity::High,
-                        message: format!(
-                            "Local variable '{}' assigned through pointer parameter - address will be invalid when function returns",
-                            right_var
-                        ),
-                        file_path: String::new(),
-                        line: start_point.row + 1,
-                        column: start_point.column + 1,
-                        suggestion: Some(
-                            "Copy data instead of assigning pointer, or use static/allocated storage".to_string()
-                        ),
-                        ..Default::default()
-                    });
-                }
-                "identifier"
-                    // Check if left is a global variable (declared outside function)
-                    if self.is_global_or_static(&left, source) => {
-                        // Only flag when the local is a pointer or array type.
-                        // Assigning a scalar value (e.g., global_int = local_int)
-                        // just copies the value — no dangling reference is created.
-                        if !self.local_var_is_pointer_or_array(&right, &right_var, source) {
-                            return None;
-                        }
-                        if self.local_var_is_heap_allocated(&right, &right_var, source) {
-                            return None;
-                        }
-                        if self.local_ptr_points_to_static(&right, &right_var, source) {
-                            return None;
-                        }
-
-                        let left_var = ast_utils::get_node_text(&left, source).to_string();
-
-                        // Check if global is reassigned later in the same function (like p = NULL)
-                        if self.is_global_reassigned_later(assignment_node, &left_var, source) {
-                            // Safe pattern: global is reset before function returns
-                            return None;
-                        }
-
-                        let start_point = assignment_node.start_position();
-
-                        return Some(RuleViolation {
-                            rule_id: "DCL30-C".to_string(),
-                            severity: Severity::High,
-                            message: format!(
-                                "Local variable '{}' assigned to global/static variable '{}' - creates dangling pointer",
-                                right_var, left_var
-                            ),
-                            file_path: String::new(),
-                            line: start_point.row + 1,
-                            column: start_point.column + 1,
-                            suggestion: Some(
-                                "Use static storage for local variable or copy data instead of assigning pointer".to_string()
-                            ),
-                            ..Default::default()
-                        });
-                    }
-                _ => {}
-            }
-        }
-
-        None
+    if top.parent().map(|p| p.id()) != Some(body.id()) {
+        return false;
     }
-
-    /// Check if a variable is declared locally in a function (automatic storage)
-    fn is_local_variable(&self, var_node: &Node, source: &str) -> bool {
-        let var_name = ast_utils::get_node_text(var_node, source);
-
-        // Find the containing function
-        let mut current = var_node.parent();
-        let mut function_body: Option<Node> = None;
-
-        while let Some(node) = current {
-            if node.kind() == "compound_statement" {
-                if let Some(parent) = node.parent() {
-                    if parent.kind() == "function_definition" {
-                        function_body = Some(node);
-                        break;
-                    }
-                }
-            }
-            current = node.parent();
-        }
-
-        let body = match function_body {
-            Some(b) => b,
-            None => return false,
-        };
-
-        // Search for declaration of this variable in function body
-        self.find_local_declaration(&body, &var_name, source)
+    let returns_after = |n: &Node, from: usize| {
+        query::find_descendants_of_kind(*n, "return_statement")
+            .iter()
+            .any(|r| r.start_byte() >= from)
+            || (n.kind() == "return_statement" && n.start_byte() >= from)
+    };
+    if returns_after(&top, assign.end_byte()) {
+        return false;
     }
-
-    /// Find if a variable is declared locally (not static)
-    fn find_local_declaration(&self, body: &Node, var_name: &str, source: &str) -> bool {
-        for child in body.child_nodes() {
-            if child.kind() == "declaration" {
-                // Check if this declaration declares our variable
-                if self.declaration_contains_var(&child, var_name, source) {
-                    // Check if it's NOT static
-                    let decl_text = ast_utils::get_node_text(&child, source);
-                    return !decl_text.contains("static");
-                }
-            }
-            // Recursively search compound statements
-            if child.kind() == "compound_statement" {
-                if self.find_local_declaration(&child, var_name, source) {
-                    return true;
-                }
-            }
+    let target = compact(get_node_text(left, source));
+    let mut cursor = body.walk();
+    for stmt in body.named_children(&mut cursor) {
+        if stmt.start_byte() <= top.start_byte() {
+            continue;
         }
-        false
+        let reset = (stmt.kind() == "expression_statement")
+            .then(|| stmt.named_child(0))
+            .flatten()
+            .filter(|e| e.kind() == "assignment_expression")
+            .filter(|e| {
+                e.child_by_field_name("operator")
+                    .is_some_and(|op| get_node_text(&op, source) == "=")
+            })
+            .filter(|e| {
+                e.child_by_field_name("left").is_some_and(|l| {
+                    compact(get_node_text(&l, source)) == target && same_root(&l, left, source)
+                })
+            })
+            .and_then(|e| e.child_by_field_name("right").map(|r| (e, r)));
+        if let Some((e, value)) = reset {
+            return escaping_object(&value, &e, source, index).is_none();
+        }
+        if returns_after(&stmt, 0) {
+            return false;
+        }
     }
+    false
+}
 
-    /// Check if a declaration contains a specific variable name
-    fn declaration_contains_var(&self, decl_node: &Node, var_name: &str, source: &str) -> bool {
-        for child in decl_node.child_nodes() {
-            // Look for init_declarator or direct declarators
-            if matches!(
-                child.kind(),
-                "init_declarator" | "array_declarator" | "pointer_declarator" | "identifier"
-            ) {
-                // Search recursively for identifier nodes using text comparison
-                if self.contains_identifier_by_name(&child, var_name, source) {
-                    return true;
-                }
-            }
+/// Whether two lvalues of the same spelling name the same root variable:
+/// each root identifier resolves to the same declarator.
+fn same_root(a: &Node, b: &Node, source: &str) -> bool {
+    let decl = |n: &Node| {
+        let mut n = strip(*n);
+        while n.kind() != "identifier" {
+            n = strip(
+                n.child_by_field_name("argument")
+                    .or_else(|| n.child_by_field_name("left"))?,
+            );
         }
-        false
+        let name = get_node_text(&n, source);
+        resolve_identifier_declarator(&n, name, source).map(|(_, d)| d.id())
+    };
+    match (decl(a), decl(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
     }
+}
 
-    /// Check if a node tree contains an identifier with given name.
-    fn contains_identifier_by_name(&self, node: &Node, var_name: &str, source: &str) -> bool {
-        query::find_first_descendant(*node, |n| {
-            n.kind() == "identifier" && ast_utils::get_node_text(&n, source) == var_name
-        })
-        .is_some()
+fn describe(object: &AutomaticObject) -> String {
+    match object.kind {
+        AutomaticKind::Local => format!("automatic object '{}'", object.name),
+        AutomaticKind::Parameter => format!("parameter '{}'", object.name),
+        AutomaticKind::CompoundLiteral => {
+            let text = compact(&object.name);
+            if text.chars().count() <= 40 {
+                format!("compound literal '{}'", text)
+            } else {
+                "a compound literal".to_string()
+            }
+        }
     }
+}
 
-    /// Check if a global variable is reassigned later in the same function
-    /// (e.g., p = NULL after p = local_var makes it safe)
-    fn is_global_reassigned_later(
-        &self,
-        assignment_node: &Node,
-        var_name: &str,
-        source: &str,
-    ) -> bool {
-        // Find the containing function body
-        let mut current = assignment_node.parent();
-        let mut function_body: Option<Node> = None;
+/// `text` with whitespace runs collapsed, for messages and comparison.
+fn compact(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
 
-        while let Some(node) = current {
-            if node.kind() == "compound_statement" {
-                if let Some(parent) = node.parent() {
-                    if parent.kind() == "function_definition" {
-                        function_body = Some(node);
-                        break;
-                    }
-                }
-            }
-            current = node.parent();
+fn strip(node: Node) -> Node {
+    match node.kind() {
+        "parenthesized_expression" | "cast_expression" => {
+            let inner = if node.kind() == "cast_expression" {
+                node.child_by_field_name("value")
+            } else {
+                node.named_children(&mut node.walk())
+                    .find(|c| c.kind() != "comment")
+            };
+            inner.map_or(node, strip)
         }
-
-        let body = match function_body {
-            Some(b) => b,
-            None => return false,
-        };
-
-        // Find the expression_statement containing the current assignment
-        let mut current_stmt: Option<Node> = None;
-        let mut node = Some(*assignment_node);
-        while let Some(n) = node {
-            if n.kind() == "expression_statement" {
-                current_stmt = Some(n);
-                break;
-            }
-            node = n.parent();
-        }
-
-        let current_expr_stmt = match current_stmt {
-            Some(s) => s,
-            None => return false,
-        };
-
-        // Find all statements after this assignment
-        let statements = self.get_statements_in_body(&body);
-        let mut found_current = false;
-
-        for stmt in statements {
-            // Skip until we find the current statement
-            if stmt.id() == current_expr_stmt.id() {
-                found_current = true;
-                continue; // Skip the current statement itself
-            }
-
-            if found_current {
-                // Check if this statement assigns to the same variable
-                if self.assigns_to_variable(&stmt, var_name, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        _ => node,
     }
+}
 
-    /// Get all statements within a compound statement (flattened)
-    fn get_statements_in_body<'a>(&self, body: &Node<'a>) -> Vec<Node<'a>> {
-        let mut statements = Vec::new();
-        for child in body.child_nodes() {
-            if child.kind() == "expression_statement" {
-                statements.push(child);
-            }
-        }
-        statements
-    }
-
-    /// Check if a statement assigns to a specific variable
-    fn assigns_to_variable(&self, stmt: &Node, var_name: &str, source: &str) -> bool {
-        if stmt.kind() == "expression_statement" {
-            for child in stmt.child_nodes() {
-                if child.kind() == "assignment_expression" {
-                    if let Some(left) = child.child_by_field_name("left") {
-                        let left_text = ast_utils::get_node_text(&left, source);
-                        if left_text == var_name {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-        false
-    }
-
-    /// Check if a variable is declared at global scope or with static storage
-    fn is_global_or_static(&self, var_node: &Node, source: &str) -> bool {
-        // Get variable name
-        let var_name = ast_utils::get_node_text(var_node, source);
-
-        // Find the translation unit (root)
-        let mut current = Some(*var_node);
-        let mut root: Option<Node> = None;
-
-        while let Some(node) = current {
-            if node.kind() == "translation_unit" {
-                root = Some(node);
-                break;
-            }
-            current = node.parent();
-        }
-
-        let translation_unit = match root {
-            Some(r) => r,
-            None => return false,
-        };
-
-        // Search for global declaration of this variable, including inside preprocessor blocks
-        let mut decls = Vec::new();
-        Self::collect_file_scope_declarations(&translation_unit, &mut decls);
-        for child in &decls {
-            if self.contains_identifier_by_name(child, &var_name, source) {
-                return true;
-            }
-        }
-
-        false
+fn violation(node: &Node, message: String) -> RuleViolation {
+    let start = node.start_position();
+    RuleViolation {
+        rule_id: "DCL30-C".to_string(),
+        severity: Severity::High,
+        message,
+        file_path: String::new(),
+        line: start.row + 1,
+        column: start.column + 1,
+        suggestion: Some(
+            "Use static or allocated storage, or have the caller provide the object".to_string(),
+        ),
+        ..Default::default()
     }
 }
