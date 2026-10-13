@@ -406,7 +406,9 @@ impl Msc37C {
                         values.push(self.is_noreturn_call_statement(&node, source, noreturn_names))
                     }
                     "while_statement" | "for_statement" | "do_statement" => {
-                        values.push(loop_never_falls_through(&node, source));
+                        values.push(loop_never_falls_through(&node, source, &|n: &Node| {
+                            self.is_noreturn_call_statement(n, source, noreturn_names)
+                        }));
                     }
                     // A `goto` back to a label above it (`goto retry;`) runs
                     // that code again instead of reaching the end; one that
@@ -435,7 +437,9 @@ impl Msc37C {
                             _ => values.push(false),
                         }
                     }
-                    "switch_statement" => match switch_last_arm_tail(&node, source) {
+                    "switch_statement" => match switch_last_arm_tail(&node, source, &|n: &Node| {
+                        self.is_noreturn_call_statement(n, source, noreturn_names)
+                    }) {
                         Some(tail) => ops.push(Op::Eval(tail)),
                         None => values.push(false),
                     },
@@ -714,7 +718,7 @@ fn defines_name(root: &Node, source: &str, name: &str) -> bool {
 /// A loop whose condition is a nonzero constant (`while (1)`, `for (;;)`,
 /// `do ... while (true)`) and that nothing leaves except a `return` (or a
 /// call that does not return): control never reaches the end after it.
-fn loop_never_falls_through(node: &Node, source: &str) -> bool {
+fn loop_never_falls_through(node: &Node, source: &str, jumps: &dyn Fn(&Node) -> bool) -> bool {
     let condition = match node.kind() {
         "for_statement" => node.child_by_field_name("condition"),
         _ => match node.child_by_field_name("condition") {
@@ -732,7 +736,7 @@ fn loop_never_falls_through(node: &Node, source: &str) -> bool {
     let Some(body) = node.child_by_field_name("body") else {
         return false;
     };
-    !leaves_other_than_by_return(node, &body, source)
+    !leaves_other_than_by_return(node, &body, source, jumps)
 }
 
 fn is_constant_true(condition: &Node, source: &str) -> bool {
@@ -760,7 +764,12 @@ fn is_constant_true(condition: &Node, source: &str) -> bool {
 /// switch is aimed at that one; a `break` right after a `return`, `goto`,
 /// `continue` or another `break` is dead; a `goto` back to a label before the
 /// construct (`goto retry;`) re-enters it rather than leaving for the end.
-fn leaves_other_than_by_return(construct: &Node, body: &Node, source: &str) -> bool {
+fn leaves_other_than_by_return(
+    construct: &Node,
+    body: &Node,
+    source: &str,
+    jumps: &dyn Fn(&Node) -> bool,
+) -> bool {
     let mut stack = vec![*body];
     while let Some(node) = stack.pop() {
         match node.kind() {
@@ -771,7 +780,7 @@ fn leaves_other_than_by_return(construct: &Node, body: &Node, source: &str) -> b
                 continue;
             }
             "break_statement" => {
-                if !is_dead_break(&node, source) {
+                if !is_dead_break(&node, source, jumps) {
                     return true;
                 }
                 continue;
@@ -799,26 +808,32 @@ fn leaves_other_than_by_return(construct: &Node, body: &Node, source: &str) -> b
 /// A `break` that nothing reaches: the statement before it (comments aside)
 /// always jumps away, as in `return x; break;`, or is a conditional block
 /// whose every arm does (`#if A return 1; #else return 2; #endif break;`).
-fn is_dead_break(node: &Node, source: &str) -> bool {
+fn is_dead_break(node: &Node, source: &str, jumps: &dyn Fn(&Node) -> bool) -> bool {
     let mut before = node.prev_named_sibling();
     while before.is_some_and(|p| p.kind() == "comment") {
         before = before.and_then(|p| p.prev_named_sibling());
     }
-    before.is_some_and(|prev| ends_with_jump(&prev, source))
+    before.is_some_and(|prev| ends_with_jump(&prev, source, jumps))
 }
 
 /// Whether control never continues past `node` to the statement after it.
-fn ends_with_jump(node: &Node, source: &str) -> bool {
+fn ends_with_jump(node: &Node, source: &str, jumps: &dyn Fn(&Node) -> bool) -> bool {
     match node.kind() {
         "return_statement" | "goto_statement" | "continue_statement" | "break_statement" => true,
+        // `abort();` before a `break;` leaves nothing for the break to do.
+        "expression_statement" => jumps(node),
+        // `{ ...; return x; }` before a `break;`.
+        "compound_statement" => {
+            last_statement_of_block(node).is_some_and(|last| ends_with_jump(&last, source, jumps))
+        }
         "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_else" => {
             match preproc_arm_tail(node, source) {
                 ArmTail::Both(stmt, alt) => {
-                    ends_with_jump(&stmt, source) && ends_with_jump(&alt, source)
+                    ends_with_jump(&stmt, source, jumps) && ends_with_jump(&alt, source, jumps)
                 }
                 ArmTail::One(stmt) => {
                     matches!(node.kind(), "preproc_else" | "preproc_elif")
-                        && ends_with_jump(&stmt, source)
+                        && ends_with_jump(&stmt, source, jumps)
                 }
                 ArmTail::Returns => true,
                 ArmTail::Empty => false,
@@ -880,7 +895,11 @@ fn goto_leaves_forward(goto: &Node, construct: &Node, source: &str) -> bool {
 /// A `switch` falls off its end unless it has a `default`, nothing breaks out
 /// of it, and its last arm ends the function. Returns that last arm's final
 /// statement to be judged, or `None` when the switch does not qualify.
-fn switch_last_arm_tail<'a>(node: &Node<'a>, source: &str) -> Option<Node<'a>> {
+fn switch_last_arm_tail<'a>(
+    node: &Node<'a>,
+    source: &str,
+    jumps: &dyn Fn(&Node) -> bool,
+) -> Option<Node<'a>> {
     let body = node.child_by_field_name("body")?;
     let arms: Vec<Node<'a>> = (0..body.named_child_count())
         .filter_map(|i| body.named_child(i))
@@ -891,7 +910,7 @@ fn switch_last_arm_tail<'a>(node: &Node<'a>, source: &str) -> Option<Node<'a>> {
             .trim_start()
             .starts_with("default")
     });
-    if !has_default || leaves_other_than_by_return(node, &body, source) {
+    if !has_default || leaves_other_than_by_return(node, &body, source, jumps) {
         return None;
     }
     let last = arms.last()?;
@@ -899,7 +918,7 @@ fn switch_last_arm_tail<'a>(node: &Node<'a>, source: &str) -> Option<Node<'a>> {
         .filter_map(|i| last.named_child(i))
         .rfind(|c| match c.kind() {
             "comment" | "preproc_call" => false,
-            "break_statement" => !is_dead_break(c, source),
+            "break_statement" => !is_dead_break(c, source, jumps),
             _ => true,
         })
         .filter(|c| {
