@@ -10,8 +10,9 @@
 //! parameter is a pointer (6.7.6.3p7), so naming one yields no address of
 //! automatic storage. A member reached through `->` or an element reached
 //! through a pointer lies in whatever the pointer points at, which nothing
-//! here claims to know. A declaration spelled with the `_Thread_local`
-//! keyword is misread by the grammar and does not resolve.
+//! here claims to know. A `_Thread_local` object has thread storage, not
+//! automatic: the parser respells the keyword as `thread_local`, which the
+//! grammar reads as a storage class.
 
 use crate::utility::cert_c::ast_utils::{
     declaration_has_storage_class, declaration_is_thread_local, get_node_text,

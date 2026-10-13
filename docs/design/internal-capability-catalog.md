@@ -1715,6 +1715,12 @@ array parameter as an automatic array.
 `automatic_address(value)`, then `pointer_value_origin(value, site)`, of each
 returned value and each value stored into an object that outlives the call.
 
+**Follow-up:** two analyses still answer `automatic_object` with private
+copies: MEM30-C's stack-escape arm (`is_address_of_automatic_storage`) and
+`thread_storage::passed_object`. MEM30-C's copy treats an array parameter as
+an automatic array. Moving both onto this module is a separate change, and
+MEM30-C's arm is due to be removed in favour of DCL30-C anyway.
+
 ### `src/utility/cert_c/thread_storage.rs`
 **Problem solved:** which storage a thread creation hands its new thread,
 the one analysis CON34-C (every family) and POS50-C (POSIX) share. Each
