@@ -7358,7 +7358,8 @@ fn original_for_wrapper_macros(
 /// One resolved header's macros, aliases, function summaries and macro
 /// definitions, merged into `context` (the macro half of `resolve_includes`'
 /// per-header harvest). `outside_project` says whether the header lies outside
-/// every project root, for `origins`.
+/// every project root, for `origins`; `written` holds the names the scanned
+/// sources write at file scope (`const_eval::file_scope_written_names`).
 fn harvest_header_macros(
     context: &mut super::context::ProjectContext,
     root: &tree_sitter::Node,
@@ -7367,9 +7368,14 @@ fn harvest_header_macros(
     model: IntFacts,
     origins: &mut MacroOrigins,
     outside_project: bool,
+    written: &HashSet<String>,
 ) {
-    // Collect macro constants and aliases from resolved headers
-    let header_macros = const_eval::collect_macro_constants(root, hsource, model);
+    // Collect macro constants and aliases from resolved headers. A header's
+    // static is compiled into each includer, which may write its copy: one a
+    // scanned file writes is no constant for any of them, as in the prescan.
+    let mut header_macros = const_eval::collect_macro_constants(root, hsource, model);
+    let statics = const_eval::file_scope_static_names(root, hsource);
+    header_macros.retain(|key, _| !names_a_written_static(key, &statics, written));
     Arc::make_mut(&mut context.macro_constants).extend(header_macros.clone());
 
     const_eval::merge_fixed_arities(
@@ -7702,6 +7708,7 @@ pub fn resolve_includes_scoped(
     let mut queue: Vec<PendingInclude> = Vec::new();
 
     let mut includer_real_paths: HashMap<Arc<str>, String> = HashMap::new();
+    let mut written: HashSet<String> = HashSet::new();
     // Seed the queue with #include directives from source files. A refused
     // source names no includes: its edges are left out, so a closure stays a
     // lower bound rather than resting on a file the scan did not read.
@@ -7717,6 +7724,10 @@ pub fn resolve_includes_scoped(
             &mut context.prescan_failures,
         );
         if let Some((tree, source)) = parsed {
+            written.extend(const_eval::file_scope_written_names(
+                &tree.root_node(),
+                &source,
+            ));
             let directives = extract_include_directives_with_liveness(&tree.root_node(), &source);
             let source_dir = Path::new(file_path).parent().map(|p| p.to_path_buf());
             let includer: Arc<str> = Arc::from(file_path.as_str());
@@ -7836,6 +7847,7 @@ pub fn resolve_includes_scoped(
                     model,
                     &mut origins,
                     outside_project,
+                    &written,
                 );
 
                 // Collect struct field types from resolved headers

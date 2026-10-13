@@ -1180,6 +1180,37 @@ fn exp33_header_static_written_by_an_includer_does_not_prune() {
     );
 }
 
+/// The same when the header is also resolved from the includer (the search
+/// path names its directory): the header's own constants come in again
+/// there, and the written static must not come back with them.
+#[test]
+fn exp33_header_static_written_by_an_includer_does_not_prune_once_resolved() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let fixture_dir = fixtures().join("exp33_header_static_written_by_includer");
+    let (code, _, stderr) = run_aurora_lint(&[
+        fixture_dir.join("use.c").to_str().unwrap(),
+        "-m",
+        manifest_exp33().to_str().unwrap(),
+        "-d",
+        fixture_dir.to_str().unwrap(),
+        "-I",
+        fixture_dir.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(
+        violations
+            .iter()
+            .filter(|v| v["rule_id"] == "EXP33-C")
+            .count(),
+        1
+    );
+}
+
 /// A tentative `int globalOn;` in one #if arm is 0 in that build, so the
 /// other arm's `= 1` is no constant for every configuration (ADR-0010).
 #[test]
