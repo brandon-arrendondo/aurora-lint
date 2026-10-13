@@ -67,17 +67,27 @@
 //! - Check for functions that read multiple static variables without synchronization
 //! - Look for functions that perform operations on static variables without mutex locks
 //! - Check for absence of atomic operations or mutex locks
+//! - A compound operation through a pointer (`(*p)++`, `p[i] += n`,
+//!   `p->n++`) is judged by what the pointer points at, not by where the
+//!   pointer itself is stored: a thread-local pointer into a shared array
+//!   still mutates the array. It is reported, naming the shared object,
+//!   only when every value the pointer is ever given (its initializer and
+//!   each assignment, by declaration) is the address of, or into, a shared
+//!   object. A pointer whose address is taken, a parameter, or one with any
+//!   other origin points at something unknown, and is not reported.
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg;
 use crate::analyze::concurrency_roots;
 use crate::analyze::context::ProjectContext;
+use crate::analyze::points_to::lvalue_of;
 use crate::manifest::Severity;
 use crate::settings::threads::ThreadOpKind;
 use crate::utility::cert_c::ast_utils::{
     declaration_is_thread_local, get_identifier_from_declarator, get_node_text,
-    resolve_identifier_binding, IdentifierBinding,
+    resolve_identifier_binding, resolve_identifier_declarator, IdentifierBinding,
 };
+use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::thread_api::{self, ProjectFunctions};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -195,35 +205,11 @@ impl Con07C {
 
     fn find_static_variables(&self, node: &Node, source: &str, static_vars: &mut StaticVars) {
         for decl_node in query::find_descendants_of_kind(*node, "declaration") {
-            let mut is_static = false;
-            let mut is_file_scope = decl_node
-                .parent()
-                .is_some_and(|p| p.kind() == "translation_unit");
-            let mut is_mutex_or_thread_type = false;
             let mut var_names = Vec::new();
 
             for i in 0..decl_node.child_count() {
                 if let Some(child) = decl_node.child(i) {
                     match child.kind() {
-                        "storage_class_specifier" => {
-                            if get_node_text(&child, source) == "static" {
-                                is_static = true;
-                            }
-                            if get_node_text(&child, source) == "extern" {
-                                // extern declarations are not owned by this file
-                                is_file_scope = false;
-                            }
-                        }
-                        "type_identifier" => {
-                            let type_name = get_node_text(&child, source);
-                            if type_name.contains("mutex")
-                                || type_name.contains("pthread")
-                                || type_name.contains("thrd")
-                                || type_name.contains("cnd")
-                            {
-                                is_mutex_or_thread_type = true;
-                            }
-                        }
                         "init_declarator" => {
                             // Case: static int a = 0;
                             if let Some(declarator) = child.child_by_field_name("declarator") {
@@ -242,13 +228,7 @@ impl Con07C {
                 }
             }
 
-            // Collect static variables AND file-scope globals (non-mutex
-            // types). An object with thread storage duration is each
-            // thread's own, so no other thread shares it.
-            if declaration_is_thread_local(&decl_node, source) {
-                continue;
-            }
-            if is_static || (is_file_scope && !is_mutex_or_thread_type) {
+            if declaration_is_shared(&decl_node, source) {
                 for name in var_names {
                     static_vars.record(name, decl_node.start_byte());
                 }
@@ -314,8 +294,13 @@ impl Con07C {
             None => return,
         };
 
-        // Check for compound operations on static variables
-        let static_var_accesses = self.find_static_var_accesses(&body, source, static_vars);
+        // Check for compound operations on static variables, and on the
+        // shared objects a pointer is proven to point into
+        let mut static_var_accesses = self.find_static_var_accesses(&body, source, static_vars);
+        let through_pointers = compound_writes_through_pointers(&body, source);
+        static_var_accesses.extend(through_pointers.iter().cloned());
+        static_var_accesses.sort();
+        static_var_accesses.dedup();
 
         // A single atomic operation spanning ALL the shared state involved
         // (e.g. one atomic_load/atomic_store on an _Atomic struct, or a
@@ -333,9 +318,10 @@ impl Con07C {
         // If function performs a compound write on multiple static variables, flag it.
         // Pure reads of multiple statics are not a compound-operation violation.
         if static_var_accesses.len() > 1 {
-            let has_compound_write = static_var_accesses
-                .iter()
-                .any(|v| self.has_compound_operation_on_var(&body, source, v, static_vars));
+            let has_compound_write = !through_pointers.is_empty()
+                || static_var_accesses
+                    .iter()
+                    .any(|v| self.has_compound_operation_on_var(&body, source, v, static_vars));
             let combines_reads = self.combines_multiple_vars(&body, source, static_vars);
             let writes_multiple = self.writes_multiple_vars(&body, source, static_vars);
             if has_compound_write || combines_reads || writes_multiple {
@@ -358,12 +344,14 @@ impl Con07C {
             }
         } else if static_var_accesses.len() == 1 {
             // Check for compound assignment operations on a single static variable
-            if self.has_compound_operation_on_var(
-                &body,
-                source,
-                &static_var_accesses[0],
-                static_vars,
-            ) {
+            if !through_pointers.is_empty()
+                || self.has_compound_operation_on_var(
+                    &body,
+                    source,
+                    &static_var_accesses[0],
+                    static_vars,
+                )
+            {
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: Severity::Medium,
@@ -618,5 +606,262 @@ impl Con07C {
         }
 
         written.len() > 1
+    }
+}
+
+/// Whether the objects `decl` (a `declaration`) declares are shared between
+/// threads: `static` ones, and file-scope ones this file owns (not
+/// `extern`) that are not a mutex or thread handle. An object with thread
+/// storage duration is each thread's own, so no other thread shares it.
+fn declaration_is_shared(decl: &Node, source: &str) -> bool {
+    if declaration_is_thread_local(decl, source) {
+        return false;
+    }
+    let mut is_static = false;
+    let mut is_file_scope = decl
+        .parent()
+        .is_some_and(|p| p.kind() == "translation_unit");
+    let mut is_mutex_or_thread_type = false;
+    for child in decl.child_nodes() {
+        match child.kind() {
+            "storage_class_specifier" => match get_node_text(&child, source) {
+                "static" => is_static = true,
+                // extern declarations are not owned by this file
+                "extern" => is_file_scope = false,
+                _ => {}
+            },
+            "type_identifier" => {
+                let type_name = get_node_text(&child, source);
+                if type_name.contains("mutex")
+                    || type_name.contains("pthread")
+                    || type_name.contains("thrd")
+                    || type_name.contains("cnd")
+                {
+                    is_mutex_or_thread_type = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    is_static || (is_file_scope && !is_mutex_or_thread_type)
+}
+
+/// The shared objects `body` performs a compound operation on through a
+/// pointer: a compound assignment, an increment or decrement, or
+/// `*p = *p + n`, whose target is `*p`, `p[i]`, `p->f` or `*(p + k)`, where
+/// `p` is proven to point into shared objects ([`proven_pointees`]).
+fn compound_writes_through_pointers(body: &Node, source: &str) -> Vec<String> {
+    let mut pointees = Vec::new();
+    for op in
+        query::find_descendants_of_kinds(*body, &["assignment_expression", "update_expression"])
+    {
+        let target = if op.kind() == "update_expression" {
+            op.child_by_field_name("argument")
+        } else {
+            op.child_by_field_name("left")
+                .filter(|left| is_compound_assignment(&op, left, source))
+        };
+        let Some(pointer) = target.and_then(|t| pointer_through(&t, source)) else {
+            continue;
+        };
+        if let Some(objects) = proven_pointees(&pointer, source) {
+            pointees.extend(objects);
+        }
+    }
+    pointees.sort();
+    pointees.dedup();
+    pointees
+}
+
+/// Whether the assignment `op` to `left` reads what it writes: a compound
+/// operator, or `=` with the same location on the right (`*p = *p + 1`).
+fn is_compound_assignment(op: &Node, left: &Node, source: &str) -> bool {
+    let operator = op
+        .child_by_field_name("operator")
+        .map(|o| get_node_text(&o, source))
+        .unwrap_or("=");
+    if operator != "=" {
+        return true;
+    }
+    let (Some(target), Some(right)) = (lvalue_of(left, source), op.child_by_field_name("right"))
+    else {
+        return false;
+    };
+    query::find_first_descendant(right, |n| {
+        matches!(
+            n.kind(),
+            "pointer_expression" | "subscript_expression" | "field_expression"
+        ) && lvalue_of(&n, source).as_ref() == Some(&target)
+    })
+    .is_some()
+}
+
+/// The pointer variable an lvalue writes through: `p` in `*p`, `p[i]`,
+/// `p->f` and `*(p + k)`, through parentheses and casts. `None` for a
+/// plain variable, a `.` member, or a pointer that is not a bare name.
+fn pointer_through<'a>(target: &Node<'a>, source: &str) -> Option<Node<'a>> {
+    let target = strip_parens_and_casts(*target);
+    let base = match target.kind() {
+        "pointer_expression"
+            if target
+                .child_by_field_name("operator")
+                .is_some_and(|o| get_node_text(&o, source) == "*") =>
+        {
+            target.child_by_field_name("argument")?
+        }
+        "subscript_expression" => target.child_by_field_name("argument")?,
+        "field_expression"
+            if target
+                .child_by_field_name("operator")
+                .is_some_and(|o| get_node_text(&o, source) == "->") =>
+        {
+            target.child_by_field_name("argument")?
+        }
+        _ => return None,
+    };
+    let mut base = strip_parens_and_casts(base);
+    if base.kind() == "binary_expression" {
+        base = strip_parens_and_casts(base.child_by_field_name("left")?);
+    }
+    (base.kind() == "identifier").then_some(base)
+}
+
+/// The shared objects `pointer` (an occurrence of a pointer variable) is
+/// proven to point into: every value its declaration (resolved by
+/// declaration, ADR-0006) is ever given -- its initializer and each plain
+/// assignment, pointer arithmetic keeping the object -- is the address of,
+/// or into, a shared object. `None` when the pointer is a parameter, its
+/// address is taken, it has no origin, or any origin is something else
+/// (a thread-local object, another pointer, a call).
+fn proven_pointees(pointer: &Node, source: &str) -> Option<Vec<String>> {
+    let name = get_node_text(pointer, source);
+    let (decl, declarator) = resolve_identifier_declarator(pointer, name, source)?;
+    if decl.kind() != "declaration" || declarator.kind() != "pointer_declarator" {
+        return None;
+    }
+    let mut origins: Vec<Node> = declarator
+        .parent()
+        .filter(|p| p.kind() == "init_declarator")
+        .and_then(|p| p.child_by_field_name("value"))
+        .into_iter()
+        .collect();
+    let mut root = decl;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    for occurrence in query::find_descendants_of_kind(root, "identifier") {
+        if get_node_text(&occurrence, source) != name
+            || occurrence == declarator_name(&declarator)?
+            || resolve_identifier_declarator(&occurrence, name, source)
+                .is_none_or(|(d, _)| d != decl)
+        {
+            continue;
+        }
+        let Some(parent) = occurrence.parent() else {
+            continue;
+        };
+        match parent.kind() {
+            "assignment_expression" if parent.child_by_field_name("left") == Some(occurrence) => {
+                match parent
+                    .child_by_field_name("operator")
+                    .map(|o| get_node_text(&o, source))
+                {
+                    Some("=") => origins.push(parent.child_by_field_name("right")?),
+                    Some("+=" | "-=") => {}
+                    _ => return None,
+                }
+            }
+            "pointer_expression"
+                if parent
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| get_node_text(&o, source) == "&") =>
+            {
+                return None;
+            }
+            _ => {}
+        }
+    }
+    if origins.is_empty() {
+        return None;
+    }
+    let mut objects = Vec::new();
+    for origin in origins {
+        objects.push(shared_object_addressed(&origin, source)?);
+    }
+    objects.sort();
+    objects.dedup();
+    Some(objects)
+}
+
+/// The identifier a declarator declares.
+fn declarator_name<'a>(declarator: &Node<'a>) -> Option<Node<'a>> {
+    let mut node = *declarator;
+    loop {
+        if node.kind() == "identifier" {
+            return Some(node);
+        }
+        node = node.child_by_field_name("declarator")?;
+    }
+}
+
+/// The shared object `value` is the address of or into: `&x`, `&x[i]`,
+/// `&x.f`, an array `x` (which decays to its first element's address), or
+/// any of these plus or minus an offset, `x` resolving by declaration to a
+/// shared object ([`declaration_is_shared`]).
+fn shared_object_addressed(value: &Node, source: &str) -> Option<String> {
+    let value = strip_parens_and_casts(*value);
+    let (object, decays) = match value.kind() {
+        "binary_expression" => {
+            return shared_object_addressed(&value.child_by_field_name("left")?, source)
+        }
+        "pointer_expression"
+            if value
+                .child_by_field_name("operator")
+                .is_some_and(|o| get_node_text(&o, source) == "&") =>
+        {
+            let mut object = strip_parens_and_casts(value.child_by_field_name("argument")?);
+            while matches!(object.kind(), "subscript_expression" | "field_expression") {
+                if object.kind() == "field_expression"
+                    && object
+                        .child_by_field_name("operator")
+                        .is_some_and(|o| get_node_text(&o, source) == "->")
+                {
+                    return None;
+                }
+                object = strip_parens_and_casts(object.child_by_field_name("argument")?);
+            }
+            (object, false)
+        }
+        "identifier" => (value, true),
+        _ => return None,
+    };
+    if object.kind() != "identifier" {
+        return None;
+    }
+    let name = get_node_text(&object, source);
+    let (decl, declarator) = resolve_identifier_declarator(&object, name, source)?;
+    if decl.kind() != "declaration" || !declaration_is_shared(&decl, source) {
+        return None;
+    }
+    if decays && declarator.kind() != "array_declarator" {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// `node` with any enclosing parentheses and casts removed.
+fn strip_parens_and_casts(mut node: Node) -> Node {
+    loop {
+        match node.kind() {
+            "parenthesized_expression" => match node.named_child(0) {
+                Some(inner) => node = inner,
+                None => return node,
+            },
+            "cast_expression" => match node.child_by_field_name("value") {
+                Some(inner) => node = inner,
+                None => return node,
+            },
+            _ => return node,
+        }
     }
 }
