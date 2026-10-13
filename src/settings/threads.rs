@@ -556,21 +556,26 @@ impl ThreadDeclarations {
             .join(",")
     }
 
-    /// Every thread-creation function in force, by name and the argument
-    /// its entry function is passed at, sorted and comma-separated: what a
-    /// prescan cache records its concurrency roots were found with.
+    /// Every thread-creation function in force, as `name:entry/arity`, and
+    /// every project declaration of a C11 or POSIX name (in force for a call
+    /// reaching the project's own definition of it), as
+    /// `name=kind:entry/arity`; sorted and comma-separated, `-` for a
+    /// position the contract leaves open. What a prescan cache records its
+    /// concurrency roots were found with.
     pub fn spawn_key(&self) -> String {
         use crate::utility::cert_c::thread_api;
-        let mut spawns: Vec<String> =
-            thread_api::functions_of_kind(self, ThreadOpKind::ThreadCreate)
-                .into_iter()
-                .map(|(name, _, op)| match op.entry {
-                    Some(entry) => format!("{name}:{entry}"),
-                    None => name,
-                })
-                .collect();
-        spawns.sort();
-        spawns.join(",")
+        let shown = |n: Option<usize>| n.map_or_else(|| "-".to_string(), |n| n.to_string());
+        let spawns = thread_api::functions_of_kind(self, ThreadOpKind::ThreadCreate)
+            .into_iter()
+            .map(|(name, _, op)| format!("{name}:{}/{}", shown(op.entry), shown(op.arity)));
+        let overrides = self
+            .functions
+            .iter()
+            .filter(|(name, _)| thread_api::builtin_family_of(name).is_some())
+            .map(|(name, op)| format!("{name}={}:{}/{}", op.op, shown(op.entry), shown(op.arity)));
+        let mut key: Vec<String> = spawns.chain(overrides).collect();
+        key.sort();
+        key.join(",")
     }
 
     /// The `[environment.threads]` table that resolves to these
@@ -796,10 +801,10 @@ mod tests {
     #[test]
     fn the_spawn_key_names_every_thread_creation_in_force() {
         let default = ThreadDeclarations::resolve(None, None).unwrap();
-        assert_eq!(default.spawn_key(), "pthread_create:3,thrd_create:2");
+        assert_eq!(default.spawn_key(), "pthread_create:3/4,thrd_create:2/3");
         assert_eq!(
             resolve("posix = \"off\"\n").unwrap().spawn_key(),
-            "thrd_create:2"
+            "thrd_create:2/3"
         );
         let declared = resolve(
             "families = [\"freertos\"]\n\
@@ -810,7 +815,17 @@ mod tests {
         .unwrap();
         assert_eq!(
             declared.spawn_key(),
-            "os_spawn:2,pthread_create:3,thrd_create:2,xTaskCreate:1,xTaskCreateStatic:1"
+            "os_spawn:2/5,pthread_create:3/4,pthread_create=thread_create:1/-,\
+             thrd_create:2/3,xTaskCreate:1/6,xTaskCreateStatic:1/7"
         );
+        // One function's two arities are two keys.
+        let arity = |n: usize| {
+            resolve(&format!(
+                "[functions]\nos_spawn = {{ op = \"thread_create\", entry = 1, arity = {n} }}\n"
+            ))
+            .unwrap()
+            .spawn_key()
+        };
+        assert_ne!(arity(2), arity(3));
     }
 }

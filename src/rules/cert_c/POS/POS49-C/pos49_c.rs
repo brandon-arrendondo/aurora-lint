@@ -170,7 +170,8 @@ impl Pos49C {
     /// contract (C11, POSIX, declared families), or, for a callee no family
     /// describes, a project wrapper whose name ends in `mutex_lock` /
     /// `mutex_unlock`, or a Win32 critical section or slim reader/writer
-    /// lock.
+    /// lock. The name is read only from a callee that resolves to a function
+    /// (ADR-0006): a function pointer or `ops->mutex_lock` is not credited.
     fn is_lock_call(&self, call: &Node, source: &str, lock: bool) -> bool {
         let project = self.project.borrow();
         if let Some(op) = thread_api::thread_op(call, source, project.as_ref()) {
@@ -181,10 +182,9 @@ impl Pos49C {
             };
             return op.kind() == kind;
         }
-        let Some(callee) = call.child_by_field_name("function") else {
+        let Some(name) = thread_api::called_function(call, source) else {
             return false;
         };
-        let name = get_node_text(&callee, source).trim();
         if lock {
             name.ends_with("mutex_lock")
                 || name == "EnterCriticalSection"

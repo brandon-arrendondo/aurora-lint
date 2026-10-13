@@ -836,6 +836,20 @@ fn file_defines(node: &Node, name: &str, source: &str) -> bool {
     false
 }
 
+/// The function `call` (a `call_expression`) calls, by name: its callee
+/// when that is a plain identifier resolving to a function, not to a local,
+/// a parameter or a file-scope function pointer (ADR-0006). `None` for a
+/// call through a pointer or a member such as `ops->lock`. For a rule that
+/// must still read a name no thread-API family describes.
+pub fn called_function<'a>(call: &Node, source: &'a str) -> Option<&'a str> {
+    let callee = call.child_by_field_name("function")?;
+    if callee.kind() != "identifier" {
+        return None;
+    }
+    let name = get_node_text(&callee, source);
+    names_a_function(&callee, name, source).then_some(name)
+}
+
 /// Whether the occurrence `callee` of `name` names a function rather than an
 /// object of that name (a local, a parameter, or a file-scope function
 /// pointer).

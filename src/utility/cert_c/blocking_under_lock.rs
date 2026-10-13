@@ -13,15 +13,14 @@
 //! that reaches the C or POSIX library function (not one the project defines
 //! itself, [`thread_api::library_call`]) of a name in [`BLOCKING`]. Acquiring
 //! another mutex is not counted here: lock order is CON35-C's. A socket send
-//! or receive whose flags include `MSG_DONTWAIT` does not block (CERT's
-//! compliant solution). A descriptor made non-blocking with `O_NONBLOCK`
+//! or receive whose flags always set `MSG_DONTWAIT` (the flag itself, or a
+//! term of a bitwise OR) does not block (CERT's compliant solution). A descriptor made non-blocking with `O_NONBLOCK`
 //! elsewhere is not visible at the call.
 
 use crate::settings::threads::ThreadOpKind;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::mutex_lifetime::{self, HeldLock};
 use crate::utility::cert_c::thread_api::{self, ProjectFunctions};
-use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 /// Library functions the C or POSIX standard lets block the caller
@@ -132,18 +131,38 @@ fn blocking_callee(
                     .collect()
             })
             .unwrap_or_default();
-        let nonblocking = args.get(position - 1).is_some_and(|flags| {
-            let mut idents = query::find_descendants_of_kind(*flags, "identifier");
-            idents.push(*flags);
-            idents
-                .iter()
-                .any(|id| id.kind() == "identifier" && get_node_text(id, source) == "MSG_DONTWAIT")
-        });
-        if nonblocking {
+        if args
+            .get(position - 1)
+            .is_some_and(|flags| sets_dontwait(*flags, source))
+        {
             return None;
         }
     }
     Some(name.to_string())
+}
+
+/// Whether the flags expression `flags` always sets `MSG_DONTWAIT`: it is
+/// `MSG_DONTWAIT` itself, or a term of a bitwise OR, through parentheses.
+/// Under `~`, `&` or `?:` the bit may be clear. A variable or macro that
+/// holds it is not followed, so such a call stays reported.
+fn sets_dontwait(flags: Node, source: &str) -> bool {
+    match flags.kind() {
+        "identifier" => get_node_text(&flags, source) == "MSG_DONTWAIT",
+        "parenthesized_expression" => flags
+            .named_child(0)
+            .is_some_and(|inner| sets_dontwait(inner, source)),
+        "binary_expression" => {
+            let or = flags
+                .child_by_field_name("operator")
+                .is_some_and(|o| get_node_text(&o, source) == "|");
+            or && ["left", "right"].iter().any(|side| {
+                flags
+                    .child_by_field_name(side)
+                    .is_some_and(|term| sets_dontwait(term, source))
+            })
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -189,6 +208,52 @@ mod tests {
                 (8, "send".into(), vec!["m".into()]),
             ]
         );
+    }
+
+    #[test]
+    fn a_lock_in_a_condition_is_held_where_it_succeeded() {
+        let got = blocking(
+            "#include <pthread.h>\n\
+             #include <unistd.h>\n\
+             pthread_mutex_t m;\n\
+             int f(int x, int fd, char *b) {\n\
+               if (x && pthread_mutex_lock(&m) == 0) { pthread_mutex_unlock(&m); } else { write(fd, b, 1); }\n\
+               x && pthread_mutex_lock(&m);\n\
+               write(fd, b, 1);\n\
+               if (pthread_mutex_lock(&m) != 0) { write(fd, b, 2); return -1; }\n\
+               write(fd, b, 3);\n\
+               pthread_mutex_unlock(&m);\n\
+               if (!pthread_mutex_lock(&m)) { write(fd, b, 4); pthread_mutex_unlock(&m); }\n\
+               if ((x = pthread_mutex_lock(&m)) != 0) { write(fd, b, 5); }\n\
+               write(fd, b, 6);\n\
+               pthread_mutex_unlock(&m);\n\
+               if (pthread_mutex_lock(&m) == 22) { write(fd, b, 7); }\n\
+               write(fd, b, 8);\n\
+               return 0;\n\
+             }",
+        );
+        let lines: Vec<usize> = got.into_iter().map(|(line, _, _)| line).collect();
+        assert_eq!(lines, vec![9, 11, 13]);
+    }
+
+    #[test]
+    fn msg_dontwait_exempts_only_as_a_term_of_an_or() {
+        let got = blocking(
+            "#include <pthread.h>\n\
+             #include <sys/socket.h>\n\
+             pthread_mutex_t m;\n\
+             void f(int s, char *b, int c, int fl) {\n\
+               pthread_mutex_lock(&m);\n\
+               recv(s, b, 1, fl & ~MSG_DONTWAIT);\n\
+               recv(s, b, 1, c ? MSG_DONTWAIT : 0);\n\
+               recv(s, b, 1, fl);\n\
+               recv(s, b, 1, MSG_PEEK | (MSG_DONTWAIT));\n\
+               recv(s, b, 1, fl | MSG_DONTWAIT);\n\
+               pthread_mutex_unlock(&m);\n\
+             }",
+        );
+        let lines: Vec<usize> = got.into_iter().map(|(line, _, _)| line).collect();
+        assert_eq!(lines, vec![6, 7, 8]);
     }
 
     #[test]

@@ -1440,7 +1440,7 @@ pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
     // could be set, so a cache that does not record it is refused.
     ("max_nesting_depth", "none"),
     ("thread_profiles", ""),
-    ("thread_spawns", "pthread_create:3,thrd_create:2"),
+    ("thread_spawns", "pthread_create:3/4,thrd_create:2/3"),
 ];
 
 /// Version of the prescan cache's serialized layout. Bump it with any change

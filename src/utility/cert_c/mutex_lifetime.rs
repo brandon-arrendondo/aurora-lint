@@ -25,7 +25,12 @@
 //! as held only when it is held on every path to the destroy (a branch that
 //! returns drops out; a label, which a `goto` may reach holding anything,
 //! forgets everything), and only a lock that waits for the mutex counts (a
-//! try or timed lock may fail). A call that hands the mutex to any other
+//! try or timed lock may fail). A lock reached only through `&&`, `||` or
+//! `?:` is not held on every path. A lock whose result decides an `if` is
+//! held only on the branch its success takes (C11 and POSIX locks return
+//! zero on success), and on neither when the condition's shape does not
+//! say which branch that is; a failure branch that falls through rejoins
+//! holding it, as an unchecked lock is presumed taken. A call that hands the mutex to any other
 //! function may initialize or unlock it there, so it ends what is known about
 //! that mutex.
 //!
@@ -148,6 +153,7 @@ fn walk_file<'a>(
             function: func,
             exits: RefCell::new(Vec::new()),
             under_lock: record.then(|| RefCell::new(Vec::new())),
+            deciding: RefCell::new(Vec::new()),
         };
         walk.statement(body, Some(Known::default()), &mut findings);
         if let Some(calls) = walk.under_lock {
@@ -360,6 +366,29 @@ struct Walk<'s, 'a> {
     exits: RefCell<Vec<Exit>>,
     /// The calls made under a lock, when the walk records them.
     under_lock: Option<RefCell<Vec<CallUnderLock<'a>>>>,
+    /// Locks whose result decides the `if` condition being walked: held
+    /// only on one branch, set aside until the branches are walked.
+    deciding: RefCell<Vec<Deciding>>,
+}
+
+/// A lock whose result decides an `if`.
+struct Deciding {
+    mutex: SyncObject,
+    lock: HeldLock,
+    /// Whether its success takes the `then` branch, or the `else`.
+    success_is_then: bool,
+}
+
+/// Where a lock call sits in the expression its statement evaluates.
+enum Guard {
+    /// Evaluated on every path through the expression, and its result
+    /// decides nothing that the walk branches on.
+    Always,
+    /// Evaluated only on some paths (`&&`, `||`, `?:`), or its success is
+    /// not known on any branch the walk takes.
+    Never,
+    /// Decides the `if` being walked: held on the `then` branch when true.
+    Decides { success_is_then: bool },
 }
 
 /// The states that leave one loop or `switch` early.
@@ -377,15 +406,36 @@ impl<'s, 'a> Walk<'s, 'a> {
                 self.sequence(node, state, out)
             }
             "if_statement" => {
+                let outer = self.deciding.take();
                 let state = self.field(node, "condition", state, out);
+                let deciding = self.deciding.replace(outer);
+                let branch = |then: bool| {
+                    let mut state = state.clone();
+                    if let Some(known) = state.as_mut() {
+                        for d in deciding.iter().filter(|d| d.success_is_then == then) {
+                            known.held.entry(d.mutex.clone()).or_insert(d.lock.clone());
+                        }
+                    }
+                    state
+                };
+                // A failure branch that falls through is read as an
+                // unchecked lock is: presumed taken from there on.
+                let rejoin = |then: bool, mut state: State| {
+                    if let Some(known) = state.as_mut() {
+                        for d in deciding.iter().filter(|d| d.success_is_then != then) {
+                            known.held.entry(d.mutex.clone()).or_insert(d.lock.clone());
+                        }
+                    }
+                    state
+                };
                 let then = node
                     .child_by_field_name("consequence")
-                    .map_or(state.clone(), |c| self.statement(c, state.clone(), out));
+                    .map_or(branch(true), |c| self.statement(c, branch(true), out));
                 let other = match node.child_by_field_name("alternative") {
-                    Some(alternative) => self.statement(alternative, state, out),
-                    None => state,
+                    Some(alternative) => self.statement(alternative, branch(false), out),
+                    None => branch(false),
                 };
-                meet(then, other)
+                meet(rejoin(true, then), rejoin(false, other))
             }
             "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef" => {
                 let alternative = node.child_by_field_name("alternative");
@@ -557,7 +607,7 @@ impl<'s, 'a> Walk<'s, 'a> {
                 }
             }
             match thread_api::thread_op(&call_node, self.source, self.project) {
-                Some(call) => self.operation(call, call_node, &mut known, out),
+                Some(call) => self.operation(call, call_node, node, &mut known, out),
                 None => self.hand_off(call_node, &mut known),
             }
         }
@@ -569,6 +619,7 @@ impl<'s, 'a> Walk<'s, 'a> {
         &self,
         call: ThreadCall<'a>,
         node: Node<'a>,
+        root: Node<'a>,
         known: &mut Known,
         out: &mut Vec<MutexFinding<'a>>,
     ) {
@@ -604,12 +655,24 @@ impl<'s, 'a> Walk<'s, 'a> {
         }
         match kind {
             ThreadOpKind::MutexLock if call.op.blocking == Some(Blocking::Always) => {
-                let family = call.family;
-                known.held.entry(mutex).or_insert(HeldLock {
+                let lock = HeldLock {
                     mutex: spelling.clone(),
                     line,
-                    family,
-                });
+                    family: call.family,
+                };
+                match lock_guard(node, root, call.family, self.source) {
+                    Guard::Always => {
+                        known.held.entry(mutex).or_insert(lock);
+                    }
+                    Guard::Never => {}
+                    Guard::Decides { success_is_then } => {
+                        self.deciding.borrow_mut().push(Deciding {
+                            mutex,
+                            lock,
+                            success_is_then,
+                        })
+                    }
+                }
             }
             ThreadOpKind::MutexUnlock => {
                 known.held.remove(&mutex);
@@ -719,6 +782,102 @@ impl<'s, 'a> Walk<'s, 'a> {
                         .any(|id| get_node_text(id, self.source) == handle)
                 })
             })
+    }
+}
+
+/// Where the lock `call` sits in `root`, the expression or statement the
+/// walk evaluates: under a short-circuit or conditional operand it is not
+/// evaluated on every path; as the condition of an `if`, through
+/// parentheses, `!`, a comparison with zero (or `thrd_success`) and an
+/// assignment, its success picks a branch, for the families whose locks
+/// return zero on success; anywhere else in an `if` condition its success
+/// is not known on either branch.
+fn lock_guard(call: Node, root: Node, family: Family, source: &str) -> Guard {
+    // Whether the value reaching the current node is true on failure.
+    let mut true_on_failure = true;
+    let mut deciding = matches!(family, Family::C11 | Family::Posix);
+    let mut current = call;
+    while current.id() != root.id() {
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        match parent.kind() {
+            "binary_expression" => {
+                let operator = parent
+                    .child_by_field_name("operator")
+                    .map(|o| get_node_text(&o, source));
+                let right = parent.child_by_field_name("right");
+                let left = parent.child_by_field_name("left");
+                match operator {
+                    Some("&&" | "||") => {
+                        if right.is_some_and(|r| r.id() == current.id()) {
+                            return Guard::Never;
+                        }
+                        deciding = false;
+                    }
+                    Some(op @ ("==" | "!=")) => {
+                        let other = if left.is_some_and(|l| l.id() == current.id()) {
+                            right
+                        } else {
+                            left
+                        };
+                        let zero = other.is_some_and(|o| {
+                            matches!(get_node_text(&o, source), "0" | "thrd_success")
+                        });
+                        if zero && op == "==" {
+                            true_on_failure = !true_on_failure;
+                        } else if !zero {
+                            deciding = false;
+                        }
+                    }
+                    _ => deciding = false,
+                }
+            }
+            "conditional_expression" => {
+                if parent
+                    .child_by_field_name("condition")
+                    .is_none_or(|c| c.id() != current.id())
+                {
+                    return Guard::Never;
+                }
+                deciding = false;
+            }
+            "unary_expression" => {
+                let operator = parent
+                    .child_by_field_name("operator")
+                    .map(|o| get_node_text(&o, source));
+                if operator == Some("!") {
+                    true_on_failure = !true_on_failure;
+                } else {
+                    deciding = false;
+                }
+            }
+            "assignment_expression" => {
+                if parent
+                    .child_by_field_name("right")
+                    .is_none_or(|r| r.id() != current.id())
+                {
+                    deciding = false;
+                }
+            }
+            "parenthesized_expression" => {}
+            _ => deciding = false,
+        }
+        current = parent;
+    }
+    let in_if_condition = root.parent().is_some_and(|p| {
+        p.kind() == "if_statement"
+            && p.child_by_field_name("condition")
+                .is_some_and(|c| c.id() == root.id())
+    });
+    if !in_if_condition {
+        Guard::Always
+    } else if deciding {
+        Guard::Decides {
+            success_is_then: !true_on_failure,
+        }
+    } else {
+        Guard::Never
     }
 }
 
