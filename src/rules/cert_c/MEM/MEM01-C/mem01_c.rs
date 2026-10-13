@@ -54,10 +54,14 @@ pub struct Mem01C {
     /// The functions the project defines (those with a summary), built with
     /// `read_only_params` for the same reason.
     defined_functions: RefCell<Arc<HashSet<String>>>,
-    /// The function-like macros the file being scanned defines: a call spelled
-    /// as one is a macro expansion, not a call to a project function that
-    /// shares the name.
-    file_function_macros: RefCell<Arc<HashSet<String>>>,
+    /// The function-like macros any scanned file defines, headers included:
+    /// a call spelled as one is a macro expansion, not a call to a project
+    /// function that shares the name.
+    function_macro_names: RefCell<Arc<HashSet<String>>>,
+    /// The function-like macros the file being scanned defines, with the byte
+    /// offset of the first definition: a macro defined after a call is not
+    /// the call's callee.
+    own_function_macros: RefCell<Arc<HashMap<String, usize>>>,
 }
 
 /// Per-callee parameter indices confirmed to be read-only-dereferenced,
@@ -78,8 +82,21 @@ struct AddressOfCallContext {
     /// one can read a global or `static` that still holds a freed address,
     /// where a library function cannot.
     defined_functions: Arc<HashSet<String>>,
-    /// The scanned file's function-like macros (`Mem01C::file_function_macros`).
-    file_function_macros: Arc<HashSet<String>>,
+    /// `Mem01C::function_macro_names` and `Mem01C::own_function_macros`.
+    function_macro_names: Arc<HashSet<String>>,
+    own_function_macros: Arc<HashMap<String, usize>>,
+}
+
+impl AddressOfCallContext {
+    /// Whether a call at byte `at` spelled `callee` is a function-like macro
+    /// invocation: defined in this file before the call, or in some other
+    /// scanned file (a header) and not redefined here after it.
+    fn is_macro_call(&self, callee: &str, at: usize) -> bool {
+        match self.own_function_macros.get(callee) {
+            Some(&defined_at) => defined_at < at,
+            None => self.function_macro_names.contains(callee),
+        }
+    }
 }
 
 impl Mem01C {
@@ -90,7 +107,8 @@ impl Mem01C {
             read_only_params: RefCell::default(),
             freeing_wrappers: RefCell::default(),
             defined_functions: RefCell::default(),
-            file_function_macros: RefCell::default(),
+            function_macro_names: RefCell::default(),
+            own_function_macros: RefCell::default(),
         }
     }
 
@@ -206,6 +224,7 @@ impl CertRule for Mem01C {
         *self.cross_file_summaries.borrow_mut() = context.function_summaries.clone();
         *self.read_only_params.borrow_mut() = Arc::new(self.build_read_only_params());
         *self.freeing_wrappers.borrow_mut() = Arc::new(self.build_freeing_wrappers());
+        *self.function_macro_names.borrow_mut() = Arc::clone(&context.function_macro_names);
         *self.defined_functions.borrow_mut() = Arc::new(
             self.cross_file_summaries
                 .borrow()
@@ -216,11 +235,7 @@ impl CertRule for Mem01C {
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        *self.file_function_macros.borrow_mut() = Arc::new(
-            crate::analyze::macro_expand::collect_function_macros(node, source)
-                .into_keys()
-                .collect(),
-        );
+        *self.own_function_macros.borrow_mut() = Arc::new(function_macro_offsets(source));
         self.check_node(node, source, violations);
     }
 }
@@ -246,7 +261,8 @@ impl Mem01C {
             read_only_params: Arc::clone(&self.read_only_params.borrow()),
             freeing_wrappers: Arc::clone(&self.freeing_wrappers.borrow()),
             defined_functions: Arc::clone(&self.defined_functions.borrow()),
-            file_function_macros: Arc::clone(&self.file_function_macros.borrow()),
+            function_macro_names: Arc::clone(&self.function_macro_names.borrow()),
+            own_function_macros: Arc::clone(&self.own_function_macros.borrow()),
         };
 
         // Get pre-built CFG or build one on the fly
@@ -582,16 +598,40 @@ fn clearing_call_covers(call: &Node, lvalue: &LValue, source: &str) -> bool {
     cleared_extent(dest, rest, source).is_some_and(|extent| extent.covers(lvalue))
 }
 
+/// Each function-like macro `source` defines, with the byte offset of its
+/// first `#define`.
+fn function_macro_offsets(source: &str) -> HashMap<String, usize> {
+    let mut out = HashMap::new();
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        let directive = line.trim_start().strip_prefix('#').map(str::trim_start);
+        if let Some(rest) = directive
+            .and_then(|d| d.strip_prefix("define"))
+            .filter(|r| r.starts_with([' ', '\t']))
+        {
+            let rest = rest.trim_start();
+            let name_len = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            if name_len > 0 && rest[name_len..].starts_with('(') {
+                out.entry(rest[..name_len].to_string()).or_insert(offset);
+            }
+        }
+        offset += line.len();
+    }
+    out
+}
+
 /// The arguments a call passes in the positions its callee's summary frees.
 fn wrapper_freed_arguments<'t>(
     call: &Node<'t>,
     source: &str,
     addr_ctx: &AddressOfCallContext,
 ) -> Option<Vec<Node<'t>>> {
-    let callee = call.child_by_field_name("function")?;
-    let positions = addr_ctx
-        .freeing_wrappers
-        .get(get_node_text(&callee, source))?;
+    // The callee must name the function, not a parameter or local spelled
+    // the same (ADR-0006).
+    let callee = crate::analyze::noreturn::called_function_name(call, source)?;
+    let positions = addr_ctx.freeing_wrappers.get(&callee)?;
     let arguments = call.child_by_field_name("arguments")?;
     let args: Vec<Node<'t>> = arguments
         .named_children(&mut arguments.walk())
@@ -723,10 +763,10 @@ fn classify_stmt_on_path(
         if node
             .child(0)
             .filter(|c| c.kind() == "call_expression")
-            .and_then(|c| c.child_by_field_name("function"))
-            .is_some_and(|f| {
+            .and_then(|c| crate::analyze::noreturn::called_function_name(&c, source))
+            .is_some_and(|name| {
                 matches!(
-                    get_node_text(&f, source),
+                    name.as_str(),
                     "exit" | "_exit" | "_Exit" | "quick_exit" | "abort"
                 )
             })
@@ -779,7 +819,7 @@ fn call_can_read_dangling(
                     && crate::analyze::noreturn::called_function_name(&call, source).is_some_and(
                         |callee| {
                             addr_ctx.defined_functions.contains(&callee)
-                                && !addr_ctx.file_function_macros.contains(&callee)
+                                && !addr_ctx.is_macro_call(&callee, call.start_byte())
                         },
                     ))
         })
