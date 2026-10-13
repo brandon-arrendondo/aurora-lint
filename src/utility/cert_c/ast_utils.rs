@@ -506,6 +506,10 @@ fn collect_declarations_transparent_to_preproc<'a>(scope: &Node<'a>, out: &mut V
         }
         match child.kind() {
             "declaration" => out.push(child),
+            // A typedef-led function-pointer declaration tree-sitter read as
+            // a call; whether it is one is `misparsed_function_pointer_
+            // declaration`'s question, asked by `declaration_declarator_for`.
+            "expression_statement" if has_misparsed_declaration_shape(&child) => out.push(child),
             "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_else" | "case_statement" => {
                 collect_declarations_transparent_to_preproc(&child, out);
             }
@@ -532,6 +536,15 @@ pub fn declaration_declarator_for<'a>(
     name: &str,
     source: &str,
 ) -> Option<Node<'a>> {
+    if decl_node.kind() == "expression_statement" {
+        // The name first: the declaration question reads the scopes around
+        // the statement, and a scope can hold many statements of this shape.
+        let (_, _, declared, _) = misparsed_parts(decl_node)?;
+        if get_node_text(&declared, source) != name {
+            return None;
+        }
+        return misparsed_function_pointer_declaration(decl_node, source);
+    }
     for child in decl_node.child_nodes() {
         let declarator = match child.kind() {
             "init_declarator" => child.child_by_field_name("declarator").unwrap_or(child),
@@ -545,6 +558,476 @@ pub fn declaration_declarator_for<'a>(
         }
     }
     None
+}
+
+/// C keywords that can begin a parameter's type: an argument list holding
+/// one is a parameter list, since no expression starts with them.
+const TYPE_KEYWORDS: &[&str] = &[
+    "void", "char", "short", "int", "long", "float", "double", "signed", "unsigned", "_Bool",
+    "const", "volatile", "struct", "union", "enum",
+];
+
+/// Whether `stmt` may hold the `T(*x)(...)` shape: an `expression_statement`
+/// holding a call -- or `call = init` -- whose callee is itself a call. Two
+/// node kinds, cheap enough to ask of every statement of every scope a
+/// lookup walks; a statement that passes is a candidate only, and
+/// [`declaration_declarator_for`] reads the whole shape ([`misparsed_parts`])
+/// before taking it for a declaration.
+fn has_misparsed_declaration_shape(stmt: &Node) -> bool {
+    let Some(expr) = stmt.named_child_nodes().find(|c| c.kind() != "comment") else {
+        return false;
+    };
+    let call = match expr.kind() {
+        "call_expression" => Some(expr),
+        "assignment_expression" => expr.child(0),
+        _ => None,
+    };
+    // A call's first child is its callee.
+    call.filter(|c| c.kind() == "call_expression")
+        .and_then(|c| c.child(0))
+        .is_some_and(|callee| callee.kind() == "call_expression")
+}
+
+/// The grammar fields [`misparsed_parts`] reads, by id: it is asked of
+/// every expression statement of every scope a lookup walks, and
+/// `child_by_field_name` searches the field names on each call.
+struct MisparsedFields {
+    function: u16,
+    arguments: u16,
+    operator: u16,
+    left: u16,
+    argument: u16,
+}
+
+fn misparsed_fields() -> &'static MisparsedFields {
+    static FIELDS: std::sync::OnceLock<MisparsedFields> = std::sync::OnceLock::new();
+    FIELDS.get_or_init(|| {
+        let language = crate::parser::c_language();
+        let id = |name: &str| language.field_id_for_name(name).map_or(0, |id| id.get());
+        MisparsedFields {
+            function: id("function"),
+            arguments: id("arguments"),
+            operator: id("operator"),
+            left: id("left"),
+            argument: id("argument"),
+        }
+    })
+}
+
+/// The parts of the `T(*x)(...)` shape: (outer call, `T`, `x`, whether an
+/// `= init` follows).
+fn misparsed_parts<'a>(stmt: &Node<'a>) -> Option<(Node<'a>, Node<'a>, Node<'a>, bool)> {
+    let fields = misparsed_fields();
+    let expr = stmt.named_child_nodes().find(|c| c.kind() != "comment")?;
+    let (outer, initialized) = match expr.kind() {
+        "call_expression" => (expr, false),
+        "assignment_expression" => {
+            let op = expr.child_by_field_id(fields.operator)?;
+            if op.kind() != "=" {
+                return None;
+            }
+            (expr.child_by_field_id(fields.left)?, true)
+        }
+        _ => return None,
+    };
+    if outer.kind() != "call_expression" {
+        return None;
+    }
+    let inner = outer.child_by_field_id(fields.function)?;
+    if inner.kind() != "call_expression" {
+        return None;
+    }
+    let type_name = inner.child_by_field_id(fields.function)?;
+    if type_name.kind() != "identifier" {
+        return None;
+    }
+    let mut args = inner
+        .child_by_field_id(fields.arguments)?
+        .named_child_nodes()
+        .filter(|c| c.kind() != "comment");
+    let mut target = args.next()?;
+    if args.next().is_some() || target.kind() != "pointer_expression" {
+        return None;
+    }
+    // `(*x)`, `(**x)`: each level a `*`, ending at the declared name.
+    while target.kind() == "pointer_expression" {
+        if target.child_by_field_id(fields.operator)?.kind() != "*" {
+            return None;
+        }
+        target = target.child_by_field_id(fields.argument)?;
+    }
+    (target.kind() == "identifier").then_some((outer, type_name, target, initialized))
+}
+
+/// The name declared by a block-scope function-pointer declaration whose
+/// return type is a typedef, which tree-sitter-c reads as a call:
+/// `LONG (*RegDeleteKeyA)(HKEY, LPCSTR) = 0;` parses as `LONG(*RegDeleteKeyA)`
+/// called with `(HKEY, LPCSTR)`, then assigned 0, because the grammar cannot
+/// know `LONG` names a type. Without this, every resolver misses the local,
+/// and a later `RegDeleteKeyA(...)` through it is taken for the function of
+/// that name (ADR-0006).
+///
+/// The statement is a declaration when something says so; otherwise it stays
+/// the call it parsed as:
+/// - an `= init` follows: a call expression is never an lvalue, so
+///   `T(*x)(a) = 0` can only be a declaration;
+/// - a parameter starts with a type keyword (`T (*x)(int)`): no argument
+///   expression does;
+/// - a `typedef` of `T` is in scope at the statement ([`typedef_in_scope`]).
+///
+/// A typedef that only a header declares, with no initializer and no keyword
+/// among the parameters (`LONG (*x)(HKEY);` with `LONG` from `<windows.h>`),
+/// is left a call: the file alone cannot tell it from `f(*p)(x)`.
+pub fn misparsed_function_pointer_declaration<'a>(
+    stmt: &Node<'a>,
+    source: &str,
+) -> Option<Node<'a>> {
+    let (outer, type_name, declared, initialized) = misparsed_parts(stmt)?;
+    if initialized {
+        return Some(declared);
+    }
+    let keyword_param = outer.child_by_field_name("arguments").is_some_and(|args| {
+        args.named_child_nodes().any(|arg| {
+            matches!(arg.kind(), "primitive_type" | "sized_type_specifier")
+                || TYPE_KEYWORDS
+                    .iter()
+                    .any(|k| get_node_text(&arg, source).split_whitespace().next() == Some(k))
+        })
+    });
+    if keyword_param || typedef_in_scope(stmt, get_node_text(&type_name, source), source) {
+        return Some(declared);
+    }
+    None
+}
+
+/// Whether `name` names a type at `node` by a `typedef` in this file: the
+/// nearest binding of `name` that precedes `node`, in the innermost
+/// enclosing block that has one, out to file scope, is a `type_definition`
+/// declaring that name (`TypedefShape::of`, so a name a typedef merely
+/// mentions, as `pick` in `typedef int (*cb)(pick);`, is not one). A local
+/// object or function of that name, or a parameter, in a nearer scope, or
+/// after the typedef in the same scope and before `node`, hides the typedef
+/// (ADR-0006), and so does a local
+/// declared through the same misparsed shape (`FP (*pick)(RF) = choose;`);
+/// a typedef inside another function's body is not in scope at all.
+/// Preprocessor arms and `case` labels open no scope. An enumeration
+/// constant of that name does not hide it; only an ill-formed program has
+/// both in one scope.
+///
+/// The bindings come from the file's [`FileTypedefs`], built once per parsed
+/// file, so a name no typedef in the file declares is answered at once and
+/// another costs a binary search per enclosing scope.
+fn typedef_in_scope(node: &Node, name: &str, source: &str) -> bool {
+    let mut root = *node;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    let file = FileTypedefs::of(&root, source);
+    let Some(bindings) = file.bindings.get(name) else {
+        return false;
+    };
+    let before = node.start_byte();
+    let mut child = *node;
+    while let Some(scope) = child.parent() {
+        #[cfg(test)]
+        count_typedef_work(|w| w.steps += 1);
+        match scope.kind() {
+            "compound_statement" | "translation_unit" => {
+                let id = ScopeId::of(&scope);
+                let preceding = bindings.partition_point(|b| (b.scope, b.end) <= (id, before));
+                for binding in bindings[..preceding]
+                    .iter()
+                    .rev()
+                    .take_while(|b| b.scope == id)
+                {
+                    #[cfg(test)]
+                    count_typedef_work(|w| w.steps += 1);
+                    match binding.kind {
+                        ScopeBindingKind::Typedef => return true,
+                        ScopeBindingKind::Ordinary => return false,
+                        ScopeBindingKind::Misparsed => {
+                            if file.misparsed_declares(&root, binding, source) {
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+            "function_definition" => {
+                let is_parameter = get_function_parameters(&scope, source)
+                    .is_some_and(|params| params.iter().any(|(n, _)| n == name));
+                if is_parameter {
+                    return false;
+                }
+            }
+            "for_statement" => {
+                let in_initializer = scope
+                    .child_by_field_name("initializer")
+                    .is_some_and(|init| {
+                        init.end_byte() <= before
+                            && init.kind() == "declaration"
+                            && declaration_binds_name(&init, name, source)
+                    });
+                if in_initializer {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        child = scope;
+    }
+    false
+}
+
+/// The work [`typedef_in_scope`] did on this thread: [`FileTypedefs`]
+/// built, scopes and bindings stepped through, and misparsed statements
+/// read. Tests bound these counts rather than the time they take, so the
+/// bound holds on any machine and a per-lookup rebuild or scan still fails.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default)]
+struct TypedefWork {
+    builds: usize,
+    steps: usize,
+    misparsed_reads: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TYPEDEF_WORK: std::cell::Cell<TypedefWork> = const {
+        std::cell::Cell::new(TypedefWork { builds: 0, steps: 0, misparsed_reads: 0 })
+    };
+}
+
+#[cfg(test)]
+fn count_typedef_work(add: impl FnOnce(&mut TypedefWork)) {
+    TYPEDEF_WORK.with(|w| {
+        let mut work = w.get();
+        add(&mut work);
+        w.set(work);
+    });
+}
+
+/// A `compound_statement` or `translation_unit`, by its byte range: the
+/// same in every parse of one text, where a node id is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ScopeId(usize, usize);
+
+impl ScopeId {
+    fn of(scope: &Node) -> Self {
+        ScopeId(scope.start_byte(), scope.end_byte())
+    }
+}
+
+/// One binding of a typedef name that a scope holds directly.
+#[derive(Debug, Clone, Copy)]
+struct ScopeBinding {
+    /// The `compound_statement` or `translation_unit` holding it.
+    scope: ScopeId,
+    /// The binding item's byte range.
+    start: usize,
+    end: usize,
+    kind: ScopeBindingKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScopeBindingKind {
+    /// A `type_definition` declaring the name.
+    Typedef,
+    /// A declaration or function definition binding it as an object or
+    /// function.
+    Ordinary,
+    /// A `T(*name)(...)` statement, which binds the name only if
+    /// [`misparsed_function_pointer_declaration`] reads it as a declaration.
+    Misparsed,
+}
+
+/// For one parsed file, each name some `typedef` in it declares, with every
+/// binding of that name in the ordinary namespace that a block or the file
+/// holds directly (through preprocessor arms and `case` labels), sorted by
+/// scope and then by where the binding ends. Names no typedef declares are
+/// absent: nothing can make them a type here.
+#[derive(Debug, Default)]
+struct FileTypedefs {
+    bindings: HashMap<String, Vec<ScopeBinding>>,
+    /// What [`Self::misparsed_declares`] found, by the statement's start.
+    misparsed: std::cell::RefCell<HashMap<usize, bool>>,
+}
+
+/// How many files' [`FileTypedefs`] one thread keeps: the file being
+/// checked, and the small trees parsed from its macro expansions.
+const FILE_TYPEDEFS_KEPT: usize = 4;
+
+thread_local! {
+    /// Each kept file's text, and its bindings.
+    static FILE_TYPEDEFS: std::cell::RefCell<Vec<(std::rc::Rc<str>, std::rc::Rc<FileTypedefs>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+impl FileTypedefs {
+    /// The bindings of the file `root` was parsed from, built on the first
+    /// question about its text and kept per thread. The text is the key,
+    /// compared whole: a reparse, or another file, can reuse the address of
+    /// the text or the tree a kept entry was built from.
+    fn of(root: &Node, source: &str) -> std::rc::Rc<FileTypedefs> {
+        if let Some(found) = FILE_TYPEDEFS.with(|kept| {
+            kept.borrow()
+                .iter()
+                .find(|(text, _)| **text == *source)
+                .map(|(_, f)| f.clone())
+        }) {
+            return found;
+        }
+        let built = std::rc::Rc::new(Self::build(root, source));
+        FILE_TYPEDEFS.with(|kept| {
+            let mut kept = kept.borrow_mut();
+            if kept.len() >= FILE_TYPEDEFS_KEPT {
+                kept.remove(0);
+            }
+            kept.push((source.into(), built.clone()));
+        });
+        built
+    }
+
+    fn build(root: &Node, source: &str) -> Self {
+        use crate::utility::cert_c::declarator_utils::{typedef_declarators, TypedefShape};
+        #[cfg(test)]
+        count_typedef_work(|w| w.builds += 1);
+        let typedef_names = |item: &Node| -> Vec<String> {
+            typedef_declarators(item)
+                .iter()
+                .filter_map(|d| TypedefShape::of(d, source).name)
+                .collect()
+        };
+        let mut scopes = Vec::new();
+        let mut names = std::collections::HashSet::new();
+        let mut cursor = root.walk();
+        let mut descending = true;
+        loop {
+            if descending {
+                let n = cursor.node();
+                match n.kind() {
+                    "compound_statement" | "translation_unit" => scopes.push(n),
+                    "type_definition" => names.extend(typedef_names(&n)),
+                    _ => {}
+                }
+                if cursor.goto_first_child() {
+                    continue;
+                }
+            }
+            if cursor.goto_next_sibling() {
+                descending = true;
+            } else if cursor.goto_parent() {
+                descending = false;
+            } else {
+                break;
+            }
+        }
+        let mut bindings: HashMap<String, Vec<ScopeBinding>> = HashMap::new();
+        if names.is_empty() {
+            return Self::default();
+        }
+        for scope in scopes {
+            let mut items = Vec::new();
+            collect_scope_items(&scope, &mut items);
+            for item in items {
+                let mut bind = |name: String, kind| {
+                    if names.contains(&name) {
+                        bindings.entry(name).or_default().push(ScopeBinding {
+                            scope: ScopeId::of(&scope),
+                            start: item.start_byte(),
+                            end: item.end_byte(),
+                            kind,
+                        });
+                    }
+                };
+                match item.kind() {
+                    "type_definition" => {
+                        for name in typedef_names(&item) {
+                            bind(name, ScopeBindingKind::Typedef);
+                        }
+                    }
+                    "declaration" => {
+                        for child in item.child_nodes() {
+                            let declarator = match child.kind() {
+                                "init_declarator" => {
+                                    child.child_by_field_name("declarator").unwrap_or(child)
+                                }
+                                "identifier"
+                                | "pointer_declarator"
+                                | "array_declarator"
+                                | "function_declarator" => child,
+                                _ => continue,
+                            };
+                            bind(
+                                get_identifier_from_declarator(&declarator, source),
+                                ScopeBindingKind::Ordinary,
+                            );
+                        }
+                    }
+                    "function_definition" => {
+                        if let Some(d) = item.child_by_field_name("declarator") {
+                            bind(
+                                get_identifier_from_declarator(&d, source),
+                                ScopeBindingKind::Ordinary,
+                            );
+                        }
+                    }
+                    "expression_statement" => {
+                        if let Some((_, _, declared, _)) = misparsed_parts(&item) {
+                            bind(
+                                get_node_text_owned(&declared, source),
+                                ScopeBindingKind::Misparsed,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for list in bindings.values_mut() {
+            list.sort_by_key(|b| (b.scope, b.end));
+        }
+        Self {
+            bindings,
+            misparsed: Default::default(),
+        }
+    }
+
+    /// Whether the `Misparsed` binding's statement is a declaration. It only
+    /// asks about statements before it, so the question ends.
+    fn misparsed_declares(&self, root: &Node, binding: &ScopeBinding, source: &str) -> bool {
+        if let Some(&known) = self.misparsed.borrow().get(&binding.start) {
+            return known;
+        }
+        #[cfg(test)]
+        count_typedef_work(|w| w.misparsed_reads += 1);
+        let stmt = root
+            .descendant_for_byte_range(binding.start, binding.end)
+            .and_then(|mut n| loop {
+                if n.kind() == "expression_statement" && n.start_byte() == binding.start {
+                    return Some(n);
+                }
+                n = n.parent()?;
+            });
+        let declares = stmt
+            .is_some_and(|stmt| misparsed_function_pointer_declaration(&stmt, source).is_some());
+        self.misparsed.borrow_mut().insert(binding.start, declares);
+        declares
+    }
+}
+
+/// The items directly in `scope`, through preprocessor arms and `case`
+/// labels, in source order.
+fn collect_scope_items<'a>(scope: &Node<'a>, out: &mut Vec<Node<'a>>) {
+    let mut cursor = scope.walk();
+    for child in scope.children(&mut cursor) {
+        match child.kind() {
+            "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_else" | "case_statement" => {
+                collect_scope_items(&child, out)
+            }
+            _ => out.push(child),
+        }
+    }
 }
 
 /// The `parameter_declaration` node of `function_node` that binds `name`.
@@ -2774,6 +3257,244 @@ mod tests {
         parser.set_language(&language).unwrap();
         let tree = parser.parse(code, None).unwrap();
         (tree, code.to_string())
+    }
+
+    /// The binding of the last `name` occurrence in `code`, as
+    /// `resolve_identifier_binding` reports it: `Some(true)` for an object
+    /// (a local or parameter), `Some(false)` for anything else it resolves
+    /// to, `None` when nothing binds it.
+    fn last_occurrence_is_local(code: &str, name: &str) -> Option<bool> {
+        let (tree, src) = parse_c_code(code);
+        let last = query::find_descendants_of_kind(tree.root_node(), "identifier")
+            .into_iter()
+            .filter(|n| get_node_text(n, &src) == name)
+            .max_by_key(|n| n.start_byte())?;
+        resolve_identifier_binding(&last, name, &src).map(|b| {
+            matches!(
+                b,
+                IdentifierBinding::Local(_) | IdentifierBinding::Parameter(_)
+            )
+        })
+    }
+
+    #[test]
+    fn a_typedef_led_function_pointer_local_misread_as_a_call_binds_its_name() {
+        let with = |decl: &str| {
+            format!(
+                "typedef long LONG;\nvoid f(void)\n{{\n    {decl}\n    RegDeleteKeyA(0, \"x\");\n}}\n"
+            )
+        };
+        // An initializer: a call is never an lvalue, so this is a declaration
+        // whatever `T` is.
+        assert_eq!(
+            last_occurrence_is_local(
+                &with("UNKNOWN (*RegDeleteKeyA)(HKEY, LPCSTR) = 0;"),
+                "RegDeleteKeyA"
+            ),
+            Some(true)
+        );
+        // A type keyword among the parameters.
+        assert_eq!(
+            last_occurrence_is_local(
+                &with("UNKNOWN (*RegDeleteKeyA)(int, LPCSTR);"),
+                "RegDeleteKeyA"
+            ),
+            Some(true)
+        );
+        // `T` is this file's typedef.
+        assert_eq!(
+            last_occurrence_is_local(
+                &with("LONG (*RegDeleteKeyA)(HKEY, LPCSTR);"),
+                "RegDeleteKeyA"
+            ),
+            Some(true)
+        );
+        // Two levels of pointer.
+        assert_eq!(
+            last_occurrence_is_local(&with("LONG (**RegDeleteKeyA)(HKEY) = 0;"), "RegDeleteKeyA"),
+            Some(true)
+        );
+        // The built-in spelling was always a declaration.
+        assert_eq!(
+            last_occurrence_is_local(
+                &with("long (*RegDeleteKeyA)(HKEY, LPCSTR) = 0;"),
+                "RegDeleteKeyA"
+            ),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn a_call_shaped_like_one_stays_a_call() {
+        // `pick` is a function returning a function pointer: `pick(*table)`
+        // is called, and its result called with `(x)`. Nothing says
+        // declaration, so `table` is not declared here.
+        let code = "int (*pick(int t))(int);\nint table;\nint f(int x)\n{\n    pick(*table)(x);\n    return table;\n}\n";
+        let (tree, src) = parse_c_code(code);
+        let stmt = query::find_descendants_of_kind(tree.root_node(), "expression_statement")
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(misparsed_function_pointer_declaration(&stmt, &src).is_none());
+        assert_eq!(last_occurrence_is_local(code, "table"), Some(false));
+        // An unknown type name with neither initializer nor keyword
+        // parameter is not taken for one either.
+        let unknown = "void f(void)\n{\n    LONG (*g)(HKEY);\n    g(0);\n}\n";
+        assert_eq!(last_occurrence_is_local(unknown, "g"), None);
+    }
+
+    #[test]
+    fn only_a_typedef_in_scope_at_the_statement_makes_it_a_declaration() {
+        let declares = |code: &str| last_occurrence_is_local(code, "rand") == Some(true);
+        let call = "pick(*rand)(x);\n    rand();";
+        // In scope: at file scope before the function, or earlier in an
+        // enclosing block.
+        assert!(declares(&format!(
+            "typedef int pick;\nvoid f(int x)\n{{\n    {call}\n}}\n"
+        )));
+        assert!(declares(&format!(
+            "void f(int x)\n{{\n    typedef int pick;\n    {{\n        {call}\n    }}\n}}\n"
+        )));
+        // A local object of the typedef's name hides it.
+        assert!(!declares(&format!(
+            "typedef int pick;\nvoid f(int x)\n{{\n    int (*pick)(int) = 0;\n    {call}\n}}\n"
+        )));
+        // So does a parameter.
+        assert!(!declares(&format!(
+            "typedef int pick;\nvoid f(int (*pick)(int), int x)\n{{\n    {call}\n}}\n"
+        )));
+        // A typedef inside another function, before or after the use.
+        assert!(!declares(&format!(
+            "void g(void) {{ typedef int pick; }}\nvoid f(int x)\n{{\n    {call}\n}}\n"
+        )));
+        assert!(!declares(&format!(
+            "void f(int x)\n{{\n    {call}\n}}\nvoid g(void) {{ typedef int pick; }}\n"
+        )));
+        // A typedef only after the statement.
+        assert!(!declares(&format!(
+            "void f(int x)\n{{\n    {call}\n}}\ntypedef int pick;\n"
+        )));
+        // A typedef that only mentions the name, as a parameter type.
+        assert!(!declares(&format!(
+            "typedef int (*cb)(pick);\nvoid f(int x)\n{{\n    {call}\n}}\n"
+        )));
+        // `bool` is an ordinary identifier before C23 without <stdbool.h>.
+        assert!(!declares(
+            "void f(int bool)\n{\n    pick(*rand)(bool);\n    rand();\n}\n"
+        ));
+    }
+
+    /// Resolves every `name(...)` call statement in `code` whose callee is
+    /// an identifier `pick` accepts, from a fresh per-thread cache, and
+    /// returns how many resolve to a local with the typedef work it took.
+    fn resolve_calls_counting(code: &str, pick: impl Fn(&str) -> bool) -> (usize, TypedefWork) {
+        FILE_TYPEDEFS.with(|kept| kept.borrow_mut().clear());
+        TYPEDEF_WORK.with(|w| w.set(TypedefWork::default()));
+        let (tree, src) = parse_c_code(code);
+        let mut locals = 0;
+        for call in query::find_descendants_of_kind(tree.root_node(), "call_expression") {
+            let callee = call.child_by_field_name("function").unwrap();
+            if callee.kind() != "identifier"
+                || call.parent().unwrap().kind() != "expression_statement"
+            {
+                continue;
+            }
+            let name = get_node_text(&callee, &src);
+            if !pick(name) {
+                continue;
+            }
+            if matches!(
+                resolve_identifier_binding(&callee, name, &src),
+                Some(IdentifierBinding::Local(_))
+            ) {
+                locals += 1;
+            }
+        }
+        (locals, TYPEDEF_WORK.with(|w| w.get()))
+    }
+
+    /// The typedef work for 2N of a shape is at most twice that for N: one
+    /// index per file, and steps that grow linearly, never with the square.
+    fn assert_linear(small: TypedefWork, large: TypedefWork, what: &str) {
+        assert_eq!(
+            (small.builds, large.builds),
+            (1, 1),
+            "{what}: {small:?} {large:?}"
+        );
+        assert!(
+            large.steps <= 2 * small.steps,
+            "{what}: {small:?} {large:?}"
+        );
+        assert!(
+            large.misparsed_reads <= 2 * small.misparsed_reads,
+            "{what}: {small:?} {large:?}"
+        );
+    }
+
+    #[test]
+    fn many_typedef_led_function_pointer_locals_resolve_in_linear_work() {
+        // One function with N `XT (*pK)(YT);` locals and N calls through
+        // them: the typedef evidence is read only for the statement that
+        // declares the name being resolved.
+        let shape = |n: usize| {
+            let mut code = String::from("typedef int XT;\ntypedef int YT;\nvoid f(void)\n{\n");
+            for k in 0..n {
+                code.push_str(&format!("    XT (*p{k})(YT);\n"));
+            }
+            for k in 0..n {
+                code.push_str(&format!("    p{k}(0);\n"));
+            }
+            code.push_str("}\n");
+            resolve_calls_counting(&code, |name| name.starts_with('p'))
+        };
+        let (locals, small) = shape(100);
+        assert_eq!(locals, 100);
+        let (locals, large) = shape(200);
+        assert_eq!(locals, 200);
+        assert_linear(small, large, "one function");
+    }
+
+    #[test]
+    fn typedef_led_locals_across_many_functions_resolve_in_linear_work() {
+        // N prototypes and N functions, each with a `T (*p)(U);` local and a
+        // call through it, asked once with no typedef of T in the file (no
+        // evidence: each statement stays a call) and once with a file-scope
+        // typedef (each is a local): the file's typedef bindings are built
+        // once, not walked from every statement out to file scope.
+        for (typedef, is_local) in [("", false), ("typedef int XT;\n", true)] {
+            let shape = |n: usize| {
+                let mut code = String::from(typedef);
+                for k in 0..n {
+                    code.push_str(&format!("int proto{k}(int);\n"));
+                }
+                for k in 0..n {
+                    code.push_str(&format!(
+                        "void f{k}(void)\n{{\n    XT (*p)(YT);\n    p(0);\n}}\n"
+                    ));
+                }
+                resolve_calls_counting(&code, |name| name == "p")
+            };
+            let (locals, small) = shape(500);
+            assert_eq!(locals, if is_local { 500 } else { 0 }, "{typedef:?}");
+            let (locals, large) = shape(1000);
+            assert_eq!(locals, if is_local { 1000 } else { 0 }, "{typedef:?}");
+            assert_linear(small, large, typedef);
+        }
+    }
+
+    #[test]
+    fn a_local_declared_through_the_misparsed_shape_hides_the_typedef() {
+        let code = "typedef int pick;\ntypedef int (*FP)(int);\ntypedef int (*RF)(void);\n\
+                    FP choose(RF);\nint f(int x)\n{\n    FP (*pick)(RF) = choose;\n    \
+                    pick(*rand)(x);\n    return rand();\n}\n";
+        let (tree, src) = parse_c_code(code);
+        let statements: Vec<Node> =
+            query::find_descendants_of_kind(tree.root_node(), "expression_statement");
+        let declares: Vec<bool> = statements
+            .iter()
+            .map(|s| misparsed_function_pointer_declaration(s, &src).is_some())
+            .collect();
+        assert_eq!(declares, vec![true, false]);
     }
 
     /// A run of case-label macro statements long enough that tree-sitter's
