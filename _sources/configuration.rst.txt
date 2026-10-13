@@ -192,6 +192,23 @@ POSIX exemptions would have withheld. Declare ``posix_version``, or pass a
 compile database that defines ``_POSIX_C_SOURCE`` for every unit, to restore
 them.
 
+Some facts no other declaration implies. Whether a handler installed with
+``signal()`` stays installed while it runs is implementation-defined in C11
+(7.14.1.1p3) and in POSIX.1-2024's ``signal()`` alike, so neither a declared
+``posix_version`` nor the machine running the scan establishes it. SIG34-C's
+exception for a handler that changes its own signal (CERT's SIG34-C-EX1, "for
+implementations with persistent signal handlers") applies under every preset
+only when the project declares it:
+
+.. code-block:: toml
+
+    [environment.overrides]
+    signal_handlers_persistent = true   # our platform keeps handlers installed
+
+or ``--set signal_handlers_persistent=true``. A preprocessor guard such as
+CERT's ``#if !defined(_WIN32)`` names a platform, not a persistent one, and is
+not read as the declaration.
+
 Integer widths are implementation-defined, so the scan credits only what it is
 told. Each width is a plain key under ``[environment]``, and ``data_model`` is a
 named bundle of those keys, loaded as if its lines were in the

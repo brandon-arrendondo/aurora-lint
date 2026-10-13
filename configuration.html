@@ -285,6 +285,20 @@ code runs on a POSIX system. <code class="docutils literal notranslate"><span cl
 POSIX exemptions would have withheld. Declare <code class="docutils literal notranslate"><span class="pre">posix_version</span></code>, or pass a
 compile database that defines <code class="docutils literal notranslate"><span class="pre">_POSIX_C_SOURCE</span></code> for every unit, to restore
 them.</p>
+<p>Some facts no other declaration implies. Whether a handler installed with
+<code class="docutils literal notranslate"><span class="pre">signal()</span></code> stays installed while it runs is implementation-defined in C11
+(7.14.1.1p3) and in POSIX.1-2024’s <code class="docutils literal notranslate"><span class="pre">signal()</span></code> alike, so neither a declared
+<code class="docutils literal notranslate"><span class="pre">posix_version</span></code> nor the machine running the scan establishes it. SIG34-C’s
+exception for a handler that changes its own signal (CERT’s SIG34-C-EX1, “for
+implementations with persistent signal handlers”) applies under every preset
+only when the project declares it:</p>
+<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="k">[environment.overrides]</span>
+<span class="n">signal_handlers_persistent</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span><span class="w">   </span><span class="c1"># our platform keeps handlers installed</span>
+</pre></div>
+</div>
+<p>or <code class="docutils literal notranslate"><span class="pre">--set</span> <span class="pre">signal_handlers_persistent=true</span></code>. A preprocessor guard such as
+CERT’s <code class="docutils literal notranslate"><span class="pre">#if</span> <span class="pre">!defined(_WIN32)</span></code> names a platform, not a persistent one, and is
+not read as the declaration.</p>
 <p>Integer widths are implementation-defined, so the scan credits only what it is
 told. Each width is a plain key under <code class="docutils literal notranslate"><span class="pre">[environment]</span></code>, and <code class="docutils literal notranslate"><span class="pre">data_model</span></code> is a
 named bundle of those keys, loaded as if its lines were in the

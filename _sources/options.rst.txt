@@ -100,6 +100,14 @@ Environment contracts
    - Oracle tag: ``contract:closed_program``
    - Basis: ADR-0011: libraries count as external, and an executable that exports its symbols (-rdynamic, dlopen'ed plugins) is a library too, so in-tree callers and writes prove nothing about a function or global with external linkage; a closed set of call sites, all passing a safe argument, is proof (basis 3). C11 6.2.2p2: every declaration of an identifier with external linkage, in any translation unit, denotes the same object. Declared by the user, never assumed: a Juliet testcase set is a closed program; a library is not.
 
+``signal_handlers_persistent``
+   A handler installed with signal() stays installed while it runs: the implementation does not reset the signal's disposition to SIG_DFL before calling it. Then a handler may call signal() on its own signal (SIG34-C EX1). Undeclared, the reset is assumed under every preset, and that call reopens the window in which a second signal takes the default action.
+
+   - Default preset: ``false``; strict preset: ``false``; pedantic preset: ``false``
+   - Scope: contract
+   - Oracle tag: ``contract:signal_handlers_persistent``
+   - Basis: CERT SIG34-C EX1 ("implementations with persistent signal handlers") and SIG01-C. C11 7.14.1.1p3: whether the equivalent of signal(sig, SIG_DFL) is executed before a handler is called is implementation-defined, and POSIX.1-2024's signal() leaves it implementation-defined too, so neither a POSIX environment nor the scanning host establishes it. Declared by the user, never assumed.
+
 ``free_null_is_noop``
    free(NULL) does nothing.
 
