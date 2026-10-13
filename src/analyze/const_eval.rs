@@ -3329,12 +3329,43 @@ fn resolve_local_var_range_depth(
                 return last_range;
             }
         }
+        // Leaving a loop: a value stored before it reaches `node` only on
+        // the first trip when the loop itself writes the variable.
+        // `i = 3; while (k--) { x >> i; if (c) { i = 40; continue; } }`
+        // shifts by 40 on a later trip.
+        if matches!(
+            parent.kind(),
+            "while_statement" | "do_statement" | "for_statement"
+        ) && subtree_writes_var(&parent, var_name, source)
+        {
+            return None;
+        }
         if parent.kind() == "function_definition" {
             break;
         }
         current = parent.parent();
     }
     None
+}
+
+/// Whether anything under `node` assigns `var_name` (`=` or a compound
+/// operator), steps it (`++`/`--`) or passes its address to a call.
+fn subtree_writes_var(node: &Node, var_name: &str, source: &str) -> bool {
+    let names_var = |n: Option<Node>| {
+        n.is_some_and(|n| {
+            n.kind() == "identifier" && n.utf8_text(source.as_bytes()) == Ok(var_name)
+        })
+    };
+    let writes = match node.kind() {
+        "assignment_expression" => names_var(node.child_by_field_name("left")),
+        "update_expression" => names_var(node.child_by_field_name("argument")),
+        "call_expression" => call_takes_address_of(node, var_name, source),
+        _ => false,
+    };
+    writes
+        || node
+            .child_nodes()
+            .any(|child| subtree_writes_var(&child, var_name, source))
 }
 
 /// Check a single statement for an assignment to `var_name` and return its range.

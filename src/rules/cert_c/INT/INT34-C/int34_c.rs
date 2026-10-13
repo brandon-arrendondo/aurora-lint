@@ -236,10 +236,7 @@ impl Int34C {
 
             // Try CFG-based VRA first (more precise)
             if let Some(range) = self.eval_shift_range_via_vra(node, &right_node, source) {
-                // A compile-time constant shift (min == max, non-negative) is
-                // equivalent to a numeric literal — the compiler validates it and
-                // INT34-C adds nothing.  Variable shifts bounded below the
-                // operand's width are also safe.
+                // A shift amount bounded below the operand's width is safe.
                 if Self::range_within_width(&range, width) {
                     return;
                 }
@@ -254,7 +251,7 @@ impl Int34C {
                 if let Some(range) =
                     const_eval::try_evaluate_range(&right_node, source, &macros, &var_ranges)
                 {
-                    // Same logic: single-value constants and width-bounded variables are safe.
+                    // Same logic: an amount bounded below the width is safe.
                     if Self::range_within_width(&range, width) {
                         return;
                     }
@@ -490,11 +487,13 @@ impl Int34C {
     }
 
     /// Check if the operand is likely an unsigned type
-    /// A shift amount range the operand can absorb: non-negative, and either
-    /// a single value (a compile-time constant the compiler already checks)
-    /// or entirely below `width`.
+    /// A shift amount range the operand can absorb: non-negative and
+    /// entirely below `width`. A single value is no exception: a literal
+    /// amount never reaches here (`is_compile_time_constant`), and a variable
+    /// the analysis pins to one value (`unsigned i = 39; x >> i`) is as
+    /// undefined at 39 as any range that reaches it.
     fn range_within_width(range: &const_eval::ValueRange, width: i64) -> bool {
-        range.min >= 0 && (range.min == range.max || range.max < width)
+        range.min >= 0 && range.max < width
     }
 
     /// Bit width of the shift's left operand once promoted, as the bound
