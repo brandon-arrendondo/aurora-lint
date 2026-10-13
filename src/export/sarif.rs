@@ -35,12 +35,12 @@ fn collect_artifacts<'a>(
         if let Some(bytes) = &content {
             artifact["hashes"] = serde_json::json!({ "sha-256": sha256_hex(bytes) });
         }
-        let lines = content.map(|bytes| {
-            String::from_utf8_lossy(&bytes)
-                .lines()
-                .map(str::to_string)
-                .collect()
-        });
+        // The hash is over the file's bytes; a snippet is a line of the
+        // text the scan read, so line numbers agree for a file with a BOM or
+        // in Latin-1 or UTF-16.
+        let lines = content
+            .and_then(|bytes| crate::parser::decode_source_bytes(bytes).ok())
+            .map(|text| text.lines().map(str::to_string).collect());
         infos.insert(
             &v.file_path,
             ArtifactInfo {

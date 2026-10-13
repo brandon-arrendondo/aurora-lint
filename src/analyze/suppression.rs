@@ -249,11 +249,7 @@ impl Suppression {
             }
         }
 
-        // Hash the violation line (stripping any inline suppress comment)
-        let code = Self::get_line(source, violation_line);
-        let code = Self::strip_suppress_comment(&code);
-        let current_hash = SuppressionManager::calculate_suppression_hash(&self.rule_id, &code);
-        current_hash == self.hash
+        SuppressionManager::line_hash(&self.rule_id, source, violation_line) == self.hash
     }
 
     /// Get a single 1-based line from source.
@@ -530,6 +526,18 @@ impl SuppressionManager {
     /// Returns the number of wildcard suppressions loaded.
     pub fn wildcard_count(&self) -> usize {
         self.wildcard_suppressions.len()
+    }
+
+    /// The hash a suppression of `rule_id` carries for the 1-based `line` of
+    /// `text`: the line without any suppress comment on it, hashed by
+    /// [`Self::calculate_suppression_hash`]. `text` is the file as the scan
+    /// reads it (`crate::parser::read_source_or_transcode`: a UTF-8 BOM
+    /// dropped, Latin-1 and UTF-16 decoded). The matcher, `--generate-
+    /// suppression` and the TUI writer all hash through here, so a
+    /// suppression one of them writes is one the scan matches.
+    pub fn line_hash(rule_id: &str, text: &str, line: usize) -> String {
+        let code = Suppression::get_line(text, line);
+        Self::calculate_suppression_hash(rule_id, &Suppression::strip_suppress_comment(&code))
     }
 
     /// Calculate hash: SHA-256(rule_id + ":" + whitespace-normalized code), truncated to 16 hex.

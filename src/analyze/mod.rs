@@ -1886,8 +1886,9 @@ pub fn handle_generate_suppression(spec: &str) -> Result<()> {
         }
     };
 
-    // Read the source file
-    let source = match fs::read_to_string(file_path) {
+    // Read the source file as the scan reads it, so the hash is the one the
+    // scan computes for the line
+    let source = match crate::parser::read_source_or_transcode(file_path) {
         Ok(content) => content,
         Err(e) => {
             eprintln!("Error: Cannot read file '{}': {}", file_path, e);
@@ -1905,21 +1906,10 @@ pub fn handle_generate_suppression(spec: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Get the code line, stripping any existing suppress comment (either
-    // spelling) so the hash covers only the code portion.
+    // The hash covers only the code portion of the line, without any
+    // existing suppress comment (either spelling).
     let raw_line = lines[line - 1];
-    let code = [
-        "// AURORA-SUPPRESS",
-        "/* AURORA-SUPPRESS",
-        "// SQC-SUPPRESS",
-        "/* SQC-SUPPRESS",
-    ]
-    .iter()
-    .filter_map(|opener| raw_line.find(opener))
-    .min()
-    .map_or(raw_line, |pos| &raw_line[..pos]);
-
-    let hash = SuppressionManager::calculate_suppression_hash(rule_id, code);
+    let hash = SuppressionManager::line_hash(rule_id, &source, line);
 
     println!(
         "Generated suppression for {}:{}:{}",
@@ -2216,7 +2206,7 @@ fn collect_function_cfgs_with_constants(
 /// The trimmed source text of `line_number` in `file_path`, or a placeholder
 /// string if the line is out of range.
 pub fn get_code_snippet(file_path: &str, line_number: usize) -> Result<String> {
-    let content = fs::read_to_string(file_path)?;
+    let content = crate::parser::read_source_or_transcode(file_path)?;
     let lines: Vec<&str> = content.lines().collect();
 
     if line_number > 0 && line_number <= lines.len() {

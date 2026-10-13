@@ -1517,7 +1517,7 @@ impl TerminalUI {
     }
 
     fn get_file_preview(&self, file_path: &str, target_line: usize) -> Result<Vec<Line<'_>>> {
-        let content = fs::read_to_string(file_path)?;
+        let content = crate::parser::read_source_or_transcode(file_path)?;
         let lines: Vec<&str> = content.lines().collect();
 
         // Show context around the target line (5 lines before and after)
@@ -2471,8 +2471,8 @@ impl TerminalUI {
 
         for &index in &self.checked_violations {
             if let Some(violation) = self.violations.get(index) {
-                // Read the source file to get code context
-                if let Ok(source) = fs::read_to_string(&violation.file_path) {
+                // Read the source file to get code context, as the scan read it
+                if let Ok(source) = crate::parser::read_source_or_transcode(&violation.file_path) {
                     let code_lines: Vec<&str> = source.lines().collect();
 
                     // Get the code preview (handle potential out-of-bounds)
@@ -2482,11 +2482,9 @@ impl TerminalUI {
                         "(line not found)".to_string()
                     };
 
-                    // Calculate hash for the violation
-                    let hash = SuppressionManager::calculate_suppression_hash(
-                        &violation.rule_id,
-                        &code_preview,
-                    );
+                    // The hash the scan computes for the line
+                    let hash =
+                        SuppressionManager::line_hash(&violation.rule_id, &source, violation.line);
 
                     let violation_suppression = ViolationSuppression {
                         rule_id: violation.rule_id.clone(),
@@ -2524,32 +2522,22 @@ impl TerminalUI {
         file_path: &str,
         violations: &[ViolationSuppression],
     ) -> Result<()> {
-        // Read the current file content
-        let content = fs::read_to_string(file_path)?;
-        let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-
-        // Sort violations by line number in reverse order to avoid index shifting
-        let mut sorted_violations = violations.to_vec();
-        sorted_violations.sort_by_key(|v| std::cmp::Reverse(v.line));
-
         // Get user information
         let user_info = self.get_user_info();
         let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
-
-        for violation in sorted_violations {
-            if violation.line > 0 && violation.line <= lines.len() {
-                let suppression_comment = format!(
+        let comments: Vec<(usize, String)> = violations
+            .iter()
+            .map(|v| {
+                let comment = format!(
                     "// SQC-SUPPRESS: {} HASH:{} JUSTIFICATION: \"Suppressed by {} on {}\"",
-                    violation.rule_id, violation.hash, user_info, timestamp
+                    v.rule_id, v.hash, user_info, timestamp
                 );
-
-                // Insert the suppression comment before the violation line
-                lines.insert(violation.line - 1, suppression_comment);
-            }
-        }
-
-        // Write the modified content back to the file
-        let new_content = lines.join("\n") + "\n";
+                (v.line, comment)
+            })
+            .collect();
+        let bytes = fs::read(file_path)?;
+        let new_content = with_comments_above(&bytes, comments)
+            .map_err(|e| anyhow::anyhow!("{file_path}: {e}"))?;
         fs::write(file_path, new_content)?;
 
         Ok(())
@@ -2823,5 +2811,58 @@ impl TerminalUI {
                 && suppressed.line == violation.line
                 && suppressed.column == violation.column
         })
+    }
+}
+
+/// `bytes` (a source file) with each `(line, comment)` inserted as a line of
+/// its own above that 1-based line. Inserting rewrites the file, so it must
+/// stay in its own encoding: a UTF-8 file keeps a byte-order mark at the top
+/// rather than below the first comment, and a Latin-1 or UTF-16 file, which
+/// would be written back as UTF-8, is refused in favour of a suppress.toml
+/// entry.
+fn with_comments_above(bytes: &[u8], mut comments: Vec<(usize, String)>) -> Result<String> {
+    let Some(content) = std::str::from_utf8(bytes)
+        .ok()
+        .filter(|text| !text.contains('\0'))
+    else {
+        anyhow::bail!(
+            "not UTF-8 text (Latin-1 or UTF-16): an inline suppression would rewrite \
+             it as UTF-8, so add the suppression to suppress.toml instead"
+        );
+    };
+    let (bom, content) = match content.strip_prefix('\u{feff}') {
+        Some(rest) => ("\u{feff}", rest),
+        None => ("", content),
+    };
+    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+    // Bottom up, so an insertion does not move the lines still to come.
+    comments.sort_by_key(|(line, _)| std::cmp::Reverse(*line));
+    for (line, comment) in comments {
+        if line > 0 && line <= lines.len() {
+            lines.insert(line - 1, comment);
+        }
+    }
+    Ok(format!("{bom}{}\n", lines.join("\n")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_comments_above;
+
+    #[test]
+    fn a_comment_above_line_one_keeps_the_bom_at_the_top() {
+        let out = with_comments_above(
+            "\u{feff}int x = 1, y;\nint z;\n".as_bytes(),
+            vec![(1, "// c1".to_string()), (2, "// c2".to_string())],
+        )
+        .unwrap();
+        assert_eq!(out, "\u{feff}// c1\nint x = 1, y;\n// c2\nint z;\n");
+    }
+
+    #[test]
+    fn a_latin1_or_utf16_file_is_refused() {
+        assert!(with_comments_above(b"int caf\xe9;\n", vec![(1, "// c".into())]).is_err());
+        assert!(with_comments_above(b"\xff\xfei\0n\0t\0", vec![(1, "// c".into())]).is_err());
+        assert!(with_comments_above(b"i\0n\0t\0 \0x\0;\0", vec![(1, "// c".into())]).is_err());
     }
 }

@@ -283,7 +283,7 @@ impl std::error::Error for NotSourceText {}
 
 /// The decoding half of [`read_source_or_transcode`], split out so the
 /// encodings can be tested without touching the filesystem.
-fn decode_source_bytes(bytes: Vec<u8>) -> std::result::Result<String, NotSourceText> {
+pub(crate) fn decode_source_bytes(bytes: Vec<u8>) -> std::result::Result<String, NotSourceText> {
     let utf16 = |payload: &[u8], unit: fn([u8; 2]) -> u16| -> String {
         // An odd trailing byte is not half of anything; drop it rather
         // than fail the whole file over one byte.

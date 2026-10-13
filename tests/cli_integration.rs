@@ -1549,6 +1549,120 @@ fn a_suppression_for_a_line_a_repair_pass_blanks_matches_it() {
     );
 }
 
+/// How a test file's text is written to disk.
+#[derive(Clone, Copy, Debug)]
+enum Encoding {
+    Utf8Bom,
+    Latin1,
+    Utf16LeBom,
+}
+
+fn encode(encoding: Encoding, text: &str) -> Vec<u8> {
+    match encoding {
+        Encoding::Utf8Bom => [&[0xEF, 0xBB, 0xBF][..], text.as_bytes()].concat(),
+        Encoding::Latin1 => text
+            .chars()
+            .map(|c| u8::try_from(u32::from(c)).unwrap())
+            .collect(),
+        Encoding::Utf16LeBom => [0xFF, 0xFE]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect(),
+    }
+}
+
+/// A SARIF snippet is the line the scan read, so a UTF-16 file's snippet is
+/// its text, not NUL-interleaved bytes; the artifact hash stays over the
+/// file's bytes.
+#[test]
+fn a_utf16_files_sarif_snippet_is_its_text_and_its_hash_its_bytes() {
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("wide.c");
+    let bytes = encode(Encoding::Utf16LeBom, "int x = 1, y;\n");
+    std::fs::write(&file, &bytes).unwrap();
+    let out = dir.path().join("out.sarif");
+    run_aurora_lint(&[
+        file.to_str().unwrap(),
+        "--rules",
+        "DCL04-C",
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    let sarif: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let run = &sarif["runs"][0];
+    let location = &run["results"][0]["locations"][0]["physicalLocation"];
+    assert_eq!(location["region"]["snippet"]["text"], "int x = 1, y;");
+    let index = location["artifactLocation"]["index"].as_u64().unwrap() as usize;
+    let digest: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(run["artifacts"][index]["hashes"]["sha-256"], digest);
+}
+
+/// A suppression for the finding on line 1 of a file in each encoding the
+/// scan reads, in each form `--generate-suppression` prints (a standalone
+/// comment above, the inline directive, a suppress.toml entry), matches it:
+/// the generator hashes the text the scan reads, not the file's bytes.
+#[test]
+fn a_generated_line_one_suppression_matches_in_every_encoding() {
+    // A Latin-1 byte in the comment, so the line's text depends on decoding.
+    let code = "int x = 1, y; /* caf\u{e9} */";
+    for encoding in [Encoding::Utf8Bom, Encoding::Latin1, Encoding::Utf16LeBom] {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("plain.c");
+        std::fs::write(&plain, encode(encoding, &format!("{code}\n"))).unwrap();
+        let (status, stdout, stderr) = run_aurora_lint(&[
+            "--generate-suppression",
+            &format!("{}:1:DCL04-C", plain.to_str().unwrap()),
+        ]);
+        assert_eq!(status, 0, "{encoding:?}: {stderr}");
+        let line_after = |prefix: &str| {
+            stdout
+                .lines()
+                .find(|l| l.starts_with(prefix))
+                .unwrap_or_else(|| panic!("{encoding:?}: no `{prefix}` line in {stdout}"))
+                .to_string()
+        };
+        let standalone = line_after("// tools:suppress");
+        let inline = line_after("// AURORA-SUPPRESS");
+        let toml: String = stdout
+            .lines()
+            .skip_while(|l| *l != "[[suppress]]")
+            .map(|l| format!("{l}\n"))
+            .collect::<String>()
+            .replace("plain.c", "toml.c");
+
+        let cases = [
+            ("standalone.c", format!("{standalone}\n{code}\n"), None),
+            ("inline.c", format!("{code} {inline}\n"), None),
+            ("toml.c", format!("{code}\n"), Some(toml)),
+        ];
+        for (name, text, suppress_file) in cases {
+            let file = dir.path().join(name);
+            std::fs::write(&file, encode(encoding, &text)).unwrap();
+            let mut args = vec![
+                file.to_str().unwrap().to_string(),
+                "--rules".into(),
+                "DCL04-C".into(),
+            ];
+            if let Some(toml) = suppress_file {
+                let path = dir.path().join("suppress.toml");
+                std::fs::write(&path, toml).unwrap();
+                args.extend(["--suppress-file".into(), path.to_str().unwrap().to_string()]);
+            }
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let (_, stdout, stderr) = run_aurora_lint(&args);
+            assert!(
+                stdout.contains("(1 suppressed)"),
+                "{encoding:?} {name}: the generated suppression should match: {stdout}{stderr}"
+            );
+        }
+    }
+}
+
 // ─── Cross-file analysis (-d) ────────────────────────────────────────────────
 
 #[test]
