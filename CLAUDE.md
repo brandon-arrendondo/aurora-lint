@@ -95,7 +95,8 @@ python -m bench reference-ab --base BASE_BIN [--tier quick] [--rules R,R]
 tuned against, or reported** — its only job is catching overfitting to the
 oracle corpora. Don't add its projects to `ground_truth`, don't justify a fix
 by its finding counts, and don't publish its findings (a critical upstream
-disclosure via ADR-0007 is the one exception). See
+disclosure via ADR-0007 is the one exception); discuss an A/B only by its
+aggregate table. See
 `docs/design/reference-corpus-ab.md`.
 
 **Run `corpus-check` before any real-world run or precision claim.** Pins live

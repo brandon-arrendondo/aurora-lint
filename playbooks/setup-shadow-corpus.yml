@@ -1,0 +1,39 @@
+---
+# Fetch the reference shadow set (data/reference_corpus.json) at its pins:
+# the never-labeled codebases a change is A/B'd over to see what it moves on
+# code nobody tuned against (docs/design/reference-corpus-ab.md).
+#
+# The pins live in data/reference_corpus.json and nowhere else. This playbook
+# does not clone anything itself: it runs `python -m bench reference-fetch`
+# from this checkout, so the shallow fetch, the detach on the pin and the
+# clean happen exactly as they do before every A/B scan.
+#
+# Shadow scans run on the host, outside the benchmark container, with no
+# compile database and whatever system headers the machine has (docs/adr/0018,
+# Decision 6). So nothing here installs headers or builds anything.
+#
+# Runs on the local machine only. Usage:
+#   ansible-playbook playbooks/setup-shadow-corpus.yml -i "localhost," -c local
+#   ansible-playbook playbooks/setup-shadow-corpus.yml -i "localhost," -c local \
+#     -e shadow_tier=all
+# Checkouts go under BENCH_ROOT/shadow_corpus/ (bench/config.py: $SQC_BENCH_ROOT,
+# .env, ~/toolchain).
+
+- name: Fetch the reference shadow set at its pins
+  hosts: localhost
+  connection: local
+  vars:
+    project_dir: "{{ playbook_dir }}/.."
+    # quick, standard, large or all; each tier includes the smaller ones.
+    shadow_tier: standard
+  tasks:
+    - name: Fetch each codebase in the tier
+      command: python3 -m bench reference-fetch --tier {{ shadow_tier }}
+      args:
+        chdir: "{{ project_dir }}"
+      register: fetched
+      changed_when: "' fetched' in fetched.stdout"
+
+    - name: Report each codebase's state
+      debug:
+        var: fetched.stdout_lines

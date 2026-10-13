@@ -7,9 +7,14 @@ projects is refused before anything is written.
 """
 
 import argparse
+import contextlib
+import io
 import json
 import re
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from bench import reference
 from bench.__main__ import _validate_label_rows
@@ -62,6 +67,51 @@ class TestDiff(unittest.TestCase):
         d = reference.diff(base, base[:1])
         self.assertEqual(len(d["removed"]), 1)
         self.assertEqual(d["added"], [])
+
+
+class TestHeaders(unittest.TestCase):
+    def _report(self, data):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        path = Path(d.name) / "h.json"
+        path.write_text(json.dumps(data))
+        return path
+
+    def test_no_search_path_is_not_attempted_rather_than_clean(self):
+        h = reference._headers(self._report(
+            {"search_paths": [], "forced_includes": [], "unresolved": []}))
+        self.assertEqual(h, {"attempted": False, "unresolved": None})
+
+    def test_unresolved_counted_when_attempted(self):
+        h = reference._headers(self._report(
+            {"search_paths": ["/x"], "forced_includes": [], "unresolved": [{}, {}]}))
+        self.assertEqual(h, {"attempted": True, "unresolved": 2})
+
+    def test_a_binary_without_the_report_records_nothing(self):
+        self.assertEqual(reference._headers(Path("/nonexistent/h.json")), {})
+
+    def test_summary_names_every_scan_that_missed_headers(self):
+        report = {"codebases": {
+            "a": {"headers": {"attempted": False, "unresolved": None}},
+            "b": {"headers": {"attempted": True, "unresolved": 3}},
+            "c": {"headers": {"attempted": True, "unresolved": 0}}}}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            reference._print_headers(report)
+        self.assertIn("not attempted (no search path): 1 codebase", out.getvalue())
+        self.assertIn("b: 3 #include(s) not found", out.getvalue())
+        self.assertNotIn("c:", out.getvalue())
+
+
+class TestCacheKey(unittest.TestCase):
+    def test_settings_id_follows_the_manifest_content(self):
+        with tempfile.TemporaryDirectory() as d:
+            m = Path(d) / "rules.toml"
+            m.write_text("[rules]\n")
+            with mock.patch.object(reference, "MANIFEST", m):
+                before = reference.settings_id()
+                m.write_text("[rules]\nX = 1\n")
+                self.assertNotEqual(before, reference.settings_id())
 
 
 class TestLabelWall(unittest.TestCase):

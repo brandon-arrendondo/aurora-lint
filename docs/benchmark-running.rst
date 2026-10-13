@@ -534,7 +534,7 @@ The oracle corpora are what rules get tuned against. To see what a change
 moves on code nobody tuned against, A/B a base and a target binary over the
 pinned, never-labeled codebases in ``data/reference_corpus.json``::
 
-    python -m bench reference-fetch --tier quick
+    python -m bench reference-fetch --tier quick   # or playbooks/setup-shadow-corpus.yml
     python -m bench reference-ab --base BASE_BIN --tier quick --rules RULE,RULE
 
 It reports findings added and removed per rule and codebase, flagging rules

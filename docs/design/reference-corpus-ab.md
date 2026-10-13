@@ -1,7 +1,8 @@
 # Reference shadow corpus: A/B a rule change on code nobody tuned against
 
-**Status:** tooling in place (`bench reference-fetch`, `bench reference-ab`);
-not yet part of any review gate.
+**Status:** tooling in place (`bench reference-fetch`, `bench reference-ab`,
+`playbooks/setup-shadow-corpus.yml`). The A/B is a release-level check, not
+a gate on every change.
 
 ## Why
 
@@ -26,7 +27,9 @@ movement in rules the change was not meant to touch.
    If a shadow codebase is ever promoted to an oracle corpus, it moves out of
    this file first.
 2. **No reporting.** Its findings, counts and deltas are not published,
-   cited, or sent upstream. The one exception is a critical defect worth
+   cited, or sent upstream. Inside the project, an A/B is discussed by its
+   aggregate table (per rule: added, removed, codebases), never by its
+   individual findings. The one exception is a critical defect worth
    disclosing, which goes through the normal disclosure process
    (`docs/adr/0007`) like any other.
 3. **Don't tune to it.** A shadow delta is a prompt to look, not a target. If
@@ -55,6 +58,21 @@ codebase is scanned whole under `rules_templates/rules-all.toml`. There is no
 per-codebase manifest, include path or scope exclusion, because that tuning is
 what makes the oracle set non-neutral.
 
+## Where it runs
+
+Shadow scans run on the host, outside the benchmark container, deliberately
+(`docs/adr/0018`, Decision 6). There is no compile database, no dependency
+set, and no system headers are required: a node scans with whatever headers
+it has, and warnings and partial scans are accepted. That noise is welcome,
+because it is code the oracle setup never sees. A missing header is never
+fixed for, but it is always reported. The A/B summary ends with a `HEADERS`
+block naming every codebase whose scan did not see all its includes, and
+every scan where include resolution was not attempted at all.
+
+Machines are provisioned with `playbooks/setup-shadow-corpus.yml`, which runs
+`bench reference-fetch` for a tier. The pins live only in
+`data/reference_corpus.json`.
+
 ## Running it
 
 ```bash
@@ -70,8 +88,10 @@ python -m bench reference-ab --base /tmp/base-target/release/aurora-lint \
 
 Checkouts go under `BENCH_ROOT/shadow_corpus/` (shallow, detached at the pin, and
 re-checked and cleaned before every scan). Scans are cached under
-`data/reference_ab/scans/<binary sha256>/`, so a base binary is scanned once
-however many targets are compared against it. The full delta (every added,
+`data/reference_ab/scans/<binary sha256>/<settings>/`, where the settings
+id hashes the manifest's content and the profile. A base binary is scanned
+once however many targets are compared against it, and a scan made under an
+edited `rules-all.toml` is never reused. The full delta (every added,
 removed and message-changed finding) is written to
 `data/reference_ab/ab-<base>-<target>.json`. All of `data/reference_ab/` is
 gitignored local working data.

@@ -90,18 +90,31 @@ def binary_id(binary: Path) -> str:
     return h.hexdigest()[:12]
 
 
+def settings_id() -> str:
+    """What a scan read besides the binary and the checkout: the manifest's
+    content and the profile. A cached scan made under other settings is not
+    the same measurement, even from the same binary at the same pin."""
+    h = hashlib.sha256(MANIFEST.read_bytes())
+    h.update(DEFAULT_PROFILE.encode())
+    return h.hexdigest()[:12]
+
+
 def scan(binary: Path, bid: str, repo: dict, root: Path, jobs: int,
          timeout: int) -> dict:
-    """Run one binary over one checkout, cached by (binary hash, pin)."""
+    """Run one binary over one checkout, cached by (binary hash, settings, pin)."""
     path = root / repo["name"]
-    out = OUT_DIR / "scans" / bid / f"{repo['name']}-{repo['commit'][:12]}.json"
+    out = (OUT_DIR / "scans" / bid / settings_id()
+           / f"{repo['name']}-{repo['commit'][:12]}.json")
     if out.exists():
         return json.loads(out.read_text())
     out.parent.mkdir(parents=True, exist_ok=True)
     export = out.with_suffix(".raw.json")
+    headers = out.with_suffix(".headers.json")
     cmd = [str(binary), str(path), "--manifest", str(MANIFEST),
            "--export", str(export), "--jobs", str(jobs),
            "--profile", DEFAULT_PROFILE, "-d", str(path)]
+    if _reports_headers(binary):
+        cmd += ["--report-headers", str(headers)]
     start = time.monotonic()
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -109,7 +122,8 @@ def scan(binary: Path, bid: str, repo: dict, root: Path, jobs: int,
     except subprocess.TimeoutExpired:
         status = f"timeout after {timeout}s"
     result = {"status": status, "seconds": round(time.monotonic() - start, 1),
-              "findings": []}
+              "headers": _headers(headers), "findings": []}
+    headers.unlink(missing_ok=True)
     if status == "ok":
         result["findings"] = [_normalize(v, path) for v in json.loads(export.read_text())]
         export.unlink()
@@ -117,6 +131,27 @@ def scan(binary: Path, bid: str, repo: dict, root: Path, jobs: int,
     if status == "ok":
         out.write_text(json.dumps(result))
     return result
+
+
+def _reports_headers(binary: Path) -> bool:
+    """Whether this binary has --report-headers. A base built at an older
+    release may not, and passing it an unknown flag would fail the scan."""
+    proc = subprocess.run([str(binary), "--help"], capture_output=True, text=True)
+    return "--report-headers" in proc.stdout
+
+
+def _headers(report: Path) -> dict:
+    """How much of a scan's #include resolution happened. Shadow scans run
+    with whatever headers the host has and are never fixed for a missing one
+    (ADR-0018), so the report has to say what was missing. With no search
+    path, resolution is never attempted and an empty list means exactly
+    that, not that every header was found."""
+    if not report.exists():
+        return {}
+    data = json.loads(report.read_text())
+    attempted = bool(data.get("search_paths") or data.get("forced_includes"))
+    return {"attempted": attempted,
+            "unresolved": len(data.get("unresolved", [])) if attempted else None}
 
 
 def _normalize(v: dict, root: Path) -> dict:
@@ -176,6 +211,7 @@ def run_ab(base_bin: Path, target_bin: Path, repos: list[dict], root: Path,
         t = scan(target_bin, tid, repo, root, jobs, timeout)
         entry = {"commit": repo["commit"], "domain": repo["domain"],
                  "base_status": b["status"], "target_status": t["status"],
+                 "headers": t.get("headers") or b.get("headers"),
                  "base_total": len(b["findings"]), "target_total": len(t["findings"])}
         if b["status"] == "ok" and t["status"] == "ok":
             entry.update(diff(b["findings"], t["findings"]))
@@ -183,6 +219,7 @@ def run_ab(base_bin: Path, target_bin: Path, repos: list[dict], root: Path,
     report = {"base": {"path": str(base_bin), "sha256_12": bid},
               "target": {"path": str(target_bin), "sha256_12": tid},
               "manifest": str(MANIFEST.relative_to(PROJECT_DIR)),
+              "settings_id": settings_id(),
               "intended_rules": sorted(intended),
               "codebases": per_codebase}
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -218,5 +255,28 @@ def print_summary(report: dict) -> None:
             print(f"{rule:<14}{r['added']:>8}{r['removed']:>9}{len(r['codebases']):>11}{flag}")
     if changed:
         print(f"\n{changed} finding(s) kept their location but changed message text")
+    _print_headers(report)
     for name, why in failures:
         print(f"FAILED {name}: {why}")
+
+
+def _print_headers(report: dict) -> None:
+    """Missing headers, said where nobody can scroll past them."""
+    skipped, missing = [], []
+    for name, e in report["codebases"].items():
+        h = e.get("headers") or {}
+        if not h:
+            continue
+        if not h.get("attempted"):
+            skipped.append(name)
+        elif h.get("unresolved"):
+            missing.append((name, h["unresolved"]))
+    if not (skipped or missing):
+        return
+    print("\nHEADERS: these scans did not see every header their code includes; "
+          "findings that depend on them can differ on another host")
+    if skipped:
+        print(f"  include resolution not attempted (no search path): "
+              f"{len(skipped)} codebase(s)")
+    for name, n in sorted(missing, key=lambda m: -m[1]):
+        print(f"  {name}: {n} #include(s) not found")
