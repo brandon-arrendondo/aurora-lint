@@ -8173,3 +8173,12 @@ fn mem01_a_macro_counts_only_where_the_file_includes_it() {
     assert_eq!(mem01_macro_scope_findings("unrelated_header"), 1);
     assert_eq!(mem01_macro_scope_findings("sibling_c"), 1);
 }
+
+/// The directive in force at the call decides: a macro `#undef`ed before the
+/// call is the project function again, and a header's macro used before the
+/// file `#undef`s and redefines it is still a macro at the call.
+#[test]
+fn mem01_the_macro_definition_in_force_at_the_call_decides() {
+    assert_eq!(mem01_macro_scope_findings("undefined_before_the_call"), 1);
+    assert_eq!(mem01_macro_scope_findings("redefined_after_the_call"), 0);
+}

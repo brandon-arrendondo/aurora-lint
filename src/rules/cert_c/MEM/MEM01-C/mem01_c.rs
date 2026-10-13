@@ -64,13 +64,19 @@ pub struct Mem01C {
     include_edges: RefCell<Arc<HashMap<String, Vec<String>>>>,
     /// The file being scanned.
     file_path: RefCell<std::path::PathBuf>,
+    /// Its real path, as the include closure spells it.
+    own_file: RefCell<Arc<str>>,
     /// The files the scanned file may include (`scan` builds it).
     include_closure: RefCell<Arc<IncludeClosure>>,
-    /// The function-like macros the file being scanned defines, with the byte
-    /// offset of the first definition: a macro defined after a call is not
-    /// the call's callee.
-    own_function_macros: RefCell<Arc<HashMap<String, usize>>>,
+    /// The `#define`s and `#undef`s of each name in the file being scanned, in
+    /// order, as (byte offset, whether it leaves a function-like macro in
+    /// force): the one in force at a call decides what the call is.
+    own_function_macros: RefCell<Arc<MacroDirectives>>,
 }
+
+/// A name's `#define`s and `#undef`s in a file, in order, as (byte offset,
+/// whether it leaves a function-like macro in force).
+type MacroDirectives = HashMap<String, Vec<(usize, bool)>>;
 
 /// Per-callee parameter indices confirmed to be read-only-dereferenced,
 /// derived from `FunctionSummary`. Threaded through the classification
@@ -94,24 +100,34 @@ struct AddressOfCallContext {
     /// `Mem01C::own_function_macros`.
     function_macro_arms: Arc<HashMap<String, Vec<crate::analyze::macro_expand::ProjectMacroArm>>>,
     include_closure: Arc<IncludeClosure>,
-    own_function_macros: Arc<HashMap<String, usize>>,
+    own_function_macros: Arc<MacroDirectives>,
+    /// The real path of the file being scanned, which its include closure
+    /// contains: its own definitions are read by offset, not by that.
+    own_file: Arc<str>,
 }
 
 impl AddressOfCallContext {
     /// Whether a call at byte `at` spelled `callee` is a function-like macro
-    /// invocation: defined in this file before the call, or, when this file
-    /// defines no macro of that name, in a file it may include. A header the
-    /// translation unit never reaches, or another `.c` file's private macro,
-    /// is no definition of the callee here (ADR-0006).
+    /// invocation: the last `#define` or `#undef` of the name in this file
+    /// before the call says so; failing that, a definition in a file this one
+    /// may include. A header the translation unit never reaches, or another
+    /// `.c` file's private macro, is no definition of the callee here
+    /// (ADR-0006).
     fn is_macro_call(&self, callee: &str, at: usize) -> bool {
-        match self.own_function_macros.get(callee) {
-            Some(&defined_at) => defined_at < at,
-            None => self.function_macro_arms.get(callee).is_some_and(|entries| {
-                entries
-                    .iter()
-                    .any(|e| e.files.iter().any(|f| self.include_closure.may_include(f)))
-            }),
+        let in_force_here = self
+            .own_function_macros
+            .get(callee)
+            .and_then(|events| events.iter().rev().find(|(offset, _)| *offset < at));
+        if let Some(&(_, defined)) = in_force_here {
+            return defined;
         }
+        self.function_macro_arms.get(callee).is_some_and(|entries| {
+            entries.iter().any(|e| {
+                e.files
+                    .iter()
+                    .any(|f| **f != *self.own_file && self.include_closure.may_include(f))
+            })
+        })
     }
 }
 
@@ -126,6 +142,7 @@ impl Mem01C {
             function_macro_arms: RefCell::default(),
             include_edges: RefCell::default(),
             file_path: RefCell::default(),
+            own_file: RefCell::new(Arc::from("")),
             include_closure: RefCell::default(),
             own_function_macros: RefCell::default(),
         }
@@ -237,6 +254,8 @@ impl CertRule for Mem01C {
 
     fn set_file_path(&self, path: &std::path::Path) {
         *self.file_path.borrow_mut() = path.to_path_buf();
+        *self.own_file.borrow_mut() =
+            Arc::from(crate::analyze::compile_commands::real_path(path).as_str());
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -292,6 +311,7 @@ impl Mem01C {
             function_macro_arms: Arc::clone(&self.function_macro_arms.borrow()),
             include_closure: Arc::clone(&self.include_closure.borrow()),
             own_function_macros: Arc::clone(&self.own_function_macros.borrow()),
+            own_file: Arc::clone(&self.own_file.borrow()),
         };
 
         // Get pre-built CFG or build one on the fly
@@ -627,23 +647,29 @@ fn clearing_call_covers(call: &Node, lvalue: &LValue, source: &str) -> bool {
     cleared_extent(dest, rest, source).is_some_and(|extent| extent.covers(lvalue))
 }
 
-/// Each function-like macro `source` defines, with the byte offset of its
-/// first `#define`.
-fn function_macro_offsets(source: &str) -> HashMap<String, usize> {
-    let mut out = HashMap::new();
+/// Each name `source` defines or undefines as a macro, with its directives in
+/// order: (byte offset, whether it leaves a function-like macro in force). An
+/// object-like `#define` and an `#undef` leave none.
+fn function_macro_offsets(source: &str) -> MacroDirectives {
+    let mut out = MacroDirectives::new();
     let mut offset = 0;
     for line in source.split_inclusive('\n') {
         let directive = line.trim_start().strip_prefix('#').map(str::trim_start);
-        if let Some(rest) = directive
+        let defines = directive
             .and_then(|d| d.strip_prefix("define"))
-            .filter(|r| r.starts_with([' ', '\t']))
-        {
-            let rest = rest.trim_start();
+            .filter(|r| r.starts_with([' ', '\t']));
+        let undefines = directive
+            .and_then(|d| d.strip_prefix("undef"))
+            .filter(|r| r.starts_with([' ', '\t']));
+        if let Some(rest) = defines.or(undefines).map(str::trim_start) {
             let name_len = rest
                 .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
                 .unwrap_or(rest.len());
-            if name_len > 0 && rest[name_len..].starts_with('(') {
-                out.entry(rest[..name_len].to_string()).or_insert(offset);
+            if name_len > 0 {
+                let function_like = defines.is_some() && rest[name_len..].starts_with('(');
+                out.entry(rest[..name_len].to_string())
+                    .or_default()
+                    .push((offset, function_like));
             }
         }
         offset += line.len();
