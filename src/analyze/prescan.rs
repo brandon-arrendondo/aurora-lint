@@ -7631,12 +7631,12 @@ pub fn resolve_includes(
 }
 
 /// Parse the header at `resolved` (spelled `header_path`, real path
-/// `header_key`) for its declarations and macros. A header is read for its
-/// facts like any prescanned file, so it is admitted and refused the same
-/// way (ADR-0017): leaving one out changes what the scanned files' findings
-/// rest on, so a refusal joins `failures` (once per file: a header in the
-/// scanned tree was already refused under its own path) and the prescan is
-/// incomplete.
+/// `header_key`) for its declarations and macros, or a source file for the
+/// includes it names. Either is read like any prescanned file, so it is
+/// admitted and refused the same way (ADR-0017): leaving one out changes what
+/// the scanned files' findings rest on, so a refusal joins `failures` (once
+/// per file: a file in the scanned tree was already refused under its own
+/// path) and the prescan is incomplete.
 fn read_header_for_facts(
     parser: &mut CParser,
     resolved: &Path,
@@ -7702,9 +7702,21 @@ pub fn resolve_includes_scoped(
     let mut queue: Vec<PendingInclude> = Vec::new();
 
     let mut includer_real_paths: HashMap<Arc<str>, String> = HashMap::new();
-    // Seed the queue with #include directives from source files
+    // Seed the queue with #include directives from source files. A refused
+    // source names no includes: its edges are left out, so a closure stays a
+    // lower bound rather than resting on a file the scan did not read.
     for file_path in source_files {
-        if let Ok((tree, source)) = parser.parse_file(file_path) {
+        let key = Path::new(file_path)
+            .canonicalize()
+            .map_or_else(|_| file_path.clone(), |c| c.to_string_lossy().to_string());
+        let parsed = read_header_for_facts(
+            &mut parser,
+            Path::new(file_path),
+            file_path,
+            &key,
+            &mut context.prescan_failures,
+        );
+        if let Some((tree, source)) = parsed {
             let directives = extract_include_directives_with_liveness(&tree.root_node(), &source);
             let source_dir = Path::new(file_path).parent().map(|p| p.to_path_buf());
             let includer: Arc<str> = Arc::from(file_path.as_str());
