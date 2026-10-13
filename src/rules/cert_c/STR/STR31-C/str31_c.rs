@@ -71,6 +71,12 @@ pub struct Str31C {
     /// The file's `#define`-sized array lines and largest numeric
     /// subscripts, for the buffer-size finders' whole-file questions. Built
     /// once per file in `check()`.
+    ///
+    /// Every lookup checks `is_of(source)` and otherwise runs the matching
+    /// `buffer_size` scan. Every caller passes `check()`'s own source, so
+    /// that fallback does not run in practice; it is kept because the scans
+    /// are the reference the index is tested against, and a lookup handed
+    /// other text stays correct rather than answering for the wrong file.
     line_index: RefCell<buffer_size::FileLineIndex>,
     /// The file scope's array declarations for the AST size resolver, so a
     /// use whose name no block declares costs a lookup rather than a pass
@@ -242,23 +248,33 @@ impl Str31C {
         // pollution (e.g. bad-section malloc(50) bleeding into good-section analysis).
         // The finders below read only rows `fn_start..=fn_end`, so they are
         // handed just those rows, numbered from 0; with the file's index
-        // nothing else of the file is split.
+        // nothing else of the file is split. The one question they ask of
+        // the whole file, whether a name is assigned from `strlen` anywhere,
+        // is answered by `strlen_assigned`.
         let (fn_start, fn_end) = fn_range.unwrap_or((0, usize::MAX));
         let index = self.line_index.borrow();
-        let lines: Vec<&str> = if index.is_of(source) {
-            if let Some(size) = index.array_declaration_size(var_name, source) {
-                return Some(size);
+        // Without the file's index the whole file is split once and scanned.
+        let whole_file: Option<Vec<&str>> =
+            (!index.is_of(source)).then(|| source.lines().collect());
+        let lines: Vec<&str> = match &whole_file {
+            None => {
+                if let Some(size) = index.array_declaration_size(var_name, source) {
+                    return Some(size);
+                }
+                index.rows(source, fn_start, fn_end)
             }
-            index.rows(source, fn_start, fn_end)
-        } else {
-            let lines: Vec<&str> = source.lines().collect();
-            if let Some(size) = buffer_size::array_declaration_size_scan(var_name, &lines) {
-                return Some(size);
+            Some(whole_file) => {
+                if let Some(size) = buffer_size::array_declaration_size_scan(var_name, whole_file) {
+                    return Some(size);
+                }
+                let end = fn_end.min(whole_file.len().saturating_sub(1));
+                whole_file.get(fn_start..=end).unwrap_or_default().to_vec()
             }
-            let end = fn_end.min(lines.len().saturating_sub(1));
-            lines.get(fn_start..=end).unwrap_or_default().to_vec()
         };
-        drop(index);
+        let strlen_assigned = |name: &str| match &whole_file {
+            None => index.assigned_from_strlen(name),
+            Some(whole_file) => buffer_size::assigned_from_strlen_scan(name, whole_file),
+        };
         let (fn_start, fn_end) = (0, lines.len().saturating_sub(1));
 
         if let Some(size) = Self::find_strlen_based_alloc_size(var_name, &lines, fn_start, fn_end) {
@@ -270,7 +286,7 @@ impl Str31C {
         if let Some(size) = Self::find_realloc_dynamic_size(var_name, &lines, fn_start, fn_end) {
             return Some(size);
         }
-        Self::find_alloca_size(var_name, &lines, fn_start, fn_end)
+        Self::find_alloca_size(var_name, &lines, fn_start, fn_end, &strlen_assigned)
     }
 
     /// Look for malloc/calloc assignments with `strlen`/`wcslen` + 1 →
@@ -398,6 +414,7 @@ impl Str31C {
         lines: &[&str],
         fn_start: usize,
         fn_end: usize,
+        strlen_assigned: &dyn Fn(&str) -> bool,
     ) -> Option<usize> {
         let assign_re = compiled(&format!(r"\b{}\s*=", regex::escape(var_name)))?;
         let alloca_sizeof_re = compiled(r"(?:ALLOCA|alloca)\s*\(\s*(\d+)\s*\*\s*sizeof\s*\(");
@@ -453,14 +470,8 @@ impl Str31C {
                     first_ident,
                     "sizeof" | "char" | "wchar_t" | "int" | "size_t" | "void" | "long"
                 );
-                if !skip {
-                    let strlen_pat =
-                        format!(r"\b{}\s*=\s*(?:w?)strlen\s*\(", regex::escape(first_ident));
-                    if let Some(strlen_re) = compiled(&strlen_pat) {
-                        if lines.iter().any(|l| strlen_re.is_match(l)) {
-                            return Some(usize::MAX);
-                        }
-                    }
+                if !skip && strlen_assigned(first_ident) {
+                    return Some(usize::MAX);
                 }
             }
         }

@@ -275,4 +275,69 @@ mod tests {
             }
         }
     }
+
+    /// The scope scan as it was before it walked with a cursor and stopped
+    /// at `before`: every child, by index, each declarator tested against
+    /// `before` itself.
+    fn scan_block_declarators_by_index<'a>(
+        scope: &Node<'a>,
+        var_name: &str,
+        source: &str,
+        before: usize,
+    ) -> Option<Node<'a>> {
+        for i in 0..scope.child_count() {
+            if let Some(child) = scope.child(i) {
+                if matches!(child.kind(), "compound_statement" | "function_definition") {
+                    continue;
+                }
+                if child.kind() == "array_declarator"
+                    && child.start_byte() < before
+                    && find_identifier_in_declarator(&child, source).as_deref() == Some(var_name)
+                {
+                    return Some(child);
+                }
+                if let Some(found) =
+                    scan_block_declarators_by_index(&child, var_name, source, before)
+                {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn scope_scan_agrees_with_the_scan_by_index() {
+        let source = "char g[4];\nint h[8], *p, q[2][3];\n\
+                      void f(char *in, int k[3]) { char g[16]; { int g[7]; } int t[1], u[2]; }\n\
+                      struct s { char m[5]; } v[3];\n\
+                      int f2(void) { for (int i[2] = {0}; ; ) { char g[9]; } int late[4]; }\n\
+                      int w[] = {1, 2, 3}, g[99];\n";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&c_language()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let mut scopes = Vec::new();
+        let mut stack = vec![tree.root_node()];
+        while let Some(node) = stack.pop() {
+            scopes.push(node);
+            let mut cursor = node.walk();
+            stack.extend(node.children(&mut cursor));
+        }
+        let names = [
+            "g", "h", "p", "q", "in", "k", "t", "u", "m", "v", "i", "late", "w",
+        ];
+        for scope in scopes {
+            for before in 0..=source.len() {
+                for name in names {
+                    assert_eq!(
+                        scan_block_declarators(&scope, name, source, before).map(|n| n.id()),
+                        scan_block_declarators_by_index(&scope, name, source, before)
+                            .map(|n| n.id()),
+                        "{name:?} in {} at byte {before}",
+                        scope.kind()
+                    );
+                }
+            }
+        }
+    }
 }

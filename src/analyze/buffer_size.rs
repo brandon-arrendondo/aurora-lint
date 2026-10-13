@@ -757,6 +757,8 @@ pub struct FileLineIndex {
     /// Every piece [`parameter_list_names_scan`] splits a candidate line's
     /// parameter text into.
     parameter_list_names: std::collections::HashSet<String>,
+    /// Every word [`assigned_from_strlen_scan`] accepts.
+    strlen_assigned_names: std::collections::HashSet<String>,
 }
 
 impl FileLineIndex {
@@ -784,6 +786,7 @@ impl FileLineIndex {
         let mut getenv_assignment_lines = Vec::new();
         let mut argv_lines = Vec::new();
         let mut parameter_list_names = std::collections::HashSet::new();
+        let mut strlen_assigned_names = std::collections::HashSet::new();
         for (row, line) in source.lines().enumerate() {
             if is_quoted_assignment_line(line) {
                 quoted_assignment_lines.push(line.to_string());
@@ -803,6 +806,9 @@ impl FileLineIndex {
             if let Some(names) = parameter_list_pieces(line) {
                 parameter_list_names.extend(names.map(str::to_string));
             }
+            if line.contains("strlen") {
+                strlen_assigned_names.extend(strlen_assigned_words(line).map(str::to_string));
+            }
         }
         for line in source.lines() {
             if line.contains('[') && line.contains(']') {
@@ -814,19 +820,17 @@ impl FileLineIndex {
             // as the per-word patterns' leftmost matches would find them.
             // Inside either match only a digit run starts a word, and it is
             // never followed by `[`, so no match hides another word's.
-            let mut first_numeric: Vec<(&str, regex::Captures)> = Vec::new();
+            let mut first_numeric: std::collections::HashMap<&str, regex::Captures> =
+                std::collections::HashMap::new();
             for caps in SUBSCRIPT.captures_iter(line) {
                 let word = caps.get(1).unwrap().as_str();
-                if first_numeric.iter().all(|(seen, _)| *seen != word) {
-                    first_numeric.push((word, caps));
-                }
+                first_numeric.entry(word).or_insert(caps);
             }
-            let mut first_arith: Vec<(&str, regex::Captures)> = Vec::new();
+            let mut first_arith: std::collections::HashMap<&str, regex::Captures> =
+                std::collections::HashMap::new();
             for caps in ARITH_SUBSCRIPT.captures_iter(line) {
                 let word = caps.get(1).unwrap().as_str();
-                if first_arith.iter().all(|(seen, _)| *seen != word) {
-                    first_arith.push((word, caps));
-                }
+                first_arith.entry(word).or_insert(caps);
             }
             for (word, caps) in &first_numeric {
                 // Only a word's first subscript on a line counts.
@@ -837,16 +841,19 @@ impl FileLineIndex {
                     *largest = (*largest).max(size);
                 }
             }
-            let words = first_numeric.iter().chain(&first_arith).map(|(w, _)| *w);
+            let words = first_numeric.keys().chain(first_arith.keys()).copied();
             for word in words {
                 if array_declaration_sizes.contains_key(word) {
                     continue;
                 }
-                let numeric = first_numeric.iter().find(|(w, _)| *w == word);
-                let arith = first_arith.iter().find(|(w, _)| *w == word);
-                let size = numeric
-                    .and_then(|(_, caps)| numeric_declaration_size(line, caps))
-                    .or_else(|| arith.and_then(|(_, caps)| arith_declaration_size(line, caps)));
+                let size = first_numeric
+                    .get(word)
+                    .and_then(|caps| numeric_declaration_size(line, caps))
+                    .or_else(|| {
+                        first_arith
+                            .get(word)
+                            .and_then(|caps| arith_declaration_size(line, caps))
+                    });
                 if let Some(size) = size {
                     array_declaration_sizes.insert(word.to_string(), size);
                 }
@@ -864,6 +871,7 @@ impl FileLineIndex {
             getenv_assignment_lines,
             argv_lines,
             parameter_list_names,
+            strlen_assigned_names,
         }
     }
 
@@ -916,6 +924,11 @@ impl FileLineIndex {
         self.argv_lines
             .iter()
             .any(|line| names_before_argv(line, var_name))
+    }
+
+    /// [`assigned_from_strlen_scan`] of the indexed file.
+    pub fn assigned_from_strlen(&self, var_name: &str) -> bool {
+        self.strlen_assigned_names.contains(var_name)
     }
 
     /// [`parameter_list_names_scan`] of the indexed file.
@@ -1065,6 +1078,25 @@ pub fn prior_safe_realloc_scan(var_name: &str, source: &str) -> bool {
 /// A line with `=` and `getenv`.
 fn is_getenv_assignment_line(line: &str) -> bool {
     line.contains('=') && line.contains("getenv")
+}
+
+/// Whether some line assigns `var_name` straight from `strlen`/`wstrlen`:
+/// `var_name = strlen(`, with `var_name` starting at a word boundary.
+/// Scans every line; [`FileLineIndex`] answers the same from one pass.
+pub fn assigned_from_strlen_scan(var_name: &str, lines: &[&str]) -> bool {
+    let pattern = format!(r"\b{}\s*=\s*(?:w?)strlen\s*\(", regex::escape(var_name));
+    regex::Regex::new(&pattern).is_ok_and(|re| lines.iter().any(|l| re.is_match(l)))
+}
+
+/// The words [`assigned_from_strlen_scan`] would accept on `line`. Such a
+/// word is followed by `\s*=`, so it is always a whole word, and two
+/// matches cannot overlap.
+fn strlen_assigned_words(line: &str) -> impl Iterator<Item = &str> {
+    static ASSIGN: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\b(\w+)\s*=\s*(?:w?)strlen\s*\(").unwrap());
+    ASSIGN
+        .captures_iter(line)
+        .map(|caps| caps.get(1).unwrap().as_str())
 }
 
 /// Whether some line of `source` mentions `var_name` with `=` and
@@ -1465,6 +1497,45 @@ mod tests {
                 "parameter_list_names({name:?})"
             );
         }
+    }
+
+    #[test]
+    fn file_line_index_strlen_assignments_agree_with_the_scan() {
+        let source = "static size_t n;\n\
+                      void init(const char *s) { n = strlen(s); }\n\
+                      a = b = strlen(t); xlen=wstrlen(w)+1; c == strlen(u);\n\
+                      d\u{e9}j\u{e0} = strlen(v); data_len = my_strlen(v);\n\
+                      dataLen = strlen (q); y = strlen; z = wcslen(r);\n";
+        let index = FileLineIndex::of(source);
+        let lines: Vec<&str> = source.lines().collect();
+        let names = [
+            "n",
+            "a",
+            "b",
+            "xlen",
+            "len",
+            "c",
+            "d\u{e9}j\u{e0}",
+            "j\u{e0}",
+            "data",
+            "data_len",
+            "dataLen",
+            "Len",
+            "y",
+            "z",
+            "strlen",
+            "missing",
+        ];
+        for name in names {
+            assert_eq!(
+                index.assigned_from_strlen(name),
+                assigned_from_strlen_scan(name, &lines),
+                "assigned_from_strlen({name:?})"
+            );
+        }
+        assert!(index.assigned_from_strlen("n"));
+        assert!(index.assigned_from_strlen("b"));
+        assert!(!index.assigned_from_strlen("a"));
     }
 
     #[test]
