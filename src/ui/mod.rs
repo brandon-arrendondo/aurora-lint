@@ -167,6 +167,9 @@ pub struct TerminalUI {
     // Suppression dialog fields
     show_suppression_dialog: bool,
     suppression_summary: Vec<SuppressionSummary>,
+    /// Files the confirmed suppressions could not be written to, and why;
+    /// while non-empty the dialog shows them instead of the summary.
+    suppression_errors: Vec<String>,
     uncommitted_files: Vec<String>,
     // Progress dialog fields
     show_progress_dialog: bool,
@@ -231,6 +234,7 @@ impl TerminalUI {
             save_config_filename: String::from("rules_templates/rules-all.toml"),
             show_suppression_dialog: false,
             suppression_summary: Vec::new(),
+            suppression_errors: Vec::new(),
             uncommitted_files: Vec::new(),
             show_progress_dialog: false,
             progress_current_file: 0,
@@ -428,11 +432,18 @@ impl TerminalUI {
     }
 
     fn handle_suppression_dialog_key(&mut self, key: KeyEvent) {
+        if !self.suppression_errors.is_empty() {
+            // Any key dismisses the report of files left unchanged
+            self.suppression_errors.clear();
+            self.show_suppression_dialog = false;
+            return;
+        }
         match key.code {
             KeyCode::Enter | KeyCode::Char('y') => {
-                // Confirm suppression generation
-                let _ = self.apply_suppressions(); // Ignore errors for now
-                self.show_suppression_dialog = false;
+                // Confirm suppression generation; a file that can't take an
+                // inline comment keeps the dialog open to say so
+                self.suppression_errors = self.apply_suppressions();
+                self.show_suppression_dialog = !self.suppression_errors.is_empty();
             }
             KeyCode::Esc | KeyCode::Char('n') => {
                 self.show_suppression_dialog = false;
@@ -2501,20 +2512,31 @@ impl TerminalUI {
             }
         }
 
-        summary_map
+        let mut summaries: Vec<SuppressionSummary> = summary_map
             .into_iter()
-            .map(|(file_path, violations)| SuppressionSummary {
-                file_path,
-                violations,
+            .map(|(file_path, mut violations)| {
+                violations.sort_by_key(|v| v.line);
+                SuppressionSummary {
+                    file_path,
+                    violations,
+                }
             })
-            .collect()
+            .collect();
+        summaries.sort_by(|a, b| a.file_path.cmp(&b.file_path));
+        summaries
     }
 
-    fn apply_suppressions(&self) -> Result<()> {
-        for summary in &self.suppression_summary {
-            self.add_suppressions_to_file(&summary.file_path, &summary.violations)?;
-        }
-        Ok(())
+    /// Write every summarized file's suppressions, carrying on past a file
+    /// that can't take them; returns one message per file left unchanged.
+    fn apply_suppressions(&self) -> Vec<String> {
+        self.suppression_summary
+            .iter()
+            .filter_map(|summary| {
+                self.add_suppressions_to_file(&summary.file_path, &summary.violations)
+                    .err()
+                    .map(|e| format!("{}: {e}", summary.file_path))
+            })
+            .collect()
     }
 
     fn add_suppressions_to_file(
@@ -2536,9 +2558,9 @@ impl TerminalUI {
             })
             .collect();
         let bytes = fs::read(file_path)?;
-        let new_content = with_comments_above(&bytes, comments)
-            .map_err(|e| anyhow::anyhow!("{file_path}: {e}"))?;
-        fs::write(file_path, new_content)?;
+        if let Some(new_content) = with_comments_above(&bytes, comments)? {
+            fs::write(file_path, new_content)?;
+        }
 
         Ok(())
     }
@@ -2605,6 +2627,34 @@ impl TerminalUI {
 
         // Clear the background
         f.render_widget(Clear, popup_area);
+
+        if !self.suppression_errors.is_empty() {
+            let mut lines = vec![
+                Line::from(Span::styled(
+                    "These files were left unchanged:",
+                    Style::default().fg(Color::Red),
+                )),
+                Line::from(""),
+            ];
+            lines.extend(
+                self.suppression_errors
+                    .iter()
+                    .map(|e| Line::from(format!("  - {e}"))),
+            );
+            lines.push(Line::from(""));
+            lines.push(Line::from("Every other file has its suppressions."));
+            lines.push(Line::from("Press any key to close"));
+            let popup = Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .title("Generate Suppression Comments")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Red)),
+                )
+                .wrap(ratatui::widgets::Wrap { trim: true });
+            f.render_widget(popup, popup_area);
+            return;
+        }
 
         // Create the content
         let mut content_lines = vec![Line::from("Suppression Confirmation"), Line::from("")];
@@ -2815,34 +2865,56 @@ impl TerminalUI {
 }
 
 /// `bytes` (a source file) with each `(line, comment)` inserted as a line of
-/// its own above that 1-based line. Inserting rewrites the file, so it must
-/// stay in its own encoding: a UTF-8 file keeps a byte-order mark at the top
-/// rather than below the first comment, and a Latin-1 or UTF-16 file, which
-/// would be written back as UTF-8, is refused in favour of a suppress.toml
-/// entry.
-fn with_comments_above(bytes: &[u8], mut comments: Vec<(usize, String)>) -> Result<String> {
+/// its own above that 1-based line, or `None` when no line is in range.
+/// Inserting rewrites the file, so it must stay as it was apart from the new
+/// lines: a byte-order mark stays at the top rather than below the first
+/// comment, each comment takes the line ending of the line it goes above, a
+/// missing final newline stays missing, and a file that is not plain UTF-8
+/// text (Latin-1 or UTF-16, which would be written back as UTF-8) is refused
+/// in favour of a suppress.toml entry.
+fn with_comments_above(bytes: &[u8], mut comments: Vec<(usize, String)>) -> Result<Option<String>> {
     let Some(content) = std::str::from_utf8(bytes)
         .ok()
         .filter(|text| !text.contains('\0'))
     else {
         anyhow::bail!(
-            "not UTF-8 text (Latin-1 or UTF-16): an inline suppression would rewrite \
-             it as UTF-8, so add the suppression to suppress.toml instead"
+            "not plain UTF-8 text: an inline suppression would rewrite its \
+             encoding, so add the suppression to suppress.toml instead"
         );
     };
     let (bom, content) = match content.strip_prefix('\u{feff}') {
         Some(rest) => ("\u{feff}", rest),
         None => ("", content),
     };
-    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
-    // Bottom up, so an insertion does not move the lines still to come.
-    comments.sort_by_key(|(line, _)| std::cmp::Reverse(*line));
-    for (line, comment) in comments {
-        if line > 0 && line <= lines.len() {
-            lines.insert(line - 1, comment);
-        }
+    let lines: Vec<&str> = content.split_inclusive('\n').collect();
+    // An unterminated last line gives its comment the file's first ending.
+    let first_ending = match lines.first() {
+        Some(line) if line.ends_with("\r\n") => "\r\n",
+        _ => "\n",
+    };
+    comments.retain(|(line, _)| *line > 0 && *line <= lines.len());
+    if comments.is_empty() {
+        return Ok(None);
     }
-    Ok(format!("{bom}{}\n", lines.join("\n")))
+    comments.sort_by_key(|(line, _)| *line);
+    let mut out = String::with_capacity(bom.len() + content.len());
+    out.push_str(bom);
+    let mut pending = comments.into_iter().peekable();
+    for (index, line) in lines.iter().enumerate() {
+        let ending = if line.ends_with("\r\n") {
+            "\r\n"
+        } else if line.ends_with('\n') {
+            "\n"
+        } else {
+            first_ending
+        };
+        while let Some((_, comment)) = pending.next_if(|(at, _)| *at == index + 1) {
+            out.push_str(&comment);
+            out.push_str(ending);
+        }
+        out.push_str(line);
+    }
+    Ok(Some(out))
 }
 
 #[cfg(test)]
@@ -2856,11 +2928,37 @@ mod tests {
             vec![(1, "// c1".to_string()), (2, "// c2".to_string())],
         )
         .unwrap();
-        assert_eq!(out, "\u{feff}// c1\nint x = 1, y;\n// c2\nint z;\n");
+        assert_eq!(
+            out.as_deref(),
+            Some("\u{feff}// c1\nint x = 1, y;\n// c2\nint z;\n")
+        );
     }
 
     #[test]
-    fn a_latin1_or_utf16_file_is_refused() {
+    fn a_comment_takes_its_lines_ending_and_a_missing_final_newline_stays_missing() {
+        let out = with_comments_above(
+            b"int a;\r\nint b;\nint c;",
+            vec![
+                (1, "// c1".into()),
+                (2, "// c2".into()),
+                (3, "// c3".into()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            out.as_deref(),
+            Some("// c1\r\nint a;\r\n// c2\nint b;\n// c3\r\nint c;")
+        );
+    }
+
+    #[test]
+    fn no_line_in_range_leaves_the_file_unwritten() {
+        let out = with_comments_above(b"int a;\n", vec![(0, "// c".into()), (2, "// c".into())]);
+        assert_eq!(out.unwrap(), None);
+    }
+
+    #[test]
+    fn a_file_that_is_not_plain_utf8_text_is_refused() {
         assert!(with_comments_above(b"int caf\xe9;\n", vec![(1, "// c".into())]).is_err());
         assert!(with_comments_above(b"\xff\xfei\0n\0t\0", vec![(1, "// c".into())]).is_err());
         assert!(with_comments_above(b"i\0n\0t\0 \0x\0;\0", vec![(1, "// c".into())]).is_err());

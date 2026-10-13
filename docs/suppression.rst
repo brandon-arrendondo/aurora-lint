@@ -115,11 +115,12 @@ Generate the hash with:
     aurora-lint --generate-suppression src/main.c:42:ARR30-C
 
 The hash is over the line's text as the scan reads the file: a UTF-8
-byte-order mark is not part of line 1, and a Latin-1 or UTF-16 file is
-decoded first. The generator, the scan and the interactive UI all read the file
-that way, so a hash one of them computes is one the others match. The UI's
-**inline** suppression rewrites the file, so it declines a Latin-1 or UTF-16
-file (it would come back as UTF-8); use ``suppress.toml`` for one of those.
+byte-order mark is not part of line 1, and a Latin-1 file or a UTF-16 file
+with a byte-order mark is decoded first. The generator, the scan and the
+interactive UI all read the file that way, so a hash one of them computes is
+one the others match. The UI's **inline** suppression rewrites the file, so it
+declines a file that is not plain UTF-8 text, such as a Latin-1 or UTF-16 file
+that would come back as UTF-8; use ``suppress.toml`` for one of those.
 
 .. _suppression-legacy-spelling:
 
