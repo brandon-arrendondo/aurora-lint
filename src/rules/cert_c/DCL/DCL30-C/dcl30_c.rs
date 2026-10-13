@@ -56,7 +56,12 @@ impl CertRule for Dcl30C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        for func in query::find_descendants_of_kind(*node, "function_definition") {
+        // Innermost function first: parser recovery can nest one definition
+        // inside another, and each site is judged once, in the frame that
+        // owns it.
+        let mut seen = std::collections::HashSet::new();
+        let functions = query::find_descendants_of_kind(*node, "function_definition");
+        for func in functions.iter().rev() {
             let Some(body) = func.child_by_field_name("body") else {
                 continue;
             };
@@ -65,6 +70,9 @@ impl CertRule for Dcl30C {
                 body,
                 &["return_statement", "assignment_expression"],
             ) {
+                if !seen.insert(found.id()) {
+                    continue;
+                }
                 let violation = match found.kind() {
                     "return_statement" => check_return(&found, source, &index),
                     _ => check_store(&found, &body, source, &index),
@@ -190,11 +198,22 @@ fn outliving_target(lvalue: &Node, source: &str) -> Option<&'static str> {
     }
 }
 
-/// Whether, after the store `assign`, the same target is assigned a value
-/// that is not an automatic address by a statement at the top of the
-/// function body that every return after the store must pass. Then the
-/// address never outlives the call: `g = &x; use(); g = NULL;`. A later
-/// store of another automatic address is no reset.
+/// Whether, after the store `assign`, the target (or an object containing
+/// it: `p->hook = saved` resets `p->hook.ctx`) is assigned a value that is
+/// not an automatic address on the way out of every block holding the store,
+/// before anything leaves those blocks early. Then the address never
+/// outlives the call: `db->pnBytesFreed = &n; ...; db->pnBytesFreed = 0;`.
+///
+/// Walks outward from the statement holding the store. In each enclosing
+/// block (`{}` or a `case`) the statements after it are read in order:
+/// - a reset statement answers;
+/// - a statement holding `return`, `goto`, `break` or `continue` may leave
+///   with the address still stored, so the answer is no;
+/// - at the end of the block the walk continues after the statement that
+///   owns the block, and at the end of the function body the answer is no.
+///
+/// A later store of another automatic address is no reset. A reset made by
+/// a callee is not seen.
 fn reset_before_every_return(
     assign: &Node,
     left: &Node,
@@ -202,54 +221,106 @@ fn reset_before_every_return(
     source: &str,
     index: &WriteIndex,
 ) -> bool {
-    // The top-level statement holding the store.
-    let mut top = *assign;
-    while let Some(parent) = top.parent() {
-        if parent.id() == body.id() {
-            break;
-        }
-        top = parent;
-    }
-    if top.parent().map(|p| p.id()) != Some(body.id()) {
-        return false;
-    }
-    let returns_after = |n: &Node, from: usize| {
-        query::find_descendants_of_kind(*n, "return_statement")
-            .iter()
-            .any(|r| r.start_byte() >= from)
-            || (n.kind() == "return_statement" && n.start_byte() >= from)
-    };
-    if returns_after(&top, assign.end_byte()) {
-        return false;
-    }
     let target = compact(get_node_text(left, source));
-    let mut cursor = body.walk();
-    for stmt in body.named_children(&mut cursor) {
-        if stmt.start_byte() <= top.start_byte() {
+    let mut current = *assign;
+    loop {
+        // The statement holding `current`, directly inside a block.
+        let Some(parent) = current.parent() else {
+            return false;
+        };
+        if !matches!(parent.kind(), "compound_statement" | "case_statement") {
+            current = parent;
             continue;
         }
-        let reset = (stmt.kind() == "expression_statement")
-            .then(|| stmt.named_child(0))
-            .flatten()
-            .filter(|e| e.kind() == "assignment_expression")
-            .filter(|e| {
-                e.child_by_field_name("operator")
-                    .is_some_and(|op| get_node_text(&op, source) == "=")
-            })
-            .filter(|e| {
-                e.child_by_field_name("left").is_some_and(|l| {
-                    compact(get_node_text(&l, source)) == target && same_root(&l, left, source)
-                })
-            })
-            .and_then(|e| e.child_by_field_name("right").map(|r| (e, r)));
-        if let Some((e, value)) = reset {
-            return escaping_object(&value, &e, source, index).is_none();
+        let mut cursor = parent.walk();
+        for stmt in parent.named_children(&mut cursor) {
+            if stmt.start_byte() <= current.start_byte() {
+                continue;
+            }
+            if let Some((e, value)) = reset_of(&stmt, &target, left, source) {
+                return escaping_object(&value, &e, source, index).is_none();
+            }
+            if leaves_early(&stmt) {
+                return false;
+            }
         }
-        if returns_after(&stmt, 0) {
+        if parent.id() == body.id() {
             return false;
         }
+        current = parent;
     }
-    false
+}
+
+/// The assignment and its value when `stmt` is `T = value;` for `T` the
+/// stored target (spelled `target`, rooted at `left`'s variable) or an
+/// object containing it.
+fn reset_of<'a>(
+    stmt: &Node<'a>,
+    target: &str,
+    left: &Node,
+    source: &str,
+) -> Option<(Node<'a>, Node<'a>)> {
+    if stmt.kind() != "expression_statement" {
+        return None;
+    }
+    let e = stmt.named_child(0)?;
+    if e.kind() != "assignment_expression"
+        || get_node_text(&e.child_by_field_name("operator")?, source) != "="
+    {
+        return None;
+    }
+    let l = e.child_by_field_name("left")?;
+    let spelled = compact(get_node_text(&l, source));
+    let contains = spelled == target
+        || target
+            .strip_prefix(spelled.as_str())
+            .is_some_and(|rest| rest.starts_with('.') || rest.starts_with("->"));
+    (contains && same_root(&l, left, source))
+        .then(|| e.child_by_field_name("right").map(|r| (e, r)))?
+}
+
+/// Whether `stmt` holds a jump that can leave the enclosing blocks: a
+/// `return` or `goto` at any depth, or a `break`/`continue` that no loop
+/// (or, for `break`, `switch`) inside `stmt` captures.
+fn leaves_early(stmt: &Node) -> bool {
+    let jumps = [
+        "return_statement",
+        "goto_statement",
+        "break_statement",
+        "continue_statement",
+    ];
+    let escapes = |jump: &Node| {
+        if matches!(jump.kind(), "return_statement" | "goto_statement") {
+            return true;
+        }
+        let captured_by: &[&str] = if jump.kind() == "break_statement" {
+            &[
+                "for_statement",
+                "while_statement",
+                "do_statement",
+                "switch_statement",
+            ]
+        } else {
+            &["for_statement", "while_statement", "do_statement"]
+        };
+        let mut node = jump.parent();
+        while let Some(n) = node {
+            if captured_by.contains(&n.kind()) {
+                return false;
+            }
+            if n.id() == stmt.id() {
+                return true;
+            }
+            node = n.parent();
+        }
+        true
+    };
+    if jumps.contains(&stmt.kind()) {
+        return true;
+    }
+    query::find_descendants_of_kinds(*stmt, &jumps)
+        .iter()
+        .any(escapes)
 }
 
 /// Whether two lvalues of the same spelling name the same root variable:
