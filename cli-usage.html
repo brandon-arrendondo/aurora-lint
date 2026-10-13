@@ -671,7 +671,9 @@ context is kept. When no C file changed, the run prints
 <h2>Project-Relevance Detection<a class="headerlink" href="#project-relevance-detection" title="Link to this heading"></a></h2>
 <p>For a codebase with no tailored manifest, <code class="docutils literal notranslate"><span class="pre">--detect-relevance</span></code> scans PATH
 (and any <code class="docutils literal notranslate"><span class="pre">-d</span></code> directories) for evidence of thread or atomic APIs
-(<code class="docutils literal notranslate"><span class="pre">pthread</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;threads.h&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">_Atomic</span></code>) and Windows API usage, then
+(<code class="docutils literal notranslate"><span class="pre">&lt;threads.h&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">_Atomic</span></code>, <code class="docutils literal notranslate"><span class="pre">pthread</span></code> unless the project is declared not
+POSIX, and the functions and types of a selected <code class="docutils literal notranslate"><span class="pre">[environment.threads]</span></code>
+profile or the project’s own declarations) and Windows API usage, then
 generates a manifest with the categorically-inapplicable <code class="docutils literal notranslate"><span class="pre">WIN*</span></code> rule class
 disabled when there is no Windows API evidence. The <code class="docutils literal notranslate"><span class="pre">CON*</span></code> rules are never
 disabled: no thread or atomic API does not mean no concurrency, since
