@@ -992,7 +992,8 @@ actually consumes:
   block, so `do { i -= 1; x >> i; } while (i)` keeps the shift amount in
   [0, 3]. Two limits stay. Ranges are intervals with no stride: `i -= 8`
   from 32 under `while (i)` can, by interval, go below zero and wrap, so it
-  is not proved. And the CFG sends a `continue` in a `do` body back to the
+  is not proved and INT34-C still reports the shift: a known false positive
+  that no fixture pins. And the CFG sends a `continue` in a `do` body back to the
   body rather than to the condition, so the state a `continue` carries is
   never narrowed by the condition, and the body stays a widening point.
 - **"No range" can mean "never runs".** A block whose every incoming edge
