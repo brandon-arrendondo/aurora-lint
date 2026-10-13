@@ -10725,8 +10725,10 @@ void caller(char *other) {
             includer_outside_project: outside,
             project_header: false,
         };
+        // A scan with a search path: without one the line also says to pass one.
         let only_compiler = IncludeReport {
             unresolved: vec![row("bits/wordsize.h", true), row("stddef.h", false)],
+            search_paths: vec!["/usr/include".into()],
             ..Default::default()
         };
         assert_eq!(
@@ -10746,6 +10748,7 @@ void caller(char *other) {
                 row("gnu/c.h", true),
                 row("stdarg.h", false),
             ],
+            search_paths: vec!["/usr/include".into()],
             ..Default::default()
         };
         let summary = mixed.summary_line().unwrap();

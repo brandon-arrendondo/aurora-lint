@@ -5569,6 +5569,28 @@ fn with_no_search_path_only_a_quoted_include_is_found_beside_its_includer() {
     assert_eq!(rows.len(), 1, "{report}");
     assert_eq!(rows[0]["spelling"], "cfg.h", "{report}");
     assert_eq!(rows[0]["line"], 2, "{report}");
+    assert!(
+        stderr.contains(
+            "The scan had no search path, so no <angle> include with a relative name could be found"
+        ),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_missing_quoted_include_alone_does_not_ask_for_a_search_path() {
+    // Only an <angle> include needs a search path; a "quoted" one missing
+    // beside its includer is missing for some other reason.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("a.c"),
+        "#include \"nope.h\"\nint f(void) { return 0; }\n",
+    )
+    .unwrap();
+    let (code, _, stderr) = run_aurora_lint(&[dir.path().join("a.c").to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stderr.contains("Headers:"), "{stderr}");
+    assert!(!stderr.contains("no search path"), "{stderr}");
 }
 
 #[test]

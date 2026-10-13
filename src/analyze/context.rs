@@ -136,6 +136,20 @@ impl IncludeReport {
         ) -> std::collections::BTreeSet<&'a str> {
             rows.map(|u| u.spelling.as_str()).collect()
         }
+        // With no search path only a "quoted" include can resolve, beside its
+        // includer, or one named by an absolute path: every other <angle> one
+        // is missing by construction, and the fix is a flag, so name it when
+        // one of those is among the missing. A forced include is no search
+        // path.
+        let angle_needs_search_path = live.iter().any(|u| {
+            u.form == IncludeForm::Angle && !std::path::Path::new(&u.spelling).is_absolute()
+        });
+        let hint = if self.search_paths.is_empty() && angle_needs_search_path {
+            " The scan had no search path, so no <angle> include with a relative name could be \
+             found: pass -I DIR for each include directory, or --compile-commands FILE."
+        } else {
+            ""
+        };
         let (compiler, rest): (Vec<&UnresolvedInclude>, Vec<&UnresolvedInclude>) =
             live.into_iter().partition(|u| u.from_compiler_directory());
         let compiler = distinct(&mut compiler.iter());
@@ -148,7 +162,7 @@ impl IncludeReport {
             return Some(format!(
                 "Headers: {} #include'd header(s) not found, all from the compiler's built-in \
                  and multiarch directories, which the scan searches only with \
-                 --system-includes: {}. -v lists each, --report-headers FILE writes them all.",
+                 --system-includes: {}. -v lists each, --report-headers FILE writes them all.{hint}",
                 compiler.len(),
                 compiler_examples()
             ));
@@ -183,7 +197,7 @@ impl IncludeReport {
             "Headers: {all} #include'd header(s) not found ({in_project} named by project files, \
              {in_system} only by system headers): {}{more}. Declarations and macros they would \
              supply were not seen, so findings that depend on them can differ from a host that \
-             has them; -v lists each, --report-headers FILE writes them all.{apart}",
+             has them; -v lists each, --report-headers FILE writes them all.{apart}{hint}",
             examples.join(", ")
         ))
     }

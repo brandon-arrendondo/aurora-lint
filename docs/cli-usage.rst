@@ -260,7 +260,8 @@ looked up in the directory of the file that names it first, as a compiler
 does, so a plain ``aurora-lint src/`` still knows which of the project's
 headers each file reaches. An ``<angle>`` include is looked up only on the
 search path, so a scan without one reports each of them (``stdio.h``
-included) as not found.
+included) as not found, and its stderr line says to pass ``-I`` or
+``--compile-commands``.
 
 Headers that live in the compiler's built-in directory or the multiarch
 directory rather than in ``/usr/include`` itself (the ``bits/``, ``gnu/`` and
