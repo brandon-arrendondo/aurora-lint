@@ -6825,6 +6825,66 @@ fn an_included_header_nested_past_the_depth_limit_is_reported_not_dropped() {
     assert!(!stdout.contains("is not freed"), "{stdout}");
 }
 
+#[test]
+fn a_header_refused_by_the_quoted_include_walk_is_reported_not_dropped() {
+    // With no search path the prescan resolves no includes, so MSC30-C
+    // follows `a.c`'s quoted includes itself to learn whether `rand` is the
+    // project's macro. `ext/big.h`, outside the scanned tree, is over the
+    // size ceiling: the walk stops there and never reaches `src/rng.h`, so
+    // the call reads as the library's. That must be refused out loud.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("ext")).unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("src/rng.h"),
+        "#define rand() my_rand()\nint my_rand(void);\n",
+    )
+    .unwrap();
+    let mut big = String::from("#include \"../src/rng.h\"\n");
+    while big.len() < 1024 * 1024 + 1 {
+        big.push_str("/* padding padding padding padding padding padding padding */\n");
+    }
+    std::fs::write(dir.path().join("ext/big.h"), &big).unwrap();
+    std::fs::write(
+        dir.path().join("src/a.c"),
+        "#include \"../ext/big.h\"\nint roll(void) { return rand(); }\n",
+    )
+    .unwrap();
+    let src = dir.path().join("src");
+    let headers = dir.path().join("headers.json");
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        src.to_str().unwrap(),
+        "--max-file-size",
+        "1",
+        "--report-headers",
+        headers.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 3, "{stderr}");
+    assert!(stdout.contains("MSC30-C"), "{stdout}");
+    assert_eq!(
+        stderr.matches("input skipped (too large): ").count(),
+        1,
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("big.h: 2 MiB is over --max-file-size 1 MiB"),
+        "{stderr}"
+    );
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&headers).unwrap()).unwrap();
+    let refused = report["refused"].as_array().unwrap();
+    assert_eq!(refused.len(), 1, "{report}");
+    assert!(
+        refused[0]["path"].as_str().unwrap().ends_with("big.h")
+            && refused[0]["cause"] == "too large",
+        "{report}"
+    );
+    // Under no ceiling the walk reaches the macro: `rand` is the project's.
+    let (code, stdout, stderr) = run_aurora_lint(&[src.to_str().unwrap(), "--max-file-size", "0"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(!stdout.contains("MSC30-C"), "{stdout}");
+}
+
 /// A file the input guard refuses contributes no cross-file facts, so a
 /// prescan cache records the limits it was built under and is refused under
 /// others.

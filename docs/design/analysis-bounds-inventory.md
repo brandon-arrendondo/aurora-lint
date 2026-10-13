@@ -92,8 +92,8 @@ Kinds:
 | `containment::start_watchdog` | max(2× limit, limit + 60 s) | e | reported; ends the scan with exit 3 |
 | `containment::Escalation` | 3 failing files | d | reported; the rule is abandoned |
 | `analyze::WORKER_STACK_BYTES` | 16 MiB per analysis thread | a/b | a stack overflow aborts the process and cannot be contained |
-| `input_guard::admit` | `--max-file-size` (64 MiB); the substrate's `classify_file` on the first 8 KiB | d | reported (stage `input`); the file is skipped, a header read only for its facts included |
-| `input_guard::admit_tree` (in `CParser::parse_file`) | `--max-nesting-depth` (5000 tree levels), measured after parsing | d | reported (stage `input`, cause `too deep`), a header read only for its facts included; the file is skipped by every parse caller, so no recursive walk sees it |
+| `input_guard::admit` | `--max-file-size` (64 MiB); the substrate's `classify_file` on the first 8 KiB | d | reported (stage `input`); the file is skipped, a header read only for its facts included, as is one the rules' quoted-include walk (`IncludeClosure::of_quoted_includes`) reads |
+| `input_guard::admit_tree` (in `CParser::parse_file`) | `--max-nesting-depth` (5000 tree levels), measured after parsing | d | reported (stage `input`, cause `too deep`), a header read only for its facts or by the quoted-include walk included; the file is skipped by every parse caller, so no recursive walk sees it |
 | `input_guard::large_file_permit` | files over 8 MiB analysed one at a time | d | none needed: it orders the work, it does not drop any |
 
 ## CFG and dataflow
