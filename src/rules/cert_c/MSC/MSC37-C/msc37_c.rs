@@ -92,6 +92,15 @@ pub struct Msc37C {
     /// macros defined as that attribute, for `msc37_attribute_noreturn`.
     attribute_functions: RefCell<Arc<HashSet<String>>>,
     attribute_macros: RefCell<Arc<HashSet<String>>>,
+    /// The same for an ISO spelling reached through a macro (`#define NR
+    /// [[noreturn]]`), which every preset credits.
+    keyword_functions: RefCell<Arc<HashSet<String>>>,
+    keyword_macros: RefCell<Arc<HashSet<String>>>,
+    /// Function-like macros that return only on some path
+    /// (`CHECK(x)` is `if (!(x)) return -1;`). A call ends the function's
+    /// path for the check that a function returns, but a `break` after one
+    /// is still reachable.
+    sometimes_returning: RefCell<HashSet<String>>,
     /// The run's policy and environment settings: whether a `_Noreturn`
     /// declaration is trusted (`trust_noreturn_keyword`).
     settings: RefCell<Arc<AnalysisSettings>>,
@@ -109,6 +118,9 @@ impl Msc37C {
             project_function_macros: RefCell::default(),
             attribute_functions: RefCell::default(),
             attribute_macros: RefCell::default(),
+            keyword_functions: RefCell::default(),
+            keyword_macros: RefCell::default(),
+            sometimes_returning: RefCell::default(),
             settings: RefCell::default(),
             typedefs: RefCell::default(),
             file_path: RefCell::default(),
@@ -179,26 +191,59 @@ impl Msc37C {
     /// declarations are read with the project's attribute macros.
     fn attribute_noreturn_names(&self, root: &Node, source: &str) -> HashSet<String> {
         use crate::analyze::noreturn as nr;
-        let mut own_statics = HashSet::new();
-        crate::analyze::prescan::collect_static_function_names(root, source, &mut own_statics);
-        let mut names: HashSet<String> = self
-            .attribute_functions
-            .borrow()
-            .difference(&own_statics)
-            .cloned()
-            .collect();
         let mut macros: HashSet<String> = self.attribute_macros.borrow().as_ref().clone();
         nr::collect_attribute_noreturn_macro_names(source, &mut macros);
-        names.extend(nr::attribute_noreturn_declared_in(
-            &nr::collect_attribute_candidates(
-                root,
-                source,
-                &nr::raw_text_or(&self.file_path.borrow(), source),
-            ),
-            &macros,
-        ));
-        // Every live definition of a macro name counts: the project's (all
-        // arms, in any header) and this file's own.
+        let names = self.declared_through(
+            root,
+            source,
+            &self.attribute_functions.borrow(),
+            |candidates| nr::attribute_noreturn_declared_in(candidates, &macros),
+        );
+        self.with_wrapping_macros(source, names)
+    }
+
+    /// The functions this file's calls reach that are declared noreturn by an
+    /// ISO spelling written through a macro (`#define NR [[noreturn]]`;
+    /// `NR void die(void);`), and the macros that wrap a call to one. The
+    /// keyword is credited under every preset, as when written directly.
+    fn keyword_noreturn_names(&self, root: &Node, source: &str) -> HashSet<String> {
+        use crate::analyze::noreturn as nr;
+        let mut macros: HashSet<String> = self.keyword_macros.borrow().as_ref().clone();
+        nr::collect_keyword_noreturn_macro_names(source, &mut macros);
+        let names = self.declared_through(
+            root,
+            source,
+            &self.keyword_functions.borrow(),
+            |candidates| nr::keyword_noreturn_declared_in(candidates, &macros),
+        );
+        self.with_wrapping_macros(source, names)
+    }
+
+    /// `project` less the functions this file defines `static`, plus the
+    /// file's own declarations that `declared_in` accepts.
+    fn declared_through(
+        &self,
+        root: &Node,
+        source: &str,
+        project: &HashSet<String>,
+        declared_in: impl Fn(&HashMap<String, HashSet<String>>) -> HashSet<String>,
+    ) -> HashSet<String> {
+        use crate::analyze::noreturn as nr;
+        let mut own_statics = HashSet::new();
+        crate::analyze::prescan::collect_static_function_names(root, source, &mut own_statics);
+        let mut names: HashSet<String> = project.difference(&own_statics).cloned().collect();
+        names.extend(declared_in(&nr::collect_attribute_candidates(
+            root,
+            source,
+            &nr::raw_text_or(&self.file_path.borrow(), source),
+        )));
+        names
+    }
+
+    /// `names` plus every function-like macro whose every live definition (the
+    /// project's, in any header and any arm, and this file's own) is one call
+    /// to a function in `names`.
+    fn with_wrapping_macros(&self, source: &str, mut names: HashSet<String>) -> HashSet<String> {
         let mut definitions: HashMap<String, FunctionMacro> = self
             .project_function_macros
             .borrow()
@@ -218,15 +263,15 @@ impl Msc37C {
         let credited: Vec<String> = definitions
             .iter()
             .filter(|(_, m)| {
-                let ends_in_attribute_call = |d: &FunctionMacro| {
+                let ends_in_noreturn_call = |d: &FunctionMacro| {
                     single_call_callee(&d.body).is_some_and(|c| names.contains(c))
                 };
                 if m.alternatives.is_empty() {
-                    ends_in_attribute_call(m)
+                    ends_in_noreturn_call(m)
                 } else {
                     m.alternatives
                         .iter()
-                        .all(|d| d.as_ref().is_some_and(ends_in_attribute_call))
+                        .all(|d| d.as_ref().is_some_and(ends_in_noreturn_call))
                 }
             })
             .map(|(name, _)| name.clone())
@@ -369,6 +414,24 @@ impl Msc37C {
         ) || crate::analyze::noreturn::calls_noreturn(&call, source, noreturn_names)
     }
 
+    /// Whether `node` is a call statement after which control does not reach
+    /// the next statement: [`Self::is_noreturn_call_statement`], less a macro
+    /// that returns only on some path.
+    fn is_jump_statement(
+        &self,
+        node: &Node,
+        source: &str,
+        noreturn_names: &HashSet<String>,
+    ) -> bool {
+        if !self.is_noreturn_call_statement(node, source, noreturn_names) {
+            return false;
+        }
+        let sometimes = self.sometimes_returning.borrow();
+        node.child(0)
+            .and_then(|call| crate::analyze::noreturn::called_function_name(&call, source))
+            .is_none_or(|name| !sometimes.contains(&name))
+    }
+
     /// Check if the last statement in a compound statement is a return
     /// (possibly through nested if/switch branches that all return).
     ///
@@ -407,7 +470,7 @@ impl Msc37C {
                     }
                     "while_statement" | "for_statement" | "do_statement" => {
                         values.push(loop_never_falls_through(&node, source, &|n: &Node| {
-                            self.is_noreturn_call_statement(n, source, noreturn_names)
+                            self.is_jump_statement(n, source, noreturn_names)
                         }));
                     }
                     // A `goto` back to a label above it (`goto retry;`) runs
@@ -438,7 +501,7 @@ impl Msc37C {
                         }
                     }
                     "switch_statement" => match switch_last_arm_tail(&node, source, &|n: &Node| {
-                        self.is_noreturn_call_statement(n, source, noreturn_names)
+                        self.is_jump_statement(n, source, noreturn_names)
                     }) {
                         Some(tail) => ops.push(Op::Eval(tail)),
                         None => values.push(false),
@@ -956,6 +1019,8 @@ impl CertRule for Msc37C {
         *self.project_function_macros.borrow_mut() = context.function_macros.clone();
         *self.attribute_functions.borrow_mut() = Arc::clone(&context.attribute_noreturn_functions);
         *self.attribute_macros.borrow_mut() = Arc::clone(&context.attribute_noreturn_macros);
+        *self.keyword_functions.borrow_mut() = Arc::clone(&context.keyword_noreturn_functions);
+        *self.keyword_macros.borrow_mut() = Arc::clone(&context.keyword_noreturn_macros);
     }
 
     fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
@@ -978,16 +1043,25 @@ impl Msc37C {
         // policy that does not trust the keyword keeps only the `_Noreturn`
         // functions whose bodies are verified never to return.
         let mut noreturn_names = Self::collect_noreturn_function_names(node, source);
+        noreturn_names.extend(self.keyword_noreturn_names(node, source));
         let settings = self.settings.borrow();
         if !settings.flag("trust_noreturn_keyword") {
             let verified =
                 crate::analyze::noreturn::collect_noreturn_function_names(node, source, &settings);
             noreturn_names.retain(|name| verified.contains(name));
         }
-        noreturn_names.extend(self.collect_returning_macros(source));
         if settings.flag("msc37_attribute_noreturn") {
             noreturn_names.extend(self.attribute_noreturn_names(node, source));
         }
+        // A macro that only sometimes returns ends the function's path, not
+        // the arm that calls it: `break;` after `CHECK(x);` is reachable. A
+        // name that also ends a path for another reason keeps doing so.
+        *self.sometimes_returning.borrow_mut() = self
+            .collect_returning_macros(source)
+            .into_iter()
+            .filter(|name| !noreturn_names.contains(name))
+            .collect();
+        noreturn_names.extend(self.sometimes_returning.borrow().iter().cloned());
         // C23 `unreachable()` (C23 7.21.1) ends a path, where the edition is
         // declared and the file does not define a function or macro of that
         // name itself: CERT's EX2 helper named `unreachable` is that case.

@@ -926,6 +926,17 @@ pub struct ProjectContext {
     /// whose body is verified never to return is in both.
     #[serde(default)]
     pub attribute_noreturn_functions: Arc<HashSet<String>>,
+    /// Object-like macros defined as an ISO noreturn (`#define NR
+    /// [[noreturn]]`, `#define NR _Noreturn`), across all scanned files and
+    /// the headers they reach.
+    #[serde(default)]
+    pub keyword_noreturn_macros: Arc<HashSet<String>>,
+    /// Functions declared noreturn by an ISO spelling reached through one of
+    /// `keyword_noreturn_macros`: the declaration's own text does not show
+    /// the keyword, so the per-file noreturn facts miss them. Unlike the
+    /// attribute set, every preset credits these.
+    #[serde(default)]
+    pub keyword_noreturn_functions: Arc<HashSet<String>>,
     /// Functions whose name appears as a bare value inside an aggregate
     /// initializer (e.g. `{ "mysql", pw_mysql_parse, pw_mysql_check,
     /// pw_mysql_exit }` or a designated `.check = pw_mysql_check`) — the

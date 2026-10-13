@@ -46,7 +46,11 @@
 //! The one exception is MSC37-C's `msc37_attribute_noreturn` option, which
 //! credits a call to such a function ([`collect_attribute_candidates`]) in the
 //! default preset only; those names are kept apart from the sets above, so no
-//! other rule sees them.
+//! other rule sees them. An ISO spelling reached through a macro
+//! (`#define NR [[noreturn]]`; `NR void die(void);`) is no attribute in that
+//! sense: [`collect_keyword_noreturn_macro_names`] and
+//! [`keyword_noreturn_declared_in`] find those, and MSC37-C credits them
+//! wherever it trusts the keyword, as it does one written directly.
 //!
 //! Signals 1 and 2 change what signal 3 infers (a wrapper around `exit` or a
 //! `_Noreturn` function is noreturn only when that callee is), so the names
@@ -303,6 +307,8 @@ pub fn collect_keyword_noreturn_names(root: &Node, source: &str) -> HashSet<Stri
 
 /// Sentinel standing in the token set of a declaration that carries the GNU
 /// noreturn attribute itself, as opposed to a macro that may expand to it.
+/// An ISO spelling written directly has none: it is read from the
+/// declaration by [`has_noreturn_keyword`].
 pub const GNU_NORETURN_DIRECT: &str = "\0gnu-noreturn";
 
 fn identifier_tokens(text: &str) -> impl Iterator<Item = &str> {
@@ -310,11 +316,11 @@ fn identifier_tokens(text: &str) -> impl Iterator<Item = &str> {
         .filter(|t| !t.is_empty())
 }
 
-/// Whether `text` spells a noreturn attribute: the GNU `__attribute__((noreturn))`
-/// (or `__noreturn__`, among other attributes in the list), the C23
-/// `[[noreturn]]` or `[[gnu::noreturn]]`, or the C11 `_Noreturn` specifier.
-/// The ISO spellings are credited elsewhere by `trust_noreturn_keyword`; they
-/// are read here too so a macro defined as one is an attribute macro.
+/// Whether `text` spells the GNU noreturn attribute: `__attribute__((noreturn))`
+/// (or `__noreturn__`, among other attributes in the list), or the
+/// `[[gnu::noreturn]]` form. Not an ISO spelling, so no policy trusts it
+/// ([`spells_keyword_noreturn`] is the other kind); only MSC37-C's
+/// `msc37_attribute_noreturn` option credits it.
 fn spells_gnu_noreturn_attribute(text: &str) -> bool {
     let is_noreturn = |t: &str| matches!(t, "noreturn" | "__noreturn__");
     let mut rest = text;
@@ -341,6 +347,24 @@ fn spells_gnu_noreturn_attribute(text: &str) -> bool {
         }
         rest = &rest[end.min(rest.len())..];
     }
+    let mut rest = text;
+    while let Some(at) = rest.find("[[") {
+        rest = &rest[at + 2..];
+        let end = rest.find("]]").unwrap_or(rest.len());
+        let mut tokens = identifier_tokens(&rest[..end]);
+        if matches!(tokens.next(), Some("gnu" | "__gnu__")) && tokens.any(is_noreturn) {
+            return true;
+        }
+        rest = &rest[end..];
+    }
+    false
+}
+
+/// Whether `text` spells an ISO noreturn: the C11 `_Noreturn` specifier or
+/// the C23 `[[noreturn]]` attribute. These count for a declaration whatever
+/// the spelling's route (directly, or through a macro defined as one), under
+/// every preset, by `trust_noreturn_keyword`.
+fn spells_keyword_noreturn(text: &str) -> bool {
     if identifier_tokens(text).any(|t| t == "_Noreturn") {
         return true;
     }
@@ -348,11 +372,11 @@ fn spells_gnu_noreturn_attribute(text: &str) -> bool {
     while let Some(at) = rest.find("[[") {
         rest = &rest[at + 2..];
         let end = rest.find("]]").unwrap_or(rest.len());
-        let mut tokens = identifier_tokens(&rest[..end]);
-        match tokens.next() {
-            Some(t) if is_noreturn(t) || t == "_Noreturn" => return true,
-            Some("gnu" | "__gnu__") if tokens.any(is_noreturn) => return true,
-            _ => {}
+        if matches!(
+            identifier_tokens(&rest[..end]).next(),
+            Some("noreturn" | "__noreturn__" | "_Noreturn")
+        ) {
+            return true;
         }
         rest = &rest[end..];
     }
@@ -366,12 +390,25 @@ fn spells_gnu_noreturn_attribute(text: &str) -> bool {
 /// its spelling (ADR-0006): an undefined or differently defined `NORETURN`
 /// declares nothing. A chain through a second macro is not followed.
 pub fn collect_attribute_noreturn_macro_names(source: &str, out: &mut HashSet<String>) {
+    collect_macro_names_spelling(source, spells_gnu_noreturn_attribute, out);
+}
+
+/// Add to `out` the name of every object-like `#define` in `source` whose
+/// replacement list spells an ISO noreturn (`#define NR [[noreturn]]`,
+/// `#define NR _Noreturn`), in any preprocessor branch. The same rule as
+/// [`collect_attribute_noreturn_macro_names`], for the spellings every preset
+/// credits.
+pub fn collect_keyword_noreturn_macro_names(source: &str, out: &mut HashSet<String>) {
+    collect_macro_names_spelling(source, spells_keyword_noreturn, out);
+}
+
+fn collect_macro_names_spelling(source: &str, spells: fn(&str) -> bool, out: &mut HashSet<String>) {
     for cap in crate::utility::cert_c::ast_utils::define_line_re().captures_iter(source) {
         let body = cap.get(2).map(|m| m.as_str()).unwrap_or("");
         if body.starts_with('(') {
             continue;
         }
-        if let Some(name) = cap.get(1).filter(|_| spells_gnu_noreturn_attribute(body)) {
+        if let Some(name) = cap.get(1).filter(|_| spells(body)) {
             out.insert(name.as_str().to_string());
         }
     }
@@ -493,6 +530,21 @@ pub fn attribute_noreturn_declared_in(
             tokens.contains(GNU_NORETURN_DIRECT)
                 || tokens.iter().any(|t| attribute_macros.contains(t))
         })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// The names in `candidates` declared noreturn through one of
+/// `keyword_macros` ([`collect_keyword_noreturn_macro_names`]): a standard
+/// spelling reached by a macro, which [`has_noreturn_keyword`] cannot see in
+/// the declaration's text.
+pub fn keyword_noreturn_declared_in(
+    candidates: &HashMap<String, HashSet<String>>,
+    keyword_macros: &HashSet<String>,
+) -> HashSet<String> {
+    candidates
+        .iter()
+        .filter(|(_, tokens)| tokens.iter().any(|t| keyword_macros.contains(t)))
         .map(|(name, _)| name.clone())
         .collect()
 }
@@ -1101,13 +1153,46 @@ mod tests {
             "void die(void) __attribute__((noreturn));\n",
             "void die(void) __attribute__((cold, __noreturn__));\n",
             "[[gnu::noreturn]] void die(void);\n",
-            "[[noreturn]] void die(void);\n",
-            "_Noreturn void die(void);\n",
-            "#define NORETURN _Noreturn\nNORETURN void die(void);\n",
             "#define NORETURN __attribute__((__noreturn__))\nvoid die(void) NORETURN;\n",
             "#define NORETURN __attribute__((__noreturn__))\nNORETURN void die(void);\n",
         ] {
             assert!(attribute_names(src).contains("die"), "{src}");
+        }
+    }
+
+    fn keyword_macro_names(src: &str) -> HashSet<String> {
+        let (tree, source) = parse(src);
+        let mut macros = HashSet::new();
+        collect_keyword_noreturn_macro_names(&source, &mut macros);
+        keyword_noreturn_declared_in(
+            &collect_attribute_candidates(&tree.root_node(), &source, &source),
+            &macros,
+        )
+    }
+
+    #[test]
+    fn an_iso_spelling_is_no_gnu_attribute_but_is_one_through_a_macro() {
+        for src in [
+            "[[noreturn]] void die(void);\n",
+            "_Noreturn void die(void);\n",
+            "#define NORETURN _Noreturn\nNORETURN void die(void);\n",
+            "#define NORETURN [[noreturn]]\nNORETURN void die(void);\n",
+        ] {
+            assert!(!attribute_names(src).contains("die"), "{src}");
+        }
+        for src in [
+            "#define NR _Noreturn\nNR void die(void);\n",
+            "#define NR [[noreturn]]\nNR void die(void);\n",
+            "#define NR [[noreturn]]\nvoid die(void) NR;\n",
+        ] {
+            assert!(keyword_macro_names(src).contains("die"), "{src}");
+        }
+        for src in [
+            "#define NR __attribute__((noreturn))\nNR void die(void);\n",
+            "#define NR [[gnu::noreturn]]\nNR void die(void);\n",
+            "void die(void) NR;\n",
+        ] {
+            assert!(!keyword_macro_names(src).contains("die"), "{src}");
         }
     }
 
