@@ -631,7 +631,8 @@ fn process_declaration(
         || type_text.contains("BYTE");
     let is_char_type =
         (type_text.contains("char") || type_text.contains("wchar_t")) && !is_unsigned_char;
-    let is_static = type_text.contains("static") || type_text.contains("_Thread_local");
+    let is_static = type_text.contains("static")
+        || crate::utility::cert_c::ast_utils::declaration_is_thread_local(node, source);
     let is_extern =
         crate::utility::cert_c::ast_utils::declaration_has_storage_class(node, "extern", source);
 
@@ -2711,7 +2712,10 @@ fn collect_file_scope_statics_recursive(node: &Node, source: &str, state: &mut I
         match child.kind() {
             "declaration" => {
                 let type_text = extract_type_text(&child, source);
-                let is_static = type_text.contains("static") || type_text.contains("_Thread_local");
+                let is_static = type_text.contains("static")
+                    || crate::utility::cert_c::ast_utils::declaration_is_thread_local(
+                        &child, source,
+                    );
                 if is_static {
                     let mut tracked = HashSet::new();
                     process_declaration(

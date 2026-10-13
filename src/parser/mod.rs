@@ -60,7 +60,19 @@ impl CParser {
     /// documented inline below, and returning the (possibly repaired)
     /// source alongside the parse tree.
     pub fn parse_file(&mut self, file_path: &str) -> Result<(Tree, String)> {
-        let source = read_source_or_transcode(file_path)?;
+        self.parse_file_with_original(file_path)
+            .map(|(tree, source, _)| (tree, source))
+    }
+
+    /// [`Self::parse_file`], also returning the file's own text as read,
+    /// before any repair pass. The two have the same length and lines, so
+    /// an offset or line in one is the same in the other. Read the original
+    /// wherever the user's own text matters: a suppression hash, which the
+    /// suppression writers compute from the file, or text quoted back in a
+    /// finding.
+    pub fn parse_file_with_original(&mut self, file_path: &str) -> Result<(Tree, String, String)> {
+        let original = read_source_or_transcode(file_path)?;
+        let source = original.clone();
         // An earlier fix: neutralize emscripten EM_ASM/EM_JS embedded-JavaScript
         // macro bodies. A JS block parses as ordinary-looking C rather than
         // an ERROR node, so without this every rule walks it -- DCL31-C
@@ -74,6 +86,11 @@ impl CParser {
         // module.c). Spell the header quoted. Length-preserving, and a no-op
         // on a file without the construct.
         let source = crate::analyze::has_include_angle::quote_has_include_headers(&source);
+
+        // tree-sitter-c does not know the C11 keyword `_Thread_local` and
+        // strands the declarator of every declaration that uses it. Spell it
+        // `thread_local`, which the grammar does know. Length-preserving.
+        let source = crate::analyze::thread_local_keyword::spell_thread_local(&source);
 
         // An earlier fix: blank empty WINAPI/RLAPI-style export-specifier macros
         // before parsing -- tree-sitter-c's grammar can't parse a bare
@@ -146,7 +163,7 @@ impl CParser {
         // Too deep to walk: refused here, so no analysis recurses into it.
         crate::analyze::input_guard::admit_tree(&tree)?;
 
-        Ok((tree, source))
+        Ok((tree, source, original))
     }
 
     /// Parse `source` directly (no file read), applying the same
@@ -162,6 +179,7 @@ impl CParser {
     pub fn parse_source(&mut self, source: &str) -> Result<(Tree, String)> {
         let source = crate::analyze::embedded_js_blank::blank_embedded_js(source);
         let source = crate::analyze::has_include_angle::quote_has_include_headers(&source);
+        let source = crate::analyze::thread_local_keyword::spell_thread_local(&source);
         let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(&source);
         let source = crate::analyze::preproc_dangling_else::blank_dangling_else_preproc(&source);
         let source = crate::analyze::label_preproc_guard::blank_label_guarded_preproc(&source);

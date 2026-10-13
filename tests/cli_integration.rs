@@ -1476,6 +1476,79 @@ fn generate_suppression_outputs_hash() {
     assert!(stdout.contains("[[suppress]]"));
 }
 
+/// The parser respells `_Thread_local` for the grammar, but a suppression is
+/// hashed from the file as written, and a finding quotes the line as written:
+/// a suppression the tool generates for such a line still matches it.
+#[test]
+fn a_suppression_for_a_thread_local_line_matches_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let code_line = "static _Thread_local int x = 1, y;";
+    let plain = dir.path().join("plain.c");
+    std::fs::write(&plain, format!("{code_line}\n")).unwrap();
+    let out = dir.path().join("out.json");
+    let (_, _, _) = run_aurora_lint(&[
+        plain.to_str().unwrap(),
+        "--rules",
+        "DCL04-C",
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(violations.len(), 1);
+    let message = violations[0]["message"].as_str().unwrap();
+    assert!(
+        message.contains(code_line),
+        "message misquotes the line: {message}"
+    );
+
+    let (code, stdout, _) = run_aurora_lint(&[
+        "--generate-suppression",
+        &format!("{}:1:DCL04-C", plain.to_str().unwrap()),
+    ]);
+    assert_eq!(code, 0);
+    let comment = stdout
+        .lines()
+        .find(|l| l.starts_with("// tools:suppress"))
+        .expect("a standalone suppression comment");
+    let suppressed = dir.path().join("suppressed.c");
+    std::fs::write(&suppressed, format!("{comment}\n{code_line}\n")).unwrap();
+    let (_, stdout, _) = run_aurora_lint(&[suppressed.to_str().unwrap(), "--rules", "DCL04-C"]);
+    assert!(
+        stdout.contains("(1 suppressed)"),
+        "the generated suppression should match: {stdout}"
+    );
+}
+
+/// A repair pass that blanks a token (an empty export macro) keeps the line's
+/// length, not its text; the suppression still matches the line as written.
+#[test]
+fn a_suppression_for_a_line_a_repair_pass_blanks_matches_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let plain = dir.path().join("plain.c");
+    std::fs::write(&plain, "#define API\nAPI int x = 1, y;\n").unwrap();
+    let (code, stdout, _) = run_aurora_lint(&[
+        "--generate-suppression",
+        &format!("{}:2:DCL04-C", plain.to_str().unwrap()),
+    ]);
+    assert_eq!(code, 0);
+    let comment = stdout
+        .lines()
+        .find(|l| l.starts_with("// tools:suppress"))
+        .expect("a standalone suppression comment");
+    let suppressed = dir.path().join("suppressed.c");
+    std::fs::write(
+        &suppressed,
+        format!("#define API\n{comment}\nAPI int x = 1, y;\n"),
+    )
+    .unwrap();
+    let (_, stdout, _) = run_aurora_lint(&[suppressed.to_str().unwrap(), "--rules", "DCL04-C"]);
+    assert!(
+        stdout.contains("(1 suppressed)"),
+        "the generated suppression should match: {stdout}"
+    );
+}
+
 // ─── Cross-file analysis (-d) ────────────────────────────────────────────────
 
 #[test]

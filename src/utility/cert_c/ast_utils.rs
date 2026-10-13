@@ -928,9 +928,10 @@ pub fn declaration_has_storage_class(decl: &Node, storage_class: &str, source: &
 
 /// Whether `decl` (a `declaration`) gives its objects thread storage
 /// duration: `_Thread_local`, `thread_local`, `__thread` or
-/// `__declspec(thread)`. The grammar does not know `_Thread_local` in every
-/// position and may read it as a type name, so a type identifier spelled that
-/// way counts.
+/// `__declspec(thread)`. The parser respells `_Thread_local` as
+/// `thread_local` before the grammar reads it (the grammar does not know the
+/// C11 spelling); a tree parsed without that pass may still hold it as a type
+/// name, so a type identifier spelled either way counts.
 pub fn declaration_is_thread_local(decl: &Node, source: &str) -> bool {
     decl.child_nodes().any(|c| {
         let text = get_node_text(&c, source);

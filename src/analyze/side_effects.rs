@@ -435,7 +435,8 @@ fn typedef_declarations(func: &Node, source: &str) -> HashMap<String, Option<(St
     out
 }
 
-/// C11 6.4.1 keywords, plus the GNU spellings of a few, which tree-sitter
+/// C11 6.4.1 keywords, plus the GNU spellings of a few and the
+/// `thread_local` the parser respells `_Thread_local` as, which tree-sitter
 /// can read as identifiers inside a macro argument it cannot parse.
 const C_KEYWORDS: &[&str] = &[
     "auto",
@@ -482,6 +483,7 @@ const C_KEYWORDS: &[&str] = &[
     "_Noreturn",
     "_Static_assert",
     "_Thread_local",
+    "thread_local",
     "__inline",
     "__inline__",
     "__restrict",

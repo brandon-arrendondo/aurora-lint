@@ -1444,6 +1444,20 @@ the angle-bracketed header is not a C expression, and the recovery from it
 did not stay on the directive line -- valkey's module.c lost the assignment
 below the `#endif`, which EXP33-C then read as a use. A rule that still
 has to reason about the directive text itself has `is_on_preproc_directive_line`.
+`thread_local_keyword.rs` respells the C11 keyword `_Thread_local` as
+`thread_local ` (same length) outside comments and literals: the grammar
+lists `thread_local` and `__thread` as storage classes but not the C11
+spelling, so it read `_Thread_local int x;` as type `_Thread_local` with
+declarator `int` and stranded `x` in an `ERROR` node. After it, a
+`_Thread_local` object's declaration reads back as `thread_local`, so a rule
+asks `declaration_is_thread_local` rather than matching either spelling. A
+directive keeps its spelling where it names something: an `#include`'s
+header, an `#if`-family condition, a `#define`'s name and a `thread_local`
+macro's definition. `CParser::parse_file_with_original` also returns the
+file as written, which every repair pass maps onto line for line and byte
+for byte: suppression hashes read it (so a suppression written for a line a
+pass rewrites still matches), and `restore_spelling` puts `_Thread_local`
+back into a message that quotes a respelled line.
 A third family sits alongside them, driven by text shape
 rather than by a macro name or a parser signal, for the preprocessor
 constructs `tree-sitter-c`'s grammar has no production for at all:

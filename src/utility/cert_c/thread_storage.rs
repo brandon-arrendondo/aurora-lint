@@ -26,10 +26,9 @@
 //! one thread hands back another's handle, and CERT's own compliant
 //! thread-specific-storage example does exactly that.
 //!
-//! Thread storage is `thread_local`, `__thread` or `__declspec(thread)`. A
-//! declaration spelled with the `_Thread_local` keyword itself is misread by
-//! the grammar (the keyword parses as a type name and strands the declared
-//! name in an error node), so such an object does not resolve here.
+//! Thread storage is `_Thread_local`, `thread_local`, `__thread` or
+//! `__declspec(thread)`. The parser respells `_Thread_local` as
+//! `thread_local`, which the grammar reads as a storage class.
 
 use crate::settings::threads::{Role, ThreadTypeKind};
 use crate::utility::cert_c::ast_utils::{

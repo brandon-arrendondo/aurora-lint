@@ -2244,7 +2244,7 @@ impl TerminalUI {
                 break;
             }
 
-            if let Ok((tree, source)) = parser.parse_file(file_path) {
+            if let Ok((tree, source, original)) = parser.parse_file_with_original(file_path) {
                 // The per-file state a CLI scan hands every rule: CFGs, value
                 // ranges when an enabled rule asks for them, and the struct and
                 // typedef tables this file sees.
@@ -2258,7 +2258,7 @@ impl TerminalUI {
                 for rule in self.registry.all_rules() {
                     analysis.apply_to(rule.as_ref());
                 }
-                self.scan_parsed_file(terminal, file_path, &tree.root_node(), &source)?;
+                self.scan_parsed_file(terminal, file_path, &tree.root_node(), &source, &original)?;
             }
         }
 
@@ -2297,15 +2297,18 @@ impl TerminalUI {
 
     /// Run all enabled rules against one already-parsed file, splitting
     /// results into active/suppressed violations, and record it as clean
-    /// if no rule fired.
+    /// if no rule fired. `source` is the text the parser read, `original`
+    /// the file's own (see [`crate::parser::CParser::parse_file_with_original`]).
     fn scan_parsed_file<B: Backend>(
         &mut self,
         terminal: &mut Terminal<B>,
         file_path: &str,
         root_node: &Node,
         source: &str,
+        original: &str,
     ) -> Result<()> {
-        // Extract suppressions from this file
+        // Extract suppressions from this file; their hashes are matched
+        // against `original` below, as the writers hash it
         let mut suppression_manager = SuppressionManager::new();
         suppression_manager.extract_from_source(file_path, source);
 
@@ -2338,7 +2341,7 @@ impl TerminalUI {
                 rule_id,
                 rule_config,
                 root_node,
-                source,
+                (source, original),
                 file_path,
                 &suppression_manager,
             );
@@ -2359,15 +2362,19 @@ impl TerminalUI {
         rule_id: &str,
         rule_config: &RuleConfig,
         root_node: &Node,
-        source: &str,
+        (source, original): (&str, &str),
         file_path: &str,
         suppression_manager: &SuppressionManager,
     ) -> bool {
         let Some(rule) = self.registry.get_rule(rule_id) else {
             return false;
         };
+        let respelled = crate::analyze::thread_local_keyword::respelled_sites(original, source);
         let mut file_violations = rule.check(root_node, source);
         for violation in &mut file_violations {
+            crate::analyze::thread_local_keyword::restore_in_finding(
+                violation, original, source, &respelled,
+            );
             violation.file_path = file_path.to_string();
             // Use config severity if specified, otherwise use rule's default severity
             violation.severity = rule_config
@@ -2383,7 +2390,7 @@ impl TerminalUI {
                     file_path,
                     rule_id,
                     violation.line,
-                    source,
+                    original,
                     &violation.message,
                 )
                 .is_some()

@@ -75,6 +75,7 @@ pub mod suppression;
 /// Recovering the compiler's *implicit* system header directories
 /// (`cc -E -Wp,-v -`), which a `compile_commands.json` can never contain.
 pub mod system_includes;
+pub mod thread_local_keyword;
 pub mod unknown_identifier_recovery;
 pub mod value_range;
 pub mod vra_access;
@@ -1410,7 +1411,7 @@ fn analyze_one_file(
     let mut file_suppressed = Vec::new();
     let mut file_failures = Vec::new();
 
-    let parsed = match parser.parse_file(file_path) {
+    let parsed = match parser.parse_file_with_original(file_path) {
         Ok(parsed) => Some(parsed),
         // Parsed but refused (ADR-0017): reported like a refusal before it.
         Err(e) if e.downcast_ref::<input_guard::Refusal>().is_some() => {
@@ -1429,7 +1430,10 @@ fn analyze_one_file(
             None
         }
     };
-    if let Some((tree, source)) = parsed {
+    if let Some((tree, source, original)) = parsed {
+        // Where the parser respelled `_Thread_local`, a message quoting the
+        // line is given the user's spelling back.
+        let respelled = thread_local_keyword::respelled_sites(&original, &source);
         // A `.h` file is ambiguous between C and C++ by extension alone; a
         // header written entirely in C++ (a vendored C++ wrapper API
         // shipped alongside a C library, e.g. mosquitto's
@@ -1457,7 +1461,11 @@ fn analyze_one_file(
             needs_vra,
         );
 
-        // Extract suppressions from the current file
+        // Extract suppressions from the current file. The inactive-branch
+        // ranges come from the text the rules read; matching a suppression's
+        // hash reads the file's own text below, as the suppression writers
+        // hash it: a repair pass keeps lines and length but not always
+        // content.
         suppression_manager.extract_from_source(file_path, &source);
 
         for (rule_id, rule_config) in manifest.enabled_rules() {
@@ -1510,6 +1518,7 @@ fn analyze_one_file(
                 // Set file path and severity on all violations
                 for v in &mut rule_violations {
                     v.file_path = file_path.to_string();
+                    thread_local_keyword::restore_in_finding(v, &original, &source, &respelled);
                     v.severity = rule_config
                         .severity
                         .clone()
@@ -1519,7 +1528,7 @@ fn analyze_one_file(
                 // Partition into active and suppressed violations
                 for v in rule_violations {
                     if let Some(j) = suppression_manager
-                        .should_suppress(file_path, rule_id, v.line, &source, &v.message)
+                        .should_suppress(file_path, rule_id, v.line, &original, &v.message)
                     {
                         file_suppressed.push(SuppressedViolation {
                             justification: j.to_string(),

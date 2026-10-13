@@ -6338,9 +6338,9 @@ impl Arr30C {
         // declarator/initializer boundary was mis-parsed, so a declarator-
         // shaped node after it is really part of the initializer expression.
         // A parse error that does NOT swallow an `=` leaves the declarator
-        // intact and is still trustworthy -- `_Thread_local int buf[8] = ...`
-        // errors on the unknown storage class alone, and its `buf[8]` is a
-        // real declaration.
+        // intact and is still trustworthy -- an unknown storage-class macro
+        // before `int buf[8] = ...` errors on that name alone, and its
+        // `buf[8]` is a real declaration.
         if Self::declarator_split_by_parse_error(node, source) {
             return None;
         }
