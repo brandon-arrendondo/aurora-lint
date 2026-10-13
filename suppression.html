@@ -209,6 +209,13 @@ only some builds compile is not suppressed: every <code class="docutils literal 
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">--</span><span class="n">generate</span><span class="o">-</span><span class="n">suppression</span> <span class="n">src</span><span class="o">/</span><span class="n">main</span><span class="o">.</span><span class="n">c</span><span class="p">:</span><span class="mi">42</span><span class="p">:</span><span class="n">ARR30</span><span class="o">-</span><span class="n">C</span>
 </pre></div>
 </div>
+<p>The hash is over the line’s text as the scan reads the file: a UTF-8
+byte-order mark is not part of line 1, and a Latin-1 file or a UTF-16 file
+with a byte-order mark is decoded first. The generator, the scan and the
+interactive UI all read the file that way, so a hash one of them computes is
+one the others match. The UI’s <strong>inline</strong> suppression rewrites the file, so it
+declines a file that is not plain UTF-8 text, such as a Latin-1 or UTF-16 file
+that would come back as UTF-8; use <code class="docutils literal notranslate"><span class="pre">suppress.toml</span></code> for one of those.</p>
 </section>
 <section id="pre-rename-spellings-still-accepted">
 <span id="suppression-legacy-spelling"></span><h2>Pre-rename spellings (still accepted)<a class="headerlink" href="#pre-rename-spellings-still-accepted" title="Link to this heading"></a></h2>
