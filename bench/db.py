@@ -2380,10 +2380,13 @@ class BenchDB:
         `not_enforced`) is an abstention, its findings and labels leave every
         denominator below, and `overall["abstention"]` names the rules and
         reports what was left out and the share of the run's findings still
-        enforced. This is the ruling, not what the binary did: the binary
-        still reports a declined rule until it is removed or the table is
-        wired to runtime declines, and the run's own preset is not checked
-        against this one. None (the default) scores every rule, as before.
+        enforced. This is the ruling, and it is wider than what the binary
+        withholds: a scan under the preset withholds the rules it declines
+        that another preset enforces (`withheld_by_binary`), but still runs a
+        rule every preset declines until the rule is removed
+        (`still_reported`). A run whose findings include a withheld rule did
+        not scan under this preset, or predates the runtime declines; the
+        result warns. None (the default) scores every rule, as before.
 
         The returned `overall` reports label coverage on BOTH bases rather
         than leaving the ratio to callers: `label_coverage_pct` over every
@@ -2412,10 +2415,15 @@ class BenchDB:
                 for proj, keys in run_keys.items()}
 
         abstained: set[str] = set()
+        withheld: set[str] = set()
+        withheld_findings = 0
         abstention_findings = 0
         if preset is not None:
             from bench import rule_presets
             abstained = rule_presets.abstaining_rules(preset)
+            withheld = rule_presets.runtime_declined_rules(preset)
+            withheld_findings = sum(
+                1 for keys in run_keys.values() for k in keys if k[2] in withheld)
             abstention_findings = sum(
                 1 for keys in run_keys.values() for k in keys if k[2] in abstained)
             run_keys = {proj: {k for k in keys if k[2] not in abstained}
@@ -2423,6 +2431,11 @@ class BenchDB:
         abstention_labels = 0
 
         warnings = []
+        if withheld_findings:
+            warnings.append(
+                f"{withheld_findings} finding(s) of rules a scan under the {preset} "
+                f"preset withholds ({', '.join(sorted(withheld))}): this run did not "
+                f"scan under it, or its binary predates the runtime declines")
         # Projects this run could not score AT ALL because no codebase_commit
         # was recorded -- a data defect, not a normal state, and distinct from
         # "scored, but nothing was labeled at that commit". Kept as its own
@@ -2613,10 +2626,16 @@ class BenchDB:
             total = enforced + abstention_findings
             overall["abstention"] = {
                 "preset": preset,
-                "note": "ruled declined; the binary still reports these rules "
-                        "until they are removed or the table is wired to "
-                        "runtime declines",
+                "note": "ruled declined; a scan under the preset withholds "
+                        "withheld_by_binary, and the binary still reports "
+                        "still_reported, the rules every preset declines, "
+                        "until they are removed",
                 "rules": sorted(abstained),
+                "withheld_by_binary": sorted(withheld),
+                "still_reported": sorted(abstained - withheld),
+                # Findings of a rule the binary withholds under this preset:
+                # zero for a run scanned under it.
+                "withheld_findings": withheld_findings,
                 "findings": abstention_findings,
                 "labels": abstention_labels,
                 # The share of the run's findings the preset still enforces:

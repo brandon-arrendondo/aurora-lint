@@ -87,6 +87,32 @@ class TestScoring(unittest.TestCase):
         a = self._score("strict")["overall"]["abstention"]
         self.assertIn("binary still reports", a["note"])
 
+    def test_the_binary_withholds_only_what_another_preset_enforces(self):
+        # B-C is enforced by default, so strict withholds it at run time; a
+        # run whose findings include it did not scan under strict.
+        result = self._score("strict")
+        a = result["overall"]["abstention"]
+        self.assertEqual(a["withheld_by_binary"], ["B-C"])
+        self.assertEqual(a["still_reported"], [])
+        self.assertEqual(a["withheld_findings"], 2)
+        self.assertIn("withholds", " ".join(result["warnings"]))
+
+    def test_runtime_declines_leave_out_a_rule_every_preset_declines(self):
+        table = {"A-C": {"default": "narrowed", "strict": "as_written",
+                         "pedantic": "not_enforced", "differs": True},
+                 "B-C": {"default": "not_enforced", "strict": "not_enforced",
+                         "pedantic": "not_enforced", "differs": False}}
+        self.assertEqual(rule_presets.runtime_declined_rules("pedantic", table), {"A-C"})
+        self.assertEqual(rule_presets.runtime_declined_rules("default", table), set())
+
+    def test_the_shipped_table_withholds_what_the_binary_does(self):
+        # The Rust side asserts the same predicate over the same file
+        # (settings::tests::the_runtime_declines_are_the_generated_tables_partial_declines).
+        self.assertEqual(rule_presets.runtime_declined_rules("default"), set())
+        self.assertEqual(rule_presets.runtime_declined_rules("strict"), set())
+        self.assertEqual(rule_presets.runtime_declined_rules("pedantic"),
+                         {"ERR33-C", "FIO30-C", "POS54-C"})
+
     def test_a_project_whose_labels_are_all_abstained_says_so(self):
         db = BenchDB.__new__(BenchDB)
         keys = {"p": {("a.c", 2, "B-C")}}

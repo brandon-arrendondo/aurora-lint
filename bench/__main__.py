@@ -484,6 +484,8 @@ def cmd_realworld_score(args):
         print(f"  Abstained rules ({a['note']}):")
         names = ", ".join(a["rules"]) or "none"
         print(f"    {names}")
+        withheld = ", ".join(a["withheld_by_binary"]) or "none"
+        print(f"  Withheld by the binary under {a['preset']}: {withheld}")
         print()
     print(f"Real-world measured precision/recall — v{run['sqc_version']}"
           f" ({_run_ident(run)})  run #{target_id}")
@@ -1422,8 +1424,9 @@ def main():
         help="Score within this preset's RULED scope: a rule it declines "
              "(rules_templates/rule-presets.json) is an abstention, left out "
              "of every denominator and named in the output with the coverage "
-             "that remains. The binary still reports declined rules until "
-             "they are removed, and the run's own preset is not checked")
+             "that remains. A scan under the preset withholds the rules it "
+             "declines that another preset enforces; a rule every preset "
+             "declines still runs until it is removed")
     p_score.set_defaults(func=cmd_realworld_score)
 
     # realworld-import-labels

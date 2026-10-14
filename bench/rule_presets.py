@@ -9,6 +9,11 @@ withholds a verdict on it, loudly, rather than guess. Scoring excludes an
 abstained rule from the precision and recall denominators and reports how
 much of the run that leaves enforced -- the coverage figure of selective
 classification (ADR-0015). It is never a miss, and never a false positive.
+
+The binary withholds the same rules at run time, with one exception: a rule
+every preset declines is a decided cut, which removing the rule stops, so the
+binary still runs it until then (`runtime_declined_rules`; the Rust side is
+`settings::PresetRow::declined_under`, which reads the same blocks).
 """
 from __future__ import annotations
 
@@ -30,3 +35,12 @@ def abstaining_rules(preset: str, table: dict[str, dict] | None = None) -> set[s
         raise ValueError(f"unknown preset {preset!r}; one of {', '.join(PRESETS)}")
     table = load() if table is None else table
     return {rule for rule, cells in table.items() if cells[preset] == "not_enforced"}
+
+
+def runtime_declined_rules(preset: str, table: dict[str, dict] | None = None) -> set[str]:
+    """The rules a scan under `preset` withholds: those it declines that some
+    other preset enforces. A rule every preset declines still runs until it
+    is removed."""
+    table = load() if table is None else table
+    return {rule for rule in abstaining_rules(preset, table)
+            if any(table[rule][p] != "not_enforced" for p in PRESETS)}
