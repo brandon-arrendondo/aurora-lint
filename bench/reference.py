@@ -10,9 +10,11 @@ it was not meant to touch? See docs/design/reference-corpus-ab.md.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -20,14 +22,16 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from bench.config import BENCH_ROOT, DEFAULT_PROFILE, PROJECT_DIR, SQC_BIN
+from bench.incomplete import EXIT_INCOMPLETE, parse_failures, summary
 
 CORPUS_FILE = PROJECT_DIR / "data" / "reference_corpus.json"
 MANIFEST = PROJECT_DIR / "rules_templates" / "rules-all.toml"
 OUT_DIR = PROJECT_DIR / "data" / "reference_ab"
 TIERS = ("quick", "standard", "large")
 # What a shadow scan may read besides the checkout's own sources: its own
-# headers and the host's system headers, and no other dependency (Brandon,
-# 2026-10-13). Part of the cache key, so changing it never reuses a scan.
+# headers and the host's system headers, and no other dependency. Part of
+# the cache key, so changing it never reuses a scan: bump it by hand whenever
+# own_include_dirs() or the include flags scan() passes change.
 INCLUDES = "own+system"
 
 
@@ -91,7 +95,7 @@ def _git(path: Path, *args: str, check: bool = True) -> str:
     return proc.stdout.strip()
 
 
-def _at_pin(path: Path, commit: str) -> bool:
+def at_pin(path: Path, commit: str) -> bool:
     if not (path / ".git").exists():
         return False
     return (_git(path, "rev-parse", "HEAD", check=False) == commit
@@ -101,7 +105,7 @@ def _at_pin(path: Path, commit: str) -> bool:
 def fetch(repo: dict, root: Path) -> str:
     """Shallow-fetch exactly the pinned commit and detach on it."""
     path = root / repo["name"]
-    if _at_pin(path, repo["commit"]):
+    if at_pin(path, repo["commit"]):
         return "ok"
     path.mkdir(parents=True, exist_ok=True)
     if not (path / ".git").exists():
@@ -110,7 +114,7 @@ def fetch(repo: dict, root: Path) -> str:
     _git(path, "fetch", "-q", "--depth", "1", "origin", repo["commit"])
     _git(path, "checkout", "-q", "--force", "--detach", repo["commit"])
     _git(path, "clean", "-qfdx")
-    if not _at_pin(path, repo["commit"]):
+    if not at_pin(path, repo["commit"]):
         raise RuntimeError(f"{repo['name']}: not at {repo['commit']} after fetch")
     return "fetched"
 
@@ -130,7 +134,27 @@ def settings_id() -> str:
     h = hashlib.sha256(MANIFEST.read_bytes())
     h.update(DEFAULT_PROFILE.encode())
     h.update(INCLUDES.encode())
+    h.update(system_headers_id().encode())
     return h.hexdigest()[:12]
+
+
+@functools.lru_cache(maxsize=None)
+def system_headers_id() -> str:
+    """The host's system headers, as --system-includes finds them: the
+    compiler's version and its include search list. Checkouts and caches stay
+    on a node, so a compiler or libc upgrade there must not reuse a scan made
+    against the old headers. This fingerprints the directories, not every
+    header's content: an upgrade that changes headers without changing the
+    compiler's version or search list is not seen."""
+    cc = shutil.which("cc")
+    if cc is None:
+        return "no-cc"
+    version = subprocess.run([cc, "--version"], capture_output=True, text=True).stdout
+    search = subprocess.run([cc, "-E", "-Wp,-v", "-"], input="", capture_output=True,
+                            text=True).stderr
+    dirs = [line.strip() for line in search.splitlines() if line.startswith(" /")]
+    return hashlib.sha256((version.split("\n")[0] + "\n" + "\n".join(dirs))
+                          .encode()).hexdigest()[:12]
 
 
 def scan(binary: Path, bid: str, repo: dict, root: Path, jobs: int,
@@ -144,6 +168,9 @@ def scan(binary: Path, bid: str, repo: dict, root: Path, jobs: int,
     out.parent.mkdir(parents=True, exist_ok=True)
     export = out.with_suffix(".raw.json")
     headers = out.with_suffix(".headers.json")
+    # A partial file left by an interrupted run must never be read as this one's.
+    export.unlink(missing_ok=True)
+    headers.unlink(missing_ok=True)
     cmd = [str(binary), str(path), "--manifest", str(MANIFEST),
            "--export", str(export), "--jobs", str(jobs),
            "--profile", DEFAULT_PROFILE, "-d", str(path),
@@ -155,7 +182,7 @@ def scan(binary: Path, bid: str, repo: dict, root: Path, jobs: int,
     start = time.monotonic()
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        status = "ok" if export.exists() else f"exit {proc.returncode}: {proc.stderr.strip()[-300:]}"
+        status = _status(proc.returncode, proc.stderr, export.exists())
     except subprocess.TimeoutExpired:
         status = f"timeout after {timeout}s"
     result = {"status": status, "seconds": round(time.monotonic() - start, 1),
@@ -163,11 +190,30 @@ def scan(binary: Path, bid: str, repo: dict, root: Path, jobs: int,
     headers.unlink(missing_ok=True)
     if status == "ok":
         result["findings"] = [_normalize(v, path) for v in json.loads(export.read_text())]
-        export.unlink()
-    # A failed scan is not cached: it may be the environment, not the binary.
+    export.unlink(missing_ok=True)
+    # Only a complete scan is cached. A failed one may be the environment,
+    # not the binary, and an incomplete one is missing whatever was not run.
     if status == "ok":
         out.write_text(json.dumps(result))
     return result
+
+
+def _status(returncode: int, stderr: str, exported: bool) -> str:
+    """A scan's status: "ok" only for a complete scan that wrote its export.
+
+    aurora-lint writes --export before it exits 3 for a contained failure or
+    an abandoned rule (ADR-0017), so an export alone does not mean complete:
+    diffed, an abandoned rule would read as findings removed. An incomplete
+    scan's status names its failures by rule and count, never by file, since
+    a shadow file's path is not to be reported."""
+    if returncode == EXIT_INCOMPLETE:
+        text = summary(parse_failures(stderr))
+        if any(line.startswith("Error: hang:") for line in stderr.splitlines()):
+            text += ", stall watchdog fired"
+        return "incomplete: " + text
+    if returncode == 0 and exported:
+        return "ok"
+    return f"exit {returncode}"
 
 
 def own_include_dirs(path: Path) -> list[Path]:
@@ -292,13 +338,23 @@ def run_ab(base_bin: Path, target_bin: Path, repos: list[dict], root: Path,
     return out
 
 
+def not_compared(report: dict) -> int:
+    """Codebases the A/B could not compare: a fetch error, or a scan that
+    failed or was incomplete on either side."""
+    return sum(1 for e in report["codebases"].values()
+               if "error" in e or e["base_status"] != "ok" or e["target_status"] != "ok")
+
+
 def print_summary(report: dict) -> None:
     intended = set(report["intended_rules"])
     rules: dict[str, dict] = defaultdict(lambda: {"added": 0, "removed": 0, "codebases": set()})
-    failures, changed = [], 0
+    failures, incomplete, changed = [], [], 0
     for name, e in report["codebases"].items():
         if "error" in e or e["base_status"] != "ok" or e["target_status"] != "ok":
-            failures.append((name, e.get("error") or f"base: {e['base_status']} / target: {e['target_status']}"))
+            why = e.get("error") or f"base: {e['base_status']} / target: {e['target_status']}"
+            sides = (e.get("base_status", ""), e.get("target_status", ""))
+            (incomplete if "error" not in e and all(s == "ok" or s.startswith("incomplete")
+                                                     for s in sides) else failures).append((name, why))
             continue
         changed += len(e["changed"])
         for side in ("added", "removed"):
@@ -306,7 +362,7 @@ def print_summary(report: dict) -> None:
                 r = rules[f["rule"]]
                 r[side] += 1
                 r["codebases"].add(name)
-    ok = len(report["codebases"]) - len(failures)
+    ok = len(report["codebases"]) - len(failures) - len(incomplete)
     print(f"\nreference A/B  base {report['base']['sha256_12']}  ->  "
           f"target {report['target']['sha256_12']}   ({ok} codebases compared)")
     if not rules:
@@ -319,8 +375,13 @@ def print_summary(report: dict) -> None:
     if changed:
         print(f"\n{changed} finding(s) kept their location but changed message text")
     _print_headers(report)
+    if failures or incomplete:
+        print(f"\n{len(failures)} codebase(s) FAILED and {len(incomplete)} INCOMPLETE "
+              "on at least one side; they are not compared above")
     for name, why in failures:
         print(f"FAILED {name}: {why}")
+    for name, why in incomplete:
+        print(f"INCOMPLETE {name}: {why}")
 
 
 def _print_headers(report: dict) -> None:

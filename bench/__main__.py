@@ -580,8 +580,9 @@ def _validate_label_rows(rows, args):
     """
     from bench.config import load_rule_ids
     from bench.reference import shadow_names
-    shadow = shadow_names()
-    in_shadow = sorted({(row.get("project") or "").strip() for row in rows} & shadow)
+    shadow = {name.lower() for name in shadow_names()}
+    in_shadow = sorted({(row.get("project") or "").strip() for row in rows
+                        if (row.get("project") or "").strip().lower() in shadow})
     if in_shadow:
         # The shadow set only works as a check while nothing is tuned to it.
         print(f"Refusing to import {args.csv}: project(s) {', '.join(in_shadow)} "
@@ -1203,6 +1204,9 @@ def cmd_reference_ab(args):
     out = reference.run_ab(Path(args.base), target, repos, root, intended,
                            jobs, args.timeout)
     print(f"\nfull delta: {out}")
+    # A codebase that failed or was incomplete on either side is a result
+    # nobody compared; a script running the A/B must see that.
+    sys.exit(1 if reference.not_compared(json.loads(out.read_text())) else 0)
 
 
 def cmd_render_docs(args):

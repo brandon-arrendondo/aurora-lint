@@ -150,12 +150,72 @@ class TestCacheKey(unittest.TestCase):
                 self.assertNotEqual(before, reference.settings_id())
 
 
+_FAKE_BINARY = """#!/bin/sh
+# Writes an export, reports a contained failure, and exits as an incomplete
+# scan does (ADR-0017).
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--export" ]; then echo '[]' > "$2"; fi
+  shift
+done
+echo 'Error: rule failure (timeout): EXP33-C: x.c: ran out of time' >&2
+exit {code}
+"""
+
+
+class TestIncompleteScan(unittest.TestCase):
+    def _scan(self, code):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        root = Path(d.name)
+        binary = root / "fake"
+        binary.write_text(_FAKE_BINARY.format(code=code))
+        binary.chmod(0o755)
+        (root / "corpus" / "c").mkdir(parents=True)
+        repo = {"name": "c", "commit": "0" * 40}
+        with mock.patch.object(reference, "OUT_DIR", root / "out"):
+            result = reference.scan(binary, "bid", repo, root / "corpus", 1, 60)
+            cached = list((root / "out").rglob("c-*.json"))
+        return result, cached
+
+    def test_an_export_with_exit_3_is_incomplete_and_not_cached(self):
+        result, cached = self._scan(3)
+        self.assertTrue(result["status"].startswith("incomplete:"), result["status"])
+        self.assertIn("EXP33-C", result["status"])
+        self.assertNotIn("x.c", result["status"])
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(cached, [])
+
+    def test_a_complete_scan_is_ok_and_cached(self):
+        result, cached = self._scan(0)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(cached), 1)
+
+    def test_status_never_carries_stderr_text(self):
+        self.assertEqual(reference._status(2, "error: /some/shadow/path.c", False), "exit 2")
+        self.assertIn("stall watchdog",
+                      reference._status(3, "Error: hang: R on f.c has run 600s", True))
+
+    def test_an_incomplete_codebase_is_not_compared(self):
+        report = {"codebases": {
+            "a": {"base_status": "ok", "target_status": "ok"},
+            "b": {"base_status": "ok", "target_status": "incomplete: INCOMPLETE: 1 failure(s)"},
+            "c": {"error": "fetch: x"}}}
+        self.assertEqual(reference.not_compared(report), 2)
+
+
 class TestLabelWall(unittest.TestCase):
     def test_import_refuses_shadow_project(self):
         name = sorted(reference.shadow_names())[0]
         rows = [{"project": name, "file": "x.c", "line": "1", "rule": "EXP33-C", "verdict": "TP"}]
         args = argparse.Namespace(csv="batch.csv", allow_unknown_rule=False)
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(SystemExit), contextlib.redirect_stdout(io.StringIO()):
+            _validate_label_rows(rows, args)
+
+    def test_import_refuses_shadow_project_in_any_case(self):
+        name = sorted(reference.shadow_names())[0].upper()
+        rows = [{"project": name, "file": "x.c", "line": "1", "rule": "EXP33-C", "verdict": "TP"}]
+        args = argparse.Namespace(csv="batch.csv", allow_unknown_rule=False)
+        with self.assertRaises(SystemExit), contextlib.redirect_stdout(io.StringIO()):
             _validate_label_rows(rows, args)
 
 

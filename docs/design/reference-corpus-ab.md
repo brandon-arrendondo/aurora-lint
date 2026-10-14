@@ -1,8 +1,8 @@
 # Reference shadow corpus: A/B a rule change on code nobody tuned against
 
 **Status:** tooling in place (`bench reference-fetch`, `bench reference-ab`,
-`playbooks/setup-shadow-corpus.yml`). The A/B is a release-level check, not
-a gate on every change.
+`playbooks/setup-shadow-corpus.yml`). The A/B is run before a release, not
+required on every change.
 
 ## Why
 
@@ -49,12 +49,14 @@ came from, or the default branch where a project tags nothing), `commit`,
 `domain` and `tier`. Pins were resolved with `git ls-remote` against each
 project's latest stable release. Re-pinning costs nothing, because no labels
 depend on these SHAs. But an A/B only compares like with like when both sides
-are scanned at the same pins, and the tool guarantees that because it scans
-both binaries in one invocation.
+are scanned at the same pins. Every cached scan is keyed by its pin, so a
+cached base scan is only ever compared with a target scan at the same pin.
 
 Tiers are cumulative: `quick` (small codebases, cheap enough for every change),
 `standard`, and `large` (kernels, interpreters, databases; opt in). Every
-codebase is scanned whole under `rules_templates/rules-all.toml`. There is no
+codebase is scanned whole under `rules_templates/rules-all.toml`, and both
+sides of an A/B use the copy in the checkout `reference-ab` runs from (the
+target's), so the base binary is scanned with the target's rule list. There is no
 per-codebase manifest, include path or scope exclusion, because that tuning is
 what makes the oracle set non-neutral. Every codebase gets the same include
 configuration instead (below).
@@ -71,7 +73,7 @@ allows the host's system headers, and assumes no other dependency:
   to the shallower one. Nothing records which directories a build would
   really use, so the same rule applies to every codebase.
 - **System headers:** `--system-includes`, the host compiler's own
-  directories, whatever the node has installed.
+  directories, whatever the machine has installed.
 - **Nothing else:** no third-party library a codebase depends on is
   installed or pointed at.
 
@@ -84,16 +86,17 @@ count against. Expect the misses to be other platforms' headers, test
 fixtures and absent dependencies; how much that degrades analysis is what
 running it shows.
 
-The set is kept resident on every node that runs A/Bs, not cloned per run:
-shallow checkouts at one SHA keep it small, and every scan re-checks a
-checkout at its pin and cleans it first. Nodes are provisioned by
-`playbooks/setup-shadow-corpus.yml`, which `setup-dev-environment.yml`
-imports at the standard tier. A node that runs the release-level large tier
-passes `-e shadow_tier=all`. The playbook first asserts about twice the
-tier's measured size is free, then runs `bench reference-fetch`. The pins
-live only in `data/reference_corpus.json`.
+The set is optional and fetched once: the checkouts stay on the machine,
+and every scan re-checks a checkout at its pin and cleans it first, so
+nothing is re-cloned per run. Shallow checkouts at one SHA keep it small.
+`playbooks/setup-shadow-corpus.yml` fetches a tier (standard by default,
+`-e shadow_tier=all` for every tier). It asserts about twice the tier's
+measured size is free first, unless every checkout is already at its pin,
+then runs `bench reference-fetch`. `setup-dev-environment.yml` imports it
+only with `-e install_shadow_corpus=true`. The pins live only in
+`data/reference_corpus.json`.
 
-The large tier is memory-heavy. On a node with under 16 GiB of RAM,
+The large tier is memory-heavy. On a machine with under 16 GiB of RAM,
 `reference-ab` halves its default `--jobs` for a selection that includes it
 and says so; an explicit `--jobs` is kept, with the same warning.
 
@@ -113,9 +116,18 @@ python -m bench reference-ab --base /tmp/base-target/release/aurora-lint \
 Checkouts go under `BENCH_ROOT/shadow_corpus/` (shallow, detached at the pin, and
 re-checked and cleaned before every scan). Scans are cached under
 `data/reference_ab/scans/<binary sha256>/<settings>/`, where the settings
-id hashes the manifest's content and the profile. A base binary is scanned
-once however many targets are compared against it, and a scan made under an
-edited `rules-all.toml` is never reused. The full delta (every added,
+id hashes the manifest's content, the profile, the include configuration
+(`INCLUDES` in `bench/reference.py`, bumped by hand whenever
+`own_include_dirs()` or the include flags change) and a fingerprint of the
+host's system headers (the compiler's version and include search list). A
+base binary is scanned once however many targets are compared against it,
+and a scan made under an edited `rules-all.toml`, another include
+configuration or another compiler is never reused. The fingerprint covers
+the search list, not each header's content, so an update that changes
+headers without changing either is not seen; delete `data/reference_ab/scans/`
+after one. Only a complete scan is cached. One that fails, or exits 3
+(incomplete: a rule or file ran out of its budget or crashed), is reported
+as FAILED or INCOMPLETE, is never diffed, and makes `reference-ab` exit 1. The full delta (every added,
 removed and message-changed finding) is written to
 `data/reference_ab/ab-<base>-<target>.json`. All of `data/reference_ab/` is
 gitignored local working data.

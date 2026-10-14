@@ -27,10 +27,6 @@
 #     CLAUDE.md's Code Navigation section) points at the `clew-mcp` command;
 #     without the package installed that command doesn't resolve and the
 #     clew MCP server silently fails to start.
-#   - The reference shadow set, imported from setup-shadow-corpus.yml at its
-#     standard tier, so every node that runs an A/B has the same pinned set
-#     (`-e shadow_tier=all` on a node that runs the release-level large
-#     tier; `-e install_shadow_corpus=false` to skip it).
 #   - cargo-sweep + an hourly cron job bounding cargo's target/ growth --
 #     found missing entirely on one of two otherwise-identically-provisioned
 #     dev nodes (2026-08-31), which is exactly the kind of silent drift this
@@ -44,6 +40,10 @@
 #   - ansible itself. Bootstrapping the tool this playbook runs under from
 #     inside itself is circular -- install it before running this playbook,
 #     e.g. `sudo apt install -y ansible` or `pipx install ansible-core`.
+#   - The reference shadow set, off by default: it downloads third-party
+#     codebases a contributor needs only to A/B against it. Opt in once with
+#     `-e install_shadow_corpus=true` (and `-e shadow_tier=...`), or run
+#     setup-shadow-corpus.yml directly; see docs/benchmark-setup.rst.
 #   - Comparison tools (cppcheck, clang-tidy, Infer, Frama-C -- see
 #     install-static-analyzers.yml and docs/benchmark-setup.rst), the 9
 #     real-world codebase checkouts (see setup-benchmark-repos.yml),
@@ -295,4 +295,4 @@
 
 - name: Fetch the reference shadow set
   import_playbook: setup-shadow-corpus.yml
-  when: install_shadow_corpus | default(true) | bool
+  when: install_shadow_corpus | default(false) | bool

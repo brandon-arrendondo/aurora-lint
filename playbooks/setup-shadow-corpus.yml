@@ -3,6 +3,11 @@
 # the never-labeled codebases a change is A/B'd over to see what it moves on
 # code nobody tuned against (docs/design/reference-corpus-ab.md).
 #
+# Optional, and a one-time setup: the checkouts stay where they are fetched,
+# and `bench reference-ab` re-checks each one at its pin before scanning it,
+# so nothing needs fetching again until the pins change. Nothing else in the
+# repository needs the shadow set.
+#
 # The pins live in data/reference_corpus.json and nowhere else. This playbook
 # does not clone anything itself: it runs `python -m bench reference-fetch`
 # from this checkout, so the shallow fetch, the detach on the pin and the
@@ -12,21 +17,21 @@
 # compile database and whatever system headers the machine has (docs/adr/0018,
 # Decision 6). So nothing here installs headers or builds anything.
 #
-# Runs on the local machine only. Usage:
+# Usage:
 #   ansible-playbook playbooks/setup-shadow-corpus.yml -i "localhost," -c local
 #   ansible-playbook playbooks/setup-shadow-corpus.yml -i "localhost," -c local \
-#     -e shadow_tier=all        # a node that runs the release-level large tier
+#     -e shadow_tier=all        # every tier, the large one included
 #
-# The set is kept resident: fetched once and re-checked at its pins before
-# every A/B scan, never re-cloned per run. Shallow checkouts at one SHA are
-# small, so the fetch only asserts room for about twice the tier's measured
-# size first, to fail before cloning rather than part-way through.
+# Before fetching, it asserts room for about twice the tier's measured size,
+# so a full disk fails before any clone rather than part-way through. The
+# check is skipped when every checkout of the tier is already at its pin.
 # Checkouts go under BENCH_ROOT/shadow_corpus/ (bench/config.py: $SQC_BENCH_ROOT,
 # .env, ~/toolchain).
 
+# hosts: all, like setup-dev-environment.yml, which imports this play. Both
+# act on the checkout they are run from, so run them with -i "localhost," -c local.
 - name: Fetch the reference shadow set at its pins
-  hosts: localhost
-  connection: local
+  hosts: all
   vars:
     project_dir: "{{ playbook_dir }}/.."
     # quick, standard, large or all; each tier includes the smaller ones,
@@ -40,26 +45,32 @@
       large: 11
       all: 11
   tasks:
-    - name: Measure free space where the checkouts go
+    - name: Count the tier's checkouts not yet at their pins, and the free space
       command: >-
-        python3 -c "import shutil; from bench.reference import default_root;
-        p = default_root();
-        p = next(a for a in (p, *p.parents) if a.exists());
-        print(shutil.disk_usage(p).free // 2**30)"
+        python3 -c "import shutil; from bench import reference;
+        root = reference.default_root();
+        repos = reference.load('{{ shadow_tier }}');
+        missing = sum(not reference.at_pin(root / r['name'], r['commit']) for r in repos);
+        p = next(a for a in (root, *root.parents) if a.exists());
+        print(missing, shutil.disk_usage(p).free // 2**30)"
       args:
         chdir: "{{ project_dir }}"
-      register: shadow_free
+      register: shadow_state
       changed_when: false
 
     - name: Require room for the tier before fetching
+      vars:
+        shadow_missing: "{{ shadow_state.stdout.split()[0] | int }}"
+        shadow_free_gb: "{{ shadow_state.stdout.split()[1] | int }}"
       assert:
-        that: shadow_free.stdout | int >= shadow_required_gb[shadow_tier]
+        that: shadow_free_gb | int >= shadow_required_gb[shadow_tier]
         fail_msg: >-
           The {{ shadow_tier }} tier needs about {{ shadow_required_gb[shadow_tier] }} GB
-          free where the shadow checkouts go; {{ shadow_free.stdout }} GB is free.
+          free where the shadow checkouts go; {{ shadow_free_gb }} GB is free.
           Free space, set SQC_BENCH_ROOT to a larger filesystem, or pick a smaller
           tier with -e shadow_tier=...
         quiet: true
+      when: shadow_missing | int > 0
 
     - name: Fetch each codebase in the tier
       command: python3 -m bench reference-fetch --tier {{ shadow_tier }}
