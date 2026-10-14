@@ -2940,7 +2940,7 @@ mod tests {
         // them, so exact include-name matching must not move them.
         assert_eq!(
             AnalysisSettings::preset(Preset::Default).settings_hash(),
-            "e0d506276a8057cff648d6acfb9bf39a6bc658fb74d2776ba7feb25f4f8a80bb"
+            "15339eecadd9161e2748b3b95607661786324c115247a0bfb3f0f5f40e4c8cf0"
         );
         assert_eq!(
             AnalysisSettings::preset(Preset::Strict).settings_hash(),

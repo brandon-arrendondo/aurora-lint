@@ -268,7 +268,7 @@ run ids even where the findings do not move.
   ========  ============================  ============================
   Preset    Before (first 12 digits)      After (first 12 digits)
   ========  ============================  ============================
-  default   ``6a42bd4cf1e0``              ``e0d506276a80``
+  default   ``6a42bd4cf1e0``              ``15339eecadd9``
   strict    ``f017c4b47de7``              ``15b0ac02df54``
   pedantic  ``7d5d09905362``              ``cf60a9257d5c``
   ========  ============================  ============================
