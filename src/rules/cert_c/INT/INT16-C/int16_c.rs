@@ -43,7 +43,7 @@ use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
-    get_node_text, resolve_field_expression_type, resolve_identifier_declarator,
+    get_node_text, resolve_field_expression_type, resolve_identifier_declarator_in, tree_root,
 };
 use crate::utility::cert_c::overflow_helpers::typedef_chain_is_unsigned;
 use lang_parsing_substrate::query;
@@ -131,8 +131,13 @@ impl CertRule for Int16C {
     // A name is not a variable; the declaration that binds it here is.
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        self.find_bitwise_operations(node, source, &mut violations);
-        self.find_signed_to_unsigned_conversions(node, source, &mut violations);
+        // Names resolve by one descent from the root, not a climb from each
+        // occurrence: `Node::parent` walks down from the root, so a climb
+        // costs the square of the depth, and a generated table fragment that
+        // is not valid C on its own parses to a very deep tree.
+        let root = tree_root(node);
+        self.find_bitwise_operations(&root, node, source, &mut violations);
+        self.find_signed_to_unsigned_conversions(&root, node, source, &mut violations);
         violations
     }
 }
@@ -150,12 +155,13 @@ impl Int16C {
     /// classify.
     fn declared_signedness(
         &self,
+        root: &Node,
         ident: &Node,
         name: &str,
         source: &str,
         unwrap: usize,
     ) -> Option<Signedness> {
-        let (decl, mut declarator) = resolve_identifier_declarator(ident, name, source)?;
+        let (decl, mut declarator) = resolve_identifier_declarator_in(root, ident, name, source)?;
         for _ in 0..unwrap {
             if !matches!(declarator.kind(), "pointer_declarator" | "array_declarator") {
                 return None;
@@ -241,8 +247,14 @@ impl Int16C {
     /// Declared type of the identifier at `ident` in the `"struct tag *"`
     /// spelling `resolve_field_expression_type`'s type map expects. `None`
     /// for an anonymous struct, an array, or a function declarator.
-    fn declared_type_text(&self, ident: &Node, name: &str, source: &str) -> Option<String> {
-        let (decl, mut declarator) = resolve_identifier_declarator(ident, name, source)?;
+    fn declared_type_text(
+        &self,
+        root: &Node,
+        ident: &Node,
+        name: &str,
+        source: &str,
+    ) -> Option<String> {
+        let (decl, mut declarator) = resolve_identifier_declarator_in(root, ident, name, source)?;
         let mut parts: Vec<String> = Vec::new();
         for i in 0..decl.child_count() {
             let Some(child) = decl.child(i) else {
@@ -276,9 +288,9 @@ impl Int16C {
 
     /// True when the identifier at `ident` is declared as a signed integer
     /// object in the scope of that occurrence.
-    fn is_signed_integer_here(&self, ident: &Node, source: &str) -> bool {
+    fn is_signed_integer_here(&self, root: &Node, ident: &Node, source: &str) -> bool {
         let name = get_node_text(ident, source);
-        self.declared_signedness(ident, name, source, 0) == Some(Signedness::Signed)
+        self.declared_signedness(root, ident, name, source, 0) == Some(Signedness::Signed)
     }
 
     /// Positive evidence that the assignment target `left` denotes an
@@ -287,15 +299,15 @@ impl Int16C {
     /// field the prescan recorded with an unsigned type. Anything the rule
     /// cannot resolve is `false` -- "not known to be signed" is not
     /// "unsigned", which is the inference the previous version made.
-    fn lvalue_is_unsigned_integer(&self, left: &Node, source: &str) -> bool {
+    fn lvalue_is_unsigned_integer(&self, root: &Node, left: &Node, source: &str) -> bool {
         match left.kind() {
             "identifier" => {
                 let name = get_node_text(left, source);
-                self.declared_signedness(left, name, source, 0) == Some(Signedness::Unsigned)
+                self.declared_signedness(root, left, name, source, 0) == Some(Signedness::Unsigned)
             }
             "parenthesized_expression" => left
                 .named_child(0)
-                .is_some_and(|inner| self.lvalue_is_unsigned_integer(&inner, source)),
+                .is_some_and(|inner| self.lvalue_is_unsigned_integer(root, &inner, source)),
             "pointer_expression" | "subscript_expression" => {
                 let is_deref = left.kind() == "subscript_expression"
                     || left
@@ -311,10 +323,10 @@ impl Int16C {
                     return false;
                 }
                 let name = get_node_text(&arg, source);
-                self.declared_signedness(&arg, name, source, 1) == Some(Signedness::Unsigned)
+                self.declared_signedness(root, &arg, name, source, 1) == Some(Signedness::Unsigned)
             }
             "field_expression" => self
-                .field_type_text(left, source)
+                .field_type_text(root, left, source)
                 .is_some_and(|ty| self.field_type_is_unsigned_integer(&ty)),
             _ => false,
         }
@@ -323,7 +335,7 @@ impl Int16C {
     /// The prescan-recorded type of the field `expr` (`s->count`,
     /// `a.b->c`) denotes, resolved from the base identifier's declaration
     /// in scope at the expression.
-    fn field_type_text(&self, expr: &Node, source: &str) -> Option<String> {
+    fn field_type_text(&self, root: &Node, expr: &Node, source: &str) -> Option<String> {
         let mut base = expr.child_by_field_name("argument")?;
         loop {
             base = match base.kind() {
@@ -336,7 +348,7 @@ impl Int16C {
             };
         }
         let base_name = get_node_text(&base, source);
-        let base_type = self.declared_type_text(&base, base_name, source)?;
+        let base_type = self.declared_type_text(root, &base, base_name, source)?;
         let type_map = HashMap::from([(base_name.to_string(), base_type)]);
         resolve_field_expression_type(expr, source, &type_map, &self.struct_field_types.borrow())
     }
@@ -361,6 +373,7 @@ impl Int16C {
     /// Find bitwise operations involving signed integer variables
     fn find_bitwise_operations(
         &self,
+        root: &Node,
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
@@ -380,14 +393,20 @@ impl Int16C {
                     // both sides, so those still check both operands.
                     if matches!(op_text, "<<" | ">>") {
                         if let Some(left) = n.child_by_field_name("left") {
-                            self.check_operand_for_violation(&left, source, violations, op_text);
+                            self.check_operand_for_violation(
+                                root, &left, source, violations, op_text,
+                            );
                         }
                     } else if matches!(op_text, "&" | "|" | "^") {
                         if let Some(left) = n.child_by_field_name("left") {
-                            self.check_operand_for_violation(&left, source, violations, op_text);
+                            self.check_operand_for_violation(
+                                root, &left, source, violations, op_text,
+                            );
                         }
                         if let Some(right) = n.child_by_field_name("right") {
-                            self.check_operand_for_violation(&right, source, violations, op_text);
+                            self.check_operand_for_violation(
+                                root, &right, source, violations, op_text,
+                            );
                         }
                     }
                 }
@@ -398,7 +417,9 @@ impl Int16C {
 
                     if op_text == "~" {
                         if let Some(argument) = n.child_by_field_name("argument") {
-                            self.check_operand_for_violation(&argument, source, violations, "~");
+                            self.check_operand_for_violation(
+                                root, &argument, source, violations, "~",
+                            );
                         }
                     }
                 }
@@ -410,13 +431,14 @@ impl Int16C {
     /// declared as a signed integer in the scope of that occurrence.
     fn check_operand_for_violation(
         &self,
+        root: &Node,
         operand: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
         operator: &str,
     ) {
         if operand.kind() == "identifier" {
-            if self.is_signed_integer_here(operand, source) {
+            if self.is_signed_integer_here(root, operand, source) {
                 self.report_bitwise(operand, source, operator, violations);
             }
             return;
@@ -432,7 +454,9 @@ impl Int16C {
             if let Some(arg) = operand.child_by_field_name("argument") {
                 if arg.kind() == "identifier" {
                     let name = get_node_text(&arg, source);
-                    if self.declared_signedness(&arg, name, source, 1) == Some(Signedness::Signed) {
+                    if self.declared_signedness(root, &arg, name, source, 1)
+                        == Some(Signedness::Signed)
+                    {
                         self.report_bitwise(&arg, source, operator, violations);
                     }
                 }
@@ -443,7 +467,8 @@ impl Int16C {
         // Complex expressions: check the identifiers one level down.
         for i in 0..operand.child_count() {
             if let Some(child) = operand.child(i) {
-                if child.kind() == "identifier" && self.is_signed_integer_here(&child, source) {
+                if child.kind() == "identifier" && self.is_signed_integer_here(root, &child, source)
+                {
                     self.report_bitwise(&child, source, operator, violations);
                 }
             }
@@ -485,6 +510,7 @@ impl Int16C {
     /// Detect signed-to-unsigned conversions without range checks.
     fn find_signed_to_unsigned_conversions(
         &self,
+        root: &Node,
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
@@ -502,17 +528,17 @@ impl Int16C {
                     // Check function definitions for unsigned return type + signed return value
                     if self.has_unsigned_return_type(&n, source) {
                         if let Some(body) = n.child_by_field_name("body") {
-                            self.check_unsigned_return_signed(&body, source, violations);
+                            self.check_unsigned_return_signed(root, &body, source, violations);
                         }
                     }
                 }
                 "declaration" => {
                     // Check declarations: unsigned var = signed_var
-                    self.check_unsigned_init_from_signed(&n, source, violations);
+                    self.check_unsigned_init_from_signed(root, &n, source, violations);
                 }
                 _ => {
                     // Check assignments: unsigned_var = signed_var
-                    self.check_unsigned_assign_from_signed(&n, source, violations);
+                    self.check_unsigned_assign_from_signed(root, &n, source, violations);
                 }
             }
         }
@@ -544,6 +570,7 @@ impl Int16C {
     /// Check return statements that return a signed variable from an unsigned function.
     fn check_unsigned_return_signed(
         &self,
+        root: &Node,
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
@@ -552,7 +579,9 @@ impl Int16C {
             // Get the returned expression (skip "return" keyword)
             for i in 0..ret.child_count() {
                 if let Some(child) = ret.child(i) {
-                    if child.kind() == "identifier" && self.is_signed_integer_here(&child, source) {
+                    if child.kind() == "identifier"
+                        && self.is_signed_integer_here(root, &child, source)
+                    {
                         let name = get_node_text(&child, source).to_string();
                         // Same VRA gate `check_unsigned_assign_from_signed` already
                         // has: a signed declaration says a sign CAN be there, but a
@@ -590,6 +619,7 @@ impl Int16C {
     /// Check `unsigned int x = signed_var;` declarations.
     fn check_unsigned_init_from_signed(
         &self,
+        root: &Node,
         decl_node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
@@ -617,7 +647,8 @@ impl Int16C {
                 continue;
             }
             if let Some(value) = child.child_by_field_name("value") {
-                if value.kind() == "identifier" && self.is_signed_integer_here(&value, source) {
+                if value.kind() == "identifier" && self.is_signed_integer_here(root, &value, source)
+                {
                     let init_name = get_node_text(&value, source).to_string();
                     if !self.has_non_negative_guard(decl_node, &init_name, source) {
                         violations.push(RuleViolation {
@@ -645,6 +676,7 @@ impl Int16C {
     /// Check `unsigned_var = signed_var;` assignments.
     fn check_unsigned_assign_from_signed(
         &self,
+        root: &Node,
         assign_node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
@@ -666,7 +698,7 @@ impl Int16C {
         ) else {
             return;
         };
-        if right.kind() != "identifier" || !self.is_signed_integer_here(&right, source) {
+        if right.kind() != "identifier" || !self.is_signed_integer_here(root, &right, source) {
             return;
         }
         let right_name = get_node_text(&right, source).to_string();
@@ -679,7 +711,7 @@ impl Int16C {
         }
 
         // The destination must be shown unsigned, not merely not-known-signed.
-        if !self.lvalue_is_unsigned_integer(&left, source) {
+        if !self.lvalue_is_unsigned_integer(root, &left, source) {
             return;
         }
 
