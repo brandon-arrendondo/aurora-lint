@@ -303,3 +303,9 @@ compares aurora-lint's output against these tools' still needs
 ``install-static-analyzers.yml`` run separately -- none of that is a
 dependency of building or testing aurora-lint *itself*, which is this playbook's
 only scope.
+
+Nor does it fetch the reference shadow set (the never-labeled codebases a
+change can be A/B'd over; see `Benchmark Setup <benchmark-setup.html>`_)
+unless asked: it downloads third-party code that only that A/B uses. Opt in
+once with ``-e install_shadow_corpus=true`` (and ``-e shadow_tier=all`` for
+every tier), or run ``playbooks/setup-shadow-corpus.yml`` on its own.

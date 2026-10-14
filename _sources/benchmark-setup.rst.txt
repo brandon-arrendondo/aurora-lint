@@ -209,6 +209,35 @@ writes:
   number: a finding count from it is a floor, and recall is not expressible
   from it at all.
 
+Reference Shadow Set (optional)
+-------------------------------
+
+The reference shadow set is a list of pinned C codebases, disjoint from the
+real-world benchmarks, that is never labeled or tuned against. Its only use
+is ``python -m bench reference-ab``: what a change moves on code nobody
+tuned against (``docs/design/reference-corpus-ab.md``). Nothing else needs
+it, so it is a one-time setup for anyone who wants to run that A/B:
+
+.. code-block:: bash
+
+    ansible-playbook playbooks/setup-shadow-corpus.yml -i "localhost," -c local
+    ansible-playbook playbooks/setup-shadow-corpus.yml -i "localhost," -c local \
+      -e shadow_tier=all     # every tier, the large one included
+
+It downloads shallow checkouts, each at its pin in
+``data/reference_corpus.json``, under ``$SQC_BENCH_ROOT/shadow_corpus/``.
+The tiers are cumulative: ``quick``, ``standard`` (the default, about 1 GB),
+and ``large`` or ``all`` (about 5 GB). The playbook checks first that about
+twice the tier's size is free, unless every checkout is already at its pin.
+The checkouts stay where they are: ``reference-ab`` re-checks and cleans
+each one at its pin before scanning it, so nothing needs fetching again
+until the pins change. ``python -m bench reference-fetch --tier T`` does the
+same fetch without Ansible.
+
+The large tier's scans are slow and memory-heavy. Expect hours for an A/B
+over it, and a peak near 12 GB resident at 8 threads; on a machine with
+under 16 GiB of RAM, ``reference-ab`` halves its default ``--jobs`` for it.
+
 Juliet Test Suite Setup
 -----------------------
 

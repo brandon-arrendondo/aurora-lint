@@ -79,6 +79,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#real-world-ground-truth-oracle-measured-precision-recall">Real-World Ground-Truth Oracle (measured precision/recall)</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#delta-adjudication-gate">Delta-Adjudication Gate</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#reference-shadow-corpus-held-out-a-b">Reference Shadow Corpus (held-out A/B)</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#comparing-across-runs">Comparing Across Runs</a><ul>
@@ -651,6 +652,20 @@ claim about the changed rule safe to publish.</p></li>
 <p>A worked example from this pattern, across six projects, measured a delta
 precision near zero, a very different number than the aggregate raw-count
 comparison suggested.</p>
+</section>
+<section id="reference-shadow-corpus-held-out-a-b">
+<h3>Reference Shadow Corpus (held-out A/B)<a class="headerlink" href="#reference-shadow-corpus-held-out-a-b" title="Link to this heading"></a></h3>
+<p>The oracle corpora are what rules get tuned against. To see what a change
+moves on code nobody tuned against, A/B a base and a target binary over the
+pinned, never-labeled codebases in <code class="docutils literal notranslate"><span class="pre">data/reference_corpus.json</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">reference</span><span class="o">-</span><span class="n">fetch</span> <span class="o">--</span><span class="n">tier</span> <span class="n">quick</span>   <span class="c1"># or playbooks/setup-shadow-corpus.yml</span>
+<span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">reference</span><span class="o">-</span><span class="n">ab</span> <span class="o">--</span><span class="n">base</span> <span class="n">BASE_BIN</span> <span class="o">--</span><span class="n">tier</span> <span class="n">quick</span> <span class="o">--</span><span class="n">rules</span> <span class="n">RULE</span><span class="p">,</span><span class="n">RULE</span>
+</pre></div>
+</div>
+<p>It reports findings added and removed per rule and codebase, flagging rules
+outside <code class="docutils literal notranslate"><span class="pre">--rules</span></code> that moved. It never computes precision, and its findings
+are never labeled or reported. Rules and recipe:
+<code class="docutils literal notranslate"><span class="pre">docs/design/reference-corpus-ab.md</span></code>.</p>
 </section>
 </section>
 <section id="comparing-across-runs">

@@ -369,6 +369,11 @@ compares aurora-lint’s output against these tools’ still needs
 <code class="docutils literal notranslate"><span class="pre">install-static-analyzers.yml</span></code> run separately – none of that is a
 dependency of building or testing aurora-lint <em>itself</em>, which is this playbook’s
 only scope.</p>
+<p>Nor does it fetch the reference shadow set (the never-labeled codebases a
+change can be A/B’d over; see <a class="reference external" href="benchmark-setup.html">Benchmark Setup</a>)
+unless asked: it downloads third-party code that only that A/B uses. Opt in
+once with <code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">install_shadow_corpus=true</span></code> (and <code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">shadow_tier=all</span></code> for
+every tier), or run <code class="docutils literal notranslate"><span class="pre">playbooks/setup-shadow-corpus.yml</span></code> on its own.</p>
 </section>
 </section>
 

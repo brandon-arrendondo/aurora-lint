@@ -67,6 +67,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#build-based-tools-need-a-compile-database">Build-based tools need a compile database</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="#reference-shadow-set-optional">Reference Shadow Set (optional)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#juliet-test-suite-setup">Juliet Test Suite Setup</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#the-benchmark-environment">The Benchmark Environment</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#when-the-image-changes">When the image changes</a></li>
@@ -326,6 +327,31 @@ number: a finding count from it is a floor, and recall is not expressible
 from it at all.</p></li>
 </ul>
 </section>
+</section>
+<section id="reference-shadow-set-optional">
+<h2>Reference Shadow Set (optional)<a class="headerlink" href="#reference-shadow-set-optional" title="Link to this heading"></a></h2>
+<p>The reference shadow set is a list of pinned C codebases, disjoint from the
+real-world benchmarks, that is never labeled or tuned against. Its only use
+is <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">reference-ab</span></code>: what a change moves on code nobody
+tuned against (<code class="docutils literal notranslate"><span class="pre">docs/design/reference-corpus-ab.md</span></code>). Nothing else needs
+it, so it is a one-time setup for anyone who wants to run that A/B:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ansible-playbook<span class="w"> </span>playbooks/setup-shadow-corpus.yml<span class="w"> </span>-i<span class="w"> </span><span class="s2">&quot;localhost,&quot;</span><span class="w"> </span>-c<span class="w"> </span><span class="nb">local</span>
+ansible-playbook<span class="w"> </span>playbooks/setup-shadow-corpus.yml<span class="w"> </span>-i<span class="w"> </span><span class="s2">&quot;localhost,&quot;</span><span class="w"> </span>-c<span class="w"> </span><span class="nb">local</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">shadow_tier</span><span class="o">=</span>all<span class="w">     </span><span class="c1"># every tier, the large one included</span>
+</pre></div>
+</div>
+<p>It downloads shallow checkouts, each at its pin in
+<code class="docutils literal notranslate"><span class="pre">data/reference_corpus.json</span></code>, under <code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT/shadow_corpus/</span></code>.
+The tiers are cumulative: <code class="docutils literal notranslate"><span class="pre">quick</span></code>, <code class="docutils literal notranslate"><span class="pre">standard</span></code> (the default, about 1 GB),
+and <code class="docutils literal notranslate"><span class="pre">large</span></code> or <code class="docutils literal notranslate"><span class="pre">all</span></code> (about 5 GB). The playbook checks first that about
+twice the tier’s size is free, unless every checkout is already at its pin.
+The checkouts stay where they are: <code class="docutils literal notranslate"><span class="pre">reference-ab</span></code> re-checks and cleans
+each one at its pin before scanning it, so nothing needs fetching again
+until the pins change. <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">reference-fetch</span> <span class="pre">--tier</span> <span class="pre">T</span></code> does the
+same fetch without Ansible.</p>
+<p>The large tier’s scans are slow and memory-heavy. Expect hours for an A/B
+over it, and a peak near 12 GB resident at 8 threads; on a machine with
+under 16 GiB of RAM, <code class="docutils literal notranslate"><span class="pre">reference-ab</span></code> halves its default <code class="docutils literal notranslate"><span class="pre">--jobs</span></code> for it.</p>
 </section>
 <section id="juliet-test-suite-setup">
 <h2>Juliet Test Suite Setup<a class="headerlink" href="#juliet-test-suite-setup" title="Link to this heading"></a></h2>
