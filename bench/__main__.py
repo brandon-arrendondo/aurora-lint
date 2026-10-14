@@ -1640,7 +1640,7 @@ def main():
                                 "move; others that move are flagged")
             p.add_argument("--jobs", type=int, default=None,
                            help="Scan threads (default: min(CPUs, 8); halved "
-                                "for the large tier on a node under 16 GiB RAM)")
+                                "for the large tier on a machine under 16 GiB RAM)")
             p.add_argument("--timeout", type=int, default=1800,
                            help="Per-scan timeout in seconds")
         p.set_defaults(func=func)

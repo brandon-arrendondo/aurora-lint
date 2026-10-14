@@ -35,7 +35,7 @@ TIERS = ("quick", "standard", "large")
 INCLUDES = "own+system"
 
 
-# The large tier's scans peak near 12 GB resident at 8 threads, so a node
+# The large tier's scans peak near 12 GB resident at 8 threads, so a machine
 # with less RAM than this scans it with fewer threads unless told otherwise.
 LARGE_TIER_RAM_GIB = 16
 
@@ -49,8 +49,8 @@ def total_ram_gib() -> float | None:
 
 def jobs_for(repos: list[dict], requested: int | None) -> int:
     """Scan threads for an A/B: the requested count, or min(CPUs, 8), halved
-    when the selection includes the large tier on a node with under
-    LARGE_TIER_RAM_GIB of RAM. Either way, a small node is warned."""
+    when the selection includes the large tier on a machine with under
+    LARGE_TIER_RAM_GIB of RAM. Either way, a small machine is warned."""
     default = min(os.cpu_count() or 4, 8)
     ram = total_ram_gib()
     if not any(r["tier"] == "large" for r in repos) or ram is None \
@@ -58,7 +58,7 @@ def jobs_for(repos: list[dict], requested: int | None) -> int:
         return requested or default
     jobs = requested or max(1, default // 2)
     print(f"warning: the large tier's scans can peak near 12 GB resident and "
-          f"this node has {ram:.0f} GiB of RAM; scanning with --jobs {jobs}"
+          f"this machine has {ram:.0f} GiB of RAM; scanning with --jobs {jobs}"
           + ("" if requested else " (pass --jobs to override)"),
           file=sys.stderr)
     return jobs
@@ -142,16 +142,20 @@ def settings_id() -> str:
 def system_headers_id() -> str:
     """The host's system headers, as --system-includes finds them: the
     compiler's version and its include search list. Checkouts and caches stay
-    on a node, so a compiler or libc upgrade there must not reuse a scan made
+    on a machine, so a compiler or libc upgrade there must not reuse a scan made
     against the old headers. This fingerprints the directories, not every
     header's content: an upgrade that changes headers without changing the
     compiler's version or search list is not seen."""
     cc = shutil.which("cc")
     if cc is None:
         return "no-cc"
-    version = subprocess.run([cc, "--version"], capture_output=True, text=True).stdout
-    search = subprocess.run([cc, "-E", "-Wp,-v", "-"], input="", capture_output=True,
-                            text=True).stderr
+    try:
+        version = subprocess.run([cc, "--version"], capture_output=True, text=True,
+                                 timeout=30).stdout
+        search = subprocess.run([cc, "-E", "-Wp,-v", "-"], input="", capture_output=True,
+                                text=True, timeout=30).stderr
+    except (subprocess.TimeoutExpired, OSError):
+        return "no-cc"
     dirs = [line.strip() for line in search.splitlines() if line.startswith(" /")]
     return hashlib.sha256((version.split("\n")[0] + "\n" + "\n".join(dirs))
                           .encode()).hexdigest()[:12]
@@ -207,10 +211,12 @@ def _status(returncode: int, stderr: str, exported: bool) -> str:
     scan's status names its failures by rule and count, never by file, since
     a shadow file's path is not to be reported."""
     if returncode == EXIT_INCOMPLETE:
-        text = summary(parse_failures(stderr))
-        if any(line.startswith("Error: hang:") for line in stderr.splitlines()):
-            text += ", stall watchdog fired"
-        return "incomplete: " + text
+        failures = parse_failures(stderr)
+        hang = any(line.startswith("Error: hang:") for line in stderr.splitlines())
+        if hang and not failures:
+            return "incomplete: stall watchdog fired"
+        text = summary(failures).removeprefix("INCOMPLETE: ")
+        return "incomplete: " + text + (", stall watchdog fired" if hang else "")
     if returncode == 0 and exported:
         return "ok"
     return f"exit {returncode}"
@@ -365,7 +371,9 @@ def print_summary(report: dict) -> None:
     ok = len(report["codebases"]) - len(failures) - len(incomplete)
     print(f"\nreference A/B  base {report['base']['sha256_12']}  ->  "
           f"target {report['target']['sha256_12']}   ({ok} codebases compared)")
-    if not rules:
+    if not ok:
+        print("nothing compared")
+    elif not rules:
         print("no findings added or removed")
     else:
         print(f"\n{'rule':<14}{'added':>8}{'removed':>9}{'codebases':>11}")

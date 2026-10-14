@@ -57,6 +57,8 @@
         chdir: "{{ project_dir }}"
       register: shadow_state
       changed_when: false
+      # Read-only, so it runs under --check too: the assert below needs it.
+      check_mode: false
 
     - name: Require room for the tier before fetching
       vars:

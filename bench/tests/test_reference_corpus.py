@@ -139,6 +139,18 @@ class TestJobs(unittest.TestCase):
         self.assertEqual(self._jobs(self.large, None, 32), 8)
 
 
+class TestSummary(unittest.TestCase):
+    def test_nothing_compared_is_not_called_no_change(self):
+        report = {"base": {"sha256_12": "b"}, "target": {"sha256_12": "t"},
+                  "intended_rules": [], "codebases": {
+                      "a": {"base_status": "exit 2", "target_status": "ok", "headers": {}}}}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            reference.print_summary(report)
+        self.assertIn("nothing compared", out.getvalue())
+        self.assertNotIn("no findings added or removed", out.getvalue())
+
+
 class TestCacheKey(unittest.TestCase):
     def test_settings_id_follows_the_manifest_content(self):
         with tempfile.TemporaryDirectory() as d:
@@ -192,8 +204,12 @@ class TestIncompleteScan(unittest.TestCase):
 
     def test_status_never_carries_stderr_text(self):
         self.assertEqual(reference._status(2, "error: /some/shadow/path.c", False), "exit 2")
-        self.assertIn("stall watchdog",
-                      reference._status(3, "Error: hang: R on f.c has run 600s", True))
+        self.assertEqual(reference._status(3, "Error: hang: R on f.c has run 600s", True),
+                         "incomplete: stall watchdog fired")
+        both = ("Error: rule failure (timeout): EXP33-C: x.c: ran out of time\n"
+                "Error: hang: R on f.c has run 600s")
+        self.assertEqual(reference._status(3, both, True),
+                         "incomplete: 1 failure(s) (rule EXP33-C), stall watchdog fired")
 
     def test_an_incomplete_codebase_is_not_compared(self):
         report = {"codebases": {
