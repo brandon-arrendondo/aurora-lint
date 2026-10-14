@@ -917,6 +917,39 @@ is specific to an argument position.
 `get_output_arg_indices` is — the two are always asked together, and an empty
 answer from one is only meaningful alongside the other.
 
+### `src/utility/cert_c/automatic_storage.rs`
+**Problem solved:** which object with automatic storage duration an
+expression addresses, and which one a local pointer's value addresses: the
+pointee DCL30-C (TS 17961 addrescape) reports escaping, where it used to
+report a local pointer variable by name whatever it pointed at. Everything
+resolves by declaration (ADR-0006). An array parameter is a pointer, so
+naming one is no address of automatic storage. Anything reached through a
+pointer (`p->m`, `*p`, `p[i]`, `s.m[i]` for a member that may be a pointer)
+is not claimed. MEM30-C's stack-escape arm and `thread_storage::passed_object`
+still answer the first question with their own copies; MEM30-C's treats an
+array parameter as an automatic array.
+
+| Function | Signature | Description |
+|---|---|---|
+| `automatic_object` | `(lvalue: &Node, source) -> Option<AutomaticObject>` | The automatic object whose own storage `lvalue` lies in: a block-scope object declared without `static`/`extern`/thread storage, a parameter object, a `.` member of one, an element of an automatic array (as many subscripts as it has dimensions, so `*pa[3]`'s `pa[1]` is in it and `pa[1][0]` is not), or a compound literal in a function body (C11 6.5.2.5p5; at file scope one is static). `AutomaticObject { name, node, kind: Local \| Parameter \| CompoundLiteral }`. |
+| `automatic_address` | `(expr: &Node, source) -> Option<AutomaticObject>` | The automatic object `expr`'s value is the address of, from the expression alone, through parentheses and casts: an automatic array named as a value (it decays), `&lvalue` for an `automatic_object`, `array + n`/`n + array`/`array - n`, an array-typed compound literal, either arm of a conditional, the last operand of a comma. A pointer variable's value is `pointer_value_origin`'s question. |
+| `pointer_value_origin` | `(ident, site, source, index: &WriteIndex) -> Option<AutomaticObject>` | The automatic object a local (or parameter) pointer holds the address of when `site` executes: its `dominating_assignment`'s value, followed through copies from other locals for up to 4 hops. `None` whenever the value is not known on every path (a write in a branch, the address taken, a label) or is not an automatic address, and for a file-scope or `static` pointer, which anyone may write. So an unknown value is never reported. `index` is the `WriteIndex` of the function body. |
+| `names_array_object` | `(ident: &Node, source) -> bool` | Whether the occurrence names an array object, so indexing it stays inside the array's own storage: an array declarator that is not a parameter's. Any storage duration. DCL30-C's store-target walk uses it to tell `garr[i] = ...` (the global array) from `p[i] = ...` (a pointee). |
+
+**Wiring pattern:** DCL30-C builds one `WriteIndex` per function body and asks
+`automatic_address(value)`, then `pointer_value_origin(value, site)`, of each
+returned value and each value stored into an object that outlives the call.
+
+**Follow-up:** two analyses still answer `automatic_object` with private
+copies: MEM30-C's stack-escape arm (`is_address_of_automatic_storage`) and
+`thread_storage::passed_object`. MEM30-C's copy treats an array parameter as
+an automatic array. Moving both onto this module is a separate change, and
+MEM30-C's arm is due to be removed in favour of DCL30-C anyway.
+
+**Known misses:** an array member of a local structure named as a value
+(`return s.a;`, which decays to an address in `s`), storage from `alloca`,
+and `&x` handed to a callee that stores it. None is reported.
+
 ## Constant folding & value-range analysis
 
 ### `src/analyze/const_eval.rs`
@@ -1690,37 +1723,6 @@ threading evidence).
 | `profile_allocator` / `profile_deallocator` | `(name: &str) -> Option<AllocatorContract>` / `Option<usize>` | A selected profile's kernel heap (FreeRTOS's `pvPortMalloc`, `vPortFree`). `call_roles`' `is_allocator_call`, `allocator_contract` and `frees_argument` already include them, so ask those. |
 | `Family::creates_storage_keys` / `Family::function_of` | `(self) -> bool` / `(self, kind) -> Option<String>` | Whether the family's thread-specific storage has created keys that can carry a destructor (C11, POSIX), as opposed to fixed slots (FreeRTOS). And the family's first function of a kind, for a message's suggestion. |
 
-## Text slicing on character boundaries
-
-### `src/utility/cert_c/automatic_storage.rs`
-**Problem solved:** which object with automatic storage duration an
-expression addresses, and which one a local pointer's value addresses: the
-pointee DCL30-C (TS 17961 addrescape) reports escaping, where it used to
-report a local pointer variable by name whatever it pointed at. Everything
-resolves by declaration (ADR-0006). An array parameter is a pointer, so
-naming one is no address of automatic storage. Anything reached through a
-pointer (`p->m`, `*p`, `p[i]`, `s.m[i]` for a member that may be a pointer)
-is not claimed. MEM30-C's stack-escape arm and `thread_storage::passed_object`
-still answer the first question with their own copies; MEM30-C's treats an
-array parameter as an automatic array.
-
-| Function | Signature | Description |
-|---|---|---|
-| `automatic_object` | `(lvalue: &Node, source) -> Option<AutomaticObject>` | The automatic object whose own storage `lvalue` lies in: a block-scope object declared without `static`/`extern`/thread storage, a parameter object, a `.` member of one, an element of an automatic array (as many subscripts as it has dimensions, so `*pa[3]`'s `pa[1]` is in it and `pa[1][0]` is not), or a compound literal in a function body (C11 6.5.2.5p5; at file scope one is static). `AutomaticObject { name, node, kind: Local \| Parameter \| CompoundLiteral }`. |
-| `automatic_address` | `(expr: &Node, source) -> Option<AutomaticObject>` | The automatic object `expr`'s value is the address of, from the expression alone, through parentheses and casts: an automatic array named as a value (it decays), `&lvalue` for an `automatic_object`, `array + n`/`n + array`/`array - n`, an array-typed compound literal, either arm of a conditional, the last operand of a comma. A pointer variable's value is `pointer_value_origin`'s question. |
-| `pointer_value_origin` | `(ident, site, source, index: &WriteIndex) -> Option<AutomaticObject>` | The automatic object a local (or parameter) pointer holds the address of when `site` executes: its `dominating_assignment`'s value, followed through copies from other locals for up to 4 hops. `None` whenever the value is not known on every path (a write in a branch, the address taken, a label) or is not an automatic address, and for a file-scope or `static` pointer, which anyone may write. So an unknown value is never reported. `index` is the `WriteIndex` of the function body. |
-| `names_array_object` | `(ident: &Node, source) -> bool` | Whether the occurrence names an array object, so indexing it stays inside the array's own storage: an array declarator that is not a parameter's. Any storage duration. DCL30-C's store-target walk uses it to tell `garr[i] = ...` (the global array) from `p[i] = ...` (a pointee). |
-
-**Wiring pattern:** DCL30-C builds one `WriteIndex` per function body and asks
-`automatic_address(value)`, then `pointer_value_origin(value, site)`, of each
-returned value and each value stored into an object that outlives the call.
-
-**Follow-up:** two analyses still answer `automatic_object` with private
-copies: MEM30-C's stack-escape arm (`is_address_of_automatic_storage`) and
-`thread_storage::passed_object`. MEM30-C's copy treats an array parameter as
-an automatic array. Moving both onto this module is a separate change, and
-MEM30-C's arm is due to be removed in favour of DCL30-C anyway.
-
 ### `src/utility/cert_c/thread_storage.rs`
 **Problem solved:** which storage a thread creation hands its new thread,
 the one analysis CON34-C (every family) and POS50-C (POSIX) share. Each
@@ -1751,6 +1753,8 @@ each statement of one block.
 | Function | Signature | Description |
 |---|---|---|
 | `blocking_under_lock` | `(root: &Node, source, project) -> Vec<BlockingCall>` | `BlockingCall { node, callee, held }` for each call under `calls_under_lock` that is a thread-API sleep, or reaches (`thread_api::library_call`) a library function in `BLOCKING` (stream, descriptor and socket I/O, waits), unless a socket call's flags always set `MSG_DONTWAIT` (the flag itself or a term of a bitwise OR; not under `~`, `&` or `?:`, and not through a variable). A lock is never a blocking call here (lock order is CON35-C's). |
+
+## Text slicing on character boundaries
 
 ### `src/utility/cert_c/text_bounds.rs`
 **Problem solved:** the scanner also reads code that does not compile, so a

@@ -13,6 +13,10 @@
 //! here claims to know. A `_Thread_local` object has thread storage, not
 //! automatic: the parser respells the keyword as `thread_local`, which the
 //! grammar reads as a storage class.
+//!
+//! Known misses, none reported: an array member of a local structure named
+//! as a value (`return s.a;`, which decays to an address in `s`), storage
+//! from `alloca`, and `&x` handed to a callee that stores it.
 
 use crate::utility::cert_c::ast_utils::{
     declaration_has_storage_class, declaration_is_thread_local, get_node_text,
