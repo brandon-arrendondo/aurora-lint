@@ -141,7 +141,7 @@ a rule outright.</p></li>
 <li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; pedantic preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
 <li><p>Scope: cross-cutting</p></li>
 <li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">noreturn-trusted</span></code></p></li>
-<li><p>Basis: C11 6.7.4p8, 7.23; C23 6.7.13.7. CERT MSC37-C-EX2 exempts a path that calls a function marked _Noreturn. A GNU noreturn attribute, [[gnu::noreturn]] included, is proof under no policy.</p></li>
+<li><p>Basis: C11 6.7.4p8, 7.23; C23 6.7.13.7. CERT MSC37-C-EX2 exempts a path that calls a function marked _Noreturn. A GNU noreturn attribute, [[gnu::noreturn]] included, is not proof under this option; only MSC37-C credits it, through its own option msc37_attribute_noreturn.</p></li>
 </ul>
 </dd>
 <dt><code class="docutils literal notranslate"><span class="pre">pre31_unknown_call_pure</span></code></dt><dd><p>PRE31-C: an unproven call, in an argument an unsafe macro may evaluate other than once, is not treated as a side effect: a call to a function with no definition in the scanned files and no library contract, a call through a pointer, strerror, inet_ntoa, strsignal, gai_strerror, getenv, gmtime and asctime (whose only effect is the static buffer they return), or a call to a scanned function that reaches one of these and nothing shown to have a side effect. A callee shown to have a side effect, in whichever scanned file it is defined, is reported either way.</p>
@@ -174,6 +174,30 @@ a rule outright.</p></li>
 <li><p>Scope: ENV33-C</p></li>
 <li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">exec-spawn-not-command-processor</span></code></p></li>
 <li><p>Basis: CERT ENV33-C: “Do not invoke a command processor via system() or equivalent functions”; its compliant solutions call execve() and CreateProcess(), which run a program the same way _exec* and _spawn* do.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">pos34_main_frame_exempt</span></code></dt><dd><p>POS34-C: putenv() of an automatic object in main’s own frame is not reported: main’s automatic objects live until the program ends, so the environment entry does not dangle unless main is called recursively. Off, it is reported as CERT’s rule is written.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code>; pedantic preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: POS34-C</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">putenv-main-frame</span></code></p></li>
+<li><p>Basis: The Clang Static Analyzer’s security.PutenvStackArray skips main. CERT POS34-C states the rule for any function and gives no exemption; C23 6.2.4p2 ends an automatic object’s lifetime when its block ends, and main’s block ends when main returns.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">pos34_exit_path_exempt</span></code></dt><dd><p>POS34-C: putenv() of an automatic object is not reported when every path after the call ends in exit(), _exit(), _Exit(), quick_exit() or abort(), so the entry is never live in a returning function. An exec* call counts only where an exit follows it on every path (execv(…); _exit(127);), because exec returns when it fails. Off, it is reported as CERT’s rule is written.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code>; pedantic preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: POS34-C</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">putenv-exit-path</span></code></p></li>
+<li><p>Basis: Clang’s security.PutenvStackArray documents the exit and exec path as a known false positive. CERT POS34-C gives no such exemption.</p></li>
+</ul>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">msc37_attribute_noreturn</span></code></dt><dd><p>MSC37-C: a call to a function declared noreturn by a GNU attribute (__attribute__((noreturn)), [[gnu::noreturn]], or a macro defined as one) ends a path the way a return does, as does a function-like macro whose every definition is such a call. The declaration must be in a file the scan reads or a header the prescan reads. The ISO spellings (_Noreturn, [[noreturn]]), written directly or through a macro, are credited by trust_noreturn_keyword, not by this option. Off, only they and verified bodies do, as everywhere else.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code>; pedantic preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: MSC37-C</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">noreturn-attribute</span></code></p></li>
+<li><p>Basis: CERT MSC37-C-EX2 exempts a path that calls a function marked _Noreturn; GCC and Clang give the GNU attribute the same meaning, and kernels and runtimes use it where C11 is unavailable. It is a promise the compiler does not check, so no stricter policy accepts it.</p></li>
 </ul>
 </dd>
 <dt><code class="docutils literal notranslate"><span class="pre">flp36_constant_assert_is_guard</span></code></dt><dd><p>FLP36-C: an assert whose condition compares constants the file can see, among them a standard integer limit or floating-point precision (LONG_MAX, DBL_MANT_DIG and the like), checks the platform, so it counts as a precision check even though NDEBUG can strip it.</p>

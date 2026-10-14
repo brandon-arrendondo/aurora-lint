@@ -1446,11 +1446,11 @@ behind a departure.
      - 
      - MSC33-C/2026-10-07/1, MSC33-C/2026-10-07/3
    * - MSC37-C
+     - narrowed
      - as_written
      - as_written
-     - as_written
-     - 
-     - MSC37-C/2026-10-07/noreturn, P/facts
+     - ``msc37_attribute_noreturn``
+     - MSC37-C/2026-10-07/noreturn, MSC37-C/2026-10-11/options, P/facts
    * - MSC38-C
      - as_written
      - as_written

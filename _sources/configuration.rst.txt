@@ -195,8 +195,10 @@ the rules today read one project-wide answer:
 - The data model comes from a compile database only when every unit states the
   same one. A unit that states none leaves it unknown; it is never inferred
   from the units that do.
-- A compile database's ``c_standard`` is recorded per unit but no rule reads it
-  yet, which is why ``--pedantic`` names only the missing ``posix_version``.
+- A compile database's ``c_standard`` is recorded per unit. Only MSC37-C reads
+  it so far (whether ``unreachable`` is a macro the standard defines); no other
+  rule does, which is why ``--pedantic`` names only the missing
+  ``posix_version``.
 
 The settings record where each declared fact came from (``cli``, ``config`` or
 ``compile database``), and that source is part of the settings hash; a scan
