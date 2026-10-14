@@ -2,8 +2,9 @@
  * Rule: CWE-272
  * Status: PASS - a Win32 registry name that is not the Win32 API: the
  *         project's own function of that name (called directly and through a
- *         wrapper), a function-pointer parameter and a local of that name,
- *         and a macro that replaces it
+ *         wrapper), a function-pointer parameter and a local of that name
+ *         (declared through the LONG typedef, a declaration tree-sitter
+ *         reads as a call), and a macro that replaces it
  */
 
 typedef void *HKEY;
@@ -37,7 +38,7 @@ void f(create_fn RegCreateKeyA)
 {
     HKEY out;
     DWORD one = 1;
-    long (*RegDeleteKeyA)(HKEY, LPCSTR) = 0;
+    LONG (*RegDeleteKeyA)(HKEY, LPCSTR) = 0;
 
     RegDeleteValueA(HKEY_LOCAL_MACHINE, "v");                   /* Compliant: own function */
     wipe(HKEY_LOCAL_MACHINE);                                   /* Compliant: through it */
