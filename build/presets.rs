@@ -397,13 +397,15 @@ pub fn to_json(table: &BTreeMap<String, Block>) -> String {
 /// `settings::PresetRow`, one per rule, which `settings::PRESET_TABLE`
 /// includes from `OUT_DIR`. Each row carries its cells in preset order and
 /// the reason a declining preset gives: the block's `basis`, which names its
-/// rulings, else the rulings alone.
+/// rulings, else the rulings alone. The basis answers "do the presets
+/// differ?", so its leading answer is dropped ([`reason_from_basis`]).
 pub fn to_rust(table: &BTreeMap<String, Block>) -> String {
     let mut out = String::from("&[\n");
     for (rule, b) in table {
         let reason = b
             .basis
-            .clone()
+            .as_deref()
+            .map(reason_from_basis)
             .or_else(|| b.ruling.as_ref().map(|r| format!("Ruling: {r}.")))
             .unwrap_or_default();
         out.push_str(&format!(
@@ -415,6 +417,34 @@ pub fn to_rust(table: &BTreeMap<String, Block>) -> String {
     }
     out.push_str("]\n");
     out
+}
+
+/// A basis as the reason a preset declines the rule: without its leading
+/// "yes." or "no." answer, or a "yes, in all three:" answer that a colon
+/// ends, and starting with a capital. A basis whose answer runs into its
+/// rulings ("yes, in all three (STR31-C/...).") is kept whole.
+pub fn reason_from_basis(basis: &str) -> String {
+    let basis = basis.trim();
+    let rest = ["yes. ", "no. "]
+        .iter()
+        .find_map(|answer| basis.strip_prefix(answer))
+        .or_else(|| {
+            let answer = basis
+                .strip_prefix("yes, ")
+                .or_else(|| basis.strip_prefix("no, "))?;
+            let colon = answer.find(": ")?;
+            (!answer[..colon].contains('(')).then(|| &answer[colon + 2..])
+        });
+    match rest.map(str::trim) {
+        Some(rest) if !rest.is_empty() => {
+            let mut chars = rest.chars();
+            chars
+                .next()
+                .map(|first| first.to_uppercase().chain(chars).collect())
+                .unwrap_or_default()
+        }
+        _ => basis.to_string(),
+    }
 }
 
 /// `docs/rule-presets.rst`: the same table as a page, so the docs cannot
@@ -664,6 +694,31 @@ mod tests {
         assert!(
             rust.contains("reason: \"Ruling: P/coincide.\" },"),
             "{rust}"
+        );
+    }
+
+    #[test]
+    fn a_decline_reason_drops_the_answer_its_basis_opens_with() {
+        assert_eq!(
+            reason_from_basis("yes. Pedantic declines the rule (R/1)."),
+            "Pedantic declines the rule (R/1)."
+        );
+        assert_eq!(
+            reason_from_basis("yes, in all three: default widens it (R/2)."),
+            "Default widens it (R/2)."
+        );
+        assert_eq!(
+            reason_from_basis("no. Not enforced in any preset."),
+            "Not enforced in any preset."
+        );
+        // An answer that runs into its rulings has nothing after it to keep.
+        assert_eq!(
+            reason_from_basis("yes, in all three (R/presets)."),
+            "yes, in all three (R/presets)."
+        );
+        assert_eq!(
+            reason_from_basis("the family is open"),
+            "the family is open"
         );
     }
 }
