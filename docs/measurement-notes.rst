@@ -261,7 +261,17 @@ run ids even where the findings do not move.
   assumes, and where it came from. Each preset's hash, and every run id that
   carries one, therefore differs from v0.6.x with nothing else changed.
   Compare a run across the break by its commit and resolved settings, not by
-  its hash.
+  its hash. With nothing declared (``aurora-lint --list-options json
+  --profile P``), the hashes move as follows; a run that declares facts has
+  its own hash, which moves at the same point:
+
+  ========  ============================  ============================
+  Preset    Before (first 12 digits)      After (first 12 digits)
+  ========  ============================  ============================
+  default   ``6a42bd4cf1e0``              ``e0d506276a80``
+  strict    ``f017c4b47de7``              ``15b0ac02df54``
+  pedantic  ``7d5d09905362``              ``cf60a9257d5c``
+  ========  ============================  ============================
 - **Declined rules do not run.** A rule a preset declines while another
   preset enforces it (``not_enforced`` in :doc:`rule-presets`) no longer
   runs under that preset, and the run's settings name it. Its findings leave
