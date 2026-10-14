@@ -80,6 +80,9 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg;
 use crate::analyze::concurrency_roots;
 use crate::analyze::context::ProjectContext;
+use crate::analyze::macro_expand::{
+    collect_function_macros, macro_output_param_indices, FunctionMacro, Live,
+};
 use crate::analyze::points_to::lvalue_of;
 use crate::manifest::Severity;
 use crate::settings::threads::ThreadOpKind;
@@ -162,6 +165,9 @@ struct PointerFacts {
     /// so a pointer's occurrences are found without walking the whole tree
     /// once per pointer.
     identifiers: HashMap<String, Vec<usize>>,
+    /// The file's function-like macros, read the first time a pointer is
+    /// judged: one may assign a pointer passed to it (`SET(p, v)`).
+    macros: Option<HashMap<String, FunctionMacro>>,
     /// [`proven_pointees`] by the start byte of the identifier the pointer's
     /// declarator declares: one declaration can declare several pointers.
     pointees: HashMap<usize, Option<Vec<String>>>,
@@ -208,6 +214,7 @@ impl CertRule for Con07C {
         *self.pointers.borrow_mut() = PointerFacts {
             macro_tokens: macro_body_tokens(node, source),
             identifiers: identifiers_by_name(node, source),
+            macros: None,
             pointees: HashMap::new(),
         };
 
@@ -717,6 +724,13 @@ fn compound_writes_through_pointers(
         let Some(declared) = declarator_name(&declarator) else {
             continue;
         };
+        if facts.macros.is_none() && !facts.pointees.contains_key(&declared.start_byte()) {
+            let mut root = *body;
+            while let Some(parent) = root.parent() {
+                root = parent;
+            }
+            facts.macros = Some(collect_function_macros(&root, source));
+        }
         let pointees = facts
             .pointees
             .entry(declared.start_byte())
@@ -728,6 +742,7 @@ fn compound_writes_through_pointers(
                     source,
                     &facts.macro_tokens,
                     &facts.identifiers,
+                    facts.macros.as_ref().unwrap_or(&HashMap::new()),
                 )
             });
         if let Some(objects) = pointees {
@@ -861,10 +876,12 @@ fn pointer_through<'a>(target: &Node<'a>, source: &str) -> Option<Node<'a>> {
 /// initializer and each plain assignment, pointer arithmetic keeping the
 /// object -- is the address of, or into, a shared object. Occurrences are
 /// matched by declaration (ADR-0006), among the `identifiers` of that name
-/// within the declaring block for a block-scope pointer. `None` when the pointer is a parameter, has external
-/// linkage (another file may retarget it), is named in a macro body, has
-/// its address taken, has no origin, or any origin is something else (a
-/// thread-local object, another pointer, a call).
+/// within the declaring block for a block-scope pointer. `None` when the
+/// pointer is a parameter, has external linkage (another file may retarget
+/// it), is named in a macro body or passed where a function-like macro
+/// assigns its argument, has its address taken, has no origin, or any
+/// origin is something else (a thread-local object, another pointer, a
+/// call).
 fn proven_pointees(
     decl: &Node,
     declarator: &Node,
@@ -872,6 +889,7 @@ fn proven_pointees(
     source: &str,
     macro_tokens: &HashSet<String>,
     identifiers: &HashMap<String, Vec<usize>>,
+    macros: &HashMap<String, FunctionMacro>,
 ) -> Option<Vec<String>> {
     if decl.kind() != "declaration"
         || pointer_derivations(declarator).first() != Some(&"pointer_declarator")
@@ -920,6 +938,9 @@ fn proven_pointees(
         let Some(parent) = parent else {
             continue;
         };
+        if is_macro_output_argument(&parent, &child, source, macros) {
+            return None;
+        }
         match parent.kind() {
             "assignment_expression" if parent.child_by_field_name("left") == Some(child) => {
                 match parent
@@ -951,6 +972,36 @@ fn proven_pointees(
     objects.sort();
     objects.dedup();
     Some(objects)
+}
+
+/// Whether `argument` is an argument a function-like macro assigns
+/// (`SET(p, v)` for `#define SET(x, v) ((x) = (v))`), `arguments` being
+/// the call's argument list.
+fn is_macro_output_argument(
+    arguments: &Node,
+    argument: &Node,
+    source: &str,
+    macros: &HashMap<String, FunctionMacro>,
+) -> bool {
+    if arguments.kind() != "argument_list" {
+        return false;
+    }
+    let Some(callee) = arguments
+        .parent()
+        .filter(|call| call.kind() == "call_expression")
+        .and_then(|call| call.child_by_field_name("function"))
+        .filter(|function| function.kind() == "identifier")
+    else {
+        return false;
+    };
+    let Some(index) = arguments
+        .named_children(&mut arguments.walk())
+        .filter(|a| a.kind() != "comment")
+        .position(|a| a == *argument)
+    else {
+        return false;
+    };
+    macro_output_param_indices(macros, get_node_text(&callee, source), Live::Any).contains(&index)
 }
 
 /// The kinds of declarator `declarator` derives its identifier's type by,

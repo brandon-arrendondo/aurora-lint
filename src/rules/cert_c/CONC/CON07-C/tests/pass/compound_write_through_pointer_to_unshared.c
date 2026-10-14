@@ -10,8 +10,9 @@
  * thread-local pointer along a shared array writes only the pointer. A
  * subscript of a shared pointer, or a pointer to an array read as the
  * array, reaches an object the pointer points at, not the shared object
- * itself. A retarget in parentheses or inside a macro still retargets, and
- * a pointer with external linkage may be retargeted by another file.
+ * itself. A retarget in parentheses, inside a macro, or by a macro the
+ * pointer is passed to still retargets, and a pointer with external
+ * linkage may be retargeted by another file.
  */
 
 static _Thread_local int tl_buf[4];
@@ -76,3 +77,13 @@ static int ext_shared[4];
 int *ext_cursor = ext_shared;
 
 void through_external_pointer(void) { (*ext_cursor)++; }
+
+static int arg_shared[4];
+static _Thread_local int arg_tl[4];
+static int *arg_cursor = arg_shared;
+#define SET(x, v) ((x) = (v))
+
+void macro_argument_retarget(void) {
+  SET(arg_cursor, arg_tl);
+  (*arg_cursor)++;
+}
