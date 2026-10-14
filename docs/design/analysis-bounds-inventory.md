@@ -101,6 +101,7 @@ Kinds:
 | Where | Bound | Kind | On hit | Effect if hit |
 |---|---|---|---|---|
 | `cfg::CfgBuilder::process_statement` and its siblings | none: native recursion per nesting level, with a checkpoint per statement | – | stack, see above | – |
+| `mutex_lifetime::Walk::statement` (CON05-C, CON31-C, POS48-C, POS52-C) | an explicit stack of continuation frames, one per nesting level, on the heap | a | – | was native recursion of about six frames per level, which overflowed a debug build's 16 MiB scan stack near 850 levels, well inside `--max-nesting-depth` |
 | `dataflow::compute_reaching_definitions` | blocks × (defs+1) + blocks | c | **reported** (`cap_reached`) | was silent: unvisited blocks read as "no reaching definition", so MSC13-C reported false positives |
 | `null_state::run_null_state_worklist` | 500 × blocks | c | **reported** | was silent: missing state reads as not null, so EXP34-C missed findings |
 | `init_state::analyze_init_states_with_statics` | 500 × blocks | c | **reported** | was a warning (`not_converged`): EXP33-C hit it on sqlite `ext/fts5/fts5_index.c` and `src/json.c`, and valkey `src/valkey-cli.c`, until loop-head entry states accumulated. Its `worklist.contains` is O(n) per push |

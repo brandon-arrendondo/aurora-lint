@@ -794,6 +794,18 @@ fn keep_failures(label: &str, failed: &[&Case]) -> PathBuf {
 /// Write `cases` to a fresh directory, scan it, and fail with every bug line,
 /// the case and recipe behind each, and how to reproduce the run.
 fn assert_scans_cleanly(label: &str, cases: &[Case], how: &str, limit: Duration) {
+    assert_scans_cleanly_with(label, cases, how, limit, None);
+}
+
+/// [`assert_scans_cleanly`], under the rules `manifest` enables instead of
+/// every rule when it is given.
+fn assert_scans_cleanly_with(
+    label: &str,
+    cases: &[Case],
+    how: &str,
+    limit: Duration,
+    manifest: Option<&Path>,
+) {
     let dir = tempfile::tempdir().unwrap();
     let mut names = BTreeMap::new();
     for c in cases {
@@ -806,7 +818,13 @@ fn assert_scans_cleanly(label: &str, cases: &[Case], how: &str, limit: Duration)
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, &c.bytes).unwrap();
     }
-    let scan = scan_dir(dir.path(), limit);
+    let scan = match manifest {
+        None => scan_dir(dir.path(), limit),
+        Some(manifest) => {
+            std::fs::copy(manifest, dir.path().join("rules.toml")).unwrap();
+            scan_dir_with(dir.path(), "rules.toml", limit)
+        }
+    };
 
     let mut problems: Vec<String> = Vec::new();
     let mut failed: Vec<&Case> = Vec::new();
@@ -920,6 +938,46 @@ fn mutated_rule_fixtures_scan_without_a_crash() {
     );
 }
 
+/// Inputs that once ended a scan, kept as they were found: one directory
+/// under `tests/fixtures/robustness/` each, holding the input and a
+/// `rules.toml` enabling the rules it crashed. Each is scanned by the binary
+/// this `cargo test` built, which in a debug build has the deep frames the
+/// crash needed, on the scan's own stack: the raised stack the in-process
+/// fixture tests run on would hide a stack overflow. Only the crashing rules
+/// run, so the case costs seconds rather than every rule's minutes.
+#[test]
+fn inputs_that_once_crashed_scan_without_a_crash() {
+    let root = repo().join("tests/fixtures/robustness");
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    assert!(!dirs.is_empty(), "no kept inputs under {}", root.display());
+    for dir in dirs {
+        let label = dir.file_name().unwrap().to_string_lossy().into_owned();
+        let mut cases: Vec<Case> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|x| x == "c" || x == "h"))
+            .map(|p| {
+                let name = p.file_name().unwrap().to_string_lossy().into_owned();
+                let recipe = format!("kept input tests/fixtures/robustness/{label}/{name}");
+                Case::new(name, std::fs::read(&p).unwrap(), recipe)
+            })
+            .collect();
+        cases.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_scans_cleanly_with(
+            &format!("kept-{label}"),
+            &cases,
+            &format!("kept inputs {label}"),
+            wall_limit(SCAN_WALL_LIMIT),
+            Some(&dir.join("rules.toml")),
+        );
+    }
+}
+
 /// Every rule's fixtures, scanned together under the FULL rule set. A rule's
 /// own fixture tests run that rule alone on its own fixtures, which never
 /// showed one rule crashing on another rule's fixtures, nor what only a
@@ -1027,6 +1085,15 @@ fn deep_nesting_cases() -> Vec<Case> {
             "n_else_if_2490_long.c",
             else_if_ladder(2_490),
             "else_if_2490_long",
+        ),
+        Case::new(
+            "n_ifs_2400_deep.c",
+            format!(
+                "void h(int x) {{ {}{} }}\n",
+                "if (x) { ".repeat(2_400),
+                "} ".repeat(2_400)
+            ),
+            "ifs_2400_deep",
         ),
     ];
     for depth in [1_000, 10_000, 100_000, 1_000_000] {

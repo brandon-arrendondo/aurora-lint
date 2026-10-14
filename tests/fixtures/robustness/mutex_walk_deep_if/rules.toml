@@ -1,0 +1,17 @@
+[metadata]
+name = "Rules that walk statements under a held mutex"
+version = "1.0.0"
+description = "The rules whose shared statement walk (utility::cert_c::mutex_lifetime) once overflowed the scan thread's stack on this input in a debug build"
+cert_version = "2016"
+
+[rules.cert_c.CON05-C]
+enabled = true
+
+[rules.cert_c.CON31-C]
+enabled = true
+
+[rules.cert_c.POS48-C]
+enabled = true
+
+[rules.cert_c.POS52-C]
+enabled = true

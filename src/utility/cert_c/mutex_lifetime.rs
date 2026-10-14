@@ -398,108 +398,166 @@ struct Exit {
     continues: State,
 }
 
+/// What the walk does when the statement it is inside finishes: the rest of
+/// that statement, waiting for its child's end state. The walk keeps these on
+/// a stack of its own instead of recursing, because a function nests as many
+/// statements as its author writes (thousands, in generated code) and a
+/// frame per level overflows a thread's stack (ADR-0017).
+enum Frame<'a> {
+    /// Run `children[next..]` in turn.
+    Sequence {
+        children: Vec<Node<'a>>,
+        next: usize,
+    },
+    /// An `if`'s consequence has run; run its alternative from `entry`.
+    IfThen {
+        alternative: Option<Node<'a>>,
+        deciding: Vec<Deciding>,
+        entry: State,
+    },
+    /// An `if`'s alternative has run; join it with the consequence's end.
+    IfElse {
+        deciding: Vec<Deciding>,
+        then: State,
+    },
+    /// A preprocessor conditional's own branch has run; run its
+    /// alternative from `entry`.
+    PreprocThen {
+        alternative: Option<Node<'a>>,
+        entry: State,
+    },
+    /// A preprocessor conditional's alternative has run; join the two.
+    PreprocElse { then: State },
+    /// A loop's body has run (its [`Exit`] is the innermost one).
+    Loop {
+        node: Node<'a>,
+        entry: State,
+        is_do: bool,
+    },
+    /// A `switch` body's `children[..next]` have run (its [`Exit`] is the
+    /// innermost one).
+    Switch {
+        children: Vec<Node<'a>>,
+        next: usize,
+        entry: State,
+        has_default: bool,
+    },
+}
+
+/// The walk's next move: start a statement, or hand an end state to the
+/// statement waiting on it.
+enum Step<'a> {
+    Run(Node<'a>, State),
+    Done(State),
+}
+
 impl<'s, 'a> Walk<'s, 'a> {
     /// `state` after `node` runs, recording each finding met on the way.
     fn statement(&self, node: Node<'a>, state: State, out: &mut Vec<MutexFinding<'a>>) -> State {
+        let mut frames: Vec<Frame<'a>> = Vec::new();
+        let mut step = Step::Run(node, state);
+        loop {
+            step = match step {
+                Step::Run(node, state) => self.start(node, state, &mut frames, out),
+                Step::Done(end) => match frames.pop() {
+                    None => return end,
+                    Some(frame) => self.resume(frame, end, &mut frames, out),
+                },
+            };
+        }
+    }
+
+    /// Begin `node` from `state`: finish it at once, or leave on `frames`
+    /// what remains of it once the child it starts has run.
+    fn start(
+        &self,
+        node: Node<'a>,
+        state: State,
+        frames: &mut Vec<Frame<'a>>,
+        out: &mut Vec<MutexFinding<'a>>,
+    ) -> Step<'a> {
         match node.kind() {
             "compound_statement" | "else_clause" | "preproc_else" => {
-                self.sequence(node, state, out)
+                frames.push(Frame::Sequence {
+                    children: Self::children(node, false),
+                    next: 0,
+                });
+                Step::Done(state)
             }
             "if_statement" => {
                 let outer = self.deciding.take();
                 let state = self.field(node, "condition", state, out);
                 let deciding = self.deciding.replace(outer);
-                let branch = |then: bool| {
-                    let mut state = state.clone();
-                    if let Some(known) = state.as_mut() {
-                        for d in deciding.iter().filter(|d| d.success_is_then == then) {
-                            known.held.entry(d.mutex.clone()).or_insert(d.lock.clone());
-                        }
-                    }
-                    state
-                };
-                // A failure branch that falls through is read as an
-                // unchecked lock is: presumed taken from there on.
-                let rejoin = |then: bool, mut state: State| {
-                    if let Some(known) = state.as_mut() {
-                        for d in deciding.iter().filter(|d| d.success_is_then != then) {
-                            known.held.entry(d.mutex.clone()).or_insert(d.lock.clone());
-                        }
-                    }
-                    state
-                };
-                let then = node
-                    .child_by_field_name("consequence")
-                    .map_or(branch(true), |c| self.statement(c, branch(true), out));
-                let other = match node.child_by_field_name("alternative") {
-                    Some(alternative) => self.statement(alternative, branch(false), out),
-                    None => branch(false),
-                };
-                meet(rejoin(true, then), rejoin(false, other))
+                let then = Self::branch(&deciding, true, &state);
+                frames.push(Frame::IfThen {
+                    alternative: node.child_by_field_name("alternative"),
+                    deciding,
+                    entry: state,
+                });
+                match node.child_by_field_name("consequence") {
+                    Some(consequence) => Step::Run(consequence, then),
+                    None => Step::Done(then),
+                }
             }
             "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef" => {
                 let alternative = node.child_by_field_name("alternative");
-                let mut then = state.clone();
+                let head = [
+                    alternative,
+                    node.child_by_field_name("condition"),
+                    node.child_by_field_name("name"),
+                ];
                 let mut cursor = node.walk();
-                for child in node.named_children(&mut cursor) {
-                    if Some(child) == alternative
-                        || Some(child) == node.child_by_field_name("condition")
-                        || Some(child) == node.child_by_field_name("name")
-                    {
-                        continue;
-                    }
-                    then = self.statement(child, then, out);
+                let children = node
+                    .named_children(&mut cursor)
+                    .filter(|c| !head.contains(&Some(*c)))
+                    .collect();
+                frames.push(Frame::PreprocThen {
+                    alternative,
+                    entry: state.clone(),
+                });
+                frames.push(Frame::Sequence { children, next: 0 });
+                Step::Done(state)
+            }
+            "while_statement" | "for_statement" | "do_statement" => {
+                let is_do = node.kind() == "do_statement";
+                let mut state = state;
+                if !is_do {
+                    state = self.field(node, "initializer", state, out);
+                    state = self.field(node, "condition", state, out);
                 }
-                let other = match alternative {
-                    Some(alternative) => self.statement(alternative, state, out),
-                    None => state,
-                };
-                meet(then, other)
-            }
-            "while_statement" | "for_statement" => {
-                let mut state = self.field(node, "initializer", state, out);
-                state = self.field(node, "condition", state, out);
-                let (body, exit) = self.breakable(true, || {
-                    node.child_by_field_name("body")
-                        .map_or(state.clone(), |b| self.statement(b, state.clone(), out))
+                self.exits.borrow_mut().push(Exit {
+                    is_loop: true,
+                    breaks: None,
+                    continues: None,
                 });
-                let body = self.field(node, "update", meet(body, exit.continues), out);
-                meet(meet(state, body), exit.breaks)
-            }
-            "do_statement" => {
-                let (body, exit) = self.breakable(true, || {
-                    node.child_by_field_name("body")
-                        .map_or(state.clone(), |b| self.statement(b, state.clone(), out))
+                frames.push(Frame::Loop {
+                    node,
+                    entry: state.clone(),
+                    is_do,
                 });
-                let body = self.field(node, "condition", meet(body, exit.continues), out);
-                meet(meet(state, body), exit.breaks)
+                match node.child_by_field_name("body") {
+                    Some(body) => Step::Run(body, state),
+                    None => Step::Done(state),
+                }
             }
             "switch_statement" => {
                 let entry = self.field(node, "condition", state, out);
                 let Some(body) = node.child_by_field_name("body") else {
-                    return entry;
+                    return Step::Done(entry);
                 };
-                let mut has_default = false;
-                let (end, exit) = self.breakable(false, || {
-                    let mut current: State = None;
-                    let mut cursor = body.walk();
-                    for child in body.named_children(&mut cursor) {
-                        if child.kind() == "case_statement" {
-                            has_default |= child.child_by_field_name("value").is_none();
-                            current = meet(current, entry.clone());
-                            current = self.sequence_from(child, current, out, true);
-                        } else {
-                            current = self.statement(child, current, out);
-                        }
-                    }
-                    current
+                self.exits.borrow_mut().push(Exit {
+                    is_loop: false,
+                    breaks: None,
+                    continues: None,
                 });
-                let end = meet(end, exit.breaks);
-                if has_default {
-                    end
-                } else {
-                    meet(end, entry)
-                }
+                let mut cursor = body.walk();
+                frames.push(Frame::Switch {
+                    children: body.named_children(&mut cursor).collect(),
+                    next: 0,
+                    entry,
+                    has_default: false,
+                });
+                Step::Done(None)
             }
             "break_statement" | "continue_statement" => {
                 let state = self.calls(node, state, out);
@@ -514,59 +572,146 @@ impl<'s, 'a> Walk<'s, 'a> {
                     };
                     *slot = meet(slot.take(), state);
                 }
-                None
+                Step::Done(None)
             }
             "return_statement" | "goto_statement" => {
                 self.calls(node, state, out);
-                None
+                Step::Done(None)
             }
             "labeled_statement" => {
                 // A `goto` may arrive here from any point.
-                let state = Some(Known::default());
-                self.sequence_from(node, state, out, true)
+                frames.push(Frame::Sequence {
+                    children: Self::children(node, true),
+                    next: 0,
+                });
+                Step::Done(Some(Known::default()))
             }
-            "comment" => state,
-            _ => self.calls(node, state, out),
+            "comment" => Step::Done(state),
+            _ => Step::Done(self.calls(node, state, out)),
         }
     }
 
-    /// Run `body` as the inside of a loop (`is_loop`) or `switch`, returning
-    /// its end state and the states its `break`s and `continue`s leave with.
-    fn breakable(&self, is_loop: bool, body: impl FnOnce() -> State) -> (State, Exit) {
-        self.exits.borrow_mut().push(Exit {
-            is_loop,
-            breaks: None,
-            continues: None,
-        });
-        let end = body();
-        let exit = self.exits.borrow_mut().pop().expect("pushed above");
-        (end, exit)
-    }
-
-    /// `state` after each statement child of `node` runs in turn.
-    fn sequence(&self, node: Node<'a>, state: State, out: &mut Vec<MutexFinding<'a>>) -> State {
-        self.sequence_from(node, state, out, false)
-    }
-
-    /// [`Self::sequence`], skipping a case's value or a label's name when
-    /// `skip_head` is set.
-    fn sequence_from(
+    /// Carry `frame` on now that the child it waited for ended in `end`.
+    fn resume(
         &self,
-        node: Node<'a>,
-        mut state: State,
+        frame: Frame<'a>,
+        end: State,
+        frames: &mut Vec<Frame<'a>>,
         out: &mut Vec<MutexFinding<'a>>,
-        skip_head: bool,
-    ) -> State {
+    ) -> Step<'a> {
+        match frame {
+            Frame::Sequence { children, next } => match children.get(next).copied() {
+                Some(child) => {
+                    frames.push(Frame::Sequence {
+                        children,
+                        next: next + 1,
+                    });
+                    Step::Run(child, end)
+                }
+                None => Step::Done(end),
+            },
+            Frame::IfThen {
+                alternative,
+                deciding,
+                entry,
+            } => {
+                let other = Self::branch(&deciding, false, &entry);
+                frames.push(Frame::IfElse {
+                    deciding,
+                    then: end,
+                });
+                match alternative {
+                    Some(alternative) => Step::Run(alternative, other),
+                    None => Step::Done(other),
+                }
+            }
+            Frame::IfElse { deciding, then } => Step::Done(meet(
+                Self::rejoin(&deciding, true, then),
+                Self::rejoin(&deciding, false, end),
+            )),
+            Frame::PreprocThen { alternative, entry } => {
+                frames.push(Frame::PreprocElse { then: end });
+                match alternative {
+                    Some(alternative) => Step::Run(alternative, entry),
+                    None => Step::Done(entry),
+                }
+            }
+            Frame::PreprocElse { then } => Step::Done(meet(then, end)),
+            Frame::Loop { node, entry, is_do } => {
+                let exit = self.exits.borrow_mut().pop().expect("pushed at the loop");
+                let field = if is_do { "condition" } else { "update" };
+                let body = self.field(node, field, meet(end, exit.continues), out);
+                Step::Done(meet(meet(entry, body), exit.breaks))
+            }
+            Frame::Switch {
+                children,
+                next,
+                entry,
+                mut has_default,
+            } => {
+                let Some(child) = children.get(next).copied() else {
+                    let exit = self.exits.borrow_mut().pop().expect("pushed at the switch");
+                    let end = meet(end, exit.breaks);
+                    return Step::Done(if has_default { end } else { meet(end, entry) });
+                };
+                let is_case = child.kind() == "case_statement";
+                has_default |= is_case && child.child_by_field_name("value").is_none();
+                let current = if is_case {
+                    meet(end, entry.clone())
+                } else {
+                    end
+                };
+                frames.push(Frame::Switch {
+                    children,
+                    next: next + 1,
+                    entry,
+                    has_default,
+                });
+                if is_case {
+                    frames.push(Frame::Sequence {
+                        children: Self::children(child, true),
+                        next: 0,
+                    });
+                    Step::Done(current)
+                } else {
+                    Step::Run(child, current)
+                }
+            }
+        }
+    }
+
+    /// `node`'s statement children, in order, without a case's value or a
+    /// label's name when `skip_head` is set.
+    fn children(node: Node<'a>, skip_head: bool) -> Vec<Node<'a>> {
         let head = [
             node.child_by_field_name("value"),
             node.child_by_field_name("label"),
         ];
         let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if skip_head && head.contains(&Some(child)) {
-                continue;
+        node.named_children(&mut cursor)
+            .filter(|c| !(skip_head && head.contains(&Some(*c))))
+            .collect()
+    }
+
+    /// The state an `if` branch starts in: a lock that decides the
+    /// condition is held on the branch its success takes.
+    fn branch(deciding: &[Deciding], then: bool, state: &State) -> State {
+        let mut state = state.clone();
+        if let Some(known) = state.as_mut() {
+            for d in deciding.iter().filter(|d| d.success_is_then == then) {
+                known.held.entry(d.mutex.clone()).or_insert(d.lock.clone());
             }
-            state = self.statement(child, state, out);
+        }
+        state
+    }
+
+    /// A failure branch that falls through is read as an unchecked lock is:
+    /// presumed taken from there on.
+    fn rejoin(deciding: &[Deciding], then: bool, mut state: State) -> State {
+        if let Some(known) = state.as_mut() {
+            for d in deciding.iter().filter(|d| d.success_is_then != then) {
+                known.held.entry(d.mutex.clone()).or_insert(d.lock.clone());
+            }
         }
         state
     }
