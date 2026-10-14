@@ -87,6 +87,45 @@ fn git_in(repo_dir: &std::path::Path, args: &[&str]) {
     );
 }
 
+// ─── Rule behaviour a fixture cannot pin ────────────────────────────────────
+
+/// CON07-C judges each pointer a declaration declares by its own pointees,
+/// in either order of the writes through them: only the write through the
+/// pointer into the shared array is reported, naming that array. A fixture
+/// says only whether a file reports, not which function does.
+#[test]
+fn con07_judges_each_pointer_of_one_declaration_by_its_own_pointees() {
+    let dir = tempfile::tempdir().unwrap();
+    let decl = "static int g_arr[4];\n\
+                static _Thread_local int tls_arr[4];\n\
+                static int *p = g_arr, *q = tls_arr;\n";
+    let through_p = "void through_p(void) { (*p)++; }\n";
+    let through_q = "void through_q(void) { (*q)++; }\n";
+    for (name, first, second) in [
+        ("p_first.c", through_p, through_q),
+        ("q_first.c", through_q, through_p),
+    ] {
+        let src = dir.path().join(name);
+        std::fs::write(&src, format!("{decl}{first}{second}")).unwrap();
+        let out = dir.path().join(format!("{name}.json"));
+        let (code, _, stderr) = run_aurora_lint(&[
+            src.to_str().unwrap(),
+            "--rules",
+            "CON07-C",
+            "-e",
+            out.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 0, "{name}: {stderr}");
+        let violations: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        let p_line = if first == through_p { 4 } else { 5 };
+        assert_eq!(violations.len(), 1, "{name}: {violations:?}");
+        assert_eq!(violations[0]["line"], p_line, "{name}: {violations:?}");
+        let message = violations[0]["message"].as_str().unwrap();
+        assert!(message.contains("'g_arr'"), "{name}: {message}");
+    }
+}
+
 // ─── Export formats ──────────────────────────────────────────────────────────
 
 #[test]

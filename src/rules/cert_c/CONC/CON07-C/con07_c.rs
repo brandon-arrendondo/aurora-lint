@@ -158,7 +158,12 @@ struct PointerFacts {
     /// Every identifier token in a `#define` body: a pointer named in one
     /// may be retargeted where the tree does not show it.
     macro_tokens: HashSet<String>,
-    /// [`proven_pointees`] by the pointer's declaration start byte.
+    /// The start byte of every identifier in the translation unit, by name,
+    /// so a pointer's occurrences are found without walking the whole tree
+    /// once per pointer.
+    identifiers: HashMap<String, Vec<usize>>,
+    /// [`proven_pointees`] by the start byte of the identifier the pointer's
+    /// declarator declares: one declaration can declare several pointers.
     pointees: HashMap<usize, Option<Vec<String>>>,
 }
 
@@ -202,6 +207,7 @@ impl CertRule for Con07C {
         let static_vars = self.collect_static_variables(node, source);
         *self.pointers.borrow_mut() = PointerFacts {
             macro_tokens: macro_body_tokens(node, source),
+            identifiers: identifiers_by_name(node, source),
             pointees: HashMap::new(),
         };
 
@@ -708,9 +714,22 @@ fn compound_writes_through_pointers(
         let Some((decl, declarator)) = resolve_identifier_declarator(&pointer, name, source) else {
             continue;
         };
-        let pointees = facts.pointees.entry(decl.start_byte()).or_insert_with(|| {
-            proven_pointees(&decl, &declarator, name, source, &facts.macro_tokens)
-        });
+        let Some(declared) = declarator_name(&declarator) else {
+            continue;
+        };
+        let pointees = facts
+            .pointees
+            .entry(declared.start_byte())
+            .or_insert_with(|| {
+                proven_pointees(
+                    &decl,
+                    &declarator,
+                    name,
+                    source,
+                    &facts.macro_tokens,
+                    &facts.identifiers,
+                )
+            });
         if let Some(objects) = pointees {
             found.pointees.extend(objects.iter().cloned());
             found.pointers.push(name.to_string());
@@ -743,6 +762,18 @@ fn only_dereferenced_in(body: &Node, name: &str, source: &str, static_vars: &Sta
             }
             false
         })
+}
+
+/// The start byte of every identifier in `root`, by name.
+fn identifiers_by_name(root: &Node, source: &str) -> HashMap<String, Vec<usize>> {
+    let mut found: HashMap<String, Vec<usize>> = HashMap::new();
+    for id in query::find_descendants_of_kind(*root, "identifier") {
+        found
+            .entry(get_node_text(&id, source).to_string())
+            .or_default()
+            .push(id.start_byte());
+    }
+    found
 }
 
 /// Every identifier token in the body of a `#define` in `root`, apart from
@@ -829,8 +860,8 @@ fn pointer_through<'a>(target: &Node<'a>, source: &str) -> Option<Node<'a>> {
 /// `decl`, is proven to point into: every value it is ever given -- its
 /// initializer and each plain assignment, pointer arithmetic keeping the
 /// object -- is the address of, or into, a shared object. Occurrences are
-/// matched by declaration (ADR-0006), within the declaring block for a
-/// block-scope pointer. `None` when the pointer is a parameter, has external
+/// matched by declaration (ADR-0006), among the `identifiers` of that name
+/// within the declaring block for a block-scope pointer. `None` when the pointer is a parameter, has external
 /// linkage (another file may retarget it), is named in a macro body, has
 /// its address taken, has no origin, or any origin is something else (a
 /// thread-local object, another pointer, a call).
@@ -840,6 +871,7 @@ fn proven_pointees(
     name: &str,
     source: &str,
     macro_tokens: &HashSet<String>,
+    identifiers: &HashMap<String, Vec<usize>>,
 ) -> Option<Vec<String>> {
     if decl.kind() != "declaration"
         || pointer_derivations(declarator).first() != Some(&"pointer_declarator")
@@ -864,9 +896,15 @@ fn proven_pointees(
         .and_then(|p| p.child_by_field_name("value"))
         .into_iter()
         .collect();
-    for occurrence in query::find_descendants_of_kind(scope, "identifier") {
+    let occurrences = identifiers
+        .get(name)
+        .into_iter()
+        .flatten()
+        .filter(|&&start| scope.start_byte() <= start && start < scope.end_byte())
+        .filter_map(|&start| scope.descendant_for_byte_range(start, start + name.len()))
+        .filter(|node| node.kind() == "identifier");
+    for occurrence in occurrences {
         if occurrence == declared
-            || get_node_text(&occurrence, source) != name
             || resolve_identifier_declarator(&occurrence, name, source)
                 .is_none_or(|(d, _)| d != *decl)
         {
