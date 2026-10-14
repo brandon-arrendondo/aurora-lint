@@ -14,7 +14,10 @@ behind a departure.
 - ``widened``: default reports more than strict (a reading by the rule's spirit,
   or an open family inferred wider).
 - ``stricter``: pedantic's closed reading beyond strict.
-- ``not_enforced``: the preset declines the rule, loudly, rather than guess.
+- ``not_enforced``: the preset declines the rule, loudly, rather than guess. A scan
+  under it does not run the rule, and its summary, SARIF settings and
+  ``--check-config`` name the rule and the reason. A rule every preset declines
+  is a decided cut instead: it still runs until it is removed.
 
 .. list-table::
    :header-rows: 1

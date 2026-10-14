@@ -102,7 +102,10 @@ behind a departure.</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">widened</span></code>: default reports more than strict (a reading by the rule’s spirit,
 or an open family inferred wider).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">stricter</span></code>: pedantic’s closed reading beyond strict.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">not_enforced</span></code>: the preset declines the rule, loudly, rather than guess.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">not_enforced</span></code>: the preset declines the rule, loudly, rather than guess. A scan
+under it does not run the rule, and its summary, SARIF settings and
+<code class="docutils literal notranslate"><span class="pre">--check-config</span></code> name the rule and the reason. A rule every preset declines
+is a decided cut instead: it still runs until it is removed.</p></li>
 </ul>
 <table class="docutils align-default">
 <colgroup>

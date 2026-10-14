@@ -182,8 +182,24 @@ environment that trusts only a declared library: small targets often link a
 reduced one, so a full ISO C library is not assumed. With no <code class="docutils literal notranslate"><span class="pre">libc</span></code>
 declared, a pedantic scan trusts no library contract and says so on stderr,
 naming the key to declare and the enabled rules a project could disable
-instead (<code class="docutils literal notranslate"><span class="pre">--check-config</span></code> warns the same way). Benchmark precision and
-recall are scored against the strict reading. <code class="docutils literal notranslate"><span class="pre">--policy</span></code> changes only the
+instead (<code class="docutils literal notranslate"><span class="pre">--check-config</span></code> warns the same way).</p>
+<p>The presets also differ on the data model (the integer widths, below) when
+none is declared. The default preset, the relaxed one, assumes the common
+hosted model, LP64 (32-bit <code class="docutils literal notranslate"><span class="pre">int</span></code>, 64-bit <code class="docutils literal notranslate"><span class="pre">long</span></code> and pointers), as a
+developer expects. The strict preset credits only the widths ISO C guarantees
+(a 16-bit <code class="docutils literal notranslate"><span class="pre">int</span></code>, a 32-bit <code class="docutils literal notranslate"><span class="pre">long</span></code>). The pedantic preset needs the data model
+declared: without one it credits the ISO C widths and says so on stderr, as it
+does for the library. A declared data model, or one a compile database states,
+always wins, and a freestanding target is never assumed to be LP64. The scan’s
+summary, its SARIF settings and <code class="docutils literal notranslate"><span class="pre">--check-config</span></code> name the data model in force
+and where it came from.</p>
+<p>A preset may decline a rule rather than run a reading it cannot make sound
+(<code class="docutils literal notranslate"><span class="pre">not_enforced</span></code> in <a class="reference internal" href="rule-presets.html"><span class="doc">Rule readings by preset</span></a>). A scan under that preset does not
+run the rule, whatever the manifest enables: its summary lists each declined
+rule with the reason, its SARIF settings carry them, and <code class="docutils literal notranslate"><span class="pre">--check-config</span></code>
+names them. A rule every preset declines is a decided cut, not a preset’s
+choice, and still runs until it is removed. Benchmark precision and recall are
+scored against the strict reading. <code class="docutils literal notranslate"><span class="pre">--policy</span></code> changes only the
 policy axis: <code class="docutils literal notranslate"><span class="pre">--policy</span> <span class="pre">pedantic</span></code> alone keeps the default preset’s hosted
 environment and its library. Any combination can be set explicitly, down to
 single options:</p>
@@ -204,7 +220,7 @@ single options:</p>
 <span class="n">c_standard</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;c99&quot;</span><span class="w">          </span><span class="c1"># c89 | c99 | c11 | c17 | c23; unknown unless declared</span>
 <span class="n">posix_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;none&quot;</span><span class="w">      </span><span class="c1"># none | pre2001 | 2001 | 2008 | 2017 | 2024; unknown unless declared</span>
 <span class="n">include_names</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;exact&quot;</span><span class="w">     </span><span class="c1"># &quot;exact&quot; | &quot;case-insensitive&quot; (as cl on Windows)</span>
-<span class="n">data_model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;lp64&quot;</span><span class="w">         </span><span class="c1"># &quot;iso&quot; (the default) | &quot;ilp32&quot; | &quot;lp64&quot; | &quot;llp64&quot;</span>
+<span class="n">data_model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;lp64&quot;</span><span class="w">         </span><span class="c1"># &quot;iso&quot; | &quot;ilp32&quot; | &quot;lp64&quot; | &quot;llp64&quot;; unset: lp64 under the default preset, iso otherwise</span>
 <span class="c1"># int_bits = 32             # integer facts the data model loads; write one to</span>
 <span class="c1">#                           # override it (see below)</span>
 
@@ -408,7 +424,9 @@ by hand are the same thing.</p>
 </tr>
 </tbody>
 </table>
-<p><code class="docutils literal notranslate"><span class="pre">iso</span></code>, the default data model, loads nothing. A data model is nothing but a list of
+<p><code class="docutils literal notranslate"><span class="pre">iso</span></code> loads nothing: it is the data model of the strict and pedantic presets
+when none is declared, and the default preset’s assumes <code class="docutils literal notranslate"><span class="pre">lp64</span></code> instead. A data
+model is nothing but a list of
 these keys: writing <code class="docutils literal notranslate"><span class="pre">lp64</span></code>’s lines under <code class="docutils literal notranslate"><span class="pre">[environment]</span></code> gives the same
 facts and findings as selecting it; the settings hash and the data model shown
 by <code class="docutils literal notranslate"><span class="pre">--list-options</span></code> differ. Facts
@@ -453,14 +471,18 @@ where it came from (<code class="docutils literal notranslate"><span class="pre"
 credit; <code class="docutils literal notranslate"><span class="pre">--list-options</span> <span class="pre">json</span></code> carries the same rows under <code class="docutils literal notranslate"><span class="pre">facts</span></code>.
 <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--check-config</span></code> resolves the settings from the manifest and the
 command line exactly as a scan would, validates them, and exits without
-scanning: <code class="docutils literal notranslate"><span class="pre">configuration</span> <span class="pre">ok</span></code> and status 0 when valid, otherwise status 1 and
-one <code class="docutils literal notranslate"><span class="pre">error:</span></code> line per problem. Both use the code a scan runs, so they cannot
+scanning: <code class="docutils literal notranslate"><span class="pre">configuration</span> <span class="pre">ok</span></code> and status 0 when valid, followed by the data
+model in force and where it came from and each rule the policy declines with
+the reason, otherwise status 1 and one <code class="docutils literal notranslate"><span class="pre">error:</span></code> line per problem. Both use the code a scan runs, so they cannot
 disagree with it.</p>
 <p><code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--write-config</span> <span class="pre">FILE</span></code> writes a complete configuration with every
 settings key and a one-line description of each. A key at its built-in default
 is commented out; with <code class="docutils literal notranslate"><span class="pre">--data-model</span> <span class="pre">X</span></code> or <code class="docutils literal notranslate"><span class="pre">--set</span></code> the data model’s bundle
 values are active lines marked <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">from</span> <span class="pre">data</span> <span class="pre">model:</span> <span class="pre">X</span></code>, and a fact no data model sets
-is written commented out as <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">unknown</span> <span class="pre">unless</span> <span class="pre">declared</span></code>. It is generated from
+is written commented out as <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">unknown</span> <span class="pre">unless</span> <span class="pre">declared</span></code>. The data model the
+default preset assumes is not written as a declaration, and neither is one a
+compile database states; a declared one is, <code class="docutils literal notranslate"><span class="pre">iso</span></code> too under the default
+preset, where leaving it out would assume <code class="docutils literal notranslate"><span class="pre">lp64</span></code>. It is generated from
 the same tables as <code class="docutils literal notranslate"><span class="pre">--list-options</span></code> and the validation, so it cannot drift
 from them, and the file it writes passes <code class="docutils literal notranslate"><span class="pre">--check-config</span></code> unchanged and
 resolves to exactly the facts of running without it (or with the same

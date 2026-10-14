@@ -81,8 +81,26 @@ environment that trusts only a declared library: small targets often link a
 reduced one, so a full ISO C library is not assumed. With no ``libc``
 declared, a pedantic scan trusts no library contract and says so on stderr,
 naming the key to declare and the enabled rules a project could disable
-instead (``--check-config`` warns the same way). Benchmark precision and
-recall are scored against the strict reading. ``--policy`` changes only the
+instead (``--check-config`` warns the same way).
+
+The presets also differ on the data model (the integer widths, below) when
+none is declared. The default preset, the relaxed one, assumes the common
+hosted model, LP64 (32-bit ``int``, 64-bit ``long`` and pointers), as a
+developer expects. The strict preset credits only the widths ISO C guarantees
+(a 16-bit ``int``, a 32-bit ``long``). The pedantic preset needs the data model
+declared: without one it credits the ISO C widths and says so on stderr, as it
+does for the library. A declared data model, or one a compile database states,
+always wins, and a freestanding target is never assumed to be LP64. The scan's
+summary, its SARIF settings and ``--check-config`` name the data model in force
+and where it came from.
+
+A preset may decline a rule rather than run a reading it cannot make sound
+(``not_enforced`` in :doc:`rule-presets`). A scan under that preset does not
+run the rule, whatever the manifest enables: its summary lists each declined
+rule with the reason, its SARIF settings carry them, and ``--check-config``
+names them. A rule every preset declines is a decided cut, not a preset's
+choice, and still runs until it is removed. Benchmark precision and recall are
+scored against the strict reading. ``--policy`` changes only the
 policy axis: ``--policy pedantic`` alone keeps the default preset's hosted
 environment and its library. Any combination can be set explicitly, down to
 single options:
@@ -106,7 +124,7 @@ single options:
     c_standard = "c99"          # c89 | c99 | c11 | c17 | c23; unknown unless declared
     posix_version = "none"      # none | pre2001 | 2001 | 2008 | 2017 | 2024; unknown unless declared
     include_names = "exact"     # "exact" | "case-insensitive" (as cl on Windows)
-    data_model = "lp64"         # "iso" (the default) | "ilp32" | "lp64" | "llp64"
+    data_model = "lp64"         # "iso" | "ilp32" | "lp64" | "llp64"; unset: lp64 under the default preset, iso otherwise
     # int_bits = 32             # integer facts the data model loads; write one to
     #                           # override it (see below)
 
@@ -303,7 +321,9 @@ by hand are the same thing.
      - unknown
      - none
 
-``iso``, the default data model, loads nothing. A data model is nothing but a list of
+``iso`` loads nothing: it is the data model of the strict and pedantic presets
+when none is declared, and the default preset's assumes ``lp64`` instead. A data
+model is nothing but a list of
 these keys: writing ``lp64``'s lines under ``[environment]`` gives the same
 facts and findings as selecting it; the settings hash and the data model shown
 by ``--list-options`` differ. Facts
@@ -351,15 +371,19 @@ where it came from (``cli``, ``config``, ``data-model:NAME``, ``iso-floor`` or
 credit; ``--list-options json`` carries the same rows under ``facts``.
 ``aurora-lint --check-config`` resolves the settings from the manifest and the
 command line exactly as a scan would, validates them, and exits without
-scanning: ``configuration ok`` and status 0 when valid, otherwise status 1 and
-one ``error:`` line per problem. Both use the code a scan runs, so they cannot
+scanning: ``configuration ok`` and status 0 when valid, followed by the data
+model in force and where it came from and each rule the policy declines with
+the reason, otherwise status 1 and one ``error:`` line per problem. Both use the code a scan runs, so they cannot
 disagree with it.
 
 ``aurora-lint --write-config FILE`` writes a complete configuration with every
 settings key and a one-line description of each. A key at its built-in default
 is commented out; with ``--data-model X`` or ``--set`` the data model's bundle
 values are active lines marked ``# from data model: X``, and a fact no data model sets
-is written commented out as ``# unknown unless declared``. It is generated from
+is written commented out as ``# unknown unless declared``. The data model the
+default preset assumes is not written as a declaration, and neither is one a
+compile database states; a declared one is, ``iso`` too under the default
+preset, where leaving it out would assume ``lp64``. It is generated from
 the same tables as ``--list-options`` and the validation, so it cannot drift
 from them, and the file it writes passes ``--check-config`` unchanged and
 resolves to exactly the facts of running without it (or with the same
