@@ -1027,11 +1027,79 @@ fn else_if_ladder(branches: usize) -> Vec<u8> {
     .into_bytes()
 }
 
+/// One loop in which a pointer is reassigned from itself in `branches`
+/// branches (`if (c == i) p = p + i;`), then written through. Each
+/// assignment's value names the pointer again, so a trace of where it may
+/// point that asks each reaching value's own reaching values, and remembers
+/// nothing, re-asks the same questions by every path: exponential in the
+/// branches, where it must be about quadratic.
+fn self_reassigned_pointer(branches: usize) -> Vec<u8> {
+    format!(
+        "void f(char *buf, int c) {{\n    char *p = buf;\n    while (c--) {{\n{}        *p = 'x';\n    }}\n}}\n",
+        (0..branches)
+            .map(|i| format!("        if (c == {i}) p = p + {i};\n"))
+            .collect::<String>()
+    )
+    .into_bytes()
+}
+
+/// One straight-line function of `blocks` repetitions of "assign a local
+/// pointer, pass its address to a call, read it", as generated initializer
+/// code is written. Every read replays the block's statements before it; a
+/// replay that finds each statement by walking the function body's children
+/// is cubic in the length.
+fn address_taken_reassignments(blocks: usize) -> Vec<u8> {
+    format!(
+        "struct o {{ int x; }};\nextern struct o g[{blocks}];\nvoid intern(struct o **);\n\
+         int check(struct o *);\nvoid init(void) {{\n    struct o *s;\n{}}}\n",
+        (0..blocks)
+            .map(|i| format!("    s = &g[{i}];\n    intern(&s);\n    check(s);\n"))
+            .collect::<String>()
+    )
+    .into_bytes()
+}
+
+/// `calls` debug-print calls, each passing two named arguments, spread over
+/// functions of 100: a generated parser's tracing. A rule that looks each
+/// argument's type up in the whole file's text, re-reading the file per
+/// argument, is quadratic in the file here.
+fn format_calls(calls: usize) -> Vec<u8> {
+    let mut out = String::from("#include <stdio.h>\n");
+    for f in 0..calls.div_ceil(100) {
+        let _ = writeln!(out, "void trace{f}(int level, const char *rule) {{");
+        for i in 0..100.min(calls - f * 100) {
+            let _ = writeln!(out, "    fprintf(stderr, \"%d %s {i}\\n\", level, rule);");
+        }
+        out.push_str("}\n");
+    }
+    out.into_bytes()
+}
+
+/// An `else if` ladder `branches` long whose conditions call a function-like
+/// macro on a local, as a command-line completer's matching is written.
+/// Every argument is an identifier to resolve thousands of levels deep, and
+/// `Node::parent()` recovers a parent by descending from the root, so a
+/// lookup that climbs to its scope per identifier is cubic here.
+fn macro_call_ladder(branches: usize) -> Vec<u8> {
+    format!(
+        "#define MATCH(v, k) ((v) == (k))\nint g(int a) {{\n    int x = a;\n    \
+         if (MATCH(x, 0)) return 0;{} return -1;\n}}\n",
+        (1..branches)
+            .map(|i| format!(" else if (MATCH(x, {i})) return {i};"))
+            .collect::<String>()
+    )
+    .into_bytes()
+}
+
 /// Long expressions and `else if` ladders at lengths real code reaches
 /// (generated tables, state machines, unrolled arithmetic). A rule that asks
 /// a whole-subtree question at each operator, or climbs `Node::parent()`
 /// from each one, is cubic in the length here: a 1000-term `1 + 1 + ...` once
-/// ran the integer rules past the watchdog, which ends the whole scan.
+/// ran the integer rules past the watchdog, which ends the whole scan. The
+/// same holds for generated straight-line code, self-referential assignments
+/// in a loop, generated tracing and macro-call ladders
+/// ([`self_reassigned_pointer`], [`address_taken_reassignments`],
+/// [`format_calls`], [`macro_call_ladder`]).
 fn long_chain_cases() -> Vec<Case> {
     let case = |name: &str, bytes: Vec<u8>| Case::new(format!("c_{name}.c"), bytes, name);
     vec![
@@ -1046,6 +1114,16 @@ fn long_chain_cases() -> Vec<Case> {
             )
             .into_bytes(),
         ),
+        case(
+            "self_reassigned_pointer_100_branches",
+            self_reassigned_pointer(100),
+        ),
+        case(
+            "address_taken_reassignments_800_long",
+            address_taken_reassignments(800),
+        ),
+        case("format_calls_20000", format_calls(20_000)),
+        case("macro_call_ladder_1000_long", macro_call_ladder(1_000)),
     ]
 }
 
