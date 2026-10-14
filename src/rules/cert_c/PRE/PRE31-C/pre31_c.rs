@@ -10,7 +10,7 @@ use crate::analyze::macro_expand::{
 };
 use crate::analyze::side_effects::{
     collect_direct_effects, dereferences_applied, designates_object, is_null_pointer_constant,
-    is_type_name_text, is_volatile_read, names_a_type, typedef_is_volatile, typedef_read,
+    is_type_name_text, is_volatile_read_in, names_a_type, typedef_is_volatile, typedef_read_in,
     EffectInputs, EffectTable, FileScope, Proof, PURE_BUILTINS,
 };
 use crate::manifest::Severity;
@@ -192,6 +192,7 @@ impl CertRule for Pre31C {
         });
         let ctx = Ctx {
             source,
+            root: ast_utils::tree_root(node),
             names: &macro_names,
             first: &function_macros,
             arms: &arms,
@@ -300,6 +301,10 @@ enum Effect {
 /// Everything one file's scan needs to classify arguments.
 struct Ctx<'a> {
     source: &'a str,
+    /// The tree's root: names resolve by one descent from it
+    /// ([`ast_utils::resolve_identifier_binding_in`]) rather than a
+    /// `Node::parent()` climb, which costs the square of the depth per name.
+    root: Node<'a>,
     names: &'a macro_expand::FunctionMacroNames<'a>,
     /// One definition per name (project-wide, this file's winning).
     first: &'a HashMap<String, FunctionMacro>,
@@ -402,7 +407,9 @@ impl<'a> Ctx<'a> {
                 Effect::None
             }
             "identifier" => {
-                if is_volatile_read(node, self.source) || self.reads_volatile_typedef(node) {
+                if is_volatile_read_in(&self.root, node, self.source)
+                    || self.reads_volatile_typedef(node)
+                {
                     Effect::Definite
                 } else {
                     self.free_name_effect(node)
@@ -447,7 +454,8 @@ impl<'a> Ctx<'a> {
         let Some(view) = self.effects else {
             return false;
         };
-        typedef_read(ident, self.source).is_some_and(|t| typedef_is_volatile(&t, &view.names))
+        typedef_read_in(&self.root, ident, self.source)
+            .is_some_and(|t| typedef_is_volatile(&t, &view.names))
     }
 
     /// A name nothing in this file declares in scope (a header's `extern
@@ -459,7 +467,8 @@ impl<'a> Ctx<'a> {
             return Effect::None;
         };
         let name = get_node_text(ident, self.source);
-        if ast_utils::resolve_identifier_binding(ident, name, self.source).is_some() {
+        if ast_utils::resolve_identifier_binding_in(&self.root, ident, name, self.source).is_some()
+        {
             return Effect::None;
         }
         // An identifier in the argument is not a call: only what the project
@@ -514,7 +523,7 @@ impl<'a> Ctx<'a> {
         match node.kind() {
             "identifier" => {
                 let name = get_node_text(node, self.source);
-                ast_utils::resolve_identifier_declared_type(node, name, self.source)
+                ast_utils::resolve_identifier_declared_type_in(&self.root, node, name, self.source)
             }
             "parenthesized_expression" => self.expression_type(&node.named_child(0)?),
             "pointer_expression" => {

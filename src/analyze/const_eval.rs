@@ -1673,7 +1673,7 @@ pub fn file_static_never_written_among(
 /// written by the scanned source.
 pub fn file_scope_written_names(root: &Node, source: &str) -> std::collections::HashSet<String> {
     use crate::utility::cert_c::ast_utils::{
-        declaration_has_storage_class, resolve_identifier_binding, IdentifierBinding,
+        declaration_has_storage_class, resolve_identifier_binding_in, IdentifierBinding,
     };
     let mut out = define_body_identifiers(source);
     let function_macros = function_macro_names(source);
@@ -1700,7 +1700,9 @@ pub fn file_scope_written_names(root: &Node, source: &str) -> std::collections::
         if !write.holds(id) && !walk.in_arguments {
             continue;
         }
-        match resolve_identifier_binding(&id, name, source) {
+        // From the root: a `parent()` climb per identifier is the square
+        // of its depth, so a long `else if` ladder of macro calls was cubic.
+        match resolve_identifier_binding_in(root, &id, name, source) {
             Some(IdentifierBinding::Local(decl))
                 if !declaration_has_storage_class(&decl, "extern", source) => {}
             Some(IdentifierBinding::Parameter(_)) => {}

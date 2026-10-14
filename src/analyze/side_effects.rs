@@ -1202,6 +1202,15 @@ pub fn is_volatile_read(ident: &Node, source: &str) -> bool {
         .is_some_and(|(decl, declarator)| volatile_read_of(ident, &decl, &declarator, source))
 }
 
+/// [`is_volatile_read`] for a caller that has the tree's root: the name
+/// resolves by one descent from it, not a `Node::parent()` climb
+/// ([`ast_utils::resolve_identifier_declarator_in`]).
+pub fn is_volatile_read_in(root: &Node, ident: &Node, source: &str) -> bool {
+    let name = get_node_text(ident, source);
+    ast_utils::resolve_identifier_declarator_in(root, ident, name, source)
+        .is_some_and(|(decl, declarator)| volatile_read_of(ident, &decl, &declarator, source))
+}
+
 /// [`is_volatile_read`] once the declaration is known.
 fn volatile_read_of(ident: &Node, decl: &Node, declarator: &Node, source: &str) -> bool {
     let mut levels = 0;
@@ -1794,6 +1803,15 @@ pub fn volatile_typedefs(root: &Node, source: &str) -> std::collections::HashSet
 pub fn typedef_read(ident: &Node, source: &str) -> Option<String> {
     let name = get_node_text(ident, source);
     let (decl, _) = ast_utils::resolve_identifier_declarator(ident, name, source)?;
+    let (ty, levels) = typedef_declaration(&decl, name, source)?;
+    typedef_level(&ty, dereferences_applied(ident, source) - levels)
+}
+
+/// [`typedef_read`] for a caller that has the tree's root; see
+/// [`is_volatile_read_in`].
+pub fn typedef_read_in(root: &Node, ident: &Node, source: &str) -> Option<String> {
+    let name = get_node_text(ident, source);
+    let (decl, _) = ast_utils::resolve_identifier_declarator_in(root, ident, name, source)?;
     let (ty, levels) = typedef_declaration(&decl, name, source)?;
     typedef_level(&ty, dereferences_applied(ident, source) - levels)
 }

@@ -1152,6 +1152,23 @@ pub fn resolve_identifier_declared_type(
     source: &str,
 ) -> Option<String> {
     let (decl, declarator) = resolve_identifier_declarator(ident_node, name, source)?;
+    declared_type_of(&decl, declarator, source)
+}
+
+/// [`resolve_identifier_declared_type`] for a caller that has the tree's
+/// root; see [`resolve_identifier_binding_in`].
+pub fn resolve_identifier_declared_type_in(
+    root: &Node,
+    ident_node: &Node,
+    name: &str,
+    source: &str,
+) -> Option<String> {
+    let (decl, declarator) = resolve_identifier_declarator_in(root, ident_node, name, source)?;
+    declared_type_of(&decl, declarator, source)
+}
+
+/// [`resolve_identifier_declared_type`] once the declaration is known.
+fn declared_type_of(decl: &Node, declarator: Node, source: &str) -> Option<String> {
     let base = get_node_text(&decl.child_by_field_name("type")?, source)
         .trim()
         .to_string();
