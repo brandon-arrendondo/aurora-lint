@@ -9,6 +9,8 @@
  *         literal still makes an `int` operand convert to unsigned. A type
  *         passed to a casting macro is still a type when it resolves to one:
  *         `cast(my_u32, st)` is an `unsigned int` however the parser reads it.
+ *         And an object that shadows a type's name is an operand like any
+ *         other: `my_u32 * x` with a local `my_u32` is a product.
  */
 
 #define cast(t, exp) ((t)(exp))
@@ -30,4 +32,11 @@ my_u32 shift_through_a_casting_macro(int st, int bits)
 {
     /* VIOLATION: `cast(my_u32, st)` is unsigned; the shift may lose bits */
     return cast(my_u32, st) << bits;
+}
+
+unsigned int object_shadowing_a_type_name(unsigned int x)
+{
+    unsigned int my_u32 = x;
+    /* VIOLATION: `my_u32` is an object here, not the typedef, so this is a product */
+    return my_u32 * x;
 }

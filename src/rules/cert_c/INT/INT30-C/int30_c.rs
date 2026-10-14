@@ -859,6 +859,14 @@ impl Int30C {
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
         ) {
+            // A `*` after a type name is a pointer declarator the parser
+            // read as an expression (`pde_t *f(...)` in a damaged region),
+            // never a product.
+            if left.kind() == "identifier"
+                && self.names_a_type(&left, get_node_text(&left, source), source)
+            {
+                return;
+            }
             let left_type = self.infer_type(&left, source, type_map);
             let right_type = self.infer_type(&right, source, type_map);
 
@@ -2035,7 +2043,7 @@ impl Int30C {
         .any(|t| {
             let text = get_node_text(t, source);
             if t.kind() == "identifier" {
-                return self.macro_argument_names_unsigned_type(t, text);
+                return self.macro_argument_names_unsigned_type(t, text, source);
             }
             text.contains("unsigned") || text.contains("size_t") || text.contains("uint")
         });
@@ -2052,15 +2060,37 @@ impl Int30C {
 
     /// Whether `ident`, an argument of a call, is a type name the parser read
     /// as an expression because a function-like macro takes it (`cast(T, x)`,
-    /// `va_arg(ap, T)`) and that type is unsigned. It counts as a type only if
-    /// it resolves to one: a typedef the scan declared, or a standard unsigned
-    /// type name. An object of the same spelling is not a type.
-    fn macro_argument_names_unsigned_type(&self, ident: &Node, name: &str) -> bool {
-        if ident.parent().is_none_or(|p| p.kind() != "argument_list") {
+    /// `va_arg(ap, T)`) and that type is unsigned. Only a macro can take a
+    /// type, so the callee must be a function-like macro the scan saw: a
+    /// type-shaped argument to a function is a declaration the parser
+    /// misread (`pde_t *CONST lookup(pde_t *pd, vptr_t vptr)` inside a
+    /// damaged region), not a value of that type.
+    fn macro_argument_names_unsigned_type(&self, ident: &Node, name: &str, source: &str) -> bool {
+        let Some(call) = ident
+            .parent()
+            .filter(|p| p.kind() == "argument_list")
+            .and_then(|args| args.parent())
+        else {
             return false;
-        }
-        let declared_typedef = self.typedef_types.borrow().contains_key(name);
-        (declared_typedef || ast_utils::is_unsigned_type(name)) && self.is_unsigned_type(name)
+        };
+        let takes_types = call
+            .child_by_field_name("function")
+            .filter(|f| f.kind() == "identifier")
+            .is_some_and(|f| {
+                self.project_function_macro_names
+                    .borrow()
+                    .contains(get_node_text(&f, source))
+            });
+        takes_types && self.names_a_type(ident, name, source) && self.is_unsigned_type(name)
+    }
+
+    /// Whether the identifier `ident`, spelled `name`, names a type rather
+    /// than an object: a typedef the scan declared, or a standard type name,
+    /// with no object of that name in scope (ADR-0006).
+    fn names_a_type(&self, ident: &Node, name: &str, source: &str) -> bool {
+        let is_type_name =
+            self.typedef_types.borrow().contains_key(name) || ast_utils::is_unsigned_type(name);
+        is_type_name && ast_utils::resolve_identifier_binding(ident, name, source).is_none()
     }
 
     /// The last token of `node`, the one whose text ends `node`'s text.
