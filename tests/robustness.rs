@@ -1091,15 +1091,33 @@ fn macro_call_ladder(branches: usize) -> Vec<u8> {
     .into_bytes()
 }
 
+/// `rows` designated-initializer rows with no enclosing declaration or
+/// function, as a generated table fragment meant to be `#include`d inside an
+/// array initializer is written. Not valid C on its own, it parses to a tree
+/// whose depth grows with the rows, so a rule that climbs `Node::parent()`
+/// from each identifier or initializer to the root is cubic here.
+fn table_fragment(rows: usize) -> Vec<u8> {
+    (0..rows)
+        .map(|i| {
+            format!(
+                "{{ .op = OP_{}, .size = {}, .type = KIND_A, .mask = 0x{i:04x} }},\n",
+                i % 37,
+                8 << (i % 2)
+            )
+        })
+        .collect::<String>()
+        .into_bytes()
+}
+
 /// Long expressions and `else if` ladders at lengths real code reaches
 /// (generated tables, state machines, unrolled arithmetic). A rule that asks
 /// a whole-subtree question at each operator, or climbs `Node::parent()`
 /// from each one, is cubic in the length here: a 1000-term `1 + 1 + ...` once
 /// ran the integer rules past the watchdog, which ends the whole scan. The
 /// same holds for generated straight-line code, self-referential assignments
-/// in a loop, generated tracing and macro-call ladders
+/// in a loop, generated tracing, macro-call ladders and table fragments
 /// ([`self_reassigned_pointer`], [`address_taken_reassignments`],
-/// [`format_calls`], [`macro_call_ladder`]).
+/// [`format_calls`], [`macro_call_ladder`], [`table_fragment`]).
 fn long_chain_cases() -> Vec<Case> {
     let case = |name: &str, bytes: Vec<u8>| Case::new(format!("c_{name}.c"), bytes, name);
     vec![
@@ -1124,6 +1142,7 @@ fn long_chain_cases() -> Vec<Case> {
         ),
         case("format_calls_20000", format_calls(20_000)),
         case("macro_call_ladder_1000_long", macro_call_ladder(1_000)),
+        case("table_fragment_400_rows", table_fragment(400)),
     ]
 }
 
