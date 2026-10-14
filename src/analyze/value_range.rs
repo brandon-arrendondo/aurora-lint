@@ -11,7 +11,7 @@
 
 use super::cfg::{BasicBlock, BlockId, CfgEdge, FunctionCfg};
 use super::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
-use super::dataflow::find_node_at_range;
+use super::dataflow::{find_node_at_range, StatementLookup};
 use super::function_summary::FunctionSummary;
 use crate::analyze::context::SummaryLookup;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1896,11 +1896,15 @@ pub fn get_var_range_at(
     // Use return ranges stored during the main analysis for intra-block replay.
     let replay_summaries = &*result.replay_summaries;
     let mut state = entry.clone();
+    let statements = StatementLookup::new(body);
     for &(start, end) in &block.statements {
         if start >= byte_offset {
             break;
         }
-        if let Some(stmt_node) = find_node_at_range(body, start, end) {
+        // One step per replayed statement: a long block replayed for each
+        // query in it is quadratic, and the budget must see it.
+        super::containment::checkpoint();
+        if let Some(stmt_node) = statements.find(start, end) {
             let empty_types = HashMap::new();
             process_statement_for_ranges(
                 &stmt_node,
@@ -1934,11 +1938,13 @@ pub fn eval_expr_range_at(
     let replay_summaries = &*result.replay_summaries;
     let mut state = entry.clone();
     let empty_types = HashMap::new();
+    let statements = StatementLookup::new(body);
     for &(start, end) in &block.statements {
         if start >= byte_offset {
             break;
         }
-        if let Some(stmt_node) = find_node_at_range(body, start, end) {
+        super::containment::checkpoint();
+        if let Some(stmt_node) = statements.find(start, end) {
             process_statement_for_ranges(
                 &stmt_node,
                 source,

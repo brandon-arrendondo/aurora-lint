@@ -5,7 +5,7 @@
 //! flow sensitivity through branches, loops, and early returns.
 
 use super::cfg::{BasicBlock, BlockId, CfgEdge, FunctionCfg};
-use super::dataflow::find_node_at_range;
+use super::dataflow::{find_node_at_range, StatementLookup};
 use crate::analyze::context::SummaryLookup;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::init_state;
@@ -392,8 +392,9 @@ fn apply_transfer(
     policy: NullPolicy,
 ) -> StateMap {
     let mut state = entry.clone();
+    let statements = StatementLookup::new(body_node);
     for &(start, end) in &block.statements {
-        if let Some(stmt_node) = find_node_at_range(body_node, start, end) {
+        if let Some(stmt_node) = statements.find(start, end) {
             process_statement_for_null_state(
                 &stmt_node,
                 source,
@@ -1937,12 +1938,16 @@ pub fn is_null_deref_at(
     let mut state = entry.clone();
     let mut declared_pointers = result.declared_pointers.clone();
 
+    let statements = StatementLookup::new(body);
     for &(start, end) in &block.statements {
         // Stop before processing statements that come after the dereference
         if start >= deref_byte {
             break;
         }
-        if let Some(stmt_node) = find_node_at_range(body, start, end) {
+        // One step per replayed statement: a long block replayed for each
+        // of its dereferences is quadratic, and the budget must see it.
+        super::containment::checkpoint();
+        if let Some(stmt_node) = statements.find(start, end) {
             if end > deref_byte && is_guard_statement(&stmt_node, source, summaries) {
                 break;
             }
@@ -1990,11 +1995,13 @@ pub fn get_var_state_at(
     let mut state = entry.clone();
     let mut declared_pointers = result.declared_pointers.clone();
 
+    let statements = StatementLookup::new(body);
     for &(start, end) in &block.statements {
         if start >= byte_offset {
             break;
         }
-        if let Some(stmt_node) = find_node_at_range(body, start, end) {
+        super::containment::checkpoint();
+        if let Some(stmt_node) = statements.find(start, end) {
             if end > byte_offset && is_guard_statement(&stmt_node, source, summaries) {
                 break;
             }

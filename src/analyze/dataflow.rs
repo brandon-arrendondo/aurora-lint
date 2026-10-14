@@ -570,19 +570,53 @@ pub fn find_node_at_range<'a>(root: &Node<'a>, start: usize, end: usize) -> Opti
         return Some(*root);
     }
 
-    for i in 0..root.child_count() {
-        if let Some(child) = root.child(i) {
-            if child.start_byte() <= start && child.end_byte() >= end {
-                if let Some(found) = find_node_at_range(&child, start, end) {
-                    return Some(found);
-                }
-                // If exact match not found in children, this node is the best match
-                return Some(child);
-            }
+    // A cursor, not `child(i)`: tree-sitter finds the i-th child by walking
+    // from the first, so indexing every child is quadratic in their number.
+    let mut cursor = root.walk();
+    let found = root
+        .children(&mut cursor)
+        .find(|child| child.start_byte() <= start && child.end_byte() >= end);
+    // If no exact match is found in the covering child, it is the best match.
+    found.map(|child| find_node_at_range(&child, start, end).unwrap_or(child))
+}
+
+/// [`find_node_at_range`] for many ranges under one root: its children are
+/// collected once, and the child covering each range is found by binary
+/// search on their end bytes, which never decrease from one sibling to the
+/// next. Replaying a block's statements up to each query point finds every
+/// statement this way, so a long function costs a logarithm of its length
+/// per statement instead of a pass over its body.
+pub struct StatementLookup<'a> {
+    root: Node<'a>,
+    children: Vec<Node<'a>>,
+}
+
+impl<'a> StatementLookup<'a> {
+    /// Collect `root`'s children, once.
+    pub fn new(root: &Node<'a>) -> Self {
+        let mut cursor = root.walk();
+        let children = root.children(&mut cursor).collect();
+        Self {
+            root: *root,
+            children,
         }
     }
 
-    None
+    /// The node [`find_node_at_range`] finds for `start..end` under the root.
+    pub fn find(&self, start: usize, end: usize) -> Option<Node<'a>> {
+        if self.root.start_byte() == start && self.root.end_byte() == end {
+            return Some(self.root);
+        }
+        // The first child ending at or after `end` is the first that can
+        // cover the range; a later one covers it only if it also starts by
+        // `start`.
+        let from = self.children.partition_point(|c| c.end_byte() < end);
+        self.children[from..]
+            .iter()
+            .take_while(|c| c.start_byte() <= start)
+            .find(|c| c.end_byte() >= end)
+            .map(|child| find_node_at_range(child, start, end).unwrap_or(*child))
+    }
 }
 
 #[cfg(test)]

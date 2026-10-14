@@ -6,7 +6,7 @@
 
 use super::cfg::{BasicBlock, BlockId, CfgEdge, FunctionCfg};
 use super::const_eval;
-use super::dataflow::find_node_at_range;
+use super::dataflow::{find_node_at_range, StatementLookup};
 use super::macro_expand::FunctionMacro;
 use crate::utility::cert_c::node_children::NodeChildren;
 use std::cell::RefCell;
@@ -550,8 +550,9 @@ fn apply_transfer(
     config: &InitAnalysisConfig,
 ) -> InitStateMap {
     let mut state = entry_state.clone();
+    let statements = StatementLookup::new(body);
     for &(start, end) in &block.statements {
-        if let Some(stmt_node) = find_node_at_range(body, start, end) {
+        if let Some(stmt_node) = statements.find(start, end) {
             process_statement(&stmt_node, source, &mut state, tracked_vars, config);
         }
     }
@@ -2320,13 +2321,18 @@ pub fn get_var_info_at_with_config(
 
     let mut state = entry.clone();
     let mut tracked = result.tracked_vars.clone();
+    let statements = StatementLookup::new(body);
 
     for &(start, end) in &block.statements {
         if start >= byte_offset {
             break;
         }
+        // Each read replays its block from the top, so a block of n
+        // statements costs n^2 over its reads: a step each, so the rule's
+        // budget can stop a long one (ADR-0017).
+        super::containment::checkpoint();
         if end <= byte_offset {
-            if let Some(stmt_node) = find_node_at_range(body, start, end) {
+            if let Some(stmt_node) = statements.find(start, end) {
                 process_statement(&stmt_node, source, &mut state, &mut tracked, config);
             }
         } else {
@@ -2334,7 +2340,7 @@ pub fn get_var_info_at_with_config(
             // same-case sub-statements that precede the target. For
             // if/while/for, replay earlier clauses of a still-in-progress
             // short-circuited condition (see an earlier fix).
-            if let Some(stmt_node) = find_node_at_range(body, start, end) {
+            if let Some(stmt_node) = statements.find(start, end) {
                 if stmt_node.kind() == "switch_statement" {
                     replay_within_switch_case(
                         &stmt_node,
