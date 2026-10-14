@@ -368,53 +368,12 @@ fn jumps_cross(func: &Node, from: usize, to: usize, source: &str) -> bool {
 }
 
 /// What a function does to the object `ident` (declared at `decl_id`)
-/// names: the assignments and `++`/`--` that write it, and whether its
-/// address is taken (after which any write through a pointer may reach it).
+/// names (see `MemoryLeakAnalyzer::declarator_uses`): what writes it, and
+/// whether its address is taken (after which any write through a pointer
+/// may reach it).
 struct DeclaratorUses<'t> {
     writes: Vec<Node<'t>>,
     address_taken: bool,
-}
-
-fn declarator_uses<'t>(
-    func: &Node<'t>,
-    ident: &Node,
-    decl_id: usize,
-    source: &str,
-) -> DeclaratorUses<'t> {
-    let name = ast_utils::get_node_text(ident, source);
-    let mut uses = DeclaratorUses {
-        writes: Vec::new(),
-        address_taken: false,
-    };
-    for occurrence in query::find_descendants_of_kind(*func, "identifier") {
-        if ast_utils::get_node_text(&occurrence, source) != name
-            || declarator_id(&occurrence, source) != Some(decl_id)
-        {
-            continue;
-        }
-        let Some(parent) = occurrence.parent() else {
-            continue;
-        };
-        let is = |field: &str| {
-            parent
-                .child_by_field_name(field)
-                .is_some_and(|c| c.id() == occurrence.id())
-        };
-        match parent.kind() {
-            "assignment_expression" if is("left") => uses.writes.push(parent),
-            "update_expression" if is("argument") => uses.writes.push(parent),
-            "pointer_expression"
-                if is("argument")
-                    && parent
-                        .child_by_field_name("operator")
-                        .is_some_and(|o| ast_utils::get_node_text(&o, source) == "&") =>
-            {
-                uses.address_taken = true
-            }
-            _ => {}
-        }
-    }
-    uses
 }
 
 /// Whether `stmt` can leave the code that follows it some other way than
@@ -474,15 +433,28 @@ fn leaves_except_on_null_store(stmt: &Node, stored: &str, source: &str) -> bool 
 /// the stored element) or writes `K`; and that `K`'s address is never
 /// taken. Every other write to `K` from the outermost loop around the
 /// store on is kept, for the freeing loop to check none comes before it.
-fn element_store(assign: &Node, left: &Node, source: &str) -> Option<ElementStore> {
+///
+/// `A` must declare an automatic array object (`char *p[8]`), not a pointer
+/// or a parameter: a pointer can be an alias of another object from its
+/// own declaration on (`char **p = g_arr;`), and writes through that object
+/// never spell `A`.
+fn element_store(
+    analyzer: &MemoryLeakAnalyzer,
+    assign: &Node,
+    left: &Node,
+    source: &str,
+) -> Option<ElementStore> {
     let (array_id, index_id) = element_store_identity(left, source)?;
     let array = peel_casts_and_parens(left.child_by_field_name("argument")?);
     let index = peel_casts_and_parens(left.child_by_field_name("index")?);
-    if !is_automatic_local(&array, source) || !is_automatic_local(&index, source) {
+    if !is_automatic_local(&array, source)
+        || !names_an_array_object(&array, source)
+        || !is_automatic_local(&index, source)
+    {
         return None;
     }
     let func = ast_utils::find_containing_function(assign)?;
-    let uses = declarator_uses(&func, &index, index_id, source);
+    let uses = analyzer.declarator_uses(&func, &index, index_id, source);
     if uses.address_taken {
         return None;
     }
@@ -1838,8 +1810,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// - `A[x]` where its value is only read (an operand, an argument, a
     ///   condition, an initializer, `A[x]->f`, `*A[x]`): nothing.
     /// - `A[x] = ...`, `A[x]++` other than this store: a change.
-    /// - `A[x]` anywhere else (`&A[x]`, an `asm` operand): refuses, since
-    ///   the element can be written there or through what is handed on.
+    /// - `A[x]` anywhere else (`&A[x]`, an `asm` operand, an argument of a
+    ///   macro other than one that frees it): refuses, since the element can
+    ///   be written there or through what is handed on.
     /// - `sizeof A`: nothing.
     /// - `&A`, for an array object, as the destination of a zeroing call
     ///   (`memset`, `bzero`, `explicit_bzero`, or a function-like macro whose
@@ -1919,6 +1892,19 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             let up = at.parent()?;
             if up.kind() == "subscript_expression" && is_field(&up, "argument", &at) {
                 let element = climb(up);
+                // Handed to a macro, the element may be assigned or have its
+                // address kept; only a macro that frees that argument is
+                // known to release it instead.
+                if let Some((call, index)) = self.macro_argument(element, source) {
+                    let callee = self.callee_name(&call.child_by_field_name("function")?, source);
+                    if !self
+                        .macro_freed_param_indices(&callee, site_of(&call, source))
+                        .contains(&index)
+                    {
+                        return None;
+                    }
+                    continue;
+                }
                 let holder = element.parent()?;
                 match holder.kind() {
                     "assignment_expression" if is_field(&holder, "left", &element) => {
@@ -1991,6 +1977,191 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         Some(events)
     }
 
+    /// What `func` does to the object `ident` (declared at `decl_id`) names,
+    /// matched by declarator (ADR-0006):
+    /// - writes: an assignment to it, `++`/`--`, an `asm` output operand
+    ///   (`"=r"(n)`, `"+r"(n)`), and each invocation of a macro whose
+    ///   definition spells the name ([`Self::macro_spells`], `RESET()` for
+    ///   `#define RESET() (n = 0)`), at the invocation;
+    /// - address taken: `&n`, or `n` handed whole to a macro
+    ///   ([`Self::macro_argument`]), which may assign it (`ZERO(n)`) or take
+    ///   its address where the tree cannot see.
+    fn declarator_uses<'t>(
+        &self,
+        func: &Node<'t>,
+        ident: &Node,
+        decl_id: usize,
+        source: &str,
+    ) -> DeclaratorUses<'t> {
+        let name = ast_utils::get_node_text(ident, source);
+        let mut uses = DeclaratorUses {
+            writes: Vec::new(),
+            address_taken: false,
+        };
+        let mut spelled = HashMap::new();
+        for occurrence in query::find_descendants(*func, |n| {
+            matches!(
+                n.kind(),
+                "identifier" | "type_identifier" | "field_identifier"
+            )
+        }) {
+            let text = ast_utils::get_node_text(&occurrence, source);
+            if text != name {
+                if self.macro_spells(text, name, &mut spelled, source) {
+                    uses.writes.push(occurrence);
+                }
+                continue;
+            }
+            if occurrence.kind() != "identifier"
+                || declarator_id(&occurrence, source) != Some(decl_id)
+            {
+                continue;
+            }
+            if query::find_ancestor(occurrence, |a| a.kind() == "gnu_asm_output_operand").is_some()
+            {
+                uses.writes.push(occurrence);
+                continue;
+            }
+            if self.macro_argument(occurrence, source).is_some() {
+                uses.address_taken = true;
+                continue;
+            }
+            let Some(parent) = occurrence.parent() else {
+                continue;
+            };
+            let is = |field: &str| {
+                parent
+                    .child_by_field_name(field)
+                    .is_some_and(|c| c.id() == occurrence.id())
+            };
+            match parent.kind() {
+                "assignment_expression" if is("left") => uses.writes.push(parent),
+                "update_expression" if is("argument") => uses.writes.push(parent),
+                "pointer_expression"
+                    if is("argument")
+                        && parent
+                            .child_by_field_name("operator")
+                            .is_some_and(|o| ast_utils::get_node_text(&o, source) == "&") =>
+                {
+                    uses.address_taken = true
+                }
+                _ => {}
+            }
+        }
+        uses
+    }
+
+    /// When `node`, through parentheses, is a whole argument of a call to a
+    /// name some `#define` defines (`CLR(p[0])`, `ZERO((n))`), and a
+    /// definition may paste that argument ([`Self::macro_pastes_argument`]):
+    /// that call and the argument's index. A macro's argument is not a value
+    /// it reads but text it pastes, which it may assign
+    /// (`#define CLR(e) ((e) = NULL)`) or take the address of.
+    fn macro_argument<'t>(&self, node: Node<'t>, source: &str) -> Option<(Node<'t>, usize)> {
+        let mut arg = node;
+        while let Some(up) = arg
+            .parent()
+            .filter(|u| u.kind() == "parenthesized_expression")
+        {
+            arg = up;
+        }
+        let call = arg
+            .parent()
+            .filter(|l| l.kind() == "argument_list")?
+            .parent()?;
+        let function = call.child_by_field_name("function")?;
+        if function.kind() != "identifier"
+            || !self.is_macro(ast_utils::get_node_text(&function, source), source)
+        {
+            return None;
+        }
+        let index = Self::call_args(call).position(|a| a.id() == arg.id())?;
+        self.macro_pastes_argument(ast_utils::get_node_text(&function, source), index, source)
+            .then_some((call, index))
+    }
+
+    /// Whether some `#define` in the scanned files, or a function-like one
+    /// in this file, defines `name`.
+    fn is_macro(&self, name: &str, source: &str) -> bool {
+        self.function_macros.contains_key(name)
+            || self.macro_definitions.is_some_and(|d| d.contains_key(name))
+            || self.function_macro_arms.is_some_and(|(project, own)| {
+                project.contains_key(name)
+                    || own
+                        .get_or_init(|| macro_expand::collect_function_macro_arms(source))
+                        .contains_key(name)
+            })
+    }
+
+    /// Every arm of the function-like macro `macro_name`: the project's, and
+    /// this file's own (`source`), which the project table leaves out for a
+    /// `.c` file. `None` when no arm table was handed to the walk.
+    fn macro_arms(&self, macro_name: &str, source: &str) -> Option<Vec<&macro_expand::MacroArm>> {
+        self.function_macro_arms.map(|(project, own)| {
+            let mut arms: Vec<&macro_expand::MacroArm> = project
+                .get(macro_name)
+                .into_iter()
+                .flatten()
+                .map(|a| &a.arm)
+                .collect();
+            let own = own.get_or_init(|| macro_expand::collect_function_macro_arms(source));
+            for arm in own.get(macro_name).into_iter().flatten() {
+                if !arms.contains(&arm) {
+                    arms.push(arm);
+                }
+            }
+            arms
+        })
+    }
+
+    /// Whether some definition of the macro `macro_name` may paste its
+    /// argument `index` into what it expands to: its parameter (or, past the
+    /// named ones, its variadic name) appears in the body, or the body
+    /// pastes tokens (`##`). A definition that cannot be read for it counts
+    /// as pasting it: an object-like one (which expands to some other name),
+    /// one with too few parameters, a variadic or pasting one no arm holds,
+    /// or a macro with no readable definition at all. hostap's no-debug
+    /// `#define wpa_printf(args...) do { } while (0)` pastes nothing.
+    fn macro_pastes_argument(&self, macro_name: &str, index: usize, source: &str) -> bool {
+        let names = |body: &str, param: Option<&String>| {
+            body.contains("##")
+                || param.is_none_or(|param| {
+                    body.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                        .any(|t| t == param)
+                })
+        };
+        let defs: &[MacroDefinition] = self
+            .macro_definitions
+            .and_then(|d| d.get(macro_name))
+            .map_or(&[], |d| d.as_slice());
+        let arms = self.macro_arms(macro_name, source).unwrap_or_default();
+        let function_defs = defs
+            .iter()
+            .filter(|d| !matches!(d, MacroDefinition::Object { .. }))
+            .count();
+        if (defs.is_empty() && arms.is_empty())
+            || defs
+                .iter()
+                .any(|d| matches!(d, MacroDefinition::Object { .. }))
+            || (defs.iter().any(|d| matches!(d, MacroDefinition::Opaque))
+                && arms.len() < function_defs)
+        {
+            return true;
+        }
+        defs.iter().any(|def| match def {
+            MacroDefinition::Function { params, body } => names(body, params.get(index)),
+            _ => false,
+        }) || arms.iter().any(|arm| {
+            let param = arm.params.get(index).or_else(|| {
+                arm.variadic
+                    .as_ref()
+                    .filter(|(start, _)| index >= *start)
+                    .map(|(_, name)| name)
+            });
+            names(&arm.body, param)
+        })
+    }
+
     /// Whether the definitions of the macro `macro_name` spell `name`, in
     /// their own text or through a macro they invoke; a parameter of the
     /// same name does not count. A variadic definition is read from its arm
@@ -2019,22 +2190,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 .filter(|t| !t.is_empty() && !params.iter().any(|p| p == t))
                 .any(|t| t == name || self.macro_spells(t, name, memo, source))
         };
-        let arms: Option<Vec<&macro_expand::MacroArm>> =
-            self.function_macro_arms.map(|(project, own)| {
-                let mut arms: Vec<&macro_expand::MacroArm> = project
-                    .get(macro_name)
-                    .into_iter()
-                    .flatten()
-                    .map(|a| &a.arm)
-                    .collect();
-                let own = own.get_or_init(|| macro_expand::collect_function_macro_arms(source));
-                for arm in own.get(macro_name).into_iter().flatten() {
-                    if !arms.contains(&arm) {
-                        arms.push(arm);
-                    }
-                }
-                arms
-            });
+        let arms = self.macro_arms(macro_name, source);
         let function_defs = defs
             .iter()
             .filter(|d| !matches!(d, MacroDefinition::Object { .. }))
@@ -2136,8 +2292,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// Matched by declaration, never by spelling (ADR-0006), and narrow on
     /// purpose. The loop counts from 0 by one up to `i < K`; its body has no
     /// `break`, `continue`, `goto` or `return`, and writes neither `i` nor
-    /// `K`; neither has its address taken anywhere in the function, so no
-    /// write can reach them unseen; and the free is a statement of the body
+    /// `K` (in source, through an `asm` output, or by a macro whose
+    /// definition spells them); neither has its address taken or is handed
+    /// to a macro anywhere in the function, so no write can reach them
+    /// unseen ([`Self::declarator_uses`]); and the free is a statement of the body
     /// itself, so it runs on every iteration: a call that releases the
     /// argument (`free`, a declared deallocator, a freeing macro, or a
     /// callee whose summary frees it) handed exactly `A[i]`. A free under an
@@ -2188,7 +2346,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             if !is_automatic_local(ident, source) {
                 return;
             }
-            let uses = declarator_uses(&func, ident, id, source);
+            let uses = self.declarator_uses(&func, ident, id, source);
             if uses.address_taken || uses.writes.iter().any(in_body) {
                 return;
             }
@@ -4431,10 +4589,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         .unwrap_or_else(|| var_name.clone());
                     let pos = right.start_position();
                     let alloc_type = self.get_allocation_type(&right, source);
-                    let identity = element_store(node, &left, source).and_then(|mut store| {
-                        store.array_events = self.array_events(node, &left, source)?;
-                        Some(store)
-                    });
+                    let identity =
+                        element_store(self, node, &left, source).and_then(|mut store| {
+                            store.array_events = self.array_events(node, &left, source)?;
+                            Some(store)
+                        });
                     let tracked = self.track_allocation_guarded(
                         var_name.clone(),
                         guard_name,
