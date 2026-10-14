@@ -856,6 +856,11 @@ fn assert_scans_cleanly(label: &str, cases: &[Case], how: &str, limit: Duration)
     if problems.is_empty() {
         return;
     }
+    // A scan a signal ended names no case (the abort comes before any
+    // failure line), so keep them all: the culprit is among them.
+    if failed.is_empty() && !matches!(scan.end, End::Exited(_)) {
+        failed.extend(cases);
+    }
     failed.sort_by(|a, b| a.name.cmp(&b.name));
     failed.dedup_by(|a, b| a.name == b.name);
     let keep = keep_failures(label, &failed);
