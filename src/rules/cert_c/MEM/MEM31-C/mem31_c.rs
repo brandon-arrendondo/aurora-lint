@@ -2053,7 +2053,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
     /// When `node`, through parentheses, is a whole argument of a call to a
     /// name some `#define` defines (`CLR(p[0])`, `ZERO((n))`), and a
-    /// definition may paste that argument ([`Self::macro_pastes_argument`]):
+    /// definition may paste that argument ([`Self::macro_pastes_argument`])
+    /// other than as a function's argument
+    /// ([`Self::macro_forwards_argument`]):
     /// that call and the argument's index. A macro's argument is not a value
     /// it reads but text it pastes, which it may assign
     /// (`#define CLR(e) ((e) = NULL)`) or take the address of.
@@ -2076,8 +2078,58 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             return None;
         }
         let index = Self::call_args(call).position(|a| a.id() == arg.id())?;
-        self.macro_pastes_argument(ast_utils::get_node_text(&function, source), index, source)
-            .then_some((call, index))
+        let name = ast_utils::get_node_text(&function, source);
+        (!self.macro_forwards_argument(name, index, source)
+            && self.macro_pastes_argument(name, index, source))
+        .then_some((call, index))
+    }
+
+    /// Whether every definition of the macro `macro_name` is one call to a
+    /// function that is handed its argument `index` whole and names it
+    /// nowhere else ([`macro_expand::macro_forwarding_target`]): hostap's
+    /// `#define os_memcpy(d, s, n) memcpy((d), (s), (n))`. Such an argument
+    /// is a value the function reads, as if the invocation called it.
+    fn macro_forwards_argument(&self, macro_name: &str, index: usize, source: &str) -> bool {
+        let Some(m) = self.function_macros.get(macro_name) else {
+            return false;
+        };
+        let Some(param) = m.params.get(index) else {
+            return false;
+        };
+        let forwarded_once =
+            macro_expand::macro_forwarding_target(self.function_macros, macro_name)
+                .is_some_and(|(_, map)| map.iter().filter(|&&j| j == Some(index)).count() == 1)
+                && m.body
+                    .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .filter(|t| t == param)
+                    .count()
+                    == 1;
+        let defs: &[MacroDefinition] = self
+            .macro_definitions
+            .and_then(|d| d.get(macro_name))
+            .map_or(&[], |d| d.as_slice());
+        let arms = self.macro_arms(macro_name, source).unwrap_or_default();
+        let function_defs = defs
+            .iter()
+            .filter(|d| !matches!(d, MacroDefinition::Object { .. }))
+            .count();
+        forwarded_once
+            && m.alternatives
+                .iter()
+                .all(|alt| alt.as_ref().is_some_and(|alt| alt.same_expansion(m)))
+            && !defs
+                .iter()
+                .any(|d| matches!(d, MacroDefinition::Object { .. }))
+            && arms.len() >= function_defs
+            && arms.iter().all(|arm| {
+                arm.variadic.is_none()
+                    && FunctionMacro {
+                        params: arm.params.clone(),
+                        body: arm.body.clone(),
+                        alternatives: Vec::new(),
+                    }
+                    .same_expansion(m)
+            })
     }
 
     /// Whether some `#define` in the scanned files, or a function-like one
