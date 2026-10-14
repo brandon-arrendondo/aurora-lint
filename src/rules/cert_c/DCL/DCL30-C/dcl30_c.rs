@@ -125,7 +125,7 @@ fn check_store(
     }
     let left = assign.child_by_field_name("left")?;
     let right = assign.child_by_field_name("right")?;
-    let target = outliving_target(&left, source)?;
+    let target = outliving_target(&left, assign, source, index)?;
     let object = escaping_object(&right, assign, source, index)?;
     if reset_before_every_return(assign, &left, body, source, index) {
         return None;
@@ -144,9 +144,17 @@ fn check_store(
 /// Why `lvalue` outlives this call, or `None` when it does not or is not
 /// known to: it lies in a file-scope, `static`, `extern` or thread-storage
 /// object, or it is reached through a dereference of a parameter (storage
-/// the caller owns). A path through a local pointer reaches storage nothing
-/// here can name, and a local or parameter object itself dies with the call.
-fn outliving_target(lvalue: &Node, source: &str) -> Option<&'static str> {
+/// the caller owns) that still holds the caller's value at `site`. A path
+/// through a local pointer reaches storage nothing here can name, a
+/// parameter retargeted to a local (`out = &tmp; *out = &x;`) reaches this
+/// call's own storage, and a local or parameter object itself dies with the
+/// call.
+fn outliving_target<'a>(
+    lvalue: &Node<'a>,
+    site: &Node<'a>,
+    source: &str,
+    index: &WriteIndex,
+) -> Option<&'static str> {
     let mut node = strip(*lvalue);
     let mut through_pointer = false;
     loop {
@@ -193,7 +201,11 @@ fn outliving_target(lvalue: &Node, source: &str) -> Option<&'static str> {
         {
             Some("static storage")
         }
-        IdentifierBinding::Parameter(_) if through_pointer => Some("the caller's storage"),
+        IdentifierBinding::Parameter(_)
+            if through_pointer && pointer_value_origin(&node, site, source, index).is_none() =>
+        {
+            Some("the caller's storage")
+        }
         _ => None,
     }
 }
@@ -205,10 +217,17 @@ fn outliving_target(lvalue: &Node, source: &str) -> Option<&'static str> {
 /// outlives the call: `db->pnBytesFreed = &n; ...; db->pnBytesFreed = 0;`.
 ///
 /// Walks outward from the statement holding the store. In each enclosing
-/// block (`{}` or a `case`) the statements after it are read in order:
+/// block (`{}`, a `case`, or a preprocessor arm, whose sibling `#else` and
+/// `#elif` arms are another build's code and are skipped) the statements
+/// after it are read in order:
 /// - a reset statement answers;
-/// - a statement holding `return`, `goto`, `break` or `continue` may leave
-///   with the address still stored, so the answer is no;
+/// - a statement holding `return` or `goto`, or a `break`/`continue` with no
+///   target in the function, may leave with the address still stored, so
+///   the answer is no;
+/// - a `break` or `continue` whose loop or `switch` encloses the store lands
+///   where the walk will resume after that statement, so it leaves nothing;
+///   but it skips whatever follows inside that statement, so a reset found
+///   there no longer answers, and the walk goes on after the statement;
 /// - at the end of the block the walk continues after the statement that
 ///   owns the block, and at the end of the function body the answer is no.
 ///
@@ -223,25 +242,44 @@ fn reset_before_every_return(
 ) -> bool {
     let target = compact(get_node_text(left, source));
     let mut current = *assign;
-    loop {
+    // The outermost loop or `switch` a jump seen so far lands after: a reset
+    // inside it misses that jump's path.
+    let mut skipped_to: Option<Node> = None;
+    'walk: loop {
         // The statement holding `current`, directly inside a block.
         let Some(parent) = current.parent() else {
             return false;
         };
-        if !matches!(parent.kind(), "compound_statement" | "case_statement") {
+        if !BLOCK_KINDS.contains(&parent.kind()) {
             current = parent;
             continue;
         }
+        let other_arm = parent.child_by_field_name("alternative").map(|a| a.id());
         let mut cursor = parent.walk();
         for stmt in parent.named_children(&mut cursor) {
-            if stmt.start_byte() <= current.start_byte() {
+            if stmt.start_byte() <= current.start_byte() || Some(stmt.id()) == other_arm {
                 continue;
             }
             if let Some((e, value)) = reset_of(&stmt, &target, left, source) {
-                return escaping_object(&value, &e, source, index).is_none();
+                if escaping_object(&value, &e, source, index).is_some() {
+                    return false;
+                }
+                match skipped_to {
+                    Some(owner) if encloses(&owner, &stmt) => {
+                        current = owner;
+                        continue 'walk;
+                    }
+                    _ => return true,
+                }
             }
-            if leaves_early(&stmt) {
-                return false;
+            match jump_exit(&stmt, body) {
+                JumpExit::None => {}
+                JumpExit::Leaves => return false,
+                JumpExit::After(owner) => {
+                    if skipped_to.is_none_or(|s| encloses(&owner, &s)) {
+                        skipped_to = Some(owner);
+                    }
+                }
             }
         }
         if parent.id() == body.id() {
@@ -249,6 +287,84 @@ fn reset_before_every_return(
         }
         current = parent;
     }
+}
+
+/// Blocks whose children run in order at one level: a `{}` body, a `case`,
+/// and a preprocessor arm (aurora-lint does not preprocess, so an
+/// `#ifdef`-guarded region is a node of its own).
+const BLOCK_KINDS: &[&str] = &[
+    "compound_statement",
+    "case_statement",
+    "preproc_if",
+    "preproc_ifdef",
+    "preproc_else",
+    "preproc_elif",
+    "preproc_elifdef",
+];
+
+/// Where the jumps in a statement can take control, seen from outside it.
+enum JumpExit<'a> {
+    /// Every jump in it lands inside it.
+    None,
+    /// A `return`, a `goto`, or a `break`/`continue` with no target in the
+    /// function body.
+    Leaves,
+    /// A `break` or `continue` lands at the end of, or the next iteration
+    /// of, this enclosing loop or `switch` (the outermost such, when several).
+    After(Node<'a>),
+}
+
+/// Where the jumps in `stmt` can go: a `return` or `goto` at any depth
+/// leaves; a `break`/`continue` that a loop (or, for `break`, a `switch`)
+/// inside `stmt` captures stays; one whose loop or `switch` lies outside
+/// `stmt` but inside `body` goes after that statement.
+fn jump_exit<'a>(stmt: &Node<'a>, body: &Node<'a>) -> JumpExit<'a> {
+    let kinds = [
+        "return_statement",
+        "goto_statement",
+        "break_statement",
+        "continue_statement",
+    ];
+    let jumps = if kinds.contains(&stmt.kind()) {
+        vec![*stmt]
+    } else {
+        query::find_descendants_of_kinds(*stmt, &kinds)
+    };
+    let mut outermost: Option<Node> = None;
+    for jump in jumps {
+        if matches!(jump.kind(), "return_statement" | "goto_statement") {
+            return JumpExit::Leaves;
+        }
+        let captured_by: &[&str] = if jump.kind() == "break_statement" {
+            &[
+                "for_statement",
+                "while_statement",
+                "do_statement",
+                "switch_statement",
+            ]
+        } else {
+            &["for_statement", "while_statement", "do_statement"]
+        };
+        let mut node = jump.parent();
+        let target = loop {
+            match node {
+                Some(n) if captured_by.contains(&n.kind()) => break Some(n),
+                Some(n) if n.id() == body.id() => break None,
+                Some(n) => node = n.parent(),
+                None => break None,
+            }
+        };
+        match target {
+            None => return JumpExit::Leaves,
+            Some(t) if encloses(stmt, &t) => {}
+            Some(t) => {
+                if outermost.is_none_or(|o| encloses(&t, &o)) {
+                    outermost = Some(t);
+                }
+            }
+        }
+    }
+    outermost.map_or(JumpExit::None, JumpExit::After)
 }
 
 /// The assignment and its value when `stmt` is `T = value;` for `T` the
@@ -279,48 +395,9 @@ fn reset_of<'a>(
         .then(|| e.child_by_field_name("right").map(|r| (e, r)))?
 }
 
-/// Whether `stmt` holds a jump that can leave the enclosing blocks: a
-/// `return` or `goto` at any depth, or a `break`/`continue` that no loop
-/// (or, for `break`, `switch`) inside `stmt` captures.
-fn leaves_early(stmt: &Node) -> bool {
-    let jumps = [
-        "return_statement",
-        "goto_statement",
-        "break_statement",
-        "continue_statement",
-    ];
-    let escapes = |jump: &Node| {
-        if matches!(jump.kind(), "return_statement" | "goto_statement") {
-            return true;
-        }
-        let captured_by: &[&str] = if jump.kind() == "break_statement" {
-            &[
-                "for_statement",
-                "while_statement",
-                "do_statement",
-                "switch_statement",
-            ]
-        } else {
-            &["for_statement", "while_statement", "do_statement"]
-        };
-        let mut node = jump.parent();
-        while let Some(n) = node {
-            if captured_by.contains(&n.kind()) {
-                return false;
-            }
-            if n.id() == stmt.id() {
-                return true;
-            }
-            node = n.parent();
-        }
-        true
-    };
-    if jumps.contains(&stmt.kind()) {
-        return true;
-    }
-    query::find_descendants_of_kinds(*stmt, &jumps)
-        .iter()
-        .any(escapes)
+/// Whether `outer` spans `inner` (or is it).
+fn encloses(outer: &Node, inner: &Node) -> bool {
+    outer.start_byte() <= inner.start_byte() && inner.end_byte() <= outer.end_byte()
 }
 
 /// Whether two lvalues of the same spelling name the same root variable:
