@@ -79,14 +79,23 @@ Warnings and partial scans are accepted. That noise is welcome, because it is
 code the oracle setup never sees. A missing header is never fixed for, but it
 is always reported. The A/B summary ends with a `HEADERS` block naming each
 codebase whose project files include headers the scan did not find, with the
-most-included ones first, and every scan where include resolution was not
-attempted at all. Expect the misses to be other platforms' headers, test
+most-included ones first, and every scan whose report had no search path to
+count against. Expect the misses to be other platforms' headers, test
 fixtures and absent dependencies; how much that degrades analysis is what
 running it shows.
 
-Machines are provisioned with `playbooks/setup-shadow-corpus.yml`, which runs
-`bench reference-fetch` for a tier. The pins live only in
-`data/reference_corpus.json`.
+The set is kept resident on every node that runs A/Bs, not cloned per run:
+shallow checkouts at one SHA keep it small, and every scan re-checks a
+checkout at its pin and cleans it first. Nodes are provisioned by
+`playbooks/setup-shadow-corpus.yml`, which `setup-dev-environment.yml`
+imports at the standard tier. A node that runs the release-level large tier
+passes `-e shadow_tier=all`. The playbook first asserts about twice the
+tier's measured size is free, then runs `bench reference-fetch`. The pins
+live only in `data/reference_corpus.json`.
+
+The large tier is memory-heavy. On a node with under 16 GiB of RAM,
+`reference-ab` halves its default `--jobs` for a selection that includes it
+and says so; an explicit `--jobs` is kept, with the same warning.
 
 ## Running it
 

@@ -15,7 +15,12 @@
 # Runs on the local machine only. Usage:
 #   ansible-playbook playbooks/setup-shadow-corpus.yml -i "localhost," -c local
 #   ansible-playbook playbooks/setup-shadow-corpus.yml -i "localhost," -c local \
-#     -e shadow_tier=all
+#     -e shadow_tier=all        # a node that runs the release-level large tier
+#
+# The set is kept resident: fetched once and re-checked at its pins before
+# every A/B scan, never re-cloned per run. Shallow checkouts at one SHA are
+# small, so the fetch only asserts room for about twice the tier's measured
+# size first, to fail before cloning rather than part-way through.
 # Checkouts go under BENCH_ROOT/shadow_corpus/ (bench/config.py: $SQC_BENCH_ROOT,
 # .env, ~/toolchain).
 
@@ -24,9 +29,38 @@
   connection: local
   vars:
     project_dir: "{{ playbook_dir }}/.."
-    # quick, standard, large or all; each tier includes the smaller ones.
+    # quick, standard, large or all; each tier includes the smaller ones,
+    # so large and all are the same set.
     shadow_tier: standard
+    # About twice each cumulative tier's measured on-disk size (shallow
+    # checkouts, .git included), rounded up.
+    shadow_required_gb:
+      quick: 1
+      standard: 2
+      large: 11
+      all: 11
   tasks:
+    - name: Measure free space where the checkouts go
+      command: >-
+        python3 -c "import shutil; from bench.reference import default_root;
+        p = default_root();
+        p = next(a for a in (p, *p.parents) if a.exists());
+        print(shutil.disk_usage(p).free // 2**30)"
+      args:
+        chdir: "{{ project_dir }}"
+      register: shadow_free
+      changed_when: false
+
+    - name: Require room for the tier before fetching
+      assert:
+        that: shadow_free.stdout | int >= shadow_required_gb[shadow_tier]
+        fail_msg: >-
+          The {{ shadow_tier }} tier needs about {{ shadow_required_gb[shadow_tier] }} GB
+          free where the shadow checkouts go; {{ shadow_free.stdout }} GB is free.
+          Free space, set SQC_BENCH_ROOT to a larger filesystem, or pick a smaller
+          tier with -e shadow_tier=...
+        quiet: true
+
     - name: Fetch each codebase in the tier
       command: python3 -m bench reference-fetch --tier {{ shadow_tier }}
       args:

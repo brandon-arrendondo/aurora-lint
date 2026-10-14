@@ -27,6 +27,10 @@
 #     CLAUDE.md's Code Navigation section) points at the `clew-mcp` command;
 #     without the package installed that command doesn't resolve and the
 #     clew MCP server silently fails to start.
+#   - The reference shadow set, imported from setup-shadow-corpus.yml at its
+#     standard tier, so every node that runs an A/B has the same pinned set
+#     (`-e shadow_tier=all` on a node that runs the release-level large
+#     tier; `-e install_shadow_corpus=false` to skip it).
 #   - cargo-sweep + an hourly cron job bounding cargo's target/ growth --
 #     found missing entirely on one of two otherwise-identically-provisioned
 #     dev nodes (2026-08-31), which is exactly the kind of silent drift this
@@ -288,3 +292,7 @@
           - ""
           - "Register the clew MCP server once per machine (see CLAUDE.md):"
           - "  cd {{ project_dir }} && {{ dev_venv }}/bin/clew init"
+
+- name: Fetch the reference shadow set
+  import_playbook: setup-shadow-corpus.yml
+  when: install_shadow_corpus | default(true) | bool

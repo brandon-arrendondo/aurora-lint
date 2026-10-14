@@ -102,7 +102,7 @@ class TestHeaders(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             reference._print_headers(report)
-        self.assertIn("not attempted (no search path): 1 codebase", out.getvalue())
+        self.assertIn("no search path, include resolution not counted: 1 codebase", out.getvalue())
         self.assertIn("b: 3 header(s) not found (x.h, y.h, z.h)", out.getvalue())
         self.assertNotIn("c:", out.getvalue())
 
@@ -117,6 +117,26 @@ class TestOwnIncludes(unittest.TestCase):
                 f.write_text("")
             dirs = [str(p.relative_to(root)) for p in reference.own_include_dirs(root)]
             self.assertEqual(dirs, [".", "include", "include/a"])
+
+
+class TestJobs(unittest.TestCase):
+    large = [{"tier": "quick"}, {"tier": "large"}]
+
+    def _jobs(self, repos, requested, ram):
+        with mock.patch.object(reference, "total_ram_gib", return_value=ram), \
+                mock.patch.object(reference.os, "cpu_count", return_value=8), \
+                contextlib.redirect_stderr(io.StringIO()):
+            return reference.jobs_for(repos, requested)
+
+    def test_large_tier_on_a_small_node_halves_the_default(self):
+        self.assertEqual(self._jobs(self.large, None, 14), 4)
+
+    def test_an_explicit_jobs_is_kept(self):
+        self.assertEqual(self._jobs(self.large, 8, 14), 8)
+
+    def test_no_large_tier_or_enough_ram_keeps_the_default(self):
+        self.assertEqual(self._jobs([{"tier": "standard"}], None, 14), 8)
+        self.assertEqual(self._jobs(self.large, None, 32), 8)
 
 
 class TestCacheKey(unittest.TestCase):

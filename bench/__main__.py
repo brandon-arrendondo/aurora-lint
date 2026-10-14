@@ -1199,8 +1199,9 @@ def cmd_reference_ab(args):
     reference, repos, root = _reference_selection(args)
     target = Path(args.target) if args.target else reference.SQC_BIN
     intended = set(args.rules.split(",")) if args.rules else set()
+    jobs = reference.jobs_for(repos, args.jobs)
     out = reference.run_ab(Path(args.base), target, repos, root, intended,
-                           args.jobs, args.timeout)
+                           jobs, args.timeout)
     print(f"\nfull delta: {out}")
 
 
@@ -1633,7 +1634,9 @@ def main():
             p.add_argument("--rules", default=None,
                            help="Comma-separated rules the change is meant to "
                                 "move; others that move are flagged")
-            p.add_argument("--jobs", type=int, default=min(os.cpu_count() or 4, 8))
+            p.add_argument("--jobs", type=int, default=None,
+                           help="Scan threads (default: min(CPUs, 8); halved "
+                                "for the large tier on a node under 16 GiB RAM)")
             p.add_argument("--timeout", type=int, default=1800,
                            help="Per-scan timeout in seconds")
         p.set_defaults(func=func)

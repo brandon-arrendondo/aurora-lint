@@ -31,6 +31,35 @@ TIERS = ("quick", "standard", "large")
 INCLUDES = "own+system"
 
 
+# The large tier's scans peak near 12 GB resident at 8 threads, so a node
+# with less RAM than this scans it with fewer threads unless told otherwise.
+LARGE_TIER_RAM_GIB = 16
+
+
+def total_ram_gib() -> float | None:
+    try:
+        return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 2**30
+    except (AttributeError, ValueError, OSError):
+        return None
+
+
+def jobs_for(repos: list[dict], requested: int | None) -> int:
+    """Scan threads for an A/B: the requested count, or min(CPUs, 8), halved
+    when the selection includes the large tier on a node with under
+    LARGE_TIER_RAM_GIB of RAM. Either way, a small node is warned."""
+    default = min(os.cpu_count() or 4, 8)
+    ram = total_ram_gib()
+    if not any(r["tier"] == "large" for r in repos) or ram is None \
+            or ram >= LARGE_TIER_RAM_GIB:
+        return requested or default
+    jobs = requested or max(1, default // 2)
+    print(f"warning: the large tier's scans can peak near 12 GB resident and "
+          f"this node has {ram:.0f} GiB of RAM; scanning with --jobs {jobs}"
+          + ("" if requested else " (pass --jobs to override)"),
+          file=sys.stderr)
+    return jobs
+
+
 def default_root() -> Path:
     return BENCH_ROOT / "shadow_corpus"
 
@@ -170,9 +199,10 @@ def _reports_headers(binary: Path) -> bool:
 def _headers(report: Path) -> dict:
     """How much of a scan's #include resolution happened. Shadow scans run
     with whatever headers the host has and are never fixed for a missing one
-    (ADR-0018), so the report has to say what was missing. With no search
-    path, resolution is never attempted and an empty list means exactly
-    that, not that every header was found."""
+    (ADR-0018), so the report has to say what was missing. A report with no
+    search path and no forced include is read as resolution not attempted,
+    which is what such a scan meant for older binaries, so an empty list is
+    never taken to mean every header was found."""
     if not report.exists():
         return {}
     data = json.loads(report.read_text())
@@ -309,7 +339,7 @@ def _print_headers(report: dict) -> None:
     print("\nHEADERS: these scans did not see every header their code includes; "
           "findings that depend on them can differ on another host")
     if skipped:
-        print(f"  include resolution not attempted (no search path): "
+        print(f"  no search path, include resolution not counted: "
               f"{len(skipped)} codebase(s)")
     for name, n in sorted(missing, key=lambda m: -m[1]):
         top = ", ".join((report["codebases"][name].get("headers") or {}).get("top", []))
