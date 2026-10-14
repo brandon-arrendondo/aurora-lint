@@ -19,10 +19,21 @@ use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::declarator_utils;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
 pub struct Int00C;
+
+thread_local! {
+    /// The file being checked, whitespace-normalized, and the type
+    /// [`Int00C::find_type_in_source`] found for each name in it. Reset by
+    /// [`Int00C::check_node`] for each file. Normalizing the whole file per
+    /// format argument made a file with thousands of `printf` calls cost its
+    /// size once per argument.
+    static SOURCE_TYPES: RefCell<(Option<String>, HashMap<String, String>)> =
+        RefCell::new((None, HashMap::new()));
+}
 
 impl CertRule for Int00C {
     fn rule_id(&self) -> &'static str {
@@ -48,6 +59,7 @@ impl CertRule for Int00C {
 
 impl Int00C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        SOURCE_TYPES.with(|c| *c.borrow_mut() = (None, HashMap::new()));
         for n in query::find_descendants(*node, |_| true) {
             // Check for format specifier mismatches in scanf/printf family
             if n.kind() == "call_expression" {
@@ -332,9 +344,23 @@ impl Int00C {
 
     /// Find variable type by searching source text for declarations
     fn find_type_in_source(&self, var_name: &str, source: &str) -> String {
-        // Normalize whitespace in source for easier matching
-        let normalized_source = source.split_whitespace().collect::<Vec<_>>().join(" ");
+        SOURCE_TYPES.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            let (normalized, found) = &mut *cache;
+            if let Some(known) = found.get(var_name) {
+                return known.clone();
+            }
+            // Normalize whitespace in source for easier matching
+            let normalized = normalized
+                .get_or_insert_with(|| source.split_whitespace().collect::<Vec<_>>().join(" "));
+            let type_name = Self::type_in_normalized(var_name, normalized);
+            found.insert(var_name.to_string(), type_name.clone());
+            type_name
+        })
+    }
 
+    /// [`Self::find_type_in_source`] over the whitespace-normalized source.
+    fn type_in_normalized(var_name: &str, normalized_source: &str) -> String {
         // Look for common declaration patterns in order of specificity
         let type_patterns = [
             (

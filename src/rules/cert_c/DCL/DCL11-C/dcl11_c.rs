@@ -17,7 +17,23 @@ use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::node_children::NodeChildren;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use tree_sitter::Node;
+
+thread_local! {
+    /// Per name, the file's first declaration's type and its first
+    /// initializer, as [`Dcl11C::find_variable_type`] and
+    /// [`Dcl11C::find_variable_initializer`] find them by searching from the
+    /// root. Each answer depends only on the file and the name, and asking it
+    /// per format argument walked the whole file for each one. Reset by
+    /// [`Dcl11C::scan`] for each file.
+    static LOOKUPS: RefCell<(NameAnswers, NameAnswers)> =
+        RefCell::new((HashMap::new(), HashMap::new()));
+}
+
+/// One lookup's answers for a file, by name.
+type NameAnswers = HashMap<String, Option<String>>;
 
 pub struct Dcl11C;
 
@@ -358,6 +374,9 @@ impl Dcl11C {
         current_node: &Node<'a>,
         source: &'a str,
     ) -> Option<String> {
+        if let Some(known) = LOOKUPS.with(|l| l.borrow().0.get(var_name).cloned()) {
+            return known;
+        }
         // Start from root and search for declaration
         let mut node = *current_node;
         while let Some(parent) = node.parent() {
@@ -365,7 +384,9 @@ impl Dcl11C {
         }
 
         // Now search down from root for declarations
-        self.search_for_declaration(&node, var_name, source)
+        let found = self.search_for_declaration(&node, var_name, source);
+        LOOKUPS.with(|l| l.borrow_mut().0.insert(var_name.to_string(), found.clone()));
+        found
     }
 
     /// Find variable initializer value (e.g., NULL check)
@@ -375,6 +396,9 @@ impl Dcl11C {
         current_node: &Node<'a>,
         source: &'a str,
     ) -> Option<String> {
+        if let Some(known) = LOOKUPS.with(|l| l.borrow().1.get(var_name).cloned()) {
+            return known;
+        }
         // Start from root and search for declaration
         let mut node = *current_node;
         while let Some(parent) = node.parent() {
@@ -382,7 +406,9 @@ impl Dcl11C {
         }
 
         // Search for declaration with initializer
-        self.search_for_initializer(&node, var_name, source)
+        let found = self.search_for_initializer(&node, var_name, source);
+        LOOKUPS.with(|l| l.borrow_mut().1.insert(var_name.to_string(), found.clone()));
+        found
     }
 
     /// Recursively search for variable initializer
@@ -556,6 +582,7 @@ impl CertRule for Dcl11C {
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        LOOKUPS.with(|l| *l.borrow_mut() = (HashMap::new(), HashMap::new()));
         self.check_node(node, source, violations);
     }
 }
