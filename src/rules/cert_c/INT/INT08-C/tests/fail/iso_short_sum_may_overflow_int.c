@@ -1,7 +1,8 @@
 /*
  * Rule: INT08-C
  * Source: regression
- * Status: FAIL - no data model is declared
+ * Status: FAIL - the ISO C data model is declared
+ * Settings: data_model=iso
  *
  * ISO C guarantees int only 16 bits. Both shorts promote to int, and
  * 32000 + 1000 = 33000 exceeds a 16-bit INT_MAX: the addition overflows on a

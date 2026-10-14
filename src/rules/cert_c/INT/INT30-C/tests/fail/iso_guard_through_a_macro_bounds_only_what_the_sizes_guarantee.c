@@ -1,7 +1,8 @@
 /*
  * Rule: INT30-C
  * Source: regression
- * Status: FAIL - no data model is declared
+ * Status: FAIL - the ISO C data model is declared
+ * Settings: data_model=iso
  *
  * HEADER_SIZE is between three and ten bytes under ISO C's widths, so a
  * length that passed `length < HEADER_SIZE` is only known to be at least

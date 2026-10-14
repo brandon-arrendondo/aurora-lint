@@ -1,7 +1,8 @@
 /*
  * Rule: INT02-C
  * Source: regression
- * Status: FAIL - no data model is declared
+ * Status: FAIL - the ISO C data model is declared
+ * Settings: data_model=iso
  *
  * ISO C guarantees int only 16 bits. Both unsigned char operands promote to
  * int wherever int holds their values, and 255 * 255 = 65025 exceeds a 16-bit

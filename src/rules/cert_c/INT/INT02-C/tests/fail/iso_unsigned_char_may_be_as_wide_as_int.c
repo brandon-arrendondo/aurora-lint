@@ -1,7 +1,8 @@
 /*
  * Rule: INT02-C
  * Source: regression
- * Status: FAIL - no data model is declared
+ * Status: FAIL - the ISO C data model is declared
+ * Settings: data_model=iso
  *
  * Where CHAR_BIT is 16 and int is 16 bits (a conforming target, and some DSPs
  * are built that way), unsigned char promotes to unsigned int, and the signed

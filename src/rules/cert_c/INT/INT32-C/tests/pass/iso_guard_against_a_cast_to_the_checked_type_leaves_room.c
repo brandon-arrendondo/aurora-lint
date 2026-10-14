@@ -1,7 +1,8 @@
 /*
  * Rule: INT32-C
  * Source: regression
- * Status: PASS - no data model is declared
+ * Status: PASS - the ISO C data model is declared
+ * Settings: data_model=iso
  *
  * A guard against an operand of the checked type bounds the value below that
  * type's limit, wherever the limit is. Casting the wider count to int first

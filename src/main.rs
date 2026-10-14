@@ -523,7 +523,7 @@ fn run() -> Result<i32> {
         .arg(
             Arg::new("profile")
                 .long("profile")
-                .help("Preset for both settings axes: default (default policy, hosted), strict (strict policy, hosted) or pedantic (pedantic policy, hosted, trusting only a declared --libc). Overrides the manifest's `profile`")
+                .help("Preset for both settings axes: default (default policy, hosted, assuming the LP64 data model unless one is declared), strict (strict policy, hosted, crediting only the integer widths ISO C guarantees unless a data model is declared) or pedantic (pedantic policy, hosted, trusting only a declared --libc and data model). Overrides the manifest's `profile`")
                 .value_name("PRESET")
                 .value_parser(["default", "strict", "pedantic"]),
         )
@@ -558,7 +558,7 @@ fn run() -> Result<i32> {
         .arg(
             Arg::new("data_model")
                 .long("data-model")
-                .help("The data model: the bundle of integer facts the code is built for: iso (default: loads nothing, so only the widths ISO C guarantees are credited and limit macros such as INT_MAX are unknown), ilp32, lp64 or llp64; override one fact with --set int_bits=16 (also char_bits, short_bits, long_bits, long_long_bits, pointer_bits, wchar_t_bits, char_signed, float_bytes, double_bytes, long_double_bytes, time_t_bytes, off_t_bytes)")
+                .help("The data model: the bundle of integer facts the code is built for: iso (loads nothing, so only the widths ISO C guarantees are credited and limit macros such as INT_MAX are unknown), ilp32, lp64 or llp64; undeclared, the default preset assumes lp64 on a hosted target and strict and pedantic take iso; override one fact with --set int_bits=16 (also char_bits, short_bits, long_bits, long_long_bits, pointer_bits, wchar_t_bits, char_signed, float_bytes, double_bytes, long_double_bytes, time_t_bytes, off_t_bytes)")
                 .value_name("MODEL")
                 .value_parser(["iso", "ilp32", "lp64", "llp64"]),
         )
@@ -799,12 +799,24 @@ fn run() -> Result<i32> {
         // command-line flag is read, and the manifest checked against the
         // ones that parsed, so each problem is named once.
         let (settings_cli, mut problems) = parse_settings_from_cli(&matches);
+        // What the configuration means, printed under "configuration ok".
+        let mut meaning = Vec::new();
         let checked = load_manifest(manifest_path).and_then(|manifest| {
             let settings = resolve_settings(&manifest, &settings_cli, compile_db.as_ref())?;
             // Valid, but the scan would trust no library: say so, and pass.
             if let Some(notice) = settings.libc_notice(|r| rule_enabled(&manifest, r)) {
                 eprintln!("warning: {notice}");
             }
+            if let Some(notice) = settings.data_model_notice() {
+                eprintln!("warning: {notice}");
+            }
+            meaning.push(format!(
+                "data model: {} ({})",
+                settings.data_model,
+                settings.data_model_source.label()
+            ));
+            // Valid, and each rule the policy declines would not run.
+            meaning.extend(settings.decline_notices(|r| rule_enabled(&manifest, r)));
             if let Some(notice) = settings.posix_notice(|r| rule_enabled(&manifest, r)) {
                 eprintln!("warning: {notice}");
             }
@@ -830,6 +842,9 @@ fn run() -> Result<i32> {
         }
         if problems.is_empty() {
             println!("configuration ok");
+            for line in meaning {
+                println!("{line}");
+            }
             return Ok(0);
         }
         for problem in problems {
@@ -962,6 +977,9 @@ fn run() -> Result<i32> {
     if let Some(notice) = analysis_settings.libc_notice(|r| rule_enabled(&manifest, r)) {
         eprintln!("warning: {notice}");
     }
+    if let Some(notice) = analysis_settings.data_model_notice() {
+        eprintln!("warning: {notice}");
+    }
     if let Some(notice) = analysis_settings.posix_notice(|r| rule_enabled(&manifest, r)) {
         eprintln!("warning: {notice}");
     }
@@ -1012,12 +1030,23 @@ fn run() -> Result<i32> {
         analysis_settings.policy,
         analysis_settings.environment,
     );
+    println!(
+        "Data model: {} ({})",
+        analysis_settings.data_model,
+        analysis_settings.data_model_source.label()
+    );
     if !declined.is_empty() {
         println!(
-            "Declined by the {} policy: {}",
+            "Declined by the {} policy, so not run: {}",
             analysis_settings.policy,
             declined.join(", ")
         );
+        for id in &declined {
+            println!(
+                "  {id}: {}",
+                analysis_settings.decline_reason(id).unwrap_or_default()
+            );
+        }
     }
 
     match diff_base {

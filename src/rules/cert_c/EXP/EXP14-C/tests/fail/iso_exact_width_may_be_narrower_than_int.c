@@ -1,7 +1,8 @@
 /*
  * Rule: EXP14-C
  * Source: regression
- * Status: FAIL - no data model is declared
+ * Status: FAIL - the ISO C data model is declared
+ * Settings: data_model=iso
  *
  * uint32_t is exactly 32 bits, and ISO C lets int be wider (ILP64 targets
  * have a 64-bit int). There the operand promotes to int before the

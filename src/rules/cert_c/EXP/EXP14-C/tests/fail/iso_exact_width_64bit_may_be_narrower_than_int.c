@@ -1,7 +1,8 @@
 /*
  * Rule: EXP14-C
  * Source: regression
- * Status: FAIL - no data model is declared
+ * Status: FAIL - the ISO C data model is declared
+ * Settings: data_model=iso
  *
  * uint64_t is exactly 64 bits, but ISO C does not bound int above, so an
  * implementation may give int 64 bits or more (or fewer: the guarantee is

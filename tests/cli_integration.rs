@@ -475,6 +475,115 @@ fn sarif_settings(manifest: &std::path::Path, args: &[&str]) -> serde_json::Valu
     sarif["runs"][0]["properties"]["aurora-lint/settings"].clone()
 }
 
+/// A scan of one unchecked `fopen` with only ERR33-C enabled, under `profile`:
+/// its exit code, stdout and SARIF settings.
+fn err33_scan(profile: &str) -> (i32, String, serde_json::Value) {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("a.c");
+    std::fs::write(
+        &src,
+        "#include <stdio.h>\nvoid f(void) { fopen(\"x\", \"r\"); }\n",
+    )
+    .unwrap();
+    let manifest = dir.path().join("m.toml");
+    std::fs::write(
+        &manifest,
+        "[metadata]\nname = \"t\"\nversion = \"1\"\ncert_version = \"2016\"\n\n\
+         [rules.cert_c.ERR33-C]\nenabled = true\n",
+    )
+    .unwrap();
+    let out = dir.path().join("out.sarif");
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        src.to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "--profile",
+        profile,
+        "--libc",
+        "glibc",
+        "--data-model",
+        "lp64",
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert!(code == 0 || code == 1, "{stderr}");
+    let sarif: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    (code, stdout, sarif["runs"][0].clone())
+}
+
+#[test]
+fn a_rule_the_policy_declines_does_not_run_and_every_output_says_why() {
+    // The default preset reads ERR33-C; pedantic declines it.
+    let (_, stdout, run) = err33_scan("default");
+    assert!(!run["results"].as_array().unwrap().is_empty(), "{run}");
+    assert!(!stdout.contains("Declined by"), "{stdout}");
+    assert!(run["properties"]["aurora-lint/settings"]
+        .get("declined")
+        .is_none());
+
+    let (_, stdout, run) = err33_scan("pedantic");
+    assert!(run["results"].as_array().unwrap().is_empty(), "{run}");
+    assert!(
+        stdout.contains("Declined by the pedantic policy, so not run: ERR33-C"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("  ERR33-C: "), "{stdout}");
+    // The settings name every rule the policy declines, whatever this
+    // manifest enables, each with its reason.
+    let settings = &run["properties"]["aurora-lint/settings"];
+    assert_eq!(
+        settings["declined_rules"],
+        serde_json::json!(["ERR33-C", "FIO30-C", "POS54-C"])
+    );
+    let err33 = settings["declined"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["rule"] == "ERR33-C")
+        .unwrap();
+    assert!(
+        err33["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("pedantic")),
+        "{settings}"
+    );
+
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        "--check-config",
+        "--profile",
+        "pedantic",
+        "--libc",
+        "glibc",
+        "--data-model",
+        "lp64",
+        "--rules",
+        "ERR33-C",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.starts_with("the pedantic policy declines ERR33-C, which does not run: ")),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn check_config_names_the_data_model_and_where_it_came_from() {
+    for (args, line) in [
+        (vec![], "data model: lp64 (assumed by the preset)"),
+        (vec!["--profile", "strict"], "data model: iso (undeclared)"),
+        (vec!["--data-model", "ilp32"], "data model: ilp32 (cli)"),
+    ] {
+        let mut all = vec!["--check-config"];
+        all.extend(args);
+        let (code, stdout, stderr) = run_aurora_lint(&all);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.lines().any(|l| l == line), "{stdout}");
+    }
+}
+
 #[test]
 fn sarif_records_default_settings() {
     let s = sarif_settings(&manifest_msc04(), &[]);
@@ -540,7 +649,7 @@ fn the_pedantic_preset_is_named_in_the_settings_and_the_banner() {
         "pedantic",
     ]);
     assert_eq!(code, 0, "{stderr}");
-    assert_eq!(stdout.trim(), "configuration ok");
+    assert_eq!(stdout.lines().next(), Some("configuration ok"), "{stdout}");
     assert!(
         stderr.starts_with("warning: the pedantic preset"),
         "{stderr}"
@@ -555,7 +664,25 @@ fn the_pedantic_preset_is_named_in_the_settings_and_the_banner() {
         "newlib-nano",
     ]);
     assert_eq!(code, 0, "{stderr}");
+    // The library is declared; the data model is not, and pedantic says so.
+    assert!(
+        stderr.starts_with("warning: the pedantic preset assumes no data model"),
+        "{stderr}"
+    );
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        "--check-config",
+        "-m",
+        fixtures().join("manifest_exp34.toml").to_str().unwrap(),
+        "--profile",
+        "pedantic",
+        "--libc",
+        "newlib-nano",
+        "--data-model",
+        "ilp32",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
     assert!(stderr.is_empty(), "{stderr}");
+    assert!(stdout.contains("data model: ilp32 (cli)"), "{stdout}");
 }
 
 #[test]
@@ -942,7 +1069,7 @@ fn a_prescan_cache_saved_under_other_rules_scans_as_a_fresh_prescan() {
     std::fs::write(
         lib.join("counts.c"),
         "int small_count(void) { return 3; }\n\
-         int wide_count(void) { return 2147483640; }\n",
+         int wide_count(void) { return 2147483647; }\n",
     )
     .unwrap();
     let main_c = dir.path().join("main.c");
@@ -5872,6 +5999,18 @@ fn multi_file_scan_of_deep_nesting_completes() {
 
 /// The resolved settings `--list-options json` prints for `args`, or the
 /// refusal text when they are invalid.
+/// `settings` less who declared the data model (cli or config), which
+/// names the layer and is not part of what was resolved.
+fn without_declaring_layer(mut settings: serde_json::Value) -> serde_json::Value {
+    if let Some(m) = settings
+        .get_mut("data_model_in_force")
+        .and_then(|m| m.as_object_mut())
+    {
+        m.remove("source");
+    }
+    settings
+}
+
 fn resolved_settings(args: &[&str]) -> Result<serde_json::Value, String> {
     let mut full = vec!["--list-options", "json"];
     full.extend_from_slice(args);
@@ -6002,7 +6141,7 @@ fn check_config_accepts_a_valid_configuration_and_scans_nothing() {
     // The path does not exist: nothing is scanned.
     let (code, stdout, stderr) = run_aurora_lint(&["--check-config", "-m", &m, "/no/such/path"]);
     assert_eq!(code, 0, "{stderr}");
-    assert_eq!(stdout.trim(), "configuration ok");
+    assert_eq!(stdout.lines().next(), Some("configuration ok"), "{stdout}");
     assert!(stderr.is_empty(), "{stderr}");
 }
 
@@ -6069,7 +6208,7 @@ fn check_config_and_a_scan_judge_a_configuration_by_the_same_code() {
     );
     let (ok_code, ok_out, _err) = run_aurora_lint(&["--check-config", "--set", "int_bits=16", f]);
     assert_eq!(ok_code, 0);
-    assert_eq!(ok_out.trim(), "configuration ok");
+    assert_eq!(ok_out.lines().next(), Some("configuration ok"), "{ok_out}");
 }
 
 #[test]
@@ -6115,8 +6254,9 @@ fn list_options_names_the_source_of_every_integer_fact() {
         source("wchar_t_bits"),
         ("unknown".to_string(), "unknown".to_string())
     );
-    // Under no data model a width is only the ISO floor.
-    let (code, stdout, _err) = run_aurora_lint(&["--list-options", "json"]);
+    // Under no data model a width is only the ISO floor, which the strict
+    // preset credits (the default one assumes lp64).
+    let (code, stdout, _err) = run_aurora_lint(&["--list-options", "json", "--profile", "strict"]);
     assert_eq!(code, 0);
     let iso: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let int_bits = iso["facts"]
@@ -6191,7 +6331,7 @@ fn a_written_config_passes_check_config_unchanged() {
         let (_dir, path, _text) = written_config(&args);
         let (code, stdout, stderr) = run_aurora_lint(&["--check-config", "-m", &path]);
         assert_eq!(code, 0, "{args:?}: {stderr}");
-        assert_eq!(stdout.trim(), "configuration ok");
+        assert_eq!(stdout.lines().next(), Some("configuration ok"), "{stdout}");
     }
 }
 
@@ -6215,7 +6355,9 @@ fn a_written_config_resolves_to_the_facts_and_hash_of_running_without_it() {
         // a repeated line keeps its true source (config), which is not part
         // of what was resolved.
         let current = |text: &str| {
-            serde_json::from_str::<serde_json::Value>(text).unwrap()["current"].clone()
+            without_declaring_layer(
+                serde_json::from_str::<serde_json::Value>(text).unwrap()["current"].clone(),
+            )
         };
         assert_eq!(current(&from_file), current(&from_flags), "{model:?}");
         assert_eq!(fact_values(&["-m", &path]), fact_values(&args), "{model:?}");
@@ -6235,7 +6377,12 @@ fn a_written_config_keeps_what_the_command_line_set_as_a_declaration() {
     );
     let from_file = resolved_settings(&["-m", &path]).unwrap();
     let from_flags = resolved_settings(&["--data-model", "lp64", "--set", "int_bits=64"]).unwrap();
-    assert_eq!(from_file, from_flags);
+    assert_eq!(from_file["data_model_in_force"]["source"], "config");
+    assert_eq!(from_flags["data_model_in_force"]["source"], "cli");
+    assert_eq!(
+        without_declaring_layer(from_file.clone()),
+        without_declaring_layer(from_flags)
+    );
     assert_eq!(from_file["int_bits"], 64);
 }
 
@@ -6415,7 +6562,8 @@ fn a_data_model_is_exactly_the_keys_a_user_can_write() {
         let keys = data_model_keys(model);
         assert!(keys.len() >= 9, "{model}: {keys:?}");
         let sets: Vec<String> = keys.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        let mut by_hand: Vec<&str> = Vec::new();
+        // On the ISO floor, not over the model the default preset assumes.
+        let mut by_hand: Vec<&str> = vec!["--data-model", "iso"];
         for s in &sets {
             by_hand.extend(["--set", s.as_str()]);
         }
@@ -6451,7 +6599,14 @@ fn every_fact_is_a_key_a_project_can_write() {
     ] {
         let value = if key.ends_with("_bytes") { "8" } else { "64" };
         let assignment = format!("{key}={value}");
-        let (code, _out, stderr) = run_aurora_lint(&["--check-config", "--set", &assignment]);
+        // On its own, as a project with no data model writes it.
+        let (code, _out, stderr) = run_aurora_lint(&[
+            "--check-config",
+            "--data-model",
+            "iso",
+            "--set",
+            &assignment,
+        ]);
         assert_eq!(code, 0, "{key}: {stderr}");
     }
     let (code, _out, stderr) = run_aurora_lint(&["--check-config", "--set", "float_bytes=0"]);
@@ -7970,7 +8125,7 @@ fn a_written_config_keeps_the_declared_thread_api_families() {
         assert_eq!(current(&path), current(original), "{manifest}: {text}");
         let (code, stdout, stderr) = run_aurora_lint(&["--check-config", "-m", &path]);
         assert_eq!(code, 0, "{manifest}: {stderr}");
-        assert_eq!(stdout.trim(), "configuration ok");
+        assert_eq!(stdout.lines().next(), Some("configuration ok"), "{stdout}");
     }
     let (_dir, _path, text) = written_config(&[
         "-m",

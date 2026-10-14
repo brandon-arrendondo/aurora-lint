@@ -393,6 +393,30 @@ pub fn to_json(table: &BTreeMap<String, Block>) -> String {
     out
 }
 
+/// The table as the library reads it at run time: an array expression of
+/// `settings::PresetRow`, one per rule, which `settings::PRESET_TABLE`
+/// includes from `OUT_DIR`. Each row carries its cells in preset order and
+/// the reason a declining preset gives: the block's `basis`, which names its
+/// rulings, else the rulings alone.
+pub fn to_rust(table: &BTreeMap<String, Block>) -> String {
+    let mut out = String::from("&[\n");
+    for (rule, b) in table {
+        let reason = b
+            .basis
+            .clone()
+            .or_else(|| b.ruling.as_ref().map(|r| format!("Ruling: {r}.")))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "    PresetRow {{ rule: {rule:?}, cells: [{:?}, {:?}, {:?}], reason: {reason:?} }},\n",
+            b.default.key(),
+            b.strict.key(),
+            b.pedantic.key(),
+        ));
+    }
+    out.push_str("]\n");
+    out
+}
+
 /// `docs/rule-presets.rst`: the same table as a page, so the docs cannot
 /// disagree with the metadata (ADR-0015 requires docs generated from the
 /// option table; this is the per-rule half).
@@ -409,7 +433,10 @@ pub fn to_rst(table: &BTreeMap<String, Block>) -> String {
          - ``widened``: default reports more than strict (a reading by the rule's spirit,\n  \
          or an open family inferred wider).\n\
          - ``stricter``: pedantic's closed reading beyond strict.\n\
-         - ``not_enforced``: the preset declines the rule, loudly, rather than guess.\n\n\
+         - ``not_enforced``: the preset declines the rule, loudly, rather than guess. A scan\n  \
+         under it does not run the rule, and its summary, SARIF settings and\n  \
+         ``--check-config`` name the rule and the reason. A rule every preset declines\n  \
+         is a decided cut instead: it still runs until it is removed.\n\n\
          .. list-table::\n   :header-rows: 1\n   :widths: 10 12 12 12 24 30\n\n\
          \x20  * - Rule\n     - default\n     - strict\n     - pedantic\n     - Options\n     - Rulings\n",
     );
@@ -621,5 +648,22 @@ mod tests {
         assert!(json.find("\"A-C\"").unwrap() < json.find("\"B-C\"").unwrap());
         assert!(json.contains("\"A-C\": {\"default\": \"narrowed\", \"strict\": \"as_written\", \"pedantic\": \"as_written\", \"differs\": true}"));
         assert!(json.contains("\"B-C\": {\"default\": \"as_written\", \"strict\": \"as_written\", \"pedantic\": \"as_written\", \"differs\": false}"));
+    }
+
+    #[test]
+    fn the_runtime_table_carries_each_cell_and_reason_as_rust() {
+        let a = block("[presets]\ndefault = \"narrowed\"\nstrict = \"as_written\"\npedantic = \"not_enforced\"\nbasis = \"the \\\"family\\\" is open\"\n");
+        let b = block("[presets]\ndefault = \"as_written\"\nstrict = \"as_written\"\npedantic = \"as_written\"\nruling = \"P/coincide\"\n");
+        let table: BTreeMap<String, Block> =
+            [("A-C".to_string(), a), ("B-C".to_string(), b)].into();
+        let rust = to_rust(&table);
+        assert!(rust.starts_with("&[\n") && rust.ends_with("]\n"), "{rust}");
+        assert!(rust.contains(
+            "PresetRow { rule: \"A-C\", cells: [\"narrowed\", \"as_written\", \"not_enforced\"], reason: \"the \\\"family\\\" is open\" },"
+        ), "{rust}");
+        assert!(
+            rust.contains("reason: \"Ruling: P/coincide.\" },"),
+            "{rust}"
+        );
     }
 }

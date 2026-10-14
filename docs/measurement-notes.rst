@@ -248,6 +248,32 @@ Real-world
   parses. Juliet's short functions show little of it. Compare analysis times
   only between runs of the same release on the same node.
 
+What changed in how v0.7.0 is measured
+---------------------------------------
+
+One change moves every run's identity at once, so it is a trend break in the
+run ids even where the findings do not move.
+
+- **Every settings hash changes once.** The settings now carry a hash of the
+  policy's column of the per-rule preset table (:doc:`rule-presets`), so a
+  changed cell moves the hash of the runs that read with it. A default-preset
+  scan with no data model declared now records the LP64 model the preset
+  assumes, and where it came from. Each preset's hash, and every run id that
+  carries one, therefore differs from v0.6.x with nothing else changed.
+  Compare a run across the break by its commit and resolved settings, not by
+  its hash.
+- **Declined rules do not run.** A rule a preset declines while another
+  preset enforces it (``not_enforced`` in :doc:`rule-presets`) no longer
+  runs under that preset, and the run's settings name it. Its findings leave
+  that preset's runs instead of being reported and scored as an abstention.
+  A rule every preset declines still runs until it is removed, and preset
+  scoring still treats it as an abstention.
+- **The data model the default preset assumes.** Undeclared, the default
+  preset now credits LP64 widths where it used to credit only ISO C's. The
+  benchmarks declare their data model (each real-world manifest in
+  ``conf/realworld/``, and Juliet's settings), so their findings do not move
+  with it.
+
 Precision intervals
 -------------------
 

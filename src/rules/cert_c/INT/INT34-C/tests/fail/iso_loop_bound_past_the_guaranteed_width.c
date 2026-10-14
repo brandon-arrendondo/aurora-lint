@@ -1,7 +1,8 @@
 /*
  * Rule: INT34-C
  * Source: regression
- * Status: FAIL - no data model is declared
+ * Status: FAIL - the ISO C data model is declared
+ * Settings: data_model=iso
  *
  * ISO C guarantees unsigned int only 16 bits, so a loop that shifts it by up
  * to 31 shifts by its width or more on a conforming target: undefined. The

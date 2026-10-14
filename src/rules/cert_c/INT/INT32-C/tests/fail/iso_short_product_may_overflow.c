@@ -1,7 +1,8 @@
 /*
  * Rule: INT32-C
  * Source: regression
- * Status: FAIL - no data model is declared
+ * Status: FAIL - the ISO C data model is declared
+ * Settings: data_model=iso
  *
  * Both shorts promote to int, which ISO C guarantees only 16 bits: there
  * 300 * 300 = 90000 exceeds INT_MAX. On a declared LP64 target the same

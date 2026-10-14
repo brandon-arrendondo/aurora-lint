@@ -61,6 +61,20 @@ impl Preset {
         self == Preset::Pedantic
     }
 
+    /// The data model this preset assumes on a hosted target when none is
+    /// declared: `default`, the relaxed preset, assumes the common hosted
+    /// model (LP64), as a developer expects; `strict` credits only what ISO
+    /// C guarantees, and `pedantic` needs one declared and says so.
+    pub fn assumed_data_model(self) -> Option<DataModel> {
+        (self == Preset::Default).then_some(DataModel::Lp64)
+    }
+
+    /// Whether this preset needs the data model declared: undeclared, the
+    /// scan credits only ISO C's minimums and says so.
+    pub fn requires_data_model_declaration(self) -> bool {
+        self == Preset::Pedantic
+    }
+
     /// The preset whose policy is `policy`.
     pub fn of_policy(policy: Policy) -> Self {
         match policy {
@@ -81,9 +95,23 @@ pub enum Policy {
     Strict,
     /// Beyond the text where a rule's pedantic reading says so; otherwise
     /// the strict policy. A rule reads it through
-    /// [`AnalysisSettings::policy`], and [`DECLINED_RULES`] lets it decline
-    /// a rule outright.
+    /// [`AnalysisSettings::policy`], and a rule's [`PRESET_TABLE`] row may
+    /// decline it outright.
     Pedantic,
+}
+
+impl Policy {
+    /// Every policy, in the order of the axis ADR-0015 orders them on.
+    pub const ALL: [Policy; 3] = [Policy::Default, Policy::Strict, Policy::Pedantic];
+
+    /// The policy's place in [`Policy::ALL`].
+    pub const fn index(self) -> usize {
+        match self {
+            Policy::Default => 0,
+            Policy::Strict => 1,
+            Policy::Pedantic => 2,
+        }
+    }
 }
 
 /// Whether the code runs under a hosted or a freestanding implementation
@@ -203,6 +231,31 @@ impl EditionSource {
             EditionSource::Cli => "cli",
             EditionSource::Config => "config",
             EditionSource::CompileDb => "compile database",
+        }
+    }
+}
+
+/// Where the data model in force came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum DataModelSource {
+    /// The command line, the project's `[environment]` or a compile
+    /// database declared it.
+    Declared(EditionSource),
+    /// Nothing declared one, and the preset assumes it
+    /// ([`Preset::assumed_data_model`]).
+    Preset,
+    /// Nothing declared one, and the preset assumes none: only what ISO C
+    /// guarantees is credited.
+    Undeclared,
+}
+
+impl DataModelSource {
+    /// The words a report shows.
+    pub fn label(self) -> &'static str {
+        match self {
+            DataModelSource::Declared(source) => source.label(),
+            DataModelSource::Preset => "assumed by the preset",
+            DataModelSource::Undeclared => "undeclared",
         }
     }
 }
@@ -746,15 +799,49 @@ pub static OPTIONS: &[OptionSpec] = &[
     },
 ];
 
-/// Rules a policy declines to enforce, each with the policies that decline
-/// it. The presets are not nested (ADR-0015, 2026-10-07 amendment, Decision
-/// 3): any of them may take a rule out of play, as `default` does for a rule
-/// too noisy for everyday code or `pedantic` for one with no sound form,
-/// rather than run a weaker form of it. A declined rule does not run, whatever
-/// the manifest enables (`analyze_project` and the interactive scan withhold
-/// it), and the settings name it, so their hash moves with the table. A rule that only reads differently under a policy
-/// stays out of this table and branches on [`AnalysisSettings::policy`].
-pub static DECLINED_RULES: &[(&str, &[Policy])] = &[];
+/// One rule's row of the per-rule preset table: how each policy reads the
+/// rule, relative to its text, from the `[presets]` block of the rule's TOML
+/// (ADR-0015, 2026-10-07 amendment). `docs/rule-presets.rst` and
+/// `rules_templates/rule-presets.json` are generated from the same blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PresetRow {
+    /// The rule id.
+    pub rule: &'static str,
+    /// The cell under each policy, in [`Policy::ALL`] order: `as_written`,
+    /// `narrowed`, `widened`, `stricter` or `not_enforced`.
+    pub cells: [&'static str; 3],
+    /// Why: the block's `basis`, naming its rulings.
+    pub reason: &'static str,
+}
+
+impl PresetRow {
+    /// The cell `policy` reads the rule with.
+    pub fn cell(&self, policy: Policy) -> &'static str {
+        self.cells[policy.index()]
+    }
+
+    /// Whether `policy` declines the rule, so a scan under it does not run
+    /// it. The presets are not nested (ADR-0015, 2026-10-07 amendment,
+    /// Decision 3): any of them may take a rule out of play rather than run
+    /// a weaker form of it. A rule every preset declines is a decided cut,
+    /// not a preset's choice: removing the rule (ADR-0013 Decision 4) is how
+    /// it stops, and until then it runs under each of them.
+    pub fn declined_under(&self, policy: Policy) -> bool {
+        self.cell(policy) == NOT_ENFORCED && self.cells.iter().any(|c| *c != NOT_ENFORCED)
+    }
+}
+
+/// The cell of a policy that declines a rule.
+const NOT_ENFORCED: &str = "not_enforced";
+
+/// Every rule's row of the per-rule preset table, sorted by rule id; built by
+/// `build.rs` from the rules' `[presets]` blocks. A declined rule does not
+/// run, whatever the manifest enables (`analyze_project` and the interactive
+/// scan withhold it), and the settings name it and hash the policy's column,
+/// so a changed cell moves the hash of the settings it reads. A rule that
+/// only reads differently under a policy branches on
+/// [`AnalysisSettings::policy`].
+pub static PRESET_TABLE: &[PresetRow] = include!(concat!(env!("OUT_DIR"), "/preset_table.rs"));
 
 /// The rules whose findings a library contract can change: those that read
 /// `free_null_is_noop`, `realloc_null_is_malloc`, `stdlib_noreturn`,
@@ -769,10 +856,10 @@ pub static LIBRARY_CONTRACT_READERS: &[&str] = &[
 ];
 
 /// Whether `table` declines `rule_id` under `policy`.
-fn declined_in(table: &[(&str, &[Policy])], policy: Policy, rule_id: &str) -> bool {
+fn declined_in(table: &[PresetRow], policy: Policy, rule_id: &str) -> bool {
     table
         .iter()
-        .any(|(id, policies)| *id == rule_id && policies.contains(&policy))
+        .any(|row| row.rule == rule_id && row.declined_under(policy))
 }
 
 /// Look up an option by name.
@@ -1224,12 +1311,18 @@ pub struct AnalysisSettings {
     pub compile_facts: CompileFacts,
     /// Where the compile database's data model supplied the project's.
     pub data_model_from_compile_db: bool,
+    /// Where the data model in force came from.
+    pub data_model_source: DataModelSource,
+    /// The preset needs a data model declared, and none was: the scan
+    /// credits ISO C's minimums and says so.
+    pub data_model_declaration_missing: bool,
     /// Each fact the configuration and the compile database state
     /// differently, which the configuration wins.
     pub edition_conflicts: Vec<EditionConflict>,
     /// How `#include` names match files.
     pub include_names: IncludeNames,
-    /// The data model selected (`DataModel::Iso` unless declared).
+    /// The data model selected: the declared one, else the one the preset
+    /// assumes on a hosted target, else `DataModel::Iso`.
     pub data_model: DataModel,
     /// The resolved integer facts: the data model's bundle under the project's
     /// own keys under the command line. What the analyses query.
@@ -1376,6 +1469,27 @@ impl AnalysisSettings {
                 data_model_from_compile_db = true;
             }
         }
+        // Declared by nothing, the model is the preset's assumption about a
+        // hosted target, where there is one; a freestanding target has no
+        // common model to assume.
+        let data_model_source = match facts_config.filter(|e| e.data_model.is_some()) {
+            Some(e) if e.cli.contains("data_model") => {
+                DataModelSource::Declared(EditionSource::Cli)
+            }
+            Some(_) => DataModelSource::Declared(EditionSource::Config),
+            None if data_model_from_compile_db => {
+                DataModelSource::Declared(EditionSource::CompileDb)
+            }
+            None => match preset.assumed_data_model() {
+                Some(m) if environment == EnvironmentKind::Hosted => {
+                    data_model = m;
+                    DataModelSource::Preset
+                }
+                _ => DataModelSource::Undeclared,
+            },
+        };
+        let data_model_declaration_missing = data_model_source == DataModelSource::Undeclared
+            && preset.requires_data_model_declaration();
         let mut edition_conflicts = Vec::new();
         for (file, tu) in &compile_facts.per_tu {
             let file = compile_facts.relative(file).to_string();
@@ -1455,6 +1569,8 @@ impl AnalysisSettings {
             posix_assumed_by_preset: preset == Preset::Default,
             compile_facts,
             data_model_from_compile_db,
+            data_model_source,
+            data_model_declaration_missing,
             edition_conflicts,
             include_names,
             data_model,
@@ -1487,9 +1603,61 @@ impl AnalysisSettings {
         }
     }
 
-    /// Whether the policy in force declines `rule_id` ([`DECLINED_RULES`]).
+    /// Whether the policy in force declines `rule_id` ([`PRESET_TABLE`]).
     pub fn declines(&self, rule_id: &str) -> bool {
-        declined_in(DECLINED_RULES, self.policy, rule_id)
+        declined_in(PRESET_TABLE, self.policy, rule_id)
+    }
+
+    /// Why the policy in force declines `rule_id`, when it does.
+    pub fn decline_reason(&self, rule_id: &str) -> Option<&'static str> {
+        PRESET_TABLE
+            .iter()
+            .find(|row| row.rule == rule_id && row.declined_under(self.policy))
+            .map(|row| row.reason)
+    }
+
+    /// SHA-256 (hex) of the policy in force's column of [`PRESET_TABLE`]:
+    /// each rule's id and cell, one `RULE=cell` line each, in id order. Part
+    /// of the settings' identity, so a changed cell moves the hash of every
+    /// run that reads under that policy.
+    pub fn preset_table_hash(&self) -> String {
+        let column: String = PRESET_TABLE
+            .iter()
+            .map(|row| format!("{}={}\n", row.rule, row.cell(self.policy)))
+            .collect();
+        crate::utility::hash::sha256_hex(column.as_bytes())
+    }
+
+    /// When the preset needs the data model declared and none is: the notice
+    /// a scan prints, naming the widths it credits instead and how to
+    /// declare one.
+    pub fn data_model_notice(&self) -> Option<String> {
+        if !self.data_model_declaration_missing {
+            return None;
+        }
+        Some(
+            "the pedantic preset assumes no data model, and none is declared, so integer \
+             widths are only ISO C's minimums (int 16 bits, long 32); declare one with \
+             [environment] data_model = \"lp64\" (or ilp32, llp64), --set data_model=lp64, or a \
+             compile database that passes -m32 or -m64 for every unit."
+                .to_string(),
+        )
+    }
+
+    /// The text a scan prints for each rule the policy in force declines and
+    /// the manifest enables (`enabled`): the rule, the policy and why.
+    pub fn decline_notices(&self, enabled: impl Fn(&str) -> bool) -> Vec<String> {
+        self.declined_rules()
+            .into_iter()
+            .filter(|id| enabled(id))
+            .map(|id| {
+                format!(
+                    "the {} policy declines {id}, which does not run: {}",
+                    self.policy,
+                    self.decline_reason(id).unwrap_or_default()
+                )
+            })
+            .collect()
     }
 
     /// When the preset trusts only a declared C library and none is declared:
@@ -1630,10 +1798,10 @@ impl AnalysisSettings {
 
     /// Every rule the policy in force declines, sorted.
     pub fn declined_rules(&self) -> Vec<&'static str> {
-        let mut ids: Vec<&'static str> = DECLINED_RULES
+        let mut ids: Vec<&'static str> = PRESET_TABLE
             .iter()
-            .filter(|(_, policies)| policies.contains(&self.policy))
-            .map(|(id, _)| *id)
+            .filter(|row| row.declined_under(self.policy))
+            .map(|row| row.rule)
             .collect();
         ids.sort_unstable();
         ids
@@ -1671,6 +1839,8 @@ impl AnalysisSettings {
                     posix_version_source: self.posix_version_source,
                     compile_facts: self.compile_facts.clone(),
                     data_model_from_compile_db: self.data_model_from_compile_db,
+                    data_model_source: self.data_model_source,
+                    data_model_declaration_missing: self.data_model_declaration_missing,
                     edition_conflicts: self.edition_conflicts.clone(),
                     ..base
                 }
@@ -1687,6 +1857,25 @@ impl AnalysisSettings {
     pub fn to_json(&self) -> serde_json::Value {
         let mut v = self.identity_json();
         v["hash"] = serde_json::Value::String(self.settings_hash());
+        // What a reader needs and the hash already covers: the data model in
+        // force and where it came from, and why each declined rule is.
+        v["data_model_in_force"] = serde_json::json!({
+            "model": self.data_model,
+            "source": self.data_model_source.label(),
+        });
+        let declined: Vec<serde_json::Value> = self
+            .declined_rules()
+            .into_iter()
+            .map(|id| {
+                serde_json::json!({
+                    "rule": id,
+                    "reason": self.decline_reason(id).unwrap_or_default(),
+                })
+            })
+            .collect();
+        if !declined.is_empty() {
+            v["declined"] = serde_json::Value::Array(declined);
+        }
         v
     }
 
@@ -1757,6 +1946,10 @@ impl AnalysisSettings {
         if self.data_model_from_compile_db {
             sources.insert("data_model".into(), EditionSource::CompileDb.label().into());
         }
+        // A model the preset assumed is not one the project declared.
+        if self.data_model_source == DataModelSource::Preset {
+            sources.insert("data_model".into(), "preset".into());
+        }
         if !sources.is_empty() {
             identity["fact_sources"] = serde_json::Value::Object(sources);
         }
@@ -1781,7 +1974,11 @@ impl AnalysisSettings {
         if self.libc_declaration_missing {
             identity["libc_declared"] = serde_json::json!(false);
         }
-        // Likewise only when a model is declared.
+        // Likewise only when a model is declared or the preset assumes one;
+        // and, as with the library, say when the preset needed one declared.
+        if self.data_model_declaration_missing {
+            identity["data_model_declared"] = serde_json::json!(false);
+        }
         if self.data_model != DataModel::Iso {
             identity["data_model"] = serde_json::json!(self.data_model);
         }
@@ -1809,12 +2006,14 @@ impl AnalysisSettings {
             identity["prescan_scope"] = serde_json::json!(self.prescan_scope);
         }
         // Likewise present only when the policy in force declines a rule, so
-        // a row added to DECLINED_RULES moves the hash of the settings it
-        // changes the output of, and a report names what did not run.
+        // a report's settings name what did not run.
         let declined = self.declined_rules();
         if !declined.is_empty() {
             identity["declined_rules"] = serde_json::json!(declined);
         }
+        // How the policy in force reads every rule, so a changed cell of the
+        // table moves the hash of the settings that read with it.
+        identity["preset_table"] = serde_json::json!(self.preset_table_hash());
         identity
     }
 }
@@ -1932,9 +2131,13 @@ fn example_fact_value(fact: Fact) -> String {
 pub fn render_config_settings(current: &AnalysisSettings) -> String {
     // A data model a compile database supplied is that database's declaration,
     // not the project's: it is not written, so the file does not turn one
-    // source's fact into another's. Pass `--compile-commands` again.
+    // source's fact into another's. Pass `--compile-commands` again. One the
+    // preset assumed is not the project's either: the file restates it by
+    // naming the preset, and a project that declares it writes the line.
     let without_compile_db_model;
-    let current = if current.data_model_from_compile_db {
+    let current = if current.data_model_from_compile_db
+        || current.data_model_source == DataModelSource::Preset
+    {
         let mut c = current.clone();
         c.data_model = DataModel::Iso;
         c.facts = IntFacts::from_model(DataModel::Iso);
@@ -2041,12 +2244,20 @@ pub fn render_config_settings(current: &AnalysisSettings) -> String {
         "",
     );
     out.push_str(&format!(
-        "# The integer data model: {}. Unset (iso), only what ISO C guarantees is credited.\n",
+        "# The integer data model: {}. Unset, the default preset assumes lp64 on a hosted target;\n\
+         # strict and pedantic credit only what ISO C guarantees (iso), and pedantic says so.\n",
         DataModel::ALL.map(|m| m.name()).join(", ")
     ));
+    // A model the project or the command line declared is written, iso too
+    // where the preset would otherwise assume one; an assumed one is not.
+    let declared_model = matches!(
+        current.data_model_source,
+        DataModelSource::Declared(EditionSource::Cli | EditionSource::Config)
+    ) && (current.data_model != DataModel::Iso
+        || profile.assumed_data_model().is_some());
     config_entry(
         &mut out,
-        current.data_model != DataModel::Iso,
+        declared_model,
         "data_model",
         &format!("\"{}\"", current.data_model),
         "",
@@ -2229,7 +2440,7 @@ pub fn render_text(current: &AnalysisSettings) -> String {
     let strict = AnalysisSettings::preset(Preset::Strict);
     let pedantic = AnalysisSettings::preset(Preset::Pedantic);
     let mut out = format!(
-        "Current: policy={}, environment={}, libc={}, include_names={}, data_model={}\n\n",
+        "Current: policy={}, environment={}, libc={}, include_names={}, data_model={} ({})\n\n",
         current.policy,
         current.environment,
         current.libc.map_or_else(
@@ -2244,6 +2455,7 @@ pub fn render_text(current: &AnalysisSettings) -> String {
         ),
         current.include_names,
         current.data_model,
+        current.data_model_source.label(),
     );
     for (key, value) in [
         ("libc_version", current.libc_version.clone()),
@@ -2457,16 +2669,18 @@ pub fn render_rst() -> String {
          - Basis: Windows looks file names up case-insensitively unless a directory\n     \
          is marked case-sensitive (Microsoft Learn, \"Case sensitivity\").\n\n\
          ``data_model``\n   \
-         How wide the integer types are: ``iso``, the default, credits only what ISO C\n   \
-         guarantees (``CHAR_BIT`` at least 8, ``short`` and ``int`` at least 16 bits,\n   \
-         ``long`` at least 32, ``long long`` at least 64, and the exact width of\n   \
-         ``int32_t`` and its kind); ``ilp32``, ``lp64`` or ``llp64`` declares the\n   \
-         target's model, so ``INT_MAX``, ``sizeof(long)`` and the like have their\n   \
-         values there. Under ``iso`` a limit such as ``INT_MAX`` is unknown, a value is\n   \
-         proven to fit a type only within the guaranteed range, and a defect that\n   \
-         occurs on some conforming width is reported. Neither preset sets it.\n\n   \
+         How wide the integer types are: ``iso`` credits only what ISO C guarantees\n   \
+         (``CHAR_BIT`` at least 8, ``short`` and ``int`` at least 16 bits, ``long`` at\n   \
+         least 32, ``long long`` at least 64, and the exact width of ``int32_t`` and its\n   \
+         kind); ``ilp32``, ``lp64`` or ``llp64`` declares the target's model, so\n   \
+         ``INT_MAX``, ``sizeof(long)`` and the like have their values there. Under\n   \
+         ``iso`` a limit such as ``INT_MAX`` is unknown, a value is proven to fit a type\n   \
+         only within the guaranteed range, and a defect that occurs on some conforming\n   \
+         width is reported. Undeclared, the default preset assumes ``lp64`` on a hosted\n   \
+         target; strict and pedantic take ``iso``, and pedantic says it is missing.\n\n   \
          - Set with ``[environment] data_model`` or ``--data-model``\n   \
-         - Part of the settings hash only when not ``iso``\n   \
+         - Part of the settings hash when not ``iso``, with ``preset`` as its source\n     \
+         when the preset assumed it\n   \
          - Basis: C11 5.2.4.2.1 (minimum magnitudes), 6.3.1.1 (rank order) and\n     \
          7.20.1.1 (exact-width types); integer widths are otherwise\n     \
          implementation-defined.\n\n\
@@ -2655,17 +2869,21 @@ mod tests {
 
     #[test]
     fn exact_include_names_leave_every_preset_hash_as_it_was() {
-        // The presets' hashes with the current option table (`closed_program`
-        // added a declared option, which moved both; the strict preset's
-        // hosted environment and trusted _Noreturn moved strict's). Benchmark
-        // run ids carry them, so exact include-name matching must not move them.
+        // The presets' hashes with the current option table and preset table
+        // (each policy's column of the table, and the default preset's
+        // assumed data model, moved all three once). Benchmark run ids carry
+        // them, so exact include-name matching must not move them.
         assert_eq!(
             AnalysisSettings::preset(Preset::Default).settings_hash(),
-            "6a42bd4cf1e02bd610c081ad24a69ebfc4a214e67a7f338449fd9651ddf24c8f"
+            "e0d506276a8057cff648d6acfb9bf39a6bc658fb74d2776ba7feb25f4f8a80bb"
         );
         assert_eq!(
             AnalysisSettings::preset(Preset::Strict).settings_hash(),
-            "f017c4b47de7072fe7c1c988c050120878b17f27c0f81d0be329a453c68f1623"
+            "15b0ac02df540d6853765588555d6cbfd548cf3287ca21b3433db235d37bbeaf"
+        );
+        assert_eq!(
+            AnalysisSettings::preset(Preset::Pedantic).settings_hash(),
+            "cf60a9257d5c1de9add673f6871f6f4090bbbc5b18213cbfcecfc3e6b843ff26"
         );
         assert_eq!(
             with_names(Preset::Default, Some(IncludeNames::Exact)).settings_hash(),
@@ -2771,7 +2989,11 @@ mod tests {
 
     #[test]
     fn a_policy_declines_only_the_rules_its_row_names() {
-        let table: &[(&str, &[Policy])] = &[("MSC04-C", &[Policy::Default, Policy::Pedantic])];
+        let table = &[PresetRow {
+            rule: "MSC04-C",
+            cells: ["not_enforced", "as_written", "not_enforced"],
+            reason: "",
+        }];
         assert!(declined_in(table, Policy::Default, "MSC04-C"));
         assert!(!declined_in(table, Policy::Strict, "MSC04-C"));
         assert!(declined_in(table, Policy::Pedantic, "MSC04-C"));
@@ -2779,12 +3001,85 @@ mod tests {
     }
 
     #[test]
-    fn every_declined_rule_is_a_known_rule() {
-        let registry = crate::rules::RuleRegistry::new();
-        for (id, policies) in DECLINED_RULES {
-            assert!(registry.get_rule(id).is_some(), "{id} is not a rule");
-            assert!(!policies.is_empty(), "{id} names no policy");
+    fn a_rule_every_policy_declines_still_runs_until_it_is_removed() {
+        // A decided cut, which the rule's removal stops, not a preset.
+        let table = &[PresetRow {
+            rule: "MSC04-C",
+            cells: ["not_enforced"; 3],
+            reason: "",
+        }];
+        for policy in Policy::ALL {
+            assert!(!declined_in(table, policy, "MSC04-C"), "{policy}");
         }
+    }
+
+    #[test]
+    fn every_declined_rule_is_a_known_rule_with_a_reason() {
+        let registry = crate::rules::RuleRegistry::new();
+        for row in PRESET_TABLE {
+            if Policy::ALL.iter().any(|p| row.declined_under(*p)) {
+                assert!(
+                    registry.get_rule(row.rule).is_some(),
+                    "{} is not a rule",
+                    row.rule
+                );
+                assert!(!row.reason.is_empty(), "{} gives no reason", row.rule);
+            }
+        }
+    }
+
+    #[test]
+    fn the_runtime_declines_are_the_generated_tables_partial_declines() {
+        // bench reads rules_templates/rule-presets.json; the binary reads the
+        // same blocks through PRESET_TABLE. Both decline a rule under a
+        // preset exactly when its cell is not_enforced and another preset's
+        // is not (bench/rule_presets.py, `runtime_declined_rules`).
+        let json: serde_json::Value =
+            serde_json::from_str(include_str!("../../rules_templates/rule-presets.json")).unwrap();
+        let rules = json["rules"].as_object().unwrap();
+        assert_eq!(rules.len(), PRESET_TABLE.len());
+        for preset in Preset::ALL {
+            let name = preset.to_string();
+            let mut from_json: Vec<&str> = rules
+                .iter()
+                .filter(|(_, cells)| {
+                    cells[&name] == "not_enforced"
+                        && Preset::ALL
+                            .iter()
+                            .any(|p| cells[&p.to_string()] != "not_enforced")
+                })
+                .map(|(id, _)| id.as_str())
+                .collect();
+            from_json.sort_unstable();
+            assert_eq!(
+                AnalysisSettings::preset(preset).declined_rules(),
+                from_json,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_pedantic_preset_declines_the_rules_its_cells_decline() {
+        let pedantic = AnalysisSettings::preset(Preset::Pedantic);
+        assert!(pedantic.declines("ERR33-C"));
+        assert!(pedantic.decline_reason("ERR33-C").is_some());
+        let default = AnalysisSettings::preset(Preset::Default);
+        assert!(!default.declines("ERR33-C"));
+        assert!(default.decline_reason("ERR33-C").is_none());
+        // Declined under every preset, so a decided cut: it still runs.
+        assert!(!pedantic.declines("API03-C"));
+    }
+
+    #[test]
+    fn the_preset_tables_column_is_part_of_the_settings() {
+        let default = AnalysisSettings::preset(Preset::Default);
+        let strict = AnalysisSettings::preset(Preset::Strict);
+        assert_eq!(
+            default.to_json()["preset_table"],
+            serde_json::json!(default.preset_table_hash())
+        );
+        assert_ne!(default.preset_table_hash(), strict.preset_table_hash());
     }
 
     #[test]
@@ -2892,9 +3187,10 @@ mod tests {
     }
 
     #[test]
-    fn only_a_declared_data_model_is_named_and_hashed() {
-        let with = |model: Option<DataModel>| {
+    fn a_data_model_is_named_and_hashed_with_where_it_came_from() {
+        let with = |preset: Preset, model: Option<DataModel>| {
             AnalysisSettings::resolve(&SettingsConfig {
+                profile: Some(preset),
                 environment: Some(EnvironmentConfig {
                     data_model: model,
                     ..Default::default()
@@ -2903,15 +3199,36 @@ mod tests {
             })
             .unwrap()
         };
-        let base = AnalysisSettings::preset(Preset::Default);
-        assert_eq!(base.data_model, DataModel::Iso);
-        let iso = with(Some(DataModel::Iso));
-        assert_eq!(iso.settings_hash(), base.settings_hash());
+        // Strict credits only ISO C's minimums: declaring iso says nothing.
+        let strict = AnalysisSettings::preset(Preset::Strict);
+        assert_eq!(strict.data_model, DataModel::Iso);
+        assert_eq!(strict.data_model_source, DataModelSource::Undeclared);
+        let iso = with(Preset::Strict, Some(DataModel::Iso));
+        assert_eq!(iso.settings_hash(), strict.settings_hash());
         assert!(iso.to_json()["data_model"].is_null());
-        let lp64 = with(Some(DataModel::Lp64));
+        // Default assumes lp64, and says the preset did; a project that
+        // declares lp64 reads the same widths under other settings.
+        let base = AnalysisSettings::preset(Preset::Default);
+        assert_eq!(base.data_model, DataModel::Lp64);
+        assert_eq!(base.data_model_source, DataModelSource::Preset);
+        assert_eq!(base.to_json()["fact_sources"]["data_model"], "preset");
+        assert_eq!(
+            base.to_json()["data_model_in_force"],
+            serde_json::json!({"model": "lp64", "source": "assumed by the preset"})
+        );
+        let lp64 = with(Preset::Default, Some(DataModel::Lp64));
+        assert_eq!(lp64.facts, base.facts);
         assert_eq!(lp64.matching_preset(), Some(Preset::Default));
         assert_ne!(lp64.settings_hash(), base.settings_hash());
         assert_eq!(lp64.to_json()["data_model"], "lp64");
+        assert!(lp64.to_json().get("fact_sources").is_none());
+        // A declared iso wins over the assumption.
+        let declared_iso = with(Preset::Default, Some(DataModel::Iso));
+        assert_eq!(declared_iso.data_model, DataModel::Iso);
+        assert_eq!(
+            declared_iso.data_model_source,
+            DataModelSource::Declared(EditionSource::Config)
+        );
         let config: SettingsConfig =
             toml::from_str("[environment]\ndata_model = \"llp64\"\n").unwrap();
         assert_eq!(
@@ -3091,25 +3408,81 @@ mod tests {
             data_model: Some(DataModel::Lp64),
             ..Default::default()
         };
-        let mut config = config_with(Preset::Default, &[]);
-        config.compile_facts = Some(compile_facts(
-            &[("/proj/a.c", ilp32), ("/proj/b.c", lp64)],
-            2,
-        ));
-        assert_eq!(
-            AnalysisSettings::resolve(&config).unwrap().data_model,
-            DataModel::Iso
-        );
+        // Units that disagree declare no project-wide model, so the
+        // preset's assumption stands.
+        for (preset, model) in [
+            (Preset::Default, DataModel::Lp64),
+            (Preset::Strict, DataModel::Iso),
+        ] {
+            let mut config = config_with(preset, &[]);
+            config.compile_facts = Some(compile_facts(
+                &[("/proj/a.c", ilp32), ("/proj/b.c", lp64)],
+                2,
+            ));
+            assert_eq!(
+                AnalysisSettings::resolve(&config).unwrap().data_model,
+                model,
+                "{preset}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_default_preset_assumes_lp64_only_on_a_hosted_target() {
+        let freestanding = AnalysisSettings::resolve(&SettingsConfig {
+            environment: Some(EnvironmentConfig {
+                kind: Some(EnvironmentKind::Freestanding),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(freestanding.data_model, DataModel::Iso);
+        assert_eq!(freestanding.data_model_source, DataModelSource::Undeclared);
+        assert!(freestanding.data_model_notice().is_none());
+    }
+
+    #[test]
+    fn only_the_pedantic_preset_asks_for_an_undeclared_data_model() {
+        let pedantic = AnalysisSettings::preset(Preset::Pedantic);
+        assert_eq!(pedantic.data_model, DataModel::Iso);
+        let notice = pedantic.data_model_notice().unwrap();
+        assert!(notice.contains("data_model"), "{notice}");
+        assert_eq!(pedantic.to_json()["data_model_declared"], false);
+        for preset in [Preset::Default, Preset::Strict] {
+            let s = AnalysisSettings::preset(preset);
+            assert!(s.data_model_notice().is_none(), "{preset}");
+            assert!(s.to_json().get("data_model_declared").is_none(), "{preset}");
+        }
+        let mut declared = config_with(Preset::Pedantic, &["data_model=ilp32"]);
+        declared.compile_facts = None;
+        let declared = AnalysisSettings::resolve(&declared).unwrap();
+        assert!(declared.data_model_notice().is_none());
+        assert_eq!(declared.data_model, DataModel::Ilp32);
+    }
+
+    #[test]
+    fn a_written_configuration_does_not_declare_the_assumed_data_model() {
+        let text = render_config_settings(&AnalysisSettings::preset(Preset::Default));
+        assert!(!text.lines().any(|l| l.starts_with("data_model")), "{text}");
     }
 
     #[test]
     fn no_build_inputs_keep_every_presets_settings_hash() {
         // A scan that declares nothing and passes no compile database hashes
         // as it did before the facts carried a source.
+        // The default preset's assumed data model is the one source named.
         for preset in Preset::ALL {
             let s = AnalysisSettings::preset(preset);
             let json = s.to_json();
-            assert!(json.get("fact_sources").is_none(), "{preset}");
+            if preset == Preset::Default {
+                assert_eq!(
+                    json["fact_sources"],
+                    serde_json::json!({"data_model": "preset"})
+                );
+            } else {
+                assert!(json.get("fact_sources").is_none(), "{preset}");
+            }
             assert!(json.get("compile_db_facts").is_none(), "{preset}");
             assert!(json.get("posix_version").is_none(), "{preset}");
         }

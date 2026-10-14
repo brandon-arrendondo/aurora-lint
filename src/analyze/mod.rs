@@ -210,7 +210,7 @@ pub fn analyze_project(
     generated_includes: &[String],
 ) -> Result<AnalysisResults> {
     // A rule the policy in force declines never runs, whatever the
-    // manifest enables (`settings::DECLINED_RULES`).
+    // manifest enables (`settings::PRESET_TABLE`).
     let withheld;
     let declines = |id: &str| settings.declines(id);
     let manifest = if manifest.declined_rules(declines).is_empty() {

@@ -1,7 +1,8 @@
 /*
  * Rule: INT32-C
  * Source: regression
- * Status: FAIL - no data model is declared
+ * Status: FAIL - the ISO C data model is declared
+ * Settings: data_model=iso
  *
  * Every operand here is an int constant that fits ISO C's guaranteed 16-bit
  * int, so the arithmetic is int arithmetic and the results (1048576,

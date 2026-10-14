@@ -1,7 +1,8 @@
 /*
  * Rule: INT30-C
  * Source: regression
- * Status: FAIL - no data model is declared
+ * Status: FAIL - the ISO C data model is declared
+ * Settings: data_model=iso
  *
  * `0x3u` and `1U` fit the 16 bits ISO C guarantees unsigned int, so the shifts
  * and the sum are unsigned int arithmetic and wrap there. On a declared target

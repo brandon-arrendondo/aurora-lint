@@ -78,6 +78,7 @@ fn main() {
     // a pre-existing target/, since none of the narrower paths moved. Watch
     // build.rs itself first so its own edits always trigger a rerun.
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=build/presets.rs");
 
     // The commit a benchmark container build is building (bench/container.py
     // passes the host's HEAD), embedded in --version so the run can check,
@@ -136,16 +137,16 @@ fn main() {
 
 /// The names in `settings::OPTIONS` (src/settings/mod.rs). build.rs cannot
 /// link the crate it builds, so it reads the table's `name:` lines: those
-/// between `pub static OPTIONS` and `pub static DECLINED_RULES`.
+/// between `pub static OPTIONS` and `pub static PRESET_TABLE`.
 fn settings_option_names() -> Result<std::collections::BTreeSet<String>> {
     let src = fs::read_to_string("src/settings/mod.rs").context("read src/settings/mod.rs")?;
     let start = src
         .find("pub static OPTIONS")
         .context("src/settings/mod.rs has no `pub static OPTIONS`")?;
     let end = src[start..]
-        .find("pub static DECLINED_RULES")
+        .find("pub static PRESET_TABLE")
         .map(|i| start + i)
-        .context("src/settings/mod.rs has no `pub static DECLINED_RULES` after OPTIONS")?;
+        .context("src/settings/mod.rs has no `pub static PRESET_TABLE` after OPTIONS")?;
     let names: std::collections::BTreeSet<String> = src[start..end]
         .lines()
         .filter_map(|l| {
@@ -225,6 +226,13 @@ fn generate_rule_presets() -> Result<()> {
     let page = PathBuf::from("docs/rule-presets.rst");
     if fs::read_to_string(&page).ok().as_deref() != Some(rst.as_str()) {
         fs::write(&page, rst).context("write docs/rule-presets.rst")?;
+    }
+    // What the library declines at run time, and what its settings hash.
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").context("OUT_DIR not set")?);
+    let rust = presets::to_rust(&table);
+    let generated = out_dir.join("preset_table.rs");
+    if fs::read_to_string(&generated).ok().as_deref() != Some(rust.as_str()) {
+        fs::write(&generated, rust).context("write OUT_DIR/preset_table.rs")?;
     }
     println!("cargo:rerun-if-changed=src/settings/mod.rs");
     check_fixture_matrix(&table)

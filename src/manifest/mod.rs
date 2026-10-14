@@ -491,7 +491,7 @@ impl RuleManifest {
 
     /// The IDs of the enabled rules `declines` names, sorted: pass
     /// `|id| settings.declines(id)` for the policy in force
-    /// (`settings::DECLINED_RULES`).
+    /// (`settings::PRESET_TABLE`).
     pub fn declined_rules(&self, declines: impl Fn(&str) -> bool) -> Vec<String> {
         let mut declined: Vec<String> = self
             .enabled_rules()
