@@ -339,6 +339,13 @@ search path it was looked up on. An <code class="docutils literal notranslate"><
 proves is never compiled (<code class="docutils literal notranslate"><span class="pre">#if</span> <span class="pre">0</span></code>) is counted, not listed, and one written
 only inside a system header (often a platform arm, such as a NetWare-only
 include in a Linux library header) is listed apart from the project’s own.</p>
+<p>Includes are resolved on every scan, flags or none. A <code class="docutils literal notranslate"><span class="pre">&quot;quoted&quot;</span></code> include is
+looked up in the directory of the file that names it first, as a compiler
+does, so a plain <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">src/</span></code> still knows which of the project’s
+headers each file reaches. An <code class="docutils literal notranslate"><span class="pre">&lt;angle&gt;</span></code> include is looked up only on the
+search path, so a scan without one reports each of them (<code class="docutils literal notranslate"><span class="pre">stdio.h</span></code>
+included) as not found, and its stderr line says to pass <code class="docutils literal notranslate"><span class="pre">-I</span></code> or
+<code class="docutils literal notranslate"><span class="pre">--compile-commands</span></code>.</p>
 <p>Headers that live in the compiler’s built-in directory or the multiarch
 directory rather than in <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> itself (the <code class="docutils literal notranslate"><span class="pre">bits/</span></code>, <code class="docutils literal notranslate"><span class="pre">gnu/</span></code> and
 <code class="docutils literal notranslate"><span class="pre">asm/</span></code> trees and the freestanding headers such as <code class="docutils literal notranslate"><span class="pre">stddef.h</span></code> and
@@ -540,7 +547,7 @@ whose definitions would otherwise count as another build of the functions
 the product calls.</p></li>
 </ul>
 <p>A header in an excluded tree that a scanned file <code class="docutils literal notranslate"><span class="pre">#include</span></code>s is still read
-through <code class="docutils literal notranslate"><span class="pre">-I</span></code> include resolution: it is part of that file’s translation unit.
+through include resolution: it is part of that file’s translation unit.
 A manifest’s <code class="docutils literal notranslate"><span class="pre">[scope]</span></code> table takes the same three lists
 (<code class="docutils literal notranslate"><span class="pre">exclude_all</span></code>, <code class="docutils literal notranslate"><span class="pre">report_exclude</span></code>, <code class="docutils literal notranslate"><span class="pre">prescan_exclude</span></code>) and adds to the
 command line’s. A prescan cache (<code class="docutils literal notranslate"><span class="pre">--save-prescan</span></code>) records which files it

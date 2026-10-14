@@ -255,6 +255,14 @@ proves is never compiled (``#if 0``) is counted, not listed, and one written
 only inside a system header (often a platform arm, such as a NetWare-only
 include in a Linux library header) is listed apart from the project's own.
 
+Includes are resolved on every scan, flags or none. A ``"quoted"`` include is
+looked up in the directory of the file that names it first, as a compiler
+does, so a plain ``aurora-lint src/`` still knows which of the project's
+headers each file reaches. An ``<angle>`` include is looked up only on the
+search path, so a scan without one reports each of them (``stdio.h``
+included) as not found, and its stderr line says to pass ``-I`` or
+``--compile-commands``.
+
 Headers that live in the compiler's built-in directory or the multiarch
 directory rather than in ``/usr/include`` itself (the ``bits/``, ``gnu/`` and
 ``asm/`` trees and the freestanding headers such as ``stddef.h`` and
@@ -453,7 +461,7 @@ Two options leave a file out of only one half:
   the product calls.
 
 A header in an excluded tree that a scanned file ``#include``\ s is still read
-through ``-I`` include resolution: it is part of that file's translation unit.
+through include resolution: it is part of that file's translation unit.
 A manifest's ``[scope]`` table takes the same three lists
 (``exclude_all``, ``report_exclude``, ``prescan_exclude``) and adds to the
 command line's. A prescan cache (``--save-prescan``) records which files it
