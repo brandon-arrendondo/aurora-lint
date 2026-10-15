@@ -313,6 +313,7 @@ impl CertRule for Exp34C {
                         &effective_summaries,
                         &all_macros,
                         &settings,
+                        &Declared::new(root),
                         &mut violations,
                         &mut reported_vars,
                     );
@@ -397,8 +398,9 @@ impl<'s> ReportedSites<'s> {
     }
 }
 
-fn check_dereferences_cfg(
-    node: &Node,
+#[allow(clippy::too_many_arguments)]
+fn check_dereferences_cfg<'t>(
+    node: &Node<'t>,
     source: &str,
     analysis: &NullAnalysisResult,
     cfg: &FunctionCfg,
@@ -406,6 +408,7 @@ fn check_dereferences_cfg(
     summaries: &(impl SummaryLookup + ?Sized),
     macros: &HashMap<String, FunctionMacro>,
     settings: &AnalysisSettings,
+    declared: &Declared<'t>,
     violations: &mut Vec<RuleViolation>,
     reported_vars: &mut ReportedSites<'_>,
 ) {
@@ -459,6 +462,7 @@ fn check_dereferences_cfg(
                 summaries,
                 macros,
                 settings,
+                declared,
                 violations,
                 reported_vars,
             ),
@@ -640,8 +644,9 @@ fn check_field_deref_cfg(
 /// possibly-null pointer is not itself a violation, since C has no contract
 /// semantics. A `...` slot has no such parameter index to seed, so it stays
 /// a call-site check (see `check_callsite_null_args`).
-fn check_call_expression_cfg(
-    node: &Node,
+#[allow(clippy::too_many_arguments)]
+fn check_call_expression_cfg<'t>(
+    node: &Node<'t>,
     source: &str,
     analysis: &NullAnalysisResult,
     cfg: &FunctionCfg,
@@ -649,6 +654,7 @@ fn check_call_expression_cfg(
     summaries: &(impl SummaryLookup + ?Sized),
     macros: &HashMap<String, FunctionMacro>,
     settings: &AnalysisSettings,
+    declared: &Declared<'t>,
     violations: &mut Vec<RuleViolation>,
     reported_vars: &mut ReportedSites<'_>,
 ) {
@@ -660,7 +666,7 @@ fn check_call_expression_cfg(
     if function.kind() == "identifier" {
         let func_name = ast_utils::get_node_text_owned(&function, source);
         if !reported_vars.contains(&func_name, &function)
-            && !is_provably_not_a_pointer(&function, &func_name, source)
+            && !declared.is_provably_not_a_pointer(&function, &func_name, source)
             && is_unsafe_at(&func_name, node, source, analysis, cfg, body, summaries)
         {
             reported_vars.insert(&func_name, &function);
@@ -715,6 +721,7 @@ fn check_call_expression_cfg(
                     cfg,
                     body,
                     summaries,
+                    declared,
                     violations,
                     reported_vars,
                 );
@@ -742,6 +749,7 @@ fn check_call_expression_cfg(
                 cfg,
                 body,
                 summaries,
+                declared,
                 violations,
                 reported_vars,
             );
@@ -764,20 +772,23 @@ fn check_call_expression_cfg(
     {
         if let Some(args_node) = node.child_by_field_name("arguments") {
             check_callsite_null_args(
-                &func_name, &args_node, source, analysis, cfg, body, summaries, violations,
+                &func_name, &args_node, source, analysis, cfg, body, summaries, declared,
+                violations,
             );
         }
     }
 }
 
-fn check_function_arguments_cfg(
+#[allow(clippy::too_many_arguments)]
+fn check_function_arguments_cfg<'t>(
     func_name: &str,
-    args: &Node,
+    args: &Node<'t>,
     source: &str,
     analysis: &NullAnalysisResult,
     cfg: &FunctionCfg,
     body: &Node,
     summaries: &(impl SummaryLookup + ?Sized),
+    declared: &Declared<'t>,
     violations: &mut Vec<RuleViolation>,
     reported_vars: &mut ReportedSites<'_>,
 ) {
@@ -813,7 +824,7 @@ fn check_function_arguments_cfg(
         if arg.kind() == "identifier" {
             let var_name = ast_utils::get_node_text_owned(arg, source);
             if !reported_vars.contains(&var_name, arg)
-                && !is_provably_not_a_pointer(arg, &var_name, source)
+                && !declared.is_provably_not_a_pointer(arg, &var_name, source)
                 && is_unsafe_at(&var_name, arg, source, analysis, cfg, body, summaries)
             {
                 reported_vars.insert(&var_name, arg);
@@ -847,16 +858,17 @@ fn check_function_arguments_cfg(
 /// applies a statement whole, and the macro's own output-parameter credit
 /// would otherwise already have marked the argument non-null.
 #[allow(clippy::too_many_arguments)]
-fn check_macro_dereferenced_arguments(
+fn check_macro_dereferenced_arguments<'t>(
     macro_name: &str,
-    invocation: &Node,
-    args: &Node,
+    invocation: &Node<'t>,
+    args: &Node<'t>,
     through: &[usize],
     source: &str,
     analysis: &NullAnalysisResult,
     cfg: &FunctionCfg,
     body: &Node,
     summaries: &(impl SummaryLookup + ?Sized),
+    declared: &Declared<'t>,
     violations: &mut Vec<RuleViolation>,
     reported_vars: &mut ReportedSites<'_>,
 ) {
@@ -871,7 +883,7 @@ fn check_macro_dereferenced_arguments(
         }
         let var_name = ast_utils::get_node_text_owned(arg, source);
         if reported_vars.contains(&var_name, arg)
-            || is_provably_not_a_pointer(arg, &var_name, source)
+            || declared.is_provably_not_a_pointer(arg, &var_name, source)
             || !is_unsafe_at(
                 &var_name, invocation, source, analysis, cfg, body, summaries,
             )
@@ -988,14 +1000,16 @@ fn formatted_io_shape(func_name: &str) -> Option<(usize, FormatReader)> {
 /// `v*printf` as its format (`iso_format_param`). A variadic that is no such
 /// formatter (`mp_clear_multi`, or one with its own engine) is not reported
 /// here at all: nothing shows it dereferences its tail.
-fn check_callsite_null_args(
+#[allow(clippy::too_many_arguments)]
+fn check_callsite_null_args<'t>(
     callee_name: &str,
-    args: &Node,
+    args: &Node<'t>,
     source: &str,
     analysis: &NullAnalysisResult,
     cfg: &FunctionCfg,
     body: &Node,
     summaries: &(impl SummaryLookup + ?Sized),
+    declared: &Declared<'t>,
     violations: &mut Vec<RuleViolation>,
 ) {
     let Some(callee_summary) = summaries.get(callee_name) else {
@@ -1070,7 +1084,7 @@ fn check_callsite_null_args(
         };
 
         let var_name = ast_utils::get_node_text_owned(arg, source);
-        if is_provably_not_a_pointer(arg, &var_name, source) {
+        if declared.is_provably_not_a_pointer(arg, &var_name, source) {
             continue;
         }
         let state = null_state::get_var_state_at(
@@ -1218,6 +1232,37 @@ fn is_null_safe_function(name: &str, settings: &AnalysisSettings) -> bool {
 // Declared-type verification
 // ---------------------------------------------------------------------------
 
+/// Identifiers resolved from the tree's root, each block's declarations
+/// read once for the whole function ([`ast_utils::ScopeDeclarations`]): a
+/// `parent()` climb per identifier read every enclosing block again, so a
+/// check at every call of a long function was quadratic in its length.
+struct Declared<'t> {
+    root: Node<'t>,
+    declarations: ast_utils::ScopeDeclarations<'t>,
+}
+
+impl<'t> Declared<'t> {
+    fn new(root: Node<'t>) -> Self {
+        Self {
+            root,
+            declarations: Default::default(),
+        }
+    }
+
+    /// True when `ident_node`'s occurrence of `name` provably resolves to a
+    /// non-pointer declared type ([`identifier_is_declared_pointer_in`]) —
+    /// the signal `check_function_arguments_cfg`, `check_callsite_null_args`,
+    /// and the function-pointer-call check use to skip a candidate outright
+    /// rather than let a type-confused dataflow state report it as a null
+    /// pointer.
+    fn is_provably_not_a_pointer(&self, ident_node: &Node<'t>, name: &str, source: &str) -> bool {
+        self.declarations
+            .resolve_identifier_binding_in(&self.root, ident_node, name, source)
+            .and_then(|binding| declared_pointer(binding, name, source))
+            == Some(false)
+    }
+}
+
 /// True when `name`'s nearest lexical declaration provably resolves to a
 /// pointer type; `false` when it provably does NOT (a plain scalar or
 /// array); `None` when the binding can't be resolved at all (macro-expanded
@@ -1235,19 +1280,10 @@ fn is_null_safe_function(name: &str, settings: &AnalysisSettings) -> bool {
 /// "possibly-NULL pointer" findings against plain integers. Re-deriving the
 /// argument's actual declared type at the call site, independent of that
 /// dataflow-internal set, catches this before it's reported. Uses the shared
-/// `ast_utils::resolve_identifier_binding` primitive rather than
-/// hand-rolling a new declaration lookup.
-fn identifier_is_declared_pointer(ident_node: &Node, name: &str, source: &str) -> Option<bool> {
-    declared_pointer(
-        ast_utils::resolve_identifier_binding(ident_node, name, source)?,
-        name,
-        source,
-    )
-}
-
-/// [`identifier_is_declared_pointer`] for a caller holding the tree's root,
-/// which resolves without climbing `Node::parent()`: a per-condition null
-/// test on deeply nested code made the climbing version cubic in depth.
+/// `ast_utils::resolve_identifier_binding_in` primitive rather than
+/// hand-rolling a new declaration lookup, from `root`, which resolves
+/// without climbing `Node::parent()`: a per-condition null test on deeply
+/// nested code made the climbing version cubic in depth.
 fn identifier_is_declared_pointer_in(
     root: &Node,
     ident_node: &Node,
@@ -1346,15 +1382,6 @@ fn declaration_prefix_type_text(decl_node: &Node, source: &str) -> String {
         }
     }
     parts.join(" ")
-}
-
-/// True when `ident_node`'s occurrence of `name` provably resolves to a
-/// non-pointer declared type — the signal `check_function_arguments_cfg`,
-/// `check_callsite_null_args`, and the function-pointer-call check use to
-/// skip a candidate outright rather than let a type-confused dataflow state
-/// report it as a null pointer.
-fn is_provably_not_a_pointer(ident_node: &Node, name: &str, source: &str) -> bool {
-    identifier_is_declared_pointer(ident_node, name, source) == Some(false)
 }
 
 // ---------------------------------------------------------------------------
