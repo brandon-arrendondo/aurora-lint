@@ -192,7 +192,15 @@ findings:
 - ARR30-C alias-taint passes (4) and cast-alias passes (3);
 - MEM33-C gives up on expressions over 200 characters;
 - MEM35-C 10-ancestor walk;
-- EXP03-C depth 20.
+- EXP03-C depth 20;
+- INT34-C `OPERAND_TYPE_DEPTH` = 32, on how deep the shifted operand's type
+  is followed through parentheses, casts, subscripts and arithmetic, and how
+  many block-scope typedefs are followed. Past it the operand's type is
+  unknown, so a constant amount is reported only when it reaches the width
+  of every standard integer type or is negative: findings can only drop.
+  Without it a machine-generated sum thousands of terms deep ran the rule
+  past its time limit; hand-written operands nest a few levels, so 32 leaves
+  ample room.
 
 Two rules slice text by byte offset and can panic on non-ASCII source:
 FIO17-C's 200-character window and ARR00-C's 50-character lookback. Under

@@ -1,6 +1,11 @@
 /*
  * Rule: INT34-C
- * Status: PASS - Shift by hex literal is compile-time checkable
+ * Status: PASS - Hex and binary literal amounts fold below the precision
+ * Settings: data_model=lp64
+ *
+ * A literal amount is judged by its value. On a declared LP64 target an
+ * unsigned int has 32 bits, so 16 and 4 are in range; under ISO C's
+ * guaranteed 16 bits, 16 is not.
  */
 
 unsigned int f(unsigned int val) {

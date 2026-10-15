@@ -13,6 +13,8 @@ use crate::manifest::Severity;
 use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::data_model::{IntWidth, Rank};
+use crate::utility::cert_c::declarator_utils;
+use crate::utility::cert_c::expr_type;
 use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
 use lang_parsing_substrate::query;
 use std::cell::{Cell, RefCell};
@@ -62,6 +64,215 @@ pub struct Int34C {
     /// The integer data model the settings credit: how wide a shifted
     /// operand is guaranteed to be.
     data_model: Cell<IntFacts>,
+}
+
+/// How deep [`Int34C::resolve_operand_width`] follows an operand through
+/// parentheses, subscripts and arithmetic before calling its type unknown,
+/// and how many block-scope typedefs it follows. Without it a
+/// machine-generated sum thousands of terms deep ran the rule past its time
+/// limit. Past this depth the operand is untyped like any other the rule
+/// cannot type, so findings can only drop.
+const OPERAND_TYPE_DEPTH: usize = 32;
+
+/// A type spelling with qualifiers and storage class dropped.
+fn strip_type_qualifiers(text: &str) -> String {
+    text.split_whitespace()
+        .filter(|t| {
+            !matches!(
+                *t,
+                "const" | "volatile" | "static" | "extern" | "register" | "_Atomic" | "restrict"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// What a typedef name visible at a use denotes, when a block enclosing the
+/// use defines it.
+enum BlockTypedef<'a> {
+    /// `typedef T name;`: the definition, and its type `T` as spelled.
+    Alias(Node<'a>, String),
+    /// A pointer, array or function type under that name: not an integer.
+    Other,
+}
+
+/// The typedef `name` that a use at `at` sees from an enclosing block: from
+/// the innermost block outward, the last definition in that block before
+/// the use. Preprocessor arms and `case` or labeled statements open no
+/// scope, so a definition under one counts for its block; arms that leave
+/// the name meaning different types, or defined in some builds and not in
+/// others, make it unknown ([`BlockTypedef::Other`]). File scope is left to
+/// the project-wide map. `None` when no enclosing block defines the name.
+fn block_scope_typedef<'a>(at: &Node<'a>, name: &str, source: &str) -> Option<BlockTypedef<'a>> {
+    let mut cur = at.parent();
+    while let Some(block) = cur {
+        if block.kind() == "compound_statement" {
+            let mut reach = Reach {
+                at: at.start_byte(),
+                name,
+                source,
+                depth: 0,
+                too_deep: false,
+            };
+            let mut seen = vec![Reaching::Undefined];
+            reach.items(&scope_items(&block), &mut seen);
+            if reach.too_deep {
+                return Some(BlockTypedef::Other);
+            }
+            if seen.iter().all(|r| matches!(r, Reaching::Undefined)) {
+                cur = block.parent();
+                continue;
+            }
+            return Some(match seen.as_slice() {
+                [Reaching::Alias(def, spelled)] => BlockTypedef::Alias(*def, spelled.clone()),
+                _ => BlockTypedef::Other,
+            });
+        }
+        cur = block.parent();
+    }
+    None
+}
+
+/// What a typedef name stands for after a run of block items, in one build.
+#[derive(Clone)]
+enum Reaching<'a> {
+    /// No definition in this block yet: the enclosing scope's meaning.
+    Undefined,
+    /// `typedef T name;`, with `T` as spelled, qualifiers dropped.
+    Alias(Node<'a>, String),
+    /// A pointer, array or function type.
+    Other,
+}
+
+/// The walk behind [`block_scope_typedef`]: the set of meanings `name` can
+/// have at byte `at`, over every combination of preprocessor arms.
+struct Reach<'s> {
+    at: usize,
+    name: &'s str,
+    source: &'s str,
+    depth: usize,
+    too_deep: bool,
+}
+
+impl<'s> Reach<'s> {
+    /// Apply `items`, in order, up to the use.
+    fn items<'a>(&mut self, items: &[Node<'a>], seen: &mut Vec<Reaching<'a>>) {
+        if self.depth > OPERAND_TYPE_DEPTH {
+            self.too_deep = true;
+            return;
+        }
+        self.depth += 1;
+        for item in items {
+            if item.start_byte() >= self.at {
+                break;
+            }
+            let holds_use = item.end_byte() > self.at;
+            match item.kind() {
+                "type_definition" if !holds_use => {
+                    if let Some(meaning) = self.definition(item) {
+                        *seen = vec![meaning];
+                    }
+                }
+                "case_statement" | "labeled_statement" => self.items(&scope_items(item), seen),
+                "preproc_if" | "preproc_ifdef" => {
+                    if holds_use {
+                        // The arm holding the use is the one compiled with it.
+                        if let Some(arm) = arms(item).into_iter().find(|arm| {
+                            arm.child_by_field_name("alternative")
+                                .is_none_or(|alt| self.at < alt.start_byte())
+                        }) {
+                            self.items(&scope_items(&arm), seen);
+                        }
+                    } else {
+                        let before = seen.clone();
+                        let mut after = Vec::new();
+                        let mut has_else = false;
+                        for arm in arms(item) {
+                            has_else |= arm.kind() == "preproc_else";
+                            let mut taken = before.clone();
+                            self.items(&scope_items(&arm), &mut taken);
+                            after.extend(taken);
+                        }
+                        if !has_else {
+                            after.extend(before);
+                        }
+                        *seen = merge(after);
+                    }
+                }
+                _ => {}
+            }
+            if holds_use {
+                break;
+            }
+        }
+        self.depth -= 1;
+    }
+
+    /// What `def` makes `name` mean, when it defines `name`.
+    fn definition<'a>(&self, def: &Node<'a>) -> Option<Reaching<'a>> {
+        let declarator = declarator_utils::typedef_declarators(def)
+            .into_iter()
+            .find(|d| {
+                declarator_utils::TypedefShape::of(d, self.source)
+                    .name
+                    .as_deref()
+                    == Some(self.name)
+            })?;
+        if declarator.kind() != "type_identifier" {
+            return Some(Reaching::Other);
+        }
+        let ty = def.child_by_field_name("type")?;
+        Some(Reaching::Alias(
+            *def,
+            strip_type_qualifiers(ast_utils::get_node_text(&ty, self.source)),
+        ))
+    }
+}
+
+/// The meanings in `all` with duplicates dropped: one per spelling, keeping
+/// the last definition.
+fn merge(all: Vec<Reaching<'_>>) -> Vec<Reaching<'_>> {
+    let mut out: Vec<Reaching<'_>> = Vec::new();
+    for r in all {
+        let same = out.iter().position(|o| match (o, &r) {
+            (Reaching::Undefined, Reaching::Undefined) | (Reaching::Other, Reaching::Other) => true,
+            (Reaching::Alias(_, a), Reaching::Alias(_, b)) => a == b,
+            _ => false,
+        });
+        match same {
+            Some(i) => out[i] = r,
+            None => out.push(r),
+        }
+    }
+    out
+}
+
+/// An `#if`/`#ifdef` chain's arms in order: the group itself, then each
+/// `#elif`/`#elifdef`/`#else` reached through `alternative`.
+fn arms<'a>(group: &Node<'a>) -> Vec<Node<'a>> {
+    let mut out = vec![*group];
+    let mut cur = *group;
+    while let Some(alt) = cur.child_by_field_name("alternative") {
+        out.push(alt);
+        cur = alt;
+    }
+    out
+}
+
+/// The items a block, arm, `case` or labeled statement holds: its named
+/// children, less a condition, name, `case` value, label or the next arm.
+fn scope_items<'a>(node: &Node<'a>) -> Vec<Node<'a>> {
+    let skip: Vec<usize> = ["condition", "name", "alternative", "value", "label"]
+        .iter()
+        .filter_map(|f| node.child_by_field_name(f))
+        .map(|n| n.id())
+        .collect();
+    let mut cursor = node.walk();
+    let found: Vec<Node<'a>> = node
+        .named_children(&mut cursor)
+        .filter(|c| !skip.contains(&c.id()))
+        .collect();
+    found
 }
 
 impl Int34C {
@@ -162,7 +373,21 @@ impl CertRule for Int34C {
 
 impl Int34C {
     fn check_recursive(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        for binary_node in query::find_descendants_of_kind(*node, "binary_expression") {
+        // Whether each node is in a preprocessor condition is carried down
+        // the walk, not climbed to from every operator.
+        for (binary_node, preproc) in ast_utils::descendants_of_kinds_with(
+            *node,
+            &["binary_expression"],
+            ast_utils::InPreprocCondition::default(),
+            ast_utils::InPreprocCondition::step,
+        ) {
+            // `#if (1 << 40) > 0` is evaluated by the preprocessor, whose
+            // arithmetic is in intmax_t (C11 6.10.1p4): there is no `int`
+            // operand for the amount to exceed. The guarded body is ordinary
+            // code and stays checked.
+            if preproc.holds(binary_node) {
+                continue;
+            }
             if let Some(operator) = ast_utils::get_binary_operator(&binary_node, source) {
                 if operator == "<<" || operator == ">>" {
                     self.check_shift_operation(&binary_node, source, operator, violations);
@@ -186,18 +411,52 @@ impl Int34C {
             let right_text = ast_utils::get_node_text(&right_node, source);
             let left_text = ast_utils::get_node_text(&left_node, source);
 
-            // The bound every range gate below compares against. C11 6.5.7p3
-            // makes the hazard relative to the LEFT operand's width, so a
-            // 64-bit operand shifted by [32, 63] is defined behaviour and
-            // must not be reported as if it were `uint32_t`.
-            let width = self.operand_bit_width(&left_node, source);
+            // The bound every range gate below compares against: the
+            // precision of the LEFT operand once promoted (CERT INT34-C uses
+            // precision, not width). C11 6.5.7p3 makes the hazard relative
+            // to that operand, so a 64-bit operand shifted by [32, 63] is
+            // defined behaviour and must not be reported as if it were
+            // `uint32_t`.
+            let width = self.operand_precision(&left_node, source);
 
-            // If the shift amount is a non-negative integer literal the rule is
-            // trivially satisfied: negative-shift cannot happen, and width-overflow
-            // is a compiler-visible property of the constant (compilers warn on
-            // e.g. `x >> 64`).  INT34-C is only meaningful for *variable* shift
-            // amounts whose range cannot be determined at compile time.
-            if self.is_non_negative_integer_literal(&right_node, source) {
+            // A constant amount -- a literal, a `#define`, an enumerator,
+            // `sizeof`, or arithmetic over those -- is judged by its value
+            // when that folds to one. One that does not fold (its macro
+            // lives in a header the scan did not read) cannot be judged and
+            // is left alone rather than guessed at.
+            //
+            // The value is held to the operand's precision only when the
+            // operand's type is known: the `int` floor above is a safe bound
+            // for a proof that a varying amount fits, but reporting `x >> 32`
+            // against it would assert a 32-bit `x` the rule never saw -- a
+            // `uint64_t` struct field, or a typedef whose header spells it
+            // through a macro. An operand of unknown type is reported only
+            // for an amount no standard integer type can take.
+            if self.is_non_negative_integer_literal(&right_node, source)
+                || self.is_compile_time_constant(&right_node, source)
+            {
+                let folded = const_eval::try_evaluate_range(
+                    &right_node,
+                    source,
+                    &self.current_macros.borrow(),
+                    &VarRangeMap::new(),
+                );
+                if let Some(value) = folded.filter(|r| r.min == r.max).map(|r| r.min) {
+                    let known = self.resolved_operand_precision(&left_node, source);
+                    let bound = known.unwrap_or_else(|| {
+                        i64::from(self.data_model.get().min_width(Rank::LongLong))
+                    });
+                    if value < 0 || value >= bound {
+                        self.report_constant_amount(
+                            node,
+                            &right_node,
+                            value,
+                            known.is_some().then_some(bound),
+                            source,
+                            violations,
+                        );
+                    }
+                }
                 return;
             }
 
@@ -214,17 +473,6 @@ impl Int34C {
             // own solution uses, and the one real code writes when it has
             // already thought about this exact hazard.
             if self.shift_amount_masked(&right_node, source) {
-                return;
-            }
-
-            // Whole shift amount is fixed at compile time (a `#define`, an
-            // enumerator, `sizeof`, or arithmetic over those), even when its
-            // value can't be folded because the header defining it wasn't
-            // parsed. Same reasoning the literal case above already applies:
-            // a constant shift amount is a compiler-visible property, not a
-            // runtime hazard, and INT34-C is only meaningful for shift
-            // amounts that vary at run time.
-            if self.is_compile_time_constant(&right_node, source) {
                 return;
             }
 
@@ -328,6 +576,58 @@ impl Int34C {
                 "Check that '{}' is >= 0 and < the bit width of the operand before shifting",
                 right_text
             )),
+            ..Default::default()
+        });
+    }
+
+    /// A constant amount whose folded `value` is negative or reaches the
+    /// promoted operand's precision `bound`, or, with no `bound`, the width
+    /// of every standard integer type.
+    fn report_constant_amount(
+        &self,
+        node: &Node,
+        amount: &Node,
+        value: i64,
+        bound: Option<i64>,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let operation = ast_utils::get_node_text(node, source);
+        let amount_text = ast_utils::get_node_text(amount, source);
+        let (message, suggestion) = match bound {
+            Some(bound) => (
+                format!(
+                    "Shift operation '{}' by '{}' ({}) is outside [0, {}), the precision of its promoted left operand",
+                    operation, amount_text, value, bound
+                ),
+                format!(
+                    "Shift by less than {} bits, or shift a wider or unsigned operand",
+                    bound
+                ),
+            ),
+            None if value < 0 => (
+                format!(
+                    "Shift operation '{}' by '{}' ({}) is by a negative amount",
+                    operation, amount_text, value
+                ),
+                "Shift by a non-negative amount".to_string(),
+            ),
+            None => (
+                format!(
+                    "Shift operation '{}' by '{}' ({}) reaches the width of every standard integer type",
+                    operation, amount_text, value
+                ),
+                "Shift by less than the operand's precision".to_string(),
+            ),
+        };
+        violations.push(RuleViolation {
+            rule_id: self.rule_id().to_string(),
+            severity: self.severity(),
+            message,
+            file_path: String::new(),
+            line: node.start_position().row + 1,
+            column: node.start_position().column + 1,
+            suggestion: Some(suggestion),
             ..Default::default()
         });
     }
@@ -496,34 +796,68 @@ impl Int34C {
         range.min >= 0 && range.max < width
     }
 
-    /// Bit width of the shift's left operand once promoted, as the bound
+    /// Precision of the shift's left operand once promoted, as the bound
     /// every range gate compares against: the width its type is guaranteed
-    /// under the data model (C11 5.2.4.2.1 unless one is declared), and no
-    /// less than `int`'s, which a narrower operand promotes to.
+    /// under the data model (C11 5.2.4.2.1 unless one is declared), less the
+    /// sign bit of a signed type. An operand narrower than `int` promotes to
+    /// a signed `int`, so `c << 31` on a char has precision 31 on a 32-bit
+    /// `int` and 15 under ISO C's 16.
     ///
     /// `int`'s guaranteed width is the floor, not a guess: an operand the
     /// rule cannot type (a struct field, a call, an unknown typedef) keeps
-    /// the narrowest bound, so widening is only ever the result of positive
+    /// the narrowest width, so widening is only ever the result of positive
     /// evidence. The reverse default would assert safety for `uint32_t x >>
-    /// 40`. Under ISO C's widths that floor is 16 (`unsigned x >> 20` is
+    /// 40`. Its sign is not known either, and only a type shown to be
+    /// signed loses the sign bit: an untyped `reg >> 31` is not reported on
+    /// a guess. Under ISO C's widths that floor is 16 (`unsigned x >> 20` is
     /// undefined where `int` is 16 bits) and a `long` is 32; a declared LP64
     /// target makes them 32 and 64.
-    fn operand_bit_width(&self, left: &Node, source: &str) -> i64 {
-        let model = self.data_model.get();
-        let int = model.min_width(Rank::Int);
-        let width = self
-            .resolve_operand_width(left, source, 0)
-            .map_or(int, |w| w.min.max(int));
-        i64::from(width)
+    fn operand_precision(&self, left: &Node, source: &str) -> i64 {
+        self.resolved_operand_precision(left, source)
+            .unwrap_or_else(|| i64::from(self.data_model.get().min_width(Rank::Int)))
     }
 
-    /// Declared width of the integer object `node` denotes, after peeling
-    /// `unwrap` pointer/array levels (`p[i]`, `*p`). `None` for anything the
-    /// rule cannot resolve to an integer scalar.
-    fn resolve_operand_width(&self, node: &Node, source: &str, unwrap: usize) -> Option<IntWidth> {
+    /// The promoted left operand's precision when the rule can type it, and
+    /// `None` when [`Self::operand_precision`] would fall back to the floor.
+    fn resolved_operand_precision(&self, left: &Node, source: &str) -> Option<i64> {
+        let (unsigned, w) = self.promoted_operand_width(left, source, 0)?;
+        Some(i64::from(w.min) - i64::from(!unsigned))
+    }
+
+    /// The left operand's type after integer promotion: anything narrower
+    /// than `int` becomes a signed `int`.
+    fn promoted_operand_width(
+        &self,
+        node: &Node,
+        source: &str,
+        depth: usize,
+    ) -> Option<(bool, IntWidth)> {
+        let model = self.data_model.get();
+        let (unsigned, w) = self.resolve_operand_width(node, source, 0, depth)?;
+        if w.min < model.min_width(Rank::Int) {
+            return Some((false, model.width_of(Rank::Int)));
+        }
+        Some((unsigned, w))
+    }
+
+    /// Whether the integer object `node` denotes is declared unsigned, and
+    /// its declared width, after peeling `unwrap` pointer/array levels
+    /// (`p[i]`, `*p`). `None` for anything the rule cannot resolve to an
+    /// integer scalar, or nested more than [`OPERAND_TYPE_DEPTH`] deep.
+    fn resolve_operand_width(
+        &self,
+        node: &Node,
+        source: &str,
+        unwrap: usize,
+        depth: usize,
+    ) -> Option<(bool, IntWidth)> {
+        if depth > OPERAND_TYPE_DEPTH {
+            return None;
+        }
+        let depth = depth + 1;
         match node.kind() {
             "parenthesized_expression" => {
-                self.resolve_operand_width(&node.named_child(0)?, source, unwrap)
+                self.resolve_operand_width(&node.named_child(0)?, source, unwrap, depth)
             }
             "cast_expression" => {
                 let ty = node.child_by_field_name("type")?;
@@ -531,24 +865,16 @@ impl Int34C {
                 if text.contains('*') {
                     return None;
                 }
-                self.width_of_type_text(text)
+                self.width_of_type_text(text, &ty, source)
             }
             "number_literal" => {
-                // `1ULL << n` / `1UL << n`: the suffix fixes the operand's type.
-                // An unsuffixed literal is `int` (or wider only by value), so
-                // it takes the floor.
-                let text = ast_utils::get_node_text(node, source);
-                let suffix: String = text
-                    .chars()
-                    .rev()
-                    .take_while(|c| matches!(c, 'u' | 'U' | 'l' | 'L'))
-                    .collect();
+                // `1ULL << n`, `0xffffffff << n`: a constant's suffix and
+                // value fix its type (C11 6.4.4.1), so a hexadecimal constant
+                // too large for `int` is an `unsigned int`.
                 let model = self.data_model.get();
-                match suffix.matches(['l', 'L']).count() {
-                    0 => None,
-                    1 => Some(model.width_of(Rank::Long)),
-                    _ => Some(model.width_of(Rank::LongLong)),
-                }
+                let text = ast_utils::get_node_text(node, source);
+                let (unsigned, rank) = expr_type::integer_literal_rank(text, model)?;
+                Some((unsigned, model.width_of(rank)))
             }
             "identifier" => {
                 let name = ast_utils::get_node_text(node, source);
@@ -563,45 +889,96 @@ impl Int34C {
                 if declarator.kind() != "identifier" {
                     return None;
                 }
-                self.width_of_type_text(&ast_utils::declaration_type_text(&decl, source))
+                self.width_of_type_text(
+                    &ast_utils::declaration_type_text(&decl, source),
+                    &decl,
+                    source,
+                )
             }
             "subscript_expression" => {
                 let arg = node.child_by_field_name("argument")?;
-                self.resolve_operand_width(&arg, source, unwrap + 1)
+                self.resolve_operand_width(&arg, source, unwrap + 1, depth)
+            }
+            // `(x & 0xFF00000000000000ULL) >> 56`: an arithmetic or bitwise
+            // result has the common type of its promoted operands, so both
+            // must be known -- unless one is wider than every standard type,
+            // which the other then converts to (`(__uint128_t)a * b`). A
+            // shift's result is its promoted left operand.
+            "binary_expression" if unwrap == 0 => {
+                let op = ast_utils::get_binary_operator(node, source).unwrap_or_default();
+                let left = node.child_by_field_name("left")?;
+                match op {
+                    "<<" | ">>" => self.promoted_operand_width(&left, source, depth),
+                    "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" => {
+                        let right = node.child_by_field_name("right")?;
+                        let widest = self.data_model.get().min_width(Rank::LongLong);
+                        let l = self.promoted_operand_width(&left, source, depth);
+                        let r = self.promoted_operand_width(&right, source, depth);
+                        if let Some(extended) = [l, r]
+                            .into_iter()
+                            .flatten()
+                            .find(|(_, w)| w.rank.is_none() && w.min > widest)
+                        {
+                            return Some(extended);
+                        }
+                        let ((lu, lw), (ru, rw)) = (l?, r?);
+                        Some(match lw.min.cmp(&rw.min) {
+                            std::cmp::Ordering::Greater => (lu, lw),
+                            std::cmp::Ordering::Less => (ru, rw),
+                            std::cmp::Ordering::Equal => (lu || ru, lw),
+                        })
+                    }
+                    _ => None,
+                }
             }
             "pointer_expression" if ast_utils::is_dereference_expression(node, source) => {
                 let arg = node.child_by_field_name("argument")?;
-                self.resolve_operand_width(&arg, source, unwrap + 1)
+                self.resolve_operand_width(&arg, source, unwrap + 1, depth)
             }
             _ => None,
         }
     }
 
-    /// Width of a declared type spelling with qualifiers and storage class
-    /// dropped and typedefs followed project-wide, as the data model knows it.
+    /// Width of the type spelled `text` at `at`, with qualifiers and storage
+    /// class dropped, as the data model knows it. A typedef name is first
+    /// looked up in the blocks enclosing `at`, since a block-scope
+    /// `typedef unsigned long long word;` hides a file-scope `word` of
+    /// another width; past those it is followed project-wide.
     /// A bare `long` is 64 bits on LP64 and 32 on LLP64; unless a model is
     /// declared, only its guaranteed 32 is credited -- a shift safety claim
     /// has to be provable, not inferred from the target the benchmark
     /// happens to run on.
-    fn width_of_type_text(&self, text: &str) -> Option<IntWidth> {
-        let base = text
-            .split_whitespace()
-            .filter(|t| {
-                !matches!(
-                    *t,
-                    "const"
-                        | "volatile"
-                        | "static"
-                        | "extern"
-                        | "register"
-                        | "_Atomic"
-                        | "restrict"
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+    fn width_of_type_text(&self, text: &str, at: &Node, source: &str) -> Option<(bool, IntWidth)> {
+        let mut base = strip_type_qualifiers(text);
+        let mut at = *at;
+        for _ in 0..OPERAND_TYPE_DEPTH {
+            if base.contains(char::is_whitespace) {
+                break;
+            }
+            match block_scope_typedef(&at, &base, source) {
+                Some(BlockTypedef::Alias(def, spelled)) => {
+                    base = strip_type_qualifiers(&spelled);
+                    at = def;
+                }
+                Some(BlockTypedef::Other) => return None,
+                None => break,
+            }
+        }
         let resolved = resolve_typedef_chain(&base, &self.typedef_types.borrow());
-        ast_utils::integer_type_width(&resolved, self.data_model.get())
+        // GCC and Clang's 128-bit extended integer types, which no data
+        // model spells.
+        if resolved.contains("__int128") || resolved.contains("__uint128") {
+            let unsigned = resolved.contains("unsigned") || resolved.contains("__uint128");
+            return Some((
+                unsigned,
+                IntWidth {
+                    rank: None,
+                    min: 128,
+                    max: Some(128),
+                },
+            ));
+        }
+        self.data_model.get().spelled_width(&resolved)
     }
 
     fn is_likely_unsigned(&self, var_name: &str, node: &Node, source: &str) -> bool {

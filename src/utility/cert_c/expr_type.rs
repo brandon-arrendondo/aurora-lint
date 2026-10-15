@@ -1031,6 +1031,16 @@ fn split_integer_literal(lower: &str) -> Option<(u128, bool, bool, Rank)> {
 /// `int` is 32 bits (a conforming `int` of some width in between is not
 /// modelled). `None` for a float or a malformed constant.
 pub fn integer_literal_width(text: &str, model: IntFacts) -> Option<u32> {
+    integer_literal_rank(text, model).map(|(_, rank)| model.min_width(rank))
+}
+
+/// Whether an integer constant is unsigned, and its rank, on the narrowest
+/// target `model` allows: the first type of C11 6.4.4.1p5's list for its
+/// suffix and base whose guaranteed range holds it. A hexadecimal or octal
+/// constant too large for the signed type takes the unsigned one of the same
+/// rank, so `0xffffffff` is an `unsigned int` where `int` is 32 bits. `None`
+/// for a float or a malformed constant.
+pub fn integer_literal_rank(text: &str, model: IntFacts) -> Option<(bool, Rank)> {
     let lower = text.replace('\'', "").to_ascii_lowercase();
     let hex = lower.starts_with("0x");
     let is_float = if hex {
@@ -1045,10 +1055,15 @@ pub fn integer_literal_width(text: &str, model: IntFacts) -> Option<u32> {
     [Rank::Int, Rank::Long, Rank::LongLong]
         .into_iter()
         .filter(|rank| *rank >= min_rank)
-        .map(|rank| model.min_width(rank))
-        .find(|w| {
-            (!unsigned_suffix && value < (1u128 << (w - 1)))
-                || ((unsigned_suffix || !decimal) && value < (1u128 << w))
+        .find_map(|rank| {
+            let w = model.min_width(rank);
+            if !unsigned_suffix && value < (1u128 << (w - 1)) {
+                Some((false, rank))
+            } else if (unsigned_suffix || !decimal) && value < (1u128 << w) {
+                Some((true, rank))
+            } else {
+                None
+            }
         })
 }
 

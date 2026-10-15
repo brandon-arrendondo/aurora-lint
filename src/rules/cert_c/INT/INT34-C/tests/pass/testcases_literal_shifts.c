@@ -1,7 +1,12 @@
 /*
  * Rule: INT34-C
  * Source: testcases
- * Status: PASS - Shifts by various non-negative integer literal formats
+ * Status: PASS - Literal amounts in every format fold below the precision
+ * Settings: data_model=lp64
+ *
+ * A literal amount is judged by its value, so each format has to fold. On a
+ * declared LP64 target an unsigned int has 32 bits, so 16 is in range;
+ * under ISO C's guaranteed 16 bits, it is not.
  */
 
 /* Hex literal shift amount */
