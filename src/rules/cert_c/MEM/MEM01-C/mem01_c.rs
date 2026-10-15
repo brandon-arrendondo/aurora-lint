@@ -26,6 +26,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self as cfg_mod, FunctionCfg};
+use crate::analyze::check_macros::collect_macro_definitions;
 use crate::analyze::context::ScopedTable;
 use crate::analyze::context::{IncludeClosure, ProjectContext};
 use crate::analyze::dataflow::find_node_at_range;
@@ -888,10 +889,12 @@ fn call_can_read_dangling(
 /// may be dereferenced for other fields, compared with null or passed to a
 /// deallocator; any other use of it (a read of the member, passing it on,
 /// returning it, dereferencing it as a whole, a local of the same name) is
-/// taken as a read, as is any macro in the body whose replacement spells the
-/// parameter, a field that shares storage with the member in a union, and a
-/// file-scope pointer variable (the caller may have stored the object there). A
-/// callee with no single body in this file or a macro is not
+/// taken as a read, as is any use of a name the file defines as a macro (also as a
+/// field name), a field that shares storage with the member in a union and any
+/// object declared at file scope (the caller may have stored the object there).
+/// A definition under a conditional counts only where the call sits in the same
+/// arm or every arm of the chain defines the callee. A callee with no single
+/// body in this file or a macro is not
 /// proven, so the call still counts as handing the dangling value on. A member
 /// path is followed by its first field: `c->list.head` handed over as `c` is
 /// read by a callee only through `c->list.head` or a prefix of it, and a callee
@@ -965,19 +968,19 @@ fn callee_leaves_member_alone(
     if definitions.is_empty() {
         return false;
     }
-    // A definition under a conditional leaves builds without it, where the
-    // callee is whatever a live declaration alone names: not a body to read.
-    if definitions.iter().any(|d| under_conditional(d, source))
-        && query::find_descendants_of_kind(root, "declaration")
-            .into_iter()
-            .any(|d| declares_function(&d, &callee, source) && !dead.contains_node(&d))
+    // A definition under a conditional leaves builds without it: it is a body
+    // for the call only where the call sits in the arm that holds it, or every
+    // arm of the chain defines the callee.
+    if !definitions
+        .iter()
+        .all(|d| definition_reaches_call(d, call, &definitions, source))
     {
         return false;
     }
     let scope = CalleeScope {
-        macros: macros_spelling_param_names(source),
+        macros: collect_macro_definitions(source).into_keys().collect(),
         unions: union_field_sets(root, source),
-        globals: file_scope_pointer_variables(root, source),
+        globals: file_scope_variables(root, source),
     };
     // Every definition, for one in each arm of a conditional.
     definitions.iter().all(|definition| {
@@ -994,133 +997,175 @@ fn callee_leaves_member_alone(
     })
 }
 
-/// What a callee's body is read against besides its own text: the macros
-/// whose replacement spells a name, the fields that share storage, and the
-/// pointer variables any function can reach.
+/// What a callee's body is read against besides its own text.
 struct CalleeScope {
-    /// Macro name -> identifiers its definitions (any arm) spell.
-    macros: HashMap<String, HashSet<String>>,
-    /// The direct field names of each union the file declares.
+    /// Every macro the file defines, in any arm and at any depth. A name of
+    /// one used in the callee may expand to a read of the parameter or the
+    /// member (as an operand or as the field name), so such a callee is not
+    /// proven.
+    macros: HashSet<String>,
+    /// The field names that share storage, one set per union the file
+    /// declares, anonymous members flattened in.
     unions: Vec<HashSet<String>>,
-    /// File-scope variables of pointer type.
+    /// Every object declared at file scope: the caller may have stored the
+    /// object in one for the callee to read.
     globals: HashSet<String>,
 }
 
-/// Whether `node` sits in a branch of an `#if` chain that is not an include
-/// guard.
-fn under_conditional(node: &Node, source: &str) -> bool {
+const CONDITIONAL_KINDS: [&str; 5] = [
+    "preproc_if",
+    "preproc_ifdef",
+    "preproc_elif",
+    "preproc_elifdef",
+    "preproc_else",
+];
+
+/// The `#if` chain arms around `node`, innermost first; an include guard is no
+/// alternative and is left out.
+fn enclosing_arms<'a>(node: &Node<'a>, source: &str) -> Vec<Node<'a>> {
+    let mut arms = Vec::new();
     let mut current = *node;
     while let Some(parent) = current.parent() {
-        if matches!(
-            parent.kind(),
-            "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef" | "preproc_else"
-        ) && !ast_utils::is_include_guard(&parent, source)
+        if CONDITIONAL_KINDS.contains(&parent.kind())
+            && !ast_utils::is_include_guard(&parent, source)
         {
-            return true;
+            arms.push(parent);
         }
         current = parent;
     }
-    false
+    arms
 }
 
-/// Whether `declaration` declares a function called `name` (a prototype).
-fn declares_function(declaration: &Node, name: &str, source: &str) -> bool {
-    declaration
-        .children_by_field_name("declarator", &mut declaration.walk())
-        .any(|d| {
-            let mut inner = d;
-            loop {
-                if inner.kind() == "function_declarator" {
-                    return ast_utils::get_identifier_from_declarator(&inner, source) == name;
-                }
-                match crate::utility::cert_c::declarator_utils::inner_declarator(&inner) {
-                    Some(next) => inner = next,
-                    None => return false,
-                }
-            }
+/// Whether the call can only be built with `definition` in the file: every arm
+/// around the definition also encloses the call, or the outermost arm chain
+/// the call is outside of defines the callee in each of its arms.
+fn definition_reaches_call(
+    definition: &Node,
+    call: &Node,
+    definitions: &[Node],
+    source: &str,
+) -> bool {
+    let around_call = enclosing_arms(call, source);
+    let outside: Vec<Node> = enclosing_arms(definition, source)
+        .into_iter()
+        .filter(|arm| !around_call.iter().any(|c| c.id() == arm.id()))
+        .collect();
+    let Some(outermost) = outside.last() else {
+        return true;
+    };
+    // The head of the chain the outermost arm belongs to.
+    let mut head = *outermost;
+    while let Some(parent) = head.parent() {
+        if CONDITIONAL_KINDS.contains(&parent.kind())
+            && parent.child_by_field_name("alternative") == Some(head)
+        {
+            head = parent;
+        } else {
+            break;
+        }
+    }
+    chain_defines_in_every_arm(&head, definitions, source)
+}
+
+/// Whether each arm of the chain starting at `head`, an `#else` arm last,
+/// holds a definition of its own or a nested chain that does.
+fn chain_defines_in_every_arm(head: &Node, definitions: &[Node], source: &str) -> bool {
+    let mut arm = Some(*head);
+    let mut has_else = false;
+    while let Some(current) = arm {
+        has_else = current.kind() == "preproc_else";
+        let holds = definitions.iter().any(|d| {
+            enclosing_arms(d, source)
+                .first()
+                .is_some_and(|inner| inner.id() == current.id())
+        }) || nested_chain_heads(&current, source)
+            .iter()
+            .any(|nested| chain_defines_in_every_arm(nested, definitions, source));
+        if !holds {
+            return false;
+        }
+        arm = current.child_by_field_name("alternative");
+    }
+    has_else
+}
+
+/// The `#if` chains written directly in `arm` (not in a chain nested deeper).
+fn nested_chain_heads<'a>(arm: &Node<'a>, source: &str) -> Vec<Node<'a>> {
+    ["preproc_if", "preproc_ifdef"]
+        .iter()
+        .flat_map(|kind| query::find_descendants_of_kind(*arm, kind))
+        .filter(|n| n.id() != arm.id())
+        .filter(|n| {
+            enclosing_arms(n, source)
+                .first()
+                .is_some_and(|inner| inner.id() == arm.id())
         })
-}
-
-/// For each macro the file defines in any arm (a `#define` inside a function
-/// body included), the identifiers its replacement list spells, closed over
-/// macros that spell other macros.
-fn macros_spelling_param_names(source: &str) -> HashMap<String, HashSet<String>> {
-    use crate::analyze::check_macros::{collect_macro_definitions, MacroDefinition};
-    let mut spelled: HashMap<String, HashSet<String>> = HashMap::new();
-    for (name, definitions) in collect_macro_definitions(source) {
-        let entry = spelled.entry(name).or_default();
-        for definition in definitions {
-            match definition {
-                MacroDefinition::Function { body, .. } | MacroDefinition::Object { body } => {
-                    entry.extend(identifiers_in(&body));
-                }
-                // Unreadable: it may spell anything.
-                MacroDefinition::Opaque => {
-                    entry.insert("*".to_string());
-                }
-            }
-        }
-    }
-    loop {
-        let snapshot = spelled.clone();
-        let mut grew = false;
-        for names in spelled.values_mut() {
-            let inherited: Vec<String> = names
-                .iter()
-                .filter_map(|n| snapshot.get(n))
-                .flat_map(|s| s.iter().cloned())
-                .collect();
-            for n in inherited {
-                grew |= names.insert(n);
-            }
-        }
-        if !grew {
-            return spelled;
-        }
-    }
-}
-
-fn identifiers_in(text: &str) -> Vec<String> {
-    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .filter(|w| !w.is_empty() && !w.starts_with(|c: char| c.is_ascii_digit()))
-        .map(str::to_string)
         .collect()
 }
 
-/// The field names declared directly in each union of the file: storage
-/// shared by those fields.
+/// The field names declared in each union of the file. A member that is itself
+/// an anonymous struct or union lives in the same storage, so its fields join
+/// the set (more than needed for an anonymous struct, which only errs toward a
+/// read).
 fn union_field_sets(root: Node, source: &str) -> Vec<HashSet<String>> {
+    fn collect(body: &Node, source: &str, out: &mut HashSet<String>) {
+        for field in body
+            .named_children(&mut body.walk())
+            .filter(|f| f.kind() == "field_declaration")
+        {
+            for declarator in field.children_by_field_name("declarator", &mut field.walk()) {
+                if let Some(name) =
+                    query::find_first_descendant(declarator, |n| n.kind() == "field_identifier")
+                        .or_else(|| (declarator.kind() == "field_identifier").then_some(declarator))
+                {
+                    out.insert(get_node_text(&name, source).to_string());
+                }
+            }
+            if let Some(inner) = field
+                .child_by_field_name("type")
+                .filter(|t| matches!(t.kind(), "struct_specifier" | "union_specifier"))
+                .and_then(|t| t.child_by_field_name("body"))
+            {
+                if field
+                    .children_by_field_name("declarator", &mut field.walk())
+                    .next()
+                    .is_none()
+                {
+                    collect(&inner, source, out);
+                }
+            }
+        }
+    }
     query::find_descendants_of_kind(root, "union_specifier")
         .into_iter()
         .filter_map(|u| u.child_by_field_name("body"))
         .map(|body| {
-            body.named_children(&mut body.walk())
-                .filter(|f| f.kind() == "field_declaration")
-                .flat_map(|f| {
-                    f.children_by_field_name("declarator", &mut f.walk())
-                        .filter_map(|d| {
-                            query::find_first_descendant(d, |n| n.kind() == "field_identifier")
-                                .or_else(|| (d.kind() == "field_identifier").then_some(d))
-                        })
-                        .map(|n| get_node_text(&n, source).to_string())
-                        .collect::<Vec<_>>()
-                })
-                .collect()
+            let mut fields = HashSet::new();
+            collect(&body, source, &mut fields);
+            fields
         })
         .collect()
 }
 
-/// The file-scope variables declared with a pointer: another function may have
-/// been handed the object through one.
-fn file_scope_pointer_variables(root: Node, source: &str) -> HashSet<String> {
+/// Every object the file declares at file scope (a function or a typedef is
+/// none).
+fn file_scope_variables(root: Node, source: &str) -> HashSet<String> {
     ast_utils::top_level_items(root)
         .filter(|item| item.kind() == "declaration")
+        .filter(|item| {
+            !item.named_children(&mut item.walk()).any(|c| {
+                c.kind() == "storage_class_specifier" && get_node_text(&c, source) == "typedef"
+            })
+        })
         .flat_map(|item| {
             item.children_by_field_name("declarator", &mut item.walk())
-                .filter(|d| {
-                    d.kind() == "pointer_declarator"
-                        || query::find_first_descendant(*d, |n| n.kind() == "pointer_declarator")
-                            .is_some()
+                .map(|d| {
+                    let d = if d.kind() == "init_declarator" {
+                        d.child_by_field_name("declarator").unwrap_or(d)
+                    } else {
+                        d
+                    };
+                    d
                 })
                 .filter(|d| {
                     query::find_first_descendant(*d, |n| n.kind() == "function_declarator")
@@ -1175,18 +1220,15 @@ fn parameter_never_reads_member(
         .split(['-', '.', '>'])
         .filter(|f| !f.is_empty())
         .collect();
-    // A macro that spells the parameter reads it wherever it is used, and a
-    // pointer variable of the file may hold the object.
-    let hidden_read = query::find_descendants_of_kind(*body, "identifier")
-        .into_iter()
-        .map(|i| get_node_text(&i, source))
-        .any(|name| {
-            scope.globals.contains(name)
-                || scope
-                    .macros
-                    .get(name)
-                    .is_some_and(|spelled| spelled.contains(param) || spelled.contains("*"))
-        });
+    // Any macro in the body may expand to a read, also as a field name, and
+    // any object of the file may hold the object.
+    let hidden_read = ["identifier", "field_identifier"]
+        .iter()
+        .flat_map(|kind| query::find_descendants_of_kind(*body, kind))
+        .any(|n| scope.macros.contains(get_node_text(&n, source)))
+        || query::find_descendants_of_kind(*body, "identifier")
+            .into_iter()
+            .any(|n| scope.globals.contains(get_node_text(&n, source)));
     if hidden_read {
         return false;
     }
@@ -1257,14 +1299,19 @@ fn access_misses_member(ident: &Node, member: &[&str], source: &str, scope: &Cal
     }
     // `p->a[i]` and `(*p->a)` read `a`; the chain ends where the subscript
     // or dereference begins, which is a prefix of the member either way.
+    // Only the first place the two paths differ matters, and not when the two
+    // fields share storage.
     !chain.is_empty()
-        && chain.iter().zip(member).any(|(accessed, wanted)| {
-            accessed != wanted
-                && !scope
+        && chain
+            .iter()
+            .zip(member)
+            .find(|(accessed, wanted)| accessed != wanted)
+            .is_some_and(|(accessed, wanted)| {
+                !scope
                     .unions
                     .iter()
                     .any(|u| u.contains(accessed) && u.contains(*wanted))
-        })
+            })
 }
 
 // ---------------------------------------------------------------------------
