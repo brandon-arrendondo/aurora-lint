@@ -36,7 +36,7 @@ use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::nonzero_facts;
 use lang_parsing_substrate::query;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -64,9 +64,11 @@ impl CertRule for Str30C {
         let mut seen = HashSet::new();
         let mut violations = Vec::new();
         for write in trace.writes_under(node) {
-            if seen.contains(&write.site.start_byte())
-                || !trace.literal_derived(&write.pointer, &write.site, Seed::ALL, 0)
-            {
+            if seen.contains(&write.site.start_byte()) {
+                continue;
+            }
+            trace.begin_write();
+            if !trace.literal_derived(&write.pointer, &write.site, Seed::ALL, 0) {
                 continue;
             }
             seen.insert(write.site.start_byte());
@@ -182,6 +184,14 @@ struct Seed<'s> {
 }
 
 impl Seed<'_> {
+    /// What distinguishes one question from another, for [`Trace::variables`].
+    fn key(&self) -> (Option<(usize, String)>, bool) {
+        (
+            self.param.map(|(func, name)| (func, name.to_string())),
+            self.const_sources,
+        )
+    }
+
     /// Every source counts: a write's own question.
     const ALL: Seed<'static> = Seed {
         param: None,
@@ -207,7 +217,58 @@ struct Trace<'a> {
     /// Per declarator: the plain assignments to the variable it declares,
     /// as (assignment, value).
     assignments: RefCell<HashMap<usize, Vec<(Node<'a>, Node<'a>)>>>,
+    /// Per (declarator, point, question): what [`Self::variable_derived`]
+    /// answered from that variable's reaching values, and with how much depth
+    /// left. A variable assigned from itself many times (`p = p + 1;` in
+    /// several branches of a loop) reaches the same questions again by many
+    /// paths, and without this each one is re-asked to the depth limit:
+    /// exponential in the number of assignments.
+    variables: RefCell<HashMap<VariableKey, Answers>>,
+    /// The variable questions being answered, by key, with their position on
+    /// that stack. A question that reaches itself answers "not derived" there:
+    /// its own pass over the same values finds whatever that would.
+    asking: RefCell<HashMap<VariableKey, usize>>,
+    /// The shallowest stack position a question being answered was cut short
+    /// at by reaching one already being asked; `usize::MAX` for none. A
+    /// question that cut short a question below it is not the answer it would
+    /// be alone: it is remembered only in [`Self::within_write`].
+    cut: Cell<usize>,
+    /// Like [`Self::variables`], for answers cut short by a question still
+    /// being asked. Within one write's question each still holds -- the
+    /// question it reached is the one deciding the rest -- but not across
+    /// writes, so [`Self::begin_write`] clears it. Without it, a variable
+    /// assigned from itself in a loop (`p = p + i;` in many branches) cuts
+    /// nearly every answer short, and each is asked again from every path.
+    within_write: RefCell<HashMap<VariableKey, Answers>>,
+    /// The function answers being computed ([`Self::param_written`],
+    /// [`Self::returns_literal`], [`Self::returns_param`]), each with the
+    /// length of [`Self::asking`] when it started. Each reads "false" while
+    /// it is computed, so a variable question started inside one that reads
+    /// it is not the answer it would be once that one is known.
+    computing: RefCell<HashMap<FunctionKey, usize>>,
+    /// The shallowest [`Self::asking`] length at which a function answer
+    /// read while still being computed was started; `usize::MAX` for none.
+    /// A variable question at that position or above read a provisional
+    /// answer, and is remembered nowhere.
+    provisional: Cell<usize>,
     root: Node<'a>,
+}
+
+/// A function answer: which of [`Trace::param_written`],
+/// [`Trace::returns_literal`] or [`Trace::returns_param`] (0, 1, 2), the
+/// function's start, and the parameter index (0 for `returns_literal`).
+type FunctionKey = (u8, usize, usize);
+
+/// A variable question: (declarator node id, point node id, seed key).
+type VariableKey = (usize, usize, (Option<(usize, String)>, bool));
+
+/// What one variable question was found to answer, by remaining depth.
+/// "Derived" with `n` levels left holds with any more; "not derived" with
+/// `n` left holds with any fewer.
+#[derive(Default, Clone, Copy)]
+struct Answers {
+    derived_from: Option<u32>,
+    not_derived_up_to: Option<u32>,
 }
 
 impl<'a> Trace<'a> {
@@ -236,6 +297,12 @@ impl<'a> Trace<'a> {
             returns_literal: RefCell::default(),
             returns_params: RefCell::default(),
             assignments: RefCell::default(),
+            variables: RefCell::default(),
+            asking: RefCell::default(),
+            cut: Cell::new(usize::MAX),
+            within_write: RefCell::default(),
+            computing: RefCell::default(),
+            provisional: Cell::new(usize::MAX),
             root,
         }
     }
@@ -353,27 +420,62 @@ impl<'a> Trace<'a> {
     /// this rule reads a write.
     fn param_written(&self, def: &Node<'a>, index: usize) -> bool {
         let key = (def.start_byte(), index);
-        if let Some(&known) = self.param_writes.borrow().get(&key) {
+        let known = self.param_writes.borrow().get(&key).copied();
+        if let Some(known) = self.known_function((0, key.0, key.1), known) {
             return known;
         }
         self.param_writes.borrow_mut().insert(key, false);
-        let written = (|| {
-            let params = ast_utils::get_function_parameters(def, self.source)?;
-            let (name, _) = params.get(index)?;
-            let body = def.child_by_field_name("body")?;
-            let seed = Seed {
-                param: Some((def.start_byte(), name.as_str())),
-                const_sources: false,
-            };
-            Some(
-                self.writes_under(&body)
-                    .iter()
-                    .any(|w| self.literal_derived(&w.pointer, &w.site, seed, 0)),
-            )
-        })()
-        .unwrap_or(false);
+        let written = self.computing_function((0, key.0, key.1), || {
+            (|| {
+                let params = ast_utils::get_function_parameters(def, self.source)?;
+                let (name, _) = params.get(index)?;
+                let body = def.child_by_field_name("body")?;
+                let seed = Seed {
+                    param: Some((def.start_byte(), name.as_str())),
+                    const_sources: false,
+                };
+                Some(
+                    self.writes_under(&body)
+                        .iter()
+                        .any(|w| self.literal_derived(&w.pointer, &w.site, seed, 0)),
+                )
+            })()
+            .unwrap_or(false)
+        });
         self.param_writes.borrow_mut().insert(key, written);
         written
+    }
+
+    /// A remembered function answer, noting when it is still being computed
+    /// and so reads "false" only provisionally ([`Self::provisional`]).
+    fn known_function(&self, key: FunctionKey, known: Option<bool>) -> Option<bool> {
+        let known = known?;
+        if let Some(&started) = self.computing.borrow().get(&key) {
+            self.provisional.set(self.provisional.get().min(started));
+        }
+        Some(known)
+    }
+
+    /// Compute a function answer with `compute`, marked as being computed
+    /// meanwhile; a provisional read of it inside stops there.
+    fn computing_function(&self, key: FunctionKey, compute: impl FnOnce() -> bool) -> bool {
+        let started = self.asking.borrow().len();
+        self.computing.borrow_mut().insert(key, started);
+        let outer = self.provisional.replace(usize::MAX);
+        let found = compute();
+        self.computing.borrow_mut().remove(&key);
+        // Questions started inside this one have ended; a provisional read
+        // of a function answer started before it still counts above.
+        let inner = self.provisional.get();
+        self.provisional
+            .set(outer.min(if inner < started { inner } else { usize::MAX }));
+        found
+    }
+
+    /// Start a new write's question: forget the answers that held only
+    /// within the last one ([`Self::within_write`]).
+    fn begin_write(&self) {
+        self.within_write.borrow_mut().clear();
     }
 
     /// Whether `expr`, evaluated at `at`, may point into a string literal.
@@ -381,6 +483,7 @@ impl<'a> Trace<'a> {
         if depth > MAX_DEPTH {
             return false;
         }
+        crate::analyze::containment::checkpoint();
         let d = depth + 1;
         let field = |name: &str| expr.child_by_field_name(name);
         match expr.kind() {
@@ -799,21 +902,24 @@ impl<'a> Trace<'a> {
     /// Whether some `return` in `def` returns a literal-derived pointer.
     fn returns_literal(&self, def: &Node<'a>, depth: u32) -> bool {
         let key = def.start_byte();
-        if let Some(&known) = self.returns_literal.borrow().get(&key) {
+        let known = self.returns_literal.borrow().get(&key).copied();
+        if let Some(known) = self.known_function((1, key, 0), known) {
             return known;
         }
         self.returns_literal.borrow_mut().insert(key, false);
-        let found = def.child_by_field_name("body").is_some_and(|body| {
-            query::find_descendants_of_kind(body, "return_statement")
-                .into_iter()
-                .filter_map(|r| r.named_child(0))
-                .any(|value| {
-                    let own = Seed {
-                        param: None,
-                        const_sources: false,
-                    };
-                    self.literal_derived(&value, &value, own, depth + 1)
-                })
+        let found = self.computing_function((1, key, 0), || {
+            def.child_by_field_name("body").is_some_and(|body| {
+                query::find_descendants_of_kind(body, "return_statement")
+                    .into_iter()
+                    .filter_map(|r| r.named_child(0))
+                    .any(|value| {
+                        let own = Seed {
+                            param: None,
+                            const_sources: false,
+                        };
+                        self.literal_derived(&value, &value, own, depth + 1)
+                    })
+            })
         });
         self.returns_literal.borrow_mut().insert(key, found);
         found
@@ -823,26 +929,29 @@ impl<'a> Trace<'a> {
     /// parameter `index`.
     fn returns_param(&self, def: &Node<'a>, index: usize, depth: u32) -> bool {
         let key = (def.start_byte(), index);
-        if let Some(&known) = self.returns_params.borrow().get(&key) {
+        let known = self.returns_params.borrow().get(&key).copied();
+        if let Some(known) = self.known_function((2, key.0, key.1), known) {
             return known;
         }
         self.returns_params.borrow_mut().insert(key, false);
-        let found = (|| {
-            let params = ast_utils::get_function_parameters(def, self.source)?;
-            let (name, _) = params.get(index)?;
-            let body = def.child_by_field_name("body")?;
-            let seed = Seed {
-                param: Some((def.start_byte(), name.as_str())),
-                const_sources: false,
-            };
-            Some(
-                query::find_descendants_of_kind(body, "return_statement")
-                    .into_iter()
-                    .filter_map(|r| r.named_child(0))
-                    .any(|value| self.literal_derived(&value, &value, seed, depth + 1)),
-            )
-        })()
-        .unwrap_or(false);
+        let found = self.computing_function((2, key.0, key.1), || {
+            (|| {
+                let params = ast_utils::get_function_parameters(def, self.source)?;
+                let (name, _) = params.get(index)?;
+                let body = def.child_by_field_name("body")?;
+                let seed = Seed {
+                    param: Some((def.start_byte(), name.as_str())),
+                    const_sources: false,
+                };
+                Some(
+                    query::find_descendants_of_kind(body, "return_statement")
+                        .into_iter()
+                        .filter_map(|r| r.named_child(0))
+                        .any(|value| self.literal_derived(&value, &value, seed, depth + 1)),
+                )
+            })()
+            .unwrap_or(false)
+        });
         self.returns_params.borrow_mut().insert(key, found);
         found
     }
@@ -877,10 +986,67 @@ impl<'a> Trace<'a> {
         if is_array {
             return false;
         }
-        let values = self.reaching_values(ident, at);
-        values
+        self.values_derived(&declarator, ident, at, seed, depth)
+    }
+
+    /// Whether some value of the variable `ident` that reaches `at` is
+    /// literal-derived: [`Self::variable_derived`]'s last step, remembered
+    /// per (`declarator`, `at`, `seed`) so each is answered once per depth.
+    fn values_derived(
+        &self,
+        declarator: &Node<'a>,
+        ident: &Node<'a>,
+        at: &Node<'a>,
+        seed: Seed,
+        depth: u32,
+    ) -> bool {
+        let key = (declarator.id(), at.id(), seed.key());
+        let left = MAX_DEPTH.saturating_sub(depth);
+        for memo in [&self.variables, &self.within_write] {
+            if let Some(known) = memo.borrow().get(&key) {
+                if known.derived_from.is_some_and(|n| left >= n) {
+                    return true;
+                }
+                if known.not_derived_up_to.is_some_and(|n| left <= n) {
+                    return false;
+                }
+            }
+        }
+        if let Some(&position) = self.asking.borrow().get(&key) {
+            self.cut.set(self.cut.get().min(position));
+            return false;
+        }
+        let position = self.asking.borrow().len();
+        self.asking.borrow_mut().insert(key.clone(), position);
+        let outer_cut = self.cut.replace(usize::MAX);
+        let outer_provisional = self.provisional.replace(usize::MAX);
+        let derived = self
+            .reaching_values(ident, at)
             .iter()
-            .any(|value| self.literal_derived(value, value, seed, depth + 1))
+            .any(|value| self.literal_derived(value, value, seed, depth + 1));
+        self.asking.borrow_mut().remove(&key);
+        let cut = self.cut.get();
+        let provisional = self.provisional.get();
+        // An answer that read a function answer still being computed, by a
+        // question started inside that computation, is remembered nowhere.
+        if provisional > position {
+            let mut memo = if derived || cut >= position {
+                self.variables.borrow_mut()
+            } else {
+                self.within_write.borrow_mut()
+            };
+            let known = memo.entry(key).or_default();
+            if derived {
+                known.derived_from = Some(known.derived_from.map_or(left, |n| n.min(left)));
+            } else {
+                known.not_derived_up_to =
+                    Some(known.not_derived_up_to.map_or(left, |n| n.max(left)));
+            }
+        }
+        self.provisional.set(outer_provisional.min(provisional));
+        self.cut
+            .set(outer_cut.min(if cut < position { cut } else { usize::MAX }));
+        derived
     }
 
     /// The values the variable `ident` names may hold at `at`: its

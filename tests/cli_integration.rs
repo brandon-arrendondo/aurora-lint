@@ -4746,6 +4746,39 @@ fn scan_project(files: &[(&str, &str)], rules: &str) -> Vec<String> {
 }
 
 #[test]
+fn a_literal_origin_found_with_depth_to_spare_reaches_a_later_write() {
+    // The writes through p1 and p2 ask first whether v may hold F's literal.
+    // z's write asks about F with more depth left and must still be found:
+    // the fixture alone cannot tell, because p1 and p2 are reported either
+    // way.
+    let found = scan_project(
+        &[(
+            "w.c",
+            "char *v;\n\
+             char *F(void) { return ((((((((((\"lit\")))))))))); }\n\
+             void s1(void) { v = (F()); }\n\
+             void s2(void) { v = \"x\"; }\n\
+             void w(void) {\n\
+             \x20   char *t = v;\n\
+             \x20   char *p1 = ((((((((((t))))))))));\n\
+             \x20   p1[0] = 0;\n\
+             \x20   char *p2 = t;\n\
+             \x20   p2[0] = 0;\n\
+             \x20   char *z = F();\n\
+             \x20   z[0] = 0;\n\
+             }\n",
+        )],
+        "STR30-C",
+    );
+    assert!(
+        found
+            .iter()
+            .any(|l| l.contains("w.c:12:") && l.contains("'z'")),
+        "{found:?}"
+    );
+}
+
+#[test]
 fn a_files_own_macro_decides_whether_it_reads_an_argument() {
     // a.c's TRACE drops its argument; b.c's reads it. In b.c, TRACE(w)
     // reads the uninitialized w whichever file the prescan met first.

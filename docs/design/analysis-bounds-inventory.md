@@ -89,7 +89,11 @@ Kinds:
 - the per-expression loops of INT02-C, INT30-C and INT32-C (once per
   candidate operator);
 - the per-node loops of ARR00-C, ARR37-C, EXP02-C and MSC12-C (once per
-  candidate node).
+  candidate node);
+- STR30-C's literal-origin trace (once per expression it asks about): a
+  variable assigned from itself in many branches reaches the same
+  questions by many paths, and the budget must see a trace that runs
+  long.
 
 ## Scan level (ADR-0017)
 
