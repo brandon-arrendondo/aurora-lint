@@ -913,8 +913,9 @@ fn classify_stmt_on_path(
 }
 
 /// Whether `node` calls a function that can read the freed value without
-/// naming it: one handed the object the member lives in (`log_state(s)` after
-/// `free(s->buf)`), or, for a global or `static`, any function the project
+/// naming it: one handed the object the member lives in, or its address
+/// (`log_state(s)` or `log_state(&s)` after `free(s->buf)`), or, for a global
+/// or `static`, any function the project
 /// defines. A deallocator is no such call.
 fn call_can_read_dangling(
     node: &Node,
@@ -931,12 +932,14 @@ fn call_can_read_dangling(
             {
                 return false;
             }
+            // `h(&c)` hands the object on as surely as `h(c)`: the callee
+            // reads the member through `(*pc)->m`.
             let hands_container = call.child_by_field_name("arguments").is_some_and(|args| {
                 args.named_children(&mut args.walk()).any(|arg| {
-                    site.containers.contains(&compact(get_node_text(
-                        &strip_parens_and_casts(&arg),
-                        source,
-                    )))
+                    let arg = strip_parens_and_casts(&arg);
+                    let arg = address_operand(&arg).unwrap_or(arg);
+                    site.containers
+                        .contains(&compact(get_node_text(&arg, source)))
                 })
             });
             // A callee that designates an object (a function-pointer
@@ -1405,6 +1408,17 @@ fn file_scope_variables(root: Node, source: &str) -> HashSet<String> {
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+/// The operand of `&x`, parentheses and casts around it removed.
+fn address_operand<'t>(expr: &Node<'t>) -> Option<Node<'t>> {
+    (expr.kind() == "pointer_expression"
+        && expr
+            .child_by_field_name("operator")
+            .is_some_and(|op| op.kind() == "&"))
+    .then(|| expr.child_by_field_name("argument"))
+    .flatten()
+    .map(|operand| strip_parens_and_casts(&operand))
 }
 
 fn mentions_name(node: &Node, name: &str, source: &str) -> bool {
