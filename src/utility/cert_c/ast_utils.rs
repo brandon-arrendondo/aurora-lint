@@ -358,6 +358,14 @@ fn find_enclosing_declaration_for_identifier_climbing<'a>(
 /// Climbing to it with `Node::parent` costs O(depth²): tree-sitter answers
 /// each `parent()` by descending from the root. Every node carries a
 /// pointer to its tree, and the tree knows its root, so this asks the tree.
+///
+/// The crate denies `unsafe` code, and this is its one exception. The
+/// tree-sitter bindings give no safe way to get from a node to its tree,
+/// and the substrate's root-down queries (`query::ancestors`,
+/// `find_ancestor_from_root`) need the root in hand; without it every
+/// outward walk from a deep node is O(depth²). The call is sound because
+/// the tree outlives every node borrowed from it.
+#[allow(unsafe_code)]
 pub fn tree_root<'a>(node: &Node<'a>) -> Node<'a> {
     let raw = node.into_raw();
     // SAFETY: `raw.tree` is the tree `node` was read from, which outlives

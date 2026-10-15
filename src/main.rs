@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 #![allow(clippy::only_used_in_recursion)]
 #![allow(clippy::needless_borrow)]
 #![allow(clippy::too_many_arguments)]

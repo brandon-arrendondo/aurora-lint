@@ -142,6 +142,10 @@ Build Requirements
   (e.g. ``libgit2-sys``); ``build-essential`` on Debian/Ubuntu
 - **Platform**: Linux, macOS, Windows (cross-platform via crossterm)
 - **Dependencies**: See ``Cargo.toml`` for the full list
+- **No unsafe code**: the library and the binary deny it
+  (``#![deny(unsafe_code)]``). The one exception is ``ast_utils::tree_root``,
+  which asks tree-sitter for a node's root in constant time; its doc comment
+  says why.
 
 ::
 
