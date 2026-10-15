@@ -8253,7 +8253,13 @@ fn a_written_config_keeps_the_declared_thread_api_families() {
 /// MEM01-C findings for `a.c` in one `mem01_macro_scope` project, which calls
 /// `log_it()` while a static still holds a freed address.
 fn mem01_macro_scope_findings(case: &str) -> usize {
-    let project = fixtures().join("mem01_macro_scope").join(case);
+    mem01_project_findings("mem01_macro_scope", case)
+}
+
+/// MEM01-C findings for `a.c` in the project `group/case`, its directory
+/// passed with `-d` so its headers are read.
+fn mem01_project_findings(group: &str, case: &str) -> usize {
+    let project = fixtures().join(group).join(case);
     let project = project.to_str().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
@@ -8285,6 +8291,35 @@ fn mem01_a_macro_counts_only_where_the_file_includes_it() {
     assert_eq!(mem01_macro_scope_findings("included_header"), 0);
     assert_eq!(mem01_macro_scope_findings("unrelated_header"), 1);
     assert_eq!(mem01_macro_scope_findings("sibling_c"), 1);
+}
+
+/// A destructor's callee is read the way it compiles, with the headers the
+/// file includes: a macro, object or union one declares can read the freed
+/// member (`free(c->ssl); h(c); free(c);`), so the call still hands the
+/// dangling value on. A struct a header declares, and a macro in a header the
+/// file does not include, leave the callee proven.
+#[test]
+fn mem01_a_destructor_callee_is_read_with_the_headers_it_includes() {
+    for case in [
+        "function_macro_in_header",
+        "field_name_macro_in_header",
+        "union_member_in_header",
+        "union_tag_in_header",
+        "global_in_header",
+    ] {
+        assert_eq!(
+            mem01_project_findings("mem01_destructor_headers", case),
+            1,
+            "{case}"
+        );
+    }
+    for case in ["struct_in_header", "macro_in_unincluded_header"] {
+        assert_eq!(
+            mem01_project_findings("mem01_destructor_headers", case),
+            0,
+            "{case}"
+        );
+    }
 }
 
 /// MSC37-C findings for `a.c` in one `msc37_macro_scope` project.

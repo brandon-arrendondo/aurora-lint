@@ -26,9 +26,9 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self as cfg_mod, FunctionCfg};
-use crate::analyze::check_macros::collect_macro_definitions;
+use crate::analyze::check_macros::{collect_macro_definitions, MacroDefinition};
 use crate::analyze::context::ScopedTable;
-use crate::analyze::context::{IncludeClosure, ProjectContext};
+use crate::analyze::context::{IncludeClosure, ProjectContext, VisibleTypes};
 use crate::analyze::dataflow::find_node_at_range;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::points_to::{lvalue_of, LValue};
@@ -75,6 +75,27 @@ pub struct Mem01C {
     /// order, as (byte offset, whether it leaves a function-like macro in
     /// force): the one in force at a call decides what the call is.
     own_function_macros: RefCell<Arc<MacroDirectives>>,
+    /// What the scanned files and headers declare, for reading a callee the
+    /// way it compiles rather than by this file's text alone.
+    headers: RefCell<HeaderTables>,
+}
+
+/// The project tables a callee of the destructor exemption is read against
+/// besides the file: project headers are scanned but not expanded, so a macro,
+/// object or union they declare is in force in the callee without appearing
+/// in the file.
+#[derive(Clone, Default)]
+struct HeaderTables {
+    /// Every `#define` of every scanned file and header, by name. Which file
+    /// makes one is not recorded, so a definition other than a function-like
+    /// macro counts wherever its name is used; a function-like one counts
+    /// through `function_macro_arms`, which says which headers make it.
+    macro_definitions: Arc<HashMap<String, Vec<MacroDefinition>>>,
+    /// Every file-scope object (and enumeration constant) the scanned files
+    /// and headers declare.
+    global_object_names: Arc<HashSet<String>>,
+    /// The struct and typedef tables as the file sees them.
+    types: VisibleTypes,
 }
 
 /// A name's `#define`s and `#undef`s in a file, in order, as (byte offset,
@@ -104,6 +125,8 @@ struct AddressOfCallContext {
     function_macro_arms: Arc<HashMap<String, Vec<crate::analyze::macro_expand::ProjectMacroArm>>>,
     include_closure: Arc<IncludeClosure>,
     own_function_macros: Arc<MacroDirectives>,
+    /// `Mem01C::headers`.
+    headers: HeaderTables,
     /// The real path of the file being scanned, which its include closure
     /// contains: its own definitions are read by offset, not by that.
     own_file: Arc<str>,
@@ -132,6 +155,40 @@ impl AddressOfCallContext {
             })
         })
     }
+
+    /// Whether the definitions of `file` may be in force in this translation
+    /// unit: a header it may include, or any header when the include graph
+    /// does not say what it includes (a closure that is known always holds
+    /// the file itself). Unlike [`Self::is_macro_call`], unknown counts: the
+    /// destructor exemption clears a finding, so what it cannot rule out it
+    /// must assume.
+    fn header_in_reach(&self, file: &str) -> bool {
+        *file != *self.own_file
+            && ((self.include_closure.files.is_empty() && !self.include_closure.any)
+                || self.include_closure.may_include(file))
+    }
+
+    /// Whether `name` may be a macro where a callee's body compiles: one this
+    /// file defines (`own`), a function-like one a header in reach defines,
+    /// or one any scanned file defines otherwise than as a function-like
+    /// macro (see [`HeaderTables::macro_definitions`]).
+    fn may_be_macro(&self, name: &str, own: &HashSet<String>) -> bool {
+        own.contains(name)
+            || self
+                .headers
+                .macro_definitions
+                .get(name)
+                .is_some_and(|definitions| {
+                    definitions
+                        .iter()
+                        .any(|d| !matches!(d, MacroDefinition::Function { .. }))
+                })
+            || self.function_macro_arms.get(name).is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|e| e.files.iter().any(|f| self.header_in_reach(f)))
+            })
+    }
 }
 
 impl Mem01C {
@@ -148,6 +205,7 @@ impl Mem01C {
             own_file: RefCell::new(Arc::from("")),
             include_closure: RefCell::default(),
             own_function_macros: RefCell::default(),
+            headers: RefCell::default(),
         }
     }
 
@@ -271,6 +329,11 @@ impl CertRule for Mem01C {
         *self.freeing_wrappers.borrow_mut() = Arc::new(self.build_freeing_wrappers());
         *self.function_macro_arms.borrow_mut() = Arc::clone(&context.function_macro_arms);
         *self.include_edges.borrow_mut() = Arc::clone(&context.include_edges);
+        {
+            let mut headers = self.headers.borrow_mut();
+            headers.macro_definitions = Arc::clone(&context.macro_definitions);
+            headers.global_object_names = Arc::clone(&context.global_object_names);
+        }
         *self.defined_functions.borrow_mut() = Arc::new(
             self.cross_file_summaries
                 .borrow()
@@ -278,6 +341,10 @@ impl CertRule for Mem01C {
                 .map(|(name, _)| name.clone())
                 .collect(),
         );
+    }
+
+    fn set_visible_types(&self, types: &VisibleTypes) {
+        self.headers.borrow_mut().types = types.clone();
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
@@ -314,6 +381,7 @@ impl Mem01C {
             function_macro_arms: Arc::clone(&self.function_macro_arms.borrow()),
             include_closure: Arc::clone(&self.include_closure.borrow()),
             own_function_macros: Arc::clone(&self.own_function_macros.borrow()),
+            headers: self.headers.borrow().clone(),
             own_file: Arc::clone(&self.own_file.borrow()),
         };
 
@@ -889,11 +957,13 @@ fn call_can_read_dangling(
 /// may be dereferenced for other fields, compared with null or passed to a
 /// deallocator; any other use of it (a read of the member, passing it on,
 /// returning it, dereferencing it as a whole, a local of the same name) is
-/// taken as a read, as is any use of a name the file defines as a macro (also as a
-/// field name), a field that shares storage with the member in a union and any
-/// object declared at file scope (the caller may have stored the object there).
-/// A definition under a conditional counts only where the call sits in the same
-/// arm or every arm of the chain defines the callee. A callee with no single
+/// taken as a read, as is any use of a name that may be a macro where the callee
+/// compiles (also as a field name), a field that may share storage with the
+/// member and any object declared at file scope (the caller may have stored the
+/// object there). Project headers are scanned but not expanded, so their
+/// macros, objects and structs count with the file's own ([`HeaderTables`]).
+/// A definition under a conditional counts only where the call sits in the
+/// arm's own span or every arm of the chain defines the callee. A callee with no single
 /// body in this file or a macro is not
 /// proven, so the call still counts as handing the dangling value on. A member
 /// path is followed by its first field: `c->list.head` handed over as `c` is
@@ -981,35 +1051,77 @@ fn callee_leaves_member_alone(
         macros: collect_macro_definitions(source).into_keys().collect(),
         unions: union_field_sets(root, source),
         globals: file_scope_variables(root, source),
+        ctx: addr_ctx,
     };
     // Every definition, for one in each arm of a conditional.
     definitions.iter().all(|definition| {
         let Some(params) = ast_utils::get_function_parameters(definition, source) else {
             return false;
         };
-        let (Some((param, _)), Some(body)) = (
+        let declared = parameter_declarations(definition);
+        // The name and the type must come from the same declaration.
+        if declared.len() != params.len() {
+            return false;
+        }
+        let (Some((param, _)), Some(param_type), Some(body)) = (
             params.get(*position),
+            declared
+                .get(*position)
+                .and_then(|d| d.child_by_field_name("type"))
+                .map(|t| get_node_text(&t, source)),
             definition.child_by_field_name("body"),
         ) else {
             return false;
         };
-        parameter_never_reads_member(&body, param, field, source, &scope)
+        parameter_never_reads_member(&body, param, param_type, field, source, &scope)
     })
 }
 
+/// The `parameter_declaration`s of a function definition, in order.
+fn parameter_declarations<'t>(definition: &Node<'t>) -> Vec<Node<'t>> {
+    let mut declarator = definition.child_by_field_name("declarator");
+    while let Some(d) = declarator.filter(|d| d.kind() != "function_declarator") {
+        declarator = d.child_by_field_name("declarator");
+    }
+    declarator
+        .and_then(|d| d.child_by_field_name("parameters"))
+        .map(|list| {
+            list.named_children(&mut list.walk())
+                .filter(|p| p.kind() == "parameter_declaration")
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// What a callee's body is read against besides its own text.
-struct CalleeScope {
+struct CalleeScope<'c> {
     /// Every macro the file defines, in any arm and at any depth. A name of
     /// one used in the callee may expand to a read of the parameter or the
     /// member (as an operand or as the field name), so such a callee is not
-    /// proven.
+    /// proven; so may a macro a header defines
+    /// ([`AddressOfCallContext::may_be_macro`]).
     macros: HashSet<String>,
     /// The field names that share storage, one set per union the file
-    /// declares, anonymous members flattened in.
+    /// declares, anonymous members flattened in. A union a header declares is
+    /// found by resolving the aggregate's type instead ([`may_share_storage`]).
     unions: Vec<HashSet<String>>,
     /// Every object declared at file scope: the caller may have stored the
-    /// object in one for the callee to read.
+    /// object in one for the callee to read. So may an object a header
+    /// declares ([`HeaderTables::global_object_names`]).
     globals: HashSet<String>,
+    ctx: &'c AddressOfCallContext,
+}
+
+impl CalleeScope<'_> {
+    /// Whether `ident`, an identifier of the callee's body, may name an
+    /// object outside the callee: one the file declares at file scope, or one
+    /// a header declares that no declaration in the file binds it to.
+    fn names_outside_object(&self, ident: &Node, source: &str) -> bool {
+        let name = get_node_text(ident, source);
+        self.globals.contains(name)
+            || (self.ctx.headers.global_object_names.contains(name)
+                && ast_utils::resolve_identifier_declarator(ident, name, source).is_none())
+    }
 }
 
 const CONDITIONAL_KINDS: [&str; 5] = [
@@ -1021,12 +1133,16 @@ const CONDITIONAL_KINDS: [&str; 5] = [
 ];
 
 /// The `#if` chain arms around `node`, innermost first; an include guard is no
-/// alternative and is left out.
+/// alternative and is left out. tree-sitter nests an `#elif` or `#else` arm
+/// inside the arm before it, as its `alternative`, so what lies in the later
+/// arm lies in the earlier one's node but not in its own span: the earlier arm
+/// is not around it.
 fn enclosing_arms<'a>(node: &Node<'a>, source: &str) -> Vec<Node<'a>> {
     let mut arms = Vec::new();
     let mut current = *node;
     while let Some(parent) = current.parent() {
         if CONDITIONAL_KINDS.contains(&parent.kind())
+            && parent.child_by_field_name("alternative") != Some(current)
             && !ast_utils::is_include_guard(&parent, source)
         {
             arms.push(parent);
@@ -1160,12 +1276,11 @@ fn file_scope_variables(root: Node, source: &str) -> HashSet<String> {
         .flat_map(|item| {
             item.children_by_field_name("declarator", &mut item.walk())
                 .map(|d| {
-                    let d = if d.kind() == "init_declarator" {
+                    if d.kind() == "init_declarator" {
                         d.child_by_field_name("declarator").unwrap_or(d)
                     } else {
                         d
-                    };
-                    d
+                    }
                 })
                 .filter(|d| {
                     query::find_first_descendant(*d, |n| n.kind() == "function_declarator")
@@ -1199,6 +1314,7 @@ fn function_definition_name(function: &Node, source: &str) -> Option<String> {
 fn parameter_never_reads_member(
     body: &Node,
     param: &str,
+    param_type: &str,
     field: &str,
     source: &str,
     scope: &CalleeScope,
@@ -1221,14 +1337,18 @@ fn parameter_never_reads_member(
         .filter(|f| !f.is_empty())
         .collect();
     // Any macro in the body may expand to a read, also as a field name, and
-    // any object of the file may hold the object.
+    // any object of the file or its headers may hold the object.
     let hidden_read = ["identifier", "field_identifier"]
         .iter()
         .flat_map(|kind| query::find_descendants_of_kind(*body, kind))
-        .any(|n| scope.macros.contains(get_node_text(&n, source)))
+        .any(|n| {
+            scope
+                .ctx
+                .may_be_macro(get_node_text(&n, source), &scope.macros)
+        })
         || query::find_descendants_of_kind(*body, "identifier")
             .into_iter()
-            .any(|n| scope.globals.contains(get_node_text(&n, source)));
+            .any(|n| scope.names_outside_object(&n, source));
     if hidden_read {
         return false;
     }
@@ -1240,7 +1360,9 @@ fn parameter_never_reads_member(
                 return false;
             };
             match parent.kind() {
-                "field_expression" => access_misses_member(&ident, &member, source, scope),
+                "field_expression" => {
+                    access_misses_member(&ident, &member, param_type, source, scope)
+                }
                 "argument_list" => parent
                     .parent()
                     .filter(|c| c.kind() == "call_expression")
@@ -1274,9 +1396,16 @@ fn parameter_never_reads_member(
 
 /// Whether the access chain that starts at `ident` (`p->a.b`, `p->a[i]`) names
 /// a different field than `member` (`["a", "b"]`) at the first place the two
-/// differ: neither is a prefix of the other. Only a `->` off the parameter
-/// itself is followed.
-fn access_misses_member(ident: &Node, member: &[&str], source: &str, scope: &CalleeScope) -> bool {
+/// differ: neither is a prefix of the other, and the two fields are members of
+/// a struct, not one storage. Only a `->` off the parameter itself, of type
+/// `param_type`, is followed.
+fn access_misses_member(
+    ident: &Node,
+    member: &[&str],
+    param_type: &str,
+    source: &str,
+    scope: &CalleeScope,
+) -> bool {
     let mut chain: Vec<String> = Vec::new();
     let mut current = *ident;
     while let Some(parent) = current.parent() {
@@ -1305,13 +1434,54 @@ fn access_misses_member(ident: &Node, member: &[&str], source: &str, scope: &Cal
         && chain
             .iter()
             .zip(member)
-            .find(|(accessed, wanted)| accessed != wanted)
-            .is_some_and(|(accessed, wanted)| {
+            .position(|(accessed, wanted)| accessed != wanted)
+            .is_some_and(|at| {
+                let (accessed, wanted) = (&chain[at], member[at]);
                 !scope
                     .unions
                     .iter()
-                    .any(|u| u.contains(accessed) && u.contains(*wanted))
+                    .any(|u| u.contains(accessed) && u.contains(wanted))
+                    && !may_share_storage(param_type, &member[..at], &scope.ctx.headers.types)
             })
+}
+
+/// Whether two fields of the aggregate reached from a parameter of type
+/// `param_type` through `prefix` may share storage: that aggregate is a union,
+/// or its declaration, the file's own or a header's, does not resolve to a
+/// struct (ADR-0006: by declaration, not by a field's spelling).
+fn may_share_storage(param_type: &str, prefix: &[&str], types: &VisibleTypes) -> bool {
+    let mut aggregate = param_type.to_string();
+    for field in prefix {
+        let Some(next) = struct_fields(&aggregate, types).and_then(|fields| fields.get(*field))
+        else {
+            return true;
+        };
+        aggregate = next.clone();
+    }
+    struct_fields(&aggregate, types).is_none()
+}
+
+/// The field table of the struct a type spelling names (`struct conn`,
+/// `const conn_t *`, or a typedef of a struct), or `None` for a union, an
+/// aggregate with no name of its own and a type no table knows. The tables
+/// file only structs, never a union.
+fn struct_fields<'t>(
+    spelling: &str,
+    types: &'t VisibleTypes,
+) -> Option<&'t HashMap<String, String>> {
+    let words: Vec<&str> = spelling
+        .split(|c: char| c.is_whitespace() || c == '*')
+        .filter(|w| !w.is_empty() && !matches!(*w, "const" | "volatile" | "restrict"))
+        .collect();
+    let name = match words.as_slice() {
+        ["struct", tag] => *tag,
+        [name] => types
+            .struct_typedef_aliases
+            .get(*name)
+            .map_or(*name, String::as_str),
+        _ => return None,
+    };
+    types.struct_field_types.get(name)
 }
 
 // ---------------------------------------------------------------------------
