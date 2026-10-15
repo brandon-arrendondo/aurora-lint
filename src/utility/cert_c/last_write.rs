@@ -5,6 +5,13 @@
 //! function: which value of a variable a site sees, told apart by the write
 //! that produced it.
 //!
+//! The match is by spelling, not by binding: a shadowing declaration of the
+//! same name counts as a write to it. That is enough to tell apart sites
+//! that see different values, for de-duplication, which is what
+//! [`LastWrites`] is for. It must never decide on its own whether to
+//! report: what an occurrence or a write refers to comes from
+//! `ast_utils::resolve_identifier_declarator` and its neighbours (ADR-0006).
+//!
 //! A write is a `=` assignment whose left side is spelled `name`, or the
 //! declarator that initializes `name`. A compound assignment (`p += n`)
 //! derives from the value already there, so it starts no new value.
