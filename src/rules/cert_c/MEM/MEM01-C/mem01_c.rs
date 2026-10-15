@@ -38,6 +38,7 @@ use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::clearing_extent::cleared_extent;
 use crate::utility::cert_c::node_children::NodeChildren;
+use crate::utility::cert_c::pp_tokens::{lex_replacement_list, PpKind, KEYWORDS};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -173,8 +174,8 @@ impl AddressOfCallContext {
     /// file defines (`own`), a function-like one a header in reach defines,
     /// or one any scanned file defines otherwise than as a function-like
     /// macro (see [`HeaderTables::macro_definitions`]).
-    fn may_be_macro(&self, name: &str, own: &HashSet<String>) -> bool {
-        own.contains(name)
+    fn may_be_macro(&self, name: &str, own: &HashMap<String, Vec<MacroDefinition>>) -> bool {
+        own.contains_key(name)
             || self
                 .headers
                 .macro_definitions
@@ -959,7 +960,9 @@ fn call_can_read_dangling(
 /// deallocator; any other use of it (a read of the member, passing it on,
 /// returning it, dereferencing it as a whole, a local of the same name) is
 /// taken as a read, as is any use of a name that may be a macro where the callee
-/// compiles (also as a field name), a field that may share storage with the
+/// compiles as a field name, or as an operand unless its expansion is proven to
+/// name nothing a read goes through ([`CalleeScope::expansion_names_no_read`]),
+/// a field that may share storage with the
 /// member and any object declared at file scope (the caller may have stored the
 /// object there). Project headers are scanned but not expanded, so their
 /// macros, objects and structs count with the file's own ([`HeaderTables`]).
@@ -1049,7 +1052,7 @@ fn callee_leaves_member_alone(
         return false;
     }
     let scope = CalleeScope {
-        macros: collect_macro_definitions(source).into_keys().collect(),
+        macros: collect_macro_definitions(source),
         unions: union_field_sets(root, source),
         globals: file_scope_variables(root, source),
         ctx: addr_ctx,
@@ -1064,7 +1067,7 @@ fn callee_leaves_member_alone(
         if declared.len() != params.len() {
             return false;
         }
-        let (Some((param, _)), Some(param_type), Some(body)) = (
+        let (Some(_), Some(param_type), Some(body)) = (
             params.get(*position),
             declared
                 .get(*position)
@@ -1074,7 +1077,16 @@ fn callee_leaves_member_alone(
         ) else {
             return false;
         };
-        parameter_never_reads_member(&body, param, param_type, field, source, &scope)
+        let parameters: Vec<&str> = params.iter().map(|(name, _)| name.as_str()).collect();
+        parameter_never_reads_member(
+            &body,
+            &parameters,
+            *position,
+            param_type,
+            field,
+            source,
+            &scope,
+        )
     })
 }
 
@@ -1096,12 +1108,13 @@ fn parameter_declarations<'t>(definition: &Node<'t>) -> Vec<Node<'t>> {
 
 /// What a callee's body is read against besides its own text.
 struct CalleeScope<'c> {
-    /// Every macro the file defines, in any arm and at any depth. A name of
-    /// one used in the callee may expand to a read of the parameter or the
-    /// member (as an operand or as the field name), so such a callee is not
-    /// proven; so may a macro a header defines
-    /// ([`AddressOfCallContext::may_be_macro`]).
-    macros: HashSet<String>,
+    /// Every macro the file defines, in any arm and at any depth, with its
+    /// definitions. A name of one used in the callee may expand to a read of
+    /// the parameter or the member, so such a callee is not proven unless
+    /// each definition is object-like and its expansion names nothing a read
+    /// could go through ([`Self::expansion_names_no_read`]); so may a macro a
+    /// header defines ([`AddressOfCallContext::may_be_macro`]).
+    macros: HashMap<String, Vec<MacroDefinition>>,
     /// The field names that share storage, one set per union the file
     /// declares, anonymous members flattened in. A union a header declares is
     /// found by resolving the aggregate's type instead ([`may_share_storage`]).
@@ -1114,6 +1127,107 @@ struct CalleeScope<'c> {
 }
 
 impl CalleeScope<'_> {
+    /// Whether the macro `name`, used as an operand in the callee, expands to
+    /// nothing a read of the member could go through, read as if its
+    /// replacement list were written in place: every definition, the file's
+    /// and every scanned file's, is object-like (a function-like or
+    /// unreadable one, a token paste among them, is not proven), and every
+    /// identifier it names is known to hold nothing: a keyword, a type name
+    /// (a tag, or a typedef the tables resolve), a field selected off
+    /// something in the list, or a macro that passes in turn. Anything else
+    /// is a read: a name no table knows may be an object declared where the
+    /// scan does not see it, such as by another macro's expansion; so is one
+    /// of `reads` (the callee's parameters and own declarations, and the
+    /// member's field names, in any position), a call, a function the
+    /// project defines (it may read an object the caller stored the object
+    /// in) and a field of something outside the list (one starting with `->`
+    /// or `.`). `expanding` holds the macros being expanded: one that names
+    /// itself again stays an unknown name.
+    fn expansion_names_no_read(
+        &self,
+        name: &str,
+        reads: &HashSet<&str>,
+        expanding: &mut HashSet<String>,
+    ) -> bool {
+        if !expanding.insert(name.to_string()) {
+            return false;
+        }
+        let passes = self.definitions_name_no_read(name, reads, expanding);
+        expanding.remove(name);
+        passes
+    }
+
+    fn definitions_name_no_read(
+        &self,
+        name: &str,
+        reads: &HashSet<&str>,
+        expanding: &mut HashSet<String>,
+    ) -> bool {
+        let in_reach_function_like =
+            self.ctx
+                .function_macro_arms
+                .get(name)
+                .is_some_and(|entries| {
+                    entries
+                        .iter()
+                        .any(|e| e.files.iter().any(|f| self.ctx.header_in_reach(f)))
+                });
+        let definitions: Vec<&MacroDefinition> = self
+            .macros
+            .get(name)
+            .into_iter()
+            .flatten()
+            .chain(
+                self.ctx
+                    .headers
+                    .macro_definitions
+                    .get(name)
+                    .into_iter()
+                    .flatten(),
+            )
+            .collect();
+        if in_reach_function_like || definitions.is_empty() {
+            return false;
+        }
+        let types = &self.ctx.headers.types;
+        definitions.iter().all(|definition| {
+            let MacroDefinition::Object { body } = definition else {
+                return false;
+            };
+            let tokens = lex_replacement_list(body, false);
+            if tokens.first().is_some_and(|t| t.is("->") || t.is(".")) {
+                return false;
+            }
+            tokens
+                .iter()
+                .enumerate()
+                .all(|(i, token)| match token.kind {
+                    PpKind::Identifier => {
+                        let word: &str = &token.text;
+                        let after =
+                            |p: &[&str]| i > 0 && p.iter().any(|p| tokens[i - 1].text == *p);
+                        let keyword = KEYWORDS.contains(&word)
+                            || matches!(word, "true" | "false" | "nullptr");
+                        let called = !keyword && tokens.get(i + 1).is_some_and(|t| t.is("("));
+                        if reads.contains(word)
+                            || called
+                            || self.ctx.defined_functions.contains(word)
+                        {
+                            return false;
+                        }
+                        keyword
+                            || after(&["->", ".", "struct", "union", "enum"])
+                            || types.typedef_types.contains_key(word)
+                            || types.struct_typedef_aliases.contains_key(word)
+                            || (self.ctx.may_be_macro(word, &self.macros)
+                                && self.expansion_names_no_read(word, reads, expanding))
+                    }
+                    PpKind::Other => false,
+                    _ => !token.is("##") && !token.is("#"),
+                })
+        })
+    }
+
     /// Whether `ident`, an identifier of the callee's body, may name an
     /// object outside the callee: one the file declares at file scope, or one
     /// a header declares that no declaration in the file binds it to.
@@ -1309,44 +1423,76 @@ fn function_definition_name(function: &Node, source: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-/// Whether, within `body`, every use of the parameter `param` is one that
-/// cannot read `param->field`: a `->` access of another field, a null test, or
-/// the freed argument of a deallocator call.
+/// Whether, within `body`, every use of the parameter at `position` of
+/// `parameters`, `param`, is one that cannot read `param->field`: a `->`
+/// access of another field, a null test, or the freed argument of a
+/// deallocator call.
 fn parameter_never_reads_member(
     body: &Node,
-    param: &str,
+    parameters: &[&str],
+    position: usize,
     param_type: &str,
     field: &str,
     source: &str,
     scope: &CalleeScope,
 ) -> bool {
+    let Some(&param) = parameters.get(position) else {
+        return false;
+    };
+    let locals: Vec<String> = query::find_descendants_of_kind(*body, "declaration")
+        .into_iter()
+        .flat_map(|d| {
+            d.children_by_field_name("declarator", &mut d.walk())
+                .map(|declarator| {
+                    let declarator = if declarator.kind() == "init_declarator" {
+                        declarator
+                            .child_by_field_name("declarator")
+                            .unwrap_or(declarator)
+                    } else {
+                        declarator
+                    };
+                    ast_utils::get_identifier_from_declarator(&declarator, source)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
     // A local or nested declaration of the same name makes the uses
     // ambiguous.
-    let redeclared = query::find_descendants_of_kind(*body, "declaration")
-        .into_iter()
-        .any(|d| {
-            d.children_by_field_name("declarator", &mut d.walk())
-                .any(|declarator| {
-                    ast_utils::get_identifier_from_declarator(&declarator, source) == param
-                })
-        });
-    if redeclared {
+    if locals.iter().any(|l| l == param) {
         return false;
     }
+    let declared_names: Vec<String> = parameters
+        .iter()
+        .map(|p| p.to_string())
+        .chain(locals)
+        .collect();
     let member: Vec<&str> = field
         .split(['-', '.', '>'])
         .filter(|f| !f.is_empty())
         .collect();
-    // Any macro in the body may expand to a read, also as a field name, and
-    // any object of the file or its headers may hold the object.
-    let hidden_read = ["identifier", "field_identifier"]
+    // A macro used as a field name may expand to the member, and one used
+    // as an operand to a read of the parameter or the member, unless its
+    // expansion is proven to name nothing such a read goes through; any
+    // object of the file or its headers may hold the object.
+    let reads: HashSet<&str> = member
         .iter()
-        .flat_map(|kind| query::find_descendants_of_kind(*body, kind))
+        .copied()
+        .chain(declared_names.iter().map(String::as_str))
+        .collect();
+    let hidden_read = query::find_descendants_of_kind(*body, "field_identifier")
+        .into_iter()
         .any(|n| {
             scope
                 .ctx
                 .may_be_macro(get_node_text(&n, source), &scope.macros)
         })
+        || query::find_descendants_of_kind(*body, "identifier")
+            .into_iter()
+            .any(|n| {
+                let name = get_node_text(&n, source);
+                scope.ctx.may_be_macro(name, &scope.macros)
+                    && !scope.expansion_names_no_read(name, &reads, &mut HashSet::new())
+            })
         || query::find_descendants_of_kind(*body, "identifier")
             .into_iter()
             .any(|n| scope.names_outside_object(&n, source));
