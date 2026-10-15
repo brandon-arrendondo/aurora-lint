@@ -250,6 +250,8 @@ pub fn top_level_items<'a>(root: Node<'a>) -> TopLevelItems<'a> {
 /// would turn a guess into a bound a rule reports from. An `ERROR` is not a
 /// configuration choice, so its items are always the file's.
 pub fn top_level_items_outside_arms<'a>(root: Node<'a>) -> TopLevelItems<'a> {
+    #[cfg(test)]
+    TOP_LEVEL_WALKS.with(|n| n.set(n.get() + 1));
     TopLevelItems::new(root, false)
 }
 
@@ -426,12 +428,18 @@ pub fn find_enclosing_declaration_for_identifier_in<'a>(
 /// resolution reads every statement of every enclosing block again, so
 /// resolving each identifier of a long function is quadratic in its length.
 ///
+/// The file-scope `declaration`s outside conditional arms are read once
+/// too: a name no block or parameter binds is looked up among them, and
+/// walking the translation unit for each such identifier is quadratic in a
+/// file whose top level holds thousands of `#ifdef` groups.
+///
 /// Keyed by node id, so one value serves one tree and must not outlive it.
 /// The `_in` resolvers here give the answers the free functions of the same
 /// name give.
 #[derive(Default)]
 pub struct ScopeDeclarations<'a> {
     by_scope: std::cell::RefCell<HashMap<usize, std::rc::Rc<[Node<'a>]>>>,
+    globals: std::cell::RefCell<HashMap<usize, std::rc::Rc<[Node<'a>]>>>,
 }
 
 impl<'a> ScopeDeclarations<'a> {
@@ -450,6 +458,19 @@ impl<'a> ScopeDeclarations<'a> {
             .borrow_mut()
             .insert(scope.id(), declarations.clone());
         declarations
+    }
+
+    /// The `declaration`s among [`top_level_items_outside_arms`] of the
+    /// translation unit `top`, in its order.
+    fn globals(&self, top: &Node<'a>) -> std::rc::Rc<[Node<'a>]> {
+        if let Some(known) = self.globals.borrow().get(&top.id()) {
+            return known.clone();
+        }
+        let globals: std::rc::Rc<[Node<'a>]> = top_level_items_outside_arms(*top)
+            .filter(|item| item.kind() == "declaration")
+            .collect();
+        self.globals.borrow_mut().insert(top.id(), globals.clone());
+        globals
     }
 
     /// [`find_enclosing_declaration_for_identifier_in`].
@@ -500,6 +521,9 @@ thread_local! {
     /// How many scopes [`ScopeDeclarations`] read the declarations of on
     /// this thread.
     static SCOPE_DECLARATION_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many walks [`top_level_items_outside_arms`] began on this
+    /// thread, by any caller.
+    static TOP_LEVEL_WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// How many statements those scopes held between them.
     static SCOPE_STATEMENT_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// How many resolutions climbed from their identifier with
@@ -507,6 +531,14 @@ thread_local! {
     static CLIMBS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// How many descents [`ancestors_from_root`] made on this thread.
     static DESCENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Walks of a translation unit's top level outside `#if` arms
+/// ([`top_level_items_outside_arms`]) begun on this thread since the last
+/// call, whoever began them.
+#[cfg(test)]
+pub(crate) fn take_top_level_walks() -> usize {
+    TOP_LEVEL_WALKS.with(|n| n.replace(0))
 }
 
 /// Resolutions that climbed with `Node::parent`, and descents from a root,
@@ -1566,8 +1598,11 @@ fn binding_on_path<'a>(
     }
     // The climbing version's translation unit is the topmost ancestor.
     let top = std::iter::once(*root).chain(path.iter().copied()).next()?;
-    top_level_items_outside_arms(top)
-        .find(|decl| decl.kind() == "declaration" && declaration_binds_name(decl, name, source))
+    declarations
+        .globals(&top)
+        .iter()
+        .find(|decl| declaration_binds_name(decl, name, source))
+        .copied()
         .map(IdentifierBinding::Global)
 }
 

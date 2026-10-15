@@ -807,6 +807,20 @@ pub fn called_function_name(call: &Node, source: &str) -> Option<String> {
     (!crate::analyze::side_effects::designates_object(&function, source)).then_some(name)
 }
 
+/// [`called_function_name`] resolving the callee through `declarations`
+/// over the tree whose root is `root`
+/// ([`crate::analyze::side_effects::designates_object_in`]). The same answer.
+pub fn called_function_name_in<'a>(
+    root: &Node<'a>,
+    call: &Node<'a>,
+    source: &str,
+    declarations: &crate::utility::cert_c::ast_utils::ScopeDeclarations<'a>,
+) -> Option<String> {
+    let (function, name) = callee_spelling(call, source)?;
+    (!crate::analyze::side_effects::designates_object_in(root, &function, source, declarations))
+        .then_some(name)
+}
+
 /// Whether `call` (a `call_expression`) calls a function in
 /// `noreturn_names`: the callee is spelled as one, and that spelling names
 /// the function rather than an object ([`called_function_name`]).

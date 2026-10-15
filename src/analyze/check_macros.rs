@@ -355,6 +355,8 @@ fn only_guards(source: &str, directives: &[(usize, String)], k: usize) -> bool {
 #[derive(Debug, Default)]
 pub struct ObjectMacroTimeline {
     names: HashMap<String, NameTimeline>,
+    /// Every directive's first physical line, in file order.
+    directive_lines: Vec<usize>,
 }
 
 /// One directive of a name, as [`ObjectMacroTimeline::of`] reads it.
@@ -625,7 +627,19 @@ impl ObjectMacroTimeline {
                 .into_iter()
                 .map(|(name, steps)| (name, NameTimeline::build(steps)))
                 .collect(),
+            directive_lines: directives.iter().map(|(line, _)| *line).collect(),
         }
+    }
+
+    /// How many of the file's directives come before `line`. Every name's
+    /// directives are among them, so two lines at one position see the same
+    /// [`ObjectMacroTimeline::in_force`] for every name: a caller asking the
+    /// same question at many calls can answer it once per position. A file
+    /// defining one name under thousands of `#ifdef` arms has every
+    /// alternative in force at each call after them, and walking them all at
+    /// each call is quadratic in the file.
+    pub fn position(&self, line: usize) -> usize {
+        self.directive_lines.partition_point(|&l| l < line)
     }
 
     /// Every name the file defines or undefines.
@@ -637,6 +651,8 @@ impl ObjectMacroTimeline {
     /// it, each replacing the alternatives it overrides. A line past the end
     /// gives what the file leaves in force for whoever includes it.
     pub fn in_force(&self, name: &str, line: usize) -> InForce {
+        #[cfg(test)]
+        IN_FORCE_WALKS.with(|n| n.set(n.get() + 1));
         let Some(timeline) = self.names.get(name) else {
             return InForce {
                 bodies: Vec::new(),
@@ -1271,6 +1287,19 @@ fn contains_top_level_keyword(s: &str, kw: &str) -> bool {
 }
 
 #[cfg(test)]
+thread_local! {
+    /// How many times [`ObjectMacroTimeline::in_force`] walked a name's
+    /// alternatives on this thread.
+    static IN_FORCE_WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// [`ObjectMacroTimeline::in_force`] walks on this thread since the last
+/// call.
+#[cfg(test)]
+pub(crate) fn take_in_force_walks() -> usize {
+    IN_FORCE_WALKS.with(|n| n.replace(0))
+}
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1455,6 +1484,42 @@ mod tests {
 
     fn bodies(list: &[&str]) -> Vec<String> {
         list.iter().map(|b| b.to_string()).collect()
+    }
+
+    /// Lines at one directive position see the same definitions of every
+    /// name, and each directive starts a new position: across `#define`,
+    /// `#undef`, `#ifdef` arms with and without `#else`, a nested group and
+    /// an include guard, every line's answer for every name is the answer
+    /// at the first line of its position.
+    #[test]
+    fn lines_at_one_position_see_the_same_definitions() {
+        let src = "#ifndef GUARD_H\n#define GUARD_H\n\
+            int a;\n#define M 1\nint b;\n\
+            #ifdef X\n#define M 2\nint c;\n#else\n#undef M\n#endif\n\
+            int d;\n\
+            #ifdef Y\n#  ifdef Z\n#define N (M | 4)\n#  endif\n#define M 3\n#endif\n\
+            int e;\nint f;\n#endif\nint g;\n";
+        let timeline = ObjectMacroTimeline::of(src);
+        let lines = src.lines().count() + 1;
+        let mut first_at: HashMap<usize, usize> = HashMap::new();
+        let mut positions = HashSet::new();
+        for line in 1..=lines + 1 {
+            let position = timeline.position(line);
+            positions.insert(position);
+            let first = *first_at.entry(position).or_insert(line);
+            for name in ["M", "N", "GUARD_H", "UNSEEN"] {
+                assert_eq!(
+                    timeline.in_force(name, line),
+                    timeline.in_force(name, first),
+                    "{name} on line {line} against line {first}"
+                );
+            }
+        }
+        let directives = src
+            .lines()
+            .filter(|l| l.trim_start().starts_with('#'))
+            .count();
+        assert_eq!(positions.len(), directives + 1);
     }
 
     #[test]

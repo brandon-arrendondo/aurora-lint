@@ -33,9 +33,9 @@ use crate::analyze::context::{IncludeClosure, ProjectContext};
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::{macro_forwarding_target, FunctionMacro};
 use crate::analyze::noreturn::{callee_spelling, library_function_replaced_in_every_build};
-use crate::analyze::side_effects::designates_object;
+use crate::analyze::side_effects::designates_object_in;
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, ScopeDeclarations};
 use crate::utility::cert_c::call_roles::is_win32_api;
 use crate::utility::cert_c::registry_access::{self, RegistryAccess};
 use lang_parsing_substrate::query;
@@ -96,9 +96,38 @@ struct FileMacros<'r> {
     reachable: std::cell::OnceCell<MacroBodies>,
     /// Reads `reachable`.
     load: Box<dyn Fn() -> MacroBodies + 'r>,
+    /// Each question's answer per (question, argument text, directive
+    /// position): calls at one position see the same definitions, and a name
+    /// defined under thousands of `#ifdef` arms has all of them in force at
+    /// each call after the arms, so asking at every call was quadratic.
+    answers: std::cell::RefCell<HashMap<AnswerKey, Option<String>>>,
 }
 
+/// A question [`FileMacros::answer`] remembers: its name, the argument text
+/// asked about, and the call's directive position.
+type AnswerKey = (&'static str, String, usize);
+
 impl FileMacros<'_> {
+    /// `ask`'s answer about `text` on `line`, with `ask` given what each name
+    /// may stand for there; remembered as the `question` about `text` at the
+    /// line's directive position.
+    fn answer(
+        &self,
+        question: &'static str,
+        text: &str,
+        line: usize,
+        ask: impl FnOnce(registry_access::Expand) -> Option<String>,
+    ) -> Option<String> {
+        let key = (question, text.to_string(), self.own.position(line));
+        if let Some(known) = self.answers.borrow().get(&key) {
+            return known.clone();
+        }
+        let expand = |t: &str| self.bodies_at(t, line);
+        let answer = ask(&expand);
+        self.answers.borrow_mut().insert(key, answer.clone());
+        answer
+    }
+
     /// Every body `name` may stand for on `line`.
     fn bodies_at(&self, name: &str, line: usize) -> Vec<String> {
         let in_force = self.own.in_force(name, line);
@@ -260,10 +289,21 @@ impl Cwe272 {
             own: ObjectMacroTimeline::of(source),
             reachable: std::cell::OnceCell::new(),
             load: Box::new(|| self.reachable_bodies()),
+            answers: Default::default(),
         };
         let mut replaced: HashMap<String, bool> = HashMap::new();
+        // The file's declarations, read once for every callee resolved.
+        let declarations = ScopeDeclarations::default();
         for call in query::find_descendants_of_kind(*node, "call_expression") {
-            self.check_call(&call, node, source, &macros, &mut replaced, violations);
+            self.check_call(
+                &call,
+                node,
+                source,
+                &macros,
+                &declarations,
+                &mut replaced,
+                violations,
+            );
         }
     }
 
@@ -328,12 +368,14 @@ impl Cwe272 {
         found
     }
 
-    fn check_call(
+    #[allow(clippy::too_many_arguments)]
+    fn check_call<'t>(
         &self,
-        node: &Node,
-        root: &Node,
+        node: &Node<'t>,
+        root: &Node<'t>,
         source: &str,
         macros: &FileMacros<'_>,
+        declarations: &ScopeDeclarations<'t>,
         replaced: &mut HashMap<String, bool>,
         violations: &mut Vec<RuleViolation>,
     ) {
@@ -350,7 +392,7 @@ impl Cwe272 {
             || self.function_macros.borrow().contains_key(&func_name);
         // The callee as a function: a local or parameter of a Win32 name (a
         // function pointer) is not the API, nor a project function (ADR-0006).
-        if !may_reach || designates_object(&callee, source) {
+        if !may_reach || designates_object_in(root, &callee, source, declarations) {
             return;
         }
         let args = match node.child_by_field_name("arguments") {
@@ -369,8 +411,13 @@ impl Cwe272 {
         // (`#define APP_ACCESS KEY_WRITE`) or a replacement list, as the
         // definitions in force at the call give it.
         let line = node.start_position().row + 1;
-        let expand = |t: &str| macros.bodies_at(t, line);
-        let writes = |mask: &str| registry_access::mask_requests_write(mask, &expand);
+        let writes = |mask: &str| {
+            macros
+                .answer("write", mask, line, |expand| {
+                    registry_access::mask_requests_write(mask, expand).then(String::new)
+                })
+                .is_some()
+        };
         // A Win32 name is the API unless the project or this file gives it a
         // meaning of its own; asked only of a name with a row.
         let is_win32_row = registry_access::root_key_call(&func_name).is_some()
@@ -406,14 +453,23 @@ impl Cwe272 {
             };
             // Through casts, parentheses and macros:
             // `(HKEY)(HKEY_LOCAL_MACHINE)` and `ROOT` are the key.
-            let Some(resolved) = registry_access::privileged_root_key(arg_texts[arg_idx], &expand)
-            else {
+            let root_text = arg_texts[arg_idx];
+            let Some(resolved) = macros.answer("root", root_text, line, |expand| {
+                registry_access::privileged_root_key(root_text, expand)
+            }) else {
                 continue;
             };
             let sink = match sink {
                 Ok(sink) => Some(sink),
-                Err(access) => registry_access::call_writes(access, &arg_texts, &expand)
-                    .then(|| func_name.clone()),
+                Err(access) => {
+                    let call = format!("{access:?}\u{1f}{}", arg_texts.join("\u{1f}"));
+                    macros
+                        .answer("call", &call, line, |expand| {
+                            registry_access::call_writes(access, &arg_texts, expand)
+                                .then(String::new)
+                        })
+                        .map(|_| func_name.clone())
+                }
             };
             if let Some(sink) = sink {
                 let via = if sink == func_name {
@@ -446,7 +502,10 @@ impl Cwe272 {
         if is_win32_api(&func_name, SHREG_CREATE) && !replaced {
             if let Some(flag_arg) = arg_nodes.get(4) {
                 let hklm = |t: &str| SHREG_HKLM_FLAGS.contains(&t);
-                if let Some(flag) = registry_access::reaches(arg_texts[4], &expand, &hklm) {
+                let flag = macros.answer("hklm", arg_texts[4], line, |expand| {
+                    registry_access::reaches(arg_texts[4], expand, &hklm)
+                });
+                if let Some(flag) = flag {
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
                         severity: self.severity(),
@@ -470,7 +529,12 @@ impl Cwe272 {
         if is_win32_api(&func_name, SHREG_OPEN) && !replaced {
             if let (Some(flag_arg), Some(mask)) = (arg_nodes.get(4), arg_texts.get(1)) {
                 let set = |t: &str| matches!(t, "TRUE" | "true" | "1");
-                if registry_access::reaches(arg_texts[4], &expand, &set).is_some() && writes(mask) {
+                let ignores_hkcu = macros
+                    .answer("set", arg_texts[4], line, |expand| {
+                        registry_access::reaches(arg_texts[4], expand, &set)
+                    })
+                    .is_some();
+                if ignores_hkcu && writes(mask) {
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
                         severity: self.severity(),

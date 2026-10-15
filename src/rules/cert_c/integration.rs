@@ -924,3 +924,74 @@ fn a_deep_sum_costs_each_rule_work_linear_in_its_length() {
         );
     }
 }
+
+/// One function making `calls` registry calls whose mask is the object-like
+/// macro `M`, written either under `arms` separate `#ifdef` groups, every one
+/// in force at the calls (all `arms` alternatives), or (`arms == 0`) once,
+/// plainly.
+#[cfg(test)]
+fn registry_macro_arms_source(arms: usize, calls: usize) -> String {
+    let mut code = String::from(
+        "typedef void *HKEY;\ntypedef unsigned long DWORD;\ntypedef DWORD REGSAM;\n\
+         typedef long LONG;\ntypedef const char *LPCSTR;\ntypedef HKEY *PHKEY;\n\
+         #define HKEY_LOCAL_MACHINE ((HKEY)(unsigned long)0x80000002)\n\
+         #define KEY_READ 0x20019\n\
+         LONG RegOpenKeyExA(HKEY, LPCSTR, DWORD, REGSAM, PHKEY);\n",
+    );
+    if arms == 0 {
+        code.push_str("#define M KEY_READ\n");
+    }
+    for i in 0..arms {
+        code.push_str(&format!(
+            "#ifdef CFG_{i}\n#define M (KEY_READ | {i})\n#endif\n"
+        ));
+    }
+    code.push_str("void f(void)\n{\n    HKEY k;\n");
+    for _ in 0..calls {
+        code.push_str("    RegOpenKeyExA(HKEY_LOCAL_MACHINE, \"S\", 0, M, &k);\n");
+    }
+    code.push_str("}\n");
+    code
+}
+
+/// A mask macro defined under N separate `#ifdef` groups, every one in force
+/// at each of N registry calls after them, through the whole pipeline: the
+/// prescan's registry-write crediting and CWE-272 itself. Calls at one
+/// directive position see the same definitions, so the alternatives are
+/// walked a bounded number of times however many calls there are, and the
+/// file's top level is walked a bounded number of times, not once per
+/// callee resolved among thousands of `#ifdef` groups. Both per call were
+/// quadratic in the file (counted, not timed). Every call is still
+/// reported: an arm whose `(KEY_READ | i)` carries a write bit makes it a
+/// write in that build.
+#[test]
+fn a_mask_macro_under_thousands_of_arms_is_worked_out_once_per_position() {
+    use crate::analyze::check_macros::take_in_force_walks;
+    use crate::utility::cert_c::ast_utils::take_top_level_walks;
+
+    let work = |arms: usize, calls: usize| {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("registry_arms.c");
+        fs::write(&path, registry_macro_arms_source(arms, calls)).unwrap();
+        take_in_force_walks();
+        take_top_level_walks();
+        let findings = findings_at("CWE-272", &path, "default", "").len();
+        (findings, take_in_force_walks(), take_top_level_walks())
+    };
+    let (small_findings, small_walks, small_top) = work(300, 300);
+    let (large_findings, large_walks, large_top) = work(600, 600);
+    // Arm 2's `(KEY_READ | 2)` carries KEY_SET_VALUE: every call writes
+    // under HKEY_LOCAL_MACHINE in that build.
+    assert_eq!((small_findings, large_findings), (300, 600));
+    assert!(
+        large_walks <= small_walks && large_walks < 64,
+        "in_force walks grew with the calls: {small_walks} -> {large_walks}"
+    );
+    assert!(
+        large_top <= small_top && large_top < 16,
+        "the top level walked per callee: {small_top} -> {large_top}"
+    );
+    // The plain control: KEY_READ alone is no write.
+    let (plain, _, _) = work(0, 300);
+    assert_eq!(plain, 0);
+}

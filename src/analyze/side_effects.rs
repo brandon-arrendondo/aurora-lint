@@ -1183,7 +1183,35 @@ fn is_automatic_local_array(decl: &Node, ident: &Node, source: &str) -> bool {
 /// `next` is not another file's function `next`).
 pub fn designates_object(ident: &Node, source: &str) -> bool {
     let name = get_node_text(ident, source);
-    match ast_utils::resolve_identifier_binding(ident, name, source) {
+    binding_designates_object(
+        ast_utils::resolve_identifier_binding(ident, name, source),
+        name,
+        source,
+    )
+}
+
+/// [`designates_object`] resolving through `declarations`, a caller's
+/// cache over the tree whose root is `root`
+/// ([`ast_utils::ScopeDeclarations`]): asked at every call of a function, a
+/// callee no block binds is looked up among the file's top-level items, and
+/// reading them again per call is quadratic in a file whose top level holds
+/// thousands of `#ifdef` groups.
+pub fn designates_object_in<'a>(
+    root: &Node<'a>,
+    ident: &Node<'a>,
+    source: &str,
+    declarations: &ast_utils::ScopeDeclarations<'a>,
+) -> bool {
+    let name = get_node_text(ident, source);
+    binding_designates_object(
+        declarations.resolve_identifier_binding_in(root, ident, name, source),
+        name,
+        source,
+    )
+}
+
+fn binding_designates_object(binding: Option<IdentifierBinding>, name: &str, source: &str) -> bool {
+    match binding {
         Some(IdentifierBinding::Parameter(_)) => true,
         Some(IdentifierBinding::Local(decl) | IdentifierBinding::Global(decl)) => {
             ast_utils::declaration_declarator_for(&decl, name, source)

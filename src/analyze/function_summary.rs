@@ -5517,6 +5517,11 @@ fn credit_clears_params(
 struct RegistryFileFacts {
     macros: std::cell::OnceCell<crate::analyze::check_macros::ObjectMacroTimeline>,
     replaced: std::cell::RefCell<HashMap<String, bool>>,
+    /// Whether a call writes, per (access row and argument texts, directive
+    /// position): calls at one position see the same definitions, and a name
+    /// defined under thousands of `#ifdef` arms has every one in force at
+    /// each call after them, so working it out per call was quadratic.
+    writes: std::cell::RefCell<HashMap<(String, usize), bool>>,
 }
 
 #[cfg(test)]
@@ -5549,7 +5554,7 @@ fn credit_registry_write_params<'a>(
     summary: &mut FunctionSummary,
 ) {
     use crate::analyze::noreturn::{
-        called_function_name, library_function_replaced_in_every_build,
+        called_function_name_in, library_function_replaced_in_every_build,
     };
     use crate::utility::cert_c::registry_access;
 
@@ -5565,7 +5570,8 @@ fn credit_registry_write_params<'a>(
         if registry_access::root_key_call(text(&function)).is_none() {
             continue;
         }
-        let Some(name) = called_function_name(call, source) else {
+        let file_root = crate::utility::cert_c::ast_utils::tree_root(func_node);
+        let Some(name) = called_function_name_in(&file_root, call, source, declarations) else {
             continue;
         };
         let Some(access) = registry_access::root_key_call(&name) else {
@@ -5605,8 +5611,18 @@ fn credit_registry_write_params<'a>(
             REGISTRY_FILE_READS.with(|n| n.set(n.get() + 1));
             crate::analyze::check_macros::ObjectMacroTimeline::of(source)
         });
-        let expand = |t: &str| macros.in_force(t, line).bodies;
-        if !registry_access::call_writes(access, &arg_texts, &expand) {
+        let key = (
+            format!("{access:?}\u{1f}{}", arg_texts.join("\u{1f}")),
+            macros.position(line),
+        );
+        let known = facts.writes.borrow().get(&key).copied();
+        let writes = known.unwrap_or_else(|| {
+            let expand = |t: &str| macros.in_force(t, line).bodies;
+            let writes = registry_access::call_writes(access, &arg_texts, &expand);
+            facts.writes.borrow_mut().insert(key, writes);
+            writes
+        });
+        if !writes {
             continue;
         }
         let Some(root_arg) = args
