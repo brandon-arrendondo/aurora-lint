@@ -7218,6 +7218,15 @@ fn is_ident_continue(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many aliases [`body_matches_alias_null_check`] searched the body
+    /// for on this thread. A test counts them, since what must hold is one
+    /// search per distinct alias however many times the body copies the
+    /// parameter into it.
+    static ALIAS_NULL_CHECK_SEARCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Detect alias null-check patterns: `TYPE *alias = param;` (or
 /// `alias = param;`) followed by a null check on `alias`. Common in
 /// libcurl/sqlite wrappers that cast-copy the pointer param first, then
@@ -7228,6 +7237,11 @@ fn body_matches_alias_null_check(body_text: &str, param_name: &str) -> bool {
     // the body has a null check on the alias.
     let bytes = body_text.as_bytes();
     let mut search_from = 0;
+    // Each alias is looked for once. The answer depends only on the body
+    // and the alias, and a body that copies the parameter into one local
+    // at every branch would otherwise search the whole body again for each
+    // copy.
+    let mut asked: HashSet<&str> = HashSet::new();
     while search_from < bytes.len() {
         // Find `= param_name` — plain assignment. Must be preceded by non-`=`
         // (to exclude `==`, `!=`) and followed by `;`, `,`, or `)`.
@@ -7280,6 +7294,11 @@ fn body_matches_alias_null_check(body_text: &str, param_name: &str) -> bool {
         }
 
         // Now check if the body null-checks the alias
+        if !asked.insert(alias) {
+            continue;
+        }
+        #[cfg(test)]
+        ALIAS_NULL_CHECK_SEARCHES.with(|n| n.set(n.get() + 1));
         if body_matches_null_check(body_text, alias) {
             return true;
         }
@@ -10740,6 +10759,30 @@ void *extra_leak_marker(void){
             summaries["wipe_second"].clears_params,
             HashSet::from([1usize])
         );
+    }
+
+    /// A body that copies a parameter into the same local at every branch
+    /// searches for a null check on that local once, not once per copy: a
+    /// function of N such branches cost N whole-body searches. Counted rather
+    /// than timed. The answer is unchanged either way: the local's null check
+    /// still credits the parameter, and its absence still does not.
+    #[test]
+    fn repeated_copies_into_one_alias_search_the_body_once() {
+        let branches: String = (0..300)
+            .map(|i| format!("    if (c == {i}) {{ s = q; use(s); }}\n"))
+            .collect();
+        let code = format!(
+            "struct o {{ int x; }};\nint use(struct o *);\n\
+             void unchecked(int c, struct o *q) {{\n    struct o *s = 0;\n{branches}}}\n\
+             void checked(int c, struct o *q) {{\n    struct o *s = 0;\n{branches}    if (s == 0) return;\n}}\n"
+        );
+        ALIAS_NULL_CHECK_SEARCHES.with(|n| n.set(0));
+        let summaries = parse_and_summarize(&code);
+        // One for `unchecked`; for `checked`, one over the body and one over
+        // the body before the first dereference of `q`, which is all of it.
+        assert_eq!(ALIAS_NULL_CHECK_SEARCHES.with(|n| n.get()), 3);
+        assert!(!summaries["unchecked"].checks_null_params.contains(&1));
+        assert!(summaries["checked"].checks_null_params.contains(&1));
     }
 
     /// The registry facts are read once per file, not once per function that
