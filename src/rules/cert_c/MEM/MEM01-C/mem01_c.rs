@@ -18,7 +18,9 @@
 //! local, parameter or member of a local struct dies at function exit, so it
 //! escapes nothing. The destructor idiom is exempt: `free(s->buf); free(s);`
 //! frees the object the member lives in next, so the member dies with it. A
-//! path that ends the process (`exit()`) escapes nothing either. The calls
+//! path that ends the process (`exit()`) escapes nothing either. Handing the
+//! object to a function the file defines whose body never reads that member is
+//! not an escape (`free(c->ssl); engine_deinit(c); free(c);`). The calls
 //! that free are `free`, C23 `free_sized` / `free_aligned_sized` and a
 //! project-declared deallocator.
 
@@ -869,7 +871,7 @@ fn call_can_read_dangling(
             // A callee that designates an object (a function-pointer
             // parameter) or a function-like macro of this file is not the
             // project function of the same spelling (ADR-0006).
-            hands_container
+            (hands_container && !callee_leaves_member_alone(&call, source, site, addr_ctx))
                 || (site.global
                     && crate::analyze::noreturn::called_function_name(&call, source).is_some_and(
                         |callee| {
@@ -878,6 +880,199 @@ fn call_can_read_dangling(
                         },
                     ))
         })
+}
+
+/// Whether `call` hands the object the freed member lives in to a function this
+/// file defines whose body provably leaves the member alone: the destructor
+/// idiom, `free(c->ssl); engine_deinit(c); free(c);`. The callee's parameter
+/// may be dereferenced for other fields, compared with null or passed to a
+/// deallocator; any other use of it (a read of the member, passing it on,
+/// returning it, dereferencing it as a whole, a local of the same name) is
+/// taken as a read. A callee with no single body in this file or a macro is not
+/// proven, so the call still counts as handing the dangling value on. A member
+/// path is followed by its first field: `c->list.head` handed over as `c` is
+/// read by a callee only through `c->list.head` or a prefix of it, and a callee
+/// with one definition in each arm of a conditional must pass in every arm.
+fn callee_leaves_member_alone(
+    call: &Node,
+    source: &str,
+    site: &FreeSite,
+    addr_ctx: &AddressOfCallContext,
+) -> bool {
+    let Some(callee) = crate::analyze::noreturn::called_function_name(call, source) else {
+        return false;
+    };
+    if addr_ctx.is_macro_call(&callee, call.start_byte()) {
+        return false;
+    }
+    let Some(arguments) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let args: Vec<Node> = arguments
+        .named_children(&mut arguments.walk())
+        .filter(|a| a.kind() != "comment")
+        .collect();
+    // The one argument that is a container of the member, and the field the
+    // callee would reach the member through: `pPhrase->doclist.aAll` handed
+    // over as `pPhrase` is reached through `doclist`.
+    let handed: Vec<(usize, &str)> = args
+        .iter()
+        .enumerate()
+        .filter_map(|(i, a)| {
+            let text = compact(get_node_text(&strip_parens_and_casts(a), source));
+            site.containers
+                .iter()
+                .find(|c| **c == text)
+                .map(|c| (i, c.as_str()))
+        })
+        .collect();
+    let [(position, container)] = handed.as_slice() else {
+        return false;
+    };
+    // Only a plain variable is followed into the callee, and the container
+    // must not appear in another argument as well.
+    if container.contains(['.', '>', '[', '(', '*'])
+        || args
+            .iter()
+            .enumerate()
+            .any(|(i, a)| i != *position && mentions_name(a, container, source))
+    {
+        return false;
+    }
+    let Some(field) = site
+        .key
+        .strip_prefix(container)
+        .and_then(|rest| rest.strip_prefix("->").or_else(|| rest.strip_prefix('.')))
+        .filter(|f| !f.is_empty())
+    else {
+        return false;
+    };
+    let mut root = *call;
+    while let Some(p) = root.parent() {
+        root = p;
+    }
+    // A definition under `#if` is no direct child of the file.
+    let definitions: Vec<Node> = query::find_descendants_of_kind(root, "function_definition")
+        .into_iter()
+        .filter(|f| function_definition_name(f, source).as_deref() == Some(callee.as_str()))
+        .collect();
+    // Every definition, for one in each arm of a conditional.
+    !definitions.is_empty()
+        && definitions.iter().all(|definition| {
+            let Some(params) = ast_utils::get_function_parameters(definition, source) else {
+                return false;
+            };
+            let (Some((param, _)), Some(body)) = (
+                params.get(*position),
+                definition.child_by_field_name("body"),
+            ) else {
+                return false;
+            };
+            parameter_never_reads_member(&body, param, field, source)
+        })
+}
+
+fn mentions_name(node: &Node, name: &str, source: &str) -> bool {
+    query::find_first_descendant(*node, |n| {
+        n.kind() == "identifier" && get_node_text(&n, source) == name
+    })
+    .is_some()
+}
+
+fn function_definition_name(function: &Node, source: &str) -> Option<String> {
+    let mut declarator = function.child_by_field_name("declarator")?;
+    while declarator.kind() != "function_declarator" {
+        declarator = declarator.child_by_field_name("declarator")?;
+    }
+    let name = ast_utils::get_identifier_from_declarator(&declarator, source);
+    (!name.is_empty()).then_some(name)
+}
+
+/// Whether, within `body`, every use of the parameter `param` is one that
+/// cannot read `param->field`: a `->` access of another field, a null test, or
+/// the freed argument of a deallocator call.
+fn parameter_never_reads_member(body: &Node, param: &str, field: &str, source: &str) -> bool {
+    // A local or nested declaration of the same name makes the uses
+    // ambiguous.
+    let redeclared = query::find_descendants_of_kind(*body, "declaration")
+        .into_iter()
+        .any(|d| {
+            d.children_by_field_name("declarator", &mut d.walk())
+                .any(|declarator| {
+                    ast_utils::get_identifier_from_declarator(&declarator, source) == param
+                })
+        });
+    if redeclared {
+        return false;
+    }
+    let member: Vec<&str> = field
+        .split(['-', '.', '>'])
+        .filter(|f| !f.is_empty())
+        .collect();
+    query::find_descendants_of_kind(*body, "identifier")
+        .into_iter()
+        .filter(|i| get_node_text(i, source) == param)
+        .all(|ident| {
+            let Some(parent) = ident.parent() else {
+                return false;
+            };
+            match parent.kind() {
+                "field_expression" => access_misses_member(&ident, &member, source),
+                "argument_list" => parent
+                    .parent()
+                    .filter(|c| c.kind() == "call_expression")
+                    .is_some_and(|c| freed_argument(&c, source).is_some_and(|a| a == ident)),
+                "unary_expression" => get_node_text(&parent, source).starts_with('!'),
+                "binary_expression" => {
+                    parent
+                        .child_by_field_name("operator")
+                        .is_some_and(|op| matches!(get_node_text(&op, source), "==" | "!="))
+                        && ["left", "right"].iter().any(|side| {
+                            parent.child_by_field_name(side).is_some_and(|n| {
+                                matches!(get_node_text(&n, source), "NULL" | "0" | "nullptr")
+                            })
+                        })
+                }
+                "condition_clause" | "parenthesized_expression" => parent
+                    .parent()
+                    .is_some_and(|g| g.kind().ends_with("_statement")),
+                _ => false,
+            }
+        })
+}
+
+/// Whether the access chain that starts at `ident` (`p->a.b`, `p->a[i]`) names
+/// a different field than `member` (`["a", "b"]`) at the first place the two
+/// differ: neither is a prefix of the other. Only a `->` off the parameter
+/// itself is followed.
+fn access_misses_member(ident: &Node, member: &[&str], source: &str) -> bool {
+    let mut chain: Vec<String> = Vec::new();
+    let mut current = *ident;
+    while let Some(parent) = current.parent() {
+        if parent.kind() != "field_expression"
+            || parent.child_by_field_name("argument") != Some(current)
+        {
+            break;
+        }
+        let arrow = parent
+            .child_by_field_name("operator")
+            .is_some_and(|op| get_node_text(&op, source) == "->");
+        if chain.is_empty() && !arrow {
+            return false;
+        }
+        let Some(name) = parent.child_by_field_name("field") else {
+            return false;
+        };
+        chain.push(get_node_text(&name, source).to_string());
+        current = parent;
+    }
+    // `p->a[i]` and `(*p->a)` read `a`; the chain ends where the subscript
+    // or dereference begins, which is a prefix of the member either way.
+    !chain.is_empty()
+        && chain
+            .iter()
+            .zip(member)
+            .any(|(accessed, wanted)| accessed != wanted)
 }
 
 // ---------------------------------------------------------------------------
