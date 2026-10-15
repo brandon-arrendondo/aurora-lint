@@ -360,8 +360,19 @@ Override one named option (repeatable); see \-\-list\-options
 .TP
 \fB\-\-check\-config\fR
 Resolve the settings from the manifest and the command line exactly as a scan
-would, validate them, and exit: 0 and one line when valid, nonzero with one
-error per problem otherwise. Scans no files.
+would, validate them, and exit: 0 when valid, nonzero with one error per
+problem otherwise. Scans no files. When valid it prints \fBconfiguration ok\fR,
+then the data model in force and where it came from, then one line per enabled
+rule the policy declines, with the reason:
+.RS
+.nf
+configuration ok
+data model: lp64 (assumed by the preset)
+.fi
+.RE
+.IP
+The warnings a scan would give about an undeclared C library, data model or
+POSIX edition go to stderr, as in a scan.
 .TP
 \fB\-\-write\-config\fR \fIFILE\fR
 Write a complete, commented configuration file for the current settings (the

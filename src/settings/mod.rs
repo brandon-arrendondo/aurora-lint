@@ -2742,10 +2742,17 @@ pub fn render_rst() -> String {
          ``iso`` a limit such as ``INT_MAX`` is unknown, a value is proven to fit a type\n   \
          only within the guaranteed range, and a defect that occurs on some conforming\n   \
          width is reported. Undeclared, the default preset assumes ``lp64`` on a hosted\n   \
-         target; strict and pedantic take ``iso``, and pedantic says it is missing.\n\n   \
+         target; strict and pedantic take ``iso``, and pedantic says it is missing.\n   \
+         Declaring a single integer fact (``--set int_bits=16``) does not declare a\n   \
+         data model: under the default preset the fact overrides one key of the\n   \
+         assumed ``lp64`` bundle and the model's source still reads ``assumed by the\n   \
+         preset``, and under pedantic the other widths stay at ISO C's minimums and\n   \
+         the scan still warns that no data model is declared.\n\n   \
          - Set with ``[environment] data_model`` or ``--data-model``\n   \
          - Part of the settings hash when not ``iso``, with ``preset`` as its source\n     \
-         when the preset assumed it\n   \
+         when the preset assumed it. So an assumed ``lp64`` and a declared one have\n     \
+         different settings hashes although they credit the same widths and give\n     \
+         the same findings: the hash records who chose the model\n   \
          - Basis: C11 5.2.4.2.1 (minimum magnitudes), 6.3.1.1 (rank order) and\n     \
          7.20.1.1 (exact-width types); integer widths are otherwise\n     \
          implementation-defined.\n\n\

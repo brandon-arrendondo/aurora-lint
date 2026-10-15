@@ -589,8 +589,10 @@ fn run() -> Result<i32> {
                 .action(clap::ArgAction::SetTrue)
                 .help(
                     "Resolve the settings from the manifest and the command line exactly as a \
-                     scan would, validate them, and exit: 0 and one line when valid, nonzero \
-                     with one error per problem otherwise. Scans no files",
+                     scan would, validate them, and exit: 0 when valid, printing \
+                     `configuration ok`, the data model in force and where it came from, and \
+                     one line per enabled rule the policy declines; nonzero with one error per \
+                     problem otherwise. Warnings go to stderr. Scans no files",
                 ),
         )
         .arg(
