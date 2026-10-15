@@ -6,7 +6,9 @@
 //! analysis for rules like MEM30-C (use-after-free) and EXP34-C (null deref).
 
 use super::cfg::{BlockId, FunctionCfg};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::rc::Rc;
 use tree_sitter::Node;
 
 /// The kind of definition (what happened to the variable).
@@ -580,42 +582,75 @@ pub fn find_node_at_range<'a>(root: &Node<'a>, start: usize, end: usize) -> Opti
     found.map(|child| find_node_at_range(&child, start, end).unwrap_or(child))
 }
 
-/// [`find_node_at_range`] for many ranges under one root: its children are
-/// collected once, and the child covering each range is found by binary
-/// search on their end bytes, which never decrease from one sibling to the
-/// next. Replaying a block's statements up to each query point finds every
-/// statement this way, so a long function costs a logarithm of its length
-/// per statement instead of a pass over its body.
+/// [`find_node_at_range`] for many ranges under one root. The descent is the
+/// same, but at every level the covering child is found by binary search on
+/// the children's end bytes, which never decrease from one sibling to the
+/// next, and each node's children are collected once, the first time the
+/// descent passes through it. Replaying a block's statements up to each
+/// query point finds every statement this way, so a long block, at the top
+/// of a body or nested in an `if`, a loop or a `case`, costs a logarithm of
+/// its length per statement instead of a pass over it. Build one per body
+/// and reuse it for every block and query over that body.
 pub struct StatementLookup<'a> {
     root: Node<'a>,
-    children: Vec<Node<'a>>,
+    children: RefCell<HashMap<usize, Rc<[Node<'a>]>>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Lookups built and children collected on this thread, for the tests
+    /// that count work rather than time it.
+    static LOOKUP_COUNTS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
 
 impl<'a> StatementLookup<'a> {
-    /// Collect `root`'s children, once.
+    /// A lookup under `root`; nothing is collected until it is asked.
     pub fn new(root: &Node<'a>) -> Self {
-        let mut cursor = root.walk();
-        let children = root.children(&mut cursor).collect();
+        #[cfg(test)]
+        LOOKUP_COUNTS.with(|c| c.set((c.get().0 + 1, c.get().1)));
         Self {
             root: *root,
-            children,
+            children: RefCell::new(HashMap::new()),
         }
     }
 
     /// The node [`find_node_at_range`] finds for `start..end` under the root.
     pub fn find(&self, start: usize, end: usize) -> Option<Node<'a>> {
-        if self.root.start_byte() == start && self.root.end_byte() == end {
-            return Some(self.root);
+        let mut node = self.root;
+        if node.start_byte() == start && node.end_byte() == end {
+            return Some(node);
         }
-        // The first child ending at or after `end` is the first that can
-        // cover the range; a later one covers it only if it also starts by
-        // `start`.
-        let from = self.children.partition_point(|c| c.end_byte() < end);
-        self.children[from..]
-            .iter()
-            .take_while(|c| c.start_byte() <= start)
-            .find(|c| c.end_byte() >= end)
-            .map(|child| find_node_at_range(child, start, end).unwrap_or(*child))
+        let mut found = None;
+        loop {
+            // The first child ending at or after `end` is the first that can
+            // cover the range, and it covers it if it also starts by
+            // `start`: the children before it end too early, and those after
+            // it start no earlier than it does.
+            let children = self.children_of(&node);
+            let from = children.partition_point(|c| c.end_byte() < end);
+            let Some(child) = children.get(from).filter(|c| c.start_byte() <= start) else {
+                // No covering child: the deepest covering node so far is the
+                // best match (none under the root itself).
+                return found;
+            };
+            if child.start_byte() == start && child.end_byte() == end {
+                return Some(*child);
+            }
+            found = Some(*child);
+            node = *child;
+        }
+    }
+
+    /// `node`'s children, collected with a cursor the first time they are
+    /// asked for.
+    fn children_of(&self, node: &Node<'a>) -> Rc<[Node<'a>]> {
+        let mut cache = self.children.borrow_mut();
+        Rc::clone(cache.entry(node.id()).or_insert_with(|| {
+            #[cfg(test)]
+            LOOKUP_COUNTS.with(|c| c.set((c.get().0, c.get().1 + node.child_count())));
+            let mut cursor = node.walk();
+            node.children(&mut cursor).collect()
+        }))
     }
 }
 
@@ -998,6 +1033,185 @@ mod tests {
         let decl = root.child(0).unwrap();
         let found = find_node_at_range(&root, decl.start_byte(), decl.end_byte());
         assert!(found.is_some());
+    }
+
+    /// Lookups built and children collected on this thread since the last
+    /// call.
+    fn take_lookup_counts() -> (usize, usize) {
+        LOOKUP_COUNTS.with(|c| c.replace((0, 0)))
+    }
+
+    /// Every node under `node`, itself included; returns the depth below it.
+    fn all_nodes<'a>(node: Node<'a>, out: &mut Vec<Node<'a>>) -> usize {
+        out.push(node);
+        let mut cursor = node.walk();
+        let mut depth = 0;
+        for child in node.children(&mut cursor) {
+            depth = depth.max(1 + all_nodes(child, out));
+        }
+        depth
+    }
+
+    /// The statements under `node` (children of a block or `case`) and
+    /// their children, found in one walk: `Node::parent` descends from the
+    /// root, so asking it per node would cost the square of the depth.
+    fn statement_level<'a>(node: Node<'a>, in_block: bool, out: &mut Vec<Node<'a>>) {
+        let block = matches!(node.kind(), "compound_statement" | "case_statement");
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if block || in_block {
+                out.push(child);
+            }
+            statement_level(child, block, out);
+        }
+    }
+
+    /// The ranges a replay may ask about under `body`: the body's own and
+    /// each statement's and its children's, as their range, an empty range
+    /// at their start, and their range less its first byte, so exact
+    /// matches, points and ranges no node has exactly are all asked.
+    fn query_ranges(body: Node) -> Vec<(usize, usize)> {
+        let mut nodes = vec![body];
+        statement_level(body, false, &mut nodes);
+        let mut ranges = Vec::new();
+        for n in nodes {
+            let (start, end) = (n.start_byte(), n.end_byte());
+            ranges.push((start, end));
+            ranges.push((start, start));
+            if end > start + 1 {
+                ranges.push((start + 1, end));
+            }
+        }
+        ranges
+    }
+
+    /// [`StatementLookup::find`] answers as [`find_node_at_range`] does, on
+    /// every function body of every C fixture in the repository (preprocessor
+    /// arms, parse errors, labels, `switch` cases, macros, empty and nested
+    /// blocks), with one lookup per body asked every range in it. The
+    /// stack-safety fixtures thousands of levels deep are left out: the
+    /// reference lookup walks the whole depth for each of their ranges, and
+    /// the descent they exercise is the one shallower nesting does.
+    #[test]
+    fn statement_lookup_agrees_with_find_node_at_range_on_the_fixtures() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        for dir in ["tests", "src/rules"] {
+            for entry in walkdir::WalkDir::new(manifest.join(dir)) {
+                let entry = entry.unwrap();
+                if entry
+                    .path()
+                    .extension()
+                    .is_some_and(|e| e == "c" || e == "h")
+                {
+                    files.push(entry.into_path());
+                }
+            }
+        }
+        assert!(files.len() > 1000, "found only {} fixtures", files.len());
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let mut queries = 0;
+        for file in &files {
+            let Ok(code) = std::fs::read(file) else {
+                continue;
+            };
+            let tree = parser.parse(&code, None).unwrap();
+            let mut nodes = Vec::new();
+            if all_nodes(tree.root_node(), &mut nodes) > 500 {
+                continue;
+            }
+            for body in nodes
+                .iter()
+                .filter(|n| n.kind() == "function_definition")
+                .filter_map(|f| f.child_by_field_name("body"))
+            {
+                let lookup = StatementLookup::new(&body);
+                for (start, end) in query_ranges(body) {
+                    queries += 1;
+                    assert_eq!(
+                        lookup.find(start, end).map(|n| n.id()),
+                        find_node_at_range(&body, start, end).map(|n| n.id()),
+                        "{}: range {start}..{end}",
+                        file.display()
+                    );
+                }
+            }
+        }
+        assert!(queries > 50_000, "asked only {queries} ranges");
+    }
+
+    /// A body of `statements` assignments, at its top level or inside an
+    /// `if`.
+    fn long_block(statements: usize, nested: bool) -> String {
+        let block: String = (0..statements).map(|i| format!("x = {i};\n")).collect();
+        if nested {
+            format!("void f(int c) {{ int x; if (c) {{\n{block}}} }}\n")
+        } else {
+            format!("void f(void) {{ int x;\n{block}}}\n")
+        }
+    }
+
+    /// Finding every statement of a long block, flat or nested one level
+    /// down, collects each node's children at most once: the work grows
+    /// with the block, where a linear scan of the siblings per statement
+    /// grows with its square.
+    #[test]
+    fn statement_lookup_collects_each_node_s_children_once() {
+        for nested in [false, true] {
+            let code = long_block(2_000, nested);
+            let (tree, _) = parse_function(&code);
+            let body = get_func_node(&tree)
+                .and_then(|f| f.child_by_field_name("body"))
+                .unwrap();
+            let mut nodes = Vec::new();
+            all_nodes(body, &mut nodes);
+            let statements: Vec<Node> = nodes
+                .iter()
+                .filter(|n| n.kind() == "expression_statement")
+                .copied()
+                .collect();
+            assert_eq!(statements.len(), 2_000);
+            take_lookup_counts();
+            let lookup = StatementLookup::new(&body);
+            for _ in 0..3 {
+                for s in &statements {
+                    assert_eq!(
+                        lookup.find(s.start_byte(), s.end_byte()).map(|n| n.id()),
+                        Some(s.id())
+                    );
+                }
+            }
+            let (built, collected) = take_lookup_counts();
+            assert_eq!(built, 1);
+            assert!(
+                collected <= nodes.len(),
+                "nested={nested}: collected {collected} children for {} nodes",
+                nodes.len()
+            );
+        }
+    }
+
+    /// The null-state and init-state worklists build one lookup per
+    /// function, not one per block per iteration: a function of two
+    /// thousand small `if` blocks builds a handful.
+    #[test]
+    fn dataflow_worklists_build_one_statement_lookup_per_body() {
+        let ifs: String = (0..2_000)
+            .map(|i| format!("    if (c == {i}) {{ p = q; }}\n"))
+            .collect();
+        let code = format!("void f(int c, char *q) {{\n    char *p = 0;\n{ifs}    *p = 0;\n}}\n");
+        let (tree, source) = parse_function(&code);
+        let func = get_func_node(&tree).unwrap();
+        let cfg = build_function_cfg(&func, &source).unwrap();
+        assert!(cfg.blocks.len() > 2_000);
+        take_lookup_counts();
+        crate::analyze::null_state::analyze_null_states(&cfg, &func, &source, &HashMap::new());
+        let (built, _) = take_lookup_counts();
+        assert!(built <= 2, "null-state built {built} lookups");
+        crate::analyze::init_state::analyze_init_states(&cfg, &func, &source);
+        let (built, _) = take_lookup_counts();
+        assert!(built <= 2, "init-state built {built} lookups");
     }
 
     #[test]

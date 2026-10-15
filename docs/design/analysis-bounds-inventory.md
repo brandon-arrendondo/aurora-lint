@@ -28,7 +28,10 @@ Kinds:
 ## Measurements behind the defaults (one node, not project figures)
 
 - **Step budget.** The busiest unit of work across the twelve corpora took
-  about 126,000 checkpoint steps (EXP34-C on lua's `lvm.c`). With the
+  about 125,000 checkpoint steps (MSC12-C on hostap's `ctrl_iface.c`),
+  measured again once the init-state, null-state and value-range block
+  replays took a step per statement; before them it was about 126,000
+  (EXP34-C on lua's `lvm.c`). With the
   value-range and init-state iteration caps raised a hundredfold, the
   busiest took 5.5 million steps. So the 50 million default leaves about
   two orders of magnitude of headroom on real code.
@@ -76,6 +79,11 @@ Kinds:
 - the reaching-definitions, null-state, init-state and value-range
   worklists;
 - CFG construction (once per statement);
+- the block replays behind the init-state, null-state and value-range
+  queries (`get_var_info_at_with_config`, `is_null_deref_at`,
+  `get_var_state_at`, `get_var_range_at` and `eval_expr_range_at`; once per
+  replayed statement): each query replays its block from the top, so a
+  block of n statements costs n² over its queries;
 - macro rescans;
 - the unknown-identifier repair loop;
 - the per-expression loops of INT02-C, INT30-C and INT32-C (once per

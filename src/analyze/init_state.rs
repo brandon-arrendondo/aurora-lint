@@ -544,13 +544,12 @@ pub struct InitAnalysisConfig {
 fn apply_transfer(
     block: &BasicBlock,
     entry_state: &InitStateMap,
-    body: &Node,
+    statements: &StatementLookup,
     source: &str,
     tracked_vars: &mut HashSet<String>,
     config: &InitAnalysisConfig,
 ) -> InitStateMap {
     let mut state = entry_state.clone();
-    let statements = StatementLookup::new(body);
     for &(start, end) in &block.statements {
         if let Some(stmt_node) = statements.find(start, end) {
             process_statement(&stmt_node, source, &mut state, tracked_vars, config);
@@ -2129,10 +2128,12 @@ pub fn analyze_init_states_with_statics(
 
     // Entry block gets initial state
     entry_states.insert(cfg.entry, initial_state.clone());
+    // One lookup for the body, shared by every block's transfer.
+    let statements = StatementLookup::new(&body);
     let entry_exit = apply_transfer(
         &cfg.blocks[cfg.entry],
         &initial_state,
-        &body,
+        &statements,
         source,
         &mut tracked_vars,
         config,
@@ -2247,7 +2248,14 @@ pub fn analyze_init_states_with_statics(
 
         // Compute exit state
         let block = &cfg.blocks[block_id];
-        let new_exit = apply_transfer(block, &new_entry, &body, source, &mut tracked_vars, config);
+        let new_exit = apply_transfer(
+            block,
+            &new_entry,
+            &statements,
+            source,
+            &mut tracked_vars,
+            config,
+        );
 
         // Check convergence
         let old_exit = exit_states.get(&block_id);

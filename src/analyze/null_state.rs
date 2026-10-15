@@ -385,14 +385,13 @@ fn extract_null_check_var(left: &Node, right: &Node, source: &str) -> Option<Str
 fn apply_transfer(
     block: &BasicBlock,
     entry: &StateMap,
-    body_node: &Node,
+    statements: &StatementLookup,
     source: &str,
     declared_pointers: &mut HashSet<String>,
     summaries: &(impl SummaryLookup + ?Sized),
     policy: NullPolicy,
 ) -> StateMap {
     let mut state = entry.clone();
-    let statements = StatementLookup::new(body_node);
     for &(start, end) in &block.statements {
         if let Some(stmt_node) = statements.find(start, end) {
             process_statement_for_null_state(
@@ -1526,7 +1525,7 @@ pub fn analyze_null_states_with_globals(
     let entry_exit = apply_transfer(
         &cfg.blocks[cfg.entry],
         &initial_state,
-        &body,
+        &StatementLookup::new(&body),
         source,
         &mut declared_pointers,
         summaries,
@@ -1663,6 +1662,8 @@ fn run_null_state_worklist(
     proven_nonnull_params: &HashSet<String>,
     policy: NullPolicy,
 ) {
+    // One lookup for the body, shared by every block's transfer.
+    let statements = StatementLookup::new(body);
     // Worklist — companion set for O(1) membership test instead of O(N) VecDeque::contains.
     let mut worklist: VecDeque<BlockId> = VecDeque::new();
     let mut in_worklist: HashSet<BlockId> = HashSet::new();
@@ -1721,7 +1722,7 @@ fn run_null_state_worklist(
         let new_exit = apply_transfer(
             block,
             &new_entry,
-            body,
+            &statements,
             source,
             declared_pointers,
             summaries,
