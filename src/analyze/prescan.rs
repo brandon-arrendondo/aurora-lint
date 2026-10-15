@@ -1797,7 +1797,12 @@ fn compute_concurrency_reachable(
 ) -> HashSet<String> {
     let mut roots: HashSet<String> =
         crate::analyze::concurrency_roots::open_caller_set_roots(function_summaries.iter());
+    // A root is a name, so a second path to one file adds none.
+    let mut seen: HashSet<String> = HashSet::new();
     for file_path in source_files {
+        if !seen.insert(crate::analyze::compile_commands::real_path(file_path)) {
+            continue;
+        }
         if let Ok((tree, source)) = parser.parse_file(&file_path.to_string_lossy()) {
             crate::analyze::concurrency_roots::collect_concurrency_roots(
                 &tree.root_node(),
@@ -4202,10 +4207,27 @@ fn propagate_param_buffer_sizes(
                 .collect()
         };
 
+        // Every path to one file (a tree that links one amalgamation into each
+        // of its examples) collects the same sites under the same seeds, so a
+        // pass parses it once and gives each path its own copy, which keeps
+        // each path's call sites counted as before.
+        let mut collected_this_pass: HashMap<String, Option<CalleeBufArgs>> = HashMap::new();
         for file_path in relevant_files {
-            if let Ok((tree, source)) = parser.parse_file(&file_path.to_string_lossy()) {
+            let file_key = crate::analyze::compile_commands::real_path(file_path);
+            if let Some(collected) = collected_this_pass.get(&file_key) {
+                if let Some(file_fresh) = collected {
+                    per_file_cache.insert(file_path.clone(), file_fresh.clone());
+                }
+                continue;
+            }
+            #[cfg(test)]
+            BUFFER_ARG_COLLECTIONS.with(|c| c.borrow_mut().push(file_key.clone()));
+            let Ok((tree, source)) = parser.parse_file(&file_path.to_string_lossy()) else {
+                collected_this_pass.insert(file_key, None);
+                continue;
+            };
+            {
                 let root = tree.root_node();
-                let file_key = crate::analyze::compile_commands::real_path(file_path);
                 let scope: FileScope<'_> = scoped_by_file
                     .get(&file_key)
                     .map(|names| (file_key.as_str(), names));
@@ -4225,6 +4247,7 @@ fn propagate_param_buffer_sizes(
                         })
                         .collect();
                 }
+                collected_this_pass.insert(file_key.clone(), Some(file_fresh.clone()));
                 per_file_cache.insert(file_path.clone(), file_fresh);
             }
         }
@@ -4828,6 +4851,16 @@ fn propagate_param_null_states(
     header_declared: &HashSet<String>,
     scoped_by_file: &HashMap<String, HashSet<String>>,
 ) {
+    // Each file's call sites from the last pass that collected them, by real
+    // path. A file's collection reads nothing of the snapshot but the seeds
+    // of the functions it defines, so a pass whose seeds for those are
+    // unchanged gets the same call sites back without parsing the file
+    // again; and every path to one file (a tree that links one amalgamation
+    // into each of its examples) parses once a pass, not once per path.
+    // The cache lives for the whole propagation: one set of call sites per
+    // real file, plus a copy of the seeds each file read, so peak memory
+    // grows by about one tree's call sites.
+    let mut per_file_cache: HashMap<String, FileCallSites> = HashMap::new();
     for _pass in 0..MAX_PROPAGATION_PASSES {
         // Snapshot the states that may be seeded, before re-collection. Not the
         // whole aggregate: see `seedable_param_states`.
@@ -4850,48 +4883,38 @@ fn propagate_param_null_states(
         let mut new_callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
 
         for file_path in source_files {
-            if let Ok((tree, source)) = parser.parse_file(&file_path.to_string_lossy()) {
-                let root = tree.root_node();
-                // A file that scopes nothing collects straight into the shared
-                // maps, as before. One that does collects into its own and has
-                // its callee keys scoped on the way out, so a call to its own
-                // `static` is not pooled with a same-named static elsewhere --
-                // and so the seeding above, which reads the ENCLOSING
-                // function's states, finds that file's definition rather than
-                // another file's.
-                let file_key = crate::analyze::compile_commands::real_path(file_path);
-                let scope: FileScope<'_> = scoped_by_file
-                    .get(&file_key)
-                    .map(|names| (file_key.as_str(), names));
-                if scope.is_none() {
-                    collect_callsite_args_with_param_states(
-                        &root,
-                        &source,
-                        &param_states_snapshot,
-                        None,
-                        &mut new_callsite_args,
-                        &mut new_callsite_field_args,
-                        &mut new_callsite_pointee_args,
-                    );
-                    continue;
-                }
-                let mut file_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
-                collect_callsite_args_with_param_states(
-                    &root,
-                    &source,
+            let file_key = crate::analyze::compile_commands::real_path(file_path);
+            let reusable = per_file_cache
+                .get(&file_key)
+                .is_some_and(|cached| cached.reads_the_same_seeds(&param_states_snapshot));
+            if !reusable {
+                let collected = collect_file_call_sites(
+                    file_path,
+                    &file_key,
+                    parser,
                     &param_states_snapshot,
-                    scope,
-                    &mut file_args,
-                    &mut new_callsite_field_args,
-                    &mut new_callsite_pointee_args,
+                    scoped_by_file,
                 );
-                let (_, names) = scope.expect("checked above");
-                for (callee, arg_vecs) in file_args {
-                    new_callsite_args
-                        .entry(scoped_callee(names, Some(file_key.as_str()), callee))
-                        .or_default()
-                        .extend(arg_vecs);
-                }
+                per_file_cache.insert(file_key.clone(), collected);
+            }
+            let cached = &per_file_cache[&file_key];
+            for (callee, arg_vecs) in &cached.args {
+                new_callsite_args
+                    .entry(callee.clone())
+                    .or_default()
+                    .extend(arg_vecs.iter().cloned());
+            }
+            for (callee, arg_vecs) in &cached.field_args {
+                new_callsite_field_args
+                    .entry(callee.clone())
+                    .or_default()
+                    .extend(arg_vecs.iter().cloned());
+            }
+            for (callee, arg_vecs) in &cached.pointee_args {
+                new_callsite_pointee_args
+                    .entry(callee.clone())
+                    .or_default()
+                    .extend(arg_vecs.iter().cloned());
             }
         }
 
@@ -4959,6 +4982,88 @@ fn propagate_param_null_states(
     );
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The real path of each file [`collect_file_call_sites`] parsed on this
+    /// thread, for the tests that count work rather than time it.
+    static CALL_SITE_COLLECTIONS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// The same for the buffer-size propagation's parses.
+    static BUFFER_ARG_COLLECTIONS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The seeds one file's collection looked up, by scoped function name, with
+/// what it found (`None`: no seed).
+type SeedsRead = Vec<(String, Option<HashMap<usize, NullState>>)>;
+
+/// One file's call sites as [`propagate_param_null_states`] collects them,
+/// callee keys already scoped, with the seeds the collection read.
+struct FileCallSites {
+    seeds_read: SeedsRead,
+    args: HashMap<String, Vec<Vec<NullState>>>,
+    field_args: HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
+    pointee_args: HashMap<String, Vec<Vec<NullState>>>,
+}
+
+impl FileCallSites {
+    /// Whether collecting under `snapshot` would read every seed this
+    /// collection read with the same value, and so collect the same sites.
+    fn reads_the_same_seeds(&self, snapshot: &HashMap<String, HashMap<usize, NullState>>) -> bool {
+        self.seeds_read
+            .iter()
+            .all(|(key, seeds)| snapshot.get(key) == seeds.as_ref())
+    }
+}
+
+/// Parse `file_path` and collect its call sites under `snapshot`. A file that
+/// scopes names has its callee keys scoped on the way out, so a call to its
+/// own `static` is not pooled with a same-named static elsewhere -- and the
+/// seeding, which reads the ENCLOSING function's states, finds that file's
+/// definition rather than another file's. A file that does not parse
+/// contributes nothing.
+fn collect_file_call_sites(
+    file_path: &Path,
+    file_key: &str,
+    parser: &mut CParser,
+    snapshot: &HashMap<String, HashMap<usize, NullState>>,
+    scoped_by_file: &HashMap<String, HashSet<String>>,
+) -> FileCallSites {
+    #[cfg(test)]
+    CALL_SITE_COLLECTIONS.with(|c| c.borrow_mut().push(file_key.to_string()));
+    let mut sites = FileCallSites {
+        seeds_read: Vec::new(),
+        args: HashMap::new(),
+        field_args: HashMap::new(),
+        pointee_args: HashMap::new(),
+    };
+    let Ok((tree, source)) = parser.parse_file(&file_path.to_string_lossy()) else {
+        return sites;
+    };
+    let scope: FileScope<'_> = scoped_by_file.get(file_key).map(|names| (file_key, names));
+    collect_callsite_args_with_param_states(
+        &tree.root_node(),
+        &source,
+        snapshot,
+        scope,
+        &mut sites.seeds_read,
+        &mut sites.args,
+        &mut sites.field_args,
+        &mut sites.pointee_args,
+    );
+    if let Some((_, names)) = scope {
+        let mut scoped: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
+        for (callee, arg_vecs) in std::mem::take(&mut sites.args) {
+            scoped
+                .entry(scoped_callee(names, Some(file_key), callee))
+                .or_default()
+                .extend(arg_vecs);
+        }
+        sites.args = scoped;
+    }
+    sites
+}
+
 /// Like `collect_callsite_args_from_tree`, but also seeds function parameters
 /// with their aggregated null states from the first pass. This resolves
 /// parameter forwarding patterns like `void mid(int *p) { low(p); }`.
@@ -4967,6 +5072,7 @@ fn collect_callsite_args_with_param_states(
     source: &str,
     param_states: &HashMap<String, HashMap<usize, NullState>>,
     scope: FileScope<'_>,
+    seeds_read: &mut SeedsRead,
     callsite_args: &mut HashMap<String, Vec<Vec<NullState>>>,
     callsite_field_args: &mut HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
     callsite_pointee_args: &mut HashMap<String, Vec<Vec<NullState>>>,
@@ -4981,9 +5087,10 @@ fn collect_callsite_args_with_param_states(
                     // Extract function name and seed parameter states
                     let func_name = extract_function_name(&child, source);
                     if let Some(func_name) = func_name {
-                        if let Some(func_param_states) =
-                            param_states.get(&scoped_name(scope, &func_name))
-                        {
+                        let key = scoped_name(scope, &func_name);
+                        let seeds = param_states.get(&key);
+                        seeds_read.push((key, seeds.cloned()));
+                        if let Some(func_param_states) = seeds {
                             // Get parameter names for this function
                             let param_names = function_summary::collect_param_names(&child, source);
                             for (idx, name) in param_names.iter().enumerate() {
@@ -5015,6 +5122,7 @@ fn collect_callsite_args_with_param_states(
                     source,
                     param_states,
                     scope,
+                    seeds_read,
                     callsite_args,
                     callsite_field_args,
                     callsite_pointee_args,
@@ -5026,6 +5134,7 @@ fn collect_callsite_args_with_param_states(
                     source,
                     param_states,
                     scope,
+                    seeds_read,
                     callsite_args,
                     callsite_field_args,
                     callsite_pointee_args,
@@ -5037,6 +5146,7 @@ fn collect_callsite_args_with_param_states(
                     source,
                     param_states,
                     scope,
+                    seeds_read,
                     callsite_args,
                     callsite_field_args,
                     callsite_pointee_args,
@@ -12266,5 +12376,111 @@ void caller(char *other) {
             summaries["f"].callsite_param_int_range.get(&0),
             Some(&(0, 50))
         );
+    }
+
+    // -- the null-state propagation's per-file call sites --
+
+    /// Prescan `dir` and return the real path of each file the null-state
+    /// propagation parsed, in order.
+    fn call_site_collections(dir: &Path) -> Vec<String> {
+        parses_while_prescanning(dir).0
+    }
+
+    /// Prescan `dir` and return the real path of each file the null-state
+    /// and the buffer-size propagations parsed, in order.
+    fn parses_while_prescanning(dir: &Path) -> (Vec<String>, Vec<String>) {
+        CALL_SITE_COLLECTIONS.with(|c| c.borrow_mut().clear());
+        BUFFER_ARG_COLLECTIONS.with(|c| c.borrow_mut().clear());
+        prescan_directories(
+            &[dir.to_string_lossy().to_string()],
+            None,
+            &|_, _| false,
+            Default::default(),
+        )
+        .unwrap();
+        (
+            CALL_SITE_COLLECTIONS.with(|c| c.take()),
+            BUFFER_ARG_COLLECTIONS.with(|c| c.take()),
+        )
+    }
+
+    /// `chain.c` forwards a null pointer two calls deep, so the propagation
+    /// takes more than one pass to settle; `other.c` defines no function
+    /// any pass seeds.
+    fn write_chain_and_other(dir: &Path) {
+        std::fs::write(
+            dir.join("chain.c"),
+            "void low(int *p) { *p = 1; }\n\
+             void mid(int *p) { low(p); }\n\
+             void top(int *p) { mid(p); }\n\
+             void entry(void) { top(0); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("other.c"),
+            "void sink(int *q);\nvoid other(int *q) { sink(q); }\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_file_whose_seeds_did_not_change_is_not_parsed_again() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write_chain_and_other(dir.path());
+        let parsed = call_site_collections(dir.path());
+        let count = |name: &str| parsed.iter().filter(|p| p.ends_with(name)).count();
+        assert!(count("chain.c") > 1, "{parsed:?}");
+        assert_eq!(count("other.c"), 1, "{parsed:?}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn every_path_to_one_file_is_parsed_once_a_pass() {
+        let one = tempfile::TempDir::new().unwrap();
+        write_chain_and_other(one.path());
+        let alone = call_site_collections(one.path());
+
+        let linked = tempfile::TempDir::new().unwrap();
+        write_chain_and_other(linked.path());
+        for sub in ["a", "b", "c"] {
+            std::fs::create_dir(linked.path().join(sub)).unwrap();
+            std::os::unix::fs::symlink(
+                linked.path().join("chain.c"),
+                linked.path().join(sub).join("chain.c"),
+            )
+            .unwrap();
+        }
+        let parsed = call_site_collections(linked.path());
+        let chain = |list: &[String]| list.iter().filter(|p| p.ends_with("chain.c")).count();
+        assert!(chain(&alone) > 1, "{alone:?}");
+        assert_eq!(chain(&parsed), chain(&alone), "{parsed:?}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn every_path_to_one_file_is_parsed_once_a_buffer_size_pass() {
+        // mid forwards its parameter to low, and entry passes mid an
+        // 8-byte array; both are static, so entry is every caller, and the
+        // buffer-size propagation runs.
+        let forwarding = "static void low(char *p) { p[0] = 0; }\n\
+                          static void mid(char *p) { low(p); }\n\
+                          void entry(void) { char buf[8]; mid(buf); }\n";
+        let one = tempfile::TempDir::new().unwrap();
+        std::fs::write(one.path().join("fwd.c"), forwarding).unwrap();
+        let (_, alone) = parses_while_prescanning(one.path());
+
+        let linked = tempfile::TempDir::new().unwrap();
+        std::fs::write(linked.path().join("fwd.c"), forwarding).unwrap();
+        for sub in ["a", "b", "c"] {
+            std::fs::create_dir(linked.path().join(sub)).unwrap();
+            std::os::unix::fs::symlink(
+                linked.path().join("fwd.c"),
+                linked.path().join(sub).join("fwd.c"),
+            )
+            .unwrap();
+        }
+        let (_, parsed) = parses_while_prescanning(linked.path());
+        assert!(!alone.is_empty(), "the buffer-size propagation did not run");
+        assert_eq!(parsed.len(), alone.len(), "{parsed:?}");
     }
 }
