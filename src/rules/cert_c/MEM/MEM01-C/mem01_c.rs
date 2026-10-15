@@ -888,7 +888,10 @@ fn call_can_read_dangling(
 /// may be dereferenced for other fields, compared with null or passed to a
 /// deallocator; any other use of it (a read of the member, passing it on,
 /// returning it, dereferencing it as a whole, a local of the same name) is
-/// taken as a read. A callee with no single body in this file or a macro is not
+/// taken as a read, as is any macro in the body whose replacement spells the
+/// parameter, a field that shares storage with the member in a union, and a
+/// file-scope pointer variable (the caller may have stored the object there). A
+/// callee with no single body in this file or a macro is not
 /// proven, so the call still counts as handing the dangling value on. A member
 /// path is followed by its first field: `c->list.head` handed over as `c` is
 /// read by a callee only through `c->list.head` or a prefix of it, and a callee
@@ -951,25 +954,182 @@ fn callee_leaves_member_alone(
     while let Some(p) = root.parent() {
         root = p;
     }
-    // A definition under `#if` is no direct child of the file.
+    // A definition under `#if` is no direct child of the file. One in a region
+    // the file proves dead never compiles, so it is no body for the call.
+    let dead = crate::analyze::dead_regions::DeadRegions::of(source);
     let definitions: Vec<Node> = query::find_descendants_of_kind(root, "function_definition")
         .into_iter()
         .filter(|f| function_definition_name(f, source).as_deref() == Some(callee.as_str()))
+        .filter(|f| !dead.contains_node(f))
         .collect();
+    if definitions.is_empty() {
+        return false;
+    }
+    // A definition under a conditional leaves builds without it, where the
+    // callee is whatever a live declaration alone names: not a body to read.
+    if definitions.iter().any(|d| under_conditional(d, source))
+        && query::find_descendants_of_kind(root, "declaration")
+            .into_iter()
+            .any(|d| declares_function(&d, &callee, source) && !dead.contains_node(&d))
+    {
+        return false;
+    }
+    let scope = CalleeScope {
+        macros: macros_spelling_param_names(source),
+        unions: union_field_sets(root, source),
+        globals: file_scope_pointer_variables(root, source),
+    };
     // Every definition, for one in each arm of a conditional.
-    !definitions.is_empty()
-        && definitions.iter().all(|definition| {
-            let Some(params) = ast_utils::get_function_parameters(definition, source) else {
-                return false;
-            };
-            let (Some((param, _)), Some(body)) = (
-                params.get(*position),
-                definition.child_by_field_name("body"),
-            ) else {
-                return false;
-            };
-            parameter_never_reads_member(&body, param, field, source)
+    definitions.iter().all(|definition| {
+        let Some(params) = ast_utils::get_function_parameters(definition, source) else {
+            return false;
+        };
+        let (Some((param, _)), Some(body)) = (
+            params.get(*position),
+            definition.child_by_field_name("body"),
+        ) else {
+            return false;
+        };
+        parameter_never_reads_member(&body, param, field, source, &scope)
+    })
+}
+
+/// What a callee's body is read against besides its own text: the macros
+/// whose replacement spells a name, the fields that share storage, and the
+/// pointer variables any function can reach.
+struct CalleeScope {
+    /// Macro name -> identifiers its definitions (any arm) spell.
+    macros: HashMap<String, HashSet<String>>,
+    /// The direct field names of each union the file declares.
+    unions: Vec<HashSet<String>>,
+    /// File-scope variables of pointer type.
+    globals: HashSet<String>,
+}
+
+/// Whether `node` sits in a branch of an `#if` chain that is not an include
+/// guard.
+fn under_conditional(node: &Node, source: &str) -> bool {
+    let mut current = *node;
+    while let Some(parent) = current.parent() {
+        if matches!(
+            parent.kind(),
+            "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef" | "preproc_else"
+        ) && !ast_utils::is_include_guard(&parent, source)
+        {
+            return true;
+        }
+        current = parent;
+    }
+    false
+}
+
+/// Whether `declaration` declares a function called `name` (a prototype).
+fn declares_function(declaration: &Node, name: &str, source: &str) -> bool {
+    declaration
+        .children_by_field_name("declarator", &mut declaration.walk())
+        .any(|d| {
+            let mut inner = d;
+            loop {
+                if inner.kind() == "function_declarator" {
+                    return ast_utils::get_identifier_from_declarator(&inner, source) == name;
+                }
+                match crate::utility::cert_c::declarator_utils::inner_declarator(&inner) {
+                    Some(next) => inner = next,
+                    None => return false,
+                }
+            }
         })
+}
+
+/// For each macro the file defines in any arm (a `#define` inside a function
+/// body included), the identifiers its replacement list spells, closed over
+/// macros that spell other macros.
+fn macros_spelling_param_names(source: &str) -> HashMap<String, HashSet<String>> {
+    use crate::analyze::check_macros::{collect_macro_definitions, MacroDefinition};
+    let mut spelled: HashMap<String, HashSet<String>> = HashMap::new();
+    for (name, definitions) in collect_macro_definitions(source) {
+        let entry = spelled.entry(name).or_default();
+        for definition in definitions {
+            match definition {
+                MacroDefinition::Function { body, .. } | MacroDefinition::Object { body } => {
+                    entry.extend(identifiers_in(&body));
+                }
+                // Unreadable: it may spell anything.
+                MacroDefinition::Opaque => {
+                    entry.insert("*".to_string());
+                }
+            }
+        }
+    }
+    loop {
+        let snapshot = spelled.clone();
+        let mut grew = false;
+        for names in spelled.values_mut() {
+            let inherited: Vec<String> = names
+                .iter()
+                .filter_map(|n| snapshot.get(n))
+                .flat_map(|s| s.iter().cloned())
+                .collect();
+            for n in inherited {
+                grew |= names.insert(n);
+            }
+        }
+        if !grew {
+            return spelled;
+        }
+    }
+}
+
+fn identifiers_in(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty() && !w.starts_with(|c: char| c.is_ascii_digit()))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The field names declared directly in each union of the file: storage
+/// shared by those fields.
+fn union_field_sets(root: Node, source: &str) -> Vec<HashSet<String>> {
+    query::find_descendants_of_kind(root, "union_specifier")
+        .into_iter()
+        .filter_map(|u| u.child_by_field_name("body"))
+        .map(|body| {
+            body.named_children(&mut body.walk())
+                .filter(|f| f.kind() == "field_declaration")
+                .flat_map(|f| {
+                    f.children_by_field_name("declarator", &mut f.walk())
+                        .filter_map(|d| {
+                            query::find_first_descendant(d, |n| n.kind() == "field_identifier")
+                                .or_else(|| (d.kind() == "field_identifier").then_some(d))
+                        })
+                        .map(|n| get_node_text(&n, source).to_string())
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The file-scope variables declared with a pointer: another function may have
+/// been handed the object through one.
+fn file_scope_pointer_variables(root: Node, source: &str) -> HashSet<String> {
+    ast_utils::top_level_items(root)
+        .filter(|item| item.kind() == "declaration")
+        .flat_map(|item| {
+            item.children_by_field_name("declarator", &mut item.walk())
+                .filter(|d| {
+                    d.kind() == "pointer_declarator"
+                        || query::find_first_descendant(*d, |n| n.kind() == "pointer_declarator")
+                            .is_some()
+                })
+                .filter(|d| {
+                    query::find_first_descendant(*d, |n| n.kind() == "function_declarator")
+                        .is_none()
+                })
+                .map(|d| ast_utils::get_identifier_from_declarator(&d, source))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 fn mentions_name(node: &Node, name: &str, source: &str) -> bool {
@@ -991,7 +1151,13 @@ fn function_definition_name(function: &Node, source: &str) -> Option<String> {
 /// Whether, within `body`, every use of the parameter `param` is one that
 /// cannot read `param->field`: a `->` access of another field, a null test, or
 /// the freed argument of a deallocator call.
-fn parameter_never_reads_member(body: &Node, param: &str, field: &str, source: &str) -> bool {
+fn parameter_never_reads_member(
+    body: &Node,
+    param: &str,
+    field: &str,
+    source: &str,
+    scope: &CalleeScope,
+) -> bool {
     // A local or nested declaration of the same name makes the uses
     // ambiguous.
     let redeclared = query::find_descendants_of_kind(*body, "declaration")
@@ -1009,6 +1175,21 @@ fn parameter_never_reads_member(body: &Node, param: &str, field: &str, source: &
         .split(['-', '.', '>'])
         .filter(|f| !f.is_empty())
         .collect();
+    // A macro that spells the parameter reads it wherever it is used, and a
+    // pointer variable of the file may hold the object.
+    let hidden_read = query::find_descendants_of_kind(*body, "identifier")
+        .into_iter()
+        .map(|i| get_node_text(&i, source))
+        .any(|name| {
+            scope.globals.contains(name)
+                || scope
+                    .macros
+                    .get(name)
+                    .is_some_and(|spelled| spelled.contains(param) || spelled.contains("*"))
+        });
+    if hidden_read {
+        return false;
+    }
     query::find_descendants_of_kind(*body, "identifier")
         .into_iter()
         .filter(|i| get_node_text(i, source) == param)
@@ -1017,7 +1198,7 @@ fn parameter_never_reads_member(body: &Node, param: &str, field: &str, source: &
                 return false;
             };
             match parent.kind() {
-                "field_expression" => access_misses_member(&ident, &member, source),
+                "field_expression" => access_misses_member(&ident, &member, source, scope),
                 "argument_list" => parent
                     .parent()
                     .filter(|c| c.kind() == "call_expression")
@@ -1033,9 +1214,17 @@ fn parameter_never_reads_member(body: &Node, param: &str, field: &str, source: &
                             })
                         })
                 }
-                "condition_clause" | "parenthesized_expression" => parent
+                // Only the condition of a branch or loop: `return (p);`
+                // hands the object on.
+                "condition_clause" => parent
                     .parent()
                     .is_some_and(|g| g.kind().ends_with("_statement")),
+                "parenthesized_expression" => parent.parent().is_some_and(|g| {
+                    matches!(
+                        g.kind(),
+                        "if_statement" | "while_statement" | "do_statement"
+                    ) && g.child_by_field_name("condition") == Some(parent)
+                }),
                 _ => false,
             }
         })
@@ -1045,7 +1234,7 @@ fn parameter_never_reads_member(body: &Node, param: &str, field: &str, source: &
 /// a different field than `member` (`["a", "b"]`) at the first place the two
 /// differ: neither is a prefix of the other. Only a `->` off the parameter
 /// itself is followed.
-fn access_misses_member(ident: &Node, member: &[&str], source: &str) -> bool {
+fn access_misses_member(ident: &Node, member: &[&str], source: &str, scope: &CalleeScope) -> bool {
     let mut chain: Vec<String> = Vec::new();
     let mut current = *ident;
     while let Some(parent) = current.parent() {
@@ -1069,10 +1258,13 @@ fn access_misses_member(ident: &Node, member: &[&str], source: &str) -> bool {
     // `p->a[i]` and `(*p->a)` read `a`; the chain ends where the subscript
     // or dereference begins, which is a prefix of the member either way.
     !chain.is_empty()
-        && chain
-            .iter()
-            .zip(member)
-            .any(|(accessed, wanted)| accessed != wanted)
+        && chain.iter().zip(member).any(|(accessed, wanted)| {
+            accessed != wanted
+                && !scope
+                    .unions
+                    .iter()
+                    .any(|u| u.contains(accessed) && u.contains(*wanted))
+        })
 }
 
 // ---------------------------------------------------------------------------
