@@ -485,9 +485,13 @@ settings key and a one-line description of each. A key at its built-in default
 is commented out; with <code class="docutils literal notranslate"><span class="pre">--data-model</span> <span class="pre">X</span></code> or <code class="docutils literal notranslate"><span class="pre">--set</span></code> the data model’s bundle
 values are active lines marked <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">from</span> <span class="pre">data</span> <span class="pre">model:</span> <span class="pre">X</span></code>, and a fact no data model sets
 is written commented out as <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">unknown</span> <span class="pre">unless</span> <span class="pre">declared</span></code>. The data model the
-default preset assumes is not written as a declaration, and neither is one a
-compile database states; a declared one is, <code class="docutils literal notranslate"><span class="pre">iso</span></code> too under the default
-preset, where leaving it out would assume <code class="docutils literal notranslate"><span class="pre">lp64</span></code>. It is generated from
+preset uses when none is declared is shown but commented out, with the reason:
+<code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">data_model</span> <span class="pre">=</span> <span class="pre">&quot;lp64&quot;</span>&#160; <span class="pre">#</span> <span class="pre">assumed</span> <span class="pre">by</span> <span class="pre">the</span> <span class="pre">default</span> <span class="pre">preset;</span> <span class="pre">declare</span> <span class="pre">it</span> <span class="pre">to</span> <span class="pre">make</span> <span class="pre">it</span>
+<span class="pre">yours</span></code> under the default preset, <code class="docutils literal notranslate"><span class="pre">iso</span></code> with the ISO C minimums under strict
+and pedantic. Writing the file therefore declares nothing (an assumed and a
+declared <code class="docutils literal notranslate"><span class="pre">lp64</span></code> hash differently), and neither is a model a compile database
+states written as a declaration; a declared one is, <code class="docutils literal notranslate"><span class="pre">iso</span></code> too under the
+default preset, where leaving it out would assume <code class="docutils literal notranslate"><span class="pre">lp64</span></code>. It is generated from
 the same tables as <code class="docutils literal notranslate"><span class="pre">--list-options</span></code> and the validation, so it cannot drift
 from them, and the file it writes passes <code class="docutils literal notranslate"><span class="pre">--check-config</span></code> unchanged and
 resolves to exactly the facts of running without it (or with the same
