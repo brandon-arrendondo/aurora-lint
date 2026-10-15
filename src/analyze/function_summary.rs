@@ -6223,7 +6223,15 @@ fn param_behind_local<'a>(
     let copy = match LOCAL_COPIES.with(|c| c.borrow().get(&key).copied()) {
         Some(known) => known,
         None => {
-            let found = local_copy(decl, &name, body, source, params, allow_offset);
+            let found = local_copy(
+                decl,
+                &name,
+                body,
+                source,
+                params,
+                allow_offset,
+                declarations,
+            );
             LOCAL_COPIES.with(|c| c.borrow_mut().insert(key, found));
             found
         }
@@ -6239,20 +6247,22 @@ fn param_behind_local<'a>(
 /// from the use site: the start of its one set and the parameter that set
 /// copies, or `None` when it is set more than once, written otherwise or has
 /// its address taken.
-fn local_copy(
-    decl: Node,
+fn local_copy<'a>(
+    decl: Node<'a>,
     name: &str,
-    body: &Node,
+    body: &Node<'a>,
     source: &str,
     params: &[String],
     allow_offset: bool,
+    declarations: &crate::utility::cert_c::ast_utils::ScopeDeclarations<'a>,
 ) -> LocalCopy {
     use crate::utility::cert_c::ast_utils;
     use lang_parsing_substrate::query;
     let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
     let root = ast_utils::tree_root(body);
-    let binds_to_decl = |n: &Node| {
-        ast_utils::find_enclosing_declaration_for_identifier_in(&root, n, name, source)
+    let binds_to_decl = |n: &Node<'a>| {
+        declarations
+            .find_enclosing_declaration_for_identifier_in(&root, n, name, source)
             .is_some_and(|d| d.id() == decl.id())
     };
 
