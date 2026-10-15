@@ -8307,6 +8307,8 @@ fn mem01_a_destructor_callee_is_read_with_the_headers_it_includes() {
         "union_tag_in_header",
         "global_in_header",
         "anonymous_union_in_header_struct",
+        "object_macro_in_header_naming_a_header_global",
+        "object_macro_in_header_naming_an_object_another_macro_declares",
     ] {
         assert_eq!(
             mem01_project_findings("mem01_destructor_headers", case),
@@ -8318,6 +8320,7 @@ fn mem01_a_destructor_callee_is_read_with_the_headers_it_includes() {
         "struct_in_header",
         "anonymous_struct_in_header_struct",
         "macro_in_unincluded_header",
+        "object_macro_in_header_naming_only_constants",
     ] {
         assert_eq!(
             mem01_project_findings("mem01_destructor_headers", case),
