@@ -41,7 +41,7 @@
 //! imprecision have been acceptable for the rules using it, and the AST form
 //! needs no CFG build per query.
 
-use super::ast_utils::get_node_text;
+use super::ast_utils::{self, get_node_text};
 use crate::analyze::const_eval::{try_evaluate_expr, MacroConstantMap};
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
@@ -331,9 +331,12 @@ impl<'a> SiteAncestors<'a> {
     }
 }
 
-/// `site`'s ancestors innermost first, each by `parent()`, lazily.
+/// `site`'s ancestors innermost first, from one descent from the tree's
+/// root ([`ast_utils::ancestors`]). A lazy `parent()` climb costs O(depth)
+/// a step, so even a climb that stops at the enclosing function was
+/// O(depth²) from a site deep in an expression.
 fn climb<'a>(site: &Node<'a>) -> impl Iterator<Item = Node<'a>> {
-    std::iter::successors(Some(*site), |n| n.parent()).skip(1)
+    ast_utils::ancestors(site)
 }
 
 /// [`dominating_conditions`] with the ancestors already in hand.

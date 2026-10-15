@@ -30,7 +30,7 @@ use crate::analyze::dead_regions::DeadRegions;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::float_typing::EXTENDED_FLOAT_TYPES;
 use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -253,6 +253,10 @@ pub struct TypeEnv<'a> {
     file_functions: OnceCell<HashMap<String, Option<CType>>>,
     /// The file's tree root, when the caller has it; see [`TypeEnv::in_tree`].
     root: Option<Node<'a>>,
+    /// [`expr_type`]'s answer per node id, kept only with a root: the
+    /// environment then holds the one tree its nodes come from, so an id
+    /// names one node for as long as the environment lives.
+    types: RefCell<HashMap<usize, Option<CType>>>,
 }
 
 impl<'a> TypeEnv<'a> {
@@ -272,6 +276,7 @@ impl<'a> TypeEnv<'a> {
             model,
             file_functions: OnceCell::new(),
             root: None,
+            types: RefCell::new(HashMap::new()),
         }
     }
 
@@ -657,7 +662,26 @@ fn type_descriptor_type(descriptor: &Node, source: &str, env: &TypeEnv) -> Optio
 }
 
 /// The type of the expression `node`, or `None` when it is not in reach.
+///
+/// Remembered per node in an environment with a root
+/// ([`TypeEnv::in_tree`]): a caller asking at every operator of a sum
+/// thousands of terms deep had each one type its whole left operand again,
+/// resolving every identifier in it, which was cubic in the sum's length.
 pub fn expr_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
+    if env.root.is_none() {
+        return expr_type_uncached(node, source, env);
+    }
+    if let Some(known) = env.types.borrow().get(&node.id()) {
+        return known.clone();
+    }
+    let t = expr_type_uncached(node, source, env);
+    env.types.borrow_mut().insert(node.id(), t.clone());
+    t
+}
+
+fn expr_type_uncached(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
+    #[cfg(test)]
+    TYPINGS.with(|n| n.set(n.get() + 1));
     match node.kind() {
         "number_literal" => number_literal_type(get_node_text(node, source), env.model),
         // A character constant has type int (C11 6.4.4.4p10).
@@ -1131,8 +1155,52 @@ fn char_literal_type(text: &str, model: IntFacts) -> Option<CType> {
 }
 
 #[cfg(test)]
+thread_local! {
+    /// How many nodes [`expr_type`] typed, rather than remembered, on this
+    /// thread.
+    static TYPINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Nodes typed on this thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_typings() -> usize {
+    TYPINGS.with(|n| n.replace(0))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Typed at every operator of a long sum, through an environment with a
+    /// root, each node is typed once and the answers are the ones an
+    /// environment without a root gives: asked at every operator, each one
+    /// typed its whole left operand again. Counted rather than timed.
+    #[test]
+    fn a_long_sum_types_each_node_once() {
+        let code = format!(
+            "typedef double real;\nreal f(unsigned x, real y) {{ return ({}y) * 2; }}\n",
+            "x + ".repeat(300)
+        );
+        let tree = parse(&code);
+        let root = tree.root_node();
+        let (fields, shapes, aliases) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let typedefs: HashMap<String, String> = [("real".to_string(), "double".to_string())].into();
+        let model = IntFacts::LP64;
+        let plain = TypeEnv::new(&typedefs, &fields, &shapes, &aliases, model);
+        let rooted = TypeEnv::new(&typedefs, &fields, &shapes, &aliases, model).in_tree(root);
+        let sums =
+            lang_parsing_substrate::query::find_descendants_of_kind(root, "binary_expression");
+        assert!(sums.len() > 300);
+        let nodes = lang_parsing_substrate::query::find_descendants(root, |_| true).len();
+        TYPINGS.with(|n| n.set(0));
+        let rooted_types: Vec<_> = sums.iter().map(|n| expr_type(n, &code, &rooted)).collect();
+        assert!(TYPINGS.with(|n| n.get()) <= nodes);
+        // Without a root nothing is remembered, so compare a sample: every
+        // sum is the whole sum's cost again.
+        for (sum, t) in sums.iter().zip(&rooted_types).step_by(25) {
+            assert_eq!(t, &expr_type(sum, &code, &plain));
+        }
+    }
 
     fn parse(code: &str) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();

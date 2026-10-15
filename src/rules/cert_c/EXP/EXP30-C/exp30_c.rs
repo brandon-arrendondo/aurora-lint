@@ -290,47 +290,52 @@ impl Exp30C {
     /// Find variables that are read in an expression (excluding modifications)
     fn find_variable_reads(&self, node: &Node, source: &str) -> HashSet<String> {
         let mut vars = HashSet::new();
-
-        // Don't count modifications as reads for this purpose
-        if node.kind() == "update_expression" {
-            // Skip the argument of ++ or --, but check other parts
-            return vars;
-        }
-
-        if node.kind() == "assignment_expression" {
-            // Only check the right side for reads
-            if let Some(right) = node.child_by_field_name("right") {
-                vars.extend(self.find_variable_reads(&right, source));
-            }
-            return vars;
-        }
-
-        // Check for identifiers that are being read
+        // Only `node` itself needs its parent asked: below it, an
+        // identifier's parent is the node the walk came from, which is
+        // neither an update nor an assignment (the walk stops at the one and
+        // enters only the right side of the other). `Node::parent` descends
+        // from the tree root, so asking it at every identifier of a sum
+        // thousands of terms deep was cubic in the sum's length.
         if node.kind() == "identifier" {
-            // Make sure this isn't the target of an assignment or update
             if let Some(parent) = node.parent() {
                 if parent.kind() == "update_expression" {
                     return vars; // This is being modified, not read
                 }
-                if parent.kind() == "assignment_expression" {
-                    if let Some(left) = parent.child_by_field_name("left") {
-                        if left.id() == node.id() {
-                            return vars; // This is the left side of assignment
-                        }
-                    }
+                if parent.kind() == "assignment_expression"
+                    && parent
+                        .child_by_field_name("left")
+                        .is_some_and(|left| left.id() == node.id())
+                {
+                    return vars; // This is the left side of assignment
                 }
             }
-
-            vars.insert(ast_utils::get_node_text(node, source).to_string());
         }
+        Self::collect_variable_reads(node, source, &mut vars);
+        vars
+    }
 
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                vars.extend(self.find_variable_reads(&child, source));
+    /// [`Self::find_variable_reads`] below its first node.
+    fn collect_variable_reads(node: &Node, source: &str, vars: &mut HashSet<String>) {
+        // Don't count modifications as reads for this purpose
+        if node.kind() == "update_expression" {
+            return;
+        }
+        if node.kind() == "assignment_expression" {
+            // Only check the right side for reads
+            if let Some(right) = node.child_by_field_name("right") {
+                Self::collect_variable_reads(&right, source, vars);
+            }
+            return;
+        }
+        if node.kind() == "identifier" {
+            let name = ast_utils::get_node_text(node, source);
+            if !vars.contains(name) {
+                vars.insert(name.to_string());
             }
         }
-
-        vars
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            Self::collect_variable_reads(&child, source, vars);
+        }
     }
 }

@@ -447,6 +447,8 @@ fn pointer_walk_uncached<'a>(
     facts: &PointerFacts,
     memo: Option<&PointerMemo>,
 ) -> PointerWalk {
+    #[cfg(test)]
+    POINTER_WALKS.with(|n| n.set(n.get() + 1));
     let walk =
         |n: &Node<'a>| pointer_walk(root, n, source, type_map, struct_field_types, facts, memo);
     let neither = PointerWalk {
@@ -565,6 +567,19 @@ fn inline_struct_field_is_pointer(node: &Node, source: &str) -> bool {
 fn operator_text(node: &Node, source: &str) -> Option<String> {
     let op = node.child_by_field_name("operator")?;
     Some(ast_utils::get_node_text(&op, source).trim().to_string())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many nodes [`pointer_walk`] walked, rather than remembered, on
+    /// this thread.
+    static POINTER_WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Pointer walks on this thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_pointer_walks() -> usize {
+    POINTER_WALKS.with(|n| n.replace(0))
 }
 
 #[cfg(test)]

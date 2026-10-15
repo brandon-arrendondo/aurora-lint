@@ -149,7 +149,7 @@ pub fn find_containing_function<'a>(node: &Node<'a>) -> Option<Node<'a>> {
     if node.kind() == "function_definition" {
         return Some(*node);
     }
-    query::nearest_ancestor_of_kind(*node, "function_definition")
+    ancestors(node).find(|a| a.kind() == "function_definition")
 }
 
 /// Every descendant of `root` matching one of `kinds` that lies **outside**
@@ -332,6 +332,18 @@ pub fn find_enclosing_declaration_for_identifier<'a>(
     name: &str,
     source: &str,
 ) -> Option<Node<'a>> {
+    find_enclosing_declaration_for_identifier_in(&tree_root(ident_node), ident_node, name, source)
+}
+
+/// [`find_enclosing_declaration_for_identifier`] by climbing from
+/// `ident_node` with `Node::parent`, at O(depth²).
+fn find_enclosing_declaration_for_identifier_climbing<'a>(
+    ident_node: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<Node<'a>> {
+    #[cfg(test)]
+    CLIMBS.with(|n| n.set(n.get() + 1));
     let mut scopes = Vec::new();
     let mut search_from = *ident_node;
     while let Some(scope) = query::find_ancestor(search_from, |n| is_declaration_scope(&n)) {
@@ -341,17 +353,18 @@ pub fn find_enclosing_declaration_for_identifier<'a>(
     find_declaration_in_scope_chain(&scopes, ident_node.start_byte(), name, source)
 }
 
-/// The root of the tree holding `node`, by climbing.
+/// The root of the tree holding `node`, in constant time.
 ///
-/// Each step is a `Node::parent` call, which costs O(depth), so climb from a
-/// shallow node -- a `function_definition` -- once, and hand the root to the
-/// `_in` resolvers rather than calling this per identifier.
+/// Climbing to it with `Node::parent` costs O(depth²): tree-sitter answers
+/// each `parent()` by descending from the root. Every node carries a
+/// pointer to its tree, and the tree knows its root, so this asks the tree.
 pub fn tree_root<'a>(node: &Node<'a>) -> Node<'a> {
-    let mut top = *node;
-    while let Some(p) = top.parent() {
-        top = p;
-    }
-    top
+    let raw = node.into_raw();
+    // SAFETY: `raw.tree` is the tree `node` was read from, which outlives
+    // `'a` because `node` borrows it for `'a`; tree-sitter's own
+    // `Tree::root_node` is this same call on that pointer, and the node it
+    // returns is never null.
+    unsafe { Node::from_raw(tree_sitter::ffi::ts_tree_root_node(raw.tree)) }
 }
 
 /// The nodes strictly between `root` and `node` on the way down, outermost
@@ -362,6 +375,8 @@ pub fn tree_root<'a>(node: &Node<'a>) -> Node<'a> {
 /// total instead of O(depth) per step: tree-sitter recovers a parent by
 /// descending from the tree root, so a climb of `d` levels costs O(d²).
 pub fn ancestors_from_root<'a>(root: &Node<'a>, node: &Node<'a>) -> Option<Vec<Node<'a>>> {
+    #[cfg(test)]
+    DESCENTS.with(|n| n.set(n.get() + 1));
     let mut path = Vec::new();
     let mut current = *root;
     while current.id() != node.id() {
@@ -371,6 +386,15 @@ pub fn ancestors_from_root<'a>(root: &Node<'a>, node: &Node<'a>) -> Option<Vec<N
         current = current.child_with_descendant(*node)?;
     }
     Some(path)
+}
+
+/// `node`'s ancestors, innermost first and ending at the tree's root: the
+/// nodes a `Node::parent` climb visits, from the substrate's one descent
+/// (`query::ancestors`) from [`tree_root`]. The climb costs O(depth) a
+/// step, so O(depth²) to the top; this costs O(depth). The substrate's
+/// `_from_root` queries need the root in hand; this finds it.
+pub fn ancestors<'a>(node: &Node<'a>) -> impl Iterator<Item = Node<'a>> {
+    query::ancestors(tree_root(node), *node).into_iter().rev()
 }
 
 /// [`find_enclosing_declaration_for_identifier`] for a caller that has the
@@ -429,7 +453,7 @@ impl<'a> ScopeDeclarations<'a> {
         source: &str,
     ) -> Option<Node<'a>> {
         let Some(path) = ancestors_from_root(root, ident_node) else {
-            return find_enclosing_declaration_for_identifier(ident_node, name, source);
+            return find_enclosing_declaration_for_identifier_climbing(ident_node, name, source);
         };
         scope_chain_declaration(root, &path, ident_node, name, source, self)
     }
@@ -443,7 +467,7 @@ impl<'a> ScopeDeclarations<'a> {
         source: &str,
     ) -> Option<IdentifierBinding<'a>> {
         let Some(path) = ancestors_from_root(root, ident_node) else {
-            return resolve_identifier_binding(ident_node, name, source);
+            return resolve_identifier_binding_climbing(ident_node, name, source);
         };
         binding_on_path(root, &path, ident_node, name, source, self)
     }
@@ -457,7 +481,7 @@ impl<'a> ScopeDeclarations<'a> {
         source: &str,
     ) -> Option<(Node<'a>, Node<'a>)> {
         let Some(path) = ancestors_from_root(root, ident_node) else {
-            return resolve_identifier_declarator(ident_node, name, source);
+            return resolve_identifier_declarator_climbing(ident_node, name, source);
         };
         declarator_on_path(root, &path, ident_node, name, source, self)
     }
@@ -470,6 +494,21 @@ thread_local! {
     static SCOPE_DECLARATION_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// How many statements those scopes held between them.
     static SCOPE_STATEMENT_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many resolutions climbed from their identifier with
+    /// `Node::parent` on this thread.
+    static CLIMBS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many descents [`ancestors_from_root`] made on this thread.
+    static DESCENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Resolutions that climbed with `Node::parent`, and descents from a root,
+/// on this thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_climbs_and_descents() -> (usize, usize) {
+    (
+        CLIMBS.with(|n| n.replace(0)),
+        DESCENTS.with(|n| n.replace(0)),
+    )
 }
 
 /// Statements [`ScopeDeclarations`] read on this thread since the last
@@ -1195,7 +1234,17 @@ pub fn resolve_identifier_declarator<'a>(
     name: &str,
     source: &str,
 ) -> Option<(Node<'a>, Node<'a>)> {
-    let decl = match resolve_identifier_binding(ident_node, name, source)? {
+    resolve_identifier_declarator_in(&tree_root(ident_node), ident_node, name, source)
+}
+
+/// [`resolve_identifier_declarator`] by climbing from `ident_node` with
+/// `Node::parent`, at O(depth²).
+fn resolve_identifier_declarator_climbing<'a>(
+    ident_node: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<(Node<'a>, Node<'a>)> {
+    let decl = match resolve_identifier_binding_climbing(ident_node, name, source)? {
         IdentifierBinding::Local(decl) | IdentifierBinding::Global(decl) => decl,
         IdentifierBinding::Parameter(_) => {
             let func = find_containing_function(ident_node)?;
@@ -1448,7 +1497,20 @@ pub fn resolve_identifier_binding<'a>(
     name: &str,
     source: &str,
 ) -> Option<IdentifierBinding<'a>> {
-    if let Some(decl) = find_enclosing_declaration_for_identifier(ident_node, name, source) {
+    resolve_identifier_binding_in(&tree_root(ident_node), ident_node, name, source)
+}
+
+/// [`resolve_identifier_binding`] by climbing from `ident_node` with
+/// `Node::parent`, at O(depth²).
+fn resolve_identifier_binding_climbing<'a>(
+    ident_node: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<IdentifierBinding<'a>> {
+    #[cfg(test)]
+    CLIMBS.with(|n| n.set(n.get() + 1));
+    if let Some(decl) = find_enclosing_declaration_for_identifier_climbing(ident_node, name, source)
+    {
         return Some(IdentifierBinding::Local(decl));
     }
     if let Some(func) = find_containing_function(ident_node) {
@@ -2698,8 +2760,7 @@ pub fn is_in_sizeof(node: &Node) -> bool {
 /// about the expression elsewhere it says there too (ADR-0010 D5).
 pub fn is_in_unevaluated_operand(node: &Node, source: &str) -> bool {
     const TYPEOF: &[&str] = &["typeof", "__typeof__", "__typeof"];
-    let mut current = node.parent();
-    while let Some(parent) = current {
+    for parent in ancestors(node) {
         match parent.kind() {
             "sizeof_expression" | "alignof_expression" | "offsetof_expression" => return true,
             "macro_type_specifier" | "call_expression" => {
@@ -2716,7 +2777,6 @@ pub fn is_in_unevaluated_operand(node: &Node, source: &str) -> bool {
             "function_definition" => break,
             _ => {}
         }
-        current = parent.parent();
     }
     false
 }
@@ -3399,6 +3459,106 @@ mod tests {
         (tree, code.to_string())
     }
 
+    /// [`ancestors`] is the chain a `Node::parent` climb visits, innermost
+    /// first and ending at the root, for every node of a file mixing
+    /// blocks, loops, `#ifdef`s, a nested function and a parse error, and
+    /// the root has none.
+    #[test]
+    fn ancestors_are_the_parent_chain() {
+        let code = "int g;\n\
+            void f(int c) {\n\
+            #ifdef X\n  int t = c;\n#endif\n\
+            \x20 for (int i = 0; i < c; i++) { if (i) g += i; else { g -= (c + i) * 2; } }\n\
+            \x20 void inner(void) { g = sizeof(c); }\n\
+            }\n\
+            void h(void) { g = ; ) }\n";
+        let (tree, _) = parse_c_code(code);
+        let root = tree.root_node();
+        let nodes = query::find_descendants(root, |_| true);
+        assert!(nodes.len() > 100);
+        for node in &nodes {
+            let climbed: Vec<usize> = std::iter::successors(node.parent(), |n| n.parent())
+                .map(|n| n.id())
+                .collect();
+            let descended: Vec<usize> = ancestors(node).map(|n| n.id()).collect();
+            assert_eq!(
+                descended,
+                climbed,
+                "{} at byte {}",
+                node.kind(),
+                node.start_byte()
+            );
+        }
+    }
+
+    /// The tree's root comes from the tree, not a climb, and through it the
+    /// free resolvers answer every identifier exactly as climbing with
+    /// `Node::parent` does, over shadowing blocks, `for` declarations,
+    /// declarations under `#ifdef`, parameters, globals, a K&R definition,
+    /// a nested function and a framing parse error. On a sum thousands of
+    /// terms deep they never climb: a climb from there costs O(depth²), and
+    /// one per identifier was cubic in the sum's length.
+    #[test]
+    fn free_resolvers_descend_from_the_tree_root_and_answer_as_the_climb() {
+        let code = "int glob;\n\
+            int kr(a, b) int a; char *b; { return a + *b; }\n\
+            void f(int c, int *q) {\n\
+            \x20   int *s = 0;\n\
+            #ifdef CHECK\n    int t = c;\n#else\n    long t = 0;\n#endif\n\
+            \x20   for (int i = 0; i < c; i++) { int s = i + t; glob += s; }\n\
+            \x20   { int *s = q; *s = glob; }\n\
+            \x20   void inner(void) { int y = c; glob = y + t; }\n\
+            \x20   s = q + c;\n\
+            }\n\
+            void g(void) { undeclared = glob; ) }\n";
+        let deep = format!(
+            "unsigned f(unsigned x) {{ return ({}x) << 4; }}\n",
+            "x + ".repeat(3_000)
+        );
+        for code in [code.to_string(), deep] {
+            let (tree, src) = parse_c_code(&code);
+            let root = tree.root_node();
+            let idents = query::find_descendants_of_kind(root, "identifier");
+            let shape = |b: Option<IdentifierBinding>| match b {
+                Some(IdentifierBinding::Local(d)) => Some((0, d.id(), String::new())),
+                Some(IdentifierBinding::Parameter(t)) => Some((1, 0, t)),
+                Some(IdentifierBinding::Global(d)) => Some((2, d.id(), String::new())),
+                None => None,
+            };
+            let ids = |d: Option<Node>| d.map(|d| d.id());
+            CLIMBS.with(|n| n.set(0));
+            let free: Vec<_> = idents
+                .iter()
+                .map(|id| {
+                    let name = get_node_text(id, &src);
+                    assert_eq!(tree_root(id).id(), root.id());
+                    (
+                        shape(resolve_identifier_binding(id, name, &src)),
+                        resolve_identifier_declarator(id, name, &src)
+                            .map(|(d, r)| (d.id(), r.id())),
+                        ids(find_enclosing_declaration_for_identifier(id, name, &src)),
+                    )
+                })
+                .collect();
+            assert_eq!(CLIMBS.with(|n| n.get()), 0);
+            // The climb itself is the cubic cost on the deep sum, so compare
+            // a sample there.
+            let step = if idents.len() > 1_000 { 500 } else { 1 };
+            for (id, free) in idents.iter().zip(&free).step_by(step) {
+                let name = get_node_text(id, &src);
+                let climbed = (
+                    shape(resolve_identifier_binding_climbing(id, name, &src)),
+                    resolve_identifier_declarator_climbing(id, name, &src)
+                        .map(|(d, r)| (d.id(), r.id())),
+                    ids(find_enclosing_declaration_for_identifier_climbing(
+                        id, name, &src,
+                    )),
+                );
+                assert_eq!(free, &climbed, "{name} at byte {}", id.start_byte());
+            }
+        }
+    }
+
     /// Every identifier of a function of 300 guarded blocks, with shadowing
     /// locals, resolves through one [`ScopeDeclarations`] exactly as through
     /// the free `_in` resolvers, and each block's declarations are read once
@@ -3802,7 +3962,7 @@ mod tests {
             let name = get_node_text(ident, &source);
             let ids = |d: Option<Node>| d.map(|d| d.id());
             assert_eq!(
-                ids(find_enclosing_declaration_for_identifier(
+                ids(find_enclosing_declaration_for_identifier_climbing(
                     ident, name, &source
                 )),
                 ids(find_enclosing_declaration_for_identifier_in(
@@ -3818,7 +3978,9 @@ mod tests {
                 get_node_text(i, &source) == "x" && inner.byte_range().contains(&i.start_byte())
             })
             .expect("inner reads x");
-        assert!(find_enclosing_declaration_for_identifier(x_in_inner, "x", &source).is_some());
+        assert!(
+            find_enclosing_declaration_for_identifier_climbing(x_in_inner, "x", &source).is_some()
+        );
         assert!(
             find_enclosing_declaration_for_identifier_in(&inner, x_in_inner, "x", &source)
                 .is_none(),

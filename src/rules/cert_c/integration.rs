@@ -858,3 +858,69 @@ fn guarded_copies_cost_each_rule_work_per_function_not_per_site() {
         );
     }
 }
+
+/// The rules that once ran past the watchdog on a sum thousands of terms
+/// deep, each run through the whole pipeline (prescan, analysis, rule) on
+/// `return (x + x + ... + x) << 40;` at N and 2N terms, with their work
+/// counted rather than timed: resolutions that climb with `Node::parent`
+/// (none: each descends from the tree's root), descents, exact constant
+/// evaluations, local-variable range lookups, pointer walks and expression
+/// typings. A descent costs the expression's depth, so a count that grows
+/// with the square of N is a cube in time: none of those may more than about
+/// double. Exact evaluations are of one node each and may grow with the
+/// square.
+#[test]
+fn a_deep_sum_costs_each_rule_work_linear_in_its_length() {
+    use crate::analyze::const_eval::take_evaluation_counts;
+    use crate::utility::cert_c::ast_utils::take_climbs_and_descents;
+    use crate::utility::cert_c::expr_type::take_typings;
+    use crate::utility::cert_c::pointer_typing::take_pointer_walks;
+
+    let work = |rule_id: &str, n: usize| {
+        let code = format!(
+            "unsigned long long deep_sum(unsigned int x)\n{{\n    return ({}x) << 40;\n}}\n",
+            "x + ".repeat(n)
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deep_sum.c");
+        fs::write(&path, code).unwrap();
+        take_climbs_and_descents();
+        take_evaluation_counts();
+        take_pointer_walks();
+        take_typings();
+        findings_at(rule_id, &path, "default", "");
+        let (climbs, descents) = take_climbs_and_descents();
+        let (lookups, evaluations) = take_evaluation_counts();
+        [
+            climbs,
+            descents,
+            lookups,
+            evaluations,
+            take_pointer_walks(),
+            take_typings(),
+        ]
+    };
+    for rule_id in [
+        "API00-C", "DCL30-C", "EXP30-C", "FLP03-C", "INT14-C", "INT30-C", "INT32-C", "MSC05-C",
+    ] {
+        let small = work(rule_id, 150);
+        let large = work(rule_id, 300);
+        let what = "climbs, descents, lookups, evaluations, pointer walks, typings";
+        assert_eq!(
+            large[0], 0,
+            "[{rule_id}] a resolution climbed ({what}): {large:?}"
+        );
+        for i in [1, 2, 4, 5] {
+            assert!(
+                large[i] <= 2 * small[i] + 64,
+                "[{rule_id}] work grew faster than the sum ({what}): {small:?} -> {large:?}"
+            );
+        }
+        // Exact evaluations are asked once per operator of each operand,
+        // the square of the length, but each is one node: not cubic.
+        assert!(
+            large[3] <= 4 * small[3] + 8 * 300,
+            "[{rule_id}] exact evaluations grew past the square ({what}): {small:?} -> {large:?}"
+        );
+    }
+}

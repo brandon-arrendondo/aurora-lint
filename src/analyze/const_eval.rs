@@ -2285,6 +2285,8 @@ fn try_evaluate_expr_uncached(
     macros: &MacroConstantMap,
     memo: Option<&ConstMemo>,
 ) -> Option<i64> {
+    #[cfg(test)]
+    EXACT_EVALUATIONS.with(|n| n.set(n.get() + 1));
     match node.kind() {
         "number_literal" => {
             let text = node.utf8_text(source.as_bytes()).ok()?;
@@ -2605,6 +2607,18 @@ pub fn try_evaluate_range(
     var_ranges: &VarRangeMap,
 ) -> Option<ValueRange> {
     try_evaluate_range_inner(node, source, macros, var_ranges, None, None)
+}
+
+/// [`try_evaluate_range`], remembering each node's exact value in `memo`
+/// (see [`ConstMemo`]). The same answer.
+pub fn try_evaluate_range_with(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    var_ranges: &VarRangeMap,
+    memo: &ConstMemo,
+) -> Option<ValueRange> {
+    try_evaluate_range_inner(node, source, macros, var_ranges, None, Some(memo))
 }
 
 /// A lower bound on the value of `node`, for the questions that need no upper
@@ -3031,7 +3045,7 @@ pub fn extract_loop_var_ranges(
     source: &str,
     macros: &MacroConstantMap,
 ) -> VarRangeMap {
-    loop_var_ranges_from(node.parent(), source, macros)
+    loop_var_ranges_from(ast_utils::ancestors(node), source, macros)
 }
 
 /// [`extract_loop_var_ranges`] for a node whose innermost enclosing loop the
@@ -3047,21 +3061,28 @@ pub fn loop_var_ranges_within(
     macros: &MacroConstantMap,
 ) -> VarRangeMap {
     match innermost_loop {
-        Some(innermost) => loop_var_ranges_from(Some(*innermost), source, macros),
+        Some(innermost) => loop_var_ranges_from(
+            std::iter::once(*innermost).chain(ast_utils::ancestors(innermost)),
+            source,
+            macros,
+        ),
         None => VarRangeMap::new(),
     }
 }
 
 /// The loop ranges `start` and its ancestors contribute, innermost first, up
 /// to the function or the translation unit.
-fn loop_var_ranges_from(
-    start: Option<Node>,
+///
+/// `nodes` is the chain outward, innermost first. It comes from one descent
+/// from the root ([`ast_utils::ancestors`]): a `parent()` climb costs
+/// O(depth) a step, so O(depth²) out of a deep expression.
+fn loop_var_ranges_from<'a>(
+    nodes: impl Iterator<Item = Node<'a>>,
     source: &str,
     macros: &MacroConstantMap,
 ) -> VarRangeMap {
     let mut ranges = VarRangeMap::new();
-    let mut current = start;
-    while let Some(parent) = current {
+    for parent in nodes {
         match parent.kind() {
             "while_statement" | "do_statement" => {
                 if let Some(condition) = parent.child_by_field_name("condition") {
@@ -3081,7 +3102,6 @@ fn loop_var_ranges_from(
             "function_definition" | "translation_unit" => break,
             _ => {}
         }
-        current = parent.parent();
     }
     ranges
 }
@@ -3292,9 +3312,10 @@ fn resolve_local_var_range_depth(
     fmacros: Option<&HashMap<String, FunctionMacro>>,
     depth: u32,
 ) -> Option<ValueRange> {
-    // Find the enclosing compound_statement (function body or block)
-    let mut current = node.parent();
-    while let Some(parent) = current {
+    // Find the enclosing compound_statement (function body or block). The
+    // ancestors come from one descent from the root: a `Node::parent` climb
+    // costs O(depth) a step, so O(depth²) out of a deep expression.
+    for parent in ast_utils::ancestors(node) {
         if parent.kind() == "compound_statement" {
             // Scan statements before our node, keeping the LAST assignment
             // (not the first) since later assignments overwrite earlier ones.
@@ -3348,7 +3369,6 @@ fn resolve_local_var_range_depth(
         if parent.kind() == "function_definition" {
             break;
         }
-        current = parent.parent();
     }
     None
 }
@@ -3789,11 +3809,22 @@ pub fn expression_fits_in_unsigned(
     macros: &MacroConstantMap,
     bits: u32,
 ) -> bool {
+    expression_fits_in_unsigned_with(node, source, macros, bits, None)
+}
+
+/// [`expression_fits_in_unsigned`] through `memo`. The same answer.
+fn expression_fits_in_unsigned_with(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    bits: u32,
+    memo: Option<&ConstMemo>,
+) -> bool {
     let loop_ranges = extract_loop_var_ranges(node, source, macros);
     let mut var_ranges = loop_ranges.clone();
-    resolve_identifiers_in_expr(node, source, macros, &loop_ranges, &mut var_ranges);
+    resolve_identifiers_in_expr_with(node, source, macros, &loop_ranges, &mut var_ranges, memo);
 
-    if let Some(range) = try_evaluate_range(node, source, macros, &var_ranges) {
+    if let Some(range) = try_evaluate_range_inner(node, source, macros, &var_ranges, None, memo) {
         return range.fits_in_unsigned(bits);
     }
     false
@@ -3948,11 +3979,25 @@ pub fn expression_overflows_unsigned_vra(
     bits: u32,
     vra_var_ranges: Option<&VarRangeMap>,
 ) -> bool {
+    expression_overflows_unsigned_vra_with(node, source, macros, bits, vra_var_ranges, None)
+}
+
+/// [`expression_overflows_unsigned_vra`] through `memo` (see
+/// [`ConstMemo`]). The same answer.
+pub fn expression_overflows_unsigned_vra_with(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    bits: u32,
+    vra_var_ranges: Option<&VarRangeMap>,
+    memo: Option<&ConstMemo>,
+) -> bool {
     if bits == 0 {
         return false;
     }
     if let Some(var_ranges) = vra_var_ranges {
-        if let Some(range) = try_evaluate_range(node, source, macros, var_ranges) {
+        if let Some(range) = try_evaluate_range_inner(node, source, macros, var_ranges, None, memo)
+        {
             // A range entirely below zero wraps whatever the width is: `0u - 1`
             // is as much a wrap in `size_t` as in `unsigned`. Answering this
             // half only for widths under 64 made a caller that correctly
@@ -3991,6 +4036,20 @@ pub fn expression_fits_in_unsigned_vra(
     bits: u32,
     vra_var_ranges: Option<&VarRangeMap>,
 ) -> bool {
+    expression_fits_in_unsigned_vra_with(node, source, macros, bits, vra_var_ranges, None)
+}
+
+/// [`expression_fits_in_unsigned_vra`], remembering exact values and which
+/// subtrees hold an identifier in `memo` (see [`ConstMemo`]), for a caller
+/// that asks at every operator of an expression. The same answer.
+pub fn expression_fits_in_unsigned_vra_with(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    bits: u32,
+    vra_var_ranges: Option<&VarRangeMap>,
+    memo: Option<&ConstMemo>,
+) -> bool {
     // Try VRA-provided ranges first.
     // VRA is used only to PROVE SAFETY (suppress): if VRA says the result fits,
     // return true immediately. If VRA says overflow is possible, fall through to
@@ -3998,14 +4057,15 @@ pub fn expression_fits_in_unsigned_vra(
     // widening data to UINT_MAX after `data=2` in a bounded loop), and the
     // syntactic path has separate constant-propagation that handles those cases.
     if let Some(var_ranges) = vra_var_ranges {
-        if let Some(range) = try_evaluate_range(node, source, macros, var_ranges) {
+        if let Some(range) = try_evaluate_range_inner(node, source, macros, var_ranges, None, memo)
+        {
             if range.fits_in_unsigned(bits) {
                 return true;
             }
         }
     }
     // Fallback to syntactic analysis
-    expression_fits_in_unsigned(node, source, macros, bits)
+    expression_fits_in_unsigned_with(node, source, macros, bits, memo)
 }
 
 /// Resolve identifiers in an expression by scanning local assignments.
@@ -4021,6 +4081,13 @@ pub fn resolve_identifiers_in_expr(
 
 /// [`resolve_identifiers_in_expr`], skipping a subtree `memo` knows holds no
 /// identifier. The same answer.
+///
+/// Every occurrence of a name in one expression sees the same statements
+/// before it, so a name that did not resolve is not tried again, as one
+/// that did is not: a parameter used thousands of times in one sum was
+/// looked up at every use. An expression holding a block (a GNU statement
+/// expression) has occurrences in different blocks, and there each is
+/// still tried.
 fn resolve_identifiers_in_expr_with(
     node: &Node,
     source: &str,
@@ -4029,20 +4096,86 @@ fn resolve_identifiers_in_expr_with(
     var_ranges: &mut VarRangeMap,
     memo: Option<&ConstMemo>,
 ) {
+    let one_block = lang_parsing_substrate::query::find_first_descendant(*node, |n| {
+        n.kind() == "compound_statement"
+    })
+    .is_none();
+    let mut unresolved = HashSet::new();
+    resolve_identifiers_in_expr_walk(
+        node,
+        source,
+        macros,
+        loop_ranges,
+        var_ranges,
+        memo,
+        one_block.then_some(&mut unresolved),
+    );
+}
+
+fn resolve_identifiers_in_expr_walk(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    loop_ranges: &VarRangeMap,
+    var_ranges: &mut VarRangeMap,
+    memo: Option<&ConstMemo>,
+    mut unresolved: Option<&mut HashSet<String>>,
+) {
     if memo.is_some_and(|m| !m.has_identifier(node)) {
         return;
     }
     if node.kind() == "identifier" {
         let name = node.utf8_text(source.as_bytes()).unwrap_or("");
-        if !name.is_empty() && !macros.contains_key(name) && !var_ranges.contains_key(name) {
-            if let Some(range) = resolve_local_var_range(name, node, source, macros, loop_ranges) {
-                var_ranges.insert(name.to_string(), range);
+        if !name.is_empty()
+            && !macros.contains_key(name)
+            && !var_ranges.contains_key(name)
+            && !unresolved.as_ref().is_some_and(|u| u.contains(name))
+        {
+            #[cfg(test)]
+            LOCAL_RANGE_LOOKUPS.with(|n| n.set(n.get() + 1));
+            match resolve_local_var_range(name, node, source, macros, loop_ranges) {
+                Some(range) => {
+                    var_ranges.insert(name.to_string(), range);
+                }
+                None => {
+                    if let Some(u) = unresolved.as_mut() {
+                        u.insert(name.to_string());
+                    }
+                }
             }
         }
     }
     for child in node.child_nodes() {
-        resolve_identifiers_in_expr_with(&child, source, macros, loop_ranges, var_ranges, memo);
+        resolve_identifiers_in_expr_walk(
+            &child,
+            source,
+            macros,
+            loop_ranges,
+            var_ranges,
+            memo,
+            unresolved.as_deref_mut(),
+        );
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many local-variable range lookups
+    /// [`resolve_identifiers_in_expr_with`] made on this thread.
+    static LOCAL_RANGE_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many nodes [`try_evaluate_expr_with`] evaluated, rather than
+    /// remembered, on this thread.
+    static EXACT_EVALUATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Local-variable range lookups and exact evaluations on this thread since
+/// the last call.
+#[cfg(test)]
+pub(crate) fn take_evaluation_counts() -> (usize, usize) {
+    (
+        LOCAL_RANGE_LOOKUPS.with(|n| n.replace(0)),
+        EXACT_EVALUATIONS.with(|n| n.replace(0)),
+    )
 }
 
 // ---------------------------------------------------------------------------

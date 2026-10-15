@@ -56,7 +56,7 @@ use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::{
     declares_static, get_function_parameters, get_node_text, get_sanitized_node_text,
     integer_type_width, is_in_unevaluated_operand, is_pointer_type, is_unsigned_type,
-    static_macro_names_in_scope,
+    static_macro_names_in_scope, tree_root,
 };
 use crate::utility::cert_c::float_typing::StructFieldTypes;
 use crate::utility::cert_c::guard_dominance;
@@ -89,6 +89,9 @@ struct PointerTypes<'a> {
     /// The settings' integer data model: how wide such a type is
     /// guaranteed to be.
     data_model: crate::settings::IntFacts,
+    /// Each node's pointer walk for this file, so asking at every operator
+    /// of a long chain does not walk each operator's subtree again.
+    pointer_memo: pointer_typing::PointerMemo,
 }
 
 pub struct Api00C {
@@ -179,6 +182,7 @@ impl CertRule for Api00C {
             facts: &facts,
             typedef_types: &typedef_types,
             data_model: self.settings.borrow().facts,
+            pointer_memo: Default::default(),
         };
         for func in query::find_descendants_of_kind(*node, "function_definition") {
             self.check_function_parameter_validation(
@@ -584,12 +588,14 @@ impl Api00C {
         // operand whose type does not resolve keeps its site and the rule
         // keeps its recall.
         let is_site = is_site
-            && !pointer_typing::is_pointer_arithmetic(
+            && !pointer_typing::is_pointer_arithmetic_with(
+                Some(&tree_root(node)),
                 node,
                 source,
                 pointer_types.type_map,
                 pointer_types.struct_field_types,
                 pointer_types.facts,
+                &pointer_types.pointer_memo,
             )
             && !Self::is_defined_unsigned_shift(
                 node,

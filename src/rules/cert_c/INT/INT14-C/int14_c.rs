@@ -147,6 +147,16 @@ impl Int14C {
 
     /// Extract variable names used in an expression
     fn extract_variables(node: &Node, source: &str, vars: &mut HashSet<String>) {
+        // The callees, found from their calls rather than by asking each
+        // identifier for its parent: `Node::parent` descends from the tree
+        // root, so asking it of every identifier in a sum thousands of terms
+        // deep, once per operator, was cubic in the sum's length. `node`
+        // itself is an operator's operand, never a callee.
+        let callees: HashSet<usize> = query::find_descendants_of_kind(*node, "call_expression")
+            .into_iter()
+            .filter_map(|call| call.child_by_field_name("function"))
+            .map(|f| f.id())
+            .collect();
         for n in query::find_descendants_of_kind(*node, "identifier") {
             // Skip a call_expression's callee identifier: `le_to_host16(x) & mask`
             // and `le_to_host16(x) * 8` both contain the identifier
@@ -156,14 +166,13 @@ impl Int14C {
             // name instead of the actual variable receiving the result
             // (hostap wmm.c:251: `duration = (le_to_host16(...) &
             // 0x7fff) * 8 / ...`).
-            if let Some(parent) = n.parent() {
-                if parent.kind() == "call_expression"
-                    && parent.child_by_field_name("function") == Some(n)
-                {
-                    continue;
-                }
+            if callees.contains(&n.id()) {
+                continue;
             }
-            vars.insert(get_node_text(&n, source).to_string());
+            let name = get_node_text(&n, source);
+            if !vars.contains(name) {
+                vars.insert(name.to_string());
+            }
         }
     }
 

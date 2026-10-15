@@ -53,6 +53,12 @@ pub struct Int30C {
     /// File-scope pointer names and pointer-returning functions, for the
     /// pointer-arithmetic gate. Rebuilt per file.
     pointer_facts: RefCell<PointerFacts>,
+    /// This file's exact constant values and pointer walks per node, cleared
+    /// per file: the rule asks at every operator of an expression, and each
+    /// question otherwise walks the operator's whole operand again, so a
+    /// sum thousands of terms deep cost the cube of its length.
+    constant: const_eval::ConstMemo,
+    pointer: pointer_typing::PointerMemo,
     /// Arrays declared in a header or another file, from `set_project_context`.
     project_arrays: RefCell<Arc<HashSet<String>>>,
     /// Declared return types of functions this file defines or prototypes
@@ -92,6 +98,8 @@ impl Int30C {
             risky_vars_cache: RefCell::new(HashMap::new()),
             callers: RefCell::default(),
             param_names_cache: RefCell::new(HashMap::new()),
+            constant: Default::default(),
+            pointer: Default::default(),
             pointer_facts: RefCell::new(PointerFacts::default()),
             project_arrays: RefCell::new(Arc::new(HashSet::new())),
             function_return_types: RefCell::new(HashMap::new()),
@@ -122,12 +130,13 @@ impl Int30C {
         // all, so that half of the channel is not asked at the floor; the
         // other half -- a result below zero wraps in unsigned arithmetic of
         // ANY width -- still is, which asking at 64 leaves as the only one.
-        if const_eval::expression_overflows_unsigned_vra(
+        if const_eval::expression_overflows_unsigned_vra_with(
             node,
             source,
             &self.current_macros.borrow(),
             bits.unwrap_or(64),
             self.vra_var_ranges_at(node, source).as_ref(),
+            Some(&self.constant),
         ) {
             return true;
         }
@@ -228,12 +237,13 @@ impl Int30C {
                 range.max = data_model::bound_open_top(range.min, range.max, high, keep);
             }
         }
-        const_eval::expression_fits_in_unsigned_vra(
+        const_eval::expression_fits_in_unsigned_vra_with(
             node,
             source,
             &self.current_macros.borrow(),
             bits,
             ranges.as_ref(),
+            Some(&self.constant),
         )
     }
 
@@ -372,6 +382,8 @@ impl CertRule for Int30C {
         // Risky-var memo is keyed on tree-sitter node ids, unique only within
         // one parse tree — reset per file.
         self.risky_vars_cache.borrow_mut().clear();
+        self.constant.clear();
+        self.pointer.clear();
         self.param_names_cache.borrow_mut().clear();
 
         *self.pointer_facts.borrow_mut() = PointerFacts::collect(node, source).with_project(
@@ -427,8 +439,20 @@ impl Int30C {
                 &mut var_ranges,
             );
             // LHS: only use loop ranges and macros (not local assignments)
-            let lr = const_eval::try_evaluate_range(&left, source, &macros, &loop_ranges);
-            let rr = const_eval::try_evaluate_range(&right, source, &macros, &var_ranges);
+            let lr = const_eval::try_evaluate_range_with(
+                &left,
+                source,
+                &macros,
+                &loop_ranges,
+                &self.constant,
+            );
+            let rr = const_eval::try_evaluate_range_with(
+                &right,
+                source,
+                &macros,
+                &var_ranges,
+                &self.constant,
+            );
             if let (Some(lr), Some(rr)) = (lr, rr) {
                 let result = match op {
                     "+" => lr.add(&rr),
@@ -591,7 +615,15 @@ impl Int30C {
     ) -> bool {
         let sft = self.struct_field_types.borrow();
         let facts = self.pointer_facts.borrow();
-        pointer_typing::is_pointer_arithmetic_in(root, node, source, type_map, &sft, &facts)
+        pointer_typing::is_pointer_arithmetic_with(
+            root,
+            node,
+            source,
+            type_map,
+            &sft,
+            &facts,
+            &self.pointer,
+        )
     }
 
     /// True if `node`'s left or right operand is float-typed, making this a
@@ -1532,11 +1564,12 @@ impl Int30C {
             .is_some_and(|low| low > self.size_t_max());
             let constant_not_evaluated = !self.data_model.get().sizeof_known(Rank::Int)
                 && !low_exceeds_size_t
-                && const_eval::try_evaluate_range(
+                && const_eval::try_evaluate_range_with(
                     check_node,
                     source,
                     &macros,
                     vra_ranges.as_ref().unwrap_or(&VarRangeMap::new()),
+                    &self.constant,
                 )
                 .is_none()
                 && const_eval::is_compile_time_constant_expr(
@@ -1860,7 +1893,13 @@ impl Int30C {
         let macros = self.current_macros.borrow();
         if use_vra {
             let ranges = self.vra_var_ranges_at(node, source)?;
-            return const_eval::try_evaluate_range(node, source, &macros, &ranges);
+            return const_eval::try_evaluate_range_with(
+                node,
+                source,
+                &macros,
+                &ranges,
+                &self.constant,
+            );
         }
         let loop_ranges = const_eval::extract_loop_var_ranges(node, source, &macros);
         let mut var_ranges = loop_ranges.clone();
@@ -1871,7 +1910,7 @@ impl Int30C {
             &loop_ranges,
             &mut var_ranges,
         );
-        const_eval::try_evaluate_range(node, source, &macros, &var_ranges)
+        const_eval::try_evaluate_range_with(node, source, &macros, &var_ranges, &self.constant)
     }
 
     fn infer_type(&self, node: &Node, source: &str, type_map: &HashMap<String, String>) -> String {
@@ -2032,21 +2071,13 @@ impl Int30C {
         }
         let names_unsigned_type = query::find_descendants_of_kinds(
             *node,
-            &[
-                "primitive_type",
-                "sized_type_specifier",
-                "type_identifier",
-                "identifier",
-            ],
+            &["primitive_type", "sized_type_specifier", "type_identifier"],
         )
         .iter()
         .any(|t| {
             let text = get_node_text(t, source);
-            if t.kind() == "identifier" {
-                return self.macro_argument_names_unsigned_type(t, text, source);
-            }
             text.contains("unsigned") || text.contains("size_t") || text.contains("uint")
-        });
+        }) || self.argument_names_unsigned_type(node, source);
         let last = Self::rightmost_leaf(*node);
         let unsigned_literal = last.kind() == "number_literal" && {
             let last = get_node_text(&last, source);
@@ -2058,21 +2089,55 @@ impl Int30C {
         names_unsigned_type || unsigned_literal
     }
 
-    /// Whether `ident`, an argument of a call, is a type name the parser read
+    /// Whether an identifier argument of a call in `node`'s subtree passes
+    /// [`Self::call_takes_unsigned_type`]. The arguments are found
+    /// from their calls, not by asking each identifier for its parent:
+    /// `Node::parent` descends from the tree root, and asking it of every
+    /// identifier under every operator of a long sum was cubic in its length.
+    /// Only a call has an `argument_list`, so an identifier whose parent is
+    /// one is exactly a direct argument of a call.
+    fn argument_names_unsigned_type(&self, node: &Node, source: &str) -> bool {
+        let mut lists: Vec<(Node, Node)> =
+            query::find_descendants_of_kind(*node, "call_expression")
+                .into_iter()
+                .filter_map(|call| Some((call.child_by_field_name("arguments")?, call)))
+                .filter(|(args, _)| args.kind() == "argument_list")
+                .collect();
+        // `node` itself an argument list: its call is above the subtree.
+        if node.kind() == "argument_list" {
+            if let Some(call) = node.parent() {
+                lists.push((*node, call));
+            }
+        }
+        lists.iter().any(|(args, call)| {
+            let mut cursor = args.walk();
+            let found = args.named_children(&mut cursor).any(|arg| {
+                arg.kind() == "identifier"
+                    && self.call_takes_unsigned_type(
+                        call,
+                        &arg,
+                        get_node_text(&arg, source),
+                        source,
+                    )
+            });
+            found
+        })
+    }
+
+    /// Whether `ident`, an argument of `call`, is a type name the parser read
     /// as an expression because a function-like macro takes it (`cast(T, x)`,
     /// `va_arg(ap, T)`) and that type is unsigned. Only a macro can take a
     /// type, so the callee must be a function-like macro the scan saw: a
     /// type-shaped argument to a function is a declaration the parser
     /// misread (`pde_t *CONST lookup(pde_t *pd, vptr_t vptr)` inside a
     /// damaged region), not a value of that type.
-    fn macro_argument_names_unsigned_type(&self, ident: &Node, name: &str, source: &str) -> bool {
-        let Some(call) = ident
-            .parent()
-            .filter(|p| p.kind() == "argument_list")
-            .and_then(|args| args.parent())
-        else {
-            return false;
-        };
+    fn call_takes_unsigned_type(
+        &self,
+        call: &Node,
+        ident: &Node,
+        name: &str,
+        source: &str,
+    ) -> bool {
         let takes_types = call
             .child_by_field_name("function")
             .filter(|f| f.kind() == "identifier")
@@ -3034,8 +3099,8 @@ impl Int30C {
         ];
 
         let op_names = overflow_helpers::extract_operand_names(node, source);
-        let mut current = *node;
-        while let Some(parent) = current.parent() {
+        // One descent from the root, not a `parent()` climb: O(depth) a step.
+        for parent in ast_utils::ancestors(node) {
             if parent.kind() == "if_statement" {
                 if let Some(condition) = parent.child_by_field_name("condition") {
                     let cond_text = get_node_text(&condition, source);
@@ -3059,7 +3124,6 @@ impl Int30C {
             if parent.kind() == "function_definition" {
                 break;
             }
-            current = parent;
         }
         false
     }
