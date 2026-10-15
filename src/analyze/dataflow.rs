@@ -603,6 +603,13 @@ thread_local! {
     static LOOKUP_COUNTS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
 
+/// Lookups built and children collected on this thread since the last
+/// call.
+#[cfg(test)]
+pub(crate) fn take_lookup_counts() -> (usize, usize) {
+    LOOKUP_COUNTS.with(|c| c.replace((0, 0)))
+}
+
 impl<'a> StatementLookup<'a> {
     /// A lookup under `root`; nothing is collected until it is asked.
     pub fn new(root: &Node<'a>) -> Self {
@@ -1033,12 +1040,6 @@ mod tests {
         let decl = root.child(0).unwrap();
         let found = find_node_at_range(&root, decl.start_byte(), decl.end_byte());
         assert!(found.is_some());
-    }
-
-    /// Lookups built and children collected on this thread since the last
-    /// call.
-    fn take_lookup_counts() -> (usize, usize) {
-        LOOKUP_COUNTS.with(|c| c.replace((0, 0)))
     }
 
     /// Every node under `node`, itself included; returns the depth below it.

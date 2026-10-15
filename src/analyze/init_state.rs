@@ -2323,13 +2323,37 @@ pub fn get_var_info_at_with_config(
     byte_offset: usize,
     config: &InitAnalysisConfig,
 ) -> Option<VarInfo> {
+    get_var_info_at_in(
+        result,
+        cfg,
+        &StatementLookup::new(body),
+        source,
+        var_name,
+        byte_offset,
+        config,
+    )
+}
+
+/// [`get_var_info_at_with_config`] finding statements through `statements`,
+/// a [`StatementLookup`] over the body, which a caller asking at every read
+/// of one function builds once: a new one per read collects the body's
+/// statements again, so the reads of a long function cost the square of
+/// its length.
+pub fn get_var_info_at_in(
+    result: &InitAnalysisResult,
+    cfg: &FunctionCfg,
+    statements: &StatementLookup,
+    source: &str,
+    var_name: &str,
+    byte_offset: usize,
+    config: &InitAnalysisConfig,
+) -> Option<VarInfo> {
     let block = find_block_containing(cfg, byte_offset)?;
 
     let entry = result.block_entry_states.get(&block.id)?;
 
     let mut state = entry.clone();
     let mut tracked = result.tracked_vars.clone();
-    let statements = StatementLookup::new(body);
 
     for &(start, end) in &block.statements {
         if start >= byte_offset {
@@ -3352,6 +3376,63 @@ cleanup:
 "#;
         assert!(!caps(code));
     }
+    /// Every read of a function of 300 guarded blocks gets the same answer
+    /// through one [`StatementLookup`] as through a lookup built per read,
+    /// and the body's statements are collected once for all of them: per
+    /// read, each query collected the whole body again. Counted rather
+    /// than timed.
+    #[test]
+    fn reads_through_one_lookup_collect_the_body_once() {
+        let mut code = String::from("void f(int c, int *q) {\n    int *s;\n    int n;\n");
+        for i in 0..300 {
+            code.push_str(&format!(
+                "    if (c == {i}) {{ s = q; n = *s; }}\n    use(s, n);\n"
+            ));
+        }
+        code.push_str("}\n");
+        let (cfg, result, source) = analyze_code(&code);
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(&source, None).unwrap();
+        let body = tree
+            .root_node()
+            .child(0)
+            .unwrap()
+            .child_by_field_name("body")
+            .unwrap();
+        let config = InitAnalysisConfig::default();
+        let reads: Vec<(usize, &str)> = source
+            .match_indices("use(s, n)")
+            .flat_map(|(at, _)| [(at + 4, "s"), (at + 7, "n")])
+            .collect();
+        assert_eq!(reads.len(), 600);
+
+        crate::analyze::dataflow::take_lookup_counts();
+        let statements = StatementLookup::new(&body);
+        let shared: Vec<Option<VarInfo>> = reads
+            .iter()
+            .map(|&(at, var)| {
+                get_var_info_at_in(&result, &cfg, &statements, &source, var, at, &config)
+            })
+            .collect();
+        let (built, collected) = crate::analyze::dataflow::take_lookup_counts();
+        assert_eq!(built, 1);
+        // Each node's children once: the body's and those of the blocks the
+        // reads replay into, never the body's again per read.
+        assert!(collected < 4 * body.descendant_count(), "{collected}");
+
+        for (&(at, var), info) in reads.iter().zip(&shared) {
+            assert_eq!(
+                *info,
+                get_var_info_at_with_config(&result, &cfg, &body, &source, var, at, &config),
+                "{var} at byte {at}"
+            );
+        }
+        assert!(shared
+            .iter()
+            .any(|i| i.as_ref().is_some_and(|i| i.state.is_unsafe())));
+    }
+
     #[test]
     fn test_uninitialized_simple() {
         let code = "void foo() { int x; x = x + 1; }";

@@ -12,11 +12,12 @@ use crate::analyze::cfg::{self as cfg_mod, FunctionCfg};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::context::ScopedTable;
 use crate::analyze::context::SummaryLookup;
+use crate::analyze::dataflow::StatementLookup;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::init_state::{self, InitAnalysisResult, InitState, InitStateMap};
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
-use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
+use crate::utility::cert_c::ast_utils::{self, get_identifier_from_declarator, get_node_text};
 use crate::utility::cert_c::guard_dominance;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -524,6 +525,7 @@ impl CertRule for Exp33C {
 
                     // Walk AST for read sites and check each against dataflow result
                     let mut reported: HashSet<String> = HashSet::new();
+                    let lookups = FunctionLookups::new(&body);
                     check_reads(
                         &root,
                         &body,
@@ -531,6 +533,7 @@ impl CertRule for Exp33C {
                         &analysis,
                         cfg,
                         &body,
+                        &lookups,
                         &mut violations,
                         &mut reported,
                         config,
@@ -541,7 +544,7 @@ impl CertRule for Exp33C {
                         source,
                         &analysis,
                         cfg,
-                        &body,
+                        &lookups,
                         &mut violations,
                         &mut reported,
                         config,
@@ -574,13 +577,54 @@ impl CertRule for Exp33C {
 // ---------------------------------------------------------------------------
 
 /// Walk the AST looking for reads of tracked variables.
-fn check_reads(
-    root: &Node,
-    node: &Node,
+/// What every read of one function asks through, built once for the
+/// function: its statements by byte range and each block's declarations.
+/// Built again at each read, each was a pass over the body, so checking
+/// the reads of a long function cost the square of its length.
+struct FunctionLookups<'t> {
+    statements: StatementLookup<'t>,
+    declarations: ast_utils::ScopeDeclarations<'t>,
+}
+
+impl<'t> FunctionLookups<'t> {
+    fn new(body: &Node<'t>) -> Self {
+        Self {
+            statements: StatementLookup::new(body),
+            declarations: Default::default(),
+        }
+    }
+
+    /// [`init_state::get_var_info_at_with_config`] over this function's body.
+    fn var_info_at(
+        &self,
+        analysis: &InitAnalysisResult,
+        cfg: &FunctionCfg,
+        source: &str,
+        var_name: &str,
+        byte_offset: usize,
+        config: &init_state::InitAnalysisConfig,
+    ) -> Option<init_state::VarInfo> {
+        init_state::get_var_info_at_in(
+            analysis,
+            cfg,
+            &self.statements,
+            source,
+            var_name,
+            byte_offset,
+            config,
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_reads<'t>(
+    root: &Node<'t>,
+    node: &Node<'t>,
     source: &str,
     analysis: &InitAnalysisResult,
     cfg: &FunctionCfg,
     body: &Node,
+    lookups: &FunctionLookups<'t>,
     violations: &mut Vec<RuleViolation>,
     reported: &mut HashSet<String>,
     config: &init_state::InitAnalysisConfig,
@@ -600,6 +644,7 @@ fn check_reads(
                     analysis,
                     cfg,
                     body,
+                    lookups,
                     violations,
                     reported,
                     config,
@@ -611,13 +656,13 @@ fn check_reads(
                 let text = get_node_text(&n, source);
                 if text.starts_with('*') {
                     check_deref_read(
-                        &n, source, analysis, cfg, body, violations, reported, config,
+                        &n, source, analysis, cfg, lookups, violations, reported, config,
                     );
                 }
             }
             "subscript_expression" => {
                 check_subscript_read(
-                    &n, source, analysis, cfg, body, violations, reported, config,
+                    &n, source, analysis, cfg, lookups, violations, reported, config,
                 );
             }
             _ => {}
@@ -870,7 +915,7 @@ fn check_append_call_reads(
     source: &str,
     analysis: &InitAnalysisResult,
     cfg: &FunctionCfg,
-    body: &Node,
+    lookups: &FunctionLookups,
     violations: &mut Vec<RuleViolation>,
     reported: &mut HashSet<String>,
     config: &init_state::InitAnalysisConfig,
@@ -902,15 +947,9 @@ fn check_append_call_reads(
         if !analysis.tracked_vars.contains(&var_name) || reported.contains(&var_name) {
             continue;
         }
-        let Some(info) = init_state::get_var_info_at_with_config(
-            analysis,
-            cfg,
-            body,
-            source,
-            &var_name,
-            call.start_byte(),
-            config,
-        ) else {
+        let Some(info) =
+            lookups.var_info_at(analysis, cfg, source, &var_name, call.start_byte(), config)
+        else {
             continue;
         };
         if matches!(info.state, InitState::MallocUninitialized) && !info.is_unsigned_char {
@@ -1033,13 +1072,15 @@ fn extract_addr_of_var(node: &Node, source: &str) -> String {
 }
 
 /// Check if an identifier read is of an uninitialized variable.
-fn check_identifier_read(
-    root: &Node,
-    node: &Node,
+#[allow(clippy::too_many_arguments)]
+fn check_identifier_read<'t>(
+    root: &Node<'t>,
+    node: &Node<'t>,
     source: &str,
     analysis: &InitAnalysisResult,
     cfg: &FunctionCfg,
     body: &Node,
+    lookups: &FunctionLookups<'t>,
     violations: &mut Vec<RuleViolation>,
     reported: &mut HashSet<String>,
     config: &init_state::InitAnalysisConfig,
@@ -1068,10 +1109,10 @@ fn check_identifier_read(
     // `serverDb *db` inside its eviction loop, and after the loop
     // `latencyTraceIfNeeded(db, ...)` passes `db` as a macro's type token,
     // which read as that variable "maybe uninitialized".
-    if crate::utility::cert_c::ast_utils::resolve_identifier_declarator_in(
-        root, node, &var_name, source,
-    )
-    .is_none()
+    if lookups
+        .declarations
+        .resolve_identifier_declarator_in(root, node, &var_name, source)
+        .is_none()
     {
         return;
     }
@@ -1103,18 +1144,11 @@ fn check_identifier_read(
 
     // Query init state at this point
 
-    let info = match init_state::get_var_info_at_with_config(
-        analysis,
-        cfg,
-        body,
-        source,
-        &var_name,
-        node.start_byte(),
-        config,
-    ) {
-        Some(i) => i,
-        None => return,
-    };
+    let info =
+        match lookups.var_info_at(analysis, cfg, source, &var_name, node.start_byte(), config) {
+            Some(i) => i,
+            None => return,
+        };
 
     // EXP33-C exception: reading uninitialized unsigned char is permitted
     if info.is_unsigned_char {
@@ -1126,49 +1160,8 @@ fn check_identifier_read(
         return;
     }
 
-    // Arrays passed by name to unknown function calls decay to pointers.
-    // The init-state transfer function treats such arrays as initialized
-    // (assumes the function writes to them). Skip the read-check here
-    // for consistency, but only for truly unknown functions — not for
-    // known read-only or known initializing functions (handled separately).
-    if info.is_array {
-        if let Some(parent) = node.parent() {
-            // Array-to-pointer decay: `ptr = arr` where arr is on the RHS.
-            // Taking the address of an array (char or not) is not itself a
-            // content read — suppress here and detect later at the actual
-            // use site (subscript access, dereference, or an append-style
-            // call like strcat/wcscat via check_append_call_reads).
-            if parent.kind() == "assignment_expression" {
-                if let Some(right) = parent.child_by_field_name("right") {
-                    if right.id() == node.id() {
-                        return;
-                    }
-                }
-            }
-            // An array name as an operand of any binary operator has
-            // decayed to its address: `p != buf` and `buf + sizeof(buf) - 1`
-            // compare and offset pointers and read no element (valkey-cli.c's
-            // byte-at-a-time read loop).
-            if parent.kind() == "binary_expression" {
-                return;
-            }
-            if parent.kind() == "argument_list" {
-                if let Some(call_expr) = parent.parent() {
-                    if call_expr.kind() == "call_expression" {
-                        if let Some(func) = call_expr.child_by_field_name("function") {
-                            let fname = get_node_text(&func, source).to_string();
-                            // Known functions are already handled by is_read_in_argument_list.
-                            // Only suppress for truly unknown functions (not non-initializing).
-                            if init_state::match_initializing_function(&fname).is_none()
-                                && !init_state::is_non_initializing_function(&fname)
-                            {
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    if info.is_array && array_name_decays_unread(node, source) {
+        return;
     }
 
     // aurora-lint has no preprocessor, so an `#ifdef GUARD ... #endif` block is
@@ -1186,24 +1179,10 @@ fn check_identifier_read(
     // `#ifdef CONFIG_ELOOP_SELECT` and read here under the identical
     // guard). Scoped to MaybeUninitialized only -- a bare Uninitialized
     // read (no write anywhere) is unaffected by this and still flagged.
-    if matches!(info.state, InitState::MaybeUninitialized) {
-        if let Some(read_guard) = enclosing_ifdef_guard_key(node, body, source) {
-            if all_write_sites_ifdef_correlated(body, &var_name, &read_guard, source) {
-                return;
-            }
-        }
-        if has_macro_shadow_definition(body, &var_name, source) {
-            return;
-        }
-        if conditional_output_is_return_guarded(
-            &var_name,
-            node,
-            body,
-            source,
-            &config.cross_file_conditional_output_params,
-        ) {
-            return;
-        }
+    if matches!(info.state, InitState::MaybeUninitialized)
+        && maybe_uninitialized_read_is_correlated(node, body, &var_name, source, config)
+    {
+        return;
     }
 
     reported.insert(var_name.clone());
@@ -1230,6 +1209,80 @@ fn check_identifier_read(
         )),
         ..Default::default()
     });
+}
+
+/// Whether an occurrence of an array's name decays to its address without
+/// reading an element.
+///
+/// Arrays passed by name to unknown function calls decay to pointers.
+/// The init-state transfer function treats such arrays as initialized
+/// (assumes the function writes to them). Skip the read-check here
+/// for consistency, but only for truly unknown functions — not for
+/// known read-only or known initializing functions (handled separately).
+fn array_name_decays_unread(node: &Node, source: &str) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    // Array-to-pointer decay: `ptr = arr` where arr is on the RHS.
+    // Taking the address of an array (char or not) is not itself a
+    // content read — suppress here and detect later at the actual
+    // use site (subscript access, dereference, or an append-style
+    // call like strcat/wcscat via check_append_call_reads).
+    if parent.kind() == "assignment_expression"
+        && parent
+            .child_by_field_name("right")
+            .is_some_and(|right| right.id() == node.id())
+    {
+        return true;
+    }
+    // An array name as an operand of any binary operator has
+    // decayed to its address: `p != buf` and `buf + sizeof(buf) - 1`
+    // compare and offset pointers and read no element (valkey-cli.c's
+    // byte-at-a-time read loop).
+    if parent.kind() == "binary_expression" {
+        return true;
+    }
+    if parent.kind() != "argument_list" {
+        return false;
+    }
+    let Some(func) = parent
+        .parent()
+        .filter(|call_expr| call_expr.kind() == "call_expression")
+        .and_then(|call_expr| call_expr.child_by_field_name("function"))
+    else {
+        return false;
+    };
+    let fname = get_node_text(&func, source).to_string();
+    // Known functions are already handled by is_read_in_argument_list.
+    // Only suppress for truly unknown functions (not non-initializing).
+    init_state::match_initializing_function(&fname).is_none()
+        && !init_state::is_non_initializing_function(&fname)
+}
+
+/// Whether a maybe-uninitialized read is one the write it may miss is
+/// correlated with: under the same `#ifdef` guard as every write, behind a
+/// macro of the variable's name, or after the caller consulted the result
+/// of a call that writes it only conditionally.
+fn maybe_uninitialized_read_is_correlated(
+    node: &Node,
+    body: &Node,
+    var_name: &str,
+    source: &str,
+    config: &init_state::InitAnalysisConfig,
+) -> bool {
+    if enclosing_ifdef_guard_key(node, body, source).is_some_and(|read_guard| {
+        all_write_sites_ifdef_correlated(body, var_name, &read_guard, source)
+    }) {
+        return true;
+    }
+    has_macro_shadow_definition(body, var_name, source)
+        || conditional_output_is_return_guarded(
+            var_name,
+            node,
+            body,
+            source,
+            &config.cross_file_conditional_output_params,
+        )
 }
 
 /// Whether the callee that left `var_name` possibly-unwritten also told the
@@ -1378,7 +1431,7 @@ fn check_deref_read(
     source: &str,
     analysis: &InitAnalysisResult,
     cfg: &FunctionCfg,
-    body: &Node,
+    lookups: &FunctionLookups,
     violations: &mut Vec<RuleViolation>,
     reported: &mut HashSet<String>,
     config: &init_state::InitAnalysisConfig,
@@ -1417,18 +1470,11 @@ fn check_deref_read(
         }
     }
 
-    let info = match init_state::get_var_info_at_with_config(
-        analysis,
-        cfg,
-        body,
-        source,
-        &var_name,
-        node.start_byte(),
-        config,
-    ) {
-        Some(i) => i,
-        None => return,
-    };
+    let info =
+        match lookups.var_info_at(analysis, cfg, source, &var_name, node.start_byte(), config) {
+            Some(i) => i,
+            None => return,
+        };
 
     // A static/thread-local pointer with no explicit initializer is
     // zero-initialized (NULL) per C11 6.7.9p10 -- its value is determinate,
@@ -1484,7 +1530,7 @@ fn check_subscript_read(
     source: &str,
     analysis: &InitAnalysisResult,
     cfg: &FunctionCfg,
-    body: &Node,
+    lookups: &FunctionLookups,
     violations: &mut Vec<RuleViolation>,
     reported: &mut HashSet<String>,
     config: &init_state::InitAnalysisConfig,
@@ -1528,18 +1574,11 @@ fn check_subscript_read(
         }
     }
 
-    let info = match init_state::get_var_info_at_with_config(
-        analysis,
-        cfg,
-        body,
-        source,
-        &var_name,
-        node.start_byte(),
-        config,
-    ) {
-        Some(i) => i,
-        None => return,
-    };
+    let info =
+        match lookups.var_info_at(analysis, cfg, source, &var_name, node.start_byte(), config) {
+            Some(i) => i,
+            None => return,
+        };
 
     // EXP33-C exception: unsigned char content reads are permitted
     if info.is_unsigned_char {
