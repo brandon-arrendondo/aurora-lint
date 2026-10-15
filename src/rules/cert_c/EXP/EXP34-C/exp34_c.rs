@@ -15,6 +15,7 @@ use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::format_slots;
 use crate::utility::cert_c::guard_dominance;
+use crate::utility::cert_c::last_write::{last_write_before, write_target_is, LastWrites};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -356,6 +357,13 @@ struct ReportedSites<'s> {
     first_site_only: bool,
     source: &'s str,
     keys: HashSet<(String, Option<usize>)>,
+    /// Which value of a variable a site sees, told apart by the write that
+    /// produced it (the last one before the site, in byte order). That
+    /// tells one value from another for de-duplication only, so byte order
+    /// is enough: it never decides whether anything is reported, only which
+    /// of several reports of one value is kept. One walk of the body per
+    /// name serves every site of the function.
+    writes: RefCell<LastWrites>,
 }
 
 impl<'s> ReportedSites<'s> {
@@ -364,12 +372,15 @@ impl<'s> ReportedSites<'s> {
             first_site_only,
             source,
             keys: HashSet::new(),
+            writes: RefCell::new(LastWrites::default()),
         }
     }
 
     fn key(&self, name: &str, site: &Node) -> (String, Option<usize>) {
         let discriminant = if self.first_site_only {
-            value_origin(name, site, self.source)
+            self.writes
+                .borrow_mut()
+                .start_before(name, site, self.source)
         } else {
             Some(site.start_position().row)
         };
@@ -383,84 +394,6 @@ impl<'s> ReportedSites<'s> {
     fn insert(&mut self, name: &str, site: &Node) {
         let key = self.key(name, site);
         self.keys.insert(key);
-    }
-}
-
-/// The start byte of the last write to `name` that ends before `site` in
-/// the enclosing function (see [`last_write_before`]). `None` when there is
-/// none, as for a parameter's incoming value.
-///
-/// This tells one value of a variable from another for de-duplication
-/// only, so byte order is enough: it never decides whether anything is
-/// reported, only which of several reports of one value is kept.
-fn value_origin(name: &str, site: &Node, source: &str) -> Option<usize> {
-    last_write_before(name, site, source).map(|w| w.start_byte())
-}
-
-/// The last write to `name` that ends before `site` in the enclosing
-/// function, in byte order: a plain `=` assignment whose left side is
-/// spelled `name`, or the declaration that initializes it. A compound
-/// assignment (`p += n`) derives from the value already there, so it starts
-/// no new value.
-fn last_write_before<'t>(name: &str, site: &Node<'t>, source: &str) -> Option<Node<'t>> {
-    let mut current = site.parent();
-    while let Some(parent) = current {
-        if parent.kind() == "function_definition" {
-            let body = parent.child_by_field_name("body")?;
-            let mut last = None;
-            collect_last_write(&body, name, site.start_byte(), source, &mut last);
-            return last;
-        }
-        current = parent.parent();
-    }
-    None
-}
-
-fn collect_last_write<'t>(
-    node: &Node<'t>,
-    name: &str,
-    before: usize,
-    source: &str,
-    last: &mut Option<Node<'t>>,
-) {
-    if node.start_byte() >= before {
-        return;
-    }
-    if node.end_byte() <= before
-        && write_target_is(node, name, source)
-        && !is_compound(node, source)
-    {
-        if last.is_none_or(|l| l.start_byte() < node.start_byte()) {
-            *last = Some(*node);
-        }
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_last_write(&child, name, before, source, last);
-        }
-    }
-}
-
-/// True for a compound assignment (`+=`, `|=`, ...), which derives its
-/// value from the one already there.
-fn is_compound(node: &Node, source: &str) -> bool {
-    node.kind() == "assignment_expression"
-        && node
-            .child_by_field_name("operator")
-            .is_some_and(|op| ast_utils::get_node_text(&op, source) != "=")
-}
-
-/// True when `node` is an assignment to, or the initializing declarator of,
-/// the lvalue spelled `name`.
-fn write_target_is(node: &Node, name: &str, source: &str) -> bool {
-    match node.kind() {
-        "assignment_expression" => node
-            .child_by_field_name("left")
-            .is_some_and(|left| ast_utils::get_node_text(&left, source) == name),
-        "init_declarator" => node
-            .child_by_field_name("declarator")
-            .is_some_and(|d| ast_utils::get_identifier_from_declarator(&d, source) == name),
-        _ => false,
     }
 }
 

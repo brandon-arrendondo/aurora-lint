@@ -39,6 +39,9 @@ pub mod format_slots;
 /// Structural "is this variable guarded here?" queries -- the AST relation
 /// that per-rule text searches for a canonical guard spelling stand in for.
 pub mod guard_dominance;
+/// The last plain write to an lvalue before a point in a function, by
+/// spelling: which value of a variable a site sees.
+pub mod last_write;
 /// Whether an ISO C or POSIX library call has a side effect (C11 5.1.2.3p2, errno
 /// included): the table behind the `stdlib_call_effects` contract.
 pub mod library_effects;
