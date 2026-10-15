@@ -46,6 +46,8 @@
 //! putenv(&env[0]);           /* so does the address of its first element */
 //! putenv(s.buf);             /* an array member of an automatic struct */
 //! putenv((char[]){"A=1"});   /* a block-scope compound literal */
+//! putenv(env3[0][1]);        /* a row of a 3-D array, or of an array member */
+//! putenv(r.rows[0]);         /* (the object is automatic, and the row is an array) */
 //! ```
 //!
 //! The storage of the argument is found by resolving each name to its own
@@ -67,12 +69,14 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::VisibleTypes;
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::{
     declaration_has_storage_class, get_identifier_from_declarator, get_node_text,
     resolve_identifier_declarator,
 };
+use crate::utility::cert_c::expr_type::{expr_type, CType, IntFacts, TypeEnv};
 use lang_parsing_substrate::query;
 use std::sync::Arc;
 use tree_sitter::Node;
@@ -92,12 +96,16 @@ const MAX_COPY_DEPTH: usize = 4;
 
 pub struct Pos34C {
     settings: std::cell::RefCell<Arc<AnalysisSettings>>,
+    /// What the file sees of struct fields and typedefs, to type an argument
+    /// that reaches an array through a member path or several subscripts.
+    visible: std::cell::RefCell<VisibleTypes>,
 }
 
 impl Pos34C {
     pub fn new() -> Self {
         Self {
             settings: std::cell::RefCell::new(Arc::new(AnalysisSettings::default())),
+            visible: std::cell::RefCell::default(),
         }
     }
 }
@@ -123,6 +131,10 @@ impl CertRule for Pos34C {
         *self.settings.borrow_mut() = Arc::clone(settings);
     }
 
+    fn set_visible_types(&self, types: &VisibleTypes) {
+        *self.visible.borrow_mut() = types.clone();
+    }
+
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.check_putenv_calls(node, source, violations);
     }
@@ -130,6 +142,8 @@ impl CertRule for Pos34C {
 
 impl Pos34C {
     fn check_putenv_calls(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let visible = self.visible.borrow();
+        let env = TypeEnv::visible(&visible, IntFacts::ISO).in_tree(*node);
         for call in query::find_descendants_of_kind(*node, "call_expression") {
             if !calls_putenv(&call, source) {
                 continue;
@@ -137,13 +151,13 @@ impl Pos34C {
             let Some(arg) = first_argument(&call) else {
                 continue;
             };
-            if !points_to_automatic(&arg, source, 0) {
+            if !points_to_automatic(&arg, source, 0, &env) {
                 continue;
             }
             if self.exempted(&call, source) {
                 continue;
             }
-            let arg_text = automatic_object_name(&arg, source);
+            let arg_text = automatic_object_name(&arg, source, &env);
             violations.push(RuleViolation {
                 rule_id: self.rule_id().to_string(),
                 message: format!(
@@ -226,15 +240,15 @@ fn inside_function(node: &Node) -> bool {
 /// of its elements, an array member of an automatic struct, a block-scope
 /// compound literal of array type, or a local pointer every value of which is
 /// one of those.
-fn points_to_automatic(expr: &Node, source: &str, depth: usize) -> bool {
+fn points_to_automatic(expr: &Node, source: &str, depth: usize, env: &TypeEnv) -> bool {
     match expr.kind() {
         "parenthesized_expression" => expr
             .named_child(0)
-            .is_some_and(|inner| points_to_automatic(&inner, source, depth)),
+            .is_some_and(|inner| points_to_automatic(&inner, source, depth, env)),
         "cast_expression" => expr
             .child_by_field_name("value")
-            .is_some_and(|inner| points_to_automatic(&inner, source, depth)),
-        "identifier" => identifier_points_to_automatic(expr, source, depth),
+            .is_some_and(|inner| points_to_automatic(&inner, source, depth, env)),
+        "identifier" => identifier_points_to_automatic(expr, source, depth, env),
         "pointer_expression" => {
             let is_address_of = expr
                 .child_by_field_name("operator")
@@ -242,20 +256,24 @@ fn points_to_automatic(expr: &Node, source: &str, depth: usize) -> bool {
             is_address_of
                 && expr
                     .child_by_field_name("argument")
-                    .is_some_and(|operand| address_is_automatic(&operand, source))
+                    .is_some_and(|operand| address_is_automatic(&operand, source, env))
         }
-        "field_expression" => automatic_array_member(expr, source),
+        "field_expression" => {
+            automatic_array_member(expr, source) || array_within_automatic_object(expr, source, env)
+        }
         // `k ? env : "B=2"`: one automatic arm is enough to dangle.
         "conditional_expression" => ["consequence", "alternative"].iter().any(|arm| {
             expr.child_by_field_name(arm)
-                .is_some_and(|inner| points_to_automatic(&inner, source, depth))
+                .is_some_and(|inner| points_to_automatic(&inner, source, depth, env))
         }),
         // `env[0]` of `char env[2][16]` is itself an array, so it decays to
         // a pointer into the automatic object.
         "subscript_expression" => {
-            expr.child_by_field_name("argument")
-                .is_some_and(|base| is_automatic_array_expr(&base, source))
-                && subscript_yields_array(expr, source)
+            (expr
+                .child_by_field_name("argument")
+                .is_some_and(|base| is_automatic_array_expr(&base, source, env))
+                && subscript_yields_array(expr, source))
+                || array_within_automatic_object(expr, source, env)
         }
         "compound_literal_expression" => {
             inside_function(expr)
@@ -273,14 +291,14 @@ fn points_to_automatic(expr: &Node, source: &str, depth: usize) -> bool {
 /// The spelling the report names for an argument that points to an automatic
 /// object: the object itself (`env` for `k ? env : "B=2"`, `&env[1]`, `s.buf`),
 /// or the whole expression when no single object stands out.
-fn automatic_object_name(expr: &Node, source: &str) -> String {
+fn automatic_object_name(expr: &Node, source: &str, env: &TypeEnv) -> String {
     let named = match expr.kind() {
         "parenthesized_expression" => expr.named_child(0),
         "cast_expression" => expr.child_by_field_name("value"),
         "conditional_expression" => ["consequence", "alternative"]
             .iter()
             .filter_map(|arm| expr.child_by_field_name(arm))
-            .find(|inner| points_to_automatic(inner, source, 0)),
+            .find(|inner| points_to_automatic(inner, source, 0, env)),
         "pointer_expression" | "subscript_expression" | "field_expression" => {
             let base = if expr.kind() == "pointer_expression" {
                 expr.child_by_field_name("argument")
@@ -295,21 +313,21 @@ fn automatic_object_name(expr: &Node, source: &str) -> String {
         _ => None,
     };
     match named {
-        Some(inner) => automatic_object_name(&inner, source),
+        Some(inner) => automatic_object_name(&inner, source, env),
         None => get_node_text(expr, source).to_string(),
     }
 }
 
 /// `&operand`: the address of an automatic object or a part of one.
-fn address_is_automatic(operand: &Node, source: &str) -> bool {
+fn address_is_automatic(operand: &Node, source: &str, env: &TypeEnv) -> bool {
     match operand.kind() {
         "parenthesized_expression" => operand
             .named_child(0)
-            .is_some_and(|inner| address_is_automatic(&inner, source)),
+            .is_some_and(|inner| address_is_automatic(&inner, source, env)),
         // `&env[0]`: the element's storage is the array's, when the base is the array.
         "subscript_expression" => operand
             .child_by_field_name("argument")
-            .is_some_and(|base| is_automatic_array_expr(&base, source)),
+            .is_some_and(|base| is_automatic_array_expr(&base, source, env)),
         "identifier" => resolve_object(operand, source).is_some_and(|o| o.automatic),
         "field_expression" => field_root_is_automatic_object(operand, source),
         _ => false,
@@ -317,13 +335,51 @@ fn address_is_automatic(operand: &Node, source: &str) -> bool {
 }
 
 /// An expression that names an automatic array itself (not a pointer).
-fn is_automatic_array_expr(expr: &Node, source: &str) -> bool {
+fn is_automatic_array_expr(expr: &Node, source: &str, env: &TypeEnv) -> bool {
     match expr.kind() {
         "parenthesized_expression" => expr
             .named_child(0)
-            .is_some_and(|inner| is_automatic_array_expr(&inner, source)),
+            .is_some_and(|inner| is_automatic_array_expr(&inner, source, env)),
         "identifier" => resolve_object(expr, source).is_some_and(|o| o.automatic && o.array),
-        "field_expression" => automatic_array_member(expr, source),
+        "field_expression" | "subscript_expression" => {
+            automatic_array_member(expr, source) || array_within_automatic_object(expr, source, env)
+        }
+        _ => false,
+    }
+}
+
+/// Whether `expr` has array type and the array is a part of one automatic
+/// object: every subscript on the way down is applied to an array (a
+/// subscript of a pointer leaves the object), every member access is `.` on a
+/// struct, and the root is a block-scope object that is not a
+/// pointer. The types are the declared ones (ADR-0006), through
+/// [`expr_type`], so a 3-D row (`env[0][1]`), a member's row (`r.rows[0]`) and
+/// a nested member all count and a row reached through a pointer does not.
+/// Known limits: a member of a union, of a struct parameter passed by value,
+/// and an array whose type is a `typedef` name are not followed.
+fn array_within_automatic_object(expr: &Node, source: &str, env: &TypeEnv) -> bool {
+    matches!(expr_type(expr, source, env), Some(CType::Array(_)))
+        && object_part_is_automatic(expr, source, env)
+}
+
+fn object_part_is_automatic(node: &Node, source: &str, env: &TypeEnv) -> bool {
+    match node.kind() {
+        "parenthesized_expression" => node
+            .named_child(0)
+            .is_some_and(|inner| object_part_is_automatic(&inner, source, env)),
+        "subscript_expression" => node.child_by_field_name("argument").is_some_and(|base| {
+            matches!(expr_type(&base, source, env), Some(CType::Array(_)))
+                && object_part_is_automatic(&base, source, env)
+        }),
+        "field_expression" => {
+            node.child_by_field_name("operator")
+                .is_some_and(|op| get_node_text(&op, source) == ".")
+                && node.child_by_field_name("argument").is_some_and(|base| {
+                    matches!(expr_type(&base, source, env), Some(CType::Record(_)))
+                        && object_part_is_automatic(&base, source, env)
+                })
+        }
+        "identifier" => resolve_object(node, source).is_some_and(|o| o.automatic && !o.pointer),
         _ => false,
     }
 }
@@ -396,7 +452,7 @@ fn resolve_object<'a>(ident: &Node<'a>, source: &str) -> Option<Object<'a>> {
     })
 }
 
-fn identifier_points_to_automatic(ident: &Node, source: &str, depth: usize) -> bool {
+fn identifier_points_to_automatic(ident: &Node, source: &str, depth: usize, env: &TypeEnv) -> bool {
     let Some(object) = resolve_object(ident, source) else {
         return false;
     };
@@ -415,7 +471,7 @@ fn identifier_points_to_automatic(ident: &Node, source: &str, depth: usize) -> b
     !values.is_empty()
         && values
             .iter()
-            .all(|value| points_to_automatic(value, source, depth + 1))
+            .all(|value| points_to_automatic(value, source, depth + 1, env))
 }
 
 /// The initializer and every assigned value of the pointer `object` in its
