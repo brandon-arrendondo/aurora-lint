@@ -70,3 +70,5 @@ outlive any one task.
   reported, and never passes as clean](0017-graceful-failure.md)
 - [0018 — A benchmark run is pinned by five things, and the environment it
   ran in is one of them](0018-a-benchmark-run-is-pinned-by-five-things.md)
+- [0019 — Every numeric gate default has a recorded source, calibration, or
+  proposed change](0019-gate-defaults-have-a-recorded-basis.md)
