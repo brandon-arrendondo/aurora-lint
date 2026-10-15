@@ -36,6 +36,23 @@ pub fn var_ranges_replay_at(
         return None;
     }
     let func = ast_utils::find_containing_function(expr_node)?;
+    var_ranges_replay_in(function_cfgs, vra_results, &func, expr_node, source, macros)
+}
+
+/// [`var_ranges_replay_at`] for a caller that knows `expr_node`'s containing
+/// function, which otherwise costs a descent from the root to find. The
+/// ranges depend only on that function and where `expr_node` starts.
+pub fn var_ranges_replay_in(
+    function_cfgs: &HashMap<usize, FunctionCfg>,
+    vra_results: &HashMap<usize, RangeAnalysisResult>,
+    func: &Node,
+    expr_node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+) -> Option<VarRangeMap> {
+    if vra_results.is_empty() || function_cfgs.is_empty() {
+        return None;
+    }
     let start_byte = func.start_byte();
     let cfg = function_cfgs.get(&start_byte)?;
     let vra = vra_results.get(&start_byte)?;

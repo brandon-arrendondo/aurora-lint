@@ -84,9 +84,17 @@ pub mod signal_handlers;
 pub mod size_analysis;
 /// Lookup of known C standard library / POSIX / Windows socket function names.
 pub mod std_functions;
+/// Whether any node of a subtree satisfies a predicate, answered bottom-up
+/// once per node and remembered, for a rule that asks it of every operand of
+/// a deep expression.
+pub mod subtree_any;
 /// Slicing and truncating source text on character boundaries, so a
 /// multibyte character at the cut cannot panic the scan.
 pub mod text_bounds;
+/// A file's text, read once (optionally with chosen nodes blanked, offsets
+/// kept), so "does this node's text contain P" is a binary search over where
+/// P occurs rather than a scan of the node's text.
+pub mod text_index;
 /// Which thread-API operation a call performs (create, lock, wait, store
 /// thread-specific data, ...), across C11, POSIX and declared families.
 pub mod thread_api;

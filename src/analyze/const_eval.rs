@@ -2230,16 +2230,36 @@ pub fn try_evaluate_expr(node: &Node, source: &str, macros: &MacroConstantMap) -
     try_evaluate_expr_with(node, source, macros, None)
 }
 
+/// A variable-range table's contents, sorted by name: what names it.
+type RangeTableContents = Vec<(String, i64, i64)>;
+
 /// Facts about the sub-expressions of one tree under one macro table,
 /// remembered by node id for a caller that evaluates every operator of an
 /// expression: each evaluation otherwise walks its operand's whole subtree
 /// again, so a long `1 + 1 + ...` chain costs the square of its length, and
 /// [`try_evaluate_range`], which tries [`try_evaluate_expr`] at every level
 /// of its own recursion, the cube.
+///
+/// Ranges are remembered too, per node and per variable-range table: an
+/// operator's range is its operands' ranges combined, so a caller asking at
+/// every operator of a chain would otherwise re-derive every operand's.
+/// The table is identified by its contents, read once per outermost
+/// evaluation, so two tables that say the same thing share their ranges.
 #[derive(Default)]
 pub struct ConstMemo {
     values: std::cell::RefCell<HashMap<usize, Option<i64>>>,
     has_identifier: std::cell::RefCell<HashMap<usize, bool>>,
+    /// `(node id, range table id)` -> range.
+    ranges: std::cell::RefCell<HashMap<(usize, usize), Option<ValueRange>>>,
+    /// `(node id, range table id)` -> lower bound.
+    lower_bounds: std::cell::RefCell<HashMap<(usize, usize), Option<i64>>>,
+    /// Range tables seen so far, by contents, sorted by name.
+    range_tables: std::cell::RefCell<HashMap<RangeTableContents, usize>>,
+    /// The table the outermost evaluation in progress was given: its address,
+    /// which identifies it while that evaluation borrows it, and its id.
+    current_table: std::cell::Cell<Option<(usize, usize)>>,
+    /// Tables a caller keeps alive until [`ConstMemo::clear`], by address.
+    pinned_tables: std::cell::RefCell<HashMap<usize, usize>>,
 }
 
 impl ConstMemo {
@@ -2247,8 +2267,74 @@ impl ConstMemo {
     pub fn clear(&self) {
         self.values.borrow_mut().clear();
         self.has_identifier.borrow_mut().clear();
+        self.ranges.borrow_mut().clear();
+        self.lower_bounds.borrow_mut().clear();
+        self.range_tables.borrow_mut().clear();
+        self.current_table.set(None);
+        self.pinned_tables.borrow_mut().clear();
     }
 
+    /// Name `var_ranges` once for every evaluation over it, rather than by
+    /// reading its contents at each one: a table shared by every operator of
+    /// an expression can hold a range for each of its names, and reading
+    /// that at each operator costs the square of the expression.
+    ///
+    /// The caller keeps `var_ranges` alive, at the same address and unchanged,
+    /// until it next calls [`ConstMemo::clear`]: until then its address is
+    /// its name.
+    pub fn pin_table(&self, var_ranges: &VarRangeMap) {
+        let address = std::ptr::from_ref(var_ranges) as usize;
+        if !self.pinned_tables.borrow().contains_key(&address) {
+            let id = self.range_table_id(var_ranges);
+            self.pinned_tables.borrow_mut().insert(address, id);
+        }
+    }
+
+    /// The id of the table that says what `var_ranges` says.
+    fn range_table_id(&self, var_ranges: &VarRangeMap) -> usize {
+        let mut contents: RangeTableContents = var_ranges
+            .iter()
+            .map(|(name, r)| (name.clone(), r.min, r.max))
+            .collect();
+        contents.sort_unstable();
+        let mut tables = self.range_tables.borrow_mut();
+        let next = tables.len();
+        *tables.entry(contents).or_insert(next)
+    }
+
+    /// The id under which to remember a fact about a node evaluated over
+    /// `var_ranges`, and the scope that names the table: the outermost
+    /// evaluation names the one it was given, and the recursion under it
+    /// reuses the name for as long as it hands down that same table. A
+    /// nested evaluation over another table gets no id and is evaluated,
+    /// not remembered.
+    fn table_for(&self, var_ranges: &VarRangeMap) -> (Option<TableScope<'_>>, Option<usize>) {
+        let address = std::ptr::from_ref(var_ranges) as usize;
+        let scope = self.current_table.get().is_none().then(|| {
+            let pinned = self.pinned_tables.borrow().get(&address).copied();
+            let id = pinned.unwrap_or_else(|| self.range_table_id(var_ranges));
+            self.current_table.set(Some((address, id)));
+            TableScope(self)
+        });
+        let id = match self.current_table.get() {
+            Some((table_address, table)) if table_address == address => Some(table),
+            _ => None,
+        };
+        (scope, id)
+    }
+}
+
+/// While alive, the outermost evaluation in progress over a table; see
+/// [`ConstMemo::table_for`].
+struct TableScope<'m>(&'m ConstMemo);
+
+impl Drop for TableScope<'_> {
+    fn drop(&mut self) {
+        self.0.current_table.set(None);
+    }
+}
+
+impl ConstMemo {
     /// Whether an `identifier` is in `node`'s subtree (or is `node`).
     fn has_identifier(&self, node: &Node) -> bool {
         if let Some(&known) = self.has_identifier.borrow().get(&node.id()) {
@@ -2263,7 +2349,7 @@ impl ConstMemo {
 
 /// [`try_evaluate_expr`], remembering each node's value in `memo` when given.
 /// The same answer.
-fn try_evaluate_expr_with(
+pub fn try_evaluate_expr_with(
     node: &Node,
     source: &str,
     macros: &MacroConstantMap,
@@ -2600,13 +2686,24 @@ pub fn is_compile_time_constant_expr(
 
 /// Evaluate an AST expression node to a value range.
 /// Falls back to `var_ranges` for identifiers not in macros.
+///
+/// Remembers what it learns about each node for the length of this one
+/// evaluation: every level of it tries an exact evaluation of its own
+/// subtree first, which would otherwise cost the square of the expression.
 pub fn try_evaluate_range(
     node: &Node,
     source: &str,
     macros: &MacroConstantMap,
     var_ranges: &VarRangeMap,
 ) -> Option<ValueRange> {
-    try_evaluate_range_inner(node, source, macros, var_ranges, None, None)
+    try_evaluate_range_inner(
+        node,
+        source,
+        macros,
+        var_ranges,
+        None,
+        Some(&ConstMemo::default()),
+    )
 }
 
 /// [`try_evaluate_range`], remembering each node's exact value in `memo`
@@ -2640,13 +2737,41 @@ pub fn try_evaluate_lower_bound(
     macros: &MacroConstantMap,
     var_ranges: &VarRangeMap,
 ) -> Option<i64> {
-    try_evaluate_lower_bound_with(node, source, macros, var_ranges, None)
+    // One evaluation's own memo, as in `try_evaluate_range`.
+    try_evaluate_lower_bound_with(
+        node,
+        source,
+        macros,
+        var_ranges,
+        Some(&ConstMemo::default()),
+    )
 }
 
-/// [`try_evaluate_lower_bound`], remembering constant values in `memo` when
-/// given. The bound itself depends on `var_ranges` and is not remembered.
-/// The same answer.
+/// [`try_evaluate_lower_bound`], remembering constant values and each
+/// node's bound under each table in `memo` when given. The same answer.
 fn try_evaluate_lower_bound_with(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    var_ranges: &VarRangeMap,
+    memo: Option<&ConstMemo>,
+) -> Option<i64> {
+    let Some(m) = memo else {
+        return try_evaluate_lower_bound_uncached(node, source, macros, var_ranges, None);
+    };
+    let (_scope, table) = m.table_for(var_ranges);
+    let key = table.map(|table| (node.id(), table));
+    if let Some(known) = key.and_then(|k| m.lower_bounds.borrow().get(&k).copied()) {
+        return known;
+    }
+    let bound = try_evaluate_lower_bound_uncached(node, source, macros, var_ranges, memo);
+    if let Some(k) = key {
+        m.lower_bounds.borrow_mut().insert(k, bound);
+    }
+    bound
+}
+
+fn try_evaluate_lower_bound_uncached(
     node: &Node,
     source: &str,
     macros: &MacroConstantMap,
@@ -2715,13 +2840,14 @@ pub fn try_evaluate_range_expanding(
     var_ranges: &VarRangeMap,
     function_macros: &HashMap<String, FunctionMacro>,
 ) -> Option<ValueRange> {
+    // One evaluation's own memo, as in `try_evaluate_range`.
     try_evaluate_range_inner(
         node,
         source,
         macros,
         var_ranges,
         Some(function_macros),
-        None,
+        Some(&ConstMemo::default()),
     )
 }
 
@@ -2733,6 +2859,36 @@ fn try_evaluate_range_inner(
     fmacros: Option<&HashMap<String, FunctionMacro>>,
     memo: Option<&ConstMemo>,
 ) -> Option<ValueRange> {
+    let Some(m) = memo else {
+        return try_evaluate_range_uncached(node, source, macros, var_ranges, fmacros, None);
+    };
+    let (_scope, table) = m.table_for(var_ranges);
+    // A function-macro table is known only by its address, which another
+    // table can take once this one is dropped, so expansions are not
+    // remembered across evaluations.
+    let key = table
+        .filter(|_| fmacros.is_none())
+        .map(|table| (node.id(), table));
+    if let Some(known) = key.and_then(|k| m.ranges.borrow().get(&k).copied()) {
+        return known;
+    }
+    let range = try_evaluate_range_uncached(node, source, macros, var_ranges, fmacros, memo);
+    if let Some(k) = key {
+        m.ranges.borrow_mut().insert(k, range);
+    }
+    range
+}
+
+fn try_evaluate_range_uncached(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    var_ranges: &VarRangeMap,
+    fmacros: Option<&HashMap<String, FunctionMacro>>,
+    memo: Option<&ConstMemo>,
+) -> Option<ValueRange> {
+    #[cfg(test)]
+    RANGE_EVALUATIONS.with(|n| n.set(n.get() + 1));
     // First try exact evaluation
     if let Some(val) = try_evaluate_expr_with(node, source, macros, memo) {
         return Some(ValueRange::exact(val));
@@ -3048,6 +3204,17 @@ pub fn extract_loop_var_ranges(
     loop_var_ranges_from(ast_utils::ancestors(node), source, macros)
 }
 
+/// [`extract_loop_var_ranges`] over ancestors, innermost first, that the
+/// caller has in hand: they may leave out any ancestor that is an
+/// expression, since only loops and the function are read.
+pub fn loop_var_ranges_among<'a>(
+    ancestors: impl Iterator<Item = Node<'a>>,
+    source: &str,
+    macros: &MacroConstantMap,
+) -> VarRangeMap {
+    loop_var_ranges_from(ancestors, source, macros)
+}
+
 /// [`extract_loop_var_ranges`] for a node whose innermost enclosing loop the
 /// caller already knows: `innermost_loop`, the nearest `for`/`while`/`do`
 /// ancestor below the node's function, or `None` when there is none. Only
@@ -3312,17 +3479,44 @@ fn resolve_local_var_range_depth(
     fmacros: Option<&HashMap<String, FunctionMacro>>,
     depth: u32,
 ) -> Option<ValueRange> {
-    // Find the enclosing compound_statement (function body or block). The
-    // ancestors come from one descent from the root: a `Node::parent` climb
-    // costs O(depth) a step, so O(depth²) out of a deep expression.
-    for parent in ast_utils::ancestors(node) {
+    // The ancestors come from one descent from the root: a `Node::parent`
+    // climb costs O(depth) a step, so O(depth²) out of a deep expression.
+    resolve_local_var_range_among(
+        var_name,
+        node.start_byte(),
+        ast_utils::ancestors(node),
+        source,
+        macros,
+        loop_ranges,
+        fmacros,
+        depth,
+    )
+}
+
+/// [`resolve_local_var_range`] for an occurrence starting at `node_start`
+/// whose ancestors, innermost first, the caller has in hand: `ancestors`
+/// may leave out any ancestor that is an expression, since only blocks,
+/// loops and the function are read.
+pub fn resolve_local_var_range_among<'a>(
+    var_name: &str,
+    node_start: usize,
+    ancestors: impl Iterator<Item = Node<'a>>,
+    source: &str,
+    macros: &MacroConstantMap,
+    loop_ranges: &VarRangeMap,
+    fmacros: Option<&HashMap<String, FunctionMacro>>,
+    depth: u32,
+) -> Option<ValueRange> {
+    #[cfg(test)]
+    LOCAL_RANGE_RESOLUTIONS.with(|n| n.set(n.get() + 1));
+    // Find the enclosing compound_statement (function body or block).
+    for parent in ancestors {
         if parent.kind() == "compound_statement" {
             // Scan statements before our node, keeping the LAST assignment
             // (not the first) since later assignments overwrite earlier ones.
             // If the last modification is unevaluable (e.g., data = rand(),
             // or fscanf(stdin, "%d", &data)), return None so callers don't
             // use a stale range from an earlier assignment.
-            let node_start = node.start_byte();
             let mut last_range: Option<ValueRange> = None;
             let mut invalidated = false;
             for stmt in parent.child_nodes() {
@@ -4019,7 +4213,8 @@ pub fn expression_overflows_unsigned_vra_with(
         // large constant), but the question is only whether the LOWER end is
         // already above the maximum.
         if bits < 63 {
-            if let Some(low) = try_evaluate_lower_bound(node, source, macros, var_ranges) {
+            if let Some(low) = try_evaluate_lower_bound_with(node, source, macros, var_ranges, memo)
+            {
                 return low > (1i64 << bits) - 1;
             }
         }
@@ -4066,6 +4261,33 @@ pub fn expression_fits_in_unsigned_vra_with(
     }
     // Fallback to syntactic analysis
     expression_fits_in_unsigned_with(node, source, macros, bits, memo)
+}
+
+/// [`expression_fits_in_unsigned_vra_with`] for a caller that has already
+/// built the syntactic fallback's variable ranges for `node`: what
+/// [`expression_fits_in_unsigned_with`] builds from the node's loops and
+/// [`resolve_identifiers_in_expr`]. Ranges for names `node` does not hold
+/// are never read, so a caller may share one table across every
+/// expression of a statement. The same answer.
+pub fn expression_fits_in_unsigned_vra_given(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    bits: u32,
+    vra_var_ranges: Option<&VarRangeMap>,
+    syntactic_var_ranges: &VarRangeMap,
+    memo: Option<&ConstMemo>,
+) -> bool {
+    if let Some(var_ranges) = vra_var_ranges {
+        if let Some(range) = try_evaluate_range_inner(node, source, macros, var_ranges, None, memo)
+        {
+            if range.fits_in_unsigned(bits) {
+                return true;
+            }
+        }
+    }
+    try_evaluate_range_inner(node, source, macros, syntactic_var_ranges, None, memo)
+        .is_some_and(|range| range.fits_in_unsigned(bits))
 }
 
 /// Resolve identifiers in an expression by scanning local assignments.
@@ -4124,6 +4346,8 @@ fn resolve_identifiers_in_expr_walk(
     if memo.is_some_and(|m| !m.has_identifier(node)) {
         return;
     }
+    #[cfg(test)]
+    IDENTIFIER_WALK_NODES.with(|n| n.set(n.get() + 1));
     if node.kind() == "identifier" {
         let name = node.utf8_text(source.as_bytes()).unwrap_or("");
         if !name.is_empty()
@@ -4166,6 +4390,33 @@ thread_local! {
     /// How many nodes [`try_evaluate_expr_with`] evaluated, rather than
     /// remembered, on this thread.
     static EXACT_EVALUATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many nodes [`try_evaluate_range_inner`] evaluated, rather than
+    /// remembered, on this thread.
+    static RANGE_EVALUATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many local-variable ranges [`resolve_local_var_range_among`]
+    /// resolved on this thread, each a scan of the blocks around a use.
+    static LOCAL_RANGE_RESOLUTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many nodes [`resolve_identifiers_in_expr_with`] walked on this
+    /// thread looking for names to resolve.
+    static IDENTIFIER_WALK_NODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Nodes walked for names to resolve on this thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_identifier_walk_nodes() -> usize {
+    IDENTIFIER_WALK_NODES.with(|n| n.replace(0))
+}
+
+/// Local-variable range resolutions on this thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_local_range_resolutions() -> usize {
+    LOCAL_RANGE_RESOLUTIONS.with(|n| n.replace(0))
+}
+
+/// Range evaluations on this thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_range_evaluations() -> usize {
+    RANGE_EVALUATIONS.with(|n| n.replace(0))
 }
 
 /// Local-variable range lookups and exact evaluations on this thread since

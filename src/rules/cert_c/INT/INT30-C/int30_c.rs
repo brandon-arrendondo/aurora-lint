@@ -20,14 +20,151 @@ use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
 use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
 use crate::utility::cert_c::std_functions;
+use crate::utility::cert_c::subtree_any::SubtreeAny;
+use crate::utility::cert_c::text_index::TextIndex;
 use lang_parsing_substrate::query;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, Ref, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 use tree_sitter::Node;
 
 /// Depth cap for walking into an operand looking for its type.
 const OPERAND_TYPE_MAX_DEPTH: u32 = 8;
+
+/// A node's kind and byte span: what it was, and enough to find it again.
+#[derive(Clone, Copy)]
+struct Span {
+    kind: &'static str,
+    start: usize,
+    end: usize,
+}
+
+impl Span {
+    fn of(node: &Node) -> Self {
+        Self {
+            kind: node.kind(),
+            start: node.start_byte(),
+            end: node.end_byte(),
+        }
+    }
+
+    fn contains(&self, node: &Node) -> bool {
+        self.start <= node.start_byte() && node.end_byte() <= self.end
+    }
+
+    /// The node this span was taken from, found by descending from `root`.
+    /// [`Site`] records statements, blocks and functions this way, which sit
+    /// only as deep as the statement nesting, so the descent is short however
+    /// deep the expression inside them. `None` if it cannot be told apart.
+    fn find<'t>(&self, root: Node<'t>) -> Option<Node<'t>> {
+        let mut node = root.descendant_for_byte_range(self.start, self.end)?;
+        loop {
+            if node.start_byte() != self.start || node.end_byte() != self.end {
+                return None;
+            }
+            if node.kind() == self.kind {
+                return Some(node);
+            }
+            node = node.parent()?;
+        }
+    }
+}
+
+/// Where the operator being checked sits, as `check_node`'s walk found it on
+/// the way down. tree-sitter recovers a parent by descending from the root,
+/// so an operator thousands of levels into an expression costs thousands of
+/// steps to climb out of, and a question asked at every operator of it costs
+/// the square. The walk passes each fact down once instead.
+struct Site {
+    /// The operator itself.
+    node: Span,
+    id: usize,
+    /// The whole expression it is part of: its outermost expression ancestor,
+    /// or itself.
+    expression: Span,
+    /// Its parent.
+    parent: Option<Span>,
+    /// The operator of the binary expression it is an operand of, looking
+    /// through one pair of parentheses.
+    enclosing_operator: Option<String>,
+    /// Its ancestors that are not expressions, innermost first: the
+    /// statements, blocks, conditionals, loops and function around it.
+    outer: Vec<Span>,
+    /// The conditions governing it that name an integer limit (see
+    /// [`WalkState::limit_conditions`]).
+    limit_conditions: Vec<Span>,
+}
+
+/// The declared type a name resolves to: `None` when the declaration it
+/// resolves to has a type with no spelling.
+type Resolution = Option<String>;
+
+/// The syntactic ranges of one expression (see
+/// [`Int30C::syntactic_ranges_ready`]): for an operator that starts later
+/// than the expression, and, when they differ, for one that starts with it.
+type SyntacticTables = (Box<VarRangeMap>, Option<Box<VarRangeMap>>);
+
+/// One non-expression ancestor on the walk down, linked to the next one out.
+struct Outer<'t> {
+    node: Node<'t>,
+    up: Option<Rc<Outer<'t>>>,
+}
+
+/// One condition governing a node on the walk down, linked to the rest.
+struct Governing<'t> {
+    condition: Node<'t>,
+    up: Option<Rc<Governing<'t>>>,
+}
+
+/// What `check_node`'s walk carries down to each node.
+#[derive(Clone, Default)]
+struct WalkState<'t> {
+    /// Whether an expression encloses this node.
+    in_expression: bool,
+    /// The outermost expression of the unbroken run of expressions this
+    /// node's parent ends, if its parent is an expression.
+    expression_root: Option<Node<'t>>,
+    parent: Option<Node<'t>>,
+    grandparent: Option<Node<'t>>,
+    function: Option<Node<'t>>,
+    outer: Option<Rc<Outer<'t>>>,
+    /// The conditions that govern this node as
+    /// `guard_dominance::dominating_conditions` reads them, within its
+    /// function, keeping only those that name an integer limit: the only
+    /// ones `has_dominating_limit_guard` reads.
+    limit_conditions: Option<Rc<Governing<'t>>>,
+}
+
+/// Whether a node of `kind` is part of an expression, which [`Site::outer`]
+/// passes over. None of the ancestors this rule looks for is one.
+fn is_expression_kind(kind: &str) -> bool {
+    kind.ends_with("_expression") || kind == "argument_list"
+}
+
+/// The nearest non-expression ancestors under which every occurrence of a
+/// name resolves alike, so [`Int30C::identifier_type`] resolves a name once
+/// per such statement. Every declaration a resolution weighs starts either
+/// before the whole statement or after it -- a `for` declares in its
+/// initializer, ahead of every expression its header holds -- so it is
+/// before all of the statement's occurrences of a name or before none.
+/// A parser `ERROR` node, which may hold declarations among its
+/// expressions, is not one of them.
+fn resolves_alike_under(kind: &str) -> bool {
+    matches!(
+        kind,
+        "expression_statement"
+            | "return_statement"
+            | "init_declarator"
+            | "if_statement"
+            | "while_statement"
+            | "do_statement"
+            | "for_statement"
+            | "switch_statement"
+            | "case_statement"
+            | "array_declarator"
+    )
+}
 
 pub struct Int30C {
     project_macros: RefCell<Arc<MacroConstantMap>>,
@@ -82,6 +219,45 @@ pub struct Int30C {
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
     data_model: Cell<IntFacts>,
+    /// This file's text as written and with comments and literals blanked,
+    /// each read once (see [`TextIndex`]); built on first use.
+    raw_text: RefCell<Option<TextIndex>>,
+    sanitized_text: RefCell<Option<TextIndex>>,
+    /// The operator being checked; see [`Site`].
+    site: RefCell<Option<Site>>,
+    /// Whether this file defines a function inside another (a GNU
+    /// extension). A node inside the operator being checked is then not
+    /// known to share its function without looking.
+    nested_functions: Cell<bool>,
+    /// Whether this file has a block inside an expression (a GNU statement
+    /// expression), whose names can resolve unlike the rest of the
+    /// expression's.
+    statement_expressions: Cell<bool>,
+    /// The declared type each name resolves to under each statement
+    /// ([`resolves_alike_under`]), by name and the statement's span: `None`
+    /// when it resolves to no declaration, `Some(None)` when to one whose
+    /// type has no spelling.
+    identifier_types: RefCell<HashMap<(String, usize, usize), Option<Resolution>>>,
+    /// Per-node answers for this file, cleared per file: whether an
+    /// expression is floating, whether a subtree spells out an unsigned type
+    /// ([`Self::spells_out_unsigned`]), and whether a subtree's last token is
+    /// an unsigned literal. The rule asks each of every operand of every
+    /// operator, and each walks the operand's subtree.
+    float: float_typing::FloatMemo,
+    risk: int_provenance::RiskMemo,
+    unsigned_spelling: SubtreeAny,
+    /// Whether a subtree names an integer limit (`guard_dominance`'s test of
+    /// a governing condition), per node for the file.
+    limit_mention: SubtreeAny,
+    unsigned_last_literal: RefCell<HashMap<usize, bool>>,
+    /// The syntactic ranges of `expression_fits_in_unsigned` for each whole
+    /// expression this file asked about, by its span: for an operator that
+    /// starts later than the expression, and (when they differ) for one
+    /// that starts with it. `None` where the record could not build them.
+    syntactic_ranges: RefCell<HashMap<(usize, usize), Option<SyntacticTables>>>,
+    /// VRA ranges replayed to each (function start, expression start) this
+    /// file asked about.
+    vra_ranges: RefCell<HashMap<(usize, usize), Option<VarRangeMap>>>,
 }
 
 impl Int30C {
@@ -108,7 +284,165 @@ impl Int30C {
             project_function_macro_names: RefCell::new(HashSet::new()),
             constant_returning_functions: RefCell::new(HashSet::new()),
             data_model: Cell::new(IntFacts::default()),
+            raw_text: RefCell::new(None),
+            sanitized_text: RefCell::new(None),
+            site: RefCell::new(None),
+            nested_functions: Cell::new(false),
+            statement_expressions: Cell::new(false),
+            float: Default::default(),
+            risk: Default::default(),
+            syntactic_ranges: RefCell::new(HashMap::new()),
+            unsigned_spelling: Default::default(),
+            limit_mention: Default::default(),
+            unsigned_last_literal: RefCell::new(HashMap::new()),
+            identifier_types: RefCell::new(HashMap::new()),
+            vra_ranges: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// This file's text as written.
+    fn raw_text(&self, source: &str) -> Ref<'_, TextIndex> {
+        if self.raw_text.borrow().is_none() {
+            *self.raw_text.borrow_mut() = Some(TextIndex::raw(source));
+        }
+        Ref::map(self.raw_text.borrow(), |t| t.as_ref().unwrap())
+    }
+
+    /// This file's text with comments and literals blanked, as
+    /// `get_sanitized_node_text` blanks them.
+    fn sanitized_text(&self, node: &Node, source: &str) -> Ref<'_, TextIndex> {
+        if self.sanitized_text.borrow().is_none() {
+            *self.sanitized_text.borrow_mut() =
+                Some(TextIndex::sanitized(&ast_utils::tree_root(node), source));
+        }
+        Ref::map(self.sanitized_text.borrow(), |t| t.as_ref().unwrap())
+    }
+
+    /// The [`Site`] of the operator being checked, when `node` is inside it
+    /// (or is it): `node` then has the operator's function and scopes.
+    fn site_around(&self, node: &Node) -> Option<Ref<'_, Site>> {
+        Ref::filter_map(self.site.borrow(), |site| {
+            site.as_ref()
+                .filter(|s| s.id == node.id() || s.node.contains(node))
+        })
+        .ok()
+    }
+
+    /// The [`Site`] of the operator being checked, when `node` is that operator.
+    fn site_of(&self, node: &Node) -> Option<Ref<'_, Site>> {
+        Ref::filter_map(self.site.borrow(), |site| {
+            site.as_ref().filter(|s| s.id == node.id())
+        })
+        .ok()
+    }
+
+    /// [`ast_utils::find_containing_function`], from the walk's record when
+    /// `node` is inside the operator being checked.
+    fn containing_function<'t>(&self, node: &Node<'t>) -> Option<Node<'t>> {
+        if !self.nested_functions.get() {
+            if let Some(site) = self.site_around(node) {
+                let span = site
+                    .outer
+                    .iter()
+                    .find(|s| s.kind == "function_definition")?;
+                if let Some(func) = span.find(ast_utils::tree_root(node)) {
+                    return Some(func);
+                }
+            }
+        }
+        ast_utils::find_containing_function(node)
+    }
+
+    /// Whether the sanitized text of `node`'s function (of the whole file,
+    /// at file scope) contains every one of `patterns`.
+    fn function_text_contains_all(&self, node: &Node, source: &str, patterns: &[&str]) -> bool {
+        let scope = self
+            .containing_function(node)
+            .unwrap_or_else(|| ast_utils::tree_root(node));
+        let text = self.sanitized_text(node, source);
+        patterns.iter().all(|p| text.contains(&scope, p))
+    }
+
+    /// Whether the sanitized text of `node`'s function contains any one of
+    /// `patterns`; false at file scope.
+    fn function_text_contains_any(&self, node: &Node, source: &str, patterns: &[&str]) -> bool {
+        let Some(func) = self.containing_function(node) else {
+            return false;
+        };
+        let text = self.sanitized_text(node, source);
+        patterns.iter().any(|p| text.contains(&func, p))
+    }
+
+    /// [`ast_utils::identifier_type`], resolving each name once per
+    /// statement when `ident` is inside the operator being checked.
+    ///
+    /// Resolving an occurrence descends from the root to it, which costs
+    /// its depth: a parameter used at every operator of a sum thousands of
+    /// terms long cost the square. Under one statement every occurrence of
+    /// a name resolves alike ([`resolves_alike_under`]), and the walk's
+    /// record of the statements around the operator is the path a
+    /// resolution reads -- scopes, the function and the root -- without
+    /// the expressions between, which it does not.
+    fn identifier_type<'m>(
+        &self,
+        ident: &Node,
+        source: &str,
+        type_map: &'m HashMap<String, String>,
+    ) -> Option<std::borrow::Cow<'m, str>> {
+        let name = get_node_text(ident, source);
+        let resolved = match self.resolve_under_statement(ident, name, source) {
+            Some(resolved) => resolved,
+            None => ast_utils::resolve_identifier_declarator(ident, name, source).map(
+                |(decl, declarator)| {
+                    ast_utils::declaration_type_spelling(&decl, &declarator, source)
+                },
+            ),
+        };
+        if let Some(spelling) = resolved {
+            return spelling.map(std::borrow::Cow::Owned);
+        }
+        type_map
+            .get(name)
+            .map(|t| std::borrow::Cow::Borrowed(t.as_str()))
+    }
+
+    /// What `ident` resolves to, from the statement record of the operator
+    /// being checked: `None` when the record cannot answer.
+    fn resolve_under_statement(
+        &self,
+        ident: &Node,
+        name: &str,
+        source: &str,
+    ) -> Option<Option<Resolution>> {
+        if ident.kind() != "identifier" || self.statement_expressions.get() {
+            return None;
+        }
+        let outer = self.site_around(ident).map(|site| site.outer.clone())?;
+        let statement = outer.first().filter(|s| resolves_alike_under(s.kind))?;
+        let key = (name.to_string(), statement.start, statement.end);
+        if let Some(known) = self.identifier_types.borrow().get(&key) {
+            return Some(known.clone());
+        }
+        let root = ast_utils::tree_root(ident);
+        // Outermost first, without the root itself, which ends the record.
+        let (last, inner) = outer.split_last()?;
+        if last.start != root.start_byte() || last.end != root.end_byte() {
+            return None;
+        }
+        let path = inner
+            .iter()
+            .rev()
+            .map(|span| span.find(root))
+            .collect::<Option<Vec<_>>>()?;
+        let resolved =
+            ast_utils::resolve_identifier_declarator_on_path(&root, &path, ident, name, source)
+                .map(|(decl, declarator)| {
+                    ast_utils::declaration_type_spelling(&decl, &declarator, source)
+                });
+        self.identifier_types
+            .borrow_mut()
+            .insert(key, resolved.clone());
+        Some(resolved)
     }
 
     /// Opt-in provenance gate for unsigned wrap — the unsigned analogue of
@@ -142,7 +476,7 @@ impl Int30C {
         }
 
         let summaries = self.function_summaries.borrow();
-        let func = match ast_utils::find_containing_function(node) {
+        let func = match self.containing_function(node) {
             Some(f) => f,
             None => return true,
         };
@@ -202,13 +536,14 @@ impl Int30C {
         }
 
         operands.iter().any(|op| {
-            int_provenance::operand_is_risky(
+            int_provenance::operand_is_risky_with(
                 op,
                 risky_vars,
                 &summaries,
                 &global_writers,
                 param_ctx.as_ref(),
                 source,
+                Some(&self.risk),
             )
         })
     }
@@ -237,6 +572,27 @@ impl Int30C {
                 range.max = data_model::bound_open_top(range.min, range.max, high, keep);
             }
         }
+        if self.syntactic_ranges_ready(node, source) {
+            let site = self.site_of(node).expect("ready only for the site");
+            let key = (site.expression.start, site.expression.end);
+            let leading = site.node.start == site.expression.start;
+            drop(site);
+            let tables = self.syntactic_ranges.borrow();
+            let (later, first) = tables[&key].as_ref().expect("ready");
+            let syntactic = match first {
+                Some(first) if leading => first,
+                _ => later,
+            };
+            return const_eval::expression_fits_in_unsigned_vra_given(
+                node,
+                source,
+                &self.current_macros.borrow(),
+                bits,
+                ranges.as_ref(),
+                syntactic,
+                Some(&self.constant),
+            );
+        }
         const_eval::expression_fits_in_unsigned_vra_with(
             node,
             source,
@@ -245,6 +601,112 @@ impl Int30C {
             ranges.as_ref(),
             Some(&self.constant),
         )
+    }
+
+    /// Whether [`Self::syntactic_ranges`] holds the tables for `node`, the
+    /// operator being checked, building them on first ask for its expression.
+    ///
+    /// The syntactic fallback of an unsigned fit reads the ranges of the
+    /// names in the operator, each resolved from the assignments before its
+    /// first use there, with the loops around it. Every name of one
+    /// expression has the same blocks, loops and function around it, and a
+    /// use is before a statement on its path exactly when the expression is,
+    /// except a use that is the expression's very first token. So the
+    /// tables are built once per expression, from a walk of it rather than
+    /// of every operator: one for an operator that starts later than the
+    /// expression, and one, differing only in the first token's name, for
+    /// an operator that starts with it. A range for a name an operator does
+    /// not hold is never read.
+    fn syntactic_ranges_ready(&self, node: &Node, source: &str) -> bool {
+        if self.statement_expressions.get() {
+            return false;
+        }
+        let Some(site) = self.site_of(node) else {
+            return false;
+        };
+        let key = (site.expression.start, site.expression.end);
+        if let Some(known) = self.syntactic_ranges.borrow().get(&key) {
+            return known.is_some();
+        }
+        let expression = site.expression;
+        let outer = site.outer.clone();
+        drop(site);
+        let tables = self.build_syntactic_ranges(node, expression, &outer, source);
+        if let Some((later, first)) = &tables {
+            self.constant.pin_table(later);
+            if let Some(first) = first {
+                self.constant.pin_table(first);
+            }
+        }
+        let ready = tables.is_some();
+        self.syntactic_ranges.borrow_mut().insert(key, tables);
+        ready
+    }
+
+    fn build_syntactic_ranges(
+        &self,
+        node: &Node,
+        expression: Span,
+        outer: &[Span],
+        source: &str,
+    ) -> Option<SyntacticTables> {
+        let root = ast_utils::tree_root(node);
+        let expr = expression.find(root)?;
+        let ancestors = outer
+            .iter()
+            .map(|span| span.find(root))
+            .collect::<Option<Vec<_>>>()?;
+        // The record is the expression's own: its parent heads it.
+        if expr.parent()?.id() != ancestors.first()?.id() {
+            return None;
+        }
+        let macros = self.current_macros.borrow();
+        let loop_ranges =
+            const_eval::loop_var_ranges_among(ancestors.iter().copied(), source, &macros);
+        let mut names: Vec<&str> = query::find_descendants_of_kind(expr, "identifier")
+            .iter()
+            .filter_map(|n| n.utf8_text(source.as_bytes()).ok())
+            .filter(|name| !name.is_empty() && !macros.contains_key(*name))
+            .filter(|name| !loop_ranges.contains_key(*name))
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        let resolve_at = |name: &str, start: usize| {
+            const_eval::resolve_local_var_range_among(
+                name,
+                start,
+                ancestors.iter().copied(),
+                source,
+                &macros,
+                &loop_ranges,
+                None,
+                0,
+            )
+        };
+        let mut later = loop_ranges.clone();
+        for name in &names {
+            if let Some(range) = resolve_at(name, expr.start_byte() + 1) {
+                later.insert(name.to_string(), range);
+            }
+        }
+        // The expression's first token, when it is a name the walk resolves.
+        let mut leaf = expr;
+        while let Some(first) = leaf.child(0) {
+            leaf = first;
+        }
+        let first = (leaf.kind() == "identifier")
+            .then(|| leaf.utf8_text(source.as_bytes()).ok())
+            .flatten()
+            .filter(|name| names.binary_search(name).is_ok())
+            .map(|name| {
+                let mut first = later.clone();
+                match resolve_at(name, expr.start_byte()) {
+                    Some(range) => first.insert(name.to_string(), range),
+                    None => first.remove(name),
+                };
+                Box::new(first)
+            });
+        Some((Box::new(later), first))
     }
 
     /// Whether every comparison that governs `node` and mentions `var` is
@@ -293,14 +755,29 @@ impl Int30C {
     ///
     /// Uses intra-block forward simulation so that assignments within the same
     /// basic block (e.g. single-block functions) are visible at the expression point.
+    ///
+    /// The ranges depend only on the function and where the expression
+    /// starts, which every left-nested operator of a chain shares, so each
+    /// pair is replayed once per file.
     fn vra_var_ranges_at(&self, expr_node: &Node, source: &str) -> Option<VarRangeMap> {
-        vra_access::var_ranges_replay_at(
+        if self.vra_results.borrow().is_empty() || self.function_cfgs.borrow().is_empty() {
+            return None;
+        }
+        let func = self.containing_function(expr_node)?;
+        let key = (func.start_byte(), expr_node.start_byte());
+        if let Some(known) = self.vra_ranges.borrow().get(&key) {
+            return known.clone();
+        }
+        let ranges = vra_access::var_ranges_replay_in(
             &self.function_cfgs.borrow(),
             &self.vra_results.borrow(),
+            &func,
             expr_node,
             source,
             &self.current_macros.borrow(),
-        )
+        );
+        self.vra_ranges.borrow_mut().insert(key, ranges.clone());
+        ranges
     }
 }
 
@@ -382,6 +859,17 @@ impl CertRule for Int30C {
         // Risky-var memo is keyed on tree-sitter node ids, unique only within
         // one parse tree — reset per file.
         self.risky_vars_cache.borrow_mut().clear();
+        *self.raw_text.borrow_mut() = None;
+        *self.sanitized_text.borrow_mut() = None;
+        *self.site.borrow_mut() = None;
+        self.identifier_types.borrow_mut().clear();
+        self.float.clear();
+        self.risk.clear();
+        self.syntactic_ranges.borrow_mut().clear();
+        self.unsigned_spelling.clear();
+        self.limit_mention.clear();
+        self.unsigned_last_literal.borrow_mut().clear();
+        self.vra_ranges.borrow_mut().clear();
         self.constant.clear();
         self.pointer.clear();
         self.param_names_cache.borrow_mut().clear();
@@ -477,22 +965,53 @@ impl Int30C {
         type_map: &HashMap<String, String>,
         env: &TypeEnv,
     ) {
-        // Each match's enclosing function is carried down the walk, not
-        // climbed to per match.
-        let matches = ast_utils::descendants_of_kinds_with(
+        // Each match's enclosing function, parent and outer statements are
+        // carried down the walk (see `Site`), not climbed to per match.
+        let nested_functions = Cell::new(false);
+        let statement_expressions = Cell::new(false);
+        let matches = self.walk_with_state(
             *node,
+            source,
             &[
                 "binary_expression",
                 "assignment_expression",
                 "call_expression",
                 "update_expression",
             ],
-            None,
-            |function: &Option<Node>, parent| match parent.kind() {
-                "function_definition" => Some(parent),
-                _ => *function,
+            |state: &WalkState, parent| {
+                let is_function = parent.kind() == "function_definition";
+                if is_function && state.function.is_some() {
+                    nested_functions.set(true);
+                }
+                if parent.kind() == "compound_statement" && state.in_expression {
+                    statement_expressions.set(true);
+                }
+                WalkState {
+                    in_expression: state.in_expression || is_expression_kind(parent.kind()),
+                    expression_root: is_expression_kind(parent.kind())
+                        .then(|| state.expression_root.unwrap_or(parent)),
+                    parent: Some(parent),
+                    grandparent: state.parent,
+                    function: if is_function {
+                        Some(parent)
+                    } else {
+                        state.function
+                    },
+                    outer: if is_expression_kind(parent.kind()) {
+                        state.outer.clone()
+                    } else {
+                        Some(Rc::new(Outer {
+                            node: parent,
+                            up: state.outer.clone(),
+                        }))
+                    },
+                    // Set per child by `walk_with_state`.
+                    limit_conditions: None,
+                }
             },
         );
+        self.nested_functions.set(nested_functions.get());
+        self.statement_expressions.set(statement_expressions.get());
 
         // Scope type_map per function to avoid cross-function name collisions
         // (e.g., a same-named variable of a different type declared in a
@@ -502,8 +1021,10 @@ impl Int30C {
         // the same function.
         let mut fn_type_maps: HashMap<usize, HashMap<String, String>> = HashMap::new();
 
-        for (matched, function) in matches {
+        for (matched, state) in matches {
             crate::analyze::containment::checkpoint();
+            *self.site.borrow_mut() = Some(Self::site(&matched, &state, source));
+            let function = state.function;
             let scoped_type_map: &HashMap<String, String> = match function {
                 Some(func_node) => fn_type_maps.entry(func_node.id()).or_insert_with(|| {
                     overflow_helpers::collect_variable_types(&func_node, source)
@@ -532,6 +1053,151 @@ impl Int30C {
                 }
                 _ => {}
             }
+        }
+        *self.site.borrow_mut() = None;
+    }
+
+    /// Every node of `kinds` under `root` (itself included), in pre-order,
+    /// each with what the walk carried down to it: `step` gives the state a
+    /// node passes to all its children, and the walk adds per child the
+    /// limit conditions (see [`WalkState::limit_conditions`]), which differ
+    /// between children of one node -- the branches of an `if` but not its
+    /// condition, the right operand of `&&` but not the left, the statements
+    /// of a block after an `if` but not before it.
+    fn walk_with_state<'t>(
+        &self,
+        root: Node<'t>,
+        source: &str,
+        kinds: &[&str],
+        step: impl Fn(&WalkState<'t>, Node<'t>) -> WalkState<'t>,
+    ) -> Vec<(Node<'t>, WalkState<'t>)> {
+        let names_limit = |cond: &Node| {
+            self.limit_mention
+                .any(cond, |n| guard_dominance::mentions_integer_limit(n, source))
+        };
+        let with = |list: &Option<Rc<Governing<'t>>>, condition: Node<'t>| {
+            if names_limit(&condition) {
+                Some(Rc::new(Governing {
+                    condition,
+                    up: list.clone(),
+                }))
+            } else {
+                list.clone()
+            }
+        };
+        let mut out = Vec::new();
+        let mut stack = vec![(root, WalkState::default())];
+        while let Some((node, state)) = stack.pop() {
+            let mut cursor = node.walk();
+            let children: Vec<Node<'t>> = node.children(&mut cursor).collect();
+            if !children.is_empty() {
+                let inner = step(&state, node);
+                // Nothing above a function governs what is inside it.
+                let base = if node.kind() == "function_definition" {
+                    None
+                } else {
+                    state.limit_conditions.clone()
+                };
+                // A block's earlier statements, as each child is reached.
+                let block_like = guard_dominance::is_block_like(node.kind());
+                let mut earlier = base;
+                let mut pending: std::collections::VecDeque<Node<'t>> = Default::default();
+                let mut child_states = Vec::with_capacity(children.len());
+                for child in &children {
+                    if block_like {
+                        while let Some(stmt) = pending
+                            .front()
+                            .filter(|s| s.start_byte() < child.start_byte())
+                        {
+                            for cond in guard_dominance::block_level_if_conditions(stmt) {
+                                earlier = with(&earlier, cond);
+                            }
+                            pending.pop_front();
+                        }
+                        if child.is_named() {
+                            pending.push_back(*child);
+                        }
+                    }
+                    let limit_conditions = match guard_dominance::governing_condition(&node, child)
+                    {
+                        Some(cond) => with(&earlier, cond),
+                        None => earlier.clone(),
+                    };
+                    child_states.push((
+                        *child,
+                        WalkState {
+                            limit_conditions,
+                            ..inner.clone()
+                        },
+                    ));
+                }
+                stack.extend(child_states.into_iter().rev());
+            }
+            if kinds.contains(&node.kind()) {
+                out.push((node, state));
+            }
+        }
+        out
+    }
+
+    /// `has_dominating_limit_guard(node, node)`, from the conditions the walk
+    /// carried down when `node` is the operator being checked: the climb
+    /// out of an operator thousands of levels into an expression, at every
+    /// operator, cost the square of the expression.
+    fn has_dominating_limit_guard(&self, node: &Node, source: &str) -> bool {
+        if let Some(site) = self.site_of(node) {
+            if site.limit_conditions.is_empty() {
+                return false;
+            }
+            let spans = site.limit_conditions.clone();
+            drop(site);
+            let root = ast_utils::tree_root(node);
+            if let Some(conditions) = spans
+                .iter()
+                .map(|span| span.find(root))
+                .collect::<Option<Vec<_>>>()
+            {
+                return guard_dominance::limit_guard_among(node, &conditions, source);
+            }
+        }
+        guard_dominance::has_dominating_limit_guard(node, node, source)
+    }
+
+    /// `matched`'s [`Site`], from what the walk carried down to it.
+    fn site(matched: &Node, state: &WalkState, source: &str) -> Site {
+        let operator_of = |n: Node| {
+            (n.kind() == "binary_expression")
+                .then(|| n.child_by_field_name("operator"))
+                .flatten()
+                .map(|op| get_node_text(&op, source).to_string())
+        };
+        let enclosing_operator = state.parent.and_then(|p| {
+            if p.kind() == "parenthesized_expression" {
+                state.grandparent.and_then(operator_of)
+            } else {
+                operator_of(p)
+            }
+        });
+        let mut outer = Vec::new();
+        let mut link = state.outer.as_deref();
+        while let Some(l) = link {
+            outer.push(Span::of(&l.node));
+            link = l.up.as_deref();
+        }
+        let mut limit_conditions = Vec::new();
+        let mut link = state.limit_conditions.as_deref();
+        while let Some(l) = link {
+            limit_conditions.push(Span::of(&l.condition));
+            link = l.up.as_deref();
+        }
+        Site {
+            node: Span::of(matched),
+            id: matched.id(),
+            expression: Span::of(&state.expression_root.unwrap_or(*matched)),
+            parent: state.parent.map(|p| Span::of(&p)),
+            enclosing_operator,
+            outer,
+            limit_conditions,
         }
     }
 
@@ -633,8 +1299,9 @@ impl Int30C {
     /// fields.
     fn operands_are_floating(&self, node: &Node, source: &str, env: &TypeEnv) -> bool {
         ["left", "right"].iter().any(|f| {
-            node.child_by_field_name(f)
-                .is_some_and(|n| float_typing::expr_is_float(&n, source, env))
+            node.child_by_field_name(f).is_some_and(|n| {
+                float_typing::expr_is_float_with(&n, source, env, Some(&self.float))
+            })
         })
     }
 
@@ -1330,7 +1997,11 @@ impl Int30C {
     ) {
         // Skip increments/decrements that are the update clause of a for-loop.
         // The loop condition inherently bounds the variable.
-        if node.parent().is_some_and(|p| p.kind() == "for_statement") {
+        let parent_kind = match self.site_of(node) {
+            Some(site) => site.parent.map(|p| p.kind),
+            None => node.parent().map(|p| p.kind()),
+        };
+        if parent_kind == Some("for_statement") {
             return;
         }
 
@@ -1510,7 +2181,7 @@ impl Int30C {
 
             let resolved_rhs = if arg_node.kind() == "identifier" {
                 let var_name = get_node_text(&arg_node, source);
-                ast_utils::find_containing_function(&arg_node)
+                self.containing_function(&arg_node)
                     .and_then(|f| f.child_by_field_name("body"))
                     .and_then(|body| {
                         overflow_helpers::resolve_identifier_assignment_expr(
@@ -1713,7 +2384,7 @@ impl Int30C {
     /// guard at the call on `total` alone never names `a` or `b`
     /// (`if (SIZE_MAX - a < b) return;`).
     fn has_allocation_size_guard(&self, node: &Node, arithmetic: &Node, source: &str) -> bool {
-        guard_dominance::has_dominating_limit_guard(node, node, source)
+        self.has_dominating_limit_guard(node, source)
             || guard_dominance::has_dominating_limit_guard(arithmetic, arithmetic, source)
             || self.has_function_context_check(node, source, &["SIZE_MAX", " / "])
     }
@@ -1941,9 +2612,11 @@ impl Int30C {
         }
 
         // Look for unsigned constants
-        if text.contains("UINT_MAX") || text.contains("SIZE_MAX") {
+        let raw = self.raw_text(source);
+        if raw.contains(node, "UINT_MAX") || raw.contains(node, "SIZE_MAX") {
             return "unsigned".to_string();
         }
+        drop(raw);
 
         // sizeof() always returns size_t (unsigned)
         if node.kind() == "sizeof_expression" {
@@ -1964,7 +2637,7 @@ impl Int30C {
         // Check identifiers against the type map (most reliable).
         // Return the actual declared type to preserve narrow-type info (uint8_t etc.).
         if node.kind() == "identifier" {
-            if let Some(declared_type) = ast_utils::identifier_type(node, source, type_map) {
+            if let Some(declared_type) = self.identifier_type(node, source, type_map) {
                 let declared_type = declared_type.as_ref();
                 // Pointer types are not integer types — skip
                 if declared_type.contains('*') {
@@ -1992,7 +2665,7 @@ impl Int30C {
             let var_name = text.trim_start_matches('*').trim();
             let declared = match node.child_by_field_name("argument") {
                 Some(arg) if arg.kind() == "identifier" => {
-                    ast_utils::identifier_type(&arg, source, type_map)
+                    self.identifier_type(&arg, source, type_map)
                 }
                 _ => type_map
                     .get(var_name)
@@ -2069,6 +2742,15 @@ impl Int30C {
         if matches!(node.kind(), "identifier" | "field_expression") {
             return false;
         }
+        if node.kind() != "argument_list" {
+            // The same two searches of the subtree, answered once per node
+            // for the file: a type name that says unsigned, or a call whose
+            // identifier argument is an unsigned type a macro takes.
+            let names_unsigned_type = self
+                .unsigned_spelling
+                .any(node, |n| self.spells_unsigned_here(n, source));
+            return names_unsigned_type || self.ends_in_unsigned_literal(node, source);
+        }
         let names_unsigned_type = query::find_descendants_of_kinds(
             *node,
             &["primitive_type", "sized_type_specifier", "type_identifier"],
@@ -2087,6 +2769,66 @@ impl Int30C {
                 || last.ends_with("ul")
         };
         names_unsigned_type || unsigned_literal
+    }
+
+    /// What [`Self::spells_out_unsigned`] looks for at one node of the
+    /// subtree: a type name that says unsigned, or a call with an
+    /// identifier argument that [`Self::call_takes_unsigned_type`].
+    fn spells_unsigned_here(&self, n: &Node, source: &str) -> bool {
+        match n.kind() {
+            "primitive_type" | "sized_type_specifier" | "type_identifier" => {
+                let text = get_node_text(n, source);
+                text.contains("unsigned") || text.contains("size_t") || text.contains("uint")
+            }
+            "call_expression" => n
+                .child_by_field_name("arguments")
+                .filter(|args| args.kind() == "argument_list")
+                .is_some_and(|args| {
+                    let mut cursor = args.walk();
+                    let found = args.named_children(&mut cursor).any(|arg| {
+                        arg.kind() == "identifier"
+                            && self.call_takes_unsigned_type(
+                                n,
+                                &arg,
+                                get_node_text(&arg, source),
+                                source,
+                            )
+                    });
+                    found
+                }),
+            _ => false,
+        }
+    }
+
+    /// Whether `node`'s last token ([`Self::rightmost_leaf`]) is an
+    /// unsigned integer literal, remembered for every node on the way down
+    /// to it: a right-nested chain shares one last token.
+    fn ends_in_unsigned_literal(&self, node: &Node, source: &str) -> bool {
+        let mut path = Vec::new();
+        let mut leaf = *node;
+        let answer = loop {
+            if let Some(&known) = self.unsigned_last_literal.borrow().get(&leaf.id()) {
+                break known;
+            }
+            path.push(leaf.id());
+            match leaf.child(leaf.child_count().saturating_sub(1)) {
+                Some(last) => leaf = last,
+                None => {
+                    break leaf.kind() == "number_literal" && {
+                        let last = get_node_text(&leaf, source);
+                        last.ends_with('u')
+                            || last.ends_with('U')
+                            || last.ends_with("UL")
+                            || last.ends_with("ul")
+                    };
+                }
+            }
+        };
+        let mut memo = self.unsigned_last_literal.borrow_mut();
+        for id in path {
+            memo.insert(id, answer);
+        }
+        answer
     }
 
     /// Whether an identifier argument of a call in `node`'s subtree passes
@@ -2169,26 +2911,18 @@ impl Int30C {
 
     /// Check if a variable is declared as unsigned in the containing function
     fn is_variable_declared_unsigned(&self, node: &Node, source: &str, var_name: &str) -> bool {
-        // Find containing function
-        let func = ast_utils::find_containing_function(node);
-        if func.is_none() {
-            return false;
-        }
-        let func = func.unwrap();
-        let func_text = get_sanitized_node_text(&func, source);
-
-        // Check for parameter declarations like "unsigned int var_name" or "unsigned int *var_name"
-        if func_text.contains(&format!("unsigned int {}", var_name))
-            || func_text.contains(&format!("unsigned int *{}", var_name))
-            || func_text.contains(&format!("unsigned long {}", var_name))
-            || func_text.contains(&format!("size_t {}", var_name))
-            || func_text.contains(&format!("uint32_t {}", var_name))
-            || func_text.contains(&format!("uint64_t {}", var_name))
-        {
-            return true;
-        }
-
-        false
+        // Check the containing function for parameter declarations like
+        // "unsigned int var_name" or "unsigned int *var_name"
+        let patterns = [
+            format!("unsigned int {}", var_name),
+            format!("unsigned int *{}", var_name),
+            format!("unsigned long {}", var_name),
+            format!("size_t {}", var_name),
+            format!("uint32_t {}", var_name),
+            format!("uint64_t {}", var_name),
+        ];
+        let patterns: Vec<&str> = patterns.iter().map(String::as_str).collect();
+        self.function_text_contains_any(node, source, &patterns)
     }
 
     /// Returns true if this binary_expression is `opaque + small_literal` or
@@ -2403,6 +3137,9 @@ impl Int30C {
     /// Pattern: `(x + 1) % N` — ring-buffer next-index idiom. The modulo makes the
     /// intermediate sum's exact value irrelevant; overflow doesn't change correctness.
     fn is_addition_bounded_by_modulo(&self, node: &Node, source: &str) -> bool {
+        if let Some(site) = self.site_of(node) {
+            return site.enclosing_operator.as_deref() == Some("%");
+        }
         if let Some(parent) = node.parent() {
             let effective_parent = if parent.kind() == "parenthesized_expression" {
                 parent.parent()
@@ -2454,6 +3191,9 @@ impl Int30C {
     }
 
     fn is_addition_masked_by_bitand(&self, node: &Node, source: &str) -> bool {
+        if let Some(site) = self.site_of(node) {
+            return site.enclosing_operator.as_deref() == Some("&");
+        }
         // The addition node's parent should be a binary_expression with operator &
         if let Some(parent) = node.parent() {
             // Check for parenthesized_expression wrapping
@@ -2569,7 +3309,9 @@ impl Int30C {
             if !self.is_narrow_unsigned_type(&t) {
                 return false;
             }
-            if let Some(val) = const_eval::try_evaluate_expr(small, source, &macros) {
+            if let Some(val) =
+                const_eval::try_evaluate_expr_with(small, source, &macros, Some(&self.constant))
+            {
                 return (0..=65535).contains(&val);
             }
             false
@@ -2600,7 +3342,9 @@ impl Int30C {
             if !self.is_narrow_unsigned_type(&t) {
                 return false;
             }
-            if let Some(val) = const_eval::try_evaluate_expr(small, source, &macros) {
+            if let Some(val) =
+                const_eval::try_evaluate_expr_with(small, source, &macros, Some(&self.constant))
+            {
                 return (0..=MAX_FACTOR).contains(&val);
             }
             false
@@ -2757,7 +3501,7 @@ impl Int30C {
                 recurse(node.child_by_field_name("left")),
                 recurse(node.child_by_field_name("right")),
             ),
-            "identifier" => match ast_utils::identifier_type(node, source, type_map) {
+            "identifier" => match self.identifier_type(node, source, type_map) {
                 Some(t) => self.type_width_bits(&t),
                 None => Some(self.promoted_bits()),
             },
@@ -2889,9 +3633,9 @@ impl Int30C {
         type_map: &HashMap<String, String>,
     ) -> Option<String> {
         match node.kind() {
-            "identifier" => {
-                ast_utils::identifier_type(node, source, type_map).map(|t| t.into_owned())
-            }
+            "identifier" => self
+                .identifier_type(node, source, type_map)
+                .map(|t| t.into_owned()),
             "call_expression" => {
                 // For function calls, check if the result is assigned to a typed variable
                 // or look at the surrounding context. For now, return None.
@@ -2909,7 +3653,7 @@ impl Int30C {
             || self.has_postcondition_check(node, source)
             || self.uses_wider_type(node, source)
             || self.is_inside_checked_block(node, source)
-            || guard_dominance::has_dominating_limit_guard(node, node, source)
+            || self.has_dominating_limit_guard(node, source)
     }
 
     fn has_overflow_check_subtraction(&self, node: &Node, source: &str) -> bool {
@@ -2928,7 +3672,7 @@ impl Int30C {
             || self.has_preceding_overflow_check(node, source)
             || self.uses_wider_type(node, source)
             || self.is_inside_checked_block(node, source)
-            || guard_dominance::has_dominating_limit_guard(node, node, source)
+            || self.has_dominating_limit_guard(node, source)
     }
 
     /// Check if there's an overflow check in the code preceding this node
@@ -2937,20 +3681,16 @@ impl Int30C {
         // comment/string literal elsewhere can't spoof the pattern.
         let node_start = node.start_byte();
         if node_start > 0 {
-            let mut root = *node;
-            while let Some(p) = root.parent() {
-                root = p;
-            }
-            let sanitized = get_sanitized_node_text(&root, source);
+            let root = ast_utils::tree_root(node);
             let root_start = root.start_byte();
             if node_start <= root_start {
                 return false;
             }
-            let preceding_text = &sanitized[..(node_start - root_start).min(sanitized.len())];
+            let text = self.sanitized_text(node, source);
+            let preceding_end = node_start.min(root.end_byte());
+            let preceding = |p: &str| text.span_contains(root_start, preceding_end, p);
             // Look for SIZE_MAX/UINT_MAX division check patterns
-            if (preceding_text.contains("SIZE_MAX /") || preceding_text.contains("UINT_MAX /"))
-                && preceding_text.contains("if")
-            {
+            if (preceding("SIZE_MAX /") || preceding("UINT_MAX /")) && preceding("if") {
                 return true;
             }
         }
@@ -2968,7 +3708,7 @@ impl Int30C {
         self.has_function_context_check(node, source, &["if", "UINT_MAX"])
             || self.has_function_context_check(node, source, &["if", "SIZE_MAX"])
             || self.is_inside_checked_block(node, source)
-            || guard_dominance::has_dominating_limit_guard(node, node, source)
+            || self.has_dominating_limit_guard(node, source)
     }
 
     fn has_overflow_check_update(&self, node: &Node, source: &str) -> bool {
@@ -2998,7 +3738,7 @@ impl Int30C {
         if args.len() < 2 {
             return false;
         }
-        let Some(func) = ast_utils::find_containing_function(node) else {
+        let Some(func) = self.containing_function(node) else {
             return false;
         };
         let mut params: HashMap<String, String> = HashMap::new();
@@ -3015,71 +3755,60 @@ impl Int30C {
         // Sanitized so a comment/string literal elsewhere in the function
         // can't spoof one of the patterns and silently suppress a real
         // violation.
-        if let Some(func) = ast_utils::find_containing_function(node) {
-            let func_text = get_sanitized_node_text(&func, source);
-            return patterns.iter().all(|pattern| func_text.contains(pattern));
-        }
-        let mut root = *node;
-        while let Some(p) = root.parent() {
-            root = p;
-        }
-        let text = get_sanitized_node_text(&root, source);
-        patterns.iter().all(|pattern| text.contains(pattern))
+        self.function_text_contains_all(node, source, patterns)
     }
 
     /// Check for subtraction precondition (if (a < b) before subtraction)
     fn has_subtraction_precondition(&self, node: &Node, source: &str) -> bool {
         // Look for if statement before the subtraction that compares the operands
-        if let Some(func) = ast_utils::find_containing_function(node) {
-            let func_text = get_sanitized_node_text(&func, source);
-            // Look for typical precondition pattern
-            if func_text.contains("if (ui_a < ui_b)")
-                || func_text.contains("if (a < b)")
-                || func_text.contains("if(ui_a < ui_b)")
-                || func_text.contains("if(a < b)")
-            {
-                return true;
-            }
-        }
-        false
+        // Look for typical precondition pattern
+        self.function_text_contains_any(
+            node,
+            source,
+            &[
+                "if (ui_a < ui_b)",
+                "if (a < b)",
+                "if(ui_a < ui_b)",
+                "if(a < b)",
+            ],
+        )
     }
 
     /// Check for postcondition check (if (result < original) or if (result > original))
     fn has_postcondition_check(&self, node: &Node, source: &str) -> bool {
-        if let Some(func) = ast_utils::find_containing_function(node) {
-            let func_text = get_sanitized_node_text(&func, source);
-            // Look for postcondition patterns like "if (usum < ui_a)" or "if (udiff > ui_a)"
-            if func_text.contains("if (usum < ")
-                || func_text.contains("if (udiff > ")
-                || func_text.contains("if(usum < ")
-                || func_text.contains("if(udiff > ")
-                || func_text.contains("if (result < ")
-                || func_text.contains("if (result > ")
-            {
-                return true;
-            }
-        }
-        false
+        // Look for postcondition patterns like "if (usum < ui_a)" or "if (udiff > ui_a)"
+        self.function_text_contains_any(
+            node,
+            source,
+            &[
+                "if (usum < ",
+                "if (udiff > ",
+                "if(usum < ",
+                "if(udiff > ",
+                "if (result < ",
+                "if (result > ",
+            ],
+        )
     }
 
     /// Check if operation uses wider type casting for safety
     fn uses_wider_type(&self, node: &Node, source: &str) -> bool {
+        let text = self.sanitized_text(node, source);
         // Check parent for cast to wider type
-        if let Some(parent) = node.parent() {
-            let parent_text = get_sanitized_node_text(&parent, source);
-            if parent_text.contains("(uint64_t)")
-                || parent_text.contains("(unsigned long long)")
-                || parent_text.contains("(int64_t)")
+        let parent = match self.site_of(node) {
+            Some(site) => site.parent.map(|p| (p.start, p.end)),
+            None => node.parent().map(|p| (p.start_byte(), p.end_byte())),
+        };
+        if let Some((start, end)) = parent {
+            if text.span_contains(start, end, "(uint64_t)")
+                || text.span_contains(start, end, "(unsigned long long)")
+                || text.span_contains(start, end, "(int64_t)")
             {
                 return true;
             }
         }
         // Also check if operands are cast to wider type
-        let node_text = get_sanitized_node_text(node, source);
-        if node_text.contains("(uint64_t)") || node_text.contains("(unsigned long long)") {
-            return true;
-        }
-        false
+        text.contains(node, "(uint64_t)") || text.contains(node, "(unsigned long long)")
     }
 
     /// Check if the operation is inside an if-else block guarded by an unsigned type-limit macro.
@@ -3098,9 +3827,10 @@ impl Int30C {
             "ULLONG_MAX",
         ];
 
-        let op_names = overflow_helpers::extract_operand_names(node, source);
-        // One descent from the root, not a `parent()` climb: O(depth) a step.
-        for parent in ast_utils::ancestors(node) {
+        // The operand names cost a walk of the operator's subtree, so they
+        // are read only once a governing condition names a limit.
+        let op_names = std::cell::OnceCell::new();
+        let guards = |parent: &Node| -> bool {
             if parent.kind() == "if_statement" {
                 if let Some(condition) = parent.child_by_field_name("condition") {
                     let cond_text = get_node_text(&condition, source);
@@ -3108,6 +3838,8 @@ impl Int30C {
                         .iter()
                         .any(|m| overflow_helpers::contains_word(cond_text, m));
                     if has_limit {
+                        let op_names = op_names
+                            .get_or_init(|| overflow_helpers::extract_operand_names(node, source));
                         if op_names.is_empty() {
                             return true;
                         }
@@ -3119,6 +3851,41 @@ impl Int30C {
                         }
                     }
                 }
+            }
+            false
+        };
+        // The walk's record skips the expressions between the operator and
+        // its statement, none of which is an `if` or a function.
+        if let Some(outer) = self.site_around(node).map(|site| site.outer.clone()) {
+            let root = ast_utils::tree_root(node);
+            for span in &outer {
+                if span.kind == "if_statement" {
+                    match span.find(root) {
+                        Some(found) if guards(&found) => return true,
+                        Some(_) => {}
+                        None => return self.is_inside_checked_block_climbing(node, &guards),
+                    }
+                }
+                // Stop at function boundary
+                if span.kind == "function_definition" {
+                    break;
+                }
+            }
+            return false;
+        }
+        self.is_inside_checked_block_climbing(node, &guards)
+    }
+
+    /// [`Self::is_inside_checked_block`]'s question asked of every ancestor
+    /// found by one descent from the root.
+    fn is_inside_checked_block_climbing(
+        &self,
+        node: &Node,
+        guards: &dyn Fn(&Node) -> bool,
+    ) -> bool {
+        for parent in ast_utils::ancestors(node) {
+            if guards(&parent) {
+                return true;
             }
             // Stop at function boundary
             if parent.kind() == "function_definition" {

@@ -263,9 +263,24 @@ fn strip_parens<'a>(node: &Node<'a>) -> Node<'a> {
 /// predicate (a bound on a specific expression, a null test, a status code)
 /// instead of [`condition_compares_var`].
 pub fn dominating_conditions<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
+    #[cfg(test)]
+    CONDITION_CLIMBS.with(|n| n.set(n.get() + 1));
     let mut conditions = enclosing_conditions(site);
     conditions.extend(preceding_if_conditions(site));
     conditions
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times [`dominating_conditions`] read a site's ancestors for
+    /// its conditions on this thread: a walk out of the site, as deep as it.
+    static CONDITION_CLIMBS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// [`dominating_conditions`] walks on this thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_condition_climbs() -> usize {
+    CONDITION_CLIMBS.with(|n| n.replace(0))
 }
 
 /// `site`'s ancestors, held so the questions in this module can walk outward
@@ -1674,16 +1689,84 @@ fn is_integer_limit_name(text: &str) -> bool {
 /// [`has_dominating_comparison`] alone: an ordinary `if (n < 5)` bounds `n`
 /// but is not read here as an overflow guard.
 pub fn has_dominating_limit_guard(expr: &Node, site: &Node, source: &str) -> bool {
-    let vars = expression_variables(expr, source);
-    if vars.is_empty() {
+    let limit_conditions: Vec<Node> = dominating_conditions(site)
+        .into_iter()
+        .filter(|cond| condition_mentions_integer_limit(cond, source))
+        .collect();
+    limit_guard_among(expr, &limit_conditions, source)
+}
+
+/// [`has_dominating_limit_guard`] for a caller that has the governing
+/// conditions which name an integer limit ([`mentions_integer_limit`]) in
+/// hand, e.g. carried down a walk ([`governing_condition`],
+/// [`block_level_if_conditions`]): `expr`'s variables are read only when
+/// there is one. The same answer.
+pub fn limit_guard_among(expr: &Node, limit_conditions: &[Node], source: &str) -> bool {
+    if limit_conditions.is_empty() {
         return false;
     }
-    dominating_conditions(site).iter().any(|cond| {
-        condition_mentions_integer_limit(cond, source)
-            && vars.iter().any(|v| {
-                condition_compares_var(cond, v, source, ComparisonKind::OrderingOrExtremeEquality)
-            })
+    let vars = expression_variables(expr, source);
+    limit_conditions.iter().any(|cond| {
+        vars.iter().any(|v| {
+            condition_compares_var(cond, v, source, ComparisonKind::OrderingOrExtremeEquality)
+        })
     })
+}
+
+/// Whether `node` is an identifier naming an integer type's extreme value:
+/// what [`has_dominating_limit_guard`] requires a condition to hold
+/// somewhere, as a predicate on one node.
+pub fn mentions_integer_limit(node: &Node, source: &str) -> bool {
+    node.kind() == "identifier"
+        && node
+            .utf8_text(source.as_bytes())
+            .is_ok_and(|text| is_integer_limit_name(text.trim()))
+}
+
+/// The condition `parent` governs every non-empty site under its child
+/// `child` with, as [`dominating_conditions`] reads its ancestors: the
+/// condition of an `if`, loop, `switch` or `?:` for any child but the
+/// condition itself, and the left operand of `&&`/`||` for its right
+/// operand. A walk that carries these down, starting afresh below each
+/// function definition, holds what [`dominating_conditions`] climbs for.
+pub fn governing_condition<'a>(parent: &Node<'a>, child: &Node<'a>) -> Option<Node<'a>> {
+    match parent.kind() {
+        "if_statement"
+        | "while_statement"
+        | "for_statement"
+        | "switch_statement"
+        | "conditional_expression" => parent
+            .child_by_field_name("condition")
+            .filter(|cond| !spans(cond, child)),
+        "binary_expression" => {
+            let is_logical = parent
+                .child_by_field_name("operator")
+                .map(|op| matches!(op.kind(), "&&" | "||"))
+                .unwrap_or(false);
+            let right = parent.child_by_field_name("right")?;
+            if is_logical && spans(&right, child) {
+                parent.child_by_field_name("left")
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Whether [`dominating_conditions`] reads the earlier statements of a
+/// `kind` node for `if` conditions that held on the way past them.
+pub fn is_block_like(kind: &str) -> bool {
+    BLOCK_LIKE_KINDS.contains(&kind)
+}
+
+/// The `if` conditions one earlier statement of a block-like node
+/// ([`is_block_like`]) contributes to [`dominating_conditions`] for a site
+/// after it.
+pub fn block_level_if_conditions<'a>(stmt: &Node<'a>) -> Vec<Node<'a>> {
+    let mut out = Vec::new();
+    collect_block_level_if_conditions(stmt, &mut out);
+    out
 }
 
 /// Which ends of a value a limit-macro guard has bounded where a site runs.

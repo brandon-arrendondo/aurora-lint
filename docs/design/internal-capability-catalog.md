@@ -1009,7 +1009,9 @@ preprocessor.
 | `collect_string_literal_macros` | `(root: &Node, source: &str) -> HashMap<String, String>` | Collects `#define NAME "string"` patterns, raw quoted value. |
 | `is_relative_command_macro` / `is_safe_command_macro` | `(string_macros, name: &str) -> bool` | Classifies a string-literal macro as a relative-path OS command (unsafe as a `strcpy`/`strcat` source) vs. an absolute path or argument fragment (safe). |
 | `try_evaluate_expr` | `(node: &Node, source: &str, macros: &MacroConstantMap) -> Option<i64>` | Evaluates an AST expression node to an exact integer constant. |
-| `ConstMemo` | `default()`, `clear()` | Constant values (and whether a subtree holds an identifier) remembered by node id for one tree and macro table, taken by `expression_fits_in_signed_vra_at`, `expression_overflows_signed_vra_with`, `expression_fits_in_unsigned_vra_with`, `expression_overflows_unsigned_vra_with` and `try_evaluate_range_with`. Every operator of a long `1 + 1 + ...` chain evaluates its whole subtree, and `try_evaluate_range` tries `try_evaluate_expr` at every level of its own recursion, so without it that chain costs the square, or the cube, of its length. Same answer. INT32-C, INT30-C. |
+| `ConstMemo` | `default()`, `clear()`, `pin_table(&VarRangeMap)` | Constant values, whether a subtree holds an identifier, and each node's range and lower bound under each variable-range table, remembered by node id for one tree and macro table; taken by `expression_fits_in_signed_vra_at`, `expression_overflows_signed_vra_with`, `expression_fits_in_unsigned_vra_with`/`_given`, `expression_overflows_unsigned_vra_with`, `try_evaluate_range_with` and `try_evaluate_expr_with`. Every operator of a long `1 + 1 + ...` chain evaluates its whole subtree, and `try_evaluate_range` tries `try_evaluate_expr` at every level of its own recursion, so without it that chain costs the square, or the cube, of its length. A table is named by its contents, read once per outermost evaluation; `pin_table` names one by its address instead, for a caller that keeps a large table alive until `clear` and evaluates over it at every operator. The memo-less `try_evaluate_range`, `try_evaluate_lower_bound` and `try_evaluate_range_expanding` use a memo of their own for the one evaluation, which keeps each of them linear in the expression. Same answer. INT32-C, INT30-C. |
+| `expression_fits_in_unsigned_vra_given` | `(node, source, macros, bits, vra_var_ranges, syntactic_var_ranges, memo) -> bool` | `expression_fits_in_unsigned_vra_with` with the syntactic fallback's ranges supplied by the caller instead of built from the node's loops and a walk of its names. Ranges for names the node does not hold are never read, so one table can serve every operator of an expression. INT30-C builds one per expression from `loop_var_ranges_among` and `resolve_local_var_range_among`. |
+| `resolve_local_var_range_among` / `loop_var_ranges_among` | `(var, node_start, ancestors, source, macros, loop_ranges, fmacros, depth)` / `(ancestors, source, macros)` | `resolve_local_var_range` and `extract_loop_var_ranges` over ancestors the caller has in hand, innermost first, which may leave out every expression: only blocks, loops and the function are read. A caller that carries a site's statement-level ancestors down its walk pays the statement nesting, not the expression depth. |
 | `try_evaluate_text_public` | `(text: &str, macros: &MacroConstantMap) -> Option<i64>` | Same evaluation, but starting from a text snippet rather than an AST node (for callers holding a textual substring of a condition). |
 | `try_evaluate_range` | `(node, source, macros, var_ranges) -> Option<ValueRange>` | Evaluates an AST expression to a *range* rather than an exact value, falling back to `var_ranges` for identifiers not in `macros`. |
 | `try_evaluate_range_expanding` | `(node, source, macros, var_ranges, function_macros) -> Option<ValueRange>` | `try_evaluate_range` plus expansion of function-like macro invocations, which otherwise parse as opaque calls and evaluate to nothing. A driver that extracts a register field with `IDR0_NUMSIDB_VAL(reg & IDR0_NUMSIDB)` keeps its bound only through here. Separate entry point because the table is a project fact (`ProjectContext::function_macros`) most callers don't hold and expanding costs a re-parse; the expansion is evaluated with no table of its own, since `expand_invocation` has already rescanned it. |
@@ -1113,6 +1115,7 @@ rule.
 | Function | Signature | Description |
 |---|---|---|
 | `var_ranges_replay_at` | `(function_cfgs, vra_results, expr_node, source, macros) -> Option<VarRangeMap>` | Ranges at `expr_node`, replaying the containing block from its entry up to the expression (intra-block precision). The default choice. |
+| `var_ranges_replay_in` | `(function_cfgs, vra_results, func, expr_node, source, macros) -> Option<VarRangeMap>` | `var_ranges_replay_at` for a caller that knows `expr_node`'s containing function, which otherwise costs a descent from the root. The ranges depend only on the function and where the expression starts, so a caller asking at every operator of an expression can remember them per pair (INT30-C). |
 | `var_ranges_entry_at` | `(function_cfgs, vra_results, expr_node) -> Option<VarRangeMap>` | Ranges read straight from the containing block's entry state — no intra-block replay, no macro resolution. A write earlier in the block is not seen: at `i--; a[i]` it gives `i` before the step, so prefer `var_ranges_replay_at` for a value at an access. |
 | `unwritten_param_entry_range` | `(function_cfgs, vra_results, ident, name, source, scope: &NameScope) -> Option<ValueRange>` | The range a parameter entered its function with, for a site where VRA gives no range for it: `ident` must resolve to the parameter, and nothing in the body may write an identifier of that spelling (`NameScope::may_write`: an assignment, a step, its address, or a name that could expand to one). Then every point of the body sees the entry range, reachable or not. A block VRA proved unreachable under a caller fact keeps no ranges (a closed caller set that always passes one flag leaves the callee's other arm dead), and without this an index parameter read there had no bound at all. ARR30-C's fixed-size variable-index check. |
 | `has_negative_value_evidence` | `(function_cfgs, vra_results, expr_node, source, macros, var_name) -> bool` | Positive evidence that `var_name` can be negative at `expr_node`. **Absent information answers `false`**, deliberately: no range, an all-non-negative range, *and a range that is exactly a signed type's full band* all mean "nothing was proved". That third case is the one to remember — an unconstrained `int` parameter is indistinguishable from a variable VRA learned nothing about, so reading its full band as "could be negative" makes a check fire on every occurrence of its shape. |
@@ -1237,6 +1240,22 @@ Two deliberate exclusions, both load-bearing:
   capacity contract that rule asks about.
 - **A `do`-`while` condition does not count**, since it runs after the body and
   establishes nothing on the first iteration.
+
+**Carrying the conditions down a walk instead of climbing to them.**
+`dominating_conditions` walks out of its site, as deep as the site, so a
+rule asking it at every operator of a deep expression pays the square.
+`governing_condition(parent, child)` is the condition `parent` governs every
+site under `child` with (an `if`/loop/`switch`/`?:` condition for any child
+but the condition itself, the left operand of `&&`/`||` for its right one);
+`is_block_like` and `block_level_if_conditions(stmt)` give what a block's
+earlier statements add; a walk that carries both down, starting afresh below
+each function definition, holds what `dominating_conditions` climbs for.
+`mentions_integer_limit` is `has_dominating_limit_guard`'s test of a
+condition as a per-node predicate (for `subtree_any::SubtreeAny`), and
+`limit_guard_among(expr, limit_conditions, source)` finishes the question
+from the conditions that pass it, reading `expr`'s variables only when there
+is one. INT30-C's walk. `PrecedingConditions` above caches each block's
+conditions for a caller that still walks out per site.
 
 Preprocessor wrappers (`preproc_if`/`ifdef`/`else`/`elif`) are treated as
 block-like when scanning preceding statements: aurora-lint does not preprocess, so a
@@ -1831,6 +1850,44 @@ search for a closing delimiter starts after the opening one
 
 For byte-level scanning that never needs a `&str` slice, compare bytes
 (`s.as_bytes()[i..].starts_with(b"/*")`), which cannot panic on a boundary.
+
+## Per-file indexes for questions asked at every operator
+
+A rule that asks one question of every operator of an expression asks it of
+nested subtrees: each operator's operand is the operator below it. A question
+that walks its subtree, or reads its node's text, then costs the square of
+the expression's length. These answer the usual ones once per file.
+
+### `src/utility/cert_c/text_index.rs`
+**Problem solved:** `get_node_text(n).contains(p)` and
+`get_sanitized_node_text(n).contains(p)` cost the length of `n`'s text (and
+sanitizing a walk of its subtree), so asking at every operator, of the
+operator's text or its whole function's, is quadratic.
+
+| Function | Signature | Description |
+|---|---|---|
+| `TextIndex::raw` / `sanitized` / `blanking` | `(source)` / `(root, source)` / `(root, source, blank: Fn(&Node) -> bool)` | The file's text once: as written, with comments and string and character literals blanked exactly as `get_sanitized_node_text` blanks them, or with the nodes a caller's predicate picks blanked (offsets kept, newlines kept). A node's sanitized text is its slice of the sanitized file, because every literal inside a node's span is a node of its subtree. |
+| `text` / `span` | `(&Node) -> &str` / `(start, end) -> &str` | A node's (or a span's) text in the index. |
+| `contains` / `span_contains` | `(&Node, pattern) -> bool` / `(start, end, pattern) -> bool` | `text(node).contains(pattern)`, as a binary search over where `pattern` occurs, found once per pattern for the file (overlapping occurrences included). INT30-C's function-text and operand-text checks. |
+
+### `src/utility/cert_c/subtree_any.rs`
+**Problem solved:** `!query::find_descendants(n, p).is_empty()` asked of
+every operand.
+
+| Function | Signature | Description |
+|---|---|---|
+| `SubtreeAny::any` | `(&self, node, pred: Fn(&Node) -> bool) -> bool` | Whether `node` or anything under it satisfies `pred`, answered bottom-up once per node and remembered, so the whole file costs each node once. One memo per predicate; `clear()` per file. Fills on a stack of its own, so a subtree thousands of levels deep is not thousands of calls deep. INT30-C's unsigned-spelling test and its governing conditions' limit test. |
+
+These, `ConstMemo`, `float_typing::FloatMemo`, `pointer_typing::PointerMemo`
+and `int_provenance::RiskMemo` (`operand_is_risky_with`) are what INT30-C
+holds per file. What they do not cover yet: `expr_type` and `pointer_typing`
+resolve each identifier by a descent from the root, O(depth) each, so a rule
+asking about every operand of a deep expression still pays the square there.
+Answering that needs O(1) parent and nearest-statement lookups for a node,
+which tree-sitter does not give; a per-tree index with parent and "nearest
+ancestor where" columns, built in one pass, would (a candidate for
+`lang_parsing_substrate`, which already flattens a tree into such columns
+for Python).
 
 ## Two files flagged as legacy, not exemplars
 

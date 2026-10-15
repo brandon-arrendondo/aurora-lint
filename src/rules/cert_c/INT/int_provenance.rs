@@ -141,6 +141,87 @@ pub fn operand_is_risky(
     params: Option<&ParamContext>,
     source: &str,
 ) -> bool {
+    operand_is_risky_with(
+        op,
+        risky_vars,
+        summaries,
+        global_writers,
+        params,
+        source,
+        None,
+    )
+}
+
+/// Answers of [`operand_is_risky`] by node id, for one file, each node
+/// answered under its own function's risky set and parameters.
+#[derive(Default)]
+pub struct RiskMemo(std::cell::RefCell<HashMap<usize, bool>>);
+
+impl RiskMemo {
+    /// Forget every answer, before asking about another file.
+    pub fn clear(&self) {
+        self.0.borrow_mut().clear();
+    }
+}
+
+/// [`operand_is_risky`], remembering each subtree's answer in `memo` (when
+/// given) for a caller that asks it of every operator of an expression:
+/// each operator's operand is the operator below it, so a chain thousands
+/// of terms long otherwise costs the square. The caller passes, for every
+/// node of a function, that function's `risky_vars` and `params`. The same
+/// answer.
+pub fn operand_is_risky_with(
+    op: &Node,
+    risky_vars: &HashSet<String>,
+    summaries: &(impl SummaryLookup + ?Sized),
+    global_writers: &HashMap<String, HashSet<String>>,
+    params: Option<&ParamContext>,
+    source: &str,
+    memo: Option<&RiskMemo>,
+) -> bool {
+    if let Some(known) = memo.and_then(|m| m.0.borrow().get(&op.id()).copied()) {
+        return known;
+    }
+    let answer = operand_is_risky_uncached(
+        op,
+        risky_vars,
+        summaries,
+        global_writers,
+        params,
+        source,
+        memo,
+    );
+    if let Some(m) = memo {
+        m.0.borrow_mut().insert(op.id(), answer);
+    }
+    answer
+}
+
+fn operand_is_risky_uncached(
+    op: &Node,
+    risky_vars: &HashSet<String>,
+    summaries: &(impl SummaryLookup + ?Sized),
+    global_writers: &HashMap<String, HashSet<String>>,
+    params: Option<&ParamContext>,
+    source: &str,
+    memo: Option<&RiskMemo>,
+) -> bool {
+    let operand_is_risky = |op: &Node,
+                            risky_vars: &HashSet<String>,
+                            summaries: &_,
+                            global_writers: &HashMap<String, HashSet<String>>,
+                            params: Option<&ParamContext>,
+                            source: &str| {
+        operand_is_risky_with(
+            op,
+            risky_vars,
+            summaries,
+            global_writers,
+            params,
+            source,
+            memo,
+        )
+    };
     match op.kind() {
         "call_expression" => match op.child_by_field_name("function") {
             Some(f) => callee_is_risky_source(&get_node_text(&f, source), summaries),
