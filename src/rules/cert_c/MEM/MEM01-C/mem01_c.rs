@@ -94,7 +94,8 @@ struct HeaderTables {
     /// through `function_macro_arms`, which says which headers make it.
     macro_definitions: Arc<HashMap<String, Vec<MacroDefinition>>>,
     /// Every file-scope object (and enumeration constant) the scanned files
-    /// and headers declare.
+    /// and headers declare, those a macro's expansion declares included
+    /// (`DECLARE_LOG_TARGET` on a line of its own).
     global_object_names: Arc<HashSet<String>>,
     /// The struct and typedef tables as the file sees them.
     types: VisibleTypes,

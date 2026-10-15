@@ -44,6 +44,7 @@ pub mod input_guard;
 /// Pre-parse repair for a label immediately followed by an `#ifdef`/`#if`
 /// block -- `tree-sitter-c`'s `labeled_statement` can't parse that shape.
 pub mod label_preproc_guard;
+pub mod macro_declarations;
 pub mod macro_expand;
 pub mod macro_gaps;
 pub mod macro_semantics;
