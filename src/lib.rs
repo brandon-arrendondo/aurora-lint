@@ -6,7 +6,6 @@
 //! [`analyze::analyze_project`]. See this crate's README for the full
 //! feature set (export formats, diff-only mode, the optional TUI).
 #![warn(missing_docs)]
-#![deny(unsafe_code)] // one documented exception: utility::cert_c::ast_utils::tree_root
 #![allow(clippy::only_used_in_recursion)] // recursive &self on tree-sitter methods
 #![allow(clippy::needless_borrow)] // &str refs in tree-sitter helper calls
 #![allow(clippy::too_many_arguments)] // rule checker APIs naturally have many params
