@@ -31,6 +31,7 @@ use crate::analyze::context::ScopedTable;
 use crate::analyze::context::{IncludeClosure, ProjectContext, VisibleTypes};
 use crate::analyze::dataflow::find_node_at_range;
 use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::macro_declarations::{Linkage, MacroDeclaredObject};
 use crate::analyze::points_to::{lvalue_of, LValue};
 use crate::analyze::prescan::ANONYMOUS_UNION_KEY;
 use crate::manifest::Severity;
@@ -97,6 +98,9 @@ struct HeaderTables {
     /// and headers declare, those a macro's expansion declares included
     /// (`DECLARE_LOG_TARGET` on a line of its own).
     global_object_names: Arc<HashSet<String>>,
+    /// The objects a macro's expansion declares, with each declaration's
+    /// file and linkage.
+    macro_declared_objects: Arc<HashMap<String, Vec<MacroDeclaredObject>>>,
     /// The struct and typedef tables as the file sees them.
     types: VisibleTypes,
 }
@@ -336,6 +340,7 @@ impl CertRule for Mem01C {
             let mut headers = self.headers.borrow_mut();
             headers.macro_definitions = Arc::clone(&context.macro_definitions);
             headers.global_object_names = Arc::clone(&context.global_object_names);
+            headers.macro_declared_objects = Arc::clone(&context.macro_declared_objects);
         }
         *self.defined_functions.borrow_mut() = Arc::new(
             self.cross_file_summaries
@@ -1060,6 +1065,8 @@ fn callee_leaves_member_alone(
         unions: union_field_sets(root, source),
         globals: file_scope_variables(root, source),
         ctx: addr_ctx,
+        root,
+        source,
     };
     // Every definition, for one in each arm of a conditional.
     definitions.iter().all(|definition| {
@@ -1111,7 +1118,7 @@ fn parameter_declarations<'t>(definition: &Node<'t>) -> Vec<Node<'t>> {
 }
 
 /// What a callee's body is read against besides its own text.
-struct CalleeScope<'c> {
+struct CalleeScope<'c, 't> {
     /// Every macro the file defines, in any arm and at any depth, with its
     /// definitions. A name of one used in the callee may expand to a read of
     /// the parameter or the member, so such a callee is not proven unless
@@ -1128,9 +1135,13 @@ struct CalleeScope<'c> {
     /// declares ([`HeaderTables::global_object_names`]).
     globals: HashSet<String>,
     ctx: &'c AddressOfCallContext,
+    /// The file the callee is in, for the stores to an object its macros
+    /// name ([`Self::static_holds_nothing`]).
+    root: Node<'t>,
+    source: &'t str,
 }
 
-impl CalleeScope<'_> {
+impl CalleeScope<'_, '_> {
     /// Whether the macro `name`, used as an operand in the callee, expands to
     /// nothing a read of the member could go through, read as if its
     /// replacement list were written in place: every definition, the file's
@@ -1138,7 +1149,9 @@ impl CalleeScope<'_> {
     /// unreadable one, a token paste among them, is not proven), and every
     /// identifier it names is known to hold nothing: a keyword, a type name
     /// (a tag, or a typedef the tables resolve), a field selected off
-    /// something in the list, or a macro that passes in turn. Anything else
+    /// something in the list, a macro that passes in turn, or an object of
+    /// this file alone that provably never holds anything the caller could
+    /// have stored ([`Self::static_holds_nothing`]). Anything else
     /// is a read: a name no table knows may be an object declared where the
     /// scan does not see it, such as by another macro's expansion; so is one
     /// of `reads` (the callee's parameters and own declarations, and the
@@ -1225,11 +1238,253 @@ impl CalleeScope<'_> {
                             || types.struct_typedef_aliases.contains_key(word)
                             || (self.ctx.may_be_macro(word, &self.macros)
                                 && self.expansion_names_no_read(word, reads, expanding))
+                            || self.static_holds_nothing(word)
                     }
                     PpKind::Other => false,
                     _ => !token.is("##") && !token.is("#"),
                 })
         })
+    }
+
+    /// Whether `name`, a name a macro of the callee expands to, is an object
+    /// with internal linkage in this file (declared `static` at file scope
+    /// here, or by a macro invoked here) that provably holds nothing derived
+    /// from the destructor's object, by its stores, never by its declared
+    /// type (a cast store defeats any type test). Every place the file names
+    /// it, directly or through a macro that expands to it, is read:
+    /// - each store to it must store a constant (a number, a literal, `NULL`,
+    ///   `sizeof`, casts and arithmetic of those), and its initializer too;
+    /// - its address must never be taken;
+    /// - when anything reads through it (`X->f`, `*X`, `X[i]`), each store
+    ///   through it must store a constant too, and its value must never be
+    ///   copied, passed, returned or cast, since a copy can be stored through
+    ///   where the file does not show it.
+    ///
+    /// A macro that names it in any other shape (as a function-like macro,
+    /// or inside a larger expression) is a place the file cannot be read, so
+    /// the object is not proven. An object another file may write (external
+    /// linkage, an `extern`, a header's `static`) is never proven.
+    fn static_holds_nothing(&self, name: &str) -> bool {
+        let source = self.source;
+        let declared_here = ast_utils::top_level_items(self.root)
+            .filter(|item| item.kind() == "declaration")
+            .filter(|item| {
+                item.children_by_field_name("declarator", &mut item.walk())
+                    .any(|d| declarator_name(&d, source) == name)
+            })
+            .collect::<Vec<_>>();
+        let macro_declared = self
+            .ctx
+            .headers
+            .macro_declared_objects
+            .get(name)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let internal = declared_here
+            .iter()
+            .all(|d| ast_utils::declaration_has_storage_class(d, "static", source))
+            && macro_declared
+                .iter()
+                .all(|o| o.linkage == Linkage::Internal && *o.file == *self.ctx.own_file)
+            && (!declared_here.is_empty() || !macro_declared.is_empty());
+        if !internal {
+            return false;
+        }
+        let mut uses: Vec<Use> = Vec::new();
+        // A macro declaration's initializer is not in the tree.
+        if !macro_declared.is_empty() {
+            uses.push(Use::Escape);
+        }
+        for declaration in &declared_here {
+            for declarator in
+                declaration.children_by_field_name("declarator", &mut declaration.walk())
+            {
+                if declarator_name(&declarator, source) != name {
+                    continue;
+                }
+                if let Some(value) = (declarator.kind() == "init_declarator")
+                    .then(|| declarator.child_by_field_name("value"))
+                    .flatten()
+                {
+                    uses.push(if is_constant_value(&value, source) {
+                        Use::Store { constant: true }
+                    } else {
+                        Use::Escape
+                    });
+                }
+            }
+        }
+        for ident in query::find_descendants_of_kind(self.root, "identifier") {
+            if get_node_text(&ident, source) != name
+                || in_declarator_of(&ident)
+                || matches!(
+                    ast_utils::resolve_identifier_binding(&ident, name, source),
+                    Some(
+                        ast_utils::IdentifierBinding::Local(_)
+                            | ast_utils::IdentifierBinding::Parameter(_)
+                    )
+                )
+            {
+                continue;
+            }
+            uses.push(classify_use(&ident, false, source));
+        }
+        for alias in self.macros_naming(name) {
+            let shape = self.alias_shape(&alias, name);
+            let declares = self.declares_only(&alias, name);
+            for occurrence in ["identifier", "field_identifier", "type_identifier"]
+                .iter()
+                .flat_map(|kind| query::find_descendants_of_kind(self.root, kind))
+                .filter(|n| get_node_text(n, source) == alias)
+                .filter(|n| {
+                    !n.parent().is_some_and(|p| {
+                        matches!(
+                            p.kind(),
+                            "preproc_def"
+                                | "preproc_function_def"
+                                | "preproc_ifdef"
+                                | "preproc_defined"
+                        )
+                    })
+                })
+            {
+                // The invocation that declares the object, at file scope, is
+                // no use of it; its initializer is not read (above).
+                if declares && ast_utils::find_containing_function(&occurrence).is_none() {
+                    continue;
+                }
+                uses.push(match shape {
+                    Some(through) if occurrence.kind() == "identifier" => {
+                        classify_use(&occurrence, through, source)
+                    }
+                    _ => Use::Escape,
+                });
+                if shape.is_none() {
+                    uses.push(Use::Opaque);
+                }
+            }
+        }
+        let read_through = uses.contains(&Use::ThroughRead);
+        uses.iter().all(|u| match u {
+            Use::Store { constant } => *constant,
+            Use::ThroughStore { constant } => *constant,
+            Use::AddressTaken | Use::Opaque => false,
+            Use::Escape => !read_through,
+            Use::Read | Use::ThroughRead | Use::Update => true,
+        })
+    }
+
+    /// The macros of the file or the scan whose definition names `name`,
+    /// directly or through another such macro.
+    fn macros_naming(&self, name: &str) -> Vec<String> {
+        let mut found: Vec<String> = Vec::new();
+        let mut pending = vec![name.to_string()];
+        while let Some(target) = pending.pop() {
+            for (macro_name, definitions) in self
+                .macros
+                .iter()
+                .chain(self.ctx.headers.macro_definitions.iter())
+            {
+                if found.contains(macro_name) || macro_name == name {
+                    continue;
+                }
+                let names_it = definitions.iter().any(|d| match d {
+                    MacroDefinition::Object { body } | MacroDefinition::Function { body, .. } => {
+                        lex_replacement_list(body, true)
+                            .iter()
+                            .any(|t| t.kind == PpKind::Identifier && t.text == target.as_str())
+                    }
+                    MacroDefinition::Opaque => false,
+                });
+                if names_it {
+                    found.push(macro_name.clone());
+                    pending.push(macro_name.clone());
+                }
+            }
+        }
+        found
+    }
+
+    /// Whether every definition of `alias` is an object-like declaration
+    /// (its replacement ends in `;`) that names `name` once, as what it
+    /// declares: its invocation at file scope is the declaration itself.
+    fn declares_only(&self, alias: &str, name: &str) -> bool {
+        let definitions: Vec<&MacroDefinition> = self
+            .macros
+            .get(alias)
+            .into_iter()
+            .flatten()
+            .chain(
+                self.ctx
+                    .headers
+                    .macro_definitions
+                    .get(alias)
+                    .into_iter()
+                    .flatten(),
+            )
+            .collect();
+        !definitions.is_empty()
+            && definitions.iter().all(|d| {
+                let MacroDefinition::Object { body } = d else {
+                    return false;
+                };
+                let tokens = lex_replacement_list(body, false);
+                tokens.last().is_some_and(|t| t.is(";"))
+                    && tokens
+                        .iter()
+                        .filter(|t| t.kind == PpKind::Identifier && t.text == name)
+                        .count()
+                        == 1
+            })
+    }
+
+    /// How a use of the macro `alias` reads `name`: `Some(false)` when every
+    /// definition is object-like and is `name` alone (parentheses aside),
+    /// `Some(true)` when each is `name` followed only by `->` or `.` field
+    /// selections, and `None` for any other shape.
+    fn alias_shape(&self, alias: &str, name: &str) -> Option<bool> {
+        let definitions: Vec<&MacroDefinition> = self
+            .macros
+            .get(alias)
+            .into_iter()
+            .flatten()
+            .chain(
+                self.ctx
+                    .headers
+                    .macro_definitions
+                    .get(alias)
+                    .into_iter()
+                    .flatten(),
+            )
+            .collect();
+        let shapes: Vec<Option<bool>> = definitions
+            .iter()
+            .map(|d| {
+                let MacroDefinition::Object { body } = d else {
+                    return None;
+                };
+                let tokens: Vec<String> = lex_replacement_list(body, false)
+                    .iter()
+                    .map(|t| t.text.to_string())
+                    .filter(|t| t != "(" && t != ")")
+                    .collect();
+                let (first, rest) = tokens.split_first()?;
+                if first != name {
+                    return None;
+                }
+                let selections = rest.chunks(2).all(|pair| {
+                    matches!(pair, [op, field] if (op == "->" || op == ".")
+                        && field.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                });
+                selections.then_some(!rest.is_empty())
+            })
+            .collect();
+        let first = *shapes.first()?;
+        shapes
+            .iter()
+            .all(|s| *s == first)
+            .then_some(first)
+            .flatten()
     }
 
     /// Whether `ident`, an identifier of the callee's body, may name an
@@ -1409,6 +1664,161 @@ fn file_scope_variables(root: Node, source: &str) -> HashSet<String> {
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+/// How one place in the file uses an object ([`CalleeScope::static_holds_nothing`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Use {
+    /// Its value is read, compared or called through.
+    Read,
+    /// Something it points to or holds is read (`X->f`, `*X`, `X[i]`).
+    ThroughRead,
+    /// It is assigned, with a constant or not.
+    Store { constant: bool },
+    /// Something it points to or holds is assigned.
+    ThroughStore { constant: bool },
+    /// It is incremented or decremented.
+    Update,
+    /// Its address is taken.
+    AddressTaken,
+    /// Its value is copied, passed, returned or cast.
+    Escape,
+    /// A macro names it in a shape that cannot be read.
+    Opaque,
+}
+
+/// How the use of an object at `node` (an identifier, or a macro that
+/// expands to the object, `through` when to a field of it) treats it.
+fn classify_use(node: &Node, through: bool, source: &str) -> Use {
+    let mut current = *node;
+    let mut through = through;
+    let Some(mut parent) = current.parent() else {
+        return Use::Escape;
+    };
+    loop {
+        let is = |field: &str| parent.child_by_field_name(field) == Some(current);
+        match parent.kind() {
+            "parenthesized_expression" => {}
+            "field_expression" | "subscript_expression" if is("argument") => through = true,
+            "pointer_expression" => {
+                let operator = parent
+                    .child_by_field_name("operator")
+                    .map(|o| get_node_text(&o, source).to_string());
+                if operator.as_deref() == Some("&") {
+                    return if through {
+                        Use::Escape
+                    } else {
+                        Use::AddressTaken
+                    };
+                }
+                through = true;
+            }
+            _ => break,
+        }
+        current = parent;
+        let Some(next) = parent.parent() else {
+            return Use::Escape;
+        };
+        parent = next;
+    }
+    let is = |field: &str| parent.child_by_field_name(field) == Some(current);
+    let read = if through { Use::ThroughRead } else { Use::Read };
+    match parent.kind() {
+        "assignment_expression" if is("left") => {
+            let constant = parent
+                .child_by_field_name("right")
+                .is_some_and(|v| is_constant_value(&v, source));
+            if through {
+                Use::ThroughStore { constant }
+            } else {
+                Use::Store { constant }
+            }
+        }
+        "update_expression" => {
+            if through {
+                Use::ThroughStore { constant: true }
+            } else {
+                Use::Update
+            }
+        }
+        "call_expression" if is("function") => read,
+        "binary_expression" => {
+            let comparison = parent.child_by_field_name("operator").is_some_and(|o| {
+                matches!(
+                    get_node_text(&o, source),
+                    "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||"
+                )
+            });
+            if comparison {
+                read
+            } else {
+                Use::Escape
+            }
+        }
+        "unary_expression" | "sizeof_expression" | "expression_statement" => read,
+        "if_statement" | "while_statement" | "do_statement" | "switch_statement"
+        | "condition_clause" => read,
+        "for_statement" if is("condition") => read,
+        "conditional_expression" if is("condition") => read,
+        _ => Use::Escape,
+    }
+}
+
+/// Whether `value` is a constant: a number, character or string literal,
+/// `NULL`, `true`/`false`/`nullptr`, `sizeof`, or a cast, a sign or
+/// arithmetic of those. It names no object, so it cannot hold one.
+fn is_constant_value(value: &Node, source: &str) -> bool {
+    match value.kind() {
+        "number_literal"
+        | "char_literal"
+        | "string_literal"
+        | "concatenated_string"
+        | "null"
+        | "true"
+        | "false"
+        | "sizeof_expression" => true,
+        "identifier" => matches!(get_node_text(value, source), "NULL" | "nullptr"),
+        "parenthesized_expression" | "unary_expression" | "binary_expression" => value
+            .named_children(&mut value.walk())
+            .filter(|c| c.kind() != "comment")
+            .all(|c| is_constant_value(&c, source)),
+        "cast_expression" => value
+            .child_by_field_name("value")
+            .is_some_and(|v| is_constant_value(&v, source)),
+        _ => false,
+    }
+}
+
+/// Whether `ident` is the name a declarator declares, not a use of it.
+fn in_declarator_of(ident: &Node) -> bool {
+    let mut current = *ident;
+    while let Some(parent) = current.parent() {
+        match parent.kind() {
+            "pointer_declarator"
+            | "array_declarator"
+            | "parenthesized_declarator"
+            | "function_declarator"
+            | "attributed_declarator" => current = parent,
+            "init_declarator" => return parent.child_by_field_name("declarator") == Some(current),
+            "declaration" | "parameter_declaration" | "field_declaration" | "type_definition" => {
+                return true
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// The name a declarator (or `init_declarator`) declares.
+fn declarator_name(declarator: &Node, source: &str) -> String {
+    let declarator = if declarator.kind() == "init_declarator" {
+        declarator
+            .child_by_field_name("declarator")
+            .unwrap_or(*declarator)
+    } else {
+        *declarator
+    };
+    ast_utils::get_identifier_from_declarator(&declarator, source)
 }
 
 /// The operand of `&x`, parentheses and casts around it removed.
