@@ -10,8 +10,27 @@ use crate::analyze::null_state::NullState;
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::node_children::NodeChildren;
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use tree_sitter::Node;
+
+thread_local! {
+    /// [`param_behind_local`]'s answer apart from the use site, per (local's
+    /// declaration, local's name, body, `allow_offset`): where the local's
+    /// one set is, and the parameter it copies. The name is part of the key
+    /// because one declaration can declare several locals
+    /// (`char *a = p, *b = q;`), each with its own set. Finding the set reads
+    /// every occurrence of the local's name in the body, the same for every
+    /// use of it, so a function that forwards one local many times paid that
+    /// once per use. Reset per function by [`analyze_function`], whose
+    /// parameters it depends on.
+    static LOCAL_COPIES: RefCell<HashMap<(usize, String, usize, bool), LocalCopy>> =
+        RefCell::new(HashMap::new());
+}
+
+/// [`local_copy`]'s answer: the start of a local's one set and the
+/// parameter it copies, or `None`.
+type LocalCopy = Option<(usize, Option<usize>)>;
 
 /// Stands for a direct process-wide protection call (zero `RLIMIT_CORE`,
 /// `mlockall`) in `FunctionSummary::main_call_sequence`; not a C identifier,
@@ -1503,6 +1522,7 @@ fn analyze_function(
     clearing_names: &HashSet<String>,
     registry: &RegistryFileFacts,
 ) -> FunctionSummary {
+    LOCAL_COPIES.with(|c| c.borrow_mut().clear());
     // Internal linkage: `static` storage class at file scope. A direct-child
     // scan, not a text one, so a `static` in the body or in a parameter type
     // cannot be mistaken for the function's own -- a `function_definition`
@@ -6161,7 +6181,6 @@ fn param_behind_local(
     allow_offset: bool,
 ) -> Option<usize> {
     use crate::utility::cert_c::ast_utils;
-    use lang_parsing_substrate::query;
     let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
     let name = text(&local);
     // Only the local-declaration branch of the binding matters here. The
@@ -6171,8 +6190,40 @@ fn param_behind_local(
     let root = ast_utils::tree_root(body);
     let decl =
         ast_utils::find_enclosing_declaration_for_identifier_in(&root, &local, &name, source)?;
+    let key = (decl.id(), name.clone(), body.id(), allow_offset);
+    let copy = match LOCAL_COPIES.with(|c| c.borrow().get(&key).copied()) {
+        Some(known) => known,
+        None => {
+            let found = local_copy(decl, &name, body, source, params, allow_offset);
+            LOCAL_COPIES.with(|c| c.borrow_mut().insert(key, found));
+            found
+        }
+    };
+    let (set_start, param) = copy?;
+    if set_start >= use_site.start_byte() {
+        return None;
+    }
+    param
+}
+
+/// [`param_behind_local`] for the local `name` that `decl` declares, apart
+/// from the use site: the start of its one set and the parameter that set
+/// copies, or `None` when it is set more than once, written otherwise or has
+/// its address taken.
+fn local_copy(
+    decl: Node,
+    name: &str,
+    body: &Node,
+    source: &str,
+    params: &[String],
+    allow_offset: bool,
+) -> LocalCopy {
+    use crate::utility::cert_c::ast_utils;
+    use lang_parsing_substrate::query;
+    let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+    let root = ast_utils::tree_root(body);
     let binds_to_decl = |n: &Node| {
-        ast_utils::find_enclosing_declaration_for_identifier_in(&root, n, &name, source)
+        ast_utils::find_enclosing_declaration_for_identifier_in(&root, n, name, source)
             .is_some_and(|d| d.id() == decl.id())
     };
 
@@ -6180,7 +6231,7 @@ fn param_behind_local(
     let mut sets: Vec<(Node, Node)> = Vec::new();
     for init in query::find_descendants_of_kind(decl, "init_declarator") {
         let declares_local = init.child_by_field_name("declarator").is_some_and(|d| {
-            ast_utils::find_identifier_in_declarator(&d, source).as_deref() == Some(name.as_str())
+            ast_utils::find_identifier_in_declarator(&d, source).as_deref() == Some(name)
         });
         if declares_local {
             sets.push((init, init.child_by_field_name("value")?));
@@ -6218,10 +6269,10 @@ fn param_behind_local(
     let [(set, value)] = sets.as_slice() else {
         return None;
     };
-    if set.start_byte() >= use_site.start_byte() {
-        return None;
-    }
-    param_at_offset(value, body, source, params, allow_offset)
+    Some((
+        set.start_byte(),
+        param_at_offset(value, body, source, params, allow_offset),
+    ))
 }
 
 /// The parameter `value` is -- `p`, or with `allow_offset` `p + k` / `p - k`
