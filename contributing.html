@@ -226,6 +226,10 @@ must be the same in everything except the rule id.</p></li>
 (e.g. <code class="docutils literal notranslate"><span class="pre">libgit2-sys</span></code>); <code class="docutils literal notranslate"><span class="pre">build-essential</span></code> on Debian/Ubuntu</p></li>
 <li><p><strong>Platform</strong>: Linux, macOS, Windows (cross-platform via crossterm)</p></li>
 <li><p><strong>Dependencies</strong>: See <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code> for the full list</p></li>
+<li><p><strong>No unsafe code</strong>: the library and the binary deny it
+(<code class="docutils literal notranslate"><span class="pre">#![deny(unsafe_code)]</span></code>). The one exception is <code class="docutils literal notranslate"><span class="pre">ast_utils::tree_root</span></code>,
+which asks tree-sitter for a node’s root in constant time; its doc comment
+says why.</p></li>
 </ul>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">cargo</span> <span class="n">build</span>             <span class="c1"># Debug build</span>
 <span class="n">cargo</span> <span class="n">build</span> <span class="o">--</span><span class="n">release</span>   <span class="c1"># Release build (optimized)</span>
