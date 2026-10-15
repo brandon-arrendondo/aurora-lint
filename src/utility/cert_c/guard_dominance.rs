@@ -45,6 +45,9 @@ use super::ast_utils::get_node_text;
 use crate::analyze::const_eval::{try_evaluate_expr, MacroConstantMap};
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 use tree_sitter::Node;
 
 /// Operators that order a variable against something — these always bound it.
@@ -60,7 +63,7 @@ const ORDERING_OPERATORS: &[&str] = &["<", "<=", ">", ">="];
 /// whole range and leaves `36 + idx*4` exactly as unbounded as before, while
 /// `n == INT_MIN` before negating `n` excludes precisely the value that
 /// overflows and is the entire guard.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ComparisonKind {
     /// `< <= > >=`, `==`/`!=` against anything, and `!var`.
     Any,
@@ -117,10 +120,36 @@ pub fn call_arg_guards_in(call: &SiteAncestors, source: &str) -> Vec<bool> {
     call_arg_guards_from(&call.site, source, || dominating_conditions_in(call))
 }
 
+/// [`call_arg_guards_in`], reading preceding conditions and their
+/// comparisons through `conditions`, which one walk holds for all its calls.
+pub fn call_arg_guards_cached<'a>(
+    call: &SiteAncestors<'a>,
+    source: &str,
+    conditions: &PrecedingConditions<'a>,
+) -> Vec<bool> {
+    call_arg_guards_with(
+        &call.site,
+        source,
+        || dominating_conditions_cached(call, conditions),
+        |cond, var| conditions.compares(cond, var, source, ComparisonKind::Any),
+    )
+}
+
 fn call_arg_guards_from<'a>(
     call_node: &Node<'a>,
     source: &str,
     dominating: impl FnOnce() -> Vec<Node<'a>>,
+) -> Vec<bool> {
+    call_arg_guards_with(call_node, source, dominating, |cond, var| {
+        condition_compares_var(cond, var, source, ComparisonKind::Any)
+    })
+}
+
+fn call_arg_guards_with<'a>(
+    call_node: &Node<'a>,
+    source: &str,
+    dominating: impl FnOnce() -> Vec<Node<'a>>,
+    compares: impl Fn(&Node<'a>, &str) -> bool,
 ) -> Vec<bool> {
     let mut dominating = Some(dominating);
     let Some(arg_list) = call_node.child_by_field_name("arguments") else {
@@ -137,15 +166,15 @@ fn call_arg_guards_from<'a>(
         }
         let inner = strip_arg_wrappers(&arg);
         guards.push(
-            inner.kind() == "identifier"
-                && has_dominating_comparison_in(
-                    conditions.get_or_insert_with(|| {
+            inner.kind() == "identifier" && {
+                let var = get_node_text(&inner, source);
+                conditions
+                    .get_or_insert_with(|| {
                         dominating.take().expect("conditions are collected once")()
-                    }),
-                    &get_node_text(&inner, source),
-                    source,
-                    ComparisonKind::Any,
-                ),
+                    })
+                    .iter()
+                    .any(|cond| compares(cond, &var))
+            },
         );
     }
     guards
@@ -166,7 +195,13 @@ pub fn collect_call_arg_guards(
     source: &str,
     out: &mut std::collections::HashMap<String, Vec<Vec<bool>>>,
 ) {
-    collect_call_arg_guards_under(node, &mut Vec::new(), source, out);
+    collect_call_arg_guards_under(
+        node,
+        &mut Vec::new(),
+        source,
+        &PrecedingConditions::default(),
+        out,
+    );
 }
 
 /// [`collect_call_arg_guards`] carrying the walk's own ancestors, outermost
@@ -175,6 +210,7 @@ fn collect_call_arg_guards_under<'a>(
     node: &Node<'a>,
     stack: &mut Vec<Node<'a>>,
     source: &str,
+    conditions: &PrecedingConditions<'a>,
     out: &mut std::collections::HashMap<String, Vec<Vec<bool>>>,
 ) {
     if node.kind() == "call_expression" {
@@ -183,14 +219,14 @@ fn collect_call_arg_guards_under<'a>(
                 let site = SiteAncestors::from_chain(*node, stack.iter().rev().copied().collect());
                 out.entry(get_node_text(&callee, source).to_string())
                     .or_default()
-                    .push(call_arg_guards_in(&site, source));
+                    .push(call_arg_guards_cached(&site, source, conditions));
             }
         }
     }
     stack.push(*node);
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_call_arg_guards_under(&child, stack, source, out);
+        collect_call_arg_guards_under(&child, stack, source, conditions, out);
     }
     stack.pop();
 }
@@ -308,6 +344,145 @@ pub fn dominating_conditions_in<'a>(site: &SiteAncestors<'a>) -> Vec<Node<'a>> {
         .collect();
     conditions.extend(preceding_if_conditions_from(&site.site, site.ancestors()));
     conditions
+}
+
+/// [`dominating_conditions_in`], reading preceding conditions through
+/// `conditions`.
+pub fn dominating_conditions_cached<'a>(
+    site: &SiteAncestors<'a>,
+    conditions: &PrecedingConditions<'a>,
+) -> Vec<Node<'a>> {
+    let mut out: Vec<Node<'a>> = enclosing_conditions_from(&site.site, site.ancestors())
+        .into_iter()
+        .map(|(cond, _)| cond)
+        .collect();
+    out.extend(conditions.preceding(&site.site, site.ancestors()));
+    out
+}
+
+/// [`dominating_conditions_with_branches_in`], reading preceding conditions
+/// and their branches through `conditions`.
+pub fn dominating_conditions_with_branches_cached<'a>(
+    site: &SiteAncestors<'a>,
+    conditions: &PrecedingConditions<'a>,
+) -> Vec<(Node<'a>, Option<bool>)> {
+    let at = site.site;
+    let mut out: Vec<(Node<'a>, Option<bool>)> = enclosing_conditions_from(&at, site.ancestors())
+        .into_iter()
+        .map(|(cond, owner)| (cond, condition_branch_under(&owner, &at)))
+        .collect();
+    out.extend(
+        conditions
+            .preceding(&at, site.ancestors())
+            .into_iter()
+            .map(|cond| (cond, conditions.branch(&cond, &at))),
+    );
+    out
+}
+
+/// One block's block-level `if` conditions, each with the start byte of the
+/// statement holding it, in statement order.
+type BlockConditions<'a> = Rc<[(usize, Node<'a>)]>;
+
+/// What [`preceding_if_conditions_from`] reads at every site of a walk,
+/// read once: each block's block-level `if` conditions, and for each
+/// condition its parent and the questions asked of it.
+///
+/// Without it every site re-reads every statement before it in each
+/// enclosing block, and climbs `parent()` twice per condition it finds for
+/// the condition's branch, so a function of N guarded statements costs N²
+/// statement reads and parent climbs. A site takes the prefix of its
+/// block's list that precedes it, so the answers are the same.
+///
+/// Keyed by node id, so one value serves one tree and must not outlive it.
+#[derive(Default)]
+pub struct PrecedingConditions<'a> {
+    /// Per block: `(start byte of the statement holding it, condition)` for
+    /// every condition [`collect_block_level_if_conditions`] finds in the
+    /// block's named children, in their order.
+    by_block: RefCell<HashMap<usize, BlockConditions<'a>>>,
+    /// Per condition: its parent, and whether that parent is the tail of an
+    /// `else if` chain (see [`condition_branch_under`]).
+    parents: RefCell<HashMap<usize, Option<(Node<'a>, bool)>>>,
+    /// Per (condition, variable, kind): [`condition_compares_var`].
+    compares: RefCell<HashMap<(usize, String, ComparisonKind), bool>>,
+}
+
+impl<'a> PrecedingConditions<'a> {
+    fn block(&self, block: &Node<'a>) -> BlockConditions<'a> {
+        if let Some(known) = self.by_block.borrow().get(&block.id()) {
+            return known.clone();
+        }
+        #[cfg(test)]
+        PRECEDING_BLOCK_READS.with(|n| n.set(n.get() + 1));
+        let mut entries = Vec::new();
+        let mut found = Vec::new();
+        let mut cursor = block.walk();
+        for stmt in block.named_children(&mut cursor) {
+            collect_block_level_if_conditions(&stmt, &mut found);
+            entries.extend(found.drain(..).map(|cond| (stmt.start_byte(), cond)));
+        }
+        let entries: BlockConditions<'a> = entries.into();
+        self.by_block
+            .borrow_mut()
+            .insert(block.id(), entries.clone());
+        entries
+    }
+
+    /// [`preceding_if_conditions_from`].
+    fn preceding(
+        &self,
+        site: &Node<'a>,
+        ancestors: impl Iterator<Item = Node<'a>>,
+    ) -> Vec<Node<'a>> {
+        let mut conditions = Vec::new();
+        let mut current = *site;
+        for parent in ancestors {
+            if BLOCK_LIKE_KINDS.contains(&parent.kind()) {
+                // The statements are in byte order, so the ones starting
+                // before `current` are a prefix: where the scan of the
+                // block's children stopped.
+                let entries = self.block(&parent);
+                let before = entries.partition_point(|&(start, _)| start < current.start_byte());
+                conditions.extend(entries[..before].iter().map(|&(_, cond)| cond));
+            }
+            if parent.kind() == "function_definition" {
+                break;
+            }
+            current = parent;
+        }
+        conditions
+    }
+
+    /// [`dominating_condition_branch`].
+    fn branch(&self, cond: &Node<'a>, site: &Node<'a>) -> Option<bool> {
+        let known = self.parents.borrow().get(&cond.id()).copied();
+        let parent = known.unwrap_or_else(|| {
+            let parent = cond.parent().map(|p| (p, is_else_if_chain_tail(&p)));
+            self.parents.borrow_mut().insert(cond.id(), parent);
+            parent
+        });
+        let (parent, chain_tail) = parent?;
+        condition_branch_under_with(&parent, site, || chain_tail)
+    }
+
+    /// [`condition_compares_var`].
+    fn compares(&self, cond: &Node<'a>, var: &str, source: &str, kind: ComparisonKind) -> bool {
+        let key = (cond.id(), var.to_string(), kind);
+        if let Some(&known) = self.compares.borrow().get(&key) {
+            return known;
+        }
+        let answer = condition_compares_var(cond, var, source, kind);
+        self.compares.borrow_mut().insert(key, answer);
+        answer
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many blocks [`PrecedingConditions`] read the statements of on
+    /// this thread.
+    static PRECEDING_BLOCK_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// [`dominating_conditions_with_branches`] with the ancestors already in
@@ -1843,6 +2018,23 @@ pub fn dominating_condition_branch(cond: &Node, site: &Node) -> Option<bool> {
 /// [`dominating_condition_branch`] for a condition whose parent, `parent`, is
 /// already known.
 fn condition_branch_under(parent: &Node, site: &Node) -> Option<bool> {
+    condition_branch_under_with(parent, site, || is_else_if_chain_tail(parent))
+}
+
+/// Whether `stmt` is a link of an `else if` chain after the first: an
+/// `if_statement` under an `else_clause` (or directly under an `if`).
+fn is_else_if_chain_tail(stmt: &Node) -> bool {
+    stmt.parent()
+        .is_some_and(|g| matches!(g.kind(), "else_clause" | "if_statement"))
+}
+
+/// [`condition_branch_under`], told by `chain_tail` whether `parent` is an
+/// [`is_else_if_chain_tail`] when it needs to know.
+fn condition_branch_under_with(
+    parent: &Node,
+    site: &Node,
+    chain_tail: impl FnOnce() -> bool,
+) -> Option<bool> {
     let parent = *parent;
     match parent.kind() {
         "if_statement" | "conditional_expression" => {
@@ -1863,11 +2055,8 @@ fn condition_branch_under(parent: &Node, site: &Node) -> Option<bool> {
             // site following the chain may have arrived through an earlier
             // branch that fell through, never evaluating this condition at
             // all — so the chain, not this link, is what would have to exit.
-            let is_chain_tail = parent
-                .parent()
-                .is_some_and(|g| matches!(g.kind(), "else_clause" | "if_statement"));
             let lone_if_that_exits = parent.kind() == "if_statement"
-                && !is_chain_tail
+                && !chain_tail()
                 && parent.child_by_field_name("alternative").is_none()
                 && parent
                     .child_by_field_name("consequence")
@@ -2761,6 +2950,69 @@ mod tests {
         let language = crate::parser::c_language();
         parser.set_language(&language).unwrap();
         parser.parse(code, None).unwrap()
+    }
+
+    /// At every call of a function mixing lone and exiting `if`s, `else if`
+    /// chains, `#ifdef`-wrapped guards, nested blocks, loops and `&&`
+    /// guards, [`PrecedingConditions`] gives the conditions, branches and
+    /// argument guards the per-site walk gives, and reads each block's
+    /// statements once for every call: per call, it read every statement
+    /// before the call again. Counted rather than timed.
+    #[test]
+    fn preceding_conditions_read_each_block_once_and_answer_as_the_walk() {
+        let mut src = String::from(
+            "int g(int *, int);\nint *h(void);\nvoid f(int c, int *q) {\n    int *s = 0;\n",
+        );
+        for i in 0..80 {
+            src.push_str(&format!(
+                "    if (c == {i}) {{ s = q; g(s, c); }}\n\
+                 \x20   if (!s) return;\n\
+                 \x20   if (c > {i}) g(s, c); else if (s == 0) g(q, c); else {{ g(s, {i}); }}\n\
+                 #ifdef CHECK\n    if (q == 0) goto out;\n#endif\n\
+                 \x20   while (c < {i}) {{ if (s) g(s, c); c++; }}\n\
+                 \x20   {{ int *t = h(); if (t && g(t, c)) g(t, c); }}\n"
+            ));
+        }
+        src.push_str("out:\n    g(s, c);\n}\n");
+        let tree = parse_c_code(&src);
+        let root = tree.root_node();
+        let calls = query::find_descendants_of_kind(root, "call_expression");
+        let blocks = query::find_descendants_of_kind(root, "compound_statement").len()
+            + query::find_descendants_of_kind(root, "preproc_ifdef").len();
+        assert!(calls.len() > 500);
+
+        PRECEDING_BLOCK_READS.with(|n| n.set(0));
+        let conditions = PrecedingConditions::default();
+        for call in &calls {
+            let site = SiteAncestors::new(&root, call).unwrap();
+            assert_eq!(
+                call_arg_guards_cached(&site, &src, &conditions),
+                call_arg_guards_in(&site, &src),
+                "argument guards at byte {}",
+                call.start_byte()
+            );
+            assert_eq!(
+                dominating_conditions_cached(&site, &conditions)
+                    .iter()
+                    .map(|c| c.id())
+                    .collect::<Vec<_>>(),
+                dominating_conditions_in(&site)
+                    .iter()
+                    .map(|c| c.id())
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(
+                dominating_conditions_with_branches_cached(&site, &conditions)
+                    .iter()
+                    .map(|(c, b)| (c.id(), *b))
+                    .collect::<Vec<_>>(),
+                dominating_conditions_with_branches_in(&site)
+                    .iter()
+                    .map(|(c, b)| (c.id(), *b))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        assert!(PRECEDING_BLOCK_READS.with(|n| n.get()) <= blocks);
     }
 
     /// Ask whether `var` is guarded at the *last* `+`/`-`/`*`/`<<` expression

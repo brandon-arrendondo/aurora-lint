@@ -5679,6 +5679,7 @@ fn collect_calls_with_locals(
         source,
         local_states,
         writes,
+        &guard_dominance::PrecedingConditions::default(),
         callsite_args,
         callsite_field_args,
         callsite_pointee_args,
@@ -5695,6 +5696,7 @@ fn collect_calls_with_locals_under<'a>(
     source: &str,
     local_states: &HashMap<String, NullState>,
     writes: &guard_dominance::WriteIndex,
+    conditions: &guard_dominance::PrecedingConditions<'a>,
     callsite_args: &mut HashMap<String, Vec<Vec<NullState>>>,
     callsite_field_args: &mut HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
     callsite_pointee_args: &mut HashMap<String, Vec<Vec<NullState>>>,
@@ -5709,6 +5711,7 @@ fn collect_calls_with_locals_under<'a>(
             source,
             local_states,
             writes,
+            conditions,
             callsite_args,
             callsite_field_args,
             callsite_pointee_args,
@@ -5724,6 +5727,7 @@ fn collect_calls_with_locals_under<'a>(
             source,
             local_states,
             writes,
+            conditions,
             callsite_args,
             callsite_field_args,
             callsite_pointee_args,
@@ -5734,11 +5738,13 @@ fn collect_calls_with_locals_under<'a>(
 
 /// Record per-argument null/field/pointee states for a single call site,
 /// keyed by callee name.
-fn collect_call_expression_locals(
-    site: &guard_dominance::SiteAncestors,
+#[allow(clippy::too_many_arguments)]
+fn collect_call_expression_locals<'a>(
+    site: &guard_dominance::SiteAncestors<'a>,
     source: &str,
     local_states: &HashMap<String, NullState>,
     writes: &guard_dominance::WriteIndex,
+    conditions: &guard_dominance::PrecedingConditions<'a>,
     callsite_args: &mut HashMap<String, Vec<Vec<NullState>>>,
     callsite_field_args: &mut HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
     callsite_pointee_args: &mut HashMap<String, Vec<Vec<NullState>>>,
@@ -5780,6 +5786,7 @@ fn collect_call_expression_locals(
             local_states,
             &mut dominators,
             writes,
+            conditions,
         ));
 
         // Collect struct field null states for this argument
@@ -5821,6 +5828,7 @@ fn infer_call_arg_state<'a>(
     local_states: &HashMap<String, NullState>,
     dominators: &mut Option<Vec<(Node<'a>, Option<bool>)>>,
     writes: &guard_dominance::WriteIndex,
+    conditions: &guard_dominance::PrecedingConditions<'a>,
 ) -> NullState {
     let arg = &site.site();
     let state = function_summary::infer_arg_null_state(arg, source);
@@ -5847,7 +5855,7 @@ fn infer_call_arg_state<'a>(
         // state vote, counting only guards evaluated after the write.
         if tabled != NullState::NotNull {
             let dominators = dominators.get_or_insert_with(|| {
-                guard_dominance::dominating_conditions_with_branches_in(site)
+                guard_dominance::dominating_conditions_with_branches_cached(site, conditions)
             });
             let after_write = reaching.map_or(0, |w| w.statement.end_byte());
             let later: Vec<(Node, Option<bool>)> = dominators
