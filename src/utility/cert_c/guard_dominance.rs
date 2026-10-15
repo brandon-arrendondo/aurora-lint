@@ -485,6 +485,8 @@ thread_local! {
     /// How many blocks [`PrecedingConditions`] read the statements of on
     /// this thread.
     static PRECEDING_BLOCK_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many times [`branch_past`] read an `if` on this thread.
+    static BRANCH_PAST_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// [`dominating_conditions_with_branches`] with the ancestors already in
@@ -2033,6 +2035,8 @@ fn condition_branch_under(parent: &Node, site: &Node) -> Option<bool> {
 /// never evaluating this condition at all — so the chain, not this link, is
 /// what would have to exit.
 fn branch_past(parent: &Node) -> Option<bool> {
+    #[cfg(test)]
+    BRANCH_PAST_READS.with(|n| n.set(n.get() + 1));
     let lone_if_that_exits = parent.kind() == "if_statement"
         && !parent
             .parent()
@@ -3018,6 +3022,18 @@ mod tests {
             );
         }
         assert!(PRECEDING_BLOCK_READS.with(|n| n.get()) <= blocks);
+
+        // Each preceding condition's branch past its `if` is read once,
+        // whatever the number of sites after it: per site, it was read
+        // again for every condition before the site.
+        let ifs = query::find_descendants_of_kind(root, "if_statement").len();
+        BRANCH_PAST_READS.with(|n| n.set(0));
+        let conditions = PrecedingConditions::default();
+        for call in &calls {
+            let site = SiteAncestors::new(&root, call).unwrap();
+            dominating_conditions_with_branches_cached(&site, &conditions);
+        }
+        assert!(BRANCH_PAST_READS.with(|n| n.get()) <= ifs);
     }
 
     /// Ask whether `var` is guarded at the *last* `+`/`-`/`*`/`<<` expression

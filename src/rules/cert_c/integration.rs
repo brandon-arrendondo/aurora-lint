@@ -541,6 +541,18 @@ fn fixture_findings(
     preset: &str,
     overrides: &str,
 ) -> Vec<crate::rules::RuleViolation> {
+    let test_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative_path);
+    findings_at(rule_id, &test_path, preset, overrides)
+}
+
+/// [`fixture_findings`] for the C file at `test_path`.
+#[cfg(test)]
+fn findings_at(
+    rule_id: &str,
+    test_path: &Path,
+    preset: &str,
+    overrides: &str,
+) -> Vec<crate::rules::RuleViolation> {
     use crate::parser::CParser;
     use crate::rules::RuleRegistry;
     use crate::settings::{AnalysisSettings, SettingsConfig};
@@ -550,8 +562,7 @@ fn fixture_findings(
         .get_rule(rule_id)
         .unwrap_or_else(|| panic!("Rule {} not found in registry", rule_id));
 
-    let test_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative_path);
-    let raw = fs::read_to_string(&test_path)
+    let raw = fs::read_to_string(test_path)
         .unwrap_or_else(|e| panic!("Failed to read {:?}: {}", test_path, e));
 
     let mut config = SettingsConfig {
@@ -570,7 +581,7 @@ fn fixture_findings(
     let settings = AnalysisSettings::resolve(&config)
         .unwrap_or_else(|e| panic!("{:?}: bad Settings: line: {}", test_path, e));
 
-    let mut context = crate::analyze::prescan::prescan_single_file(&test_path, settings.facts)
+    let mut context = crate::analyze::prescan::prescan_single_file(test_path, settings.facts)
         .unwrap_or_else(|e| panic!("Failed to prescan {:?}: {}", test_path, e));
     context.settings = std::sync::Arc::new(settings);
     rule.set_analysis_settings(&context.settings);
@@ -582,7 +593,7 @@ fn fixture_findings(
         .parse_source(&raw)
         .unwrap_or_else(|e| panic!("Failed to parse {:?}: {}", test_path, e));
     let analysis = crate::analyze::build_file_analysis(
-        &test_path,
+        test_path,
         &tree.root_node(),
         &source,
         &context,
@@ -797,5 +808,53 @@ fn fixtures_report_the_same_findings_every_run() {
                 rule_id, relative_path, run
             );
         }
+    }
+}
+
+/// The work EXP34-C and EXP33-C do on one function of N guarded copies of a
+/// pointer, counted through the whole pipeline (prescan, analysis, rule) at
+/// N and 2N rather than timed. Each function's bodies are walked once per
+/// name and its scopes and statements read once, so doubling N doubles the
+/// reads; a rule that went back to asking per site would read the body
+/// again at every site and quadruple them.
+#[test]
+fn guarded_copies_cost_each_rule_work_per_function_not_per_site() {
+    use crate::analyze::dataflow::take_lookup_counts;
+    use crate::utility::cert_c::ast_utils::take_scope_statement_reads;
+    use crate::utility::cert_c::last_write::take_body_walks;
+
+    let work = |rule_id: &str, n: usize| {
+        let mut code = String::from(
+            "struct o { int x; };\nint check(struct o *);\nvoid init(int c, struct o *q) {\n    struct o *s = 0;\n",
+        );
+        for i in 0..n {
+            code.push_str(&format!("    if (c == {i}) {{ s = q; check(s); }}\n"));
+        }
+        code.push_str("    check(s);\n    s->x = c;\n}\n");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("guarded_copies.c");
+        fs::write(&path, code).unwrap();
+        take_body_walks();
+        take_scope_statement_reads();
+        take_lookup_counts();
+        findings_at(rule_id, &path, "default", "");
+        (
+            take_body_walks(),
+            take_scope_statement_reads(),
+            take_lookup_counts().1,
+        )
+    };
+    for rule_id in ["EXP34-C", "EXP33-C"] {
+        let small = work(rule_id, 150);
+        let large = work(rule_id, 300);
+        assert!(
+            large.0 <= small.0 + 2,
+            "[{rule_id}] body walks grew with the sites: {small:?} -> {large:?}"
+        );
+        assert!(
+            large.1 <= small.1 * 5 / 2 && large.2 <= small.2 * 5 / 2,
+            "[{rule_id}] scope or statement reads grew faster than the function: \
+             {small:?} -> {large:?}"
+        );
     }
 }

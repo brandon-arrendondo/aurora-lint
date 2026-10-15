@@ -65,6 +65,8 @@ fn enclosing_function_body<'t>(node: &Node<'t>) -> Option<Node<'t>> {
 /// is). Of two writes starting at the same byte, the outer one.
 pub fn last_write_before<'t>(name: &str, site: &Node<'t>, source: &str) -> Option<Node<'t>> {
     let body = enclosing_function_body(site)?;
+    #[cfg(test)]
+    BODY_WALKS.with(|n| n.set(n.get() + 1));
     let mut last = None;
     collect_last_write(&body, name, site.start_byte(), source, &mut last);
     last
@@ -156,8 +158,15 @@ fn write_spans(body: &Node, name: &str, source: &str) -> Vec<(usize, usize)> {
 
 #[cfg(test)]
 thread_local! {
-    /// How many function bodies [`LastWrites`] walked on this thread.
+    /// How many function bodies [`last_write_before`] and [`LastWrites`]
+    /// walked on this thread.
     static BODY_WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Function bodies walked on this thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_body_walks() -> usize {
+    BODY_WALKS.with(|n| n.replace(0))
 }
 
 #[cfg(test)]
@@ -200,16 +209,20 @@ mod tests {
         identifiers(tree.root_node(), "s", &code, &mut sites);
         assert!(sites.len() > 1_000);
 
-        BODY_WALKS.with(|n| n.set(0));
+        let walked: Vec<_> = sites
+            .iter()
+            .map(|site| last_write_before("s", site, &code).map(|w| w.start_byte()))
+            .collect();
+        take_body_walks();
         let mut index = LastWrites::default();
-        for site in &sites {
+        for (site, expected) in sites.iter().zip(walked) {
             assert_eq!(
                 index.start_before("s", site, &code),
-                last_write_before("s", site, &code).map(|w| w.start_byte()),
+                expected,
                 "at byte {}",
                 site.start_byte()
             );
         }
-        assert_eq!(BODY_WALKS.with(|n| n.get()), 1);
+        assert_eq!(take_body_walks(), 1);
     }
 }

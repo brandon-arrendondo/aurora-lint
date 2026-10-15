@@ -409,6 +409,8 @@ impl<'a> ScopeDeclarations<'a> {
         }
         #[cfg(test)]
         SCOPE_DECLARATION_READS.with(|n| n.set(n.get() + 1));
+        #[cfg(test)]
+        SCOPE_STATEMENT_READS.with(|n| n.set(n.get() + scope.named_child_count()));
         let mut declarations = Vec::new();
         collect_declarations_transparent_to_preproc(scope, &mut declarations);
         let declarations: std::rc::Rc<[Node<'a>]> = declarations.into();
@@ -466,6 +468,16 @@ thread_local! {
     /// How many scopes [`ScopeDeclarations`] read the declarations of on
     /// this thread.
     static SCOPE_DECLARATION_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many statements those scopes held between them.
+    static SCOPE_STATEMENT_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Statements [`ScopeDeclarations`] read on this thread since the last
+/// call: a cache per function reads each scope's once, and a resolution per
+/// identifier reads every enclosing scope's again.
+#[cfg(test)]
+pub(crate) fn take_scope_statement_reads() -> usize {
+    SCOPE_STATEMENT_READS.with(|n| n.replace(0))
 }
 
 /// The innermost-first scope chain of `path` (with `root` itself when it is
