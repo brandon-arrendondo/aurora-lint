@@ -311,11 +311,18 @@ kind); <code class="docutils literal notranslate"><span class="pre">ilp32</span>
 <code class="docutils literal notranslate"><span class="pre">iso</span></code> a limit such as <code class="docutils literal notranslate"><span class="pre">INT_MAX</span></code> is unknown, a value is proven to fit a type
 only within the guaranteed range, and a defect that occurs on some conforming
 width is reported. Undeclared, the default preset assumes <code class="docutils literal notranslate"><span class="pre">lp64</span></code> on a hosted
-target; strict and pedantic take <code class="docutils literal notranslate"><span class="pre">iso</span></code>, and pedantic says it is missing.</p>
+target; strict and pedantic take <code class="docutils literal notranslate"><span class="pre">iso</span></code>, and pedantic says it is missing.
+Declaring a single integer fact (<code class="docutils literal notranslate"><span class="pre">--set</span> <span class="pre">int_bits=16</span></code>) does not declare a
+data model: under the default preset the fact overrides one key of the
+assumed <code class="docutils literal notranslate"><span class="pre">lp64</span></code> bundle and the model’s source still reads <code class="docutils literal notranslate"><span class="pre">assumed</span> <span class="pre">by</span> <span class="pre">the</span>
+<span class="pre">preset</span></code>, and under pedantic the other widths stay at ISO C’s minimums and
+the scan still warns that no data model is declared.</p>
 <ul class="simple">
 <li><p>Set with <code class="docutils literal notranslate"><span class="pre">[environment]</span> <span class="pre">data_model</span></code> or <code class="docutils literal notranslate"><span class="pre">--data-model</span></code></p></li>
 <li><p>Part of the settings hash when not <code class="docutils literal notranslate"><span class="pre">iso</span></code>, with <code class="docutils literal notranslate"><span class="pre">preset</span></code> as its source
-when the preset assumed it</p></li>
+when the preset assumed it. So an assumed <code class="docutils literal notranslate"><span class="pre">lp64</span></code> and a declared one have
+different settings hashes although they credit the same widths and give
+the same findings: the hash records who chose the model</p></li>
 <li><p>Basis: C11 5.2.4.2.1 (minimum magnitudes), 6.3.1.1 (rank order) and
 7.20.1.1 (exact-width types); integer widths are otherwise
 implementation-defined.</p></li>

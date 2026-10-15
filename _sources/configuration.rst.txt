@@ -98,7 +98,10 @@ A preset may decline a rule rather than run a reading it cannot make sound
 (``not_enforced`` in :doc:`rule-presets`). A scan under that preset does not
 run the rule, whatever the manifest enables: its summary lists each declined
 rule with the reason, its SARIF settings carry them, and ``--check-config``
-names them. A rule every preset declines is a decided cut, not a preset's
+names them. The summary and ``--check-config`` list only the declined rules the
+manifest enables. The SARIF settings (``declined`` and the hashed
+``declined_rules``) list every rule the policy declines, enabled or not, so
+the settings hash depends on the policy and not on the manifest. A rule every preset declines is a decided cut, not a preset's
 choice, and still runs until it is removed. Benchmark precision and recall are
 scored against the strict reading. ``--policy`` changes only the
 policy axis: ``--policy pedantic`` alone keeps the default preset's hosted
@@ -398,6 +401,7 @@ resolves to exactly the facts of running without it (or with the same
     $ $EDITOR aurora.toml                    # e.g. uncomment char_signed
     $ aurora-lint --check-config -m aurora.toml
     configuration ok
+    data model: lp64 (config)
     $ aurora-lint -m aurora.toml src/
 
 A width below its ISO minimum, a width that is not a whole number of 8-bit

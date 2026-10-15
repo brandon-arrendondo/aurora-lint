@@ -214,10 +214,17 @@ Toolchain
    only within the guaranteed range, and a defect that occurs on some conforming
    width is reported. Undeclared, the default preset assumes ``lp64`` on a hosted
    target; strict and pedantic take ``iso``, and pedantic says it is missing.
+   Declaring a single integer fact (``--set int_bits=16``) does not declare a
+   data model: under the default preset the fact overrides one key of the
+   assumed ``lp64`` bundle and the model's source still reads ``assumed by the
+   preset``, and under pedantic the other widths stay at ISO C's minimums and
+   the scan still warns that no data model is declared.
 
    - Set with ``[environment] data_model`` or ``--data-model``
    - Part of the settings hash when not ``iso``, with ``preset`` as its source
-     when the preset assumed it
+     when the preset assumed it. So an assumed ``lp64`` and a declared one have
+     different settings hashes although they credit the same widths and give
+     the same findings: the hash records who chose the model
    - Basis: C11 5.2.4.2.1 (minimum magnitudes), 6.3.1.1 (rank order) and
      7.20.1.1 (exact-width types); integer widths are otherwise
      implementation-defined.

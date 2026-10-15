@@ -197,7 +197,10 @@ and where it came from.</p>
 (<code class="docutils literal notranslate"><span class="pre">not_enforced</span></code> in <a class="reference internal" href="rule-presets.html"><span class="doc">Rule readings by preset</span></a>). A scan under that preset does not
 run the rule, whatever the manifest enables: its summary lists each declined
 rule with the reason, its SARIF settings carry them, and <code class="docutils literal notranslate"><span class="pre">--check-config</span></code>
-names them. A rule every preset declines is a decided cut, not a preset’s
+names them. The summary and <code class="docutils literal notranslate"><span class="pre">--check-config</span></code> list only the declined rules the
+manifest enables. The SARIF settings (<code class="docutils literal notranslate"><span class="pre">declined</span></code> and the hashed
+<code class="docutils literal notranslate"><span class="pre">declined_rules</span></code>) list every rule the policy declines, enabled or not, so
+the settings hash depends on the policy and not on the manifest. A rule every preset declines is a decided cut, not a preset’s
 choice, and still runs until it is removed. Benchmark precision and recall are
 scored against the strict reading. <code class="docutils literal notranslate"><span class="pre">--policy</span></code> changes only the
 policy axis: <code class="docutils literal notranslate"><span class="pre">--policy</span> <span class="pre">pedantic</span></code> alone keeps the default preset’s hosted
@@ -494,6 +497,7 @@ resolves to exactly the facts of running without it (or with the same
 <span class="gp">$ </span><span class="nv">$EDITOR</span><span class="w"> </span>aurora.toml<span class="w">                    </span><span class="c1"># e.g. uncomment char_signed</span>
 <span class="gp">$ </span>aurora-lint<span class="w"> </span>--check-config<span class="w"> </span>-m<span class="w"> </span>aurora.toml
 <span class="go">configuration ok</span>
+<span class="go">data model: lp64 (config)</span>
 <span class="gp">$ </span>aurora-lint<span class="w"> </span>-m<span class="w"> </span>aurora.toml<span class="w"> </span>src/
 </pre></div>
 </div>
