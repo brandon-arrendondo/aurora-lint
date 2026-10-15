@@ -638,7 +638,7 @@ The rules removed so far:
 - **FIO51-C** (removed in v0.7.0, not a CERT C guideline (C++ id)): CERT C has no FIO51-C; it is CERT C++'s FIO51-CPP. FIO42-C reports the same file left open. Now covered by FIO42-C.
 - **MSC42-C** (removed in v0.7.0, moved to CWE ruleset): MSC42-C is not a CERT C identifier; the weak-cipher check is unchanged. Now reported as CWE-327 in the CWE ruleset.
 - **POS55-C** (removed in v0.7.0, moved to CWE ruleset): CERT C never published a POS55-C; the socket-ordering check is unchanged. Now reported as CWE-666 in the CWE ruleset.
-- **WIN05-C** (removed in v0.7.0, moved to CWE ruleset): CERT C never published a WIN05-C; the check is unchanged. Now reported as CWE-428 in the CWE ruleset.
+- **WIN05-C** (removed in v0.7.0, moved to CWE ruleset): CERT C never published a WIN05-C; its unquoted CreateProcess path check is unchanged, and its registry check now reports only a write under HKEY_LOCAL_MACHINE or HKEY_CLASSES_ROOT, as CWE-272. Now reported as CWE-428 in the CWE ruleset.
 
 .. REMOVED-RULES:END
 
