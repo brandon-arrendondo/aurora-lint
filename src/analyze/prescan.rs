@@ -6743,6 +6743,12 @@ fn collect_from_struct_specifier(
     }
 }
 
+/// The key a struct's shape table files when the struct has an anonymous union
+/// member with no name of its own ([`file_guarded_and_nested_member_shapes`]):
+/// that union's members are filed as the struct's own, so without it nothing
+/// says that two of them share storage.
+pub(crate) const ANONYMOUS_UNION_KEY: &str = "(union)";
+
 /// File the member shapes `extract_struct_fields` does not reach, in `shapes`
 /// only -- `struct_field_types` and what reads it stay as they were:
 ///
@@ -6757,6 +6763,12 @@ fn collect_from_struct_specifier(
 ///   replaces the owner (a later definition, the file's own over the
 ///   project's) replaces its nested members with it -- nothing of another
 ///   definition's `sme` can survive under a definition that has none.
+///
+/// * an anonymous union with no name of its own, whose members are filed as
+///   the owner's, also files [`ANONYMOUS_UNION_KEY`] at its level (`"(union)"`
+///   or `"sme.(union)"`), so a reader can tell that two of the owner's
+///   members may share storage. Neither a field name nor a path contains a
+///   `(`, so the key collides with neither.
 ///
 /// A member whose declarations disagree between the arms of a preprocessor
 /// conditional gets the shape `"?"`, which says nothing about the member: the
@@ -6806,6 +6818,12 @@ fn file_member_paths(body: &Node, source: &str, prefix: &str, table: &mut HashMa
         } else if let Some(inner) = find_anonymous_inner_body(&decl) {
             // An anonymous member with no name of its own: its members are
             // the enclosing struct's.
+            if inner
+                .parent()
+                .is_some_and(|s| s.kind() == "union_specifier")
+            {
+                table.insert(format!("{prefix}{ANONYMOUS_UNION_KEY}"), "?".to_string());
+            }
             file_member_paths(&inner, source, prefix, table);
         }
     }

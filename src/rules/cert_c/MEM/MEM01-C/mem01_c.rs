@@ -32,6 +32,7 @@ use crate::analyze::context::{IncludeClosure, ProjectContext, VisibleTypes};
 use crate::analyze::dataflow::find_node_at_range;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::points_to::{lvalue_of, LValue};
+use crate::analyze::prescan::ANONYMOUS_UNION_KEY;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::call_roles;
@@ -1463,8 +1464,9 @@ fn may_share_storage(param_type: &str, prefix: &[&str], types: &VisibleTypes) ->
 
 /// The field table of the struct a type spelling names (`struct conn`,
 /// `const conn_t *`, or a typedef of a struct), or `None` for a union, an
-/// aggregate with no name of its own and a type no table knows. The tables
-/// file only structs, never a union.
+/// aggregate with no name of its own, a struct with an anonymous union member
+/// (whose members the table files as the struct's own) and a type no table
+/// knows. The tables file only structs, never a union.
 fn struct_fields<'t>(
     spelling: &str,
     types: &'t VisibleTypes,
@@ -1481,6 +1483,13 @@ fn struct_fields<'t>(
             .map_or(*name, String::as_str),
         _ => return None,
     };
+    let has_anonymous_union = types
+        .struct_field_shapes
+        .get(name)
+        .is_some_and(|shapes| shapes.contains_key(ANONYMOUS_UNION_KEY));
+    if has_anonymous_union {
+        return None;
+    }
     types.struct_field_types.get(name)
 }
 

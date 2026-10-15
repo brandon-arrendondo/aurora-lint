@@ -1038,7 +1038,9 @@ pub struct ProjectContext {
     /// under the dotted path `"sme.ie"` -- so whatever replaces the struct
     /// replaces its nested members with it. A member (or path) declared
     /// differently in the arms of a conditional has the shape `"?"`: no shape
-    /// is known, and a reader must not pick an arm.
+    /// is known, and a reader must not pick an arm. A struct with an
+    /// anonymous union member of no name of its own files the key
+    /// `"(union)"` too, since nothing else says those members share storage.
     #[serde(default)]
     pub struct_field_shapes: Arc<HashMap<String, HashMap<String, String>>>,
     /// Struct/union typedef aliases: `alias name -> the tag name its fields
@@ -1490,7 +1492,7 @@ pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
 /// to a serialized field of [`ProjectContext`] (or of a type it holds), or to
 /// what such a field means: the cache header carries it, so an old cache is
 /// refused instead of misread.
-const PRESCAN_CACHE_FORMAT: u32 = 55;
+const PRESCAN_CACHE_FORMAT: u32 = 56;
 
 /// The header a prescan cache file starts with: a magic, the layout version
 /// and the aurora-lint version that wrote it.
