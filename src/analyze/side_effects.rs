@@ -360,6 +360,7 @@ pub fn collect_direct_effects(
         typed: typedef_declarations(func, source),
         arms,
         scope,
+        declarations: Default::default(),
         out: DirectEffects::default(),
     };
     if let Some(body) = func.child_by_field_name("body") {
@@ -518,6 +519,9 @@ struct Collector<'s, 't> {
     typed: HashMap<String, Option<(String, isize)>>,
     arms: &'s HashMap<String, Vec<MacroArm>>,
     scope: &'s FileScope<'t>,
+    /// Each block's declarations, read once for every identifier
+    /// [`Collector::bound`] resolves in this function.
+    declarations: ast_utils::ScopeDeclarations<'t>,
     out: DirectEffects,
 }
 
@@ -914,12 +918,10 @@ impl<'t> Collector<'_, 't> {
         // as it is long. From the root, not the function, so a function
         // nested in a block still sees that block's earlier declarations,
         // as the climb does.
-        if let Some(decl) = ast_utils::find_enclosing_declaration_for_identifier_in(
-            &self.root,
-            ident,
-            name,
-            self.source,
-        ) {
+        if let Some(decl) = self
+            .declarations
+            .find_enclosing_declaration_for_identifier_in(&self.root, ident, name, self.source)
+        {
             return Some(Bound::Local(decl));
         }
         // `collect_param_names` leaves a function-pointer parameter

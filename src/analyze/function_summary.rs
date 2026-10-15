@@ -1523,6 +1523,10 @@ fn analyze_function(
     registry: &RegistryFileFacts,
 ) -> FunctionSummary {
     LOCAL_COPIES.with(|c| c.borrow_mut().clear());
+    // Each block's declarations, read once for every identifier this
+    // function's facts resolve: a long body's resolutions otherwise read its
+    // statements again each time.
+    let declarations = crate::utility::cert_c::ast_utils::ScopeDeclarations::default();
     // Internal linkage: `static` storage class at file scope. A direct-child
     // scan, not a text one, so a `static` in the body or in a parameter type
     // cannot be mistaken for the function's own -- a `function_definition`
@@ -1681,6 +1685,7 @@ fn analyze_function(
             body_text,
             &params,
             function_macros,
+            &declarations,
             &mut summary,
         );
         credit_out_param_facts(func_node, source, &params, is_void_return, &mut summary);
@@ -1734,8 +1739,22 @@ fn analyze_function(
             summary.return_edge_arms.push(arms.clone());
         }
         credit_clears_params(&sweep.calls, source, &params, clearing_names, &mut summary);
-        credit_credential_facts(func_node, &body, &sweep.calls, source, &mut summary);
-        credit_registry_write_params(func_node, &sweep.calls, source, registry, &mut summary);
+        credit_credential_facts(
+            func_node,
+            &body,
+            &sweep.calls,
+            source,
+            &declarations,
+            &mut summary,
+        );
+        credit_registry_write_params(
+            func_node,
+            &sweep.calls,
+            source,
+            registry,
+            &declarations,
+            &mut summary,
+        );
         summary.definitions = vec![DefinitionFacts::own(&summary, arms)];
 
         // Compute return value range for integer-returning functions (only when VRA is needed)
@@ -5521,11 +5540,12 @@ thread_local! {
 /// own macros in force at the call: an alias (`#define APP_ACCESS
 /// KEY_WRITE`) or an object-like replacement list (`#define M (KEY_READ |
 /// KEY_SET_VALUE)`), each alternative an `#if` arm leaves counting.
-fn credit_registry_write_params(
-    func_node: &Node,
-    calls: &[Node],
+fn credit_registry_write_params<'a>(
+    func_node: &Node<'a>,
+    calls: &[Node<'a>],
     source: &str,
     facts: &RegistryFileFacts,
+    declarations: &crate::utility::cert_c::ast_utils::ScopeDeclarations<'a>,
     summary: &mut FunctionSummary,
 ) {
     use crate::analyze::noreturn::{
@@ -5555,7 +5575,7 @@ fn credit_registry_write_params(
             let root = crate::utility::cert_c::ast_utils::tree_root(func_node);
             let keys = parameter_identifiers(func_node)
                 .iter()
-                .map(|id| id.map(|id| object_key(&root, &id, source)))
+                .map(|id| id.map(|id| object_key(&root, &id, source, declarations)))
                 .collect();
             (root, keys)
         });
@@ -5596,7 +5616,7 @@ fn credit_registry_write_params(
         else {
             continue;
         };
-        let arg_key = object_key(root, &root_arg, source);
+        let arg_key = object_key(root, &root_arg, source, declarations);
         if let Some(idx) = param_keys
             .iter()
             .position(|p| p.as_deref() == Some(arg_key.as_str()))
@@ -5626,11 +5646,12 @@ fn credit_registry_write_params(
 /// - `protects_process_memory`, for an unconditionally reached zero
 ///   `RLIMIT_CORE` or `mlockall`;
 /// - `unconditional_callees`, and for `main` its `main_call_sequence`.
-fn credit_credential_facts(
-    func_node: &Node,
-    body: &Node,
-    calls: &[Node],
+fn credit_credential_facts<'a>(
+    func_node: &Node<'a>,
+    body: &Node<'a>,
+    calls: &[Node<'a>],
     source: &str,
+    declarations: &crate::utility::cert_c::ast_utils::ScopeDeclarations<'a>,
     summary: &mut FunctionSummary,
 ) {
     use crate::utility::cert_c::credential_sinks;
@@ -5650,7 +5671,7 @@ fn credit_credential_facts(
     let root = crate::utility::cert_c::ast_utils::tree_root(func_node);
     let param_keys: Vec<Option<String>> = parameter_identifiers(func_node)
         .iter()
-        .map(|id| id.map(|id| object_key(&root, &id, source)))
+        .map(|id| id.map(|id| object_key(&root, &id, source, declarations)))
         .collect();
     // Jump facts once per function. A function the parser nested inside this
     // one would make a call's innermost function another node, so that case
@@ -5684,7 +5705,7 @@ fn credit_credential_facts(
         // block a return names.
         let arg_object = |i: usize| -> Option<String> {
             let a = init_state::strip_arg_casts(args.get(i)?);
-            (a.kind() == "identifier").then(|| object_key(&root, &a, source))
+            (a.kind() == "identifier").then(|| object_key(&root, &a, source, declarations))
         };
 
         if credential_sinks::has_conditional_sink_row(&name) {
@@ -5746,7 +5767,7 @@ fn credit_credential_facts(
             .insert(*idx, vec![callees.clone()]);
     }
 
-    credit_returns_locked(&root, body, source, &locks, &handed, summary);
+    credit_returns_locked(&root, body, source, &locks, &handed, declarations, summary);
 }
 
 /// `returns_locked`: every block the body allocates and returns is
@@ -5757,30 +5778,32 @@ fn credit_credential_facts(
 /// only another function's summary can settle -- a project allocator, a
 /// project lock wrapper -- becomes a clause of
 /// `returns_locked_obligations`.
-fn credit_returns_locked(
-    root: &Node,
-    body: &Node,
+fn credit_returns_locked<'a>(
+    root: &Node<'a>,
+    body: &Node<'a>,
     source: &str,
     locks: &[(String, Node)],
     handed: &[(String, Node, String, usize)],
+    declarations: &crate::utility::cert_c::ast_utils::ScopeDeclarations<'a>,
     summary: &mut FunctionSummary,
 ) {
     use crate::utility::cert_c::credential_sinks;
     use lang_parsing_substrate::query;
 
     let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-    let allocations: Vec<(String, Node, String, bool)> = plain_assignments(root, body, source)
-        .into_iter()
-        .filter_map(|(target, value)| {
-            let v = init_state::strip_arg_casts(&value);
-            if v.kind() != "call_expression" {
-                return None;
-            }
-            let callee = v.child_by_field_name("function").map(|f| text(&f))?;
-            let locked = credential_sinks::platform_allocation_is_locked(&callee) == Some(true);
-            Some((target, v, callee, locked))
-        })
-        .collect();
+    let allocations: Vec<(String, Node, String, bool)> =
+        plain_assignments(root, body, source, declarations)
+            .into_iter()
+            .filter_map(|(target, value)| {
+                let v = init_state::strip_arg_casts(&value);
+                if v.kind() != "call_expression" {
+                    return None;
+                }
+                let callee = v.child_by_field_name("function").map(|f| text(&f))?;
+                let locked = credential_sinks::platform_allocation_is_locked(&callee) == Some(true);
+                Some((target, v, callee, locked))
+            })
+            .collect();
     let mut obligations: Vec<Vec<(String, Option<usize>)>> = Vec::new();
     let mut returned = 0usize;
     for r in query::find_descendants_of_kind(*body, "return_statement") {
@@ -5808,7 +5831,7 @@ fn credit_returns_locked(
                 }
             }
             "identifier" => {
-                let t = object_key(root, &e, source);
+                let t = object_key(root, &e, source, declarations);
                 let reaching: Vec<&(String, Node, String, bool)> = allocations
                     .iter()
                     .filter(|(var, a, _, _)| *var == t && a.start_byte() < r.start_byte())
@@ -5888,11 +5911,14 @@ fn parameter_identifiers<'a>(func_node: &Node<'a>) -> Vec<Option<Node<'a>>> {
 /// declarator's position (ADR-0006: a shadowing inner `p` is another object),
 /// or the spelling when nothing in scope declares it. `root` is the tree's
 /// root, which the resolver descends from instead of climbing per identifier.
-fn object_key<'a>(root: &Node<'a>, ident: &Node<'a>, source: &str) -> String {
+fn object_key<'a>(
+    root: &Node<'a>,
+    ident: &Node<'a>,
+    source: &str,
+    declarations: &crate::utility::cert_c::ast_utils::ScopeDeclarations<'a>,
+) -> String {
     let name = ident.utf8_text(source.as_bytes()).unwrap_or("");
-    match crate::utility::cert_c::ast_utils::resolve_identifier_declarator_in(
-        root, ident, name, source,
-    ) {
+    match declarations.resolve_identifier_declarator_in(root, ident, name, source) {
         Some((_, declarator)) => format!("@{}", declarator.start_byte()),
         None => name.to_string(),
     }
@@ -5904,6 +5930,7 @@ fn plain_assignments<'a>(
     root: &Node<'a>,
     body: &Node<'a>,
     source: &str,
+    declarations: &crate::utility::cert_c::ast_utils::ScopeDeclarations<'a>,
 ) -> Vec<(String, Node<'a>)> {
     use lang_parsing_substrate::query;
 
@@ -5919,7 +5946,7 @@ fn plain_assignments<'a>(
             a.child_by_field_name("right"),
         ) {
             if l.kind() == "identifier" {
-                out.push((object_key(root, &l, source), r));
+                out.push((object_key(root, &l, source, declarations), r));
             }
         }
     }
@@ -5933,7 +5960,7 @@ fn plain_assignments<'a>(
             })
             .or_else(|| (decl.kind() == "identifier").then_some(decl));
             if let Some(ident) = ident {
-                out.push((object_key(root, &ident, source), v));
+                out.push((object_key(root, &ident, source, declarations), v));
             }
         }
     }
@@ -6077,12 +6104,13 @@ pub fn sets_zero_core_limit(call: &Node, args: &[Node], source: &str) -> bool {
 /// `frees_param_pointees` for the `void **` "safe free" shape), the same
 /// classification `strip_free_argument` already gives a literal `free()`
 /// argument.
-fn credit_frees_one_arg(
-    call: &Node,
-    arg: Node,
-    body: &Node,
+fn credit_frees_one_arg<'a>(
+    call: &Node<'a>,
+    arg: Node<'a>,
+    body: &Node<'a>,
     source: &str,
     params: &[String],
+    declarations: &crate::utility::cert_c::ast_utils::ScopeDeclarations<'a>,
     summary: &mut FunctionSummary,
 ) {
     let Some((target, through_pointee)) = strip_free_argument(arg) else {
@@ -6103,7 +6131,7 @@ fn credit_frees_one_arg(
         // hostap's traced `os_free` frees `a = (struct os_alloc_trace *) ptr
         // - 1`, the header its `os_malloc` returned the block past.
         None if !through_pointee => {
-            match param_behind_local(call, target, body, source, params, true) {
+            match param_behind_local(call, target, body, source, params, true, declarations) {
                 Some(idx) => idx,
                 None => return,
             }
@@ -6172,13 +6200,14 @@ fn credit_param_free(
 /// local-declaration branch of `resolve_identifier_binding`), never by
 /// spelling alone, so a shadowing local of the same name in an inner block is
 /// another object (ADR-0006).
-fn param_behind_local(
-    use_site: &Node,
-    local: Node,
-    body: &Node,
+fn param_behind_local<'a>(
+    use_site: &Node<'a>,
+    local: Node<'a>,
+    body: &Node<'a>,
     source: &str,
     params: &[String],
     allow_offset: bool,
+    declarations: &crate::utility::cert_c::ast_utils::ScopeDeclarations<'a>,
 ) -> Option<usize> {
     use crate::utility::cert_c::ast_utils;
     let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
@@ -6189,7 +6218,7 @@ fn param_behind_local(
     // climbing lookup does.
     let root = ast_utils::tree_root(body);
     let decl =
-        ast_utils::find_enclosing_declaration_for_identifier_in(&root, &local, &name, source)?;
+        declarations.find_enclosing_declaration_for_identifier_in(&root, &local, &name, source)?;
     let key = (decl.id(), name.clone(), body.id(), allow_offset);
     let copy = match LOCAL_COPIES.with(|c| c.borrow().get(&key).copied()) {
         Some(known) => known,
@@ -6359,12 +6388,13 @@ fn param_at_offset(
 /// wrappers. What a callee's NAME looks like is never evidence: a callee
 /// whose body the scan does not hold frees nothing that can be shown, and a
 /// project whose deallocator is such a callee declares it.
-fn credit_frees_params(
-    calls: &[Node],
-    body: &Node,
+fn credit_frees_params<'a>(
+    calls: &[Node<'a>],
+    body: &Node<'a>,
     source: &str,
     params: &[String],
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    declarations: &crate::utility::cert_c::ast_utils::ScopeDeclarations<'a>,
     summary: &mut FunctionSummary,
 ) {
     use crate::analyze::macro_expand::{macro_frees_param_indices, Live};
@@ -6406,7 +6436,7 @@ fn credit_frees_params(
                 _ => real.get(k).copied(),
             };
             if let Some(arg) = arg {
-                credit_frees_one_arg(&call, arg, body, source, params, summary);
+                credit_frees_one_arg(&call, arg, body, source, params, declarations, summary);
             }
             continue;
         }
@@ -6416,7 +6446,7 @@ fn credit_frees_params(
         if !macro_idxs.is_empty() {
             for idx in macro_idxs {
                 if let Some(&arg) = real.get(idx) {
-                    credit_frees_one_arg(&call, arg, body, source, params, summary);
+                    credit_frees_one_arg(&call, arg, body, source, params, declarations, summary);
                 }
             }
             continue;
@@ -6475,20 +6505,25 @@ fn returned_names(body: &Node, source: &str) -> HashSet<String> {
 /// chain this pass does not follow. That arm needs no credit of its own --
 /// the same function's `eap_methods = method` arm already establishes the
 /// MAY fact, which is the polarity `stores_params` is built on.
-fn destination_outlives_call(
-    left: &Node,
+fn destination_outlives_call<'a>(
+    left: &Node<'a>,
     source: &str,
     params: &[String],
     returned: &HashSet<String>,
+    tree: &Node<'a>,
+    declarations: &crate::utility::cert_c::ast_utils::ScopeDeclarations<'a>,
 ) -> bool {
-    use crate::utility::cert_c::ast_utils::{self, IdentifierBinding};
+    use crate::utility::cert_c::ast_utils::IdentifierBinding;
 
-    fn is_file_scope(node: &Node, name: &str, source: &str) -> bool {
+    // Resolved from the tree's root, not by a `parent()` climb per
+    // assignment: a climb costs the depth at each step and reads every
+    // sibling on the way.
+    let is_file_scope = |node: &Node<'a>, name: &str| {
         matches!(
-            ast_utils::resolve_identifier_binding(node, name, source),
+            declarations.resolve_identifier_binding_in(tree, node, name, source),
             Some(IdentifierBinding::Global(_))
         )
-    }
+    };
 
     let Some(root) = deref_write_root(left, false) else {
         // No dereference was crossed, so nothing the caller owns was written
@@ -6498,7 +6533,7 @@ fn destination_outlives_call(
             return false;
         }
         let name = left.utf8_text(source.as_bytes()).unwrap_or("");
-        return is_file_scope(left, name, source);
+        return is_file_scope(left, name);
     };
 
     let name = root.utf8_text(source.as_bytes()).unwrap_or("");
@@ -6507,7 +6542,7 @@ fn destination_outlives_call(
     }
     params.iter().any(|p| !p.is_empty() && p == name)
         || returned.contains(name)
-        || is_file_scope(&root, name, source)
+        || is_file_scope(&root, name)
 }
 
 /// Credit `summary.stores_params` for every assignment in the body that puts
@@ -6518,11 +6553,12 @@ fn destination_outlives_call(
 /// The evidence is the callee's own body and nothing else: no name shape
 /// participates, because the wrong default here trades a large false-positive
 /// win for silently dropped leaks.
-fn credit_stores_params(
-    sweep: &BodySweep,
-    body: &Node,
+fn credit_stores_params<'a>(
+    sweep: &BodySweep<'a>,
+    body: &Node<'a>,
     source: &str,
     params: &[String],
+    declarations: &crate::utility::cert_c::ast_utils::ScopeDeclarations<'a>,
     summary: &mut FunctionSummary,
 ) {
     use crate::utility::cert_c::ast_utils;
@@ -6532,6 +6568,7 @@ fn credit_stores_params(
     }
 
     let mut returned: Option<HashSet<String>> = None;
+    let tree = ast_utils::tree_root(body);
 
     for assign in &sweep.assignments {
         // `p += n` adjusts a value rather than storing one.
@@ -6575,7 +6612,7 @@ fn credit_stores_params(
             continue;
         }
         let returned = returned.get_or_insert_with(|| returned_names(body, source));
-        if destination_outlives_call(&left, source, params, returned) {
+        if destination_outlives_call(&left, source, params, returned, &tree, declarations) {
             summary.stores_params.insert(idx);
         }
     }
@@ -6615,11 +6652,12 @@ fn object_root_name<'a>(expr: &Node<'a>, source: &'a str) -> Option<&'a str> {
 /// `destination_outlives_call` is asked with an EMPTY returned set on
 /// purpose: a store INTO the returned object (`obj->self = obj`) is not the
 /// object escaping. Only a parameter-rooted or file-scope destination is.
-fn credit_returned_value_escapes(
-    sweep: &BodySweep,
-    body: &Node,
+fn credit_returned_value_escapes<'a>(
+    sweep: &BodySweep<'a>,
+    body: &Node<'a>,
     source: &str,
     params: &[String],
+    declarations: &crate::utility::cert_c::ast_utils::ScopeDeclarations<'a>,
     summary: &mut FunctionSummary,
 ) {
     use crate::utility::cert_c::ast_utils;
@@ -6629,6 +6667,7 @@ fn credit_returned_value_escapes(
         return;
     }
     let no_returned = HashSet::new();
+    let tree = ast_utils::tree_root(body);
 
     for assign in &sweep.assignments {
         if assign
@@ -6647,7 +6686,7 @@ fn credit_returned_value_escapes(
         if !object_root_name(&right, source).is_some_and(|n| returned.contains(n)) {
             continue;
         }
-        if destination_outlives_call(&left, source, params, &no_returned) {
+        if destination_outlives_call(&left, source, params, &no_returned, &tree, declarations) {
             summary.returned_value_escapes = true;
             break;
         }
@@ -6676,22 +6715,31 @@ fn credit_returned_value_escapes(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn analyze_param_usage(
-    body: &Node,
-    sweep: &BodySweep,
+fn analyze_param_usage<'a>(
+    body: &Node<'a>,
+    sweep: &BodySweep<'a>,
     source: &str,
     body_text: &str,
     params: &[String],
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    declarations: &crate::utility::cert_c::ast_utils::ScopeDeclarations<'a>,
     summary: &mut FunctionSummary,
 ) {
     // Credited for every definition, including one inside a preprocessor
     // conditional: that arm compiles in some configuration, so its facts are
     // facts about the name (ADR-0010), and definitions from different arms
     // meet in `merge_summary_variant` like any other alternates.
-    credit_frees_params(&sweep.calls, body, source, params, function_macros, summary);
-    credit_stores_params(sweep, body, source, params, summary);
-    credit_returned_value_escapes(sweep, body, source, params, summary);
+    credit_frees_params(
+        &sweep.calls,
+        body,
+        source,
+        params,
+        function_macros,
+        declarations,
+        summary,
+    );
+    credit_stores_params(sweep, body, source, params, declarations, summary);
+    credit_returned_value_escapes(sweep, body, source, params, declarations, summary);
 
     // One walk for the whole body, not one per parameter.
     let library_written = library_written_names_in(&sweep.calls, source);
@@ -6803,7 +6851,7 @@ fn analyze_param_usage(
     credit_modifies_params(body, sweep, source, params, &cast_aliases, summary);
 
     // Detect param pass-through: when a parameter is forwarded to a callee
-    collect_param_passthroughs(body, body, source, params, summary);
+    collect_param_passthroughs(body, body, source, params, declarations, summary);
 
     // Detect param forwards into an indirect (function-pointer/field) call
     // this build can never resolve to a specific function.
@@ -7312,11 +7360,12 @@ fn body_matches_alias_null_check(body_text: &str, param_name: &str) -> bool {
 /// compound_statement, threaded through unchanged across the recursion (distinct from `node`,
 /// the recursive traversal cursor) so `is_unconditionally_reached` can be
 /// checked against it at each call site.
-fn collect_param_passthroughs(
-    node: &Node,
-    body: &Node,
+fn collect_param_passthroughs<'a>(
+    node: &Node<'a>,
+    body: &Node<'a>,
     source: &str,
     params: &[String],
+    declarations: &crate::utility::cert_c::ast_utils::ScopeDeclarations<'a>,
     summary: &mut FunctionSummary,
 ) {
     if node.kind() == "call_expression" {
@@ -7347,7 +7396,15 @@ fn collect_param_passthroughs(
                             // bin_clear_free(actx, ...)`).
                             let copy_of = (!params.iter().any(|p| !p.is_empty() && p == arg_text))
                                 .then(|| {
-                                    param_behind_local(node, stripped, body, source, params, false)
+                                    param_behind_local(
+                                        node,
+                                        stripped,
+                                        body,
+                                        source,
+                                        params,
+                                        false,
+                                        declarations,
+                                    )
                                 })
                                 .flatten();
                             for (param_idx, param_name) in params.iter().enumerate() {
@@ -7384,7 +7441,7 @@ fn collect_param_passthroughs(
         if is_real_nested_function_definition(&child, source) {
             continue;
         }
-        collect_param_passthroughs(&child, body, source, params, summary);
+        collect_param_passthroughs(&child, body, source, params, declarations, summary);
     }
 }
 

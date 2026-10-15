@@ -384,10 +384,88 @@ pub fn find_enclosing_declaration_for_identifier_in<'a>(
     name: &str,
     source: &str,
 ) -> Option<Node<'a>> {
-    let Some(path) = ancestors_from_root(root, ident_node) else {
-        return find_enclosing_declaration_for_identifier(ident_node, name, source);
-    };
-    scope_chain_declaration(root, &path, ident_node, name, source)
+    ScopeDeclarations::default()
+        .find_enclosing_declaration_for_identifier_in(root, ident_node, name, source)
+}
+
+/// The declarations directly in each scope, as
+/// [`find_declaration_in_scope_chain`] reads them, collected once per scope
+/// for every identifier resolved through one value. Without it each
+/// resolution reads every statement of every enclosing block again, so
+/// resolving each identifier of a long function is quadratic in its length.
+///
+/// Keyed by node id, so one value serves one tree and must not outlive it.
+/// The `_in` resolvers here give the answers the free functions of the same
+/// name give.
+#[derive(Default)]
+pub struct ScopeDeclarations<'a> {
+    by_scope: std::cell::RefCell<HashMap<usize, std::rc::Rc<[Node<'a>]>>>,
+}
+
+impl<'a> ScopeDeclarations<'a> {
+    fn of(&self, scope: &Node<'a>) -> std::rc::Rc<[Node<'a>]> {
+        if let Some(known) = self.by_scope.borrow().get(&scope.id()) {
+            return known.clone();
+        }
+        #[cfg(test)]
+        SCOPE_DECLARATION_READS.with(|n| n.set(n.get() + 1));
+        let mut declarations = Vec::new();
+        collect_declarations_transparent_to_preproc(scope, &mut declarations);
+        let declarations: std::rc::Rc<[Node<'a>]> = declarations.into();
+        self.by_scope
+            .borrow_mut()
+            .insert(scope.id(), declarations.clone());
+        declarations
+    }
+
+    /// [`find_enclosing_declaration_for_identifier_in`].
+    pub fn find_enclosing_declaration_for_identifier_in(
+        &self,
+        root: &Node<'a>,
+        ident_node: &Node<'a>,
+        name: &str,
+        source: &str,
+    ) -> Option<Node<'a>> {
+        let Some(path) = ancestors_from_root(root, ident_node) else {
+            return find_enclosing_declaration_for_identifier(ident_node, name, source);
+        };
+        scope_chain_declaration(root, &path, ident_node, name, source, self)
+    }
+
+    /// [`resolve_identifier_binding_in`].
+    pub fn resolve_identifier_binding_in(
+        &self,
+        root: &Node<'a>,
+        ident_node: &Node<'a>,
+        name: &str,
+        source: &str,
+    ) -> Option<IdentifierBinding<'a>> {
+        let Some(path) = ancestors_from_root(root, ident_node) else {
+            return resolve_identifier_binding(ident_node, name, source);
+        };
+        binding_on_path(root, &path, ident_node, name, source, self)
+    }
+
+    /// [`resolve_identifier_declarator_in`].
+    pub fn resolve_identifier_declarator_in(
+        &self,
+        root: &Node<'a>,
+        ident_node: &Node<'a>,
+        name: &str,
+        source: &str,
+    ) -> Option<(Node<'a>, Node<'a>)> {
+        let Some(path) = ancestors_from_root(root, ident_node) else {
+            return resolve_identifier_declarator(ident_node, name, source);
+        };
+        declarator_on_path(root, &path, ident_node, name, source, self)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many scopes [`ScopeDeclarations`] read the declarations of on
+    /// this thread.
+    static SCOPE_DECLARATION_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The innermost-first scope chain of `path` (with `root` itself when it is
@@ -399,13 +477,14 @@ fn scope_chain_declaration<'a>(
     ident_node: &Node<'a>,
     name: &str,
     source: &str,
+    declarations: &ScopeDeclarations<'a>,
 ) -> Option<Node<'a>> {
     let scopes: Vec<Node<'a>> = std::iter::once(*root)
         .chain(path.iter().copied())
         .filter(is_declaration_scope)
         .rev()
         .collect();
-    find_declaration_in_scope_chain(&scopes, ident_node.start_byte(), name, source)
+    declaration_in_scopes(&scopes, ident_node.start_byte(), name, source, declarations)
 }
 
 /// [`find_enclosing_declaration_for_identifier`], considering only the
@@ -462,11 +541,29 @@ pub fn find_declaration_in_scope_chain<'a>(
     name: &str,
     source: &str,
 ) -> Option<Node<'a>> {
+    declaration_in_scopes(
+        scopes,
+        ident_start,
+        name,
+        source,
+        &ScopeDeclarations::default(),
+    )
+}
+
+/// [`find_declaration_in_scope_chain`], reading each scope's declarations
+/// through `declarations`.
+fn declaration_in_scopes<'a>(
+    scopes: &[Node<'a>],
+    ident_start: usize,
+    name: &str,
+    source: &str,
+    declarations: &ScopeDeclarations<'a>,
+) -> Option<Node<'a>> {
     for scope in scopes {
-        let mut declarations = Vec::new();
-        collect_declarations_transparent_to_preproc(scope, &mut declarations);
         let best = declarations
-            .into_iter()
+            .of(scope)
+            .iter()
+            .copied()
             .filter(|child| {
                 child.start_byte() < ident_start && declaration_binds_name(child, name, source)
             })
@@ -1105,10 +1202,7 @@ pub fn resolve_identifier_declarator_in<'a>(
     name: &str,
     source: &str,
 ) -> Option<(Node<'a>, Node<'a>)> {
-    let Some(path) = ancestors_from_root(root, ident_node) else {
-        return resolve_identifier_declarator(ident_node, name, source);
-    };
-    resolve_identifier_declarator_on_path(root, &path, ident_node, name, source)
+    ScopeDeclarations::default().resolve_identifier_declarator_in(root, ident_node, name, source)
 }
 
 /// [`resolve_identifier_declarator_in`] for a caller that already has
@@ -1121,7 +1215,25 @@ pub fn resolve_identifier_declarator_on_path<'a>(
     name: &str,
     source: &str,
 ) -> Option<(Node<'a>, Node<'a>)> {
-    let decl = match binding_on_path(root, path, ident_node, name, source)? {
+    declarator_on_path(
+        root,
+        path,
+        ident_node,
+        name,
+        source,
+        &ScopeDeclarations::default(),
+    )
+}
+
+fn declarator_on_path<'a>(
+    root: &Node<'a>,
+    path: &[Node<'a>],
+    ident_node: &Node<'a>,
+    name: &str,
+    source: &str,
+    declarations: &ScopeDeclarations<'a>,
+) -> Option<(Node<'a>, Node<'a>)> {
+    let decl = match binding_on_path(root, path, ident_node, name, source, declarations)? {
         IdentifierBinding::Local(decl) | IdentifierBinding::Global(decl) => decl,
         IdentifierBinding::Parameter(_) => {
             let func = containing_function_on_path(root, path)?;
@@ -1348,10 +1460,7 @@ pub fn resolve_identifier_binding_in<'a>(
     name: &str,
     source: &str,
 ) -> Option<IdentifierBinding<'a>> {
-    let Some(path) = ancestors_from_root(root, ident_node) else {
-        return resolve_identifier_binding(ident_node, name, source);
-    };
-    binding_on_path(root, &path, ident_node, name, source)
+    ScopeDeclarations::default().resolve_identifier_binding_in(root, ident_node, name, source)
 }
 
 fn binding_on_path<'a>(
@@ -1360,8 +1469,10 @@ fn binding_on_path<'a>(
     ident_node: &Node<'a>,
     name: &str,
     source: &str,
+    declarations: &ScopeDeclarations<'a>,
 ) -> Option<IdentifierBinding<'a>> {
-    if let Some(decl) = scope_chain_declaration(root, path, ident_node, name, source) {
+    if let Some(decl) = scope_chain_declaration(root, path, ident_node, name, source, declarations)
+    {
         return Some(IdentifierBinding::Local(decl));
     }
     if let Some(func) = containing_function_on_path(root, path) {
@@ -3274,6 +3385,66 @@ mod tests {
         parser.set_language(&language).unwrap();
         let tree = parser.parse(code, None).unwrap();
         (tree, code.to_string())
+    }
+
+    /// Every identifier of a function of 300 guarded blocks, with shadowing
+    /// locals, resolves through one [`ScopeDeclarations`] exactly as through
+    /// the free `_in` resolvers, and each block's declarations are read once
+    /// for all of them: per identifier, the function's own block of 300
+    /// statements was read again each time. Counted rather than timed.
+    #[test]
+    fn scope_declarations_read_each_block_once_and_answer_as_the_free_resolvers() {
+        let mut code =
+            String::from("int g(int *);\nint glob;\nvoid f(int c, int *q) {\n    int *s = 0;\n");
+        for i in 0..300 {
+            code.push_str(&format!(
+                "    if (c == {i}) {{ s = q; g(s); glob = c; }}\n    {{ int *s = q; g(s); }}\n"
+            ));
+        }
+        code.push_str("    g(s);\n}\n");
+        let (tree, src) = parse_c_code(&code);
+        let root = tree.root_node();
+        let idents = descendants_of_kinds_with(root, &["identifier"], (), |_, _| ());
+        let blocks = descendants_of_kinds_with(root, &["compound_statement"], (), |_, _| ()).len();
+        assert!(idents.len() > 3_000);
+
+        let shape = |b: Option<IdentifierBinding>| match b {
+            Some(IdentifierBinding::Local(d)) => Some((0, d.id(), String::new())),
+            Some(IdentifierBinding::Parameter(t)) => Some((1, 0, t)),
+            Some(IdentifierBinding::Global(d)) => Some((2, d.id(), String::new())),
+            None => None,
+        };
+        let declarations = ScopeDeclarations::default();
+        for (id, ()) in &idents {
+            let name = get_node_text(id, &src);
+            assert_eq!(
+                shape(declarations.resolve_identifier_binding_in(&root, id, name, &src)),
+                shape(resolve_identifier_binding_in(&root, id, name, &src)),
+            );
+            assert_eq!(
+                declarations
+                    .resolve_identifier_declarator_in(&root, id, name, &src)
+                    .map(|(d, x)| (d.id(), x.id())),
+                resolve_identifier_declarator_in(&root, id, name, &src)
+                    .map(|(d, x)| (d.id(), x.id())),
+            );
+            assert_eq!(
+                declarations
+                    .find_enclosing_declaration_for_identifier_in(&root, id, name, &src)
+                    .map(|d| d.id()),
+                find_enclosing_declaration_for_identifier_in(&root, id, name, &src).map(|d| d.id()),
+            );
+        }
+        // Counted over the cached resolvers alone: each free one reads afresh.
+        SCOPE_DECLARATION_READS.with(|n| n.set(0));
+        let declarations = ScopeDeclarations::default();
+        for (id, ()) in &idents {
+            let name = get_node_text(id, &src);
+            declarations.resolve_identifier_binding_in(&root, id, name, &src);
+            declarations.resolve_identifier_declarator_in(&root, id, name, &src);
+            declarations.find_enclosing_declaration_for_identifier_in(&root, id, name, &src);
+        }
+        assert!(SCOPE_DECLARATION_READS.with(|n| n.get()) <= blocks);
     }
 
     /// The binding of the last `name` occurrence in `code`, as
