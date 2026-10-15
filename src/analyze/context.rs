@@ -1129,6 +1129,18 @@ pub struct ProjectContext {
     /// macro, or unknown.
     #[serde(default)]
     pub global_object_names: Arc<HashSet<String>>,
+    /// The identifiers that begin a file-scope item in a scanned file or
+    /// resolved header, with the argument list after each: what
+    /// [`crate::analyze::macro_declarations::declare_macro_objects`] expands
+    /// once every `#define` is known.
+    #[serde(default)]
+    pub file_scope_macro_items: Arc<Vec<crate::analyze::macro_declarations::FileScopeMacroItem>>,
+    /// The file-scope objects a macro's expansion declares
+    /// (`SQLITE_EXTENSION_INIT1`), each with the file of the invocation and
+    /// the linkage it gives; their names are in `global_object_names` too.
+    #[serde(default)]
+    pub macro_declared_objects:
+        Arc<HashMap<String, Vec<crate::analyze::macro_declarations::MacroDeclaredObject>>>,
     /// The file-scope objects some scanned file or header declares
     /// `volatile` (`extern volatile int g_ready;`), so a body in another
     /// file reading one reads a volatile object.
@@ -1492,7 +1504,7 @@ pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
 /// to a serialized field of [`ProjectContext`] (or of a type it holds), or to
 /// what such a field means: the cache header carries it, so an old cache is
 /// refused instead of misread.
-const PRESCAN_CACHE_FORMAT: u32 = 57;
+const PRESCAN_CACHE_FORMAT: u32 = 58;
 
 /// The header a prescan cache file starts with: a magic, the layout version
 /// and the aurora-lint version that wrote it.

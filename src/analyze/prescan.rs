@@ -149,6 +149,10 @@ struct FilePrescanResult {
     pointer_named_globals: HashSet<String>,
     /// File-scope objects and enumeration constants (`#if` arms included).
     file_scope_names: HashSet<String>,
+    /// The identifiers that begin a file-scope item, for the objects a macro
+    /// may declare (`macro_declarations::file_scope_macro_items`); the file
+    /// is filled in by the merge.
+    file_scope_macro_items: Vec<crate::analyze::macro_declarations::FileScopeMacroItem>,
     /// File-scope objects declared `volatile` (`#if` arms included).
     volatile_globals: HashSet<String>,
     /// File-scope objects declared without `volatile`.
@@ -229,6 +233,7 @@ impl FilePrescanResult {
             value_only_global_candidates: HashSet::new(),
             pointer_named_globals: HashSet::new(),
             file_scope_names: HashSet::new(),
+            file_scope_macro_items: Vec::new(),
             volatile_globals: HashSet::new(),
             non_volatile_globals: HashSet::new(),
             array_globals: HashSet::new(),
@@ -472,6 +477,8 @@ fn process_file(
             original.as_deref(),
         );
         result.file_scope_names = objects.names;
+        result.file_scope_macro_items =
+            crate::analyze::macro_declarations::file_scope_macro_items(&root, &source, "");
         result.volatile_globals = objects.volatile;
         result.non_volatile_globals = objects.non_volatile;
         result.array_globals = objects.array;
@@ -862,6 +869,8 @@ fn prescan_file_list(
     let mut value_only_global_candidates: HashSet<String> = HashSet::new();
     let mut pointer_named_globals: HashSet<String> = HashSet::new();
     let mut file_scope_names: HashSet<String> = HashSet::new();
+    let mut file_scope_macro_items: Vec<crate::analyze::macro_declarations::FileScopeMacroItem> =
+        Vec::new();
     let mut volatile_globals: HashSet<String> = HashSet::new();
     let mut non_volatile_globals: HashSet<String> = HashSet::new();
     let mut array_globals: HashSet<String> = HashSet::new();
@@ -1296,6 +1305,11 @@ fn prescan_file_list(
         value_only_global_candidates.extend(r.value_only_global_candidates);
         pointer_named_globals.extend(r.pointer_named_globals);
         file_scope_names.extend(r.file_scope_names);
+        let item_file = crate::analyze::compile_commands::real_path(Path::new(&r.display_path));
+        file_scope_macro_items.extend(r.file_scope_macro_items.into_iter().map(|mut item| {
+            item.file = item_file.clone();
+            item
+        }));
         volatile_globals.extend(r.volatile_globals);
         non_volatile_globals.extend(r.non_volatile_globals);
         array_globals.extend(r.array_globals);
@@ -1647,7 +1661,7 @@ fn prescan_file_list(
     // of the project, deferred to here).
     signal_handlers_registered_elsewhere.retain(|name| known_functions.contains(name));
 
-    Ok(ProjectContext {
+    let mut context = ProjectContext {
         prescan_failures,
         // Set by the caller, which knows the scope.
         settings: Default::default(),
@@ -1717,7 +1731,11 @@ fn prescan_file_list(
         restrict_params,
         concurrency_reachable: Arc::new(concurrency_reachable),
         value_only_globals: Arc::new(value_only_globals),
-    })
+        file_scope_macro_items: Arc::new(file_scope_macro_items),
+        macro_declared_objects: Default::default(),
+    };
+    crate::analyze::macro_declarations::declare_macro_objects(&mut context);
+    Ok(context)
 }
 
 /// `callee -> {callers}` for every edge in `call_graph`, whose ends are keyed
@@ -7928,6 +7946,13 @@ pub fn resolve_includes_scoped(
                     outside_project,
                     &written,
                 );
+                Arc::make_mut(&mut context.file_scope_macro_items).extend(
+                    crate::analyze::macro_declarations::file_scope_macro_items(
+                        &root,
+                        &hsource,
+                        &header_key,
+                    ),
+                );
 
                 // Collect struct field types from resolved headers
                 collect_struct_tables(
@@ -8167,6 +8192,9 @@ pub fn resolve_includes_scoped(
             names,
         ))
     });
+    // A resolved header's `#define` may declare an object where a scanned
+    // file invokes it, and its own invocations may too.
+    crate::analyze::macro_declarations::declare_macro_objects(context);
     // Resolved headers may define functions, and every table the closure
     // reads may have grown.
     context.invalidate_side_effects();
@@ -11892,6 +11920,48 @@ void caller(char *other) {
         assert!(sink.caller_set_is_closed());
         assert!(sink.callsite_param_taint_observed.contains(&0));
         assert!(sink.callsite_param_tainted.contains(&0));
+    }
+
+    /// A file-scope invocation of a macro whose expansion is a declaration
+    /// declares its object, with the linkage the expansion gives it; one
+    /// that expands to something else declares nothing, and neither does one
+    /// in a struct body or a function body.
+    #[test]
+    fn a_macro_expansion_declares_file_scope_objects() {
+        use crate::analyze::macro_declarations::Linkage;
+        let code = "struct conn { char *ssl; };\n\
+                    #define DECL_STATIC static struct conn *s_conn;\n\
+                    #define DECL_EXTERN extern struct conn *e_conn;\n\
+                    #define DECL_DEF struct conn *d_conn = 0;\n\
+                    #define DECLARE_PTR(T, n) T *n;\n\
+                    #define NOT_A_DECL (1 + 2)\n\
+                    DECL_STATIC\n\
+                    DECL_EXTERN\n\
+                    DECL_DEF\n\
+                    DECLARE_PTR(struct conn, p_conn);\n\
+                    NOT_A_DECL\n\
+                    struct holder {\n\
+                      DECLARE_PTR(struct conn, member);\n\
+                    };\n\
+                    void use(void) {\n\
+                      DECLARE_PTR(struct conn, local);\n\
+                      s_conn = local;\n\
+                    }\n";
+        let ctx = prescan_one("aurora-lint-prescan-macro-declared-objects-test", code);
+        let linkage = |name: &str| -> Vec<Linkage> {
+            ctx.macro_declared_objects
+                .get(name)
+                .map(|objects| objects.iter().map(|o| o.linkage).collect())
+                .unwrap_or_default()
+        };
+        assert_eq!(linkage("s_conn"), [Linkage::Internal]);
+        assert_eq!(linkage("e_conn"), [Linkage::Extern]);
+        assert_eq!(linkage("d_conn"), [Linkage::External]);
+        assert_eq!(linkage("p_conn"), [Linkage::External]);
+        for name in ["s_conn", "e_conn", "d_conn", "p_conn"] {
+            assert!(ctx.global_object_names.contains(name), "{name}");
+        }
+        assert_eq!(ctx.macro_declared_objects.len(), 4);
     }
 
     // -- caller argument ranges: loop counters and stepped locals --
