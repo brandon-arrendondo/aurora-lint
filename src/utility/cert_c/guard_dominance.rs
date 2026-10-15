@@ -384,6 +384,9 @@ pub fn dominating_conditions_with_branches_cached<'a>(
 /// statement holding it, in statement order.
 type BlockConditions<'a> = Rc<[(usize, Node<'a>)]>;
 
+/// A condition's parent, with the parent's [`branch_past`].
+type ConditionParent<'a> = (Node<'a>, Option<bool>);
+
 /// What [`preceding_if_conditions_from`] reads at every site of a walk,
 /// read once: each block's block-level `if` conditions, and for each
 /// condition its parent and the questions asked of it.
@@ -401,9 +404,8 @@ pub struct PrecedingConditions<'a> {
     /// every condition [`collect_block_level_if_conditions`] finds in the
     /// block's named children, in their order.
     by_block: RefCell<HashMap<usize, BlockConditions<'a>>>,
-    /// Per condition: its parent, and whether that parent is the tail of an
-    /// `else if` chain (see [`condition_branch_under`]).
-    parents: RefCell<HashMap<usize, Option<(Node<'a>, bool)>>>,
+    /// Per condition: its parent, and that parent's [`branch_past`].
+    parents: RefCell<HashMap<usize, Option<ConditionParent<'a>>>>,
     /// Per (condition, variable, kind): [`condition_compares_var`].
     compares: RefCell<HashMap<(usize, String, ComparisonKind), bool>>,
 }
@@ -458,12 +460,12 @@ impl<'a> PrecedingConditions<'a> {
     fn branch(&self, cond: &Node<'a>, site: &Node<'a>) -> Option<bool> {
         let known = self.parents.borrow().get(&cond.id()).copied();
         let parent = known.unwrap_or_else(|| {
-            let parent = cond.parent().map(|p| (p, is_else_if_chain_tail(&p)));
+            let parent = cond.parent().map(|p| (p, branch_past(&p)));
             self.parents.borrow_mut().insert(cond.id(), parent);
             parent
         });
-        let (parent, chain_tail) = parent?;
-        condition_branch_under_with(&parent, site, || chain_tail)
+        let (parent, past) = parent?;
+        condition_branch_under_with(&parent, site, || past)
     }
 
     /// [`condition_compares_var`].
@@ -2018,22 +2020,36 @@ pub fn dominating_condition_branch(cond: &Node, site: &Node) -> Option<bool> {
 /// [`dominating_condition_branch`] for a condition whose parent, `parent`, is
 /// already known.
 fn condition_branch_under(parent: &Node, site: &Node) -> Option<bool> {
-    condition_branch_under_with(parent, site, || is_else_if_chain_tail(parent))
+    condition_branch_under_with(parent, site, || branch_past(parent))
 }
 
-/// Whether `stmt` is a link of an `else if` chain after the first: an
-/// `if_statement` under an `else_clause` (or directly under an `if`).
-fn is_else_if_chain_tail(stmt: &Node) -> bool {
-    stmt.parent()
-        .is_some_and(|g| matches!(g.kind(), "else_clause" | "if_statement"))
+/// [`condition_branch_under`] for a site in neither branch of the `if` (or
+/// `?:`) `parent`, which does not depend on where the site is: `false` past
+/// a lone `if` whose consequence always diverges, otherwise unknown.
+///
+/// An `else if` is an `if_statement` under an `else_clause`. Such a tail
+/// looks exactly like a lone exiting `if` from here, but a site following
+/// the chain may have arrived through an earlier branch that fell through,
+/// never evaluating this condition at all — so the chain, not this link, is
+/// what would have to exit.
+fn branch_past(parent: &Node) -> Option<bool> {
+    let lone_if_that_exits = parent.kind() == "if_statement"
+        && !parent
+            .parent()
+            .is_some_and(|g| matches!(g.kind(), "else_clause" | "if_statement"))
+        && parent.child_by_field_name("alternative").is_none()
+        && parent
+            .child_by_field_name("consequence")
+            .is_some_and(|c| always_diverges(&c));
+    lone_if_that_exits.then_some(false)
 }
 
-/// [`condition_branch_under`], told by `chain_tail` whether `parent` is an
-/// [`is_else_if_chain_tail`] when it needs to know.
+/// [`condition_branch_under`], with `past` giving [`branch_past`] when the
+/// site is in neither branch of an `if` or `?:`.
 fn condition_branch_under_with(
     parent: &Node,
     site: &Node,
-    chain_tail: impl FnOnce() -> bool,
+    past: impl FnOnce() -> Option<bool>,
 ) -> Option<bool> {
     let parent = *parent;
     match parent.kind() {
@@ -2050,18 +2066,7 @@ fn condition_branch_under_with(
             {
                 return Some(false);
             }
-            // An `else if` is an `if_statement` under an `else_clause`. Such a
-            // tail looks exactly like a lone exiting `if` from here, but a
-            // site following the chain may have arrived through an earlier
-            // branch that fell through, never evaluating this condition at
-            // all — so the chain, not this link, is what would have to exit.
-            let lone_if_that_exits = parent.kind() == "if_statement"
-                && !chain_tail()
-                && parent.child_by_field_name("alternative").is_none()
-                && parent
-                    .child_by_field_name("consequence")
-                    .is_some_and(|c| always_diverges(&c));
-            lone_if_that_exits.then_some(false)
+            past()
         }
         "while_statement" | "for_statement" => parent
             .child_by_field_name("body")
