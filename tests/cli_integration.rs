@@ -6516,6 +6516,47 @@ fn a_data_model_writes_its_bundle_as_active_lines_and_leaves_the_rest_unknown() 
     );
 }
 
+/// Under each preset, the written file's `data_model` line shows the model
+/// in force and why, commented out so writing the file declares nothing:
+/// the file loads back to the same model, from the same source.
+#[test]
+fn a_written_config_shows_the_preset_data_model_without_declaring_it() {
+    for (args, line) in [
+        (
+            vec!["--profile", "default"],
+            "# data_model = \"lp64\"  # assumed by the default preset; declare it to make it yours\n",
+        ),
+        // The default preset assumes lp64 only on a hosted target.
+        (
+            vec!["--environment", "freestanding"],
+            "# data_model = \"iso\"  # undeclared: the default preset credits only ISO C's minimums\n",
+        ),
+        (
+            vec!["--profile", "strict"],
+            "# data_model = \"iso\"  # undeclared: the strict preset credits only ISO C's minimums\n",
+        ),
+        (
+            vec!["--profile", "pedantic"],
+            "# data_model = \"iso\"  # undeclared: the pedantic preset credits only ISO C's minimums and reports it; declare one\n",
+        ),
+    ] {
+        let profile = args.join(" ");
+        let (_dir, path, text) = written_config(&args);
+        assert!(text.contains(line), "{profile}: {text}");
+        let model_line = |args: &[&str]| {
+            let mut full = vec!["--check-config"];
+            full.extend_from_slice(args);
+            let (code, stdout, stderr) = run_aurora_lint(&full);
+            assert_eq!(code, 0, "{profile}: {stderr}");
+            stdout
+                .lines()
+                .find(|l| l.starts_with("data model:"))
+                .map(str::to_string)
+        };
+        assert_eq!(model_line(&["-m", &path]), model_line(&args), "{profile}");
+    }
+}
+
 #[test]
 fn write_config_refuses_to_overwrite_unless_told_to() {
     let (_dir, path, first) = written_config(&[]);

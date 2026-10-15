@@ -386,9 +386,13 @@ settings key and a one-line description of each. A key at its built-in default
 is commented out; with ``--data-model X`` or ``--set`` the data model's bundle
 values are active lines marked ``# from data model: X``, and a fact no data model sets
 is written commented out as ``# unknown unless declared``. The data model the
-default preset assumes is not written as a declaration, and neither is one a
-compile database states; a declared one is, ``iso`` too under the default
-preset, where leaving it out would assume ``lp64``. It is generated from
+preset uses when none is declared is shown but commented out, with the reason:
+``# data_model = "lp64"  # assumed by the default preset; declare it to make it
+yours`` under the default preset, ``iso`` with the ISO C minimums under strict
+and pedantic. Writing the file therefore declares nothing (an assumed and a
+declared ``lp64`` hash differently), and neither is a model a compile database
+states written as a declaration; a declared one is, ``iso`` too under the
+default preset, where leaving it out would assume ``lp64``. It is generated from
 the same tables as ``--list-options`` and the validation, so it cannot drift
 from them, and the file it writes passes ``--check-config`` unchanged and
 resolves to exactly the facts of running without it (or with the same

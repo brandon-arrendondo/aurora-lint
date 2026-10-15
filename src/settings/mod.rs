@@ -2320,12 +2320,35 @@ pub fn render_config_settings(current: &AnalysisSettings) -> String {
         DataModelSource::Declared(EditionSource::Cli | EditionSource::Config)
     ) && (current.data_model != DataModel::Iso
         || profile.assumed_data_model().is_some());
+    // Commented out, the line shows the model the file resolves to and why,
+    // so it states the preset's assumption without declaring it: an assumed
+    // and a declared lp64 hash differently.
+    let assumed = profile
+        .assumed_data_model()
+        .filter(|_| current.environment == EnvironmentKind::Hosted);
+    let (shown, note) = match assumed {
+        _ if declared_model => (current.data_model, String::new()),
+        Some(model) => (
+            model,
+            format!("assumed by the {profile} preset; declare it to make it yours"),
+        ),
+        None if profile.requires_data_model_declaration() => (
+            DataModel::Iso,
+            format!(
+                "undeclared: the {profile} preset credits only ISO C's minimums and reports it; declare one"
+            ),
+        ),
+        None => (
+            DataModel::Iso,
+            format!("undeclared: the {profile} preset credits only ISO C's minimums"),
+        ),
+    };
     config_entry(
         &mut out,
         declared_model,
         "data_model",
-        &format!("\"{}\"", current.data_model),
-        "",
+        &format!("\"{shown}\""),
+        &note,
     );
     out.push_str(
         "# Integer facts: the data model loads some; a key here overrides it (and must stay at or\n\
