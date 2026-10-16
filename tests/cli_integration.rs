@@ -8310,6 +8310,8 @@ fn mem01_a_destructor_callee_is_read_with_the_headers_it_includes() {
         "object_macro_in_header_naming_a_header_global",
         "object_macro_in_header_naming_an_object_another_macro_declares",
         "object_a_header_macro_declares",
+        "object_macro_naming_an_object_another_file_typedefs",
+        "object_macro_naming_an_object_another_file_aliases_a_struct",
     ] {
         assert_eq!(
             mem01_project_findings("mem01_destructor_headers", case),

@@ -1059,6 +1059,7 @@ fn callee_leaves_member_alone(
         macros: collect_macro_definitions(source),
         unions: union_field_sets(root, source),
         globals: file_scope_variables(root, source),
+        typedefs: unconditional_typedef_names(root, source),
         ctx: addr_ctx,
     };
     // Every definition, for one in each arm of a conditional.
@@ -1127,7 +1128,28 @@ struct CalleeScope<'c> {
     /// object in one for the callee to read. So may an object a header
     /// declares ([`HeaderTables::global_object_names`]).
     globals: HashSet<String>,
+    /// The typedef names the file declares at file scope outside every
+    /// `#if` arm: the only names a macro's expansion may use as a type. The
+    /// project's typedef tables hold every file's and every arm's, and a
+    /// name one of them makes a type may be an object where the callee
+    /// compiles.
+    typedefs: HashSet<String>,
     ctx: &'c AddressOfCallContext,
+}
+
+/// How many macros deep an expansion is followed; a name past it is read as
+/// unknown.
+const MAX_EXPANSION_DEPTH: usize = 32;
+
+/// The state of [`CalleeScope::expansion_names_no_read`] across one callee's
+/// uses: the macros being expanded, innermost last, and each answer given.
+/// An answer reached through a name that was being expanded, or past the
+/// depth limit, may be "read" where the macro alone passes; it is kept all
+/// the same, which can only report more.
+#[derive(Default)]
+struct ExpansionWalk {
+    expanding: Vec<String>,
+    answers: HashMap<String, bool>,
 }
 
 impl CalleeScope<'_> {
@@ -1137,7 +1159,8 @@ impl CalleeScope<'_> {
     /// and every scanned file's, is object-like (a function-like or
     /// unreadable one, a token paste among them, is not proven), and every
     /// identifier it names is known to hold nothing: a keyword, a type name
-    /// (a tag, or a typedef the tables resolve), a field selected off
+    /// (a tag, or a typedef the file declares outside every `#if` arm and no
+    /// file declares an object of the same name), a field selected off
     /// something in the list, or a macro that passes in turn. Anything else
     /// is a read: a name no table knows may be an object declared where the
     /// scan does not see it, such as by another macro's expansion; so is one
@@ -1145,19 +1168,26 @@ impl CalleeScope<'_> {
     /// member's field names, in any position), a call, a function the
     /// project defines (it may read an object the caller stored the object
     /// in) and a field of something outside the list (one starting with `->`
-    /// or `.`). `expanding` holds the macros being expanded: one that names
-    /// itself again stays an unknown name.
+    /// or `.`). `walk` holds the macros being expanded, and the answers
+    /// already given against the same `reads`: one that names itself again
+    /// stays an unknown name, and so does one more than
+    /// [`MAX_EXPANSION_DEPTH`] macros deep.
     fn expansion_names_no_read(
         &self,
         name: &str,
         reads: &HashSet<&str>,
-        expanding: &mut HashSet<String>,
+        walk: &mut ExpansionWalk,
     ) -> bool {
-        if !expanding.insert(name.to_string()) {
+        if let Some(&passes) = walk.answers.get(name) {
+            return passes;
+        }
+        if walk.expanding.len() >= MAX_EXPANSION_DEPTH || walk.expanding.iter().any(|m| m == name) {
             return false;
         }
-        let passes = self.definitions_name_no_read(name, reads, expanding);
-        expanding.remove(name);
+        walk.expanding.push(name.to_string());
+        let passes = self.definitions_name_no_read(name, reads, walk);
+        walk.expanding.pop();
+        walk.answers.insert(name.to_string(), passes);
         passes
     }
 
@@ -1165,7 +1195,7 @@ impl CalleeScope<'_> {
         &self,
         name: &str,
         reads: &HashSet<&str>,
-        expanding: &mut HashSet<String>,
+        walk: &mut ExpansionWalk,
     ) -> bool {
         let in_reach_function_like =
             self.ctx
@@ -1193,7 +1223,6 @@ impl CalleeScope<'_> {
         if in_reach_function_like || definitions.is_empty() {
             return false;
         }
-        let types = &self.ctx.headers.types;
         definitions.iter().all(|definition| {
             let MacroDefinition::Object { body } = definition else {
                 return false;
@@ -1221,15 +1250,20 @@ impl CalleeScope<'_> {
                         }
                         keyword
                             || after(&["->", ".", "struct", "union", "enum"])
-                            || types.typedef_types.contains_key(word)
-                            || types.struct_typedef_aliases.contains_key(word)
+                            || (self.typedefs.contains(word) && !self.may_name_object(word))
                             || (self.ctx.may_be_macro(word, &self.macros)
-                                && self.expansion_names_no_read(word, reads, expanding))
+                                && self.expansion_names_no_read(word, reads, walk))
                     }
                     PpKind::Other => false,
                     _ => !token.is("##") && !token.is("#"),
                 })
         })
+    }
+
+    /// Whether some scanned file or header declares an object `name` at file
+    /// scope, in any arm.
+    fn may_name_object(&self, name: &str) -> bool {
+        self.globals.contains(name) || self.ctx.headers.global_object_names.contains(name)
     }
 
     /// Whether `ident`, an identifier of the callee's body, may name an
@@ -1384,6 +1418,20 @@ fn union_field_sets(root: Node, source: &str) -> Vec<HashSet<String>> {
 
 /// Every object the file declares at file scope (a function or a typedef is
 /// none).
+/// The names `root`'s file-scope `typedef`s declare outside every `#if` arm.
+fn unconditional_typedef_names(root: Node, source: &str) -> HashSet<String> {
+    ast_utils::top_level_items(root)
+        .filter(|item| item.kind() == "type_definition")
+        .filter(|item| enclosing_arms(item, source).is_empty())
+        .flat_map(|item| {
+            item.children_by_field_name("declarator", &mut item.walk())
+                .filter_map(|d| query::find_first_descendant(d, |n| n.kind() == "type_identifier"))
+                .map(|name| get_node_text(&name, source).to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 fn file_scope_variables(root: Node, source: &str) -> HashSet<String> {
     ast_utils::top_level_items(root)
         .filter(|item| item.kind() == "declaration")
@@ -1494,6 +1542,7 @@ fn parameter_never_reads_member(
         .copied()
         .chain(declared_names.iter().map(String::as_str))
         .collect();
+    let mut walk = ExpansionWalk::default();
     let hidden_read = query::find_descendants_of_kind(*body, "field_identifier")
         .into_iter()
         .any(|n| {
@@ -1506,7 +1555,7 @@ fn parameter_never_reads_member(
             .any(|n| {
                 let name = get_node_text(&n, source);
                 scope.ctx.may_be_macro(name, &scope.macros)
-                    && !scope.expansion_names_no_read(name, &reads, &mut HashSet::new())
+                    && !scope.expansion_names_no_read(name, &reads, &mut walk)
             })
         || query::find_descendants_of_kind(*body, "identifier")
             .into_iter()
