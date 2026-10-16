@@ -196,8 +196,17 @@ impl CertRule for Err33C {
             root: *node,
             bindings: &self.binding_cache,
         });
+        // One environment for the file: with the root it indexes the whole
+        // tree on its first resolution, so one per stored result would index
+        // the file once per result.
+        let visible = self.visible.borrow();
+        let types = TypeEnv::visible(&visible, self.data_model.get());
+        let types = match &tree {
+            Some(tree) => types.in_tree(tree.root),
+            None => types,
+        };
         let mut violations = Vec::new();
-        self.check_node(node, tree.as_ref(), source, &mut violations);
+        self.check_node(node, tree.as_ref(), &types, source, &mut violations);
         violations
     }
 }
@@ -207,6 +216,7 @@ impl Err33C {
         &self,
         node: &Node,
         tree: Option<&result_checks::FileTree>,
+        types: &TypeEnv,
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
@@ -233,10 +243,10 @@ impl Err33C {
                     }
                 }
                 "assignment_expression" => {
-                    self.check_assignment(&n, tree, source, violations);
+                    self.check_assignment(&n, tree, types, source, violations);
                 }
                 "init_declarator" => {
-                    self.check_init_declarator(&n, tree, source, violations);
+                    self.check_init_declarator(&n, tree, types, source, violations);
                 }
                 _ => {}
             }
@@ -399,6 +409,7 @@ impl Err33C {
         &self,
         node: &Node,
         tree: Option<&result_checks::FileTree>,
+        types: &TypeEnv,
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
@@ -446,6 +457,7 @@ impl Err33C {
                         // before the variable is written again.
                         if !self.stored_result_is_tested(
                             tree,
+                            types,
                             node,
                             &left,
                             &right,
@@ -481,6 +493,7 @@ impl Err33C {
         &self,
         node: &Node,
         tree: Option<&result_checks::FileTree>,
+        types: &TypeEnv,
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
@@ -512,6 +525,7 @@ impl Err33C {
                                     Self::declarator_name(&declarator).is_some_and(|name_node| {
                                         self.stored_result_is_tested(
                                             tree,
+                                            types,
                                             node,
                                             &name_node,
                                             &call,
@@ -931,10 +945,13 @@ impl Err33C {
     /// tested against `function_name`'s error value before `target` is
     /// written again -- see `result_checks::stored_result_is_tested`. A
     /// function the error-signal table does not know is held to any test of
-    /// its result.
+    /// its result. `types` is the file's environment, rooted at `tree`'s
+    /// root when there is a tree.
+    #[allow(clippy::too_many_arguments)]
     fn stored_result_is_tested(
         &self,
         tree: Option<&result_checks::FileTree>,
+        types: &TypeEnv,
         store: &Node,
         target: &Node,
         call: &Node,
@@ -950,17 +967,12 @@ impl Err33C {
             conditional: [&project.1, &file.1],
             cache: &self.macro_test_cache,
         };
-        let visible = self.visible.borrow();
-        let types = TypeEnv::visible(&visible, self.data_model.get());
         match tree {
-            Some(tree) => {
-                let types = types.in_tree(tree.root);
-                result_checks::stored_result_is_tested_in(
-                    tree, store, target, call, signal, source, &macros, &types,
-                )
-            }
+            Some(tree) => result_checks::stored_result_is_tested_in(
+                tree, store, target, call, signal, source, &macros, types,
+            ),
             None => result_checks::stored_result_is_tested(
-                store, target, call, signal, source, &macros, &types,
+                store, target, call, signal, source, &macros, types,
             ),
         }
     }

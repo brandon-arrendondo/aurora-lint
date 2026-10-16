@@ -465,6 +465,11 @@ pub struct ScopeIndex<'a> {
 impl<'a> ScopeIndex<'a> {
     /// Index the tree under `root`, its root.
     pub fn new(root: Node<'a>) -> Self {
+        debug_assert!(
+            root.parent().is_none(),
+            "ScopeIndex::new takes the tree's root, not a {}",
+            root.kind()
+        );
         let nodes = NodeIndex::new(root);
         let scopes = nodes.nearest_column(read_by_resolution);
         Self { nodes, scopes }
@@ -489,6 +494,13 @@ impl<'a> ScopeDeclarations<'a> {
     /// first resolution, instead of a descent from `root` per identifier.
     /// Same answers.
     pub fn indexed(root: Node<'a>) -> Self {
+        // An index of a subtree would answer for its nodes alone, and the
+        // resolutions under it would miss the file scope above it.
+        debug_assert!(
+            root.parent().is_none(),
+            "ScopeDeclarations::indexed takes the tree's root, not a {}",
+            root.kind()
+        );
         Self {
             indexed_root: Some(root),
             ..Self::default()

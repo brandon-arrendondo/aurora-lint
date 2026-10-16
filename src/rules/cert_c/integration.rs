@@ -1049,6 +1049,54 @@ fn a_deep_sum_costs_each_rule_work_linear_in_its_length() {
     }
 }
 
+/// A rule that types what it asks about through an index of the tree builds
+/// that index once per file, however many sites in the file it asks at: an
+/// environment built per site indexes the whole tree per site, quadratic in
+/// the file's length. Each rule runs through the whole pipeline on N copies
+/// of a function that gives it a few sites to ask at, at N and 4N copies, and
+/// the indexes built may not grow with N.
+#[test]
+fn a_rule_indexes_its_file_once_however_many_sites_it_asks_at() {
+    use crate::utility::cert_c::node_index::take_builds;
+
+    // ERR33-C asks whether each stored result is tested; INT33-C whether
+    // each divisor holds unsigned arithmetic.
+    let cases = [
+        (
+            "ERR33-C",
+            "int fK(void)\n{\n    int r;\n    long n;\n    r = printf(\"x\");\n    \
+             if (r < 0)\n        return -1;\n    n = fputs(\"y\", stdout);\n    \
+             if (n == EOF)\n        return -2;\n    return r;\n}\n",
+        ),
+        (
+            "INT33-C",
+            "unsigned fK(unsigned a, unsigned b)\n{\n    unsigned q = a / (b + a);\n    \
+             unsigned m = a % (b * a);\n    return q + m;\n}\n",
+        ),
+    ];
+    for (rule_id, function) in cases {
+        let builds = |n: usize| {
+            let code = format!(
+                "#include <stdio.h>\n{}",
+                (0..n)
+                    .map(|k| function.replacen("fK", &format!("f{k}"), 1))
+                    .collect::<String>()
+            );
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("sites.c");
+            fs::write(&path, code).unwrap();
+            take_builds();
+            findings_at(rule_id, &path, "default", "");
+            take_builds()
+        };
+        let (small, large) = (builds(5), builds(20));
+        assert!(
+            small > 0 && large <= small,
+            "[{rule_id}] indexes built: {small} for 5 functions, {large} for 20"
+        );
+    }
+}
+
 /// One function making `calls` registry calls whose mask is the object-like
 /// macro `M`, written either under `arms` separate `#ifdef` groups, every one
 /// in force at the calls (all `arms` alternatives), or (`arms == 0`) once,

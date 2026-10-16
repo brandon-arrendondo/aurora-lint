@@ -439,7 +439,7 @@ impl Int33C {
                 || right.kind() == "parenthesized_expression" // Parenthesized expressions
                 || right.kind() == "pointer_expression" // Pointer dereference like *ptr
                 || right.kind() == "unary_expression")
-                && !self.is_divisor_checked(node, &right, source)
+                && !self.is_divisor_checked(node, &right, source, env)
             {
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
@@ -504,7 +504,7 @@ impl Int33C {
                 || right.kind() == "parenthesized_expression"
                 || right.kind() == "pointer_expression"
                 || right.kind() == "unary_expression")
-                && !self.is_divisor_checked(node, &right, source)
+                && !self.is_divisor_checked(node, &right, source, env)
             {
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
@@ -534,7 +534,13 @@ impl Int33C {
     /// the function, or every caller of a closed function. A condition that
     /// merely mentions the divisor, or a check somewhere else in the file,
     /// proves nothing (ADR-0005).
-    fn is_divisor_checked(&self, div_node: &Node, divisor: &Node, source: &str) -> bool {
+    fn is_divisor_checked(
+        &self,
+        div_node: &Node,
+        divisor: &Node,
+        source: &str,
+        env: &TypeEnv,
+    ) -> bool {
         // Fast path: compile-time constant expression — evaluate and check non-zero.
         // Covers macros like `BRIGHTNESS_MAX 255`, enum values, and numeric literals.
         {
@@ -560,7 +566,7 @@ impl Int33C {
 
         // Value-range analysis: check if enclosing conditions prove divisor >= 1
         // This catches patterns like `if (lower < upper) { total / (upper - lower); }`
-        if self.divisor_provably_nonzero(div_node, divisor, source) {
+        if self.divisor_provably_nonzero(div_node, divisor, source, env) {
             return true;
         }
 
@@ -581,7 +587,7 @@ impl Int33C {
 
         // The divisor's last assignment before the division stored a value
         // proven non-zero there: `if (!step) return; p->step = step; x / p->step`.
-        if self.assigned_nonzero_before(div_node, &targets, source) {
+        if self.assigned_nonzero_before(div_node, &targets, source, env) {
             return true;
         }
 
@@ -595,7 +601,7 @@ impl Int33C {
 
         // A parameter of a closed function every caller passes a value
         // proven non-zero.
-        self.every_caller_passes_nonzero(divisor, source)
+        self.every_caller_passes_nonzero(divisor, source, env)
     }
 
     /// Whether the last plain assignment to one of `targets` at statement
@@ -603,7 +609,13 @@ impl Int33C {
     /// value this rule proves non-zero at the assignment, and nothing between
     /// the assignment and `site` writes the divisor again or otherwise
     /// separates the two (`nonzero_facts::fact_reaches`).
-    fn assigned_nonzero_before(&self, site: &Node, targets: &[String], source: &str) -> bool {
+    fn assigned_nonzero_before(
+        &self,
+        site: &Node,
+        targets: &[String],
+        source: &str,
+        env: &TypeEnv,
+    ) -> bool {
         let mut current = *site;
         while let Some(parent) = current.parent() {
             if parent.kind() == "function_definition" {
@@ -633,7 +645,7 @@ impl Int33C {
                         && assignment
                             .child_by_field_name("right")
                             .is_some_and(|value| {
-                                self.is_divisor_checked(&assignment, &value, source)
+                                self.is_divisor_checked(&assignment, &value, source, env)
                             });
                 }
             }
@@ -904,11 +916,17 @@ impl Int33C {
     /// First tries CFG-based VRA (if available), which handles sequential
     /// assignments, conditional narrowing through arbitrary paths, and
     /// early-return guard patterns. Falls back to syntactic ancestor walks.
-    fn divisor_provably_nonzero(&self, div_node: &Node, divisor: &Node, source: &str) -> bool {
+    fn divisor_provably_nonzero(
+        &self,
+        div_node: &Node,
+        divisor: &Node,
+        source: &str,
+        env: &TypeEnv,
+    ) -> bool {
         // Ranges are computed as if arithmetic never wrapped, which an
         // unsigned sum, product or shift does: `d + 1` is zero for
         // `d == UINT_MAX` however surely `d > 0`.
-        if self.unsigned_arithmetic_in(divisor, source) {
+        if self.unsigned_arithmetic_in(divisor, source, env) {
             return false;
         }
         let file_macros = self.file_macros.borrow();
@@ -936,14 +954,10 @@ impl Int33C {
     }
 
     /// Whether `expr` holds a `+`, `*` or `<<` computed in an unsigned type,
-    /// outside a `sizeof` and short of a constant the file evaluates.
-    fn unsigned_arithmetic_in(&self, expr: &Node, source: &str) -> bool {
-        let visible = self.visible.borrow();
-        let mut root = *expr;
-        while let Some(parent) = root.parent() {
-            root = parent;
-        }
-        let env = TypeEnv::visible(&visible, self.settings.borrow().facts).in_tree(root);
+    /// outside a `sizeof` and short of a constant the file evaluates. `env`
+    /// is the file's, from [`CertRule::check`]: one built here would index
+    /// the whole tree again for every divisor.
+    fn unsigned_arithmetic_in(&self, expr: &Node, source: &str, env: &TypeEnv) -> bool {
         let macros = self.file_macros.borrow();
         let mut stack = vec![*expr];
         while let Some(node) = stack.pop() {
@@ -953,7 +967,7 @@ impl Int33C {
                     let wraps = ast_utils::get_binary_operator(&node, source)
                         .is_some_and(|op| matches!(op, "+" | "*" | "<<"))
                         && const_eval::try_evaluate_expr(&node, source, &macros).is_none()
-                        && expr_type::expr_type(&node, source, &env).and_then(|t| t.is_unsigned())
+                        && expr_type::expr_type(&node, source, env).and_then(|t| t.is_unsigned())
                             == Some(true);
                     if wraps {
                         return true;
@@ -1072,7 +1086,7 @@ impl Int33C {
     /// least one call, and nothing in the function may write the parameter.
     /// A caller forwarding its own parameter is judged the same way in turn;
     /// a cycle proves nothing.
-    fn every_caller_passes_nonzero(&self, divisor: &Node, source: &str) -> bool {
+    fn every_caller_passes_nonzero(&self, divisor: &Node, source: &str, env: &TypeEnv) -> bool {
         let mut param = *divisor;
         while let Some(inner) = nonzero_facts::peel_sign(&param) {
             param = inner;
@@ -1101,14 +1115,21 @@ impl Int33C {
         }
         // Provisionally unproven, so a call cycle back to here proves nothing.
         self.caller_proofs.borrow_mut().insert(key, false);
-        let proven = self.callers_pass_nonzero(&func, name, index, source);
+        let proven = self.callers_pass_nonzero(&func, name, index, source, env);
         self.caller_proofs.borrow_mut().insert(key, proven);
         proven
     }
 
     /// The body of [`Self::every_caller_passes_nonzero`] for parameter
     /// `index`, named `param`, of `func`.
-    fn callers_pass_nonzero(&self, func: &Node, param: &str, index: usize, source: &str) -> bool {
+    fn callers_pass_nonzero(
+        &self,
+        func: &Node,
+        param: &str,
+        index: usize,
+        source: &str,
+        env: &TypeEnv,
+    ) -> bool {
         let Some(body) = func.child_by_field_name("body") else {
             return false;
         };
@@ -1177,7 +1198,7 @@ impl Int33C {
                         .filter(|a| a.kind() != "comment")
                         .nth(index)
                 })
-                .is_some_and(|arg| self.is_divisor_checked(call, &arg, source))
+                .is_some_and(|arg| self.is_divisor_checked(call, &arg, source, env))
         })
     }
 
