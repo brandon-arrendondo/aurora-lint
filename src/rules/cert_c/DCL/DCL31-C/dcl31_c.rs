@@ -662,18 +662,12 @@ fn unwrap_to_function_declarator<'a>(node: &Node<'a>) -> Option<Node<'a>> {
 /// `__attribute__((aligned(8)))` is a `call_expression` to something that was
 /// never declared and never called.
 fn is_inside_attribute(node: &Node) -> bool {
-    let mut current = *node;
-    while let Some(parent) = current.parent() {
-        match parent.kind() {
-            "attribute_specifier"
-            | "attribute_declaration"
-            | "attributed_declarator"
-            | "attribute" => return true,
-            _ => {}
-        }
-        current = parent;
-    }
-    false
+    ast_utils::ancestors(node).any(|parent| {
+        matches!(
+            parent.kind(),
+            "attribute_specifier" | "attribute_declaration" | "attributed_declarator" | "attribute"
+        )
+    })
 }
 
 /// Returns true if the node is nested inside a preprocessor conditional block
@@ -681,13 +675,10 @@ fn is_inside_attribute(node: &Node) -> bool {
 /// functions declared in conditionally-included headers that tree-sitter
 /// cannot resolve.
 fn is_inside_preproc_conditional(node: &Node) -> bool {
-    let mut current = *node;
-    while let Some(parent) = current.parent() {
-        match parent.kind() {
-            "preproc_ifdef" | "preproc_if" | "preproc_elif" => return true,
-            _ => {}
-        }
-        current = parent;
-    }
-    false
+    ast_utils::ancestors(node).any(|parent| {
+        matches!(
+            parent.kind(),
+            "preproc_ifdef" | "preproc_if" | "preproc_elif"
+        )
+    })
 }

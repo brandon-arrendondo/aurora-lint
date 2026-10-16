@@ -13,7 +13,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -96,23 +96,10 @@ impl Dcl36C {
 
     /// Check if this is a file-scope declaration (not inside a function)
     fn is_file_scope(&self, node: &Node) -> bool {
-        let mut current = node.parent();
-        while let Some(parent) = current {
-            // If we hit a function definition, this is not file scope
-            if parent.kind() == "function_definition" {
-                return false;
-            }
-            // If we hit a compound statement (block), check if it's inside a function
-            if parent.kind() == "compound_statement" {
-                if let Some(grandparent) = parent.parent() {
-                    if grandparent.kind() == "function_definition" {
-                        return false;
-                    }
-                }
-            }
-            current = parent.parent();
-        }
-        true
+        // A block directly inside a function is reached on the way to the
+        // function itself, so meeting the function settles both questions.
+        // One descent for the chain: a climb costs the depth a step.
+        !ast_utils::ancestors(node).any(|a| a.kind() == "function_definition")
     }
 
     /// Process a declaration node

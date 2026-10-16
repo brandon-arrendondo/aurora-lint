@@ -48,16 +48,13 @@ pub fn write_target_is(node: &Node, name: &str, source: &str) -> bool {
     }
 }
 
-/// The body of the function definition enclosing `node`.
+/// The body of the function definition enclosing `node`, from one descent
+/// ([`ast_utils::ancestors`]) rather than a climb that costs the depth per
+/// step.
 fn enclosing_function_body<'t>(node: &Node<'t>) -> Option<Node<'t>> {
-    let mut current = node.parent();
-    while let Some(parent) = current {
-        if parent.kind() == "function_definition" {
-            return parent.child_by_field_name("body");
-        }
-        current = parent.parent();
-    }
-    None
+    ast_utils::ancestors(node)
+        .find(|a| a.kind() == "function_definition")?
+        .child_by_field_name("body")
 }
 
 /// The last write to `name` that ends before `site` in the enclosing

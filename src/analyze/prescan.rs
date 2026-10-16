@@ -3340,8 +3340,8 @@ impl<'t> IntCallWalk<'_, 't> {
     /// the inner one, so its writes are seen.
     fn loop_counter_range(&mut self, ident: &Node<'t>, name: &str) -> Option<(i64, i64)> {
         let mut inner = *ident;
-        let mut current = ident.parent();
-        while let Some(node) = current {
+        // One descent for the whole chain; a climb costs the depth a step.
+        for node in ast_utils::ancestors(ident) {
             if node.id() == self.function.id() {
                 return None;
             }
@@ -3365,7 +3365,6 @@ impl<'t> IntCallWalk<'_, 't> {
                 }
             }
             inner = node;
-            current = node.parent();
         }
         None
     }

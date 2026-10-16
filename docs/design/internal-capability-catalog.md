@@ -396,6 +396,7 @@ builds the report rows for a header found only by ignoring case.
 | `resolve_identifier_binding` | `(ident_node: &Node, name: &str, source: &str) -> Option<IdentifierBinding>` | The three-way fallback every rule otherwise hand-rolls: nearest enclosing local declaration (`Local(decl)`), else the containing function's parameter (`Parameter(type text)`), else a file-scope global (`Global(decl)`). Answers "WHERE is this occurrence bound". |
 | `resolve_identifier_declarator` | `(ident_node: &Node, name: &str, source: &str) -> Option<(Node, Node)>` | Same fallback, but hands back `(declaration \| parameter_declaration, declarator-for-name)` as nodes in every case, so a caller classifying the DECLARED TYPE reads the specifiers and the declarator's kind through one code path whether the name is a local, a parameter or a global. Reach for this over `resolve_identifier_binding` when the question is "what type is this name here" — INT16-C answers "is this operand a signed integer / is this destination unsigned" with it. **A file-wide `name -> declaration` map is not a substitute**: a name is not a variable, and INT16-C's map matched lua's `unsigned int i` in one function to an `int i` in another (119 of 120 adjudicated findings false). |
 | `ScopeDeclarations` | `ScopeDeclarations::default()`; methods `find_enclosing_declaration_for_identifier_in`, `resolve_identifier_binding_in`, `resolve_identifier_declarator_in` with the free `_in` functions' signatures | The `_in` resolvers (from the tree's root, no `parent()` climb) reading each block's declarations once for every identifier resolved through one value, instead of once per identifier: per identifier, resolving every name in a function of N statements reads N statements each time. Same answers as the free functions. Keyed by node id: hold one per function or file, never past its tree. It also reads the translation unit's file-scope `declaration`s (outside conditional arms) once, for every name that falls through to a global lookup. |
+| `ScopeDeclarations::indexed` / `over` / `resolve_identifier_declarator_indexed` | `(root) -> Self` / `(Rc<ScopeIndex>) -> Self` / `(&self, ident: &Node, name, source) -> Option<Option<(Node, Node)>>` | A `ScopeDeclarations` that finds the scopes around an identifier from an index of the tree (`ScopeIndex`: a `NodeIndex` and, per node, its nearest declaration scope or function), stepping from one scope to the next, instead of descending from the root to the identifier: a resolution costs the scopes around the identifier, not its depth. `indexed` builds the index on the first resolution; `over` shares one built per file (`side_effects::FileScope` builds one, and each function's collector resolves through it). `resolve_identifier_declarator_indexed` takes an occurrence of any lifetime, looks it up in the index and resolves the index's node, so a caller whose node and environment lifetimes are unrelated needs no signature change; `None` means no index or another tree. Same answers as the descent, every fixture checked. Hold one for a file, never one per call: the index costs a pass over the tree. `TypeEnv::in_tree` holds one (`declared_type`, `TypeEnv::declarations`), and `pointer_typing` takes one (`is_pointer_arithmetic_in` / `_with`). |
 | `tree_root` | `(node: &Node) -> Node` | The root of the tree holding `node`, in constant time: asked of the node's own tree, not climbed to with `parent()`, which costs O(depth) a step because tree-sitter recovers a parent by descending from the root. The free resolvers above hand it to their `_in` forms, so they never climb either. The crate's one `unsafe` call, allowed on this function alone under `Cargo.toml`'s `[lints.rust] unsafe_code = "deny"`, which covers every target (tests, examples and `build.rs` too). |
 | `ancestors` | `(node: &Node) -> impl Iterator<Item = Node>` | `node`'s ancestors innermost first, ending at the root: the chain a `parent()` climb visits, from the substrate's one descent (`query::ancestors`) from `tree_root`; the substrate's `_from_root` queries need the root in hand, and this finds it. O(depth) for the whole chain, where the climb is O(depth) a step, so O(depth²) out of a deep expression and cubic when asked at every operator of one. Use it for any walk outward that does not already hold its ancestors. |
 | `resolve_identifier_declared_type` | `(ident_node: &Node, name: &str, source: &str) -> Option<String>` | `resolve_identifier_declarator` asked the type question: the resolved declaration's `type` field verbatim (`size_t`, `unsigned long`, a typedef alias -- storage classes and qualifiers are not in that field), with ` *` appended for a pointer OR array declarator, since an array name used as an operand decays to a pointer. `None` when the occurrence resolves to nothing in this file or to a function. Consult it BEFORE any `{name -> type}` map: INT32-C's per-function map falls back to a file-wide one whenever the enclosing function is not a parsed `function_definition` (a macro-headed `SM_STATE(M, S) { ... }`, a body tree-sitter recovers around), and there hostap's `int wpa_ie_len` answered for another function's `size_t wpa_ie_len` -- and an `unsigned int j` silenced another function's `int j`. |
@@ -1870,6 +1871,26 @@ operator's text or its whole function's, is quadratic.
 | `text` / `span` | `(&Node) -> &str` / `(start, end) -> &str` | A node's (or a span's) text in the index. |
 | `contains` / `span_contains` | `(&Node, pattern) -> bool` / `(start, end, pattern) -> bool` | `text(node).contains(pattern)`, as a binary search over where `pattern` occurs, found once per pattern for the file (overlapping occurrences included). INT30-C's function-text and operand-text checks. |
 
+### `src/utility/cert_c/node_index.rs`
+**Problem solved:** `Node::parent` finds a parent by descending from the
+root, so a climb of d levels costs O(d²), and even one descent
+(`ancestors_from_root`, `ancestors`) costs the node's depth: asked of every
+node of a deep nesting, the square of the depth.
+
+| Function | Signature | Description |
+|---|---|---|
+| `NodeIndex::new` | `(root: Node) -> NodeIndex` | Every node of the tree in pre-order with its parent's row and its subtree's end, from one cursor walk (no recursion). Keyed by `Node::id`; a node of another tree is not in it. Language-agnostic, shaped for `lang_parsing_substrate`. |
+| `parent` / `parent_or_climb` / `ancestors` / `ancestors_or_climb` | `(&Node) -> Option<Node>` / same / `(&Node) -> impl Iterator` / same | A parent in constant time, an ancestor chain at constant cost a step, innermost first. The `_or_climb` forms fall back to `Node::parent` for a node the table lacks (the indexed subtree's own top, another tree), so an index over just the subtree a caller walks serves every node it meets. |
+| `contains` | `(ancestor, node) -> bool` | Subtree membership in constant time, by pre-order rows. |
+| `nearest_column` / `nearest` / `nearest_above` / `ancestors_where` | `(pred) -> NearestColumn` / `(&col, &Node) -> Option<Node>` / same / `(&col, &Node) -> impl Iterator` | "The nearest ancestor where P" for every node, in one pass; then the nearest such node at or strictly above a node, or all of them innermost first without visiting the nodes between. `ScopeIndex` is this with P = declaration scope or function. |
+
+Where a caller has no per-file value to hold an index in, and climbs
+outward once per call, `ast_utils::ancestors` (one descent, O(depth)) is the
+cheaper fix: `last_write`'s enclosing function, the function summaries'
+reach tests, the prescan's loop-counter range, DCL31-C and DCL36-C climb
+that way. A `Node` cannot be kept in a thread-local without `unsafe`, so
+the index is always held explicitly.
+
 ### `src/utility/cert_c/subtree_any.rs`
 **Problem solved:** `!query::find_descendants(n, p).is_empty()` asked of
 every operand.
@@ -1880,14 +1901,10 @@ every operand.
 
 These, `ConstMemo`, `float_typing::FloatMemo`, `pointer_typing::PointerMemo`
 and `int_provenance::RiskMemo` (`operand_is_risky_with`) are what INT30-C
-holds per file. What they do not cover yet: `expr_type` and `pointer_typing`
-resolve each identifier by a descent from the root, O(depth) each, so a rule
-asking about every operand of a deep expression still pays the square there.
-Answering that needs O(1) parent and nearest-statement lookups for a node,
-which tree-sitter does not give; a per-tree index with parent and "nearest
-ancestor where" columns, built in one pass, would (a candidate for
-`lang_parsing_substrate`, which already flattens a tree into such columns
-for Python).
+holds per file. `expr_type` and `pointer_typing` resolve each identifier
+through an indexed `ScopeDeclarations` (see `node_index.rs` above), so a
+rule asking about every operand of a deep expression pays the scopes around
+each operand, not its depth.
 
 Nor do they cover a function with many parameters. Resolving a name to a
 parameter reads the function's whole parameter list
@@ -1895,8 +1912,9 @@ parameter reads the function's whole parameter list
 `find_parameter_declaration`). The function summaries, float typing,
 pointer typing and INT30-C's identifier typing each resolve a name with a
 fresh `ScopeDeclarations`, so an expression over N distinct parameters costs
-N² there. A per-function parameter index, kept as long as the caller keeps
-its `ScopeDeclarations` and held per file by those callers, would answer it.
+N² there. A per-function parameter index kept in `ScopeIndex` (or beside it
+in an indexed `ScopeDeclarations`, which float and pointer typing now hold
+per file) would answer it.
 
 ## Two files flagged as legacy, not exemplars
 

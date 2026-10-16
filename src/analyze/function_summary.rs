@@ -7,6 +7,7 @@
 use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
 use crate::analyze::init_state;
 use crate::analyze::null_state::NullState;
+use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::node_children::NodeChildren;
@@ -3134,11 +3135,8 @@ fn line_has_arrow_or_subscript_write(body_text: &str, param_name: &str) -> bool 
 /// transparent (still unconditional). Used to distinguish a MUST-free from
 /// a merely-possible MAY-free.
 fn is_unconditionally_reached(node: &Node, body: &Node) -> bool {
-    let mut current = *node;
-    loop {
-        let Some(parent) = current.parent() else {
-            return true;
-        };
+    // One descent for the chain: a climb costs the depth a step.
+    for parent in ast_utils::ancestors(node) {
         if parent.id() == body.id() {
             return true;
         }
@@ -3155,8 +3153,8 @@ fn is_unconditionally_reached(node: &Node, body: &Node) -> bool {
         {
             return false;
         }
-        current = parent;
     }
+    true
 }
 
 /// Whether `condition` is EXACTLY a null test of `name` and nothing else,
@@ -3222,10 +3220,8 @@ fn is_unconditionally_reached_modulo_null_guard(
     guarded: &str,
 ) -> bool {
     let mut current = *node;
-    loop {
-        let Some(parent) = current.parent() else {
-            return true;
-        };
+    // One descent for the chain: a climb costs the depth a step.
+    for parent in ast_utils::ancestors(node) {
         if parent.id() == body.id() {
             return true;
         }
@@ -3269,6 +3265,7 @@ fn is_unconditionally_reached_modulo_null_guard(
         }
         current = parent;
     }
+    true
 }
 
 /// Whether `condition`, when true, says `name` and/or `*name` is non-null
@@ -3367,7 +3364,7 @@ fn pointee_null_guard_on(condition: &Node, source: &str, name: &str) -> Option<b
 fn returns_before(node: &Node, body: &Node, source: &str, name: &str, pointee: bool) -> bool {
     let on_null_branch = |ret: &Node| {
         let mut current = *ret;
-        while let Some(parent) = current.parent() {
+        for parent in ast_utils::ancestors(ret) {
             if parent.id() == body.id() {
                 break;
             }
@@ -3412,10 +3409,8 @@ fn is_unconditionally_reached_modulo_pointee_guard(
         return false;
     }
     let mut current = *node;
-    loop {
-        let Some(parent) = current.parent() else {
-            return true;
-        };
+    // One descent for the chain: a climb costs the depth a step.
+    for parent in ast_utils::ancestors(node) {
         if parent.id() == body.id() {
             return true;
         }
@@ -3443,6 +3438,7 @@ fn is_unconditionally_reached_modulo_pointee_guard(
         }
         current = parent;
     }
+    true
 }
 
 /// Every assignment in `body` of a null pointer through `param`:
