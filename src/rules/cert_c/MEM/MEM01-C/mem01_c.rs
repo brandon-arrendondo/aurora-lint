@@ -38,7 +38,7 @@ use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::clearing_extent::cleared_extent;
 use crate::utility::cert_c::node_children::NodeChildren;
-use crate::utility::cert_c::pp_tokens::{lex_replacement_list, PpKind, KEYWORDS};
+use crate::utility::cert_c::pp_tokens::{lex_replacement_list, PpKind, PpToken, KEYWORDS};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1228,7 +1228,9 @@ impl CalleeScope<'_> {
                 return false;
             };
             let tokens = lex_replacement_list(body, false);
-            if tokens.first().is_some_and(|t| t.is("->") || t.is(".")) {
+            if tokens.first().is_some_and(|t| t.is("->") || t.is("."))
+                || may_declare_tokens(&tokens)
+            {
                 return false;
             }
             tokens
@@ -1258,6 +1260,63 @@ impl CalleeScope<'_> {
                     _ => !token.is("##") && !token.is("#"),
                 })
         })
+    }
+
+    /// Whether every definition of the macro `name` is object-like and
+    /// expands to a type specifier and nothing else: type keywords and
+    /// qualifiers, a `struct`, `union` or `enum` tag, a typedef the file
+    /// declares outside every `#if` arm whose name no file declares an object
+    /// by, or a macro that does the same in turn, at most
+    /// [`MAX_EXPANSION_DEPTH`] deep. Such a macro, as a declaration's type,
+    /// leaves the declarators the parser read the only names it declares.
+    fn expands_to_a_type(&self, name: &str, depth: usize) -> bool {
+        if depth >= MAX_EXPANSION_DEPTH
+            || self
+                .ctx
+                .function_macro_arms
+                .get(name)
+                .is_some_and(|entries| {
+                    entries
+                        .iter()
+                        .any(|e| e.files.iter().any(|f| self.ctx.header_in_reach(f)))
+                })
+        {
+            return false;
+        }
+        let definitions: Vec<&MacroDefinition> = self
+            .macros
+            .get(name)
+            .into_iter()
+            .flatten()
+            .chain(
+                self.ctx
+                    .headers
+                    .macro_definitions
+                    .get(name)
+                    .into_iter()
+                    .flatten(),
+            )
+            .collect();
+        !definitions.is_empty()
+            && definitions.iter().all(|definition| {
+                let MacroDefinition::Object { body } = definition else {
+                    return false;
+                };
+                let tokens = lex_replacement_list(body, false);
+                !tokens.is_empty()
+                    && tokens.iter().enumerate().all(|(i, t)| {
+                        let word: &str = &t.text;
+                        t.kind == PpKind::Identifier
+                            && (TYPE_WORDS.contains(&word)
+                                || matches!(word, "struct" | "union" | "enum")
+                                || (i > 0
+                                    && matches!(&*tokens[i - 1].text, "struct" | "union" | "enum"))
+                                || (self.typedefs.contains(word) && !self.may_name_object(word))
+                                || (word != name
+                                    && self.ctx.may_be_macro(word, &self.macros)
+                                    && self.expands_to_a_type(word, depth + 1)))
+                    })
+            })
     }
 
     /// Whether some scanned file or header declares an object `name` at file
@@ -1416,8 +1475,108 @@ fn union_field_sets(root: Node, source: &str) -> Vec<HashSet<String>> {
         .collect()
 }
 
-/// Every object the file declares at file scope (a function or a typedef is
-/// none).
+/// Storage classes: a replacement list that holds one declares.
+const STORAGE_CLASSES: [&str; 7] = [
+    "extern",
+    "static",
+    "typedef",
+    "register",
+    "auto",
+    "_Thread_local",
+    "thread_local",
+];
+
+/// Whether a replacement list, expanded where an expression's operand
+/// stands, may declare something: only through a `;`, a brace (a statement
+/// expression or a compound literal) or a storage class can it.
+fn may_declare_tokens(tokens: &[PpToken]) -> bool {
+    tokens.iter().any(|t| {
+        t.is(";")
+            || t.is("{")
+            || t.is("}")
+            || (t.kind == PpKind::Identifier && STORAGE_CLASSES.contains(&&*t.text))
+    })
+}
+
+/// The keywords and qualifiers a type specifier is made of.
+const TYPE_WORDS: [&str; 16] = [
+    "void", "char", "short", "int", "long", "float", "double", "signed", "unsigned", "_Bool",
+    "bool", "_Complex", "const", "volatile", "restrict", "_Atomic",
+];
+
+/// Whether `name`, a `type_identifier`, is the whole type of a declaration
+/// in the body (a `for` initializer's included).
+fn is_declaration_type(name: &Node) -> bool {
+    name.parent().is_some_and(|parent| {
+        parent.kind() == "declaration"
+            && parent
+                .child_by_field_name("type")
+                .is_some_and(|t| t.id() == name.id())
+    })
+}
+
+/// Whether `ident` stands as an operand of an expression the callee
+/// evaluates: every node from it up to the statement that holds it is an
+/// expression, reached through an operand, and the statement uses that
+/// expression as its value: an expression statement the identifier does
+/// not begin, a condition, a `for` loop's condition or update, a
+/// returned value or a `case` value. A name anywhere else (in a
+/// declaration's specifiers, declarator or initializer, a type, a `for`
+/// initializer, a statement's first token) may stand for a declaration the parsed
+/// body does not show, which can shadow what the callee's other names
+/// resolve to.
+fn in_operand_position(ident: &Node) -> bool {
+    let field_is = |parent: &Node, child: &Node, fields: &[&str]| {
+        fields.iter().any(|f| {
+            parent
+                .children_by_field_name(f, &mut parent.walk())
+                .any(|c| c.id() == child.id())
+        })
+    };
+    if ident.kind() != "identifier" {
+        return false;
+    }
+    let mut child = *ident;
+    while let Some(parent) = child.parent() {
+        match parent.kind() {
+            // A declaration begins at a statement's first token, so a
+            // macro there may open one (`DECL = 0;`, `DECL & x;`).
+            "expression_statement" => return ident.start_byte() != parent.start_byte(),
+            "return_statement" => return true,
+            "if_statement" | "while_statement" | "do_statement" | "switch_statement" => {
+                return field_is(&parent, &child, &["condition"])
+            }
+            "for_statement" => return field_is(&parent, &child, &["condition", "update"]),
+            "case_statement" => return field_is(&parent, &child, &["value"]),
+            "cast_expression" => {
+                if !field_is(&parent, &child, &["value"]) {
+                    return false;
+                }
+            }
+            "sizeof_expression" => {
+                if !field_is(&parent, &child, &["value"]) {
+                    return false;
+                }
+            }
+            "parenthesized_expression"
+            | "binary_expression"
+            | "unary_expression"
+            | "pointer_expression"
+            | "update_expression"
+            | "assignment_expression"
+            | "conditional_expression"
+            | "comma_expression"
+            | "call_expression"
+            | "argument_list"
+            | "field_expression"
+            | "subscript_expression" => {}
+            _ => return false,
+        }
+        child = parent;
+    }
+    false
+}
+
 /// The names `root`'s file-scope `typedef`s declare outside every `#if` arm.
 fn unconditional_typedef_names(root: Node, source: &str) -> HashSet<String> {
     ast_utils::top_level_items(root)
@@ -1432,6 +1591,8 @@ fn unconditional_typedef_names(root: Node, source: &str) -> HashSet<String> {
         .collect()
 }
 
+/// Every object the file declares at file scope (a function or a typedef is
+/// none).
 fn file_scope_variables(root: Node, source: &str) -> HashSet<String> {
     ast_utils::top_level_items(root)
         .filter(|item| item.kind() == "declaration")
@@ -1542,6 +1703,8 @@ fn parameter_never_reads_member(
         .copied()
         .chain(declared_names.iter().map(String::as_str))
         .collect();
+    // The answers it keeps hold for these `reads` only: one walk per freed
+    // member and callee body.
     let mut walk = ExpansionWalk::default();
     let hidden_read = query::find_descendants_of_kind(*body, "field_identifier")
         .into_iter()
@@ -1555,7 +1718,18 @@ fn parameter_never_reads_member(
             .any(|n| {
                 let name = get_node_text(&n, source);
                 scope.ctx.may_be_macro(name, &scope.macros)
-                    && !scope.expansion_names_no_read(name, &reads, &mut walk)
+                    && (!in_operand_position(&n)
+                        || !scope.expansion_names_no_read(name, &reads, &mut walk))
+            })
+        // A macro anywhere but an operand may stand for a declaration the
+        // parsed body does not show, unless it is a declaration's whole type
+        // and expands to a type alone.
+        || query::find_descendants_of_kind(*body, "type_identifier")
+            .into_iter()
+            .any(|n| {
+                let name = get_node_text(&n, source);
+                scope.ctx.may_be_macro(name, &scope.macros)
+                    && !(is_declaration_type(&n) && scope.expands_to_a_type(name, 0))
             })
         || query::find_descendants_of_kind(*body, "identifier")
             .into_iter()

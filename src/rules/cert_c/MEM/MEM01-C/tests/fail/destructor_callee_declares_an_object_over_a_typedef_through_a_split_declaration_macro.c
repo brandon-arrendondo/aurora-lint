@@ -1,0 +1,34 @@
+/*
+ * Rule: MEM01-C
+ * Source: synthetic
+ * Status: FAIL - a declaration whose type and declarator are two macros declares an extern object by the name the file's typedef makes a type, and the callee reads the freed member through it
+ */
+
+#include <stdlib.h>
+#include <stdio.h>
+
+struct conn {
+  char *ssl;
+  char *engine;
+};
+
+typedef int log_conn;
+
+void set_log(struct conn *c);
+
+#define CONN_PTR struct conn *
+#define LOG_NAME log_conn
+#define LOG_TARGET log_conn
+
+static void conn_log(struct conn *c) {
+  extern CONN_PTR LOG_NAME;
+  c->engine = NULL;
+  if (LOG_TARGET) puts(LOG_TARGET->ssl);
+}
+
+void conn_free(struct conn *c) {
+  set_log(c);
+  free(c->ssl);
+  conn_log(c);
+  free(c);
+}
