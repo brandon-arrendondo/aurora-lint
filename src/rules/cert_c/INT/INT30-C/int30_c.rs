@@ -32,6 +32,10 @@ use tree_sitter::Node;
 /// Depth cap for walking into an operand looking for its type.
 const OPERAND_TYPE_MAX_DEPTH: u32 = 8;
 
+/// A name and the statement it is resolved under, by the statement's kind
+/// and span; see `Int30C::identifier_types`.
+type NameUnderStatement = (String, &'static str, usize, usize);
+
 /// A node's kind and byte span: what it was, and enough to find it again.
 #[derive(Clone, Copy)]
 struct Span {
@@ -234,10 +238,10 @@ pub struct Int30C {
     /// expression's.
     statement_expressions: Cell<bool>,
     /// The declared type each name resolves to under each statement
-    /// ([`resolves_alike_under`]), by name and the statement's span: `None`
-    /// when it resolves to no declaration, `Some(None)` when to one whose
-    /// type has no spelling.
-    identifier_types: RefCell<HashMap<(String, usize, usize), Option<Resolution>>>,
+    /// ([`resolves_alike_under`]), by name and the statement's kind and
+    /// span: `None` when it resolves to no declaration, `Some(None)` when to
+    /// one whose type has no spelling.
+    identifier_types: RefCell<HashMap<NameUnderStatement, Option<Resolution>>>,
     /// Per-node answers for this file, cleared per file: whether an
     /// expression is floating, whether a subtree spells out an unsigned type
     /// ([`Self::spells_out_unsigned`]), and whether a subtree's last token is
@@ -419,7 +423,12 @@ impl Int30C {
         }
         let outer = self.site_around(ident).map(|site| site.outer.clone())?;
         let statement = outer.first().filter(|s| resolves_alike_under(s.kind))?;
-        let key = (name.to_string(), statement.start, statement.end);
+        let key = (
+            name.to_string(),
+            statement.kind,
+            statement.start,
+            statement.end,
+        );
         if let Some(known) = self.identifier_types.borrow().get(&key) {
             return Some(known.clone());
         }
