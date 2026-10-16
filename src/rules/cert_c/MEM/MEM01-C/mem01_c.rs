@@ -1129,10 +1129,10 @@ struct CalleeScope<'c> {
     /// declares ([`HeaderTables::global_object_names`]).
     globals: HashSet<String>,
     /// The typedef names the file declares at file scope outside every
-    /// `#if` arm: the only names a macro's expansion may use as a type. The
-    /// project's typedef tables hold every file's and every arm's, and a
-    /// name one of them makes a type may be an object where the callee
-    /// compiles.
+    /// `#if` arm: the only names a declaration's type macro may expand to
+    /// ([`CalleeScope::expands_to_a_type`]). The project's typedef tables
+    /// hold every file's and every arm's, and a name one of them makes a
+    /// type may be an object where the callee compiles.
     typedefs: HashSet<String>,
     ctx: &'c AddressOfCallContext,
 }
@@ -1158,12 +1158,13 @@ impl CalleeScope<'_> {
     /// replacement list were written in place: every definition, the file's
     /// and every scanned file's, is object-like (a function-like or
     /// unreadable one, a token paste among them, is not proven), and every
-    /// identifier it names is known to hold nothing: a keyword, a type name
-    /// (a tag, or a typedef the file declares outside every `#if` arm and no
-    /// file declares an object of the same name), a field selected off
-    /// something in the list, or a macro that passes in turn. Anything else
-    /// is a read: a name no table knows may be an object declared where the
-    /// scan does not see it, such as by another macro's expansion; so is one
+    /// identifier it names is known to hold nothing: a keyword, a tag after
+    /// `struct`, `union` or `enum`, a field selected off something in the
+    /// list, or a macro that passes in turn. Anything else is a read: a name
+    /// no table knows may be an object declared where the scan does not see
+    /// it, such as by another macro's expansion. A typedef name is one too: a
+    /// block-scope declaration the parse misreads (`conn_p (name) = 0;` reads
+    /// as a call) can declare an object of that name in the callee; so is one
     /// of `reads` (the callee's parameters and own declarations, and the
     /// member's field names, in any position), a call, a function the
     /// project defines (it may read an object the caller stored the object
@@ -1252,7 +1253,6 @@ impl CalleeScope<'_> {
                         }
                         keyword
                             || after(&["->", ".", "struct", "union", "enum"])
-                            || (self.typedefs.contains(word) && !self.may_name_object(word))
                             || (self.ctx.may_be_macro(word, &self.macros)
                                 && self.expansion_names_no_read(word, reads, walk))
                     }
@@ -1522,9 +1522,12 @@ fn is_declaration_type(name: &Node) -> bool {
 /// not begin, a condition, a `for` loop's condition or update, a
 /// returned value or a `case` value. A name anywhere else (in a
 /// declaration's specifiers, declarator or initializer, a type, a `for`
-/// initializer, a statement's first token) may stand for a declaration the parsed
-/// body does not show, which can shadow what the callee's other names
-/// resolve to.
+/// initializer, a statement's first token) may stand for a declaration the
+/// parsed body does not show, which can shadow what the callee's other names
+/// resolve to. A statement that begins with a typedef name may be a
+/// declaration too (`conn_p (DECL) = 0;` reads as a call), and a name in it
+/// its declarator, which makes a typedef's name an object: an expansion's
+/// typedef name is a read for that reason.
 fn in_operand_position(ident: &Node) -> bool {
     let field_is = |parent: &Node, child: &Node, fields: &[&str]| {
         fields.iter().any(|f| {
@@ -1540,7 +1543,9 @@ fn in_operand_position(ident: &Node) -> bool {
     while let Some(parent) = child.parent() {
         match parent.kind() {
             // A declaration begins at a statement's first token, so a
-            // macro there may open one (`DECL = 0;`, `DECL & x;`).
+            // macro there may open one (`DECL = 0;`, `DECL & x;`). A typedef
+            // there may too (`T (DECL) = 0;`), with `DECL` its declarator:
+            // an expansion naming a typedef is a read for that reason.
             "expression_statement" => return ident.start_byte() != parent.start_byte(),
             "return_statement" => return true,
             "if_statement" | "while_statement" | "do_statement" | "switch_statement" => {

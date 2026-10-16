@@ -1,7 +1,7 @@
 /*
  * Rule: MEM01-C
  * Source: synthetic
- * Status: PASS - the callee's object-like macros expand only to constants, keywords and a type the file declares, and the object is freed next
+ * Status: PASS - the callee's object-like macros expand only to constants, keywords and a struct tag, and the object is freed next
  */
 
 #include <stdlib.h>
@@ -15,7 +15,7 @@ struct conn {
 };
 
 #define CONN_CLOSED 0x2u
-#define CONN_FLAGS_NONE ((conn_flags)0)
+#define CONN_FLAGS_NONE ((unsigned int)0)
 #define CONN_MARK (CONN_CLOSED | sizeof(struct conn))
 
 static void conn_reset(struct conn *c) {
