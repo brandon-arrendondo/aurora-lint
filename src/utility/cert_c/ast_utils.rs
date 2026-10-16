@@ -460,14 +460,15 @@ impl<'a> ScopeDeclarations<'a> {
         declarations
     }
 
-    /// The `declaration`s among [`top_level_items_outside_arms`] of the
-    /// translation unit `top`, in its order.
+    /// The items among [`top_level_items_outside_arms`] of the translation
+    /// unit `top` that can bind a name ([`binds_at_file_scope`]), in its
+    /// order.
     fn globals(&self, top: &Node<'a>) -> std::rc::Rc<[Node<'a>]> {
         if let Some(known) = self.globals.borrow().get(&top.id()) {
             return known.clone();
         }
         let globals: std::rc::Rc<[Node<'a>]> = top_level_items_outside_arms(*top)
-            .filter(|item| item.kind() == "declaration")
+            .filter(binds_at_file_scope)
             .collect();
         self.globals.borrow_mut().insert(top.id(), globals.clone());
         globals
@@ -861,11 +862,15 @@ fn misparsed_parts<'a>(stmt: &Node<'a>) -> Option<(Node<'a>, Node<'a>, Node<'a>,
 ///   `T(*x)(a) = 0` can only be a declaration;
 /// - a parameter starts with a type keyword (`T (*x)(int)`): no argument
 ///   expression does;
-/// - a `typedef` of `T` is in scope at the statement ([`typedef_in_scope`]).
+/// - a `typedef` of `T` is in scope at the statement ([`typedef_in_scope`]);
+/// - the statement is at file scope, through preprocessor arms: C has no
+///   expression statement there, so `LONG (*x)(HKEY);` declares `x` even
+///   with `LONG` from `<windows.h>`.
 ///
-/// A typedef that only a header declares, with no initializer and no keyword
-/// among the parameters (`LONG (*x)(HKEY);` with `LONG` from `<windows.h>`),
-/// is left a call: the file alone cannot tell it from `f(*p)(x)`.
+/// In a block, a typedef that only a header declares, with no initializer
+/// and no keyword among the parameters (`LONG (*x)(HKEY);` with `LONG` from
+/// `<windows.h>`), is left a call: the file alone cannot tell it from
+/// `f(*p)(x)`.
 pub fn misparsed_function_pointer_declaration<'a>(
     stmt: &Node<'a>,
     source: &str,
@@ -882,10 +887,67 @@ pub fn misparsed_function_pointer_declaration<'a>(
                     .any(|k| get_node_text(&arg, source).split_whitespace().next() == Some(k))
         })
     });
-    if keyword_param || typedef_in_scope(stmt, get_node_text(&type_name, source), source) {
+    if keyword_param
+        || at_file_scope(stmt)
+        || typedef_in_scope(stmt, get_node_text(&type_name, source), source)
+    {
         return Some(declared);
     }
     None
+}
+
+/// Whether `stmt` is an item of the translation unit itself, directly or
+/// through `#if` arms. Not through an `ERROR`: parser recovery can leave a
+/// function body's statements there with no block around them.
+///
+/// Recovery can also strand a body statement directly under the
+/// translation unit, beside an `ERROR` rather than inside one (an extra
+/// `}`), so a stranded `get(*ctx)(1);` would read as declaring `ctx`. That
+/// takes the exact `f(*p)(x)` call shape as well, and a real file-scope
+/// `declaration` of the name still wins ([`file_scope_binder`]).
+fn at_file_scope(stmt: &Node) -> bool {
+    let mut node = *stmt;
+    while let Some(parent) = node.parent() {
+        match parent.kind() {
+            "translation_unit" => return true,
+            "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef"
+            | "preproc_else" => node = parent,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Whether a top-level item can bind a name at file scope: a `declaration`,
+/// or a typedef-led function-pointer declaration tree-sitter read as a call
+/// ([`misparsed_function_pointer_declaration`], asked by
+/// [`declaration_declarator_for`]).
+fn binds_at_file_scope(item: &Node) -> bool {
+    item.kind() == "declaration"
+        || (item.kind() == "expression_statement" && has_misparsed_declaration_shape(item))
+}
+
+/// The file-scope item among `items` that binds `name`: the first
+/// `declaration` of it, else the first misparsed statement declaring it.
+/// A `declaration` wins whatever the order: in a valid program the two
+/// cannot both declare the name, so the statement is then a macro use
+/// (`REGISTER(*count)(int);` before `int count;`) and declares nothing.
+fn file_scope_binder<'a>(
+    items: impl Iterator<Item = Node<'a>>,
+    name: &str,
+    source: &str,
+) -> Option<Node<'a>> {
+    let mut misparsed = None;
+    for item in items {
+        if !binds_at_file_scope(&item) || !declaration_binds_name(&item, name, source) {
+            continue;
+        }
+        if item.kind() == "declaration" {
+            return Some(item);
+        }
+        misparsed.get_or_insert(item);
+    }
+    misparsed
 }
 
 /// Whether `name` names a type at `node` by a `typedef` in this file: the
@@ -1509,8 +1571,7 @@ pub fn find_global_declaration_for_identifier<'a>(
     while let Some(p) = top.parent() {
         top = p;
     }
-    top_level_items_outside_arms(top)
-        .find(|decl| decl.kind() == "declaration" && declaration_binds_name(decl, name, source))
+    file_scope_binder(top_level_items_outside_arms(top), name, source)
 }
 
 /// Where an identifier use resolves to its binding declaration/parameter.
@@ -1598,11 +1659,7 @@ fn binding_on_path<'a>(
     }
     // The climbing version's translation unit is the topmost ancestor.
     let top = std::iter::once(*root).chain(path.iter().copied()).next()?;
-    declarations
-        .globals(&top)
-        .iter()
-        .find(|decl| declaration_binds_name(decl, name, source))
-        .copied()
+    file_scope_binder(declarations.globals(&top).iter().copied(), name, source)
         .map(IdentifierBinding::Global)
 }
 
@@ -3725,6 +3782,72 @@ mod tests {
             ),
             Some(true)
         );
+    }
+
+    #[test]
+    fn a_file_scope_function_pointer_misread_as_a_call_binds_its_name() {
+        // `LONG` from a header the file does not show: in a block this stays
+        // the call it parsed as, but no expression statement stands at file
+        // scope, so there it declares `g`.
+        let code = "LONG (*g)(HKEY);\nvoid f(void)\n{\n    g(0);\n}\n";
+        assert_eq!(last_occurrence_is_local(code, "g"), Some(false));
+        let (tree, src) = parse_c_code(code);
+        let root = tree.root_node();
+        let call = query::find_descendants_of_kind(root, "identifier")
+            .into_iter()
+            .filter(|n| get_node_text(n, &src) == "g")
+            .max_by_key(|n| n.start_byte())
+            .unwrap();
+        assert!(matches!(
+            resolve_identifier_binding_in(&root, &call, "g", &src),
+            Some(IdentifierBinding::Global(_))
+        ));
+        assert_eq!(
+            find_global_declaration_for_identifier(&call, "g", &src).map(|d| d.kind()),
+            Some("expression_statement")
+        );
+        // No parameters to say declaration.
+        let empty = "LONG (*g)();\nvoid f(void)\n{\n    g();\n}\n";
+        assert_eq!(last_occurrence_is_local(empty, "g"), Some(false));
+        // Under an `#if` arm it is a declaration too, but of one build only:
+        // the file-scope lookups do not choose among arms.
+        let armed = "#ifdef DYN\nLONG (*g)(HKEY);\n#endif\nvoid f(void)\n{\n    g(0);\n}\n";
+        let (tree, src) = parse_c_code(armed);
+        let stmt = query::find_descendants_of_kind(tree.root_node(), "expression_statement")
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(misparsed_function_pointer_declaration(&stmt, &src).is_some());
+        assert_eq!(last_occurrence_is_local(armed, "g"), None);
+    }
+
+    #[test]
+    fn a_file_scope_declaration_binds_before_a_misparsed_statement_of_its_name() {
+        // Both cannot declare `count` in a valid program, so the statement is
+        // a macro use and the declaration binds, before or after it.
+        for code in [
+            "REGISTER(*count)(int);\nint count;\nvoid h(int v)\n{\n    count = v;\n}\n",
+            "int count;\nREGISTER(*count)(int);\nvoid h(int v)\n{\n    count = v;\n}\n",
+        ] {
+            let (tree, src) = parse_c_code(code);
+            let root = tree.root_node();
+            let used = query::find_descendants_of_kind(root, "identifier")
+                .into_iter()
+                .filter(|n| get_node_text(n, &src) == "count")
+                .max_by_key(|n| n.start_byte())
+                .unwrap();
+            assert_eq!(
+                find_global_declaration_for_identifier(&used, "count", &src).map(|d| d.kind()),
+                Some("declaration"),
+                "{code}"
+            );
+            let Some(IdentifierBinding::Global(decl)) =
+                resolve_identifier_binding_in(&root, &used, "count", &src)
+            else {
+                panic!("no file-scope binding: {code}");
+            };
+            assert_eq!(decl.kind(), "declaration", "{code}");
+        }
     }
 
     #[test]

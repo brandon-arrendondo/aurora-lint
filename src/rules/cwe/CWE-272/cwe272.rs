@@ -390,8 +390,9 @@ impl Cwe272 {
             || is_win32_api(&func_name, SHREG_OPEN)
             || self.function_summaries.borrow().contains_key(&func_name)
             || self.function_macros.borrow().contains_key(&func_name);
-        // The callee as a function: a local or parameter of a Win32 name (a
-        // function pointer) is not the API, nor a project function (ADR-0006).
+        // The callee as a function: a local, parameter or file-scope object
+        // of a Win32 name (a function pointer) is not the API, nor a project
+        // function (ADR-0006).
         if !may_reach || designates_object_in(root, &callee, source, declarations) {
             return;
         }
