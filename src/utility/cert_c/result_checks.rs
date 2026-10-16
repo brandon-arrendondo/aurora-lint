@@ -233,11 +233,11 @@ pub struct FileTree<'a> {
 pub type BindingCache = HashMap<usize, Option<usize>>;
 
 /// What every step of one [`stored_result_is_tested`] query shares.
-struct Cx<'s> {
+struct Cx<'s, 'e> {
     signal: ErrorSignal,
     source: &'s str,
     macros: &'s MacroView<'s>,
-    types: &'s TypeEnv<'s>,
+    types: &'s TypeEnv<'e>,
     tree: Option<&'s FileTree<'s>>,
 }
 
@@ -279,10 +279,10 @@ pub type MacroTestCache = HashMap<
 /// has one, and the types in view, to type a cast constant it is compared
 /// with.
 #[derive(Clone, Copy)]
-struct Stored<'a> {
+struct Stored<'a, 'e> {
     unsigned: bool,
     rank: Option<Rank>,
-    types: &'a TypeEnv<'a>,
+    types: &'a TypeEnv<'e>,
 }
 
 /// How many plain copies (`*out = (int)count;`) a result is followed
@@ -1054,13 +1054,13 @@ fn truthiness_counts(signal: ErrorSignal) -> bool {
 /// cast at the store, `(size_t)f(...)`; a typed signed object holds the
 /// converted value whatever it was cast to. Anything else reads as signed,
 /// the stricter answer.
-fn stored_object<'a>(
+fn stored_object<'a, 'e>(
     store: &Node,
     target: &Node,
     source: &str,
-    types: &'a TypeEnv<'a>,
+    types: &'a TypeEnv<'e>,
     tree: Option<&FileTree>,
-) -> Stored<'a> {
+) -> Stored<'a, 'e> {
     let ty = stored_type(store, target, source, types, tree).or_else(|| {
         let value = match store.kind() {
             "assignment_expression" => store.child_by_field_name("right"),

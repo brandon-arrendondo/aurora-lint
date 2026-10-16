@@ -20,7 +20,7 @@
 //! recall. Every caller uses the answer to SUPPRESS, never to fire.
 
 use crate::analyze::argument_objects::declared_pointers;
-use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::ast_utils::{self, ScopeDeclarations};
 use crate::utility::cert_c::float_typing::StructFieldTypes;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -209,7 +209,15 @@ pub fn expr_is_pointer(
     struct_field_types: &StructFieldTypes,
     facts: &PointerFacts,
 ) -> bool {
-    pointer_value(None, node, source, type_map, struct_field_types, facts)
+    pointer_value(
+        None,
+        None,
+        node,
+        source,
+        type_map,
+        struct_field_types,
+        facts,
+    )
 }
 
 /// [`expr_is_pointer`], resolving identifiers by descending from `root` when
@@ -217,6 +225,7 @@ pub fn expr_is_pointer(
 /// reaches by a `Node::parent` climb per identifier. The same answer.
 fn pointer_value<'a>(
     root: Option<&Node<'a>>,
+    scopes: Option<&ScopeDeclarations>,
     node: &Node<'a>,
     source: &str,
     type_map: &std::collections::HashMap<String, String>,
@@ -233,18 +242,27 @@ fn pointer_value<'a>(
             // Resolve the occurrence to its own declarator (ADR-0006): the
             // declarator's kind says whether the name decays to a pointer
             // here, for a local, a parameter or a file-scope variable alike.
-            let resolved = match root {
-                Some(root) => ast_utils::resolve_identifier_declarator_in(root, node, name, source),
-                None => ast_utils::resolve_identifier_declarator(node, name, source),
+            // The map spelling says pointer only for a pointer declarator;
+            // the declarator's own kind covers the array that decays.
+            let declares_pointer = |decl: &Node, declarator: &Node| {
+                ast_utils::declaration_type_spelling(decl, declarator, source)
+                    .is_some_and(|t| ast_utils::is_pointer_type(&t))
+                    || declarator_decays_to_pointer(declarator)
             };
-            match resolved {
-                // The map spelling says pointer only for a pointer declarator;
-                // the declarator's own kind covers the array that decays.
-                Some((decl, declarator)) => {
-                    ast_utils::declaration_type_spelling(&decl, &declarator, source)
-                        .is_some_and(|t| ast_utils::is_pointer_type(&t))
-                        || declarator_decays_to_pointer(&declarator)
+            let indexed = scopes
+                .and_then(|s| s.resolve_identifier_declarator_indexed(node, name, source))
+                .map(|resolved| resolved.map(|(decl, d)| declares_pointer(&decl, &d)));
+            let resolved = indexed.unwrap_or_else(|| {
+                match root {
+                    Some(root) => {
+                        ast_utils::resolve_identifier_declarator_in(root, node, name, source)
+                    }
+                    None => ast_utils::resolve_identifier_declarator(node, name, source),
                 }
+                .map(|(decl, d)| declares_pointer(&decl, &d))
+            });
+            match resolved {
+                Some(pointer) => pointer,
                 // Unresolved: the caller's map, else a file-scope declaration
                 // the collector saw.
                 None => match type_map.get(name) {
@@ -271,9 +289,17 @@ fn pointer_value<'a>(
             Some(t) => ast_utils::is_pointer_type(ast_utils::get_node_text(&t, source)),
             None => false,
         },
-        "parenthesized_expression" => node
-            .named_child(0)
-            .is_some_and(|c| pointer_value(root, &c, source, type_map, struct_field_types, facts)),
+        "parenthesized_expression" => node.named_child(0).is_some_and(|c| {
+            pointer_value(
+                root,
+                scopes,
+                &c,
+                source,
+                type_map,
+                struct_field_types,
+                facts,
+            )
+        }),
         "call_expression" => match node.child_by_field_name("function") {
             Some(f) => facts
                 .pointer_returning_functions
@@ -299,9 +325,24 @@ fn pointer_value<'a>(
             ) else {
                 return false;
             };
-            let left_ptr = pointer_value(root, &left, source, type_map, struct_field_types, facts);
-            let right_ptr =
-                pointer_value(root, &right, source, type_map, struct_field_types, facts);
+            let left_ptr = pointer_value(
+                root,
+                scopes,
+                &left,
+                source,
+                type_map,
+                struct_field_types,
+                facts,
+            );
+            let right_ptr = pointer_value(
+                root,
+                scopes,
+                &right,
+                source,
+                type_map,
+                struct_field_types,
+                facts,
+            );
             match op.as_str() {
                 // `ptr + int` (either order) is a pointer; `ptr + ptr` is not C.
                 "+" => left_ptr != right_ptr,
@@ -334,7 +375,15 @@ pub fn is_pointer_arithmetic(
     struct_field_types: &StructFieldTypes,
     facts: &PointerFacts,
 ) -> bool {
-    is_pointer_arithmetic_in(None, node, source, type_map, struct_field_types, facts)
+    is_pointer_arithmetic_in(
+        None,
+        None,
+        node,
+        source,
+        type_map,
+        struct_field_types,
+        facts,
+    )
 }
 
 /// [`is_pointer_arithmetic`] given `root`, the root of `node`'s tree when the
@@ -342,6 +391,7 @@ pub fn is_pointer_arithmetic(
 /// `Node::parent` climb each. The same answer.
 pub fn is_pointer_arithmetic_in<'a>(
     root: Option<&Node<'a>>,
+    scopes: Option<&ScopeDeclarations>,
     node: &Node<'a>,
     source: &str,
     type_map: &std::collections::HashMap<String, String>,
@@ -350,6 +400,7 @@ pub fn is_pointer_arithmetic_in<'a>(
 ) -> bool {
     pointer_walk(
         root,
+        scopes,
         node,
         source,
         type_map,
@@ -378,6 +429,7 @@ impl PointerMemo {
 /// `a + b + ...` chain costs the square of its length. The same answer.
 pub fn is_pointer_arithmetic_with<'a>(
     root: Option<&Node<'a>>,
+    scopes: Option<&ScopeDeclarations>,
     node: &Node<'a>,
     source: &str,
     type_map: &std::collections::HashMap<String, String>,
@@ -387,6 +439,7 @@ pub fn is_pointer_arithmetic_with<'a>(
 ) -> bool {
     pointer_walk(
         root,
+        scopes,
         node,
         source,
         type_map,
@@ -413,6 +466,7 @@ struct PointerWalk {
 /// chain cost the cube of its length across a rule's per-operator calls.
 fn pointer_walk<'a>(
     root: Option<&Node<'a>>,
+    scopes: Option<&ScopeDeclarations>,
     node: &Node<'a>,
     source: &str,
     type_map: &std::collections::HashMap<String, String>,
@@ -425,6 +479,7 @@ fn pointer_walk<'a>(
     }
     let walk = pointer_walk_uncached(
         root,
+        scopes,
         node,
         source,
         type_map,
@@ -440,6 +495,7 @@ fn pointer_walk<'a>(
 
 fn pointer_walk_uncached<'a>(
     root: Option<&Node<'a>>,
+    scopes: Option<&ScopeDeclarations>,
     node: &Node<'a>,
     source: &str,
     type_map: &std::collections::HashMap<String, String>,
@@ -449,8 +505,18 @@ fn pointer_walk_uncached<'a>(
 ) -> PointerWalk {
     #[cfg(test)]
     POINTER_WALKS.with(|n| n.set(n.get() + 1));
-    let walk =
-        |n: &Node<'a>| pointer_walk(root, n, source, type_map, struct_field_types, facts, memo);
+    let walk = |n: &Node<'a>| {
+        pointer_walk(
+            root,
+            scopes,
+            n,
+            source,
+            type_map,
+            struct_field_types,
+            facts,
+            memo,
+        )
+    };
     let neither = PointerWalk {
         value: false,
         arithmetic: false,
@@ -499,7 +565,15 @@ fn pointer_walk_uncached<'a>(
         }
         "parenthesized_expression" => node.named_child(0).map_or(neither, |c| walk(&c)),
         _ => {
-            let value = pointer_value(root, node, source, type_map, struct_field_types, facts);
+            let value = pointer_value(
+                root,
+                scopes,
+                node,
+                source,
+                type_map,
+                struct_field_types,
+                facts,
+            );
             PointerWalk {
                 value,
                 arithmetic: value,

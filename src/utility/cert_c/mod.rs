@@ -56,6 +56,10 @@ pub mod mutex_lifetime;
 /// A node's children in order at linear cost: indexed when there are few,
 /// a cursor when there are many (`child(i)` walks from the first child).
 pub mod node_children;
+/// A tree's nodes in one table with each one's parent, built once, so a
+/// parent, an ancestor chain or the nearest ancestor of a kind costs no
+/// descent from the root.
+pub mod node_index;
 /// The conditions whose truth value is known where a site executes, with
 /// stale ones dropped: the shared reading of a guard for the rules that need
 /// a value proven non-zero there (INT33-C's divisor, MEM04-C's size).

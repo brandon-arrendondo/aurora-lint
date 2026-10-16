@@ -27,7 +27,7 @@
 
 use crate::analyze::context::VisibleTypes;
 use crate::analyze::dead_regions::DeadRegions;
-use crate::utility::cert_c::ast_utils::{self, get_node_text};
+use crate::utility::cert_c::ast_utils::{self, get_node_text, ScopeDeclarations};
 use crate::utility::cert_c::float_typing::EXTENDED_FLOAT_TYPES;
 use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
 use std::cell::{OnceCell, RefCell};
@@ -257,6 +257,10 @@ pub struct TypeEnv<'a> {
     /// environment then holds the one tree its nodes come from, so an id
     /// names one node for as long as the environment lives.
     types: RefCell<HashMap<usize, Option<CType>>>,
+    /// With a root, what [`declared_type`] resolves identifiers through: each
+    /// scope's declarations read once, and the scopes around an identifier
+    /// found from an index of the tree rather than a descent to it.
+    declarations: Option<ScopeDeclarations<'a>>,
 }
 
 impl<'a> TypeEnv<'a> {
@@ -277,6 +281,7 @@ impl<'a> TypeEnv<'a> {
             file_functions: OnceCell::new(),
             root: None,
             types: RefCell::new(HashMap::new()),
+            declarations: None,
         }
     }
 
@@ -288,6 +293,7 @@ impl<'a> TypeEnv<'a> {
     pub fn in_tree(mut self, root: Node<'a>) -> Self {
         if root.parent().is_none() {
             self.root = Some(root);
+            self.declarations = Some(ScopeDeclarations::indexed(root));
         }
         self
     }
@@ -295,6 +301,13 @@ impl<'a> TypeEnv<'a> {
     /// The tree root given to [`TypeEnv::in_tree`], if any.
     pub fn root(&self) -> Option<&Node<'a>> {
         self.root.as_ref()
+    }
+
+    /// With a root, the scope declarations identifiers resolve through
+    /// ([`ScopeDeclarations::indexed`]), for a caller resolving names of the
+    /// same tree on its own account.
+    pub fn declarations(&self) -> Option<&ScopeDeclarations<'a>> {
+        self.declarations.as_ref()
     }
 
     /// An environment over what one file sees, under `model` (the settings'
@@ -586,9 +599,16 @@ pub fn declarator_type(
 /// `None` when the occurrence does not resolve to a declaration in this file.
 pub fn declared_type(ident: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
     let name = get_node_text(ident, source);
-    let (decl, declarator) = match &env.root {
-        Some(root) => ast_utils::resolve_identifier_declarator_in(root, ident, name, source)?,
-        None => ast_utils::resolve_identifier_declarator(ident, name, source)?,
+    let indexed = env
+        .declarations
+        .as_ref()
+        .and_then(|d| d.resolve_identifier_declarator_indexed(ident, name, source));
+    let (decl, declarator) = match (indexed, env.root) {
+        (Some(resolved), _) => resolved?,
+        (None, Some(root)) => {
+            ast_utils::resolve_identifier_declarator_in(&root, ident, name, source)?
+        }
+        (None, None) => ast_utils::resolve_identifier_declarator(ident, name, source)?,
     };
     // A declarator with no pointer, array or function level leaves the
     // specifier type; an unknown specifier leaves it unknown.

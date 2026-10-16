@@ -3,6 +3,7 @@
 
 use crate::utility::cert_c::data_model::{IntFacts, IntWidth};
 use crate::utility::cert_c::node_children::NodeChildren;
+use crate::utility::cert_c::node_index::{NearestColumn, NodeIndex};
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -436,13 +437,120 @@ pub fn find_enclosing_declaration_for_identifier_in<'a>(
 /// Keyed by node id, so one value serves one tree and must not outlive it.
 /// The `_in` resolvers here give the answers the free functions of the same
 /// name give.
+///
+/// One built with [`ScopeDeclarations::indexed`] also finds the scopes
+/// around an identifier without descending from the root to it: it indexes
+/// the tree once ([`NodeIndex`]) and steps from each scope or function
+/// around the identifier straight to the next, so a resolution costs the
+/// scopes around the identifier, not its depth. Hold such a value for a
+/// whole file; the index costs a pass over the tree.
 #[derive(Default)]
 pub struct ScopeDeclarations<'a> {
     by_scope: std::cell::RefCell<HashMap<usize, std::rc::Rc<[Node<'a>]>>>,
     globals: std::cell::RefCell<HashMap<usize, std::rc::Rc<[Node<'a>]>>>,
+    /// The root to index, and the index once a resolution asks for it.
+    indexed_root: Option<Node<'a>>,
+    index: std::cell::OnceCell<std::rc::Rc<ScopeIndex<'a>>>,
+}
+
+/// A tree's [`NodeIndex`] and, for every node, the nearest declaration
+/// scope or function definition at or above it: the only ancestors a
+/// resolution reads. Built once per tree; share it among the
+/// [`ScopeDeclarations`] of one file with [`ScopeDeclarations::over`].
+pub struct ScopeIndex<'a> {
+    nodes: NodeIndex<'a>,
+    scopes: NearestColumn,
+}
+
+impl<'a> ScopeIndex<'a> {
+    /// Index the tree under `root`, its root.
+    pub fn new(root: Node<'a>) -> Self {
+        let nodes = NodeIndex::new(root);
+        let scopes = nodes.nearest_column(read_by_resolution);
+        Self { nodes, scopes }
+    }
+
+    /// The tree's nodes and their parents.
+    pub fn nodes(&self) -> &NodeIndex<'a> {
+        &self.nodes
+    }
+}
+
+/// Whether a resolution reads `node` among an identifier's ancestors:
+/// [`scope_chain_declaration`] reads the declaration scopes, and
+/// [`containing_function_on_path`] the function definitions.
+fn read_by_resolution(node: &Node) -> bool {
+    is_declaration_scope(node) || node.kind() == "function_definition"
 }
 
 impl<'a> ScopeDeclarations<'a> {
+    /// A value for the tree under `root` (its root) that finds the scopes
+    /// around an identifier through an index of the tree, built on the
+    /// first resolution, instead of a descent from `root` per identifier.
+    /// Same answers.
+    pub fn indexed(root: Node<'a>) -> Self {
+        Self {
+            indexed_root: Some(root),
+            ..Self::default()
+        }
+    }
+
+    /// [`ScopeDeclarations::indexed`] over an index already built for the
+    /// tree, shared with whatever else the caller resolves through it.
+    pub fn over(index: std::rc::Rc<ScopeIndex<'a>>) -> Self {
+        let declarations = Self {
+            indexed_root: Some(index.nodes.root()),
+            ..Self::default()
+        };
+        let _ = declarations.index.set(index);
+        declarations
+    }
+
+    /// [`ScopeDeclarations::resolve_identifier_declarator_in`] from the root
+    /// this value was built for with [`ScopeDeclarations::indexed`], for an
+    /// occurrence of any lifetime: the occurrence is looked up in the index
+    /// by its id and resolved as the index's node, which is the same node.
+    /// `None` when this value has no index, or `ident_node` is not in its
+    /// tree, so the caller resolves another way; `Some(None)` when it
+    /// resolves to nothing.
+    #[allow(clippy::option_option)]
+    pub fn resolve_identifier_declarator_indexed(
+        &self,
+        ident_node: &Node,
+        name: &str,
+        source: &str,
+    ) -> Option<Option<(Node<'a>, Node<'a>)>> {
+        let root = self.indexed_root?;
+        let row = self.scope_index(root).nodes.row(ident_node)?;
+        let ident = self.scope_index(root).nodes.node(row);
+        Some(self.resolve_identifier_declarator_in(&root, &ident, name, source))
+    }
+
+    fn scope_index(&self, root: Node<'a>) -> &ScopeIndex<'a> {
+        self.index
+            .get_or_init(|| std::rc::Rc::new(ScopeIndex::new(root)))
+    }
+
+    /// The ancestors of `ident_node` below `root` that a resolution reads,
+    /// outermost first: from the index when this value has one for `root`'s
+    /// tree, else every ancestor, from one descent. `None` when
+    /// `ident_node` is not under `root`.
+    fn resolution_path(&self, root: &Node<'a>, ident_node: &Node<'a>) -> Option<Vec<Node<'a>>> {
+        if let Some(indexed) = self.indexed_root.filter(|r| r.id() == root.id()) {
+            let index = self.scope_index(indexed);
+            if index.nodes.row(ident_node).is_some() {
+                let mut path: Vec<Node<'a>> = index
+                    .nodes
+                    .ancestors_where(&index.scopes, ident_node)
+                    .filter(|n| n.id() != root.id())
+                    .collect();
+                path.reverse();
+                return Some(path);
+            }
+        }
+        ancestors_from_root(root, ident_node)
+    }
+
     fn of(&self, scope: &Node<'a>) -> std::rc::Rc<[Node<'a>]> {
         if let Some(known) = self.by_scope.borrow().get(&scope.id()) {
             return known.clone();
@@ -482,7 +590,7 @@ impl<'a> ScopeDeclarations<'a> {
         name: &str,
         source: &str,
     ) -> Option<Node<'a>> {
-        let Some(path) = ancestors_from_root(root, ident_node) else {
+        let Some(path) = self.resolution_path(root, ident_node) else {
             return find_enclosing_declaration_for_identifier_climbing(ident_node, name, source);
         };
         scope_chain_declaration(root, &path, ident_node, name, source, self)
@@ -496,7 +604,7 @@ impl<'a> ScopeDeclarations<'a> {
         name: &str,
         source: &str,
     ) -> Option<IdentifierBinding<'a>> {
-        let Some(path) = ancestors_from_root(root, ident_node) else {
+        let Some(path) = self.resolution_path(root, ident_node) else {
             return resolve_identifier_binding_climbing(ident_node, name, source);
         };
         binding_on_path(root, &path, ident_node, name, source, self)
@@ -510,7 +618,7 @@ impl<'a> ScopeDeclarations<'a> {
         name: &str,
         source: &str,
     ) -> Option<(Node<'a>, Node<'a>)> {
-        let Some(path) = ancestors_from_root(root, ident_node) else {
+        let Some(path) = self.resolution_path(root, ident_node) else {
             return resolve_identifier_declarator_climbing(ident_node, name, source);
         };
         declarator_on_path(root, &path, ident_node, name, source, self)
@@ -3557,6 +3665,115 @@ mod tests {
         parser.set_language(&language).unwrap();
         let tree = parser.parse(code, None).unwrap();
         (tree, code.to_string())
+    }
+
+    /// What the three resolvers of `declarations` say of `ident`, by node id.
+    fn resolutions<'a>(
+        declarations: &ScopeDeclarations<'a>,
+        root: &Node<'a>,
+        ident: &Node<'a>,
+        name: &str,
+        source: &str,
+    ) -> (Option<usize>, Option<String>, Option<(usize, usize)>) {
+        let enclosing = declarations
+            .find_enclosing_declaration_for_identifier_in(root, ident, name, source)
+            .map(|n| n.id());
+        let binding = declarations
+            .resolve_identifier_binding_in(root, ident, name, source)
+            .map(|b| match b {
+                IdentifierBinding::Local(n) => format!("local {}", n.id()),
+                IdentifierBinding::Global(n) => format!("global {}", n.id()),
+                IdentifierBinding::Parameter(t) => format!("parameter {t}"),
+            });
+        let declarator = declarations
+            .resolve_identifier_declarator_in(root, ident, name, source)
+            .map(|(decl, declarator)| (decl.id(), declarator.id()));
+        (enclosing, binding, declarator)
+    }
+
+    /// Every identifier of `code` resolves through an indexed
+    /// [`ScopeDeclarations`] exactly as through a plain one, by all three
+    /// resolvers.
+    fn assert_indexed_resolution_agrees(code: &str) {
+        let (tree, source) = parse_c_code(code);
+        let root = tree.root_node();
+        let plain = ScopeDeclarations::default();
+        let indexed = ScopeDeclarations::indexed(root);
+        for ident in query::find_descendants(root, |n| n.kind() == "identifier") {
+            let name = get_node_text(&ident, &source);
+            assert_eq!(
+                resolutions(&plain, &root, &ident, name, &source),
+                resolutions(&indexed, &root, &ident, name, &source),
+                "`{name}` at {}",
+                ident.start_byte()
+            );
+        }
+    }
+
+    /// Shadowing in blocks and for-init, parameters, globals inside and
+    /// outside `#if`, statement expressions, a GNU nested function, a
+    /// `case` without braces, K&R parameters, a misparsed function-pointer
+    /// declaration and a parse error: an indexed resolution steps only
+    /// through the scopes and functions around each identifier, and reads
+    /// the same declarations.
+    #[test]
+    fn an_indexed_resolution_answers_as_a_descent_does() {
+        assert_indexed_resolution_agrees(
+            "int g; static unsigned long w;\n\
+             #if A\nint cond;\n#else\nlong cond;\n#endif\n\
+             typedef int T; typedef int (*fp)(int);\n\
+             int f(int a, char *b, int c[3]) {\n\
+             \x20 int x = a + g; { unsigned x = 2u; x += a * (x - w); }\n\
+             \x20 for (int i = 0; i < x; i++) { int a = i; g += a + i + cond; }\n\
+             \x20 int y = ({ int x = 3; x + a; }) + x;\n\
+             \x20 switch (a) { case 1: int z = a; g = z; break; case 2: { int z = 2; g = z; } }\n\
+             \x20 int inner(int q) { return q + x + g; }\n\
+             \x20 T T2 = (T)a; fp(cb)(int); \n\
+             \x20 return inner(y) + b[0] + c[1] + T2 + sizeof x;\n\
+             }\n\
+             int kr(p, q) int p; char *q; { return p + *q + g; }\n\
+             void broken(void) { g = ; ) w = g; }\n",
+        );
+    }
+
+    /// The same, at a depth where a descent per identifier costs the
+    /// square of the depth: nested blocks each declaring and using names,
+    /// and a sum hundreds of terms deep.
+    #[test]
+    fn an_indexed_resolution_answers_as_a_descent_does_deep_in_blocks_and_sums() {
+        let mut code = String::from("int g;\nint f(int x) {\n");
+        for d in 0..60 {
+            code.push_str(&format!("if (x) {{ int v{d} = x + g; x += v{d};\n"));
+        }
+        code.push_str(&"}\n".repeat(60));
+        code.push_str(&format!("return {}x;\n}}\n", "x + g + ".repeat(300)));
+        assert_indexed_resolution_agrees(&code);
+    }
+
+    /// Every rule fixture, through [`assert_indexed_resolution_agrees`].
+    /// Slow in a debug build; run with `--ignored` after changing either
+    /// resolution path.
+    #[test]
+    #[ignore]
+    fn an_indexed_resolution_answers_as_a_descent_does_on_every_fixture() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/rules");
+        let mut pending = vec![root];
+        let mut files = 0;
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|e| e == "c" || e == "h") {
+                    let Ok(code) = std::fs::read_to_string(&path) else {
+                        continue;
+                    };
+                    assert_indexed_resolution_agrees(&code);
+                    files += 1;
+                }
+            }
+        }
+        assert!(files > 1000, "only {files} fixtures found");
     }
 
     /// [`ancestors`] is the chain a `Node::parent` climb visits, innermost

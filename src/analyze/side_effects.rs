@@ -173,6 +173,9 @@ impl DirectEffects {
 /// declaration binding the name -- from one pass.
 pub struct FileScope<'t> {
     globals: HashMap<String, Node<'t>>,
+    /// The file's tree indexed once, for every function's resolutions and
+    /// climbs: a parent is a lookup rather than a descent from the root.
+    index: std::rc::Rc<ast_utils::ScopeIndex<'t>>,
     /// `None` when the file never spells `volatile`, so no identifier in it
     /// can read a volatile object it declares.
     volatile_names: Option<std::collections::HashSet<String>>,
@@ -196,6 +199,7 @@ impl<'t> FileScope<'t> {
         });
         FileScope {
             globals,
+            index: std::rc::Rc::new(ast_utils::ScopeIndex::new(*root)),
             volatile_names,
         }
     }
@@ -360,7 +364,7 @@ pub fn collect_direct_effects(
         typed: typedef_declarations(func, source),
         arms,
         scope,
-        declarations: Default::default(),
+        declarations: ast_utils::ScopeDeclarations::over(scope.index.clone()),
         out: DirectEffects::default(),
     };
     if let Some(body) = func.child_by_field_name("body") {
@@ -798,7 +802,7 @@ impl<'t> Collector<'_, 't> {
             // object (`#ifdef _WIN32 long n; #else int n; #endif n = 0;`),
             // and so it is when every alternative of the group declares it,
             // whatever lies past.
-            Some(IdentifierBinding::Local(decl)) if in_other_arm(&decl, ident) => {
+            Some(IdentifierBinding::Local(decl)) if self.in_other_arm(&decl, ident) => {
                 if let Some(decls) = declarations_in_every_arm(&decl, name, self.source) {
                     return decls
                         .iter()
@@ -825,6 +829,15 @@ impl<'t> Collector<'_, 't> {
             }
             None => Some(Loc::Global(name.to_string())),
         }
+    }
+
+    /// [`in_other_arm`], climbing from `decl` through the file's index.
+    fn in_other_arm(&self, decl: &Node<'t>, usage: &Node) -> bool {
+        in_other_arm(
+            decl,
+            usage,
+            self.scope.index.nodes().ancestors_or_climb(decl),
+        )
     }
 
     /// What a write to `ident`, bound by the local declaration `decl`,
@@ -855,7 +868,7 @@ impl<'t> Collector<'_, 't> {
         let name = get_node_text(ident, self.source);
         if let Some(decl) =
             ast_utils::find_enclosing_declaration_where(ident, name, self.source, &|d| {
-                !in_other_arm(d, ident)
+                !self.in_other_arm(d, ident)
             })
         {
             return Some(IdentifierBinding::Local(decl));
@@ -1140,12 +1153,16 @@ fn declarations_in_every_arm<'t>(
 /// Whether `decl` sits in a preprocessor arm that does not also hold `usage`:
 /// under an `#if` whose block `usage` is outside, or in the `#else`/`#elif`
 /// alternative of one whose other branch holds `usage` (or the reverse).
-fn in_other_arm(decl: &Node, usage: &Node) -> bool {
+/// `ancestors` are `decl`'s, innermost first.
+fn in_other_arm<'t>(
+    decl: &Node<'t>,
+    usage: &Node,
+    ancestors: impl Iterator<Item = Node<'t>>,
+) -> bool {
     let within = |outer: &Node, inner: &Node| {
         outer.start_byte() <= inner.start_byte() && inner.end_byte() <= outer.end_byte()
     };
-    let mut node = decl.parent();
-    while let Some(ancestor) = node {
+    for ancestor in ancestors {
         if ancestor.kind() == "function_definition" {
             return false;
         }
@@ -1162,7 +1179,6 @@ fn in_other_arm(decl: &Node, usage: &Node) -> bool {
                 }
             }
         }
-        node = ancestor.parent();
     }
     false
 }

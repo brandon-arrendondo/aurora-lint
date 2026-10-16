@@ -971,11 +971,18 @@ fn int30_c_asks_of_a_long_chain_work_linear_in_its_length() {
 /// with the square of N is a cube in time: none of those may more than about
 /// double. Exact evaluations are of one node each and may grow with the
 /// square.
+///
+/// A rule that types its operands through `expr_type` or `pointer_typing`
+/// resolves each identifier through an index of the tree built once per
+/// file, so its descents may not grow with N at all, and it builds no more
+/// indexes for a longer sum: a resolution that descends to its identifier
+/// again would cost the sum's depth per operand.
 #[test]
 fn a_deep_sum_costs_each_rule_work_linear_in_its_length() {
     use crate::analyze::const_eval::take_evaluation_counts;
     use crate::utility::cert_c::ast_utils::take_climbs_and_descents;
     use crate::utility::cert_c::expr_type::take_typings;
+    use crate::utility::cert_c::node_index::take_builds;
     use crate::utility::cert_c::pointer_typing::take_pointer_walks;
 
     let work = |rule_id: &str, n: usize| {
@@ -990,6 +997,7 @@ fn a_deep_sum_costs_each_rule_work_linear_in_its_length() {
         take_evaluation_counts();
         take_pointer_walks();
         take_typings();
+        take_builds();
         findings_at(rule_id, &path, "default", "");
         let (climbs, descents) = take_climbs_and_descents();
         let (lookups, evaluations) = take_evaluation_counts();
@@ -1000,14 +1008,17 @@ fn a_deep_sum_costs_each_rule_work_linear_in_its_length() {
             evaluations,
             take_pointer_walks(),
             take_typings(),
+            take_builds(),
         ]
     };
+    // The rules whose identifiers resolve only through the indexed paths.
+    let indexed = ["API00-C", "EXP30-C", "FLP03-C", "INT14-C", "INT30-C"];
     for rule_id in [
         "API00-C", "DCL30-C", "EXP30-C", "FLP03-C", "INT14-C", "INT30-C", "INT32-C", "MSC05-C",
     ] {
         let small = work(rule_id, 150);
         let large = work(rule_id, 300);
-        let what = "climbs, descents, lookups, evaluations, pointer walks, typings";
+        let what = "climbs, descents, lookups, evaluations, pointer walks, typings, index builds";
         assert_eq!(
             large[0], 0,
             "[{rule_id}] a resolution climbed ({what}): {large:?}"
@@ -1016,6 +1027,17 @@ fn a_deep_sum_costs_each_rule_work_linear_in_its_length() {
             assert!(
                 large[i] <= 2 * small[i] + 64,
                 "[{rule_id}] work grew faster than the sum ({what}): {small:?} -> {large:?}"
+            );
+        }
+        assert!(
+            large[6] <= small[6],
+            "[{rule_id}] indexes were built per operand ({what}): {small:?} -> {large:?}"
+        );
+        if indexed.contains(&rule_id) {
+            assert!(
+                large[1] <= small[1] + 8,
+                "[{rule_id}] a resolution descended to its identifier ({what}): \
+                 {small:?} -> {large:?}"
             );
         }
         // Exact evaluations are asked once per operator of each operand,

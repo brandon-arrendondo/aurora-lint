@@ -13,7 +13,9 @@ use crate::analyze::vra_access;
 use crate::manifest::Severity;
 use crate::rules::cert_c::int_provenance;
 use crate::settings::IntFacts;
-use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
+use crate::utility::cert_c::ast_utils::{
+    self, get_node_text, get_sanitized_node_text, ScopeDeclarations,
+};
 use crate::utility::cert_c::data_model::{self, Rank};
 use crate::utility::cert_c::expr_type::{integer_literal_width, TypeEnv};
 use crate::utility::cert_c::float_typing;
@@ -619,7 +621,7 @@ impl Int32C {
         // ptrdiff_t computation; neither is the signed integer overflow this
         // rule detects. Forming an out-of-bounds pointer is ARR30-C's
         // concern.
-        if self.is_pointer_arithmetic(node, source, type_map, env.root()) {
+        if self.is_pointer_arithmetic(node, source, type_map, env.root(), env.declarations()) {
             return;
         }
 
@@ -652,7 +654,7 @@ impl Int32C {
         }
 
         // See check_binary_operation: `buf += n` advances a pointer.
-        if self.is_pointer_arithmetic(node, source, type_map, env.root()) {
+        if self.is_pointer_arithmetic(node, source, type_map, env.root(), env.declarations()) {
             return;
         }
 
@@ -703,16 +705,17 @@ impl Int32C {
         source: &str,
         type_map: &HashMap<String, String>,
         root: Option<&Node<'a>>,
+        scopes: Option<&ScopeDeclarations>,
     ) -> bool {
         let sft = self.struct_field_types.borrow();
         let facts = self.pointer_facts.borrow();
         match self.memo.pointer() {
             Some(memo) => pointer_typing::is_pointer_arithmetic_with(
-                root, node, source, type_map, &sft, &facts, memo,
+                root, scopes, node, source, type_map, &sft, &facts, memo,
             ),
-            None => {
-                pointer_typing::is_pointer_arithmetic_in(root, node, source, type_map, &sft, &facts)
-            }
+            None => pointer_typing::is_pointer_arithmetic_in(
+                root, scopes, node, source, type_map, &sft, &facts,
+            ),
         }
     }
 
@@ -2091,7 +2094,7 @@ impl Int32C {
                 if !matches!(op.as_str(), "+" | "-" | "*" | "<<") {
                     return inside(self);
                 }
-                if self.is_pointer_arithmetic(node, source, type_map, None) {
+                if self.is_pointer_arithmetic(node, source, type_map, None, None) {
                     return None;
                 }
                 if matches!(
