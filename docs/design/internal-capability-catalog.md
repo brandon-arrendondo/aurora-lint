@@ -1889,6 +1889,15 @@ ancestor where" columns, built in one pass, would (a candidate for
 `lang_parsing_substrate`, which already flattens a tree into such columns
 for Python).
 
+Nor do they cover a function with many parameters. Resolving a name to a
+parameter reads the function's whole parameter list
+(`get_function_parameters` in `binding_on_path`, then
+`find_parameter_declaration`). The function summaries, float typing,
+pointer typing and INT30-C's identifier typing each resolve a name with a
+fresh `ScopeDeclarations`, so an expression over N distinct parameters costs
+N² there. A per-function parameter index, kept as long as the caller keeps
+its `ScopeDeclarations` and held per file by those callers, would answer it.
+
 ## Two files flagged as legacy, not exemplars
 
 `src/utility/cert_c/size_analysis.rs` and

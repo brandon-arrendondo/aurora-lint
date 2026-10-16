@@ -100,6 +100,19 @@ impl FloatMemo {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many nodes [`expr_is_float_with`] typed, rather than remembered,
+    /// on this thread.
+    static FLOAT_TYPINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Float typings on this thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_float_typings() -> usize {
+    FLOAT_TYPINGS.with(|n| n.replace(0))
+}
+
 /// [`expr_is_float`], remembering each node's answer in `memo` (when given)
 /// for a caller that asks it of every operator of an expression: each call
 /// otherwise walks its operand's whole subtree again, so a long `a + b + ...`
@@ -126,6 +139,8 @@ fn expr_is_float_uncached(
     env: &TypeEnv,
     memo: Option<&FloatMemo>,
 ) -> bool {
+    #[cfg(test)]
+    FLOAT_TYPINGS.with(|n| n.set(n.get() + 1));
     // Every recursive question below goes through the memo.
     let expr_is_float =
         |n: &Node, source: &str, env: &TypeEnv| expr_is_float_with(n, source, env, memo);

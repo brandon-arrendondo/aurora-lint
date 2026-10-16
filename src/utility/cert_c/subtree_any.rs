@@ -39,6 +39,8 @@ impl SubtreeAny {
             }
             let mut cursor = n.walk();
             if children_done {
+                #[cfg(test)]
+                NODES_ANSWERED.with(|n| n.set(n.get() + 1));
                 let memo = self.0.borrow();
                 let answer = pred(&n)
                     || n.children(&mut cursor)
@@ -58,6 +60,19 @@ impl SubtreeAny {
         }
         self.0.borrow()[&node.id()]
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many nodes any [`SubtreeAny`] answered, rather than remembered,
+    /// on this thread.
+    static NODES_ANSWERED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Nodes answered on this thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_nodes_answered() -> usize {
+    NODES_ANSWERED.with(|n| n.replace(0))
 }
 
 #[cfg(test)]

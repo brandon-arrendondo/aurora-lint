@@ -164,6 +164,19 @@ impl RiskMemo {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many subtrees [`operand_is_risky_with`] judged, rather than
+    /// remembered, on this thread.
+    static RISK_EVALUATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Risk judgments on this thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_risk_evaluations() -> usize {
+    RISK_EVALUATIONS.with(|n| n.replace(0))
+}
+
 /// [`operand_is_risky`], remembering each subtree's answer in `memo` (when
 /// given) for a caller that asks it of every operator of an expression:
 /// each operator's operand is the operator below it, so a chain thousands
@@ -206,6 +219,8 @@ fn operand_is_risky_uncached(
     source: &str,
     memo: Option<&RiskMemo>,
 ) -> bool {
+    #[cfg(test)]
+    RISK_EVALUATIONS.with(|n| n.set(n.get() + 1));
     let operand_is_risky = |op: &Node,
                             risky_vars: &HashSet<String>,
                             summaries: &_,

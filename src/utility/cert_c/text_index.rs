@@ -66,6 +66,8 @@ impl TextIndex {
     }
 
     fn of(text: String) -> Self {
+        #[cfg(test)]
+        TEXT_READS.with(|n| n.set(n.get() + 1));
         Self {
             text,
             occurrences: RefCell::new(HashMap::new()),
@@ -105,10 +107,25 @@ impl TextIndex {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times a [`TextIndex`] read its whole text on this thread:
+    /// once to build it, and once for each pattern it was first asked about.
+    static TEXT_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whole-text reads on this thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_text_reads() -> usize {
+    TEXT_READS.with(|n| n.replace(0))
+}
+
 /// Every offset `pattern` starts at in `text`, overlapping occurrences
 /// included (`str::match_indices` skips those, and the only occurrence
 /// inside a span can be one that overlaps another).
 fn all_occurrences(text: &str, pattern: &str) -> Vec<usize> {
+    #[cfg(test)]
+    TEXT_READS.with(|n| n.set(n.get() + 1));
     let step = pattern.chars().next().map_or(1, char::len_utf8);
     let mut out = Vec::new();
     let mut from = 0;

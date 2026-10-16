@@ -2778,6 +2778,8 @@ fn try_evaluate_lower_bound_uncached(
     var_ranges: &VarRangeMap,
     memo: Option<&ConstMemo>,
 ) -> Option<i64> {
+    #[cfg(test)]
+    LOWER_BOUND_EVALUATIONS.with(|n| n.set(n.get() + 1));
     let lower = |n: &Node| try_evaluate_lower_bound_with(n, source, macros, var_ranges, memo);
     if let Some(val) = try_evaluate_expr_with(node, source, macros, memo) {
         return Some(val);
@@ -4393,6 +4395,9 @@ thread_local! {
     /// How many nodes [`try_evaluate_range_inner`] evaluated, rather than
     /// remembered, on this thread.
     static RANGE_EVALUATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many nodes [`try_evaluate_lower_bound_with`] bounded, rather than
+    /// remembered, on this thread.
+    static LOWER_BOUND_EVALUATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// How many local-variable ranges [`resolve_local_var_range_among`]
     /// resolved on this thread, each a scan of the blocks around a use.
     static LOCAL_RANGE_RESOLUTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -4417,6 +4422,12 @@ pub(crate) fn take_local_range_resolutions() -> usize {
 #[cfg(test)]
 pub(crate) fn take_range_evaluations() -> usize {
     RANGE_EVALUATIONS.with(|n| n.replace(0))
+}
+
+/// Lower-bound evaluations on this thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_lower_bound_evaluations() -> usize {
+    LOWER_BOUND_EVALUATIONS.with(|n| n.replace(0))
 }
 
 /// Local-variable range lookups and exact evaluations on this thread since

@@ -861,25 +861,54 @@ fn guarded_copies_cost_each_rule_work_per_function_not_per_site() {
 
 /// INT30-C's questions of a chain of each operator it checks,
 /// `(x OP x OP ... OP x) << 40` at N and 2N terms through the whole pipeline,
-/// counted rather than timed: range evaluations and exact evaluations of a
-/// node (a lower bound's included; each the work of one node once its
-/// operands are known), and resolutions of a local's range (each a scan of the blocks
-/// around a use). Every operator asks about its whole operand, which is the
-/// operator below it, so any of these that is not remembered across the
-/// operators of the chain grows with the square of its length -- `*` went
-/// through a lower bound that grew with the cube -- and none may more than
-/// about double. So may the nodes walked looking for names to resolve. A
-/// walk out of an operator to the conditions that govern it is as deep as
-/// the operator, so those walks may not grow with the chain at all: the
-/// rule's own walk carries the conditions down.
+/// counted rather than timed. Every operator asks about its whole operand,
+/// which is the operator below it, so any per-node answer that is not
+/// remembered across the operators of the chain grows with the square of
+/// its length -- `*` went through a lower bound that grew with the cube --
+/// and none may more than about double: range, exact and lower-bound
+/// evaluations of a node (each the work of one node once its operands are
+/// known), float typings, risk judgments, subtree answers (whether a
+/// subtree spells out `unsigned` or names an integer limit), and the nodes
+/// walked looking for names to resolve. The work done once per expression
+/// or per file may not grow with the chain at all: resolutions of a local's
+/// range (each a scan of the blocks around a use, made when the
+/// expression's tables are built), whole-text reads of the file (a build of
+/// its text index, or a first search for a pattern), and walks out of an
+/// operator to the conditions that govern it, which the rule's own walk
+/// carries down instead.
+///
+/// Each of those answers is remembered for the same reason, and removing
+/// any one of them fails this test. The rule remembers some answers that
+/// this chain does not need: how each name resolves under a statement, the
+/// replayed value ranges at an expression, and whether a subtree ends in an
+/// unsigned literal. Removing one of those costs this chain a constant
+/// factor at most, so the test does not see it.
 #[test]
 fn int30_c_asks_of_a_long_chain_work_linear_in_its_length() {
     use crate::analyze::const_eval::{
         take_evaluation_counts, take_identifier_walk_nodes, take_local_range_resolutions,
-        take_range_evaluations,
+        take_lower_bound_evaluations, take_range_evaluations,
     };
+    use crate::rules::cert_c::int_provenance::take_risk_evaluations;
+    use crate::utility::cert_c::float_typing::take_float_typings;
     use crate::utility::cert_c::guard_dominance::take_condition_climbs;
+    use crate::utility::cert_c::subtree_any::take_nodes_answered;
+    use crate::utility::cert_c::text_index::take_text_reads;
 
+    let per_node = [
+        "range evaluations",
+        "exact evaluations",
+        "lower-bound evaluations",
+        "float typings",
+        "risk judgments",
+        "subtree answers",
+        "identifier walk nodes",
+    ];
+    let per_chain = [
+        "local range resolutions",
+        "whole-text reads",
+        "condition climbs",
+    ];
     let work = |op: &str, n: usize| {
         let code = format!(
             "unsigned long long chain(unsigned int x)\n{{\n    return ({}x) << 40;\n}}\n",
@@ -888,36 +917,47 @@ fn int30_c_asks_of_a_long_chain_work_linear_in_its_length() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chain.c");
         fs::write(&path, code).unwrap();
-        take_evaluation_counts();
-        take_range_evaluations();
-        take_local_range_resolutions();
-        take_identifier_walk_nodes();
-        take_condition_climbs();
+        let take = || {
+            (
+                [
+                    take_range_evaluations(),
+                    take_evaluation_counts().1,
+                    take_lower_bound_evaluations(),
+                    take_float_typings(),
+                    take_risk_evaluations(),
+                    take_nodes_answered(),
+                    take_identifier_walk_nodes(),
+                ],
+                [
+                    take_local_range_resolutions(),
+                    take_text_reads(),
+                    take_condition_climbs(),
+                ],
+            )
+        };
+        take();
         findings_at("INT30-C", &path, "default", "");
-        [
-            take_range_evaluations(),
-            take_evaluation_counts().1,
-            take_local_range_resolutions(),
-            take_identifier_walk_nodes(),
-            take_condition_climbs(),
-        ]
+        take()
     };
     for op in ["+", "-", "*", "<<"] {
-        let small = work(op, 150);
-        let large = work(op, 300);
-        let what = "range evaluations, exact evaluations, local range resolutions, \
-                    identifier walk nodes, condition climbs";
-        for i in 0..4 {
+        let (small, small_once) = work(op, 150);
+        let (large, large_once) = work(op, 300);
+        for (i, what) in per_node.iter().enumerate() {
             assert!(
                 large[i] <= 2 * small[i] + 64,
-                "[{op}] work grew faster than the chain ({what}): {small:?} -> {large:?}"
+                "[{op}] {what} grew faster than the chain: {} -> {}",
+                small[i],
+                large[i]
             );
         }
-        assert!(
-            large[4] <= small[4] + 8,
-            "[{op}] climbs for governing conditions grew with the chain ({what}): \
-             {small:?} -> {large:?}"
-        );
+        for (i, what) in per_chain.iter().enumerate() {
+            assert!(
+                large_once[i] <= small_once[i] + 8,
+                "[{op}] {what} grew with the chain: {} -> {}",
+                small_once[i],
+                large_once[i]
+            );
+        }
     }
 }
 
