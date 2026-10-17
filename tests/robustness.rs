@@ -1407,6 +1407,29 @@ fn define_chain(depth: usize) -> Vec<u8> {
     out.into_bytes()
 }
 
+/// A `static` set only to `NULL` and a chain of `depth` object-like macros
+/// aliasing it, each defined from the next one down and written newest
+/// first, which a destructor's callee reads through. Each link is one more
+/// name that stands for the static, and one more macro a header could name
+/// it by.
+fn static_alias_chain(depth: usize) -> Vec<u8> {
+    let mut out = String::from(
+        "#include <stdlib.h>\n#include <stdio.h>\n\
+         struct conn { char *ssl; char *engine; };\nstatic struct conn *s;\n",
+    );
+    for i in (1..depth).rev() {
+        let _ = writeln!(out, "#define M{i} (M{})", i - 1);
+    }
+    let _ = writeln!(
+        out,
+        "#define M0 s\nvoid reset(void) {{ s = NULL; }}\n\
+         static void conn_log(struct conn *c) {{ c->engine = NULL; if (M{0}) puts(M{0}->ssl); }}\n\
+         void conn_free(struct conn *c) {{ free(c->ssl); conn_log(c); free(c); }}",
+        depth - 1
+    );
+    out.into_bytes()
+}
+
 /// Scan one generated file alone under one rule [`SIZE_SERIES_RUNS`] times,
 /// and return the fastest scan's time. A scan that does not finish cleanly
 /// fails the test outright.
@@ -1439,8 +1462,9 @@ fn time_one_file(name: &str, bytes: Vec<u8>, rule_id: &str) -> Duration {
 /// times the per-function prescan steps, the same file under INT34-C times
 /// the per-function value-range analysis the integer rules share, a file of
 /// one-line `strcpy` functions under STR31-C times that rule's per-call
-/// buffer-size lookups, and a deep `#define` chain under PRE32-C times that
-/// rule's per-directive work.
+/// buffer-size lookups, a deep `#define` chain under PRE32-C times that
+/// rule's per-directive work, and a deep chain of macros aliasing a `static`
+/// under MEM01-C times working out which macros name which static.
 /// Each pair must cost under
 /// [`SIZE_SERIES_MAX_RATIO`] times as much, so a step that rescans the
 /// whole file per item fails here rather than as a watchdog hang on a large
@@ -1449,7 +1473,7 @@ fn time_one_file(name: &str, bytes: Vec<u8>, rule_id: &str) -> Duration {
 #[ignore = "size series: run in release with --ignored (CI robustness job)"]
 fn generated_size_series_scale_near_linearly() {
     type Generate = fn(usize) -> Vec<u8>;
-    let series: [(&str, &str, Generate, usize); 4] = [
+    let series: [(&str, &str, Generate, usize); 5] = [
         (
             "one_line_functions",
             "MSC04-C",
@@ -1469,6 +1493,7 @@ fn generated_size_series_scale_near_linearly() {
             8 * 1024,
         ),
         ("define_chain", "PRE32-C", define_chain, 10_000),
+        ("static_alias_chain", "MEM01-C", static_alias_chain, 2_000),
     ];
     let mut failures = Vec::new();
     for (name, rule_id, generate, small) in series {

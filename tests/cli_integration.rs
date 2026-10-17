@@ -8333,6 +8333,73 @@ fn mem01_a_destructor_callee_is_read_with_the_headers_it_includes() {
     }
 }
 
+/// A static a destructor's callee names through a macro clears only when
+/// nothing can put the object in it, the headers the file includes too: a
+/// header's function or macro that stores it (through the file's own alias
+/// for it too), a header that declares it again, a header's `##` paste that
+/// could spell it, or a quoted header the scan could not read each leave the
+/// call handing the dangling value on.
+#[test]
+fn mem01_a_static_a_callee_macro_names_is_read_with_the_headers_it_includes() {
+    for case in [
+        "static_a_header_function_stores",
+        "static_a_header_redeclares",
+        "static_a_header_macro_stores",
+        "static_a_header_pastes",
+        "static_beside_an_unread_header",
+        "static_a_header_macro_names_through_an_alias",
+    ] {
+        assert_eq!(
+            mem01_project_findings("mem01_destructor_headers", case),
+            1,
+            "{case}"
+        );
+    }
+    assert_eq!(
+        mem01_project_findings(
+            "mem01_destructor_headers",
+            "static_holding_constants_beside_a_header"
+        ),
+        0
+    );
+}
+
+/// A `.c` file another scanned file may `#include` is part of that file's
+/// translation unit too, whose stores to its statics it does not show:
+/// `b.c` stores the object in the static `a.c`'s callee reads, and includes
+/// `a.c` by a path that resolves, by a computed `#include` that may name any
+/// file, or by a spelling that resolves to no file (from a directory `a.c`
+/// is not in, or in `<...>`) but ends in `a.c`.
+#[test]
+fn mem01_a_static_of_a_file_another_file_includes_is_read() {
+    for case in [
+        "static_in_a_file_another_includes",
+        "static_in_a_file_a_computed_include_may_name",
+        "static_in_a_file_an_unresolved_include_names",
+        "static_in_a_file_an_angle_include_names",
+    ] {
+        let project = fixtures().join("mem01_destructor_headers").join(case);
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.json");
+        let manifest = fixtures().join("manifest_mem01.toml");
+        let (code, _, stderr) = run_aurora_lint(&[
+            project.to_str().unwrap(),
+            "-m",
+            manifest.to_str().unwrap(),
+            "-e",
+            out.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 0, "{case}: {stderr}");
+        let findings: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        let in_a = findings
+            .iter()
+            .filter(|f| f["rule_id"] == "MEM01-C" && f["file"].as_str().unwrap().ends_with("/a.c"))
+            .count();
+        assert_eq!(in_a, 1, "{case}: {findings:?}");
+    }
+}
+
 /// MSC37-C findings for `a.c` in one `msc37_macro_scope` project.
 fn msc37_macro_scope_findings(case: &str) -> usize {
     let project = fixtures().join("msc37_macro_scope").join(case);
