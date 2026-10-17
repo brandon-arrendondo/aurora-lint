@@ -343,6 +343,13 @@ impl Dcl31C {
                     return;
                 }
 
+                // `conn_p (log) = get_log();` with `conn_p` a typedef parses
+                // as a call of `conn_p`: the statement declares `log`, and the
+                // "callee" is its type.
+                if ast_utils::call_is_a_misparsed_declaration(node, source) {
+                    return;
+                }
+
                 // A callee bound by a parameter, a local or a file-scope
                 // declaration has a prior declaration, whatever its type
                 // spelling: curl's `curl_write_callback wcb` parameter is a

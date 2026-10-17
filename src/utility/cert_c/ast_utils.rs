@@ -849,11 +849,19 @@ pub fn declaration_declarator_for<'a>(
     if decl_node.kind() == "expression_statement" {
         // The name first: the declaration question reads the scopes around
         // the statement, and a scope can hold many statements of this shape.
-        let declared = misparsed_parts(decl_node)?.declared;
-        if get_node_text(&declared, source) != name {
-            return None;
+        if let Some(parts) = misparsed_parts(decl_node) {
+            if get_node_text(&parts.declared, source) != name {
+                return None;
+            }
+            return misparsed_function_pointer_declaration(decl_node, source);
         }
-        return misparsed_function_pointer_declaration(decl_node, source);
+        let parts = paren_declarator_parts(decl_node)?;
+        let declared = parts
+            .declared
+            .iter()
+            .copied()
+            .find(|d| get_node_text(d, source) == name)?;
+        return paren_declaration_declares(decl_node, &parts, source).then_some(declared);
     }
     for child in decl_node.child_nodes() {
         let declarator = match child.kind() {
@@ -877,16 +885,23 @@ const TYPE_KEYWORDS: &[&str] = &[
     "const", "volatile", "struct", "union", "enum",
 ];
 
-/// Whether `stmt` may hold the `T(*x)(...)` shape: an `expression_statement`
-/// holding a call -- or `call = init` -- whose callee is itself a call. Two
-/// node kinds, cheap enough to ask of every statement of every scope a
+/// Whether `stmt` may hold the `T(*x)(...)` shape or the `T(x) = init;`
+/// one: an `expression_statement` holding a call -- or `call = init`, or
+/// either first in a comma list -- whose callee is itself a call or a name.
+/// A few node kinds, cheap enough to ask of every statement of every scope a
 /// lookup walks; a statement that passes is a candidate only, and
-/// [`declaration_declarator_for`] reads the whole shape ([`misparsed_parts`])
-/// before taking it for a declaration.
+/// [`declaration_declarator_for`] reads the whole shape ([`misparsed_parts`],
+/// [`paren_declarator_parts`]) before taking it for a declaration.
 fn has_misparsed_declaration_shape(stmt: &Node) -> bool {
-    let Some(expr) = stmt.named_child_nodes().find(|c| c.kind() != "comment") else {
+    let Some(mut expr) = stmt.named_child_nodes().find(|c| c.kind() != "comment") else {
         return false;
     };
+    if expr.kind() == "comma_expression" {
+        let Some(first) = expr.child(0) else {
+            return false;
+        };
+        expr = first;
+    }
     let call = match expr.kind() {
         "call_expression" => Some(expr),
         "assignment_expression" => expr.child(0),
@@ -895,7 +910,7 @@ fn has_misparsed_declaration_shape(stmt: &Node) -> bool {
     // A call's first child is its callee.
     call.filter(|c| c.kind() == "call_expression")
         .and_then(|c| c.child(0))
-        .is_some_and(|callee| callee.kind() == "call_expression")
+        .is_some_and(|callee| matches!(callee.kind(), "call_expression" | "identifier"))
 }
 
 /// The grammar fields [`misparsed_parts`] reads, by id: it is asked of
@@ -1070,6 +1085,135 @@ pub fn misparsed_function_pointer_declaration<'a>(
         return Some(declared);
     }
     None
+}
+
+/// The parts of the `T(x) [= init];` shape: a declaration whose declarator
+/// is parenthesized, after a typedef name, which tree-sitter-c reads as a
+/// call of `T`, or an assignment to one: `conn_p (log) = get_log();` parses
+/// as `conn_p(log)` assigned `get_log()`. A comma list after it, `T (a),
+/// (b) = 0, *c;`, is a comma expression of the rest.
+struct ParenDeclaratorParts<'a> {
+    /// `T`.
+    type_name: Node<'a>,
+    /// Each name the list declares, in order.
+    declared: Vec<Node<'a>>,
+}
+
+/// The parts of the `T(x) [= init], ...;` shape ([`ParenDeclaratorParts`]).
+/// Each declarator may be parenthesized again or led by `*`s; anything else
+/// in the list, a call or an arithmetic operand, makes it no such shape.
+fn paren_declarator_parts<'a>(stmt: &Node<'a>) -> Option<ParenDeclaratorParts<'a>> {
+    let fields = misparsed_fields();
+    let mut rest = stmt.named_child_nodes().find(|c| c.kind() != "comment")?;
+    // `a, b, c` is `a, (b, c)`.
+    let mut items = Vec::new();
+    while rest.kind() == "comma_expression" {
+        items.push(rest.child_by_field_id(fields.left)?);
+        rest = rest.child_by_field_id(fields.right)?;
+    }
+    items.push(rest);
+    let mut items = items
+        .into_iter()
+        .map(|item| initialized_declarator(item, fields));
+    let call = items.next()?;
+    if call.kind() != "call_expression" {
+        return None;
+    }
+    let type_name = call.child_by_field_id(fields.function)?;
+    if type_name.kind() != "identifier" {
+        return None;
+    }
+    let mut args = call
+        .child_by_field_id(fields.arguments)?
+        .named_child_nodes()
+        .filter(|c| c.kind() != "comment");
+    let first = declarator_name(args.next()?, fields)?;
+    if args.next().is_some() {
+        return None;
+    }
+    let mut declared = vec![first];
+    for item in items {
+        declared.push(declarator_name(item, fields)?);
+    }
+    Some(ParenDeclaratorParts {
+        type_name,
+        declared,
+    })
+}
+
+/// `x` for `x = init`, else the item itself.
+fn initialized_declarator<'a>(item: Node<'a>, fields: &MisparsedFields) -> Node<'a> {
+    if item.kind() != "assignment_expression" {
+        return item;
+    }
+    item.child_by_field_id(fields.operator)
+        .filter(|op| op.kind() == "=")
+        .and_then(|_| item.child_by_field_id(fields.left))
+        .unwrap_or(item)
+}
+
+/// The name an expression read as a declarator declares: `x`, `(x)`, `*x`,
+/// and any nesting of those.
+fn declarator_name<'a>(mut node: Node<'a>, fields: &MisparsedFields) -> Option<Node<'a>> {
+    loop {
+        match node.kind() {
+            "identifier" => return Some(node),
+            "parenthesized_expression" => {
+                let mut inner = node.named_child_nodes().filter(|c| c.kind() != "comment");
+                node = inner.next()?;
+                if inner.next().is_some() {
+                    return None;
+                }
+            }
+            "pointer_expression" => {
+                if node.child_by_field_id(fields.operator)?.kind() != "*" {
+                    return None;
+                }
+                node = node.child_by_field_id(fields.argument)?;
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Whether a statement of the `T(x) [= init];` shape is the declaration:
+/// exactly when `T` names a type by a `typedef` in scope at the statement
+/// ([`typedef_in_scope`]), at any scope, since a type cannot be called. A
+/// `T` the file does not show as a typedef leaves it the call it parsed as,
+/// whatever follows: `REG(x) = v;` with a macro `REG` assigns through it,
+/// and at file scope `EXPORT_SYMBOL(f);` is a macro use, not a declaration.
+fn paren_declaration_declares(stmt: &Node, parts: &ParenDeclaratorParts, source: &str) -> bool {
+    typedef_in_scope(stmt, get_node_text(&parts.type_name, source), source)
+}
+
+/// Whether `call`, a `call_expression`, is the typedef name and declarator
+/// of a declaration tree-sitter read as a call: `conn_p(log)` in `conn_p
+/// (log) = get_log();`, or `lng(*fp)` in `lng (*fp)(int);`, when the
+/// statement is read as the declaration ([`paren_declaration_declares`],
+/// [`misparsed_function_pointer_declaration`]). Its callee is a type, not
+/// a function.
+pub fn call_is_a_misparsed_declaration(call: &Node, source: &str) -> bool {
+    let mut stmt = *call;
+    while let Some(parent) = stmt.parent() {
+        stmt = parent;
+        if !matches!(
+            stmt.kind(),
+            "call_expression" | "assignment_expression" | "comma_expression"
+        ) {
+            break;
+        }
+    }
+    if stmt.kind() != "expression_statement" {
+        return false;
+    }
+    let is_type_of_call = |type_name: Node| type_name.parent().is_some_and(|p| p.id() == call.id());
+    if let Some(parts) = misparsed_parts(&stmt) {
+        return is_type_of_call(parts.type_name)
+            && misparsed_function_pointer_declaration(&stmt, source).is_some();
+    }
+    paren_declarator_parts(&stmt).is_some_and(|parts| {
+        is_type_of_call(parts.type_name) && paren_declaration_declares(&stmt, &parts, source)
+    })
 }
 
 /// Calling conventions, by the keyword or by the macro the platform headers
@@ -1441,7 +1585,8 @@ enum ScopeBindingKind {
     /// function.
     Ordinary,
     /// A `T(*name)(...)` statement, which binds the name only if
-    /// [`misparsed_function_pointer_declaration`] reads it as a declaration.
+    /// [`misparsed_function_pointer_declaration`] reads it as a declaration,
+    /// or a `T(name) = init;` one, only if [`paren_declaration_declares`].
     Misparsed,
 }
 
@@ -1582,6 +1727,13 @@ impl FileTypedefs {
                                 get_node_text_owned(&parts.declared, source),
                                 ScopeBindingKind::Misparsed,
                             );
+                        } else if let Some(parts) = paren_declarator_parts(&item) {
+                            for declared in parts.declared {
+                                bind(
+                                    get_node_text_owned(&declared, source),
+                                    ScopeBindingKind::Misparsed,
+                                );
+                            }
                         }
                     }
                     _ => {}
@@ -1613,8 +1765,11 @@ impl FileTypedefs {
                 }
                 n = n.parent()?;
             });
-        let declares = stmt
-            .is_some_and(|stmt| misparsed_function_pointer_declaration(&stmt, source).is_some());
+        let declares = stmt.is_some_and(|stmt| {
+            misparsed_function_pointer_declaration(&stmt, source).is_some()
+                || paren_declarator_parts(&stmt)
+                    .is_some_and(|parts| paren_declaration_declares(&stmt, &parts, source))
+        });
         self.misparsed.borrow_mut().insert(binding.start, declares);
         declares
     }
@@ -4364,6 +4519,93 @@ mod tests {
                 "{code}"
             );
         }
+    }
+
+    #[test]
+    fn a_parenthesized_declarator_after_a_typedef_misread_as_a_call_binds_its_name() {
+        // `conn_p(x)`, assigned or not: a type cannot be called, so with
+        // `conn_p` a typedef in scope it declares `x`, over a file typedef of
+        // that name too.
+        let with = |stmt: &str| {
+            format!(
+                "typedef struct conn *conn_p;\ntypedef int x;\nconn_p get(void);\nvoid f(void)\n{{\n    {stmt}\n    use(x);\n}}\n"
+            )
+        };
+        for stmt in [
+            "conn_p (x) = get();",
+            "conn_p (x);",
+            "conn_p ((x));",
+            "conn_p (*x) = 0;",
+            "conn_p (a), (x) = get();",
+            "conn_p (a) = 0, x, (b);",
+            "conn_p (a), *(x);",
+        ] {
+            assert_eq!(
+                last_occurrence_is_local_both_ways(&with(stmt), "x"),
+                Some(true),
+                "{stmt}"
+            );
+        }
+        // At file scope too, by the same evidence.
+        let at_file_scope =
+            "typedef struct conn *conn_p;\nconn_p (g) = 0;\nvoid f(void)\n{\n    use(g);\n}\n";
+        assert!(matches!(
+            last_occurrence_is_local_both_ways(at_file_scope, "g"),
+            Some(false)
+        ));
+        let (tree, src) = parse_c_code(at_file_scope);
+        let used = query::find_descendants_of_kind(tree.root_node(), "identifier")
+            .into_iter()
+            .filter(|n| get_node_text(n, &src) == "g")
+            .max_by_key(|n| n.start_byte())
+            .unwrap();
+        assert_eq!(
+            find_global_declaration_for_identifier(&used, "g", &src).map(|d| d.kind()),
+            Some("expression_statement")
+        );
+    }
+
+    #[test]
+    fn a_call_of_a_name_no_typedef_declares_stays_a_call() {
+        // `reg` is no typedef here, or a nearer object hides it: `reg(x)` is
+        // a call or a macro use, assigned or not, and `x` the object before.
+        let with = |defines: &str, stmt: &str| {
+            format!("{defines}int x;\nvoid f(int a)\n{{\n    {stmt}\n    x = 1;\n}}\n")
+        };
+        for (defines, stmt) in [
+            ("", "reg(x) = 1;"),
+            ("", "reg(x);"),
+            ("#define reg(v) v\n", "reg(x) = 1;"),
+            ("typedef int reg;\n", "int reg;\n    reg(x) = 1;"),
+            ("typedef int reg;\n", "reg(x, a);"),
+            ("typedef int reg;\n", "reg(x) = 1, a + 1;"),
+            ("typedef int reg;\n", "reg(x + 1) = 1;"),
+            ("void g(void) { typedef int reg; }\n", "reg(x) = 1;"),
+            // A local `reg` declared through the shape hides the typedef.
+            (
+                "typedef struct s *T;\ntypedef int reg;\n",
+                "T (reg) = 0;\n    reg(x) = 1;",
+            ),
+        ] {
+            let code = with(defines, stmt);
+            assert_eq!(
+                last_occurrence_is_local_both_ways(&code, "x"),
+                Some(false),
+                "{code}"
+            );
+        }
+        // A macro use at file scope declares nothing either.
+        let macro_use = "int f(void)\n{\n    return 0;\n}\nEXPORT_SYMBOL(f);\nint g(void)\n{\n    return f();\n}\n";
+        let (tree, src) = parse_c_code(macro_use);
+        let used = query::find_descendants_of_kind(tree.root_node(), "identifier")
+            .into_iter()
+            .filter(|n| get_node_text(n, &src) == "f")
+            .max_by_key(|n| n.start_byte())
+            .unwrap();
+        assert_eq!(
+            find_global_declaration_for_identifier(&used, "f", &src).map(|d| d.kind()),
+            None
+        );
     }
 
     #[test]
