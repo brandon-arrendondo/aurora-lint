@@ -3,7 +3,7 @@
  * Status: FAIL - Type confusion via void pointer
  *
  * Both pointers on the one line are dereferenced as a wider type than the
- * object they point to.
+ * object they point to; the line's finding names the one written first.
  */
 
 long both(void) {

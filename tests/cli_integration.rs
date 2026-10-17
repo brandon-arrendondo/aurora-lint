@@ -175,6 +175,10 @@ fn a_finding_names_what_it_names_in_one_order_in_every_run() {
                 "{rule}: {first:?}"
             );
         }
+        if rule == "API07-C" {
+            // The confusion written first on the line, not the first name.
+            assert!(first.iter().any(|f| f.contains("'wide'")), "{first:?}");
+        }
         if rule == "EXP30-C" {
             assert!(
                 first.iter().filter(|f| f.contains("'i', 'j', 'k'")).count() >= 2,

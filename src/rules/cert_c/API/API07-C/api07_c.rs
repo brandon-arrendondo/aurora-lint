@@ -14,7 +14,7 @@ use crate::manifest::Severity;
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 pub struct Api07C;
@@ -157,9 +157,8 @@ impl Api07C {
         let func_text = get_node_text(func_node, source);
         let func_start_row = func_node.start_position().row;
 
-        // Phase 1: Find void* variable declarations. Ordered: a line reports
-        // only the first of them it confuses.
-        let mut void_ptr_vars: BTreeSet<String> = BTreeSet::new();
+        // Phase 1: Find void* variable declarations
+        let mut void_ptr_vars: HashSet<String> = HashSet::new();
         // Maps variable name → declared type (e.g., "charBuffer" → "char")
         let mut var_types: HashMap<String, String> = HashMap::new();
         // Maps void* var → source type it was assigned from
@@ -210,31 +209,34 @@ impl Api07C {
                 }
             }
 
-            // Detect dereference with cast: *((int*)data) or *((long*)data)
-            for vp in &void_ptr_vars {
-                if let Some(src_type) = void_ptr_source_type.get(vp) {
-                    if let Some(cast_type) = Self::find_cast_deref(trimmed, vp) {
-                        if Self::type_size(&cast_type) > Self::type_size(src_type) {
-                            violations.push(RuleViolation {
-                                rule_id: self.rule_id().to_string(),
-                                severity: Severity::High,
-                                message: format!(
-                                    "Type confusion: void* '{}' points to {} but is dereferenced as {}*",
-                                    vp, src_type, cast_type
-                                ),
-                                file_path: String::new(),
-                                line: func_start_row + line_idx + 1,
-                                column: 1,
-                                suggestion: Some(
-                                    "Ensure the cast type matches the actual pointed-to type"
-                                        .to_string(),
-                                ),
-                                ..Default::default()
-                            });
-                            break;
-                        }
-                    }
-                }
+            // Detect dereference with cast: *((int*)data) or *((long*)data).
+            // A line reports the first confusion written on it, by where its
+            // cast starts, not by the set's order, which changes run to run.
+            let first = void_ptr_vars
+                .iter()
+                .filter_map(|vp| {
+                    let src_type = void_ptr_source_type.get(vp)?;
+                    let (at, cast_type) = Self::find_cast_deref(trimmed, vp)?;
+                    (Self::type_size(&cast_type) > Self::type_size(src_type))
+                        .then_some((at, vp, src_type, cast_type))
+                })
+                .min_by_key(|(at, ..)| *at);
+            if let Some((_, vp, src_type, cast_type)) = first {
+                violations.push(RuleViolation {
+                    rule_id: self.rule_id().to_string(),
+                    severity: Severity::High,
+                    message: format!(
+                        "Type confusion: void* '{}' points to {} but is dereferenced as {}*",
+                        vp, src_type, cast_type
+                    ),
+                    file_path: String::new(),
+                    line: func_start_row + line_idx + 1,
+                    column: 1,
+                    suggestion: Some(
+                        "Ensure the cast type matches the actual pointed-to type".to_string(),
+                    ),
+                    ..Default::default()
+                });
             }
         }
     }
@@ -288,7 +290,9 @@ impl Api07C {
     }
 
     /// Find a cast-dereference pattern like *((int*)var) or *((long *)var)
-    fn find_cast_deref(line: &str, var_name: &str) -> Option<String> {
+    /// The type `var_name` is cast to and dereferenced as on `line`, with the
+    /// byte offset where that cast starts.
+    fn find_cast_deref(line: &str, var_name: &str) -> Option<(usize, String)> {
         // Look for patterns: (TYPE*)var or (TYPE *)var followed by ) and preceded by *(
         let var_close = format!("{})", var_name);
         if !line.contains(&var_close) {
@@ -305,7 +309,7 @@ impl Api07C {
                 // Extract type name (everything before the *)
                 let type_name: String = cast_content.trim_end_matches('*').trim().to_string();
                 if !type_name.is_empty() {
-                    return Some(type_name);
+                    return Some((paren_pos, type_name));
                 }
             }
         }
@@ -317,7 +321,7 @@ impl Api07C {
             if let Some(paren_pos) = before.rfind('(') {
                 let type_name = before[paren_pos + 1..].trim().to_string();
                 if !type_name.is_empty() {
-                    return Some(type_name);
+                    return Some((paren_pos, type_name));
                 }
             }
         }
