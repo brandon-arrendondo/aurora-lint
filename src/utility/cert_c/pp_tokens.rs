@@ -231,6 +231,13 @@ pub fn directive_end(text: &str) -> usize {
     scan(text, false, &mut |_: PpKind, _: std::ops::Range<usize>| {})
 }
 
+/// Whether a block comment in the directive whose replacement list `text`
+/// starts in never closes: the directive then runs on to the end of `text`
+/// ([`directive_end`]), and what it defines cannot be read.
+pub fn directive_comment_unclosed(text: &str) -> bool {
+    scan_to_end(text, false, &mut |_: PpKind, _: std::ops::Range<usize>| {}).unclosed_comment
+}
+
 /// `text` up to the end of its directive (see [`directive_end`]), with
 /// every comment and every literal's contents blanked to spaces: the same
 /// byte length and line breaks, so an offset in the result is an offset in
@@ -558,13 +565,33 @@ fn scan(
     multi_line: bool,
     emit: &mut dyn FnMut(PpKind, std::ops::Range<usize>),
 ) -> usize {
+    scan_to_end(text, multi_line, emit).end
+}
+
+/// Where [`scan_to_end`] stopped.
+struct ScanEnd {
+    /// One past the last byte scanned.
+    end: usize,
+    /// Whether a block comment ran on to the end of the text unclosed.
+    unclosed_comment: bool,
+}
+
+/// [`scan`], also saying whether it stopped inside a block comment.
+fn scan_to_end(
+    text: &str,
+    multi_line: bool,
+    emit: &mut dyn FnMut(PpKind, std::ops::Range<usize>),
+) -> ScanEnd {
     let b = text.as_bytes();
     let n = b.len();
     let mut i = 0;
     while i < n {
         let c = b[i];
         if c == b'\n' && !multi_line {
-            return i;
+            return ScanEnd {
+                end: i,
+                unclosed_comment: false,
+            };
         }
         if c == b'\\' && continuation_len(b, i) > 0 {
             i += continuation_len(b, i);
@@ -575,7 +602,13 @@ fn scan(
             continue;
         }
         if c == b'/' && b.get(i + 1) == Some(&b'*') {
-            i = text[i + 2..].find("*/").map_or(n, |k| i + 2 + k + 2);
+            let Some(k) = text[i + 2..].find("*/") else {
+                return ScanEnd {
+                    end: n,
+                    unclosed_comment: true,
+                };
+            };
+            i += 2 + k + 2;
             continue;
         }
         if c == b'/' && b.get(i + 1) == Some(&b'/') {
@@ -658,7 +691,10 @@ fn scan(
             emit(PpKind::Other, start..i);
         }
     }
-    n
+    ScanEnd {
+        end: n,
+        unclosed_comment: false,
+    }
 }
 
 /// Length of a line continuation starting at the `\` at `i` (`\` then
@@ -924,6 +960,19 @@ mod tests {
         // A `//` comment continued by a `\` swallows the next line too.
         let src = "x // note \\\n still comment\ny";
         assert_eq!(texts(&lex_replacement_list(src, false)), ["x"]);
+    }
+
+    #[test]
+    fn a_block_comment_that_never_closes_is_told_apart_from_one_in_a_line_comment() {
+        for (src, unclosed) in [
+            ("#define CC /* never closed\nint x;", true),
+            ("#define CC __stdcall // see /* the ABI\nint x;", false),
+            ("#define CC \"/*\" __stdcall\nint x;", false),
+            ("#define CC /* spans\n lines */ __stdcall\nint x;", false),
+            ("#define CC __stdcall", false),
+        ] {
+            assert_eq!(directive_comment_unclosed(src), unclosed, "{src}");
+        }
     }
 
     #[test]

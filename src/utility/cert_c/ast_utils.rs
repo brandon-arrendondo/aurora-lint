@@ -1139,7 +1139,9 @@ fn misparsed_parts<'a>(stmt: &Node<'a>) -> Option<MisparsedParts<'a>> {
 ///   `T(*x)(a) = 0` can only be a declaration;
 /// - a parameter starts with a type keyword (`T (*x)(int)`): no argument
 ///   expression does;
-/// - a `typedef` of `T` is in scope at the statement ([`typedef_in_scope`]);
+/// - a `typedef` of `T` is in scope at the statement ([`typedef_in_scope`]),
+///   and no function-like macro of that name makes the statement its use
+///   (`#define trace(x) log_fn(x)` beside `typedef LONG (*trace)(HKEY)`);
 /// - the statement is at file scope, through preprocessor arms: C has no
 ///   expression statement there, so `LONG (*x)(HKEY);` declares `x` even
 ///   with `LONG` from `<windows.h>`.
@@ -1185,9 +1187,11 @@ pub fn misparsed_function_pointer_declaration<'a>(
                     .any(|k| get_node_text(&arg, source).split_whitespace().next() == Some(k))
         })
     });
+    let type_name = get_node_text(&type_name, source);
     if keyword_param
         || at_file_scope(stmt)
-        || typedef_in_scope(stmt, get_node_text(&type_name, source), source)
+        || (typedef_in_scope(stmt, type_name, source)
+            && !defines_function_like_macro(source, type_name))
     {
         return Some(declared);
     }
@@ -1445,12 +1449,7 @@ fn object_macro_definitions<'s>(
     macro_definitions_named(source, name)
         .into_iter()
         .filter(|(_, define)| define.params.is_none())
-        .map(|(directive, define)| {
-            let unclosed = directive
-                .rfind("/*")
-                .is_some_and(|open| !directive[open..].contains("*/"));
-            (!unclosed).then_some(define)
-        })
+        .map(|(unclosed, define)| (!unclosed).then_some(define))
         .collect()
 }
 
@@ -1464,12 +1463,13 @@ fn defines_function_like_macro(source: &str, name: &str) -> bool {
         .any(|(_, define)| define.params.is_some())
 }
 
-/// Every `#define name` in `source`, with the text of its whole directive,
-/// read by the preprocessor's own lexing ([`pp_tokens::parse_define_directive`]).
+/// Every `#define name` in `source`, each with whether a comment in it never
+/// closes ([`pp_tokens::directive_comment_unclosed`]), read by the
+/// preprocessor's own lexing ([`pp_tokens::parse_define_directive`]).
 fn macro_definitions_named<'s>(
     source: &'s str,
     name: &str,
-) -> Vec<(&'s str, pp_tokens::DefineDirective<'s>)> {
+) -> Vec<(bool, pp_tokens::DefineDirective<'s>)> {
     // Lexing the file is the cost; a file whose directives never name
     // `name` has nothing to lex for.
     let named = source.lines().any(|line| {
@@ -1486,7 +1486,7 @@ fn macro_definitions_named<'s>(
             if define.name != name {
                 return None;
             }
-            Some((text.get(..pp_tokens::directive_end(text))?, define))
+            Some((pp_tokens::directive_comment_unclosed(text), define))
         })
         .collect()
 }
@@ -4639,6 +4639,7 @@ mod tests {
             "#define MYAPI __attribute__((ms_abi)) EFIAPI\n",
             "#ifdef _WIN32\n#define MYAPI __stdcall\n#else\n#define MYAPI\n#endif\n",
             "#define MYAPI /* the platform's */ __stdcall\n",
+            "#define MYAPI __stdcall // see /* the ABI\n",
         ] {
             let code = format!("{defines}{}", in_block("LONG (MYAPI *g)(HKEY);"));
             assert_eq!(
@@ -4741,6 +4742,11 @@ mod tests {
             (
                 "typedef int reg;\n#ifdef TRACE\n#define reg(v) log_it(v)\n#endif\n",
                 "reg (x) = 1;",
+            ),
+            // And of a function-pointer typedef's name.
+            (
+                "typedef int (*reg)(int);\n#define reg(v) log_it(v)\n",
+                "reg (*x)(1);",
             ),
         ] {
             let code = with(defines, stmt);
