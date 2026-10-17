@@ -27,6 +27,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self as cfg_mod, FunctionCfg};
 use crate::analyze::check_macros::{collect_macro_definitions, MacroDefinition};
+use crate::analyze::const_eval;
 use crate::analyze::context::ScopedTable;
 use crate::analyze::context::{IncludeClosure, ProjectContext, VisibleTypes};
 use crate::analyze::dataflow::find_node_at_range;
@@ -80,7 +81,252 @@ pub struct Mem01C {
     /// What the scanned files and headers declare, for reading a callee the
     /// way it compiles rather than by this file's text alone.
     headers: RefCell<HeaderTables>,
+    /// `ProjectContext::include_edges_beyond_search_path` and
+    /// `ProjectContext::unresolved_project_headers`: whether the file may
+    /// include a project header the scan could not read.
+    include_edges_beyond_search_path: RefCell<Arc<HashMap<String, Vec<String>>>>,
+    unresolved_project_headers: RefCell<Arc<HashSet<String>>>,
+    /// `IncludeReport::outside_headers`: the system headers the scan read.
+    outside_headers: RefCell<Arc<HashSet<String>>>,
+    /// The words of each header read so far, kept across files.
+    header_words: Arc<std::sync::Mutex<HashMap<String, Option<Arc<HeaderWords>>>>>,
+    /// The file's statics whose value is always a constant (`scan` resets
+    /// it; the first callee that needs it fills it).
+    static_holders: RefCell<Arc<StaticHolders>>,
 }
+
+/// What a header holds that can name a file's `static`: every word in its
+/// text (comments and strings too, which only makes a name more often
+/// counted as named), and whether it has a `##`.
+struct HeaderWords {
+    words: HashSet<String>,
+    pastes: bool,
+    /// The spellings it `#include`s other than as `<...>`.
+    quoted_includes: HashSet<String>,
+}
+
+impl HeaderWords {
+    fn of(text: &str) -> Self {
+        Self {
+            words: text
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|w| w.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_'))
+                .map(str::to_string)
+                .collect(),
+            pastes: text.contains("##"),
+            quoted_includes: quoted_includes(text),
+        }
+    }
+}
+
+/// The spellings `text` `#include`s other than as `<...>` (a quoted or a
+/// computed include), as `IncludeClosure::unresolved` spells them: `/`
+/// separated, `.` and `..` segments dropped.
+fn quoted_includes(text: &str) -> HashSet<String> {
+    text.lines()
+        .filter_map(|l| {
+            l.trim_start()
+                .strip_prefix('#')
+                .map(str::trim_start)
+                .and_then(|r| r.strip_prefix("include"))
+                .map(str::trim_start)
+        })
+        .filter(|r| !r.starts_with('<'))
+        .map(|r| {
+            r.trim_start_matches('"')
+                .split('"')
+                .next()
+                .unwrap_or("")
+                .split(['/', '\\'])
+                .filter(|segment| !matches!(*segment, "" | "." | ".."))
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .collect()
+}
+
+/// The file's statics a callee's macro may name without reading the freed
+/// member: those whose value is always a constant
+/// ([`const_eval::file_statics_holding_constants`]) and that no header the
+/// file may include names.
+#[derive(Default)]
+struct StaticHolders {
+    /// The real paths of the headers the file may include, or `None` when
+    /// that is not known, or it may include a project header the scan could
+    /// not read: then no static is proven.
+    headers: Option<Vec<String>>,
+    /// `IncludeClosure::unresolved`: one the file or a project header it
+    /// reads includes in quotes is a project header the scan did not read.
+    unresolved: HashSet<String>,
+    words: Arc<std::sync::Mutex<HashMap<String, Option<Arc<HeaderWords>>>>>,
+    proven: std::sync::OnceLock<HashSet<String>>,
+}
+
+impl StaticHolders {
+    /// The proven statics of the file `root`, worked out on the first call.
+    fn proven(
+        &self,
+        root: &Node,
+        source: &str,
+        macros: &HashMap<String, Vec<MacroDefinition>>,
+        ctx: &AddressOfCallContext,
+    ) -> &HashSet<String> {
+        self.proven
+            .get_or_init(|| self.work_out(root, source, macros, ctx))
+    }
+
+    fn work_out(
+        &self,
+        root: &Node,
+        source: &str,
+        macros: &HashMap<String, Vec<MacroDefinition>>,
+        ctx: &AddressOfCallContext,
+    ) -> HashSet<String> {
+        let Some(headers) = &self.headers else {
+            return HashSet::new();
+        };
+        if quoted_includes(source)
+            .iter()
+            .any(|spelling| self.unresolved.contains(spelling))
+        {
+            return HashSet::new();
+        }
+        let mut function_macros = const_eval::function_macro_names(source);
+        for call in query::find_descendants_of_kind(*root, "call_expression") {
+            if let Some(name) = call
+                .child_by_field_name("function")
+                .filter(|f| f.kind() == "identifier")
+                .map(|f| get_node_text(&f, source))
+            {
+                if ctx.may_be_macro(name, macros) || ctx.is_macro_call(name, call.start_byte()) {
+                    function_macros.insert(name.to_string());
+                }
+            }
+        }
+        let enumerators = const_eval::enumeration_constant_names(root, source);
+        let constants = RefCell::new(HashMap::new());
+        let constant_name = |name: &str| {
+            macro_is_constant(
+                name,
+                macros,
+                &enumerators,
+                ctx,
+                0,
+                &mut constants.borrow_mut(),
+            )
+        };
+        let mut proven = const_eval::file_statics_holding_constants(
+            root,
+            source,
+            &function_macros,
+            &constant_name,
+        );
+        for header in headers {
+            if proven.is_empty() {
+                break;
+            }
+            let words = {
+                let mut memo = self.words.lock().unwrap_or_else(|e| e.into_inner());
+                memo.entry(header.clone())
+                    .or_insert_with(|| {
+                        std::fs::read_to_string(header)
+                            .ok()
+                            .map(|text| Arc::new(HeaderWords::of(&text)))
+                    })
+                    .clone()
+            };
+            match words {
+                Some(words)
+                    if !words.pastes
+                        && !words
+                            .quoted_includes
+                            .iter()
+                            .any(|spelling| self.unresolved.contains(spelling)) =>
+                {
+                    proven.retain(|name| !words.words.contains(name))
+                }
+                _ => return HashSet::new(),
+            }
+        }
+        proven
+    }
+}
+
+/// Whether every definition of the macro `name` (the file's, or any scanned
+/// file's) is object-like and expands to a constant: numbers, character
+/// constants, operators that store nothing, `sizeof`, type keywords for a
+/// cast, `NULL`, the file's enumeration constants (`enumerators`), and
+/// macros that do the same, at most [`MAX_EXPANSION_DEPTH`] deep.
+fn macro_is_constant(
+    name: &str,
+    own: &HashMap<String, Vec<MacroDefinition>>,
+    enumerators: &HashSet<String>,
+    ctx: &AddressOfCallContext,
+    depth: usize,
+    memo: &mut HashMap<String, bool>,
+) -> bool {
+    if let Some(&known) = memo.get(name) {
+        return known;
+    }
+    if depth >= MAX_EXPANSION_DEPTH {
+        return false;
+    }
+    // A name being worked out counts as not constant until it is.
+    memo.insert(name.to_string(), false);
+    let definitions: Vec<&MacroDefinition> = own
+        .get(name)
+        .into_iter()
+        .flatten()
+        .chain(
+            ctx.headers
+                .macro_definitions
+                .get(name)
+                .into_iter()
+                .flatten(),
+        )
+        .collect();
+    let constant = !definitions.is_empty()
+        && !ctx.function_macro_arms.get(name).is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|e| e.files.iter().any(|f| ctx.header_in_reach(f)))
+        })
+        && definitions.iter().all(|definition| {
+            let MacroDefinition::Object { body } = definition else {
+                return false;
+            };
+            let tokens = lex_replacement_list(body, false);
+            !tokens.is_empty()
+                && tokens.iter().enumerate().all(|(i, t)| match t.kind {
+                    PpKind::Number | PpKind::CharLiteral => true,
+                    PpKind::Punctuator => !STORING_PUNCTUATORS.iter().any(|p| t.is(p)),
+                    PpKind::Identifier => {
+                        let word: &str = &t.text;
+                        TYPE_WORDS.contains(&word)
+                            || matches!(
+                                word,
+                                "NULL" | "sizeof" | "_Alignof" | "alignof" | "true" | "false"
+                            )
+                            || (matches!(word, "struct" | "union" | "enum"))
+                            || (i > 0
+                                && matches!(&*tokens[i - 1].text, "struct" | "union" | "enum"))
+                            || enumerators.contains(word)
+                            || (word != name
+                                && macro_is_constant(word, own, enumerators, ctx, depth + 1, memo))
+                    }
+                    _ => false,
+                })
+        });
+    memo.insert(name.to_string(), constant);
+    constant
+}
+
+/// The punctuators that store, take an address or reach a member, none of
+/// which a constant holds.
+const STORING_PUNCTUATORS: [&str; 18] = [
+    "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", "++", "--", "->", ".", "&",
+    "#", "##",
+];
 
 /// The project tables a callee of the destructor exemption is read against
 /// besides the file: project headers are scanned but not expanded, so a macro,
@@ -133,6 +379,8 @@ struct AddressOfCallContext {
     /// The real path of the file being scanned, which its include closure
     /// contains: its own definitions are read by offset, not by that.
     own_file: Arc<str>,
+    /// `Mem01C::static_holders`.
+    static_holders: Arc<StaticHolders>,
 }
 
 impl AddressOfCallContext {
@@ -209,6 +457,11 @@ impl Mem01C {
             include_closure: RefCell::default(),
             own_function_macros: RefCell::default(),
             headers: RefCell::default(),
+            include_edges_beyond_search_path: RefCell::default(),
+            unresolved_project_headers: RefCell::default(),
+            outside_headers: RefCell::default(),
+            header_words: Arc::default(),
+            static_holders: RefCell::default(),
         }
     }
 
@@ -332,6 +585,18 @@ impl CertRule for Mem01C {
         *self.freeing_wrappers.borrow_mut() = Arc::new(self.build_freeing_wrappers());
         *self.function_macro_arms.borrow_mut() = Arc::clone(&context.function_macro_arms);
         *self.include_edges.borrow_mut() = Arc::clone(&context.include_edges);
+        *self.include_edges_beyond_search_path.borrow_mut() =
+            Arc::clone(&context.include_edges_beyond_search_path);
+        *self.unresolved_project_headers.borrow_mut() =
+            Arc::new(context.unresolved_project_headers.clone());
+        *self.outside_headers.borrow_mut() = Arc::new(
+            context
+                .include_report
+                .outside_headers
+                .iter()
+                .cloned()
+                .collect(),
+        );
         {
             let mut headers = self.headers.borrow_mut();
             headers.macro_definitions = Arc::clone(&context.macro_definitions);
@@ -356,11 +621,58 @@ impl CertRule for Mem01C {
             &self.include_edges.borrow(),
             &self.file_path.borrow(),
         ));
+        *self.static_holders.borrow_mut() = Arc::new(StaticHolders {
+            headers: self.reachable_headers(source),
+            unresolved: self.include_closure.borrow().unresolved.clone(),
+            words: Arc::clone(&self.header_words),
+            proven: std::sync::OnceLock::new(),
+        });
         self.check_node(node, source, violations);
     }
 }
 
 impl Mem01C {
+    /// The real paths of the project headers the scanned file may include,
+    /// or `None` when that is unknown (a computed `#include`, or an include
+    /// graph with no edge out of a file that includes anything but `<...>`
+    /// headers) or the file may include a project header the scan could not
+    /// read. A system header is left out: it is written without knowing the
+    /// file's statics, so it names one only by coincidence of spelling, and
+    /// a store it could make through a macro's argument is a store the
+    /// parse of the argument shows, or one through `&`.
+    fn reachable_headers(&self, source: &str) -> Option<Vec<String>> {
+        let closure = self.include_closure.borrow();
+        let own = self.own_file.borrow();
+        let only_system_includes = source.lines().all(|l| {
+            l.trim_start()
+                .strip_prefix('#')
+                .map(str::trim_start)
+                .and_then(|r| r.strip_prefix("include"))
+                .is_none_or(|r| r.trim_start().starts_with('<'))
+        });
+        if closure.any || (closure.files.is_empty() && !only_system_includes) {
+            return None;
+        }
+        let unread = crate::analyze::context::unresolved_project_headers_reached(
+            &self.include_edges.borrow(),
+            &self.include_edges_beyond_search_path.borrow(),
+            &self.unresolved_project_headers.borrow(),
+            &self.file_path.borrow(),
+        );
+        if !unread.is_empty() {
+            return None;
+        }
+        let outside = self.outside_headers.borrow();
+        let mut headers: Vec<String> = closure
+            .files
+            .iter()
+            .filter(|f| ***f != **own && !outside.contains(*f))
+            .cloned()
+            .collect();
+        headers.sort();
+        Some(headers)
+    }
+
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         if node.kind() == "function_definition" {
             self.check_function(node, source, violations);
@@ -386,6 +698,7 @@ impl Mem01C {
             own_function_macros: Arc::clone(&self.own_function_macros.borrow()),
             headers: self.headers.borrow().clone(),
             own_file: Arc::clone(&self.own_file.borrow()),
+            static_holders: Arc::clone(&self.static_holders.borrow()),
         };
 
         // Get pre-built CFG or build one on the fly
@@ -1055,8 +1368,13 @@ fn callee_leaves_member_alone(
     {
         return false;
     }
+    let macros = collect_macro_definitions(source);
+    let statics = addr_ctx
+        .static_holders
+        .proven(&root, source, &macros, addr_ctx);
     let scope = CalleeScope {
-        macros: collect_macro_definitions(source),
+        macros,
+        statics,
         unions: union_field_sets(root, source),
         globals: file_scope_variables(root, source),
         typedefs: unconditional_typedef_names(root, source),
@@ -1134,6 +1452,10 @@ struct CalleeScope<'c> {
     /// hold every file's and every arm's, and a name one of them makes a
     /// type may be an object where the callee compiles.
     typedefs: HashSet<String>,
+    /// The file's statics whose value is always a constant, which no header
+    /// names ([`StaticHolders`]): a macro's expansion may name one, since
+    /// nothing read through it is the object.
+    statics: &'c HashSet<String>,
     ctx: &'c AddressOfCallContext,
 }
 
@@ -1160,7 +1482,9 @@ impl CalleeScope<'_> {
     /// unreadable one, a token paste among them, is not proven), and every
     /// identifier it names is known to hold nothing: a keyword, a tag after
     /// `struct`, `union` or `enum`, a field selected off something in the
-    /// list, or a macro that passes in turn. Anything else is a read: a name
+    /// list, a static of the file whose value is always a constant and that
+    /// no header names ([`StaticHolders`]), or a macro that passes in turn.
+    /// Anything else is a read: a name
     /// no table knows may be an object declared where the scan does not see
     /// it, such as by another macro's expansion. A typedef name is one too: a
     /// block-scope declaration the parse misreads (`conn_p (name) = 0;` reads
@@ -1253,6 +1577,7 @@ impl CalleeScope<'_> {
                         }
                         keyword
                             || after(&["->", ".", "struct", "union", "enum"])
+                            || self.statics.contains(word)
                             || (self.ctx.may_be_macro(word, &self.macros)
                                 && self.expansion_names_no_read(word, reads, walk))
                     }

@@ -1752,6 +1752,476 @@ pub fn file_scope_static_names(root: &Node, source: &str) -> std::collections::H
     out
 }
 
+/// The file-scope objects of the translation unit `root` whose value is
+/// always a constant: each is declared `static` wherever the file declares
+/// it at file scope (every arm), as a pointer or an arithmetic object, never
+/// an array, its initializer is a constant expression ([`is_constant_value`])
+/// or absent, and every occurrence that binds to it only reads its value or
+/// stores a constant expression in it (`=` or a compound assignment), or
+/// steps it with `++`/`--`. Nothing derived from another object's address
+/// can then be in it, so reading through it reaches no object the program
+/// made.
+///
+/// Fail-safe where the parse cannot see: an occurrence whose address is
+/// taken, inside an argument of a call `function_macros` names (a macro may
+/// store it), under a parser `ERROR`, or bound by a block-scope `extern`
+/// declaration is not proven. So is any name a `#define` of the file names
+/// other than as the whole of an object-like macro's replacement (`#define
+/// CUR g`, `(g)`, or another such alias, whose uses then count as the
+/// object's) or before `->`, `[` or `(`, which read its value whatever
+/// surrounds the expansion. Any `##` in a `#define` of the file, or any
+/// `asm`, leaves nothing proven: a pasted name or an assembler operand is
+/// a store the parse cannot place. What the file's headers say is the
+/// caller's to rule out.
+///
+/// `constant_name` says whether an identifier that does not bind to an
+/// object is a constant: an enumeration constant of the file always is, and
+/// the caller says which macros expand to constants.
+pub fn file_statics_holding_constants<'a>(
+    root: &Node<'a>,
+    source: &str,
+    function_macros: &HashSet<String>,
+    constant_name: &dyn Fn(&str) -> bool,
+) -> HashSet<String> {
+    use crate::utility::cert_c::ast_utils::{
+        declaration_has_storage_class, IdentifierBinding, ScopeDeclarations,
+    };
+    if source.contains("##")
+        || ["asm", "__asm", "__asm__"]
+            .iter()
+            .any(|k| contains_token(source, k))
+    {
+        return HashSet::new();
+    }
+    let enumerators = enumeration_constant_names(root, source);
+    let declarations = ScopeDeclarations::default();
+    let is_constant = |name: &str, at: &Node<'a>| {
+        declarations
+            .resolve_identifier_binding_in(root, at, name, source)
+            .is_none()
+            && (matches!(name, "NULL" | "nullptr" | "true" | "false")
+                || enumerators.contains(name)
+                || constant_name(name))
+    };
+
+    // Every file-scope declaration of each name, in every arm.
+    let mut candidates: HashMap<String, bool> = HashMap::new();
+    for item in ast_utils::top_level_items(*root) {
+        let declared = match item.kind() {
+            "declaration" => declarators_of(&item),
+            "function_definition" => {
+                if let Some(d) = item.child_by_field_name("declarator") {
+                    let name = ast_utils::get_identifier_from_declarator(&d, source);
+                    candidates.insert(name, false);
+                }
+                continue;
+            }
+            _ => continue,
+        };
+        let is_static = declaration_has_storage_class(&item, "static", source);
+        let is_typedef = declaration_has_storage_class(&item, "typedef", source);
+        for (declarator, init) in declared {
+            let name = ast_utils::get_identifier_from_declarator(&declarator, source);
+            if name.is_empty() {
+                continue;
+            }
+            let ok = is_static
+                && !is_typedef
+                && holds_one_value(&item, &declarator)
+                && init.is_none_or(|v| is_constant_value(&v, source, &is_constant));
+            let slot = candidates.entry(name).or_insert(true);
+            *slot &= ok;
+        }
+    }
+    candidates.retain(|_, ok| *ok);
+    if candidates.is_empty() {
+        return HashSet::new();
+    }
+
+    // What each name the `#define`s alias stands for, and the names a
+    // `#define` uses otherwise than an alias or a read may.
+    let defines = define_lines(source);
+    let mut aliases: HashMap<String, String> = HashMap::new();
+    loop {
+        let before = aliases.len();
+        for define in &defines {
+            if define.params.is_some() || aliases.contains_key(&define.name) {
+                continue;
+            }
+            if let Some(target) = alias_target(&define.body) {
+                let object = aliases.get(&target).cloned().unwrap_or(target);
+                if candidates.contains_key(&object) {
+                    aliases.insert(define.name.clone(), object);
+                }
+            }
+        }
+        if aliases.len() == before {
+            break;
+        }
+    }
+    let object_of = |name: &str| -> Option<String> {
+        aliases
+            .get(name)
+            .cloned()
+            .or_else(|| candidates.contains_key(name).then(|| name.to_string()))
+    };
+    let mut failed: HashSet<String> = HashSet::new();
+    for define in &defines {
+        let is_alias = define.params.is_none()
+            && alias_target(&define.body).is_some_and(|t| object_of(&t).is_some());
+        let tokens = crate::utility::cert_c::pp_tokens::lex_replacement_list(
+            &define.body,
+            define.params.is_some(),
+        );
+        for (i, token) in tokens.iter().enumerate() {
+            let Some(object) = (token.kind
+                == crate::utility::cert_c::pp_tokens::PpKind::Identifier)
+                .then(|| object_of(&token.text))
+                .flatten()
+            else {
+                continue;
+            };
+            let previous = i.checked_sub(1).map(|p| &tokens[p]);
+            if previous.is_some_and(|p| p.is(".") || p.is("->")) || is_alias {
+                continue;
+            }
+            let reads = tokens
+                .get(i + 1)
+                .is_some_and(|n| n.is("->") || n.is("[") || n.is("("))
+                && !previous.is_some_and(|p| {
+                    define
+                        .params
+                        .as_ref()
+                        .is_some_and(|params| params.iter().any(|q| *q == p.text))
+                });
+            if !reads {
+                failed.insert(object);
+            }
+        }
+    }
+
+    // Every occurrence in the parse, with the function it is in: only a
+    // name that function declares can bind to anything but the file's
+    // object, so only that is resolved (from the root, which costs a
+    // descent past every item before it).
+    let walk = ast_utils::descendants_of_kinds_with(
+        *root,
+        &["identifier"],
+        (MacroArgumentWalk::default(), false, None::<Node<'a>>),
+        |(arguments, in_error, function), parent| {
+            (
+                arguments.step(parent, source, function_macros),
+                *in_error || parent.kind() == "ERROR",
+                if parent.kind() == "function_definition" {
+                    Some(parent)
+                } else {
+                    *function
+                },
+            )
+        },
+    );
+    let mut declared_in: HashMap<usize, HashSet<String>> = HashMap::new();
+    for (id, (arguments, in_error, function)) in walk {
+        let text = id.utf8_text(source.as_bytes()).unwrap_or("");
+        let Some(object) = object_of(text) else {
+            continue;
+        };
+        if failed.contains(&object) {
+            continue;
+        }
+        let may_bind_locally = function.is_some_and(|f| {
+            declared_in
+                .entry(f.id())
+                .or_insert_with(|| names_declared_in(&f, source))
+                .contains(text)
+        });
+        if !aliases.contains_key(text) && may_bind_locally {
+            match declarations.resolve_identifier_binding_in(root, &id, text, source) {
+                Some(IdentifierBinding::Local(decl)) => {
+                    if declaration_has_storage_class(&decl, "extern", source) {
+                        failed.insert(object);
+                    }
+                    continue;
+                }
+                Some(IdentifierBinding::Parameter(_)) => continue,
+                _ => {}
+            }
+        }
+        if !aliases.contains_key(text) && function.is_none() && declares_at_file_scope(&id) {
+            continue;
+        }
+        if in_error || arguments.in_arguments || !use_keeps_constant(&id, source, &is_constant) {
+            failed.insert(object);
+        }
+    }
+    candidates
+        .into_keys()
+        .filter(|name| !failed.contains(name))
+        .collect()
+}
+
+/// The enumeration constants `root` declares, in any `enum` of the file.
+pub fn enumeration_constant_names(root: &Node, source: &str) -> HashSet<String> {
+    let mut enumerators = Vec::new();
+    collect_enum_constants(root, source, &mut enumerators);
+    enumerators.into_iter().map(|(name, _)| name).collect()
+}
+
+/// Every name a declaration or parameter inside `function` declares, and
+/// every function pointer an expression statement in it declares where
+/// tree-sitter reads a call (`FP (*x)(int) = f;`,
+/// [`ast_utils::misparsed_function_pointer_declaration`]): the names an
+/// identifier in it may bind to instead of a file-scope object. Missing
+/// one only makes a local's uses count as the object's.
+fn names_declared_in(function: &Node, source: &str) -> HashSet<String> {
+    lang_parsing_substrate::query::find_descendants_of_kinds(
+        *function,
+        &[
+            "declaration",
+            "parameter_declaration",
+            "expression_statement",
+        ],
+    )
+    .into_iter()
+    .flat_map(|d| {
+        if d.kind() == "expression_statement" {
+            return ast_utils::misparsed_function_pointer_declaration(&d, source)
+                .map(|n| ast_utils::get_node_text(&n, source).to_string())
+                .into_iter()
+                .collect::<Vec<_>>();
+        }
+        d.children_by_field_name("declarator", &mut d.walk())
+            .map(|declarator| ast_utils::get_identifier_from_declarator(&declarator, source))
+            .collect()
+    })
+    .collect()
+}
+
+/// The declarators of `declaration`, each with its initializer.
+fn declarators_of<'a>(declaration: &Node<'a>) -> Vec<(Node<'a>, Option<Node<'a>>)> {
+    declaration
+        .children_by_field_name("declarator", &mut declaration.walk())
+        .map(|d| {
+            if d.kind() == "init_declarator" {
+                (
+                    d.child_by_field_name("declarator").unwrap_or(d),
+                    d.child_by_field_name("value"),
+                )
+            } else {
+                (d, None)
+            }
+        })
+        .collect()
+}
+
+/// Whether `declarator` of `declaration` declares one pointer or arithmetic
+/// object: no array or function in it, and either a pointer or a type made
+/// of the arithmetic keywords alone (a typedef may name an array or a
+/// struct, whose parts a store can reach without naming the whole).
+fn holds_one_value(declaration: &Node, declarator: &Node) -> bool {
+    if lang_parsing_substrate::query::find_first_descendant(*declarator, |n| {
+        matches!(n.kind(), "array_declarator" | "function_declarator")
+    })
+    .is_some()
+        || matches!(
+            declarator.kind(),
+            "array_declarator" | "function_declarator"
+        )
+    {
+        return false;
+    }
+    declarator.kind() == "pointer_declarator"
+        || lang_parsing_substrate::query::find_first_descendant(*declarator, |n| {
+            n.kind() == "pointer_declarator"
+        })
+        .is_some()
+        || declaration
+            .child_by_field_name("type")
+            .is_some_and(|t| matches!(t.kind(), "primitive_type" | "sized_type_specifier"))
+}
+
+/// Whether the identifier `id` is the name a file-scope declaration
+/// declares: reached from the declaration through its declarators alone.
+fn declares_at_file_scope(id: &Node) -> bool {
+    let mut child = *id;
+    while let Some(parent) = child.parent() {
+        match parent.kind() {
+            "pointer_declarator" | "parenthesized_declarator" | "attributed_declarator" => {}
+            "init_declarator" => {
+                if parent
+                    .child_by_field_name("declarator")
+                    .is_none_or(|d| d.id() != child.id())
+                {
+                    return false;
+                }
+            }
+            "declaration" => {
+                return parent
+                    .children_by_field_name("declarator", &mut parent.walk())
+                    .any(|d| d.id() == child.id())
+                    && parent.parent().is_some_and(|p| {
+                        matches!(p.kind(), "translation_unit" | "ERROR" | "declaration_list")
+                            || p.kind().starts_with("preproc_")
+                    });
+            }
+            _ => return false,
+        }
+        child = parent;
+    }
+    false
+}
+
+/// Whether the use of an object at `id` leaves a constant in it: anything
+/// but a store or `&` reads it; a store must write a constant expression
+/// ([`is_constant_value`]), and `++`/`--` steps a constant to another.
+fn use_keeps_constant<'a>(
+    id: &Node<'a>,
+    source: &str,
+    is_constant: &dyn Fn(&str, &Node<'a>) -> bool,
+) -> bool {
+    let mut node = *id;
+    while let Some(parent) = node.parent() {
+        if parent.kind() == "parenthesized_expression" {
+            node = parent;
+            continue;
+        }
+        return match parent.kind() {
+            "assignment_expression"
+                if parent
+                    .child_by_field_name("left")
+                    .is_some_and(|l| l.id() == node.id()) =>
+            {
+                parent
+                    .child_by_field_name("right")
+                    .is_some_and(|r| is_constant_value(&r, source, is_constant))
+            }
+            "pointer_expression" => parent.child(0).is_none_or(|op| op.kind() != "&"),
+            _ => true,
+        };
+    }
+    true
+}
+
+/// Whether `expr` is a constant expression whose value no object's address
+/// enters: a literal, `NULL`, `true` or `false`, `sizeof`/`_Alignof`, a name
+/// `is_constant` accepts (it is handed the name and where it stands), and
+/// casts, unary and binary arithmetic and conditional choices of those (a
+/// conditional's test need not be constant: either value it picks is). An
+/// address (`&x`), a string literal's included, is never one.
+pub fn is_constant_value<'a>(
+    expr: &Node<'a>,
+    source: &str,
+    is_constant: &dyn Fn(&str, &Node<'a>) -> bool,
+) -> bool {
+    match expr.kind() {
+        "number_literal"
+        | "char_literal"
+        | "null"
+        | "true"
+        | "false"
+        | "sizeof_expression"
+        | "alignof_expression"
+        | "offsetof_expression" => true,
+        "identifier" => {
+            let name = expr.utf8_text(source.as_bytes()).unwrap_or("");
+            is_constant(name, expr)
+        }
+        "parenthesized_expression" => expr.named_child(0).is_some_and(|e| {
+            expr.named_child_count() == 1 && is_constant_value(&e, source, is_constant)
+        }),
+        "cast_expression" => expr
+            .child_by_field_name("value")
+            .is_some_and(|v| is_constant_value(&v, source, is_constant)),
+        "unary_expression" => expr
+            .child_by_field_name("argument")
+            .is_some_and(|a| is_constant_value(&a, source, is_constant)),
+        "binary_expression" => ["left", "right"].iter().all(|f| {
+            expr.child_by_field_name(f)
+                .is_some_and(|e| is_constant_value(&e, source, is_constant))
+        }),
+        "conditional_expression" => ["consequence", "alternative"].iter().all(|f| {
+            expr.child_by_field_name(f)
+                .is_some_and(|e| is_constant_value(&e, source, is_constant))
+        }),
+        _ => false,
+    }
+}
+
+/// The name an object-like macro's replacement is, when it is nothing else:
+/// `NAME` or `(NAME)`.
+fn alias_target(body: &str) -> Option<String> {
+    use crate::utility::cert_c::pp_tokens::PpKind;
+    let tokens = crate::utility::cert_c::pp_tokens::lex_replacement_list(body, false);
+    let inner: &[_] = match tokens.as_slice() {
+        [open, rest @ .., close] if open.is("(") && close.is(")") => rest,
+        all => all,
+    };
+    match inner {
+        [only] if only.kind == PpKind::Identifier => Some(only.text.to_string()),
+        _ => None,
+    }
+}
+
+/// One `#define` of a file: its name, its parameters when function-like,
+/// and its replacement text (continuation lines joined).
+struct DefineLine {
+    name: String,
+    params: Option<Vec<String>>,
+    body: String,
+}
+
+/// Every `#define` in `source`, in any arm.
+fn define_lines(source: &str) -> Vec<DefineLine> {
+    let mut out = Vec::new();
+    let mut lines = source.lines();
+    while let Some(line) = lines.next() {
+        let mut text = line.to_string();
+        while text.ends_with('\\') {
+            text.pop();
+            match lines.next() {
+                Some(next) => text.push_str(next),
+                None => break,
+            }
+        }
+        let Some(rest) = text.trim_start().strip_prefix('#') else {
+            continue;
+        };
+        let Some(rest) = rest.trim_start().strip_prefix("define") else {
+            continue;
+        };
+        if !rest.starts_with(|c: char| c.is_whitespace()) {
+            continue;
+        }
+        let rest = rest.trim_start();
+        let name_len = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let (Some(name), Some(after)) = (rest.get(..name_len), rest.get(name_len..)) else {
+            continue;
+        };
+        let name = name.to_string();
+        let (params, body) = match after.strip_prefix('(') {
+            Some(list) => {
+                let close = list.find(')').unwrap_or(list.len());
+                let params = list
+                    .get(..close)
+                    .unwrap_or("")
+                    .split(',')
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty())
+                    .collect();
+                (
+                    Some(params),
+                    list.get(close + 1..).unwrap_or("").to_string(),
+                )
+            }
+            None => (None, after.to_string()),
+        };
+        out.push(DefineLine { name, params, body });
+    }
+    out
+}
+
 /// Every identifier token in the replacement list of any `#define` in
 /// `source` (continuation lines joined), in any arm.
 fn define_body_identifiers(source: &str) -> std::collections::HashSet<String> {

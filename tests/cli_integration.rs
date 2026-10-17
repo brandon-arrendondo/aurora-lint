@@ -8333,6 +8333,35 @@ fn mem01_a_destructor_callee_is_read_with_the_headers_it_includes() {
     }
 }
 
+/// A static a destructor's callee names through a macro clears only when
+/// nothing can put the object in it, the headers the file includes too: a
+/// header's function or macro that stores it, a header that declares it
+/// again, a header's `##` paste that could spell it, or a quoted header the
+/// scan could not read each leave the call handing the dangling value on.
+#[test]
+fn mem01_a_static_a_callee_macro_names_is_read_with_the_headers_it_includes() {
+    for case in [
+        "static_a_header_function_stores",
+        "static_a_header_redeclares",
+        "static_a_header_macro_stores",
+        "static_a_header_pastes",
+        "static_beside_an_unread_header",
+    ] {
+        assert_eq!(
+            mem01_project_findings("mem01_destructor_headers", case),
+            1,
+            "{case}"
+        );
+    }
+    assert_eq!(
+        mem01_project_findings(
+            "mem01_destructor_headers",
+            "static_holding_constants_beside_a_header"
+        ),
+        0
+    );
+}
+
 /// MSC37-C findings for `a.c` in one `msc37_macro_scope` project.
 fn msc37_macro_scope_findings(case: &str) -> usize {
     let project = fixtures().join("msc37_macro_scope").join(case);
