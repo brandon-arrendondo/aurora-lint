@@ -178,17 +178,22 @@ pub fn output_var_args(call: &Node, source: &str) -> Vec<(String, ArgRole)> {
 /// (Iterator/Temp/Out) position of a registered macro invocation — i.e. the
 /// macro *writes* this argument, so reading it there is not a use of an
 /// uninitialized value. Used by the EXP33 read-checker to avoid flagging the
-/// macro's own output arguments.
-pub fn is_macro_output_arg(ident: &Node, source: &str) -> bool {
+/// macro's own output arguments. Its parents come from `tree`, a step in
+/// constant time rather than a descent from the root.
+pub fn is_macro_output_arg<'t>(
+    ident: &Node<'t>,
+    tree: &crate::utility::cert_c::node_index::NodeIndex<'t>,
+    source: &str,
+) -> bool {
     if ident.kind() != "identifier" {
         return false;
     }
     // ident -> argument_list -> call_expression
-    let arg_list = match ident.parent() {
+    let arg_list = match tree.parent_or_climb(ident) {
         Some(p) if p.kind() == "argument_list" => p,
         _ => return false,
     };
-    let call = match arg_list.parent() {
+    let call = match tree.parent_or_climb(&arg_list) {
         Some(c) if c.kind() == "call_expression" => c,
         _ => return false,
     };
