@@ -119,9 +119,9 @@ fn file_flag_macros(source: &str) -> MacroConstantMap {
         .map(|(name, value)| (name.to_string(), *value as i64))
         .collect();
     let mut out = MacroConstantMap::new();
-    // A few rounds settle a chain of flag macros defined in terms of each
-    // other, in any order.
-    for _ in 0..4 {
+    // Rounds until none resolves another settle a chain of flag macros
+    // defined in terms of each other, however deep, whatever the map's order.
+    loop {
         let mut changed = false;
         for (name, body) in &bodies {
             let Some(body) = body else { continue };

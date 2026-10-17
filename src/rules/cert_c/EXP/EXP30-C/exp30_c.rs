@@ -185,7 +185,9 @@ impl Exp30C {
             }
             // Check if RHS modifications conflict with LHS or other reads
             let read_vars = self.find_variable_reads(node, source);
-            let conflicts: Vec<_> = rhs_mods.intersection(&read_vars).collect();
+            // Sorted, as for the unsequenced arguments above.
+            let mut conflicts: Vec<_> = rhs_mods.intersection(&read_vars).collect();
+            conflicts.sort();
             if !conflicts.is_empty() {
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
@@ -234,8 +236,9 @@ impl Exp30C {
         let modified_vars = self.find_modifications(node, source);
         let read_vars = self.find_variable_reads(node, source);
 
-        // Find variables that are both modified and read
-        let conflicts: Vec<_> = modified_vars.intersection(&read_vars).collect();
+        // Find variables that are both modified and read, sorted as above
+        let mut conflicts: Vec<_> = modified_vars.intersection(&read_vars).collect();
+        conflicts.sort();
 
         if !conflicts.is_empty() {
             violations.push(RuleViolation {

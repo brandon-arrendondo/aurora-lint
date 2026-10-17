@@ -3253,14 +3253,23 @@ impl FlexibleArrayAnalyzer {
 
         let cast_text = source[node.start_byte()..node.end_byte()].to_string();
 
-        // Check if this is a cast to a flexible array struct pointer
-        let mut target_struct_name = None;
-        for struct_name in self.flexible_structs.keys() {
-            if cast_text.contains(&format!("struct {}", struct_name)) && cast_text.contains("*") {
-                target_struct_name = Some(struct_name.clone());
-                break;
-            }
-        }
+        // Check if this is a cast to a flexible array struct pointer. When
+        // several names match (`struct S` is also a prefix of `struct S2`),
+        // take the one written first and, there, the longest: the map's own
+        // order changes from run to run.
+        let target_struct_name = if cast_text.contains('*') {
+            self.flexible_structs
+                .keys()
+                .filter_map(|struct_name| {
+                    cast_text
+                        .find(&format!("struct {}", struct_name))
+                        .map(|at| (at, std::cmp::Reverse(struct_name.len()), struct_name))
+                })
+                .min()
+                .map(|(_, _, struct_name)| struct_name.clone())
+        } else {
+            None
+        };
 
         if let Some(struct_name) = target_struct_name {
             // Check for invalid type casting (not const-casting)

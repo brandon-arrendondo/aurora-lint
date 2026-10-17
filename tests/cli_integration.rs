@@ -126,6 +126,67 @@ fn con07_judges_each_pointer_of_one_declaration_by_its_own_pointees() {
     }
 }
 
+#[test]
+fn a_finding_names_what_it_names_in_one_order_in_every_run() {
+    // Each process seeds its hash sets differently, so only separate runs
+    // show an order that comes from iterating one: in the names a message
+    // lists, the one a line reports, or whether a deep macro is valued.
+    let rules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/rules/cert_c");
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    for (rule, fixture, expected) in [
+        (
+            "EXP30-C",
+            "EXP/EXP30-C/tests/fail/several_variables_modified_and_read_in_one_expression.c",
+            &["10:", "16:"][..],
+        ),
+        (
+            "API07-C",
+            "API/API07-C/tests/fail/two_void_pointers_confused_on_one_line.c",
+            &["14:"][..],
+        ),
+        (
+            "WIN00-C",
+            "WIN/WIN00-C/tests/fail/flags_through_a_long_chain_of_macros_without_search_path.c",
+            &["23:"][..],
+        ),
+    ] {
+        let fixture = rules.join(fixture);
+        let findings = || {
+            let (code, _, stderr) = run_aurora_lint(&[
+                fixture.to_str().unwrap(),
+                "--rules",
+                rule,
+                "-e",
+                out.to_str().unwrap(),
+            ]);
+            assert_eq!(code, 0, "{rule}: {stderr}");
+            let violations: Vec<serde_json::Value> =
+                serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+            violations
+                .iter()
+                .map(|v| format!("{}:{} {}", v["line"], v["column"], v["message"]))
+                .collect::<Vec<_>>()
+        };
+        let first = findings();
+        for line in expected {
+            assert!(
+                first.iter().any(|f| f.starts_with(line)),
+                "{rule}: {first:?}"
+            );
+        }
+        if rule == "EXP30-C" {
+            assert!(
+                first.iter().filter(|f| f.contains("'i', 'j', 'k'")).count() >= 2,
+                "{first:?}"
+            );
+        }
+        for _ in 0..7 {
+            assert_eq!(findings(), first, "{rule}");
+        }
+    }
+}
+
 // ─── Export formats ──────────────────────────────────────────────────────────
 
 #[test]

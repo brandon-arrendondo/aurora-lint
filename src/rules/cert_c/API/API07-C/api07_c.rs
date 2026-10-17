@@ -14,7 +14,7 @@ use crate::manifest::Severity;
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use tree_sitter::Node;
 
 pub struct Api07C;
@@ -157,8 +157,9 @@ impl Api07C {
         let func_text = get_node_text(func_node, source);
         let func_start_row = func_node.start_position().row;
 
-        // Phase 1: Find void* variable declarations
-        let mut void_ptr_vars: HashSet<String> = HashSet::new();
+        // Phase 1: Find void* variable declarations. Ordered: a line reports
+        // only the first of them it confuses.
+        let mut void_ptr_vars: BTreeSet<String> = BTreeSet::new();
         // Maps variable name → declared type (e.g., "charBuffer" → "char")
         let mut var_types: HashMap<String, String> = HashMap::new();
         // Maps void* var → source type it was assigned from
