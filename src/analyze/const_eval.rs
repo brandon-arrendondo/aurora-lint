@@ -1752,6 +1752,683 @@ pub fn file_scope_static_names(root: &Node, source: &str) -> std::collections::H
     out
 }
 
+/// The file-scope objects of the translation unit `root` whose value is
+/// always a constant: each is declared `static` wherever the file declares
+/// it at file scope (every arm), as a pointer or an arithmetic object, never
+/// an array, its initializer is a constant expression ([`is_constant_value`])
+/// or absent, and every occurrence that binds to it only reads its value or
+/// stores a constant expression in it (`=` or a compound assignment), or
+/// steps it with `++`/`--`. Nothing derived from another object's address
+/// can then be in it, so reading through it reaches no object the program
+/// made.
+///
+/// Fail-safe where the parse cannot see: an occurrence whose address is
+/// taken, inside an argument of a call `function_macros` names (a macro may
+/// store it), the whole of an argument of a call `undeclared_calls` names
+/// (nothing declares the callee, so it may be a macro the scan did not
+/// read), under a parser `ERROR`, or bound by a block-scope `extern`
+/// declaration is not proven. So is a name a `#define` of the file
+/// defines (the parse's uses of it may be the macro's), and any name a
+/// `#define` of the file names other than as the whole of an object-like macro's replacement (`#define
+/// CUR g`, `(g)`, or another such alias, whose uses then count as the
+/// object's) or before `->`, `[` or `(`, which read its value whatever
+/// surrounds the expansion. Any `##` in a `#define` of the file, or any
+/// `asm`, leaves nothing proven: a pasted name or an assembler operand is
+/// a store the parse cannot place. What the file's headers say is the
+/// caller's to rule out.
+///
+/// `constant_name` says whether an identifier that does not bind to an
+/// object is a constant: an enumeration constant of the file always is, and
+/// the caller says which macros expand to constants.
+pub fn file_statics_holding_constants<'a>(
+    root: &Node<'a>,
+    source: &str,
+    function_macros: &HashSet<String>,
+    undeclared_calls: &HashSet<String>,
+    constant_name: &dyn Fn(&str) -> bool,
+) -> HashSet<String> {
+    use crate::utility::cert_c::ast_utils::{
+        declaration_has_storage_class, IdentifierBinding, ScopeDeclarations,
+    };
+    if source.contains("##")
+        || ["asm", "__asm", "__asm__"]
+            .iter()
+            .any(|k| contains_token(source, k))
+    {
+        return HashSet::new();
+    }
+    let enumerators = enumeration_constant_names(root, source);
+    let declarations = ScopeDeclarations::default();
+    let is_constant = |name: &str, at: &Node<'a>| {
+        declarations
+            .resolve_identifier_binding_in(root, at, name, source)
+            .is_none()
+            && (matches!(name, "NULL" | "nullptr" | "true" | "false")
+                || enumerators.contains(name)
+                || constant_name(name))
+    };
+
+    // Every file-scope declaration of each name, in every arm.
+    let mut candidates: HashMap<String, bool> = HashMap::new();
+    for item in ast_utils::top_level_items(*root) {
+        let declared = match item.kind() {
+            "declaration" => declarators_of(&item),
+            "function_definition" => {
+                if let Some(d) = item.child_by_field_name("declarator") {
+                    let name = ast_utils::get_identifier_from_declarator(&d, source);
+                    candidates.insert(name, false);
+                }
+                continue;
+            }
+            _ => continue,
+        };
+        let is_static = declaration_has_storage_class(&item, "static", source);
+        let is_typedef = declaration_has_storage_class(&item, "typedef", source);
+        for (declarator, init) in declared {
+            let name = ast_utils::get_identifier_from_declarator(&declarator, source);
+            if name.is_empty() {
+                continue;
+            }
+            let ok = is_static
+                && !is_typedef
+                && holds_one_value(&item, &declarator)
+                && init.is_none_or(|v| is_constant_value(&v, source, &is_constant));
+            let slot = candidates.entry(name).or_insert(true);
+            *slot &= ok;
+        }
+    }
+    candidates.retain(|_, ok| *ok);
+    if candidates.is_empty() {
+        return HashSet::new();
+    }
+
+    // What each name the `#define`s alias stands for, and the names a
+    // `#define` uses otherwise than an alias or a read may.
+    // A name defined as an alias in several arms stands for each object any
+    // of them reaches.
+    let defines = define_lines(source);
+    let mut alias_edges: HashMap<String, Vec<String>> = HashMap::new();
+    for define in &defines {
+        if let Some(target) = define
+            .params
+            .is_none()
+            .then(|| alias_target(&define.body))
+            .flatten()
+        {
+            alias_edges
+                .entry(define.name.clone())
+                .or_default()
+                .push(target);
+        }
+    }
+    // Each name with the objects it is, or a `#define` of it reaches (a
+    // static's own name among them, `#define g h`).
+    let reaching = names_reaching(&alias_edges, candidates.keys().map(String::as_str));
+    let is_alias = |name: &str| alias_edges.contains_key(name) && reaching.reaches_any(name);
+    let object_of =
+        |name: &str| -> Vec<String> { reaching.reached(name).map(str::to_string).collect() };
+    let mut failed: HashSet<String> = defines
+        .iter()
+        .filter(|define| candidates.contains_key(&define.name))
+        .map(|define| define.name.clone())
+        .collect();
+    for define in &defines {
+        let whole_alias = define.params.is_none()
+            && alias_target(&define.body).is_some_and(|t| !object_of(&t).is_empty());
+        let tokens = crate::utility::cert_c::pp_tokens::lex_replacement_list(
+            &define.body,
+            define.params.is_some(),
+        );
+        for (i, token) in tokens.iter().enumerate() {
+            if token.kind != crate::utility::cert_c::pp_tokens::PpKind::Identifier {
+                continue;
+            }
+            let objects = object_of(&token.text);
+            if objects.is_empty() {
+                continue;
+            }
+            let previous = i.checked_sub(1).map(|p| &tokens[p]);
+            if previous.is_some_and(|p| p.is(".") || p.is("->")) || whole_alias {
+                continue;
+            }
+            let reads = tokens
+                .get(i + 1)
+                .is_some_and(|n| n.is("->") || n.is("[") || n.is("("))
+                && !previous.is_some_and(|p| {
+                    define
+                        .params
+                        .as_ref()
+                        .is_some_and(|params| params.iter().any(|q| *q == p.text))
+                });
+            if !reads {
+                failed.extend(objects);
+            }
+        }
+    }
+
+    // Every occurrence in the parse, with the function it is in: only a
+    // name that function declares can bind to anything but the file's
+    // object, so only that is resolved (from the root, which costs a
+    // descent past every item before it).
+    let walk = ast_utils::descendants_of_kinds_with(
+        *root,
+        &["identifier"],
+        (MacroArgumentWalk::default(), false, None::<Node<'a>>),
+        |(arguments, in_error, function), parent| {
+            (
+                arguments.step(parent, source, function_macros),
+                *in_error || parent.kind() == "ERROR",
+                if parent.kind() == "function_definition" {
+                    Some(parent)
+                } else {
+                    *function
+                },
+            )
+        },
+    );
+    let mut declared_in: HashMap<usize, HashSet<String>> = HashMap::new();
+    for (id, (arguments, in_error, function)) in walk {
+        let text = id.utf8_text(source.as_bytes()).unwrap_or("");
+        let objects = object_of(text);
+        if objects.iter().all(|object| failed.contains(object)) {
+            continue;
+        }
+        let may_bind_locally = function.is_some_and(|f| {
+            declared_in
+                .entry(f.id())
+                .or_insert_with(|| names_declared_in(&f, source))
+                .contains(text)
+        });
+        if !is_alias(text) && may_bind_locally {
+            match declarations.resolve_identifier_binding_in(root, &id, text, source) {
+                Some(IdentifierBinding::Local(decl)) => {
+                    if declaration_has_storage_class(&decl, "extern", source) {
+                        failed.extend(objects);
+                    }
+                    continue;
+                }
+                Some(IdentifierBinding::Parameter(_)) => continue,
+                _ => {}
+            }
+        }
+        if !is_alias(text) && function.is_none() && declares_at_file_scope(&id) {
+            continue;
+        }
+        if in_error
+            || arguments.in_arguments
+            || is_whole_argument_of(&id, source, undeclared_calls)
+            || !use_keeps_constant(&id, source, &is_constant)
+        {
+            failed.extend(objects);
+        }
+    }
+    candidates
+        .into_keys()
+        .filter(|name| !failed.contains(name))
+        .collect()
+}
+
+/// Which of a set of roots each name reaches: [`names_reaching`].
+pub struct NamesReaching {
+    roots: Vec<String>,
+    /// Each name's strongly connected component.
+    component: HashMap<String, usize>,
+    /// The roots each component reaches, a bit per root, or `None` for none.
+    /// A component that adds nothing to the one set it reaches shares it,
+    /// so a chain above a name that reaches many roots holds one set.
+    reached: Vec<Option<std::rc::Rc<[u64]>>>,
+}
+
+impl NamesReaching {
+    /// The roots `name` reaches, itself among them when it is one.
+    pub fn reached<'s>(&'s self, name: &str) -> impl Iterator<Item = &'s str> + 's {
+        let bits = self
+            .component
+            .get(name)
+            .and_then(|&c| self.reached[c].clone());
+        let roots = &self.roots;
+        bits.into_iter().flat_map(move |bits| {
+            (0..roots.len())
+                .filter(|&i| bits[i / 64] & (1 << (i % 64)) != 0)
+                .map(|i| roots[i].as_str())
+                .collect::<Vec<_>>()
+        })
+    }
+
+    /// Whether `name` reaches any root.
+    pub fn reaches_any(&self, name: &str) -> bool {
+        self.component
+            .get(name)
+            .is_some_and(|&c| self.reached[c].is_some())
+    }
+}
+
+/// For each name `edges` leads from, the `roots` it reaches through them,
+/// and each root itself: what a macro may name through the macros its
+/// replacement names, when `edges` maps each macro to the names in it.
+/// Every path counts, a cycle's included, so a name reaches whatever any
+/// name on a cycle with it reaches. One pass over the strongly connected
+/// components (Tarjan's, iterative, so a chain's depth costs no stack)
+/// works each component's set out from those it leads to, which it
+/// finishes first; a set is a bit per root, shared where a component adds
+/// nothing to the one set it reaches. The time is the edges plus a set's
+/// width per edge, and a deep chain of macros above one that names every
+/// root holds one set, never one per link.
+pub fn names_reaching<'r>(
+    edges: &HashMap<String, Vec<String>>,
+    roots: impl IntoIterator<Item = &'r str>,
+) -> NamesReaching {
+    use std::rc::Rc;
+    let mut ids: HashMap<String, usize> = HashMap::new();
+    let mut names: Vec<String> = Vec::new();
+    let mut intern = |name: &str| -> usize {
+        if let Some(&id) = ids.get(name) {
+            return id;
+        }
+        names.push(name.to_string());
+        ids.insert(name.to_string(), names.len() - 1);
+        names.len() - 1
+    };
+    let mut root_names: Vec<String> = Vec::new();
+    let mut root_bit: HashMap<usize, usize> = HashMap::new();
+    for root in roots {
+        let id = intern(root);
+        if let std::collections::hash_map::Entry::Vacant(slot) = root_bit.entry(id) {
+            slot.insert(root_names.len());
+            root_names.push(root.to_string());
+        }
+    }
+    let mut edge_list: Vec<(usize, usize)> = Vec::new();
+    for (from, targets) in edges {
+        let from = intern(from);
+        for target in targets {
+            edge_list.push((from, intern(target)));
+        }
+    }
+    let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); names.len()];
+    for (from, to) in edge_list {
+        adjacency[from].push(to);
+    }
+    let words = root_names.len().div_ceil(64);
+
+    let n = names.len();
+    let unvisited = usize::MAX;
+    let mut index = vec![unvisited; n];
+    let mut low = vec![0; n];
+    let mut on_stack = vec![false; n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut component_of = vec![unvisited; n];
+    let mut reached: Vec<Option<Rc<[u64]>>> = Vec::new();
+    let mut next = 0;
+    for start in 0..n {
+        if index[start] != unvisited {
+            continue;
+        }
+        index[start] = next;
+        low[start] = next;
+        next += 1;
+        stack.push(start);
+        on_stack[start] = true;
+        let mut calls: Vec<(usize, usize)> = vec![(start, 0)];
+        while let Some(&(v, edge)) = calls.last() {
+            if let Some(&w) = adjacency[v].get(edge) {
+                if let Some(call) = calls.last_mut() {
+                    call.1 += 1;
+                }
+                if index[w] == unvisited {
+                    index[w] = next;
+                    low[w] = next;
+                    next += 1;
+                    stack.push(w);
+                    on_stack[w] = true;
+                    calls.push((w, 0));
+                } else if on_stack[w] {
+                    low[v] = low[v].min(index[w]);
+                }
+                continue;
+            }
+            calls.pop();
+            if let Some(&(u, _)) = calls.last() {
+                low[u] = low[u].min(low[v]);
+            }
+            if low[v] != index[v] {
+                continue;
+            }
+            let component = reached.len();
+            let mut members = Vec::new();
+            while let Some(w) = stack.pop() {
+                on_stack[w] = false;
+                component_of[w] = component;
+                members.push(w);
+                if w == v {
+                    break;
+                }
+            }
+            let mut own: Option<Vec<u64>> = None;
+            for m in &members {
+                if let Some(&bit) = root_bit.get(m) {
+                    own.get_or_insert_with(|| vec![0; words])[bit / 64] |= 1 << (bit % 64);
+                }
+            }
+            let mut shared: Option<Rc<[u64]>> = None;
+            for m in &members {
+                for &w in &adjacency[*m] {
+                    let c = component_of[w];
+                    if c == component {
+                        continue;
+                    }
+                    let Some(set) = &reached[c] else {
+                        continue;
+                    };
+                    if let Some(bits) = own.as_mut() {
+                        bits.iter_mut().zip(set.iter()).for_each(|(b, s)| *b |= s);
+                    } else {
+                        match &shared {
+                            None => shared = Some(Rc::clone(set)),
+                            Some(prev) if Rc::ptr_eq(prev, set) => {}
+                            Some(prev) => {
+                                let mut bits = prev.to_vec();
+                                bits.iter_mut().zip(set.iter()).for_each(|(b, s)| *b |= s);
+                                own = Some(bits);
+                                shared = None;
+                            }
+                        }
+                    }
+                }
+            }
+            reached.push(own.map(Rc::from).or(shared));
+        }
+    }
+    NamesReaching {
+        roots: root_names,
+        component: names.into_iter().zip(component_of).collect(),
+        reached,
+    }
+}
+
+/// The enumeration constants `root` declares, in any `enum` of the file.
+pub fn enumeration_constant_names(root: &Node, source: &str) -> HashSet<String> {
+    let mut enumerators = Vec::new();
+    collect_enum_constants(root, source, &mut enumerators);
+    enumerators.into_iter().map(|(name, _)| name).collect()
+}
+
+/// Every name a declaration or parameter inside `function` declares, and
+/// every function pointer an expression statement in it declares where
+/// tree-sitter reads a call (`FP (*x)(int) = f;`,
+/// [`ast_utils::misparsed_function_pointer_declaration`]): the names an
+/// identifier in it may bind to instead of a file-scope object. Missing
+/// one only makes a local's uses count as the object's.
+fn names_declared_in(function: &Node, source: &str) -> HashSet<String> {
+    lang_parsing_substrate::query::find_descendants_of_kinds(
+        *function,
+        &[
+            "declaration",
+            "parameter_declaration",
+            "expression_statement",
+        ],
+    )
+    .into_iter()
+    .flat_map(|d| {
+        if d.kind() == "expression_statement" {
+            return ast_utils::misparsed_function_pointer_declaration(&d, source)
+                .map(|n| ast_utils::get_node_text(&n, source).to_string())
+                .into_iter()
+                .collect::<Vec<_>>();
+        }
+        d.children_by_field_name("declarator", &mut d.walk())
+            .map(|declarator| ast_utils::get_identifier_from_declarator(&declarator, source))
+            .collect()
+    })
+    .collect()
+}
+
+/// The declarators of `declaration`, each with its initializer.
+fn declarators_of<'a>(declaration: &Node<'a>) -> Vec<(Node<'a>, Option<Node<'a>>)> {
+    declaration
+        .children_by_field_name("declarator", &mut declaration.walk())
+        .map(|d| {
+            if d.kind() == "init_declarator" {
+                (
+                    d.child_by_field_name("declarator").unwrap_or(d),
+                    d.child_by_field_name("value"),
+                )
+            } else {
+                (d, None)
+            }
+        })
+        .collect()
+}
+
+/// Whether `declarator` of `declaration` declares one pointer or arithmetic
+/// object: no array or function in it, and either a pointer or a type made
+/// of the arithmetic keywords alone (a typedef may name an array or a
+/// struct, whose parts a store can reach without naming the whole).
+fn holds_one_value(declaration: &Node, declarator: &Node) -> bool {
+    if lang_parsing_substrate::query::find_first_descendant(*declarator, |n| {
+        matches!(n.kind(), "array_declarator" | "function_declarator")
+    })
+    .is_some()
+        || matches!(
+            declarator.kind(),
+            "array_declarator" | "function_declarator"
+        )
+    {
+        return false;
+    }
+    declarator.kind() == "pointer_declarator"
+        || lang_parsing_substrate::query::find_first_descendant(*declarator, |n| {
+            n.kind() == "pointer_declarator"
+        })
+        .is_some()
+        || declaration
+            .child_by_field_name("type")
+            .is_some_and(|t| matches!(t.kind(), "primitive_type" | "sized_type_specifier"))
+}
+
+/// Whether the identifier `id` is the name a file-scope declaration
+/// declares: reached from the declaration through its declarators alone.
+fn declares_at_file_scope(id: &Node) -> bool {
+    let mut child = *id;
+    while let Some(parent) = child.parent() {
+        match parent.kind() {
+            "pointer_declarator" | "parenthesized_declarator" | "attributed_declarator" => {}
+            "init_declarator" => {
+                if parent
+                    .child_by_field_name("declarator")
+                    .is_none_or(|d| d.id() != child.id())
+                {
+                    return false;
+                }
+            }
+            "declaration" => {
+                return parent
+                    .children_by_field_name("declarator", &mut parent.walk())
+                    .any(|d| d.id() == child.id())
+                    && parent.parent().is_some_and(|p| {
+                        matches!(p.kind(), "translation_unit" | "ERROR" | "declaration_list")
+                            || p.kind().starts_with("preproc_")
+                    });
+            }
+            _ => return false,
+        }
+        child = parent;
+    }
+    false
+}
+
+/// Whether `id`, parentheses aside, is the whole of an argument of a call
+/// to a name in `callees`.
+fn is_whole_argument_of(id: &Node, source: &str, callees: &HashSet<String>) -> bool {
+    let mut node = *id;
+    while let Some(parent) = node.parent() {
+        if parent.kind() != "parenthesized_expression" {
+            return parent.kind() == "argument_list"
+                && parent
+                    .parent()
+                    .filter(|call| call.kind() == "call_expression")
+                    .and_then(|call| call.child_by_field_name("function"))
+                    .is_some_and(|f| {
+                        f.kind() == "identifier"
+                            && callees.contains(f.utf8_text(source.as_bytes()).unwrap_or(""))
+                    });
+        }
+        node = parent;
+    }
+    false
+}
+
+/// Whether the use of an object at `id` leaves a constant in it: anything
+/// but a store or `&` reads it; a store must write a constant expression
+/// ([`is_constant_value`]), and `++`/`--` steps a constant to another.
+fn use_keeps_constant<'a>(
+    id: &Node<'a>,
+    source: &str,
+    is_constant: &dyn Fn(&str, &Node<'a>) -> bool,
+) -> bool {
+    let mut node = *id;
+    while let Some(parent) = node.parent() {
+        if parent.kind() == "parenthesized_expression" {
+            node = parent;
+            continue;
+        }
+        return match parent.kind() {
+            "assignment_expression"
+                if parent
+                    .child_by_field_name("left")
+                    .is_some_and(|l| l.id() == node.id()) =>
+            {
+                parent
+                    .child_by_field_name("right")
+                    .is_some_and(|r| is_constant_value(&r, source, is_constant))
+            }
+            "pointer_expression" => parent.child(0).is_none_or(|op| op.kind() != "&"),
+            _ => true,
+        };
+    }
+    true
+}
+
+/// Whether `expr` is a constant expression whose value no object's address
+/// enters: a literal, `NULL`, `true` or `false`, `sizeof`/`_Alignof`, a name
+/// `is_constant` accepts (it is handed the name and where it stands), and
+/// casts, unary and binary arithmetic and conditional choices of those (a
+/// conditional's test need not be constant: either value it picks is). An
+/// address (`&x`), a string literal's included, is never one.
+pub fn is_constant_value<'a>(
+    expr: &Node<'a>,
+    source: &str,
+    is_constant: &dyn Fn(&str, &Node<'a>) -> bool,
+) -> bool {
+    match expr.kind() {
+        "number_literal"
+        | "char_literal"
+        | "null"
+        | "true"
+        | "false"
+        | "sizeof_expression"
+        | "alignof_expression"
+        | "offsetof_expression" => true,
+        "identifier" => {
+            let name = expr.utf8_text(source.as_bytes()).unwrap_or("");
+            is_constant(name, expr)
+        }
+        "parenthesized_expression" => expr.named_child(0).is_some_and(|e| {
+            expr.named_child_count() == 1 && is_constant_value(&e, source, is_constant)
+        }),
+        "cast_expression" => expr
+            .child_by_field_name("value")
+            .is_some_and(|v| is_constant_value(&v, source, is_constant)),
+        "unary_expression" => expr
+            .child_by_field_name("argument")
+            .is_some_and(|a| is_constant_value(&a, source, is_constant)),
+        "binary_expression" => ["left", "right"].iter().all(|f| {
+            expr.child_by_field_name(f)
+                .is_some_and(|e| is_constant_value(&e, source, is_constant))
+        }),
+        "conditional_expression" => ["consequence", "alternative"].iter().all(|f| {
+            expr.child_by_field_name(f)
+                .is_some_and(|e| is_constant_value(&e, source, is_constant))
+        }),
+        _ => false,
+    }
+}
+
+/// The name an object-like macro's replacement is, when it is nothing else:
+/// `NAME` or `(NAME)`.
+fn alias_target(body: &str) -> Option<String> {
+    use crate::utility::cert_c::pp_tokens::PpKind;
+    let tokens = crate::utility::cert_c::pp_tokens::lex_replacement_list(body, false);
+    let inner: &[_] = match tokens.as_slice() {
+        [open, rest @ .., close] if open.is("(") && close.is(")") => rest,
+        all => all,
+    };
+    match inner {
+        [only] if only.kind == PpKind::Identifier => Some(only.text.to_string()),
+        _ => None,
+    }
+}
+
+/// One `#define` of a file: its name, its parameters when function-like,
+/// and its replacement text (continuation lines joined).
+struct DefineLine {
+    name: String,
+    params: Option<Vec<String>>,
+    body: String,
+}
+
+/// Every `#define` in `source`, in any arm.
+fn define_lines(source: &str) -> Vec<DefineLine> {
+    let mut out = Vec::new();
+    let mut lines = source.lines();
+    while let Some(line) = lines.next() {
+        let mut text = line.to_string();
+        while text.ends_with('\\') {
+            text.pop();
+            match lines.next() {
+                Some(next) => text.push_str(next),
+                None => break,
+            }
+        }
+        let Some(rest) = text.trim_start().strip_prefix('#') else {
+            continue;
+        };
+        let Some(rest) = rest.trim_start().strip_prefix("define") else {
+            continue;
+        };
+        if !rest.starts_with(|c: char| c.is_whitespace()) {
+            continue;
+        }
+        let rest = rest.trim_start();
+        let name_len = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let (Some(name), Some(after)) = (rest.get(..name_len), rest.get(name_len..)) else {
+            continue;
+        };
+        let name = name.to_string();
+        let (params, body) = match after.strip_prefix('(') {
+            Some(list) => {
+                let close = list.find(')').unwrap_or(list.len());
+                let params = list
+                    .get(..close)
+                    .unwrap_or("")
+                    .split(',')
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty())
+                    .collect();
+                (
+                    Some(params),
+                    list.get(close + 1..).unwrap_or("").to_string(),
+                )
+            }
+            None => (None, after.to_string()),
+        };
+        out.push(DefineLine { name, params, body });
+    }
+    out
+}
+
 /// Every identifier token in the replacement list of any `#define` in
 /// `source` (continuation lines joined), in any arm.
 fn define_body_identifiers(source: &str) -> std::collections::HashSet<String> {
@@ -4628,6 +5305,60 @@ fn parens_balanced(text: &str) -> bool {
 mod tests {
     use super::*;
     use crate::utility::cert_c::data_model::FactSource;
+
+    #[test]
+    fn names_reaching_follows_chains_and_cycles() {
+        let edges: HashMap<String, Vec<String>> = [
+            ("A", vec!["B"]),
+            ("B", vec!["g"]),
+            ("C", vec!["D", "h"]),
+            ("D", vec!["C"]),
+            ("E", vec!["x"]),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.into_iter().map(String::from).collect()))
+        .collect();
+        let reaching = names_reaching(&edges, ["g", "h"]);
+        let of = |name: &str| {
+            let mut v: Vec<_> = reaching.reached(name).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(of("A"), ["g"]);
+        assert_eq!(of("g"), ["g"]);
+        assert_eq!(of("C"), ["h"]);
+        assert_eq!(of("D"), ["h"]);
+        assert!(of("E").is_empty());
+    }
+
+    /// A chain of `links` macros above one that names each of `roots` holds
+    /// one set of them, whatever its length: the sets stored are the roots'
+    /// own and that macro's, so a fan-in is never the roots times the links.
+    fn fan_in_sets(roots: usize, links: usize) -> usize {
+        let mut edges: HashMap<String, Vec<String>> = HashMap::new();
+        edges.insert("X0".into(), (0..roots).map(|i| format!("s{i}")).collect());
+        for i in 1..links {
+            edges.insert(format!("X{i}"), vec![format!("X{}", i - 1)]);
+        }
+        let names: Vec<String> = (0..roots).map(|i| format!("s{i}")).collect();
+        let reaching = names_reaching(&edges, names.iter().map(String::as_str));
+        assert_eq!(reaching.reached(&format!("X{}", links - 1)).count(), roots);
+        let mut distinct: Vec<*const [u64]> = reaching
+            .reached
+            .iter()
+            .flatten()
+            .map(std::rc::Rc::as_ptr)
+            .collect();
+        distinct.sort();
+        distinct.dedup();
+        distinct.len()
+    }
+
+    #[test]
+    fn names_reaching_shares_one_set_along_a_fan_in_chain() {
+        assert_eq!(fan_in_sets(500, 2_000), 501);
+        assert_eq!(fan_in_sets(500, 4_000), 501);
+    }
 
     fn written_names(code: &str) -> std::collections::HashSet<String> {
         let mut parser = tree_sitter::Parser::new();

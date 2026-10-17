@@ -7823,7 +7823,7 @@ pub fn resolve_includes_scoped(
             let directives = extract_include_directives_with_liveness(&tree.root_node(), &source);
             let source_dir = Path::new(file_path).parent().map(|p| p.to_path_buf());
             let includer: Arc<str> = Arc::from(file_path.as_str());
-            if has_computed_include(&tree.root_node()) {
+            if has_computed_include(&tree.root_node(), &source) {
                 add_include_edge(
                     context,
                     &mut includer_real_paths,
@@ -8026,7 +8026,7 @@ pub fn resolve_includes_scoped(
                 // Enqueue transitive includes from this header
                 let header_dir = resolved.parent().map(|p| p.to_path_buf());
                 let includer: Arc<str> = Arc::from(header_path.as_str());
-                if has_computed_include(&root) {
+                if has_computed_include(&root, &hsource) {
                     add_include_edge(
                         context,
                         &mut includer_real_paths,
@@ -8231,13 +8231,78 @@ fn add_include_edge(
 
 /// Whether the file holds a computed `#include` (`#include DEFS_H`), whose
 /// header the scan cannot know without expanding the macro: it may be any.
-fn has_computed_include(root: &Node) -> bool {
+fn has_computed_include(root: &Node, source: &str) -> bool {
     lang_parsing_substrate::query::find_descendants_of_kind(*root, "preproc_include")
         .iter()
         .any(|inc| {
             inc.child_by_field_name("path")
                 .is_some_and(|p| !matches!(p.kind(), "string_literal" | "system_lib_string"))
         })
+        || unparsed_include_directives(source)
+            .iter()
+            .any(|(_, _, form)| *form == super::context::IncludeForm::Computed)
+}
+
+/// The include directives the parse does not read as an `#include`, each
+/// with its path, 1-based line and form: `#include_next` and `#import`
+/// (which include a file as `#include` does), `%:include` (the digraph for
+/// `#`), and a directive whose name a backslash-newline splits
+/// (`#inc\` + newline + `lude`). The preprocessor includes the file for
+/// each, so each is an include of the file it names; one whose operand is
+/// not a quoted or bracketed name is `Computed`.
+fn unparsed_include_directives(source: &str) -> Vec<(String, usize, super::context::IncludeForm)> {
+    use super::context::IncludeForm;
+    let mut directives = Vec::new();
+    let mut lines = source.lines().enumerate();
+    while let Some((index, first)) = lines.next() {
+        let mut text = first.to_string();
+        while text.ends_with('\\') {
+            text.pop();
+            match lines.next() {
+                Some((_, next)) => text.push_str(next),
+                None => break,
+            }
+        }
+        let trimmed = text.trim_start();
+        let Some(rest) = trimmed
+            .strip_prefix('#')
+            .or_else(|| trimmed.strip_prefix("%:"))
+        else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let name_len = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let (Some(name), Some(operand)) = (rest.get(..name_len), rest.get(name_len..)) else {
+            continue;
+        };
+        if !matches!(name, "include" | "include_next" | "import") {
+            continue;
+        }
+        // An `#include` written on one line, as the parse reads it.
+        let parsed = name == "include"
+            && first.trim_start().strip_prefix('#').is_some_and(|r| {
+                r.trim_start().strip_prefix("include").is_some_and(|r| {
+                    !r.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                })
+            });
+        if parsed {
+            continue;
+        }
+        let operand = operand.trim();
+        let (path, form) = if let Some(quoted) = operand.strip_prefix('"') {
+            (quoted.split('"').next().unwrap_or(""), IncludeForm::Quoted)
+        } else if let Some(angled) = operand.strip_prefix('<') {
+            (angled.split('>').next().unwrap_or(""), IncludeForm::Angle)
+        } else {
+            (operand, IncludeForm::Computed)
+        };
+        if !path.is_empty() || form == IncludeForm::Computed {
+            directives.push((path.to_string(), index + 1, form));
+        }
+    }
+    directives
 }
 
 /// Extract `#include` directive paths from an AST.
@@ -8260,6 +8325,11 @@ pub(crate) fn extract_include_directives(node: &Node, source: &str) -> Vec<Strin
 fn extract_include_directives_with_liveness(node: &Node, source: &str) -> Vec<IncludeDirective> {
     let mut directives = Vec::new();
     extract_includes_recursive(node, source, &mut directives);
+    directives.extend(
+        unparsed_include_directives(source)
+            .into_iter()
+            .filter(|(path, _, _)| !path.is_empty()),
+    );
     if directives.is_empty() {
         return Vec::new();
     }
@@ -10038,6 +10108,27 @@ no_mem:
             &search,
             &HeaderLookup::default()
         ));
+    }
+
+    /// The include directives the parse misses are read from the text, each
+    /// with its operand; the ones it parses are left to it.
+    #[test]
+    fn unparsed_include_directives_reads_what_the_parse_misses() {
+        use super::super::context::IncludeForm;
+        let source = "#include \"plain.h\"\n  #  include <spaced.h>\n#include_next \"n.c\"\n\
+                      #import <m.h>\n%:include \"d.c\"\n#inc\\\nlude \"s.c\"\n#import NAME\n\
+                      #define include_next 1\n";
+        let found = unparsed_include_directives(source);
+        assert_eq!(
+            found,
+            vec![
+                ("n.c".to_string(), 3, IncludeForm::Quoted),
+                ("m.h".to_string(), 4, IncludeForm::Angle),
+                ("d.c".to_string(), 5, IncludeForm::Quoted),
+                ("s.c".to_string(), 6, IncludeForm::Quoted),
+                ("NAME".to_string(), 8, IncludeForm::Computed),
+            ]
+        );
     }
 
     /// A Windows source spells the SDK's `ShlObj.h` as `Shlobj.h`. cl finds
