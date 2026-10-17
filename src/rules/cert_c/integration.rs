@@ -1012,7 +1012,9 @@ fn a_deep_sum_costs_each_rule_work_linear_in_its_length() {
         ]
     };
     // The rules whose identifiers resolve only through the indexed paths.
-    let indexed = ["API00-C", "EXP30-C", "FLP03-C", "INT14-C", "INT30-C"];
+    let indexed = [
+        "API00-C", "DCL30-C", "EXP30-C", "FLP03-C", "INT14-C", "INT30-C", "INT32-C", "MSC05-C",
+    ];
     for rule_id in [
         "API00-C", "DCL30-C", "EXP30-C", "FLP03-C", "INT14-C", "INT30-C", "INT32-C", "MSC05-C",
     ] {
@@ -1047,6 +1049,68 @@ fn a_deep_sum_costs_each_rule_work_linear_in_its_length() {
             "[{rule_id}] exact evaluations grew past the square ({what}): {small:?} -> {large:?}"
         );
     }
+}
+
+/// The rules that resolve every read in a function (EXP33-C), every
+/// NULL-tested name (EXP34-C) or every name a write through a pointer
+/// traces back to a string literal (STR30-C) do so through one index of the
+/// file, on `if` statements N deep around a body that asks them to, at N and
+/// 2N: a rule may build no more indexes and make no more descents from the
+/// root for the deeper nest, and none may resolve by climbing. A descent
+/// costs the identifier's depth. So does each `Node::parent` step, which
+/// cannot be counted here; these rules take those steps through the same
+/// index.
+#[test]
+fn a_deep_nest_is_resolved_through_one_index_of_the_file() {
+    use crate::utility::cert_c::ast_utils::take_climbs_and_descents;
+    use crate::utility::cert_c::node_index::take_builds;
+
+    // An allocation, its test and its free at the bottom of the nest; a
+    // pointer to a string literal written through at every level of it.
+    let allocation = (
+        "",
+        "    if (x) {\n",
+        "        int *p = malloc(sizeof(int));\n        if (p == NULL) { return -1; }\n\
+         \x20       *p = 42;\n        free(p);\n",
+    );
+    let literal = (
+        "    char *s = \"abc\";\n    char *t = s;\n",
+        "    if (x) {\n        t[0] = 'x';\n",
+        "",
+    );
+    let work = |rule_id: &str, (prelude, level, body): (&str, &str, &str), n: usize| {
+        let code = format!(
+            "#include <stdlib.h>\n\nint main() {{\n    int x = 1;\n{prelude}{}{body}{}    \
+             return 0;\n}}\n",
+            level.repeat(n),
+            "    }\n".repeat(n)
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deep_if.c");
+        fs::write(&path, code).unwrap();
+        take_climbs_and_descents();
+        take_builds();
+        findings_at(rule_id, &path, "default", "");
+        let (climbs, descents) = take_climbs_and_descents();
+        [climbs, descents, take_builds()]
+    };
+    let mut grew = Vec::new();
+    for (rule_id, body) in [
+        ("EXP33-C", allocation),
+        ("EXP34-C", allocation),
+        ("STR30-C", literal),
+    ] {
+        let small = work(rule_id, body, 150);
+        let large = work(rule_id, body, 300);
+        if large[0] > 0 || large[1] > small[1] + 8 || large[2] > small[2] {
+            grew.push(format!("{rule_id}: {small:?} -> {large:?}"));
+        }
+    }
+    assert!(
+        grew.is_empty(),
+        "climbs, descents and index builds grew with the depth:\n{}",
+        grew.join("\n")
+    );
 }
 
 /// A rule that types what it asks about through an index of the tree builds
