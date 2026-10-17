@@ -19,9 +19,11 @@ use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::{self, get_identifier_from_declarator, get_node_text};
 use crate::utility::cert_c::guard_dominance;
+use crate::utility::cert_c::node_index::NodeIndex;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 use tree_sitter::Node;
 
@@ -412,6 +414,9 @@ impl CertRule for Exp33C {
         // summaries, neither of which changes between two functions, so it
         // is built at the first function after that branch and reused.
         let mut file_config: Option<(init_state::InitAnalysisConfig, ReadOnlyDerefFns)> = None;
+        // Built at the file's first function: every read of every function
+        // steps to its parents and resolves its identifier through it.
+        let mut file_index: Option<Rc<ast_utils::ScopeIndex>> = None;
         for n in
             query::find_descendants_of_kinds(*node, &["translation_unit", "function_definition"])
         {
@@ -525,7 +530,9 @@ impl CertRule for Exp33C {
 
                     // Walk AST for read sites and check each against dataflow result
                     let mut reported: HashSet<String> = HashSet::new();
-                    let lookups = FunctionLookups::new(&body);
+                    let file_index =
+                        file_index.get_or_insert_with(|| Rc::new(ast_utils::ScopeIndex::new(root)));
+                    let lookups = FunctionLookups::new(&body, file_index);
                     check_reads(
                         &root,
                         &body,
@@ -584,14 +591,23 @@ impl CertRule for Exp33C {
 struct FunctionLookups<'t> {
     statements: StatementLookup<'t>,
     declarations: ast_utils::ScopeDeclarations<'t>,
+    /// The file's index, which resolves each read's identifier and gives
+    /// the parents the read predicates step through.
+    file: Rc<ast_utils::ScopeIndex<'t>>,
 }
 
 impl<'t> FunctionLookups<'t> {
-    fn new(body: &Node<'t>) -> Self {
+    fn new(body: &Node<'t>, file: &Rc<ast_utils::ScopeIndex<'t>>) -> Self {
         Self {
             statements: StatementLookup::new(body),
-            declarations: Default::default(),
+            declarations: ast_utils::ScopeDeclarations::over(file.clone()),
+            file: file.clone(),
         }
+    }
+
+    /// The file's nodes and their parents.
+    fn tree(&self) -> &NodeIndex<'t> {
+        self.file.nodes()
     }
 
     /// [`init_state::get_var_info_at_with_config`] over this function's body.
@@ -697,8 +713,9 @@ fn collect_invoked_macro_names(
 /// macro writes this argument, so reading it there is not a use of an
 /// uninitialized value. Mirrors `macro_semantics::is_macro_output_arg` for
 /// expansion-derived (rather than registry) macros.
-fn is_function_macro_output_arg(
-    node: &Node,
+fn is_function_macro_output_arg<'t>(
+    node: &Node<'t>,
+    tree: &NodeIndex<'t>,
     source: &str,
     macro_output_params: &HashMap<String, Vec<usize>>,
 ) -> bool {
@@ -706,11 +723,11 @@ fn is_function_macro_output_arg(
         return false;
     }
     // identifier -> argument_list -> call_expression
-    let arg_list = match node.parent() {
+    let arg_list = match tree.parent_or_climb(node) {
         Some(p) if p.kind() == "argument_list" => p,
         _ => return false,
     };
-    let call = match arg_list.parent() {
+    let call = match tree.parent_or_climb(&arg_list) {
         Some(c) if c.kind() == "call_expression" => c,
         _ => return false,
     };
@@ -1099,7 +1116,14 @@ fn check_identifier_read<'t>(
     }
 
     // Skip if this is NOT a read context
-    if !is_read_context(node, source, &config.cross_file_output_params, asm_ranges) {
+    let tree = lookups.tree();
+    if !is_read_context(
+        node,
+        tree,
+        source,
+        &config.cross_file_output_params,
+        asm_ranges,
+    ) {
         return;
     }
 
@@ -1122,7 +1146,7 @@ fn check_identifier_read<'t>(
     // args, so their appearance in the invocation is not a use of an
     // uninitialized value. See crate::analyze::macro_semantics (Phase 1 of
     // docs/design/macro-expansion.md).
-    if crate::analyze::macro_semantics::is_macro_output_arg(node, source) {
+    if crate::analyze::macro_semantics::is_macro_output_arg(node, tree, source) {
         return;
     }
 
@@ -1130,7 +1154,7 @@ fn check_identifier_read<'t>(
     // whose body assigns them (e.g. curl's `CF_DATA_SAVE(save, …)`). The macro
     // writes this arg, so its appearance in the invocation is not a read of an
     // uninitialized value. Phase 2c-ii of docs/design/macro-expansion.md.
-    if is_function_macro_output_arg(node, source, &config.macro_output_params) {
+    if is_function_macro_output_arg(node, tree, source, &config.macro_output_params) {
         return;
     }
 
@@ -1138,7 +1162,7 @@ fn check_identifier_read<'t>(
     // (`GET(v)` that is `((v) = f())` in one build and `0` in the other).
     // Nothing reads it here; if no build wrote it, the next use is where
     // the uninitialized value shows.
-    if is_function_macro_output_arg(node, source, &config.macro_untouched_params) {
+    if is_function_macro_output_arg(node, tree, source, &config.macro_untouched_params) {
         return;
     }
 
@@ -1160,7 +1184,7 @@ fn check_identifier_read<'t>(
         return;
     }
 
-    if info.is_array && array_name_decays_unread(node, source) {
+    if info.is_array && array_name_decays_unread(node, tree, source) {
         return;
     }
 
@@ -1219,8 +1243,8 @@ fn check_identifier_read<'t>(
 /// (assumes the function writes to them). Skip the read-check here
 /// for consistency, but only for truly unknown functions — not for
 /// known read-only or known initializing functions (handled separately).
-fn array_name_decays_unread(node: &Node, source: &str) -> bool {
-    let Some(parent) = node.parent() else {
+fn array_name_decays_unread<'t>(node: &Node<'t>, tree: &NodeIndex<'t>, source: &str) -> bool {
+    let Some(parent) = tree.parent_or_climb(node) else {
         return false;
     };
     // Array-to-pointer decay: `ptr = arr` where arr is on the RHS.
@@ -1245,8 +1269,8 @@ fn array_name_decays_unread(node: &Node, source: &str) -> bool {
     if parent.kind() != "argument_list" {
         return false;
     }
-    let Some(func) = parent
-        .parent()
+    let Some(func) = tree
+        .parent_or_climb(&parent)
         .filter(|call_expr| call_expr.kind() == "call_expression")
         .and_then(|call_expr| call_expr.child_by_field_name("function"))
     else {
@@ -1426,12 +1450,12 @@ fn call_result_variable(call: &Node, source: &str) -> Option<String> {
 }
 
 /// Check if a dereference (*ptr) reads uninitialized content.
-fn check_deref_read(
-    node: &Node,
+fn check_deref_read<'t>(
+    node: &Node<'t>,
     source: &str,
     analysis: &InitAnalysisResult,
     cfg: &FunctionCfg,
-    lookups: &FunctionLookups,
+    lookups: &FunctionLookups<'t>,
     violations: &mut Vec<RuleViolation>,
     reported: &mut HashSet<String>,
     config: &init_state::InitAnalysisConfig,
@@ -1452,7 +1476,8 @@ fn check_deref_read(
     }
 
     // Skip non-read contexts (e.g., *ptr = value is a write)
-    if !is_deref_read_context(node) {
+    let tree = lookups.tree();
+    if !is_deref_read_context(node, tree) {
         return;
     }
 
@@ -1464,8 +1489,8 @@ fn check_deref_read(
     // check_reads visits `*ptr` itself as its own pointer_expression node
     // (real-world FPs: sqlite's `pRhs = sqlite3_malloc64(sizeof(*pRhs))`,
     // hostap's `vhdr` in `while (left >= sizeof(*vhdr))`).
-    if let Some(parent) = node.parent() {
-        if has_sizeof_or_alignof_ancestor(parent) {
+    if let Some(parent) = tree.parent_or_climb(node) {
+        if has_sizeof_or_alignof_ancestor(parent, tree) {
             return;
         }
     }
@@ -1525,12 +1550,12 @@ fn check_deref_read(
 }
 
 /// Check if a subscript access (arr[i]) reads uninitialized content.
-fn check_subscript_read(
-    node: &Node,
+fn check_subscript_read<'t>(
+    node: &Node<'t>,
     source: &str,
     analysis: &InitAnalysisResult,
     cfg: &FunctionCfg,
-    lookups: &FunctionLookups,
+    lookups: &FunctionLookups<'t>,
     violations: &mut Vec<RuleViolation>,
     reported: &mut HashSet<String>,
     config: &init_state::InitAnalysisConfig,
@@ -1562,14 +1587,15 @@ fn check_subscript_read(
     }
 
     // Skip non-read contexts
-    if !is_subscript_read_context(node, source, &config.cross_file_output_params) {
+    let tree = lookups.tree();
+    if !is_subscript_read_context(node, tree, source, &config.cross_file_output_params) {
         return;
     }
 
     // `sizeof(arr[i])` — the operand of sizeof is unevaluated per C11
     // 6.5.3.4; the subscript access itself is not actually performed.
-    if let Some(parent) = node.parent() {
-        if has_sizeof_or_alignof_ancestor(parent) {
+    if let Some(parent) = tree.parent_or_climb(node) {
+        if has_sizeof_or_alignof_ancestor(parent, tree) {
             return;
         }
     }
@@ -1674,8 +1700,9 @@ fn is_in_asm_call(node: &Node, asm_ranges: &[(usize, usize)]) -> bool {
         .any(|&(from, to)| start >= from && start < to)
 }
 
-fn is_read_context(
-    node: &Node,
+fn is_read_context<'t>(
+    node: &Node<'t>,
+    tree: &NodeIndex<'t>,
     source: &str,
     cross_file_output_params: &HashMap<String, HashSet<usize>>,
     asm_ranges: &[(usize, usize)],
@@ -1700,7 +1727,7 @@ fn is_read_context(
     // SQLITE_OMIT_TRIGGER ... #else # define pTrigger 0 ... #endif`).
     // Function-like macros (`preproc_function_def`) and their parameter
     // list (`preproc_params`), and `#undef NAME`, have the same shape.
-    if let Some(parent) = node.parent() {
+    if let Some(parent) = tree.parent_or_climb(node) {
         if matches!(
             parent.kind(),
             "preproc_def" | "preproc_function_def" | "preproc_params" | "preproc_undef"
@@ -1719,18 +1746,18 @@ fn is_read_context(
     // declaration line itself as a read (an earlier fix's "plain declaration
     // statements misflagged as reads" category — real-world sqlite examples:
     // vdbe.c `VdbeOp *pCaller;` and `Mem *pMem = p->pResultRow;`).
-    if is_declarator_name_of_declaration(node) {
+    if is_declarator_name_of_declaration(node, tree) {
         return false;
     }
 
-    let parent = match node.parent() {
+    let parent = match tree.parent_or_climb(node) {
         Some(p) => p,
         None => return true,
     };
 
     // Walk up ancestors to check context
     // Some non-read contexts are nested: sizeof(x) → sizeof_expression > parenthesized_expression > identifier
-    if has_sizeof_or_alignof_ancestor(parent) {
+    if has_sizeof_or_alignof_ancestor(parent, tree) {
         return false;
     }
 
@@ -1745,7 +1772,7 @@ fn is_read_context(
         "sizeof_expression" => false,
         // &x — address-of. Generally not a read, BUT if &x is passed to a
         // non-initializing function (one that reads from the pointer), it IS a read.
-        "pointer_expression" => is_read_in_pointer_expression(&parent, source),
+        "pointer_expression" => is_read_in_pointer_expression(&parent, tree, source),
         // Update expression (i++, ++i) — both read and write, but we don't flag these
         "update_expression" => false,
         // Field expression LHS — writing to a field is NOT reading the base
@@ -1753,16 +1780,18 @@ fn is_read_context(
             // `&s.f` — the address handed to the callee lies inside `s`'s own
             // storage, so this is the address-of case, not a content read
             // .
-            if is_addressed_subobject_root(node, &parent, source) {
+            if is_addressed_subobject_root(node, &parent, tree, source) {
                 return false;
             }
             // `memset(u.tmpSpace, 0, sizeof(u.tmpSpace))` — the field access is
             // the whole argument, and it sits at an output position, so the
             // call fills that storage rather than reading it.
-            if let Some(verdict) = output_arg_read_verdict(node, source, cross_file_output_params) {
+            if let Some(verdict) =
+                output_arg_read_verdict(node, tree, source, cross_file_output_params)
+            {
                 return verdict;
             }
-            is_read_in_field_expression(&parent)
+            is_read_in_field_expression(&parent, tree)
         }
         // Subscript base (arr[i]) — the base identifier provides the address,
         // not a value read. Content reads are handled by check_subscript_read.
@@ -1774,12 +1803,12 @@ fn is_read_context(
         // not a content read; without this arm it fell to the catch-all below
         // and reported `x` read at the very call that fills it.
         "parenthesized_expression" => {
-            if is_addressed_subobject_root(node, &parent, source) {
+            if is_addressed_subobject_root(node, &parent, tree, source) {
                 return false;
             }
             // `memset((buf), 0, n)` — a redundant parenthesis must not hide the
             // output position from the argument-list check either.
-            output_arg_read_verdict(node, source, cross_file_output_params).unwrap_or(true)
+            output_arg_read_verdict(node, tree, source, cross_file_output_params).unwrap_or(true)
         }
         // Cast expression — reading the value, EXCEPT the `(void)x;`
         // discard idiom (a bare identifier cast straight to `void`): the
@@ -1796,10 +1825,10 @@ fn is_read_context(
         // Function call argument — usually a read, but check for output args
         // of known initializing functions (e.g., fgets(input, ...) is a write to input)
         "argument_list" => {
-            if is_misparsed_asm_output_operand(&parent, source) {
+            if is_misparsed_asm_output_operand(&parent, tree, source) {
                 return false;
             }
-            is_read_in_argument_list(node, &parent, source, cross_file_output_params)
+            is_read_in_argument_list(node, &parent, tree, source, cross_file_output_params)
         }
         // Return statement — reading
         "return_statement" => true,
@@ -1818,10 +1847,10 @@ fn is_read_context(
 /// never mistaken for the declared name) to a `declaration` (no initializer)
 /// or `init_declarator` (has one) node. Either way, the identifier there
 /// names storage coming into existence, not a value being read.
-fn is_declarator_name_of_declaration(node: &Node) -> bool {
+fn is_declarator_name_of_declaration<'t>(node: &Node<'t>, tree: &NodeIndex<'t>) -> bool {
     let mut cur = *node;
     loop {
-        let Some(parent) = cur.parent() else {
+        let Some(parent) = tree.parent_or_climb(&cur) else {
             return false;
         };
         match parent.kind() {
@@ -1845,7 +1874,7 @@ fn is_declarator_name_of_declaration(node: &Node) -> bool {
 /// `sizeof(p->field)` are recognized too — the identifier read one of these
 /// composes (`p`, `i`, `p`) is just as unevaluated as a bare `sizeof(x)`,
 /// since sizeof's whole operand is unevaluated per C11 6.5.3.4.
-fn has_sizeof_or_alignof_ancestor(parent: Node) -> bool {
+fn has_sizeof_or_alignof_ancestor<'t>(parent: Node<'t>, tree: &NodeIndex<'t>) -> bool {
     let mut ancestor = Some(parent);
     let mut depth = 0;
     while let Some(anc) = ancestor {
@@ -1859,7 +1888,7 @@ fn has_sizeof_or_alignof_ancestor(parent: Node) -> bool {
             | "pointer_expression"
             | "subscript_expression"
             | "field_expression" => {
-                ancestor = anc.parent();
+                ancestor = tree.parent_or_climb(&anc);
                 continue;
             }
             _ => return false,
@@ -1913,12 +1942,16 @@ fn is_void_discard_cast(cast: &Node, node: &Node, source: &str) -> bool {
 
 /// `*x` is always a dereference read. `&var` is a read only when passed to a
 /// non-initializing function (one that reads from the pointer).
-fn is_read_in_pointer_expression(parent: &Node, source: &str) -> bool {
+fn is_read_in_pointer_expression<'t>(
+    parent: &Node<'t>,
+    tree: &NodeIndex<'t>,
+    source: &str,
+) -> bool {
     let text = get_node_text(parent, source);
     if !text.starts_with('&') {
         return true; // *x — dereference read
     }
-    is_address_of_read(parent, source)
+    is_address_of_read(parent, tree, source)
 }
 
 /// Whether the `&lvalue` at `pointer_expr` is a CONTENT read of the object the
@@ -1933,14 +1966,14 @@ fn is_read_in_pointer_expression(parent: &Node, source: &str) -> bool {
 /// `&var` and `&arr[i]` each carried their own copy of this and `&var.field`
 /// carried none, which is why `recvfrom(..., &from.ss, &fromlen)` reported
 /// `from` read-uninitialised at the very call that fills it.
-fn is_address_of_read(pointer_expr: &Node, source: &str) -> bool {
-    let Some(arg_list) = pointer_expr.parent() else {
+fn is_address_of_read<'t>(pointer_expr: &Node<'t>, tree: &NodeIndex<'t>, source: &str) -> bool {
+    let Some(arg_list) = tree.parent_or_climb(pointer_expr) else {
         return false;
     };
     if arg_list.kind() != "argument_list" {
         return false;
     }
-    let Some(call) = arg_list.parent() else {
+    let Some(call) = tree.parent_or_climb(&arg_list) else {
         return false;
     };
     if call.kind() != "call_expression" {
@@ -1963,9 +1996,14 @@ fn is_address_of_read(pointer_expr: &Node, source: &str) -> bool {
 /// credit funnel and this read predicate answering from one traversal — they
 /// disagreed before, which is how `recvfrom(..., &from.ss, &fromlen)` reported
 /// `from` uninitialised at the call that fills it.
-fn is_addressed_subobject_root(node: &Node, parent: &Node, source: &str) -> bool {
+fn is_addressed_subobject_root<'t>(
+    node: &Node<'t>,
+    parent: &Node<'t>,
+    tree: &NodeIndex<'t>,
+    source: &str,
+) -> bool {
     let mut outer = *parent;
-    while let Some(next) = outer.parent() {
+    while let Some(next) = tree.parent_or_climb(&outer) {
         if !matches!(
             next.kind(),
             "field_expression" | "subscript_expression" | "parenthesized_expression"
@@ -1974,7 +2012,7 @@ fn is_addressed_subobject_root(node: &Node, parent: &Node, source: &str) -> bool
         }
         outer = next;
     }
-    let Some(addr) = outer.parent() else {
+    let Some(addr) = tree.parent_or_climb(&outer) else {
         return false;
     };
     if addr.kind() != "pointer_expression" || !get_node_text(&addr, source).starts_with('&') {
@@ -1986,7 +2024,7 @@ fn is_addressed_subobject_root(node: &Node, parent: &Node, source: &str) -> bool
     let Some(root) = init_state::addressed_object_root(&inner) else {
         return false;
     };
-    root.id() == node.id() && !is_address_of_read(&addr, source)
+    root.id() == node.id() && !is_address_of_read(&addr, tree, source)
 }
 
 /// The outermost lvalue containing `node`, reached by walking up through the
@@ -1996,9 +2034,9 @@ fn is_addressed_subobject_root(node: &Node, parent: &Node, source: &str) -> bool
 /// Only the *base* side of a field or subscript is followed, so the `i` in
 /// `f(arr[i])` and a field name are never mistaken for the object being passed:
 /// they are their own outermost lvalue and keep whatever verdict they had.
-fn outermost_lvalue<'a>(node: &Node<'a>) -> Node<'a> {
+fn outermost_lvalue<'t>(node: &Node<'t>, tree: &NodeIndex<'t>) -> Node<'t> {
     let mut outer = *node;
-    while let Some(next) = outer.parent() {
+    while let Some(next) = tree.parent_or_climb(&outer) {
         let follows_base = match next.kind() {
             "field_expression" | "subscript_expression" => {
                 next.child_by_field_name("argument").map(|a| a.id()) == Some(outer.id())
@@ -2025,25 +2063,27 @@ fn outermost_lvalue<'a>(node: &Node<'a>) -> Node<'a> {
 /// (sqlite's `memset(uFts.tmpSpace, 0, sizeof(uFts.tmpSpace))`). Same principle
 /// as an earlier fix: the read predicate and the credit funnel have to agree about
 /// argument shapes, so consult the outermost lvalue rather than the identifier.
-fn output_arg_read_verdict(
-    node: &Node,
+fn output_arg_read_verdict<'t>(
+    node: &Node<'t>,
+    tree: &NodeIndex<'t>,
     source: &str,
     cross_file_output_params: &HashMap<String, HashSet<usize>>,
 ) -> Option<bool> {
-    let outer = outermost_lvalue(node);
+    let outer = outermost_lvalue(node, tree);
     if outer.id() == node.id() {
         return None; // bare identifier — `is_read_in_context`'s own arm has it
     }
-    let arg_list = outer.parent()?;
+    let arg_list = tree.parent_or_climb(&outer)?;
     if arg_list.kind() != "argument_list" {
         return None;
     }
-    if is_misparsed_asm_output_operand(&arg_list, source) {
+    if is_misparsed_asm_output_operand(&arg_list, tree, source) {
         return Some(false);
     }
     Some(is_read_in_argument_list(
         node,
         &arg_list,
+        tree,
         source,
         cross_file_output_params,
     ))
@@ -2053,9 +2093,9 @@ fn output_arg_read_verdict(
 /// Walks up through chained field expressions (`a.b.c = val` — `a`'s
 /// immediate parent is `a.b`, not `a.b.c`) to find the outermost field
 /// access, since only that one can be the assignment's actual LHS.
-fn is_read_in_field_expression(parent: &Node) -> bool {
+fn is_read_in_field_expression<'t>(parent: &Node<'t>, tree: &NodeIndex<'t>) -> bool {
     let mut outer = *parent;
-    while let Some(next) = outer.parent() {
+    while let Some(next) = tree.parent_or_climb(&outer) {
         // `obj.field[i] = val` / `obj.field[i].g[j] = val` — the assignment's
         // LHS is the subscript_expression wrapping the field access, not the
         // field access itself. Keep rebasing `outer` through subscript and
@@ -2068,7 +2108,7 @@ fn is_read_in_field_expression(parent: &Node) -> bool {
         }
         outer = next;
     }
-    let Some(grandparent) = outer.parent() else {
+    let Some(grandparent) = tree.parent_or_climb(&outer) else {
         return true;
     };
     if grandparent.kind() != "assignment_expression" {
@@ -2085,8 +2125,12 @@ fn is_read_in_field_expression(parent: &Node) -> bool {
 /// `"=r"(var)` becomes `call_expression("=r", [var])`. Detect this: an
 /// identifier inside an `argument_list` of a call whose function is a
 /// string_literal with "=" (output constraint).
-fn is_misparsed_asm_output_operand(arg_list: &Node, source: &str) -> bool {
-    let Some(call_gp) = arg_list.parent() else {
+fn is_misparsed_asm_output_operand<'t>(
+    arg_list: &Node<'t>,
+    tree: &NodeIndex<'t>,
+    source: &str,
+) -> bool {
+    let Some(call_gp) = tree.parent_or_climb(arg_list) else {
         return false;
     };
     if call_gp.kind() != "call_expression" {
@@ -2102,14 +2146,15 @@ fn is_misparsed_asm_output_operand(arg_list: &Node, source: &str) -> bool {
 }
 
 /// Check if an identifier in an argument_list is being read (vs. being an output arg).
-fn is_read_in_argument_list(
-    node: &Node,
-    arg_list: &Node,
+fn is_read_in_argument_list<'t>(
+    node: &Node<'t>,
+    arg_list: &Node<'t>,
+    tree: &NodeIndex<'t>,
     source: &str,
     cross_file_output_params: &HashMap<String, HashSet<usize>>,
 ) -> bool {
     // Find the parent call_expression
-    let call_expr = match arg_list.parent() {
+    let call_expr = match tree.parent_or_climb(arg_list) {
         Some(c) if c.kind() == "call_expression" => c,
         _ => return true,
     };
@@ -2201,8 +2246,8 @@ fn contains_node(haystack: &Node, needle: &Node) -> bool {
 }
 
 /// Check if a dereference (*ptr) is in a read context.
-fn is_deref_read_context(node: &Node) -> bool {
-    let parent = match node.parent() {
+fn is_deref_read_context<'t>(node: &Node<'t>, tree: &NodeIndex<'t>) -> bool {
+    let parent = match tree.parent_or_climb(node) {
         Some(p) => p,
         None => return true,
     };
@@ -2220,15 +2265,16 @@ fn is_deref_read_context(node: &Node) -> bool {
 }
 
 /// Check if a subscript access (arr[i]) is in a read context.
-fn is_subscript_read_context(
-    node: &Node,
+fn is_subscript_read_context<'t>(
+    node: &Node<'t>,
+    tree: &NodeIndex<'t>,
     source: &str,
     cross_file_output_params: &HashMap<String, HashSet<usize>>,
 ) -> bool {
     // Walk up ancestors to find if this subscript is ultimately on the LHS of an assignment
     let mut current = *node;
     for _ in 0..5 {
-        let parent = match current.parent() {
+        let parent = match tree.parent_or_climb(&current) {
             Some(p) => p,
             None => return true,
         };
@@ -2256,7 +2302,7 @@ fn is_subscript_read_context(
                 if !text.starts_with('&') {
                     return true;
                 }
-                return is_address_of_read(&parent, source);
+                return is_address_of_read(&parent, tree, source);
             }
             // `memset(arr[i], 0, n)` / `memset(s.a[i].buf, 0, n)` — the element
             // (or the field reached through it) is the whole argument and sits
@@ -2265,12 +2311,13 @@ fn is_subscript_read_context(
             // element read as a use of its own uninitialized content, the same
             // dispatch gap the identifier path had.
             "argument_list" => {
-                if is_misparsed_asm_output_operand(&parent, source) {
+                if is_misparsed_asm_output_operand(&parent, tree, source) {
                     return false;
                 }
                 return is_read_in_argument_list(
                     &current,
                     &parent,
+                    tree,
                     source,
                     cross_file_output_params,
                 );

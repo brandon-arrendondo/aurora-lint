@@ -16,9 +16,11 @@ use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::format_slots;
 use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::last_write::{last_write_before, write_target_is, LastWrites};
+use crate::utility::cert_c::node_index::NodeIndex;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 use tree_sitter::Node;
 
@@ -196,6 +198,8 @@ impl CertRule for Exp34C {
         let cfgs = self.function_cfgs.borrow();
         let all_macros = self.function_macros.borrow();
         let root = *node;
+        // Built at the file's first function and shared by all of them.
+        let mut declared: Option<Declared> = None;
 
         for n in
             query::find_descendants_of_kinds(*node, &["translation_unit", "function_definition"])
@@ -304,6 +308,7 @@ impl CertRule for Exp34C {
 
                     // Walk AST for dereferences and check each against the dataflow result
                     let mut reported_vars = ReportedSites::new(first_site_only, source);
+                    let declared = declared.get_or_insert_with(|| Declared::new(root));
                     check_dereferences_cfg(
                         &body,
                         source,
@@ -313,7 +318,7 @@ impl CertRule for Exp34C {
                         &effective_summaries,
                         &all_macros,
                         &settings,
-                        &Declared::new(root),
+                        declared,
                         &mut violations,
                         &mut reported_vars,
                     );
@@ -322,7 +327,7 @@ impl CertRule for Exp34C {
                     // said the value could be NULL, followed by a NULL test of
                     // that same value.
                     check_dereferences_before_null_tests(
-                        &root,
+                        declared,
                         node,
                         &body,
                         source,
@@ -1232,69 +1237,72 @@ fn is_null_safe_function(name: &str, settings: &AnalysisSettings) -> bool {
 // Declared-type verification
 // ---------------------------------------------------------------------------
 
-/// Identifiers resolved from the tree's root, each block's declarations
-/// read once for the whole function ([`ast_utils::ScopeDeclarations`]): a
-/// `parent()` climb per identifier read every enclosing block again, so a
-/// check at every call of a long function was quadratic in its length.
+/// Identifiers resolved from the tree's root through an index of the file,
+/// each block's declarations read once for the whole file
+/// ([`ast_utils::ScopeDeclarations`]): a `parent()` climb per identifier
+/// read every enclosing block again, so a check at every call of a long
+/// function was quadratic in its length. The same index gives the parents
+/// the null-test search steps through.
 struct Declared<'t> {
     root: Node<'t>,
+    file: Rc<ast_utils::ScopeIndex<'t>>,
     declarations: ast_utils::ScopeDeclarations<'t>,
 }
 
 impl<'t> Declared<'t> {
     fn new(root: Node<'t>) -> Self {
+        let file = Rc::new(ast_utils::ScopeIndex::new(root));
         Self {
             root,
-            declarations: Default::default(),
+            declarations: ast_utils::ScopeDeclarations::over(file.clone()),
+            file,
         }
     }
 
+    /// The file's nodes and their parents.
+    fn tree(&self) -> &NodeIndex<'t> {
+        self.file.nodes()
+    }
+
+    /// True when `name`'s nearest lexical declaration provably resolves to a
+    /// pointer type; `false` when it provably does NOT (a plain scalar or
+    /// array); `None` when the binding can't be resolved at all (macro-expanded
+    /// declarator, unresolvable identifier, etc.) — callers should treat `None`
+    /// as "can't tell" rather than using it to suppress a finding.
+    ///
+    /// This guards EXP34-C's call-argument null-propagation checks against the
+    /// class of type-confusion bug found in an earlier fix (shared with ARR37-C's
+    /// an earlier fix): `declared_pointers` in `null_state.rs` is a flat, whole-function
+    /// set rather than one scoped per lexical block, so a pointer declared under
+    /// one name in one scope (e.g. `HashElem *i;` in one `PRAGMA` case of
+    /// sqlite's giant `sqlite3Pragma` function) can make an unrelated `int i;`
+    /// loop counter declared under the *same name* in a different scope of the
+    /// same function get tracked as a nullable pointer too — producing
+    /// "possibly-NULL pointer" findings against plain integers. Re-deriving the
+    /// argument's actual declared type at the call site, independent of that
+    /// dataflow-internal set, catches this before it's reported. Uses the shared
+    /// `ast_utils::resolve_identifier_binding_in` primitive rather than
+    /// hand-rolling a new declaration lookup, through the file's index, which
+    /// resolves without climbing `Node::parent()`: a per-condition null test on
+    /// deeply nested code made the climbing version cubic in depth.
+    fn is_declared_pointer(&self, ident_node: &Node<'t>, name: &str, source: &str) -> Option<bool> {
+        declared_pointer(
+            self.declarations
+                .resolve_identifier_binding_in(&self.root, ident_node, name, source)?,
+            name,
+            source,
+        )
+    }
+
     /// True when `ident_node`'s occurrence of `name` provably resolves to a
-    /// non-pointer declared type ([`identifier_is_declared_pointer_in`]) —
+    /// non-pointer declared type ([`Declared::is_declared_pointer`]) —
     /// the signal `check_function_arguments_cfg`, `check_callsite_null_args`,
     /// and the function-pointer-call check use to skip a candidate outright
     /// rather than let a type-confused dataflow state report it as a null
     /// pointer.
     fn is_provably_not_a_pointer(&self, ident_node: &Node<'t>, name: &str, source: &str) -> bool {
-        self.declarations
-            .resolve_identifier_binding_in(&self.root, ident_node, name, source)
-            .and_then(|binding| declared_pointer(binding, name, source))
-            == Some(false)
+        self.is_declared_pointer(ident_node, name, source) == Some(false)
     }
-}
-
-/// True when `name`'s nearest lexical declaration provably resolves to a
-/// pointer type; `false` when it provably does NOT (a plain scalar or
-/// array); `None` when the binding can't be resolved at all (macro-expanded
-/// declarator, unresolvable identifier, etc.) — callers should treat `None`
-/// as "can't tell" rather than using it to suppress a finding.
-///
-/// This guards EXP34-C's call-argument null-propagation checks against the
-/// class of type-confusion bug found in an earlier fix (shared with ARR37-C's
-/// an earlier fix): `declared_pointers` in `null_state.rs` is a flat, whole-function
-/// set rather than one scoped per lexical block, so a pointer declared under
-/// one name in one scope (e.g. `HashElem *i;` in one `PRAGMA` case of
-/// sqlite's giant `sqlite3Pragma` function) can make an unrelated `int i;`
-/// loop counter declared under the *same name* in a different scope of the
-/// same function get tracked as a nullable pointer too — producing
-/// "possibly-NULL pointer" findings against plain integers. Re-deriving the
-/// argument's actual declared type at the call site, independent of that
-/// dataflow-internal set, catches this before it's reported. Uses the shared
-/// `ast_utils::resolve_identifier_binding_in` primitive rather than
-/// hand-rolling a new declaration lookup, from `root`, which resolves
-/// without climbing `Node::parent()`: a per-condition null test on deeply
-/// nested code made the climbing version cubic in depth.
-fn identifier_is_declared_pointer_in(
-    root: &Node,
-    ident_node: &Node,
-    name: &str,
-    source: &str,
-) -> Option<bool> {
-    declared_pointer(
-        ast_utils::resolve_identifier_binding_in(root, ident_node, name, source)?,
-        name,
-        source,
-    )
 }
 
 fn declared_pointer(
@@ -1639,10 +1647,10 @@ fn is_inside_ast_null_guard(var_name: &str, node: &Node, source: &str) -> bool {
 /// own body never returns NULL. So is any other start (a copy of another
 /// pointer, a field read), where there is no single value to re-seed.
 #[allow(clippy::too_many_arguments)]
-fn check_dereferences_before_null_tests(
-    root: &Node,
-    func: &Node,
-    body: &Node,
+fn check_dereferences_before_null_tests<'t>(
+    declared: &Declared<'t>,
+    func: &Node<'t>,
+    body: &Node<'t>,
     source: &str,
     cfg: &FunctionCfg,
     summaries: &(impl SummaryLookup + ?Sized),
@@ -1653,8 +1661,8 @@ fn check_dereferences_before_null_tests(
     violations: &mut Vec<RuleViolation>,
     reported_vars: &mut ReportedSites<'_>,
 ) {
-    for (var, test) in null_tests(root, body, source) {
-        let Some(site) = first_dereference_before(&var, &test, source) else {
+    for (var, test) in null_tests(declared, body, source) {
+        let Some(site) = first_dereference_before(&var, &test, declared.tree(), source) else {
             continue;
         };
         if asserted_by_the_same_macro(&var, &site, source, macros) {
@@ -1741,7 +1749,11 @@ fn check_dereferences_before_null_tests(
 /// Every NULL test of a declared pointer in `body`, as `(name, tested
 /// operand)`: `p == NULL`, `NULL != p`, `!p` and a bare `p` used as a
 /// condition, including as an operand of `&&`/`||` inside one.
-fn null_tests<'t>(root: &Node<'t>, body: &Node<'t>, source: &str) -> Vec<(String, Node<'t>)> {
+fn null_tests<'t>(
+    declared: &Declared<'t>,
+    body: &Node<'t>,
+    source: &str,
+) -> Vec<(String, Node<'t>)> {
     let mut tests = Vec::new();
     for owner in query::find_descendants_of_kinds(
         *body,
@@ -1758,7 +1770,7 @@ fn null_tests<'t>(root: &Node<'t>, body: &Node<'t>, source: &str) -> Vec<(String
         }
     }
     tests.retain(|(name, operand)| {
-        identifier_is_declared_pointer_in(root, operand, name, source) == Some(true)
+        declared.is_declared_pointer(operand, name, source) == Some(true)
     });
     tests
 }
@@ -1816,10 +1828,15 @@ fn collect_null_tests<'t>(cond: &Node<'t>, source: &str, out: &mut Vec<(String, 
 /// or in a straight-line statement, or an `if` chain's conditions, that
 /// precedes the test in one of its enclosing blocks. A preceding label
 /// ends the search, since a `goto` can enter below the dereference.
-fn first_dereference_before<'t>(var: &str, test: &Node<'t>, source: &str) -> Option<Node<'t>> {
+fn first_dereference_before<'t>(
+    var: &str,
+    test: &Node<'t>,
+    tree: &NodeIndex<'t>,
+    source: &str,
+) -> Option<Node<'t>> {
     let mut candidates: Vec<Node<'t>> = Vec::new();
     let mut current = *test;
-    while let Some(parent) = current.parent() {
+    while let Some(parent) = tree.parent_or_climb(&current) {
         match parent.kind() {
             "function_definition" => break,
             "if_statement"
