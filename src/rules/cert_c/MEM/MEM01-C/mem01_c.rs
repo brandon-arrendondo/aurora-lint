@@ -964,7 +964,8 @@ fn call_can_read_dangling(
 /// name nothing a read goes through ([`CalleeScope::expansion_names_no_read`]),
 /// a field that may share storage with the
 /// member and any object declared at file scope (the caller may have stored the
-/// object there). Project headers are scanned but not expanded, so their
+/// object there), and an access of any field of the member's path through any
+/// other pointer, which may point at the object or a part of it. Project headers are scanned but not expanded, so their
 /// macros, objects and structs count with the file's own ([`HeaderTables`]).
 /// A definition under a conditional counts only where the call sits in the
 /// arm's own span or every arm of the chain defines the callee. A callee with no single
@@ -1651,7 +1652,8 @@ fn function_definition_name(function: &Node, source: &str) -> Option<String> {
 /// Whether, within `body`, every use of the parameter at `position` of
 /// `parameters`, `param`, is one that cannot read `param->field`: a `->`
 /// access of another field, a null test, or the freed argument of a
-/// deallocator call.
+/// deallocator call; and no other pointer is used to reach a field of the
+/// member's path ([`reaches_field_otherwise`]).
 fn parameter_never_reads_member(
     body: &Node,
     parameters: &[&str],
@@ -1734,7 +1736,12 @@ fn parameter_never_reads_member(
             })
         || query::find_descendants_of_kind(*body, "identifier")
             .into_iter()
-            .any(|n| scope.names_outside_object(&n, source));
+            .any(|n| scope.names_outside_object(&n, source))
+        // Another pointer may hold the object or a part of it: one a call
+        // returns (the caller may have handed the object to a function that
+        // keeps it), another parameter, or a member of the parameter
+        // (`c->peer` may be `c`).
+        || reaches_field_otherwise(body, param, &member, source);
     if hidden_read {
         return false;
     }
@@ -1778,6 +1785,157 @@ fn parameter_never_reads_member(
                 _ => false,
             }
         })
+}
+
+/// Whether `body` accesses a field named like any field of the member path
+/// `member` (`["a", "t", "ssl"]` for `c->a.t.ssl`) other than along that path
+/// from the parameter `param` itself: `x->ssl` or `i->t.ssl` for a pointer
+/// obtained elsewhere, which may point at the object or a part of it, or
+/// `c->peer->ssl`. The callee cannot tell such a pointer from the parameter.
+/// A `.` access of a value the callee itself declares
+/// ([`is_access_of_a_callee_value`]) is no such pointer.
+fn reaches_field_otherwise(body: &Node, param: &str, member: &[&str], source: &str) -> bool {
+    query::find_descendants_of_kind(*body, "field_expression")
+        .into_iter()
+        .any(|access| {
+            let Some(field) = access.child_by_field_name("field") else {
+                return false;
+            };
+            if !member.contains(&get_node_text(&field, source))
+                || is_access_of_a_callee_value(&access, body, source)
+            {
+                return false;
+            }
+            // The fields from the root of the access out: the parameter's own
+            // accesses along the member path are judged by its uses.
+            let mut chain = Vec::new();
+            let mut current = access;
+            loop {
+                let Some(field) = current.child_by_field_name("field") else {
+                    return true;
+                };
+                chain.push(get_node_text(&field, source));
+                let Some(base) = current.child_by_field_name("argument") else {
+                    return true;
+                };
+                let base = strip_parens_and_casts(&base);
+                if base.kind() != "field_expression" {
+                    chain.reverse();
+                    return base.kind() != "identifier"
+                        || get_node_text(&base, source) != param
+                        || !member.starts_with(&chain);
+                }
+                current = base;
+            }
+        })
+}
+
+/// Whether `access` is a `.` access of a struct or union value the callee
+/// whose `body` it is declares, or of an element of an array of them:
+/// `o.ssl`, `a[0].ssl`. Such a value is not the freed object. The base is
+/// resolved by its declaration (ADR-0006), which must be a local of the callee,
+/// not a block-scope `extern`, with no initializer but a brace list of constants, and the name must be used
+/// in the body only as the base of such accesses: `= *p`, `memcpy(&l, ...)` or
+/// `l = *p;` may copy the dangling value in, and so may the caller's argument
+/// to a parameter.
+fn is_access_of_a_callee_value(access: &Node, body: &Node, source: &str) -> bool {
+    let dot = access
+        .child_by_field_name("operator")
+        .is_some_and(|op| get_node_text(&op, source) == ".");
+    let Some(base) = access.child_by_field_name("argument").filter(|_| dot) else {
+        return false;
+    };
+    let base = strip_parens_and_casts(&base);
+    let (ident, element) = match base.kind() {
+        "identifier" => (base, false),
+        "subscript_expression" => match base.child_by_field_name("argument") {
+            Some(array) if strip_parens_and_casts(&array).kind() == "identifier" => {
+                (strip_parens_and_casts(&array), true)
+            }
+            _ => return false,
+        },
+        _ => return false,
+    };
+    let name = get_node_text(&ident, source);
+    let Some((declaration, declarator)) =
+        ast_utils::resolve_identifier_declarator(&ident, name, source)
+    else {
+        return false;
+    };
+    // A parameter is filled by the caller's argument, which may be `*p`, and
+    // a block-scope `extern` names an object defined elsewhere, which the
+    // caller may have filled with `g = *p`. A `static` local is the callee's
+    // own: no other function can name it.
+    if declaration.kind() != "declaration"
+        || declaration.start_byte() < body.start_byte()
+        || declaration.end_byte() > body.end_byte()
+        || ast_utils::declaration_has_storage_class(&declaration, "extern", source)
+    {
+        return false;
+    }
+    // The resolver hands back the declarator inside an `init_declarator`.
+    let declarator = if declarator.kind() == "init_declarator" {
+        match declarator.child_by_field_name("declarator") {
+            Some(d) => d,
+            None => return false,
+        }
+    } else {
+        declarator
+    };
+    let initializer = declarator
+        .parent()
+        .filter(|p| {
+            p.kind() == "init_declarator" && p.child_by_field_name("declarator") == Some(declarator)
+        })
+        .and_then(|p| p.child_by_field_name("value"));
+    if initializer.is_some_and(|v| !initializes_with_constants(&v, source)) {
+        return false;
+    }
+    // The identifier the declaration binds: `a` of `a[2]`.
+    let bound = if element {
+        match declarator.child_by_field_name("declarator") {
+            Some(d) if declarator.kind() == "array_declarator" => d,
+            _ => return false,
+        }
+    } else {
+        declarator
+    };
+    // Every other use of the name is the base of a `.` access, directly or
+    // through a subscript.
+    bound.kind() == "identifier"
+        && query::find_descendants_of_kind(*body, "identifier")
+            .into_iter()
+            .filter(|i| get_node_text(i, source) == name && *i != bound)
+            .all(|i| {
+                let mut at = i;
+                if element {
+                    match at.parent() {
+                        Some(p)
+                            if p.kind() == "subscript_expression"
+                                && p.child_by_field_name("argument") == Some(at) =>
+                        {
+                            at = p
+                        }
+                        _ => return false,
+                    }
+                }
+                at.parent().is_some_and(|p| {
+                    p.kind() == "field_expression"
+                        && p.child_by_field_name("argument") == Some(at)
+                        && p.child_by_field_name("operator")
+                            .is_some_and(|op| get_node_text(&op, source) == ".")
+                })
+            })
+}
+
+/// Whether the initializer `value` is a brace list of constants, nested brace
+/// lists and designators: `{ 0 }`, `{ .ssl = "x" }`. Any name, `NULL` aside,
+/// may carry a struct (`{ *get_log() }`, `{ g }`).
+fn initializes_with_constants(value: &Node, source: &str) -> bool {
+    value.kind() == "initializer_list"
+        && query::find_descendants_of_kind(*value, "identifier")
+            .into_iter()
+            .all(|i| get_node_text(&i, source) == "NULL")
 }
 
 /// Whether the access chain that starts at `ident` (`p->a.b`, `p->a[i]`) names
