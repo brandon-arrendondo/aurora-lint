@@ -4,6 +4,7 @@
 use crate::utility::cert_c::data_model::{IntFacts, IntWidth};
 use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::node_index::{NearestColumn, NodeIndex};
+use crate::utility::cert_c::pp_tokens;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -1044,6 +1045,11 @@ pub fn misparsed_function_pointer_declaration<'a>(
         convention,
     } = misparsed_parts(stmt)?;
     if let Some(convention) = convention {
+        // A pointer named for a convention is no declaration this reads, and
+        // resolving the convention by declaration stops here.
+        if CALLING_CONVENTIONS.contains(&get_node_text(&declared, source)) {
+            return None;
+        }
         return is_calling_convention(&convention, source).then_some(declared);
     }
     if initialized {
@@ -1099,16 +1105,19 @@ const CALLING_CONVENTIONS: &[&str] = &[
     "GLAPIENTRY",
 ];
 
-/// Whether `node`, read as an operand of `*`, is a calling convention: a name
-/// in [`CALLING_CONVENTIONS`], an `__attribute__((...))`, or an object-like
-/// macro this file defines, every definition of which expands to those
-/// alone (`#define MYAPI __stdcall`, `#define MYAPI WINAPI`). A definition
-/// that expands to nothing counts too: the blanking pass before the parse
-/// removes the uses of a macro empty in every arm, but not of one empty in
-/// only some.
+/// Whether `node`, read as an operand of `*`, is a calling convention: an
+/// `__attribute__((...))`, or a name [`names_calling_convention`] accepts
+/// that nothing in scope declares as an object, function, parameter or
+/// enumerator (`int WINAPI = 3;`, `enum { NTAPI = 3 };`), since each of those
+/// can be multiplied.
 fn is_calling_convention(node: &Node, source: &str) -> bool {
     match node.kind() {
-        "identifier" => names_calling_convention(get_node_text(node, source), source, 0),
+        "identifier" => {
+            let name = get_node_text(node, source);
+            names_calling_convention(name, source, 0)
+                && resolve_identifier_binding(node, name, source).is_none()
+                && !enumerator_in_scope(node, name, source)
+        }
         "call_expression" => node
             .child(0)
             .is_some_and(|f| matches!(get_node_text(&f, source), "__attribute__" | "__attribute")),
@@ -1116,89 +1125,129 @@ fn is_calling_convention(node: &Node, source: &str) -> bool {
     }
 }
 
-/// [`is_calling_convention`] for a name, `depth` macros down.
+/// Whether `name` stands for calling conventions alone, `depth` macros
+/// down. A name this file defines as an object-like macro stands for what
+/// every definition expands to (`#define MYAPI __stdcall`, `#define MYAPI
+/// WINAPI`), so `#define CALLBACK 2` makes `CALLBACK` a number. Any other
+/// name is a convention when [`CALLING_CONVENTIONS`] lists it. A definition
+/// that expands to nothing counts too: the blanking pass before the parse
+/// removes the uses of a macro empty in every arm, but not of one empty in
+/// only some.
 fn names_calling_convention(name: &str, source: &str, depth: usize) -> bool {
-    if CALLING_CONVENTIONS.contains(&name) {
-        return true;
+    let definitions = object_macro_definitions(source, name);
+    if definitions.is_empty() {
+        return CALLING_CONVENTIONS.contains(&name);
     }
     // A macro of a macro of a convention is two levels; four is plenty, and
     // stops a macro defined by its own name.
-    if depth == 4 {
-        return false;
-    }
-    let mut bodies = object_macro_bodies(source, name).peekable();
-    bodies.peek().is_some()
-        && bodies.all(|body| expands_to_calling_conventions(body, source, depth + 1))
+    depth < 4
+        && definitions.iter().all(|define| {
+            define
+                .as_ref()
+                .is_some_and(|define| expands_to_calling_conventions(define, source, depth + 1))
+        })
 }
 
-/// Whether a macro body is calling conventions and attributes only: names
-/// [`names_calling_convention`] accepts, each `__attribute__` with its
-/// parenthesized arguments, or nothing.
-fn expands_to_calling_conventions(body: &str, source: &str, depth: usize) -> bool {
-    let mut rest = body.trim();
-    while !rest.is_empty() {
-        let end = rest
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .unwrap_or(rest.len());
-        let (word, after) = rest.split_at(end);
-        if word.is_empty() {
+/// Whether a macro's replacement list is calling conventions and attributes
+/// only: names [`names_calling_convention`] accepts, each `__attribute__`
+/// with its parenthesized arguments, or nothing. Comments are white space
+/// wherever they sit.
+fn expands_to_calling_conventions(
+    define: &pp_tokens::DefineDirective,
+    source: &str,
+    depth: usize,
+) -> bool {
+    let tokens = define.tokens();
+    let mut k = 0;
+    while let Some(token) = tokens.get(k) {
+        if token.kind != pp_tokens::PpKind::Identifier {
             return false;
         }
-        rest = after.trim_start();
-        if matches!(word, "__attribute__" | "__attribute") {
-            let Some(close) = balanced_parens_end(rest) else {
+        if matches!(&*token.text, "__attribute__" | "__attribute") {
+            if !tokens.get(k + 1).is_some_and(|t| t.is("(")) {
+                return false;
+            }
+            let Some(close) = pp_tokens::matching_close(&tokens, k + 1) else {
                 return false;
             };
-            rest = rest[close..].trim_start();
-        } else if !names_calling_convention(word, source, depth) {
+            k = close + 1;
+        } else if names_calling_convention(&token.text, source, depth) {
+            k += 1;
+        } else {
             return false;
         }
     }
     true
 }
 
-/// The byte just past the parenthesized group `text` opens, or `None` when
-/// it doesn't open one or never closes it.
-fn balanced_parens_end(text: &str) -> Option<usize> {
-    if !text.starts_with('(') {
-        return None;
+/// Every object-like `#define name` in `source`, read by the preprocessor's
+/// own lexing ([`pp_tokens::parse_define_directive`]), or `None` for one
+/// whose comment never closes, which nothing can read. A function-like
+/// definition is left out: a name not followed by `(` is not its use.
+fn object_macro_definitions<'s>(
+    source: &'s str,
+    name: &str,
+) -> Vec<Option<pp_tokens::DefineDirective<'s>>> {
+    // Lexing the file is the cost; a file whose directives never name
+    // `name` has nothing to lex for.
+    let named = source.lines().any(|line| {
+        line.trim_start().starts_with('#') && line.contains("define") && line.contains(name)
+    });
+    if !named {
+        return Vec::new();
     }
-    let mut depth = 0usize;
-    for (i, c) in text.char_indices() {
-        match c {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i + 1);
-                }
+    pp_tokens::directive_starts(source)
+        .into_iter()
+        .filter_map(|at| {
+            let text = source.get(at..)?;
+            let define = pp_tokens::parse_define_directive(text)?;
+            if define.name != name || define.params.is_some() {
+                return None;
             }
-            _ => {}
-        }
-    }
-    None
+            let directive = text.get(..pp_tokens::directive_end(text))?;
+            let unclosed = directive
+                .rfind("/*")
+                .is_some_and(|open| !directive[open..].contains("*/"));
+            Some((!unclosed).then_some(define))
+        })
+        .collect()
 }
 
-/// The replacement text of each object-like `#define name` in `source`,
-/// with any comment after it removed. A definition continued onto the next
-/// line is returned with its `\`, which no convention spells, so it never
-/// counts as one.
-fn object_macro_bodies<'s>(source: &'s str, name: &'s str) -> impl Iterator<Item = &'s str> {
-    source.lines().filter_map(move |line| {
-        let rest = line.trim_start().strip_prefix('#')?.trim_start();
-        let rest = rest.strip_prefix("define")?;
-        if !rest.starts_with([' ', '\t']) {
-            return None;
+/// Whether an enumerator named `name` is declared before `node` in a scope
+/// enclosing it: `enum { NTAPI = 3 };` makes `NTAPI` a constant there.
+fn enumerator_in_scope(node: &Node, name: &str, source: &str) -> bool {
+    let mut root = *node;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    let before = node.start_byte();
+    let mut cursor = root.walk();
+    let mut descending = true;
+    loop {
+        let n = cursor.node();
+        if descending && n.start_byte() < before {
+            if n.kind() == "enumerator"
+                && n.child_by_field_name("name")
+                    .is_some_and(|id| get_node_text(&id, source) == name)
+            {
+                let scope = ancestors(&n)
+                    .find(|a| matches!(a.kind(), "compound_statement" | "translation_unit"));
+                if scope.is_some_and(|s| s.start_byte() <= before && before < s.end_byte()) {
+                    return true;
+                }
+            }
+            if cursor.goto_first_child() {
+                continue;
+            }
         }
-        let rest = rest.trim_start().strip_prefix(name)?;
-        // `#define name(` is a function-like macro, `#define named` another.
-        if !rest.is_empty() && !rest.starts_with([' ', '\t']) && !rest.starts_with("/*") {
-            return None;
+        if cursor.goto_next_sibling() {
+            descending = true;
+        } else if cursor.goto_parent() {
+            descending = false;
+        } else {
+            return false;
         }
-        let body = rest.find("//").map_or(rest, |i| &rest[..i]);
-        let body = body.find("/*").map_or(body, |i| &body[..i]);
-        Some(body)
-    })
+    }
 }
 
 /// Whether `stmt` is an item of the translation unit itself, directly or
@@ -4284,8 +4333,31 @@ mod tests {
             "#define MYAPI WINAPI /* the platform's */\n",
             "#define MYAPI __attribute__((ms_abi)) EFIAPI\n",
             "#ifdef _WIN32\n#define MYAPI __stdcall\n#else\n#define MYAPI\n#endif\n",
+            "#define MYAPI /* the platform's */ __stdcall\n",
         ] {
             let code = format!("{defines}{}", in_block("LONG (MYAPI *g)(HKEY);"));
+            assert_eq!(
+                last_occurrence_is_local_both_ways(&code, "g"),
+                Some(true),
+                "{code}"
+            );
+        }
+        // A listed name the file gives its own conventions, one an
+        // enumerator in another function declares, out of scope here, and
+        // one only a pointer named for it would declare, which nothing reads
+        // as a declaration.
+        for (defines, decl) in [
+            (
+                "",
+                "LONG (WINAPI *WINAPI)(HKEY);\n    LONG (WINAPI *g)(HKEY);",
+            ),
+            ("#define CALLBACK __stdcall\n", "LONG (CALLBACK *g)(HKEY);"),
+            (
+                "void h(void)\n{\n    enum { NTAPI = 3 };\n}\n",
+                "LONG (NTAPI *g)(HKEY);",
+            ),
+        ] {
+            let code = format!("{defines}{}", in_block(decl));
             assert_eq!(
                 last_occurrence_is_local_both_ways(&code, "g"),
                 Some(true),
@@ -4313,6 +4385,16 @@ mod tests {
                 "pick(MYAPI * g)(1);",
             ),
             ("#define MYAPI MYAPI\n", "pick(MYAPI * g)(1);"),
+            ("#define MYAPI /* ms */ 2\n", "pick(MYAPI * g)(1);"),
+            // A listed name the file gives another meaning is that meaning.
+            ("#define CALLBACK 2\n", "pick(CALLBACK * g)(1);"),
+            (
+                "#undef PASCAL\n#define PASCAL 100000\n",
+                "pick(PASCAL * g)(1);",
+            ),
+            ("enum { NTAPI = 3 };\n", "pick(NTAPI * g)(1);"),
+            ("", "int WINAPI = 3;\n    pick(WINAPI * g)(1);"),
+            ("", "enum { EFIAPI = 3 };\n    pick(EFIAPI * g)(1);"),
             (
                 "#define MYAPI __stdcall \\\n    + 1\n",
                 "pick(MYAPI * g)(1);",
@@ -4325,6 +4407,16 @@ mod tests {
                 "{code}"
             );
         }
+        // A comment never closed leaves the body unreadable: no convention.
+        let code = format!(
+            "{}#define MYAPI /* never closed\n",
+            with("", "pick(MYAPI * g)(1);")
+        );
+        assert_eq!(
+            last_occurrence_is_local_both_ways(&code, "g"),
+            Some(false),
+            "{code}"
+        );
     }
 
     #[test]
