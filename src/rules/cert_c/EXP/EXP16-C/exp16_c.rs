@@ -130,7 +130,18 @@ impl Exp16C {
             "while_statement",
             "parenthesized_expression",
         ];
-        for n in query::find_descendants_of_kinds(*node, &kinds) {
+        let found = query::find_descendants_of_kinds(*node, &kinds);
+        // The parenthesized expressions directly under an `if` or `while`,
+        // read from the statements down rather than from each expression up:
+        // `Node::parent` costs the node's depth.
+        let conditions: HashSet<usize> = found
+            .iter()
+            .filter(|n| matches!(n.kind(), "if_statement" | "while_statement"))
+            .flat_map(|n| n.child_nodes())
+            .filter(|c| c.kind() == "parenthesized_expression")
+            .map(|c| c.id())
+            .collect();
+        for n in found {
             match n.kind() {
                 // Check binary expressions for comparisons
                 "binary_expression" => {
@@ -152,22 +163,18 @@ impl Exp16C {
                         );
                     }
                 }
-                // Check parenthesized expressions in conditions
-                "parenthesized_expression" => {
-                    // Check if this is directly inside an if/while (the condition)
-                    if let Some(parent) = n.parent() {
-                        if parent.kind() == "if_statement" || parent.kind() == "while_statement" {
-                            // Check the inner expression
-                            for child in n.child_nodes() {
-                                if child.kind() == "identifier" {
-                                    self.check_identifier_as_condition(
-                                        &child,
-                                        source,
-                                        function_names,
-                                        violations,
-                                    );
-                                }
-                            }
+                // Check parenthesized expressions in conditions: directly
+                // inside an if/while (the condition)
+                "parenthesized_expression" if conditions.contains(&n.id()) => {
+                    // Check the inner expression
+                    for child in n.child_nodes() {
+                        if child.kind() == "identifier" {
+                            self.check_identifier_as_condition(
+                                &child,
+                                source,
+                                function_names,
+                                violations,
+                            );
                         }
                     }
                 }
@@ -351,6 +358,18 @@ impl Exp16C {
 
         let name = node.utf8_text(source.as_bytes()).unwrap_or("");
 
+        // Check against function names collected from the AST, with a
+        // fallback to well-known standard library functions. Asked first:
+        // the parent test below costs the identifier's depth.
+        const KNOWN_FUNCTIONS: &[&str] = &[
+            "getuid", "geteuid", "getgid", "getegid", "getpid", "getppid", "fork", "exit", "main",
+            "printf", "scanf", "malloc", "free", "strlen", "strcpy", "strcat", "strcmp", "memcpy",
+            "memset", "fopen", "fclose", "fread", "fwrite", "rand", "srand",
+        ];
+        if !function_names.contains(name) && !KNOWN_FUNCTIONS.contains(&name) {
+            return false;
+        }
+
         // If this identifier is being called (parent is call_expression), it's fine
         if let Some(parent) = node.parent() {
             if parent.kind() == "call_expression" {
@@ -361,19 +380,7 @@ impl Exp16C {
                 }
             }
         }
-
-        // Check against function names collected from the AST
-        if function_names.contains(name) {
-            return true;
-        }
-
-        // Fallback: well-known standard library functions
-        const KNOWN_FUNCTIONS: &[&str] = &[
-            "getuid", "geteuid", "getgid", "getegid", "getpid", "getppid", "fork", "exit", "main",
-            "printf", "scanf", "malloc", "free", "strlen", "strcpy", "strcat", "strcmp", "memcpy",
-            "memset", "fopen", "fclose", "fread", "fwrite", "rand", "srand",
-        ];
-        KNOWN_FUNCTIONS.contains(&name)
+        true
     }
 
     fn is_constant(&self, node: &Node, source: &str) -> bool {

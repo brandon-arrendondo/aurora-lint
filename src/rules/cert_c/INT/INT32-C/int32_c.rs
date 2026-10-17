@@ -169,7 +169,7 @@ impl Int32C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) -> Option<VarRangeMap> {
         let vra = self.vra_var_ranges_at(node, source);
         let mut ranges: VarRangeMap = type_map
@@ -463,6 +463,35 @@ fn quoted_expression(message: &str) -> Option<String> {
     Some(message[start + 1..end].to_string())
 }
 
+/// The `name -> type` map one function's types are asked under, with the
+/// file's environment, whose index resolves each identifier to the
+/// declaration that binds that occurrence (ADR-0006) without a descent from
+/// the root per identifier. Dereferences to the map, which every type
+/// question below also reads.
+struct FileTypes<'m, 'a> {
+    map: &'m HashMap<String, String>,
+    env: &'m TypeEnv<'a>,
+}
+
+impl std::ops::Deref for FileTypes<'_, '_> {
+    type Target = HashMap<String, String>;
+
+    fn deref(&self) -> &Self::Target {
+        self.map
+    }
+}
+
+impl FileTypes<'_, '_> {
+    /// [`ast_utils::resolve_identifier_declared_type`], through the file's
+    /// index when `ident` is in its tree.
+    fn declared_type(&self, ident: &Node, name: &str, source: &str) -> Option<String> {
+        self.env
+            .declarations()
+            .and_then(|d| d.resolve_identifier_declared_type_indexed(ident, name, source))
+            .unwrap_or_else(|| ast_utils::resolve_identifier_declared_type(ident, name, source))
+    }
+}
+
 impl Int32C {
     fn check_node(
         &self,
@@ -510,6 +539,10 @@ impl Int32C {
             // Every type asked for below is asked under `scoped_type_map`,
             // which only the enclosing function decides.
             self.memo.enter(facts.function.map(|f| f.id()));
+            let scoped_type_map = &FileTypes {
+                map: scoped_type_map,
+                env,
+            };
 
             match candidate.kind() {
                 "binary_expression" => {
@@ -604,7 +637,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         env: &TypeEnv,
         site: &AncestorFacts,
     ) {
@@ -643,7 +676,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         env: &TypeEnv,
         site: &AncestorFacts,
     ) {
@@ -678,7 +711,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         env: &TypeEnv,
         site: &AncestorFacts,
     ) {
@@ -703,7 +736,7 @@ impl Int32C {
         &self,
         node: &Node<'a>,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         root: Option<&Node<'a>>,
         scopes: Option<&ScopeDeclarations>,
     ) -> bool {
@@ -737,7 +770,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) {
         if let (Some(left), Some(right)) = (
@@ -832,7 +865,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) {
         if let (Some(left), Some(right)) = (
@@ -921,7 +954,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) {
         if let (Some(left), Some(right)) = (
@@ -1003,7 +1036,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) {
         if let (Some(left), Some(right)) = (
@@ -1079,7 +1112,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) {
         if let (Some(left), Some(right)) = (
@@ -1146,7 +1179,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) {
         if let Some(argument) = node.child_by_field_name("argument") {
@@ -1192,7 +1225,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) {
         if let (Some(left), Some(_right)) = (
@@ -1263,12 +1296,7 @@ impl Int32C {
     /// promoted LEFT operand's type and the right operand takes no part in
     /// the usual arithmetic conversions, so an unsigned shift count leaves a
     /// signed shift signed.
-    fn compound_rhs_is_unsigned(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &HashMap<String, String>,
-    ) -> bool {
+    fn compound_rhs_is_unsigned(&self, node: &Node, source: &str, type_map: &FileTypes) -> bool {
         match node.child_by_field_name("right") {
             Some(right) => self.infer_type(&right, source, type_map) == "unsigned",
             None => false,
@@ -1280,7 +1308,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) {
         if let Some(left) = node.child_by_field_name("left") {
@@ -1349,7 +1377,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) {
         if let Some(left) = node.child_by_field_name("left") {
@@ -1416,7 +1444,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) {
         if let Some(left) = node.child_by_field_name("left") {
@@ -1557,7 +1585,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) {
         if let Some(left) = node.child_by_field_name("left") {
@@ -1613,7 +1641,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) {
         if let Some(argument) = node.child_by_field_name("argument") {
@@ -1697,7 +1725,7 @@ impl Int32C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) {
         if let Some(function_node) = node.child_by_field_name("function") {
             let function_name = get_node_text(&function_node, source);
@@ -1736,7 +1764,7 @@ impl Int32C {
         source: &str,
         function_name: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) {
         // Which argument positions actually carry a size computation.
         // `realloc`'s first argument is the pointer being resized, never a
@@ -1891,7 +1919,7 @@ impl Int32C {
         source: &str,
         function_name: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) {
         // Check size arguments for arithmetic that might overflow
         let size_arg_idx: usize = match function_name {
@@ -2076,7 +2104,7 @@ impl Int32C {
         &self,
         node: &Node<'a>,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) -> Option<Node<'a>> {
         match node.kind() {
             "parenthesized_expression" => {
@@ -2242,7 +2270,7 @@ impl Int32C {
         overflow_helpers::collect_variable_types(node, source)
     }
 
-    fn infer_type(&self, node: &Node, source: &str, type_map: &HashMap<String, String>) -> String {
+    fn infer_type(&self, node: &Node, source: &str, type_map: &FileTypes) -> String {
         if let Some(t) = self.memo.get_type(node) {
             return t;
         }
@@ -2251,12 +2279,7 @@ impl Int32C {
         t
     }
 
-    fn infer_type_uncached(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &HashMap<String, String>,
-    ) -> String {
+    fn infer_type_uncached(&self, node: &Node, source: &str, type_map: &FileTypes) -> String {
         let text = get_node_text(node, source);
 
         // Check the type map FIRST — most reliable source of type info.
@@ -2268,8 +2291,7 @@ impl Int32C {
             // wpa_ie_len` of another (hostap wpa_auth.c). The
             // occurrence's own declaration is authoritative (ADR-0006); the
             // map answers only for a name this file does not declare.
-            if let Some(declared) = ast_utils::resolve_identifier_declared_type(node, text, source)
-            {
+            if let Some(declared) = type_map.declared_type(node, text, source) {
                 return self.classify_declared_type(&declared);
             }
             if let Some(declared_type) = type_map.get(text) {
@@ -2576,7 +2598,7 @@ impl Int32C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) -> String {
         let sft = self.struct_field_types.borrow();
         match crate::utility::cert_c::ast_utils::resolve_field_expression_type(
@@ -2596,7 +2618,7 @@ impl Int32C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) -> Option<String> {
         let (left, right) = (
             node.child_by_field_name("left")?,
@@ -2761,12 +2783,7 @@ impl Int32C {
     /// its LEFT operand alone, a compound assignment and `++`/`--` convert
     /// back into their destination, and a binary expression is as wide as its
     /// wider operand.
-    fn signed_arith_width_bits(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &HashMap<String, String>,
-    ) -> u32 {
+    fn signed_arith_width_bits(&self, node: &Node, source: &str, type_map: &FileTypes) -> u32 {
         let wide = |n: Option<Node>| {
             n.is_some_and(|n| self.operand_is_wide_signed(&n, source, type_map, 0))
         };
@@ -2852,7 +2869,7 @@ impl Int32C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         depth: u32,
     ) -> bool {
         if depth > OPERAND_TYPE_MAX_DEPTH {
@@ -2880,7 +2897,7 @@ impl Int32C {
             }
             "identifier" => {
                 let name = get_node_text(node, source);
-                match ast_utils::resolve_identifier_declared_type(node, name, source) {
+                match type_map.declared_type(node, name, source) {
                     Some(declared) => is_wide(&declared),
                     None => type_map.get(name).is_some_and(|t| is_wide(t)),
                 }
@@ -2930,7 +2947,7 @@ impl Int32C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) -> bool {
         self.expression_fits_in(
@@ -2957,7 +2974,7 @@ impl Int32C {
         destination_bits: u32,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) -> u32 {
         if destination_bits < self.promoted_bits() {
             return destination_bits;
@@ -2977,7 +2994,7 @@ impl Int32C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
         destination_bits: u32,
         narrow_store: bool,
@@ -3019,7 +3036,7 @@ impl Int32C {
         ranges: VarRangeMap,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         bits: u32,
     ) -> VarRangeMap {
         if bits == 0 || bits >= 64 {
@@ -3047,7 +3064,7 @@ impl Int32C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         var: &str,
         bits: u32,
     ) -> bool {
@@ -3074,7 +3091,7 @@ impl Int32C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         depth: u32,
     ) -> bool {
         if depth > OPERAND_TYPE_MAX_DEPTH {
@@ -3104,7 +3121,7 @@ impl Int32C {
             }
             "identifier" => {
                 let name = get_node_text(node, source);
-                match ast_utils::resolve_identifier_declared_type(node, name, source) {
+                match type_map.declared_type(node, name, source) {
                     Some(declared) => unsigned_type(&declared),
                     None => type_map.get(name).is_some_and(|t| unsigned_type(t)),
                 }
@@ -3126,7 +3143,7 @@ impl Int32C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         depth: u32,
     ) -> Option<u32> {
         if depth > OPERAND_TYPE_MAX_DEPTH {
@@ -3163,7 +3180,7 @@ impl Int32C {
             }
             "identifier" => {
                 let name = get_node_text(node, source);
-                match ast_utils::resolve_identifier_declared_type(node, name, source) {
+                match type_map.declared_type(node, name, source) {
                     Some(declared) => of_type(&declared),
                     None => type_map.get(name).and_then(|t| of_type(t)),
                 }
@@ -3209,7 +3226,7 @@ impl Int32C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) -> u32 {
         self.result_destination_class(node, source, type_map, site)
@@ -3228,7 +3245,7 @@ impl Int32C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) -> bool {
         matches!(
@@ -3245,7 +3262,7 @@ impl Int32C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) -> Option<String> {
         let mut child = *node;
@@ -3377,7 +3394,7 @@ impl Int32C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) -> u32 {
         let ty = |field: &str| {
@@ -3412,7 +3429,7 @@ impl Int32C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         site: &AncestorFacts,
     ) -> bool {
         // VRA-concrete-overflow channel: a provably-overflowing expression

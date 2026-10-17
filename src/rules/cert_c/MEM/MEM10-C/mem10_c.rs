@@ -41,7 +41,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::dead_regions::DeadRegions;
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declarator};
+use crate::utility::cert_c::ast_utils::{ancestors, get_node_text, resolve_identifier_declarator};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -87,19 +87,17 @@ impl CertRule for Mem10C {
 impl Mem10C {
     /// Collect the pointer parameter names of the enclosing function definition.
     /// Returns an empty set if we can't find a function definition ancestor.
+    /// The function comes from one descent ([`ancestors`]), not a `parent()`
+    /// climb, which costs the node's depth a step.
     fn collect_enclosing_params<'a>(
         &self,
         node: &Node<'a>,
         source: &str,
     ) -> std::collections::HashSet<String> {
-        let mut current = node.parent();
-        while let Some(p) = current {
-            if p.kind() == "function_definition" {
-                return self.extract_pointer_param_names(&p, source);
-            }
-            current = p.parent();
+        match ancestors(node).find(|p| p.kind() == "function_definition") {
+            Some(func) => self.extract_pointer_param_names(&func, source),
+            None => std::collections::HashSet::new(),
         }
-        std::collections::HashSet::new()
     }
 
     fn extract_pointer_param_names(

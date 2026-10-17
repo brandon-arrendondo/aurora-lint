@@ -16,7 +16,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::ast_utils::{self, ScopeDeclarations};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -35,11 +35,17 @@ impl Msc05C {
     /// (locally, as a parameter, or at file scope) with type `time_t`.
     /// Scope- and shadowing-aware: two different functions (or blocks)
     /// declaring a same-named variable of a different type are not conflated.
-    /// `ast_utils::resolve_identifier_type` chains the local/parameter/global
+    /// `ScopeDeclarations::resolve_identifier_type` chains the local/parameter/global
     /// fallback (an earlier fix item #3) that used to be hand-rolled here.
-    fn is_time_t_typed(&self, ident: &Node, source: &str) -> bool {
+    fn is_time_t_typed<'t>(
+        &self,
+        ident: &Node<'t>,
+        declarations: &ScopeDeclarations<'t>,
+        source: &str,
+    ) -> bool {
         let name = ast_utils::get_node_text(ident, source);
-        ast_utils::resolve_identifier_type(ident, name, source)
+        declarations
+            .resolve_identifier_type(ident, name, source)
             .is_some_and(|t| t.contains("time_t"))
     }
 
@@ -64,6 +70,9 @@ impl Msc05C {
     }
 
     fn traverse(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        // Every operand resolves through one index of the file, not a
+        // descent from the root each.
+        let declarations = ScopeDeclarations::indexed(*root);
         for bin in query::find_descendants_of_kind(*root, "binary_expression") {
             let Some(op) = bin.child(1) else { continue };
             let op_text = ast_utils::get_node_text(&op, source);
@@ -72,7 +81,9 @@ impl Msc05C {
             }
             for side in ["left", "right"] {
                 if let Some(operand) = bin.child_by_field_name(side) {
-                    if operand.kind() == "identifier" && self.is_time_t_typed(&operand, source) {
+                    if operand.kind() == "identifier"
+                        && self.is_time_t_typed(&operand, &declarations, source)
+                    {
                         let name = ast_utils::get_node_text(&operand, source);
                         self.flag(&bin, op_text, name, violations);
                         break;
@@ -88,7 +99,8 @@ impl Msc05C {
                 continue;
             }
             if let Some(left) = assign.child_by_field_name("left") {
-                if left.kind() == "identifier" && self.is_time_t_typed(&left, source) {
+                if left.kind() == "identifier" && self.is_time_t_typed(&left, &declarations, source)
+                {
                     let name = ast_utils::get_node_text(&left, source);
                     self.flag(&assign, op_text, name, violations);
                 }
