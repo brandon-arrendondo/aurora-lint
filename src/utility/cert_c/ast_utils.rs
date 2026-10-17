@@ -564,7 +564,7 @@ impl<'a> ScopeDeclarations<'a> {
         ancestors_from_root(root, ident_node)
     }
 
-    fn of(&self, scope: &Node<'a>) -> std::rc::Rc<[Node<'a>]> {
+    fn of(&self, scope: &Node<'a>, source: &str) -> std::rc::Rc<[Node<'a>]> {
         if let Some(known) = self.by_scope.borrow().get(&scope.id()) {
             return known.clone();
         }
@@ -573,7 +573,7 @@ impl<'a> ScopeDeclarations<'a> {
         #[cfg(test)]
         SCOPE_STATEMENT_READS.with(|n| n.set(n.get() + scope.named_child_count()));
         let mut declarations = Vec::new();
-        collect_declarations_transparent_to_preproc(scope, &mut declarations);
+        collect_declarations_transparent_to_preproc(scope, source, &mut declarations);
         let declarations: std::rc::Rc<[Node<'a>]> = declarations.into();
         self.by_scope
             .borrow_mut()
@@ -715,7 +715,7 @@ pub fn find_enclosing_declaration_where<'a>(
     let mut search_from = *ident_node;
     while let Some(scope) = query::find_ancestor(search_from, |n| is_declaration_scope(&n)) {
         let mut declarations = Vec::new();
-        collect_declarations_transparent_to_preproc(&scope, &mut declarations);
+        collect_declarations_transparent_to_preproc(&scope, source, &mut declarations);
         let best = declarations
             .into_iter()
             .filter(|child| {
@@ -774,7 +774,7 @@ fn declaration_in_scopes<'a>(
 ) -> Option<Node<'a>> {
     for scope in scopes {
         let best = declarations
-            .of(scope)
+            .of(scope, source)
             .iter()
             .copied()
             .filter(|child| {
@@ -803,7 +803,27 @@ fn declaration_in_scopes<'a>(
 /// `compound_statement` under the label is a real scope and is left to
 /// the caller's outward walk, which is why the recursion below descends
 /// through `case_statement` but never through a block.
-fn collect_declarations_transparent_to_preproc<'a>(scope: &Node<'a>, out: &mut Vec<Node<'a>>) {
+///
+/// A statement of the misparsed shapes is a candidate only when its callee
+/// could name a type: a call (`T(*x)(...)`), or a name some `typedef` in the
+/// file declares (`T (x) = init;`), since nothing else makes the second a
+/// declaration and a block of `use(buf);` calls would otherwise hand every
+/// one to each lookup of `buf`.
+fn collect_declarations_transparent_to_preproc<'a>(
+    scope: &Node<'a>,
+    source: &str,
+    out: &mut Vec<Node<'a>>,
+) {
+    let typedefs = std::cell::OnceCell::new();
+    collect_scope_declarations(scope, source, &typedefs, out);
+}
+
+fn collect_scope_declarations<'a>(
+    scope: &Node<'a>,
+    source: &str,
+    typedefs: &std::cell::OnceCell<std::rc::Rc<FileTypedefs>>,
+    out: &mut Vec<Node<'a>>,
+) {
     let condition_id = scope.child_by_field_name("condition").map(|n| n.id());
     let name_id = scope.child_by_field_name("name").map(|n| n.id());
     // A cursor, not `scope.child(i)`: tree-sitter finds the i-th child by
@@ -819,9 +839,20 @@ fn collect_declarations_transparent_to_preproc<'a>(scope: &Node<'a>, out: &mut V
             // A typedef-led function-pointer declaration tree-sitter read as
             // a call; whether it is one is `misparsed_function_pointer_
             // declaration`'s question, asked by `declaration_declarator_for`.
-            "expression_statement" if has_misparsed_declaration_shape(&child) => out.push(child),
+            "expression_statement" => {
+                let Some(callee) = misparsed_declaration_callee(&child) else {
+                    continue;
+                };
+                let may_name_a_type = callee.kind() == "call_expression"
+                    || typedefs
+                        .get_or_init(|| FileTypedefs::of(&tree_root(&child), source))
+                        .declares_typedef(get_node_text(&callee, source));
+                if may_name_a_type {
+                    out.push(child);
+                }
+            }
             "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_else" | "case_statement" => {
-                collect_declarations_transparent_to_preproc(&child, out);
+                collect_scope_declarations(&child, source, typedefs, out);
             }
             _ => {}
         }
@@ -893,14 +924,15 @@ const TYPE_KEYWORDS: &[&str] = &[
 /// [`declaration_declarator_for`] reads the whole shape ([`misparsed_parts`],
 /// [`paren_declarator_parts`]) before taking it for a declaration.
 fn has_misparsed_declaration_shape(stmt: &Node) -> bool {
-    let Some(mut expr) = stmt.named_child_nodes().find(|c| c.kind() != "comment") else {
-        return false;
-    };
+    misparsed_declaration_callee(stmt).is_some()
+}
+
+/// The callee of the call [`has_misparsed_declaration_shape`] finds: the
+/// `T(*x)` call of `T(*x)(...)`, or the name `T` of `T (x) = init;`.
+fn misparsed_declaration_callee<'a>(stmt: &Node<'a>) -> Option<Node<'a>> {
+    let mut expr = stmt.named_child_nodes().find(|c| c.kind() != "comment")?;
     if expr.kind() == "comma_expression" {
-        let Some(first) = expr.child(0) else {
-            return false;
-        };
-        expr = first;
+        expr = expr.child(0)?;
     }
     let call = match expr.kind() {
         "call_expression" => Some(expr),
@@ -910,7 +942,7 @@ fn has_misparsed_declaration_shape(stmt: &Node) -> bool {
     // A call's first child is its callee.
     call.filter(|c| c.kind() == "call_expression")
         .and_then(|c| c.child(0))
-        .is_some_and(|callee| matches!(callee.kind(), "call_expression" | "identifier"))
+        .filter(|callee| matches!(callee.kind(), "call_expression" | "identifier"))
 }
 
 /// The grammar fields [`misparsed_parts`] reads, by id: it is asked of
@@ -1182,8 +1214,11 @@ fn declarator_name<'a>(mut node: Node<'a>, fields: &MisparsedFields) -> Option<N
 /// `T` the file does not show as a typedef leaves it the call it parsed as,
 /// whatever follows: `REG(x) = v;` with a macro `REG` assigns through it,
 /// and at file scope `EXPORT_SYMBOL(f);` is a macro use, not a declaration.
+/// A function-like macro of the typedef's name makes it that macro's use
+/// (`typedef struct vec2 vec2; #define vec2(...)`).
 fn paren_declaration_declares(stmt: &Node, parts: &ParenDeclaratorParts, source: &str) -> bool {
-    typedef_in_scope(stmt, get_node_text(&parts.type_name, source), source)
+    let type_name = get_node_text(&parts.type_name, source);
+    typedef_in_scope(stmt, type_name, source) && !defines_function_like_macro(source, type_name)
 }
 
 /// Whether `call`, a `call_expression`, is the typedef name and declarator
@@ -1332,6 +1367,34 @@ fn object_macro_definitions<'s>(
     source: &'s str,
     name: &str,
 ) -> Vec<Option<pp_tokens::DefineDirective<'s>>> {
+    macro_definitions_named(source, name)
+        .into_iter()
+        .filter(|(_, define)| define.params.is_none())
+        .map(|(directive, define)| {
+            let unclosed = directive
+                .rfind("/*")
+                .is_some_and(|open| !directive[open..].contains("*/"));
+            (!unclosed).then_some(define)
+        })
+        .collect()
+}
+
+/// Whether `source` defines `name` as a function-like macro, in any arm:
+/// then `name (x);` is that macro's use wherever the definition reaches,
+/// whatever a typedef of the name says, since the preprocessor expands it
+/// before any declaration is read.
+fn defines_function_like_macro(source: &str, name: &str) -> bool {
+    macro_definitions_named(source, name)
+        .iter()
+        .any(|(_, define)| define.params.is_some())
+}
+
+/// Every `#define name` in `source`, with the text of its whole directive,
+/// read by the preprocessor's own lexing ([`pp_tokens::parse_define_directive`]).
+fn macro_definitions_named<'s>(
+    source: &'s str,
+    name: &str,
+) -> Vec<(&'s str, pp_tokens::DefineDirective<'s>)> {
     // Lexing the file is the cost; a file whose directives never name
     // `name` has nothing to lex for.
     let named = source.lines().any(|line| {
@@ -1345,14 +1408,10 @@ fn object_macro_definitions<'s>(
         .filter_map(|at| {
             let text = source.get(at..)?;
             let define = pp_tokens::parse_define_directive(text)?;
-            if define.name != name || define.params.is_some() {
+            if define.name != name {
                 return None;
             }
-            let directive = text.get(..pp_tokens::directive_end(text))?;
-            let unclosed = directive
-                .rfind("/*")
-                .is_some_and(|open| !directive[open..].contains("*/"));
-            Some((!unclosed).then_some(define))
+            Some((text.get(..pp_tokens::directive_end(text))?, define))
         })
         .collect()
 }
@@ -1528,12 +1587,13 @@ fn typedef_in_scope(node: &Node, name: &str, source: &str) -> bool {
 }
 
 /// The work [`typedef_in_scope`] did on this thread: [`FileTypedefs`]
-/// built, scopes and bindings stepped through, and misparsed statements
-/// read. Tests bound these counts rather than the time they take, so the
+/// looked up and built, scopes and bindings stepped through, and misparsed
+/// statements read. Tests bound these counts rather than the time they take, so the
 /// bound holds on any machine and a per-lookup rebuild or scan still fails.
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, Default)]
 struct TypedefWork {
+    lookups: usize,
     builds: usize,
     steps: usize,
     misparsed_reads: usize,
@@ -1542,7 +1602,7 @@ struct TypedefWork {
 #[cfg(test)]
 thread_local! {
     static TYPEDEF_WORK: std::cell::Cell<TypedefWork> = const {
-        std::cell::Cell::new(TypedefWork { builds: 0, steps: 0, misparsed_reads: 0 })
+        std::cell::Cell::new(TypedefWork { lookups: 0, builds: 0, steps: 0, misparsed_reads: 0 })
     };
 }
 
@@ -1618,6 +1678,8 @@ impl FileTypedefs {
     /// compared whole: a reparse, or another file, can reuse the address of
     /// the text or the tree a kept entry was built from.
     fn of(root: &Node, source: &str) -> std::rc::Rc<FileTypedefs> {
+        #[cfg(test)]
+        count_typedef_work(|w| w.lookups += 1);
         if let Some(found) = FILE_TYPEDEFS.with(|kept| {
             kept.borrow()
                 .iter()
@@ -1747,6 +1809,11 @@ impl FileTypedefs {
             bindings,
             misparsed: Default::default(),
         }
+    }
+
+    /// Whether some `typedef` in the file declares `name`.
+    fn declares_typedef(&self, name: &str) -> bool {
+        self.bindings.contains_key(name)
     }
 
     /// Whether the `Misparsed` binding's statement is a declaration. It only
@@ -4586,6 +4653,12 @@ mod tests {
                 "typedef struct s *T;\ntypedef int reg;\n",
                 "T (reg) = 0;\n    reg(x) = 1;",
             ),
+            // A function-like macro of the typedef's name is what runs.
+            ("typedef int reg;\n#define reg(v) log_it(v)\n", "reg (x);"),
+            (
+                "typedef int reg;\n#ifdef TRACE\n#define reg(v) log_it(v)\n#endif\n",
+                "reg (x) = 1;",
+            ),
         ] {
             let code = with(defines, stmt);
             assert_eq!(
@@ -4777,6 +4850,34 @@ mod tests {
             }
         }
         (locals, TYPEDEF_WORK.with(|w| w.get()))
+    }
+
+    #[test]
+    fn a_name_passed_to_calls_is_resolved_without_asking_about_each_call() {
+        // `use(buf);` has the parenthesized-declarator shape, but no typedef
+        // declares `use`: a lookup of `buf` does not ask the file's typedef
+        // index about every such statement before it.
+        let work = |n: usize| {
+            let code = format!(
+                "typedef int conn_p;\nvoid use(char *);\nvoid f(char *buf)\n{{\n{}}}\n",
+                "    use(buf);\n".repeat(n)
+            );
+            FILE_TYPEDEFS.with(|kept| kept.borrow_mut().clear());
+            TYPEDEF_WORK.with(|w| w.set(TypedefWork::default()));
+            let (tree, src) = parse_c_code(&code);
+            for buf in query::find_descendants_of_kind(tree.root_node(), "identifier")
+                .into_iter()
+                .filter(|n| get_node_text(n, &src) == "buf")
+            {
+                assert!(matches!(
+                    resolve_identifier_binding(&buf, "buf", &src),
+                    Some(IdentifierBinding::Parameter(_))
+                ));
+            }
+            TYPEDEF_WORK.with(|w| w.get())
+        };
+        let (small, large) = (work(100), work(200));
+        assert!(large.lookups <= 2 * small.lookups, "{small:?} {large:?}");
     }
 
     /// The typedef work for 2N of a shape is at most twice that for N: one
