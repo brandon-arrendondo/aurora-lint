@@ -782,24 +782,20 @@ fn path_ends_at(cfg: &FunctionCfg, block_id: usize) -> bool {
     cfg.successors(block_id).is_empty()
 }
 
-/// A global, or a block-scope `static`/`extern` declaration.
+/// A global, or a block-scope `static`/`extern` declaration. Resolved from
+/// the tree's root and placed by one descent, since a `parent()` climb costs
+/// the node's depth a step.
 fn identifier_outlives_function(ident: &Node, source: &str) -> bool {
     let name = get_node_text(ident, source);
-    let Some((decl, _)) = ast_utils::resolve_identifier_declarator(ident, name, source) else {
+    let root = ast_utils::tree_root(ident);
+    let Some((decl, _)) = ast_utils::resolve_identifier_declarator_in(&root, ident, name, source)
+    else {
         return false;
     };
     if decl.kind() != "declaration" {
         return false; // a parameter is the callee's own copy
     }
-    let mut inside_function = false;
-    let mut current = decl.parent();
-    while let Some(n) = current {
-        if n.kind() == "function_definition" {
-            inside_function = true;
-            break;
-        }
-        current = n.parent();
-    }
+    let inside_function = ast_utils::ancestors(&decl).any(|n| n.kind() == "function_definition");
     !inside_function
         || ["static", "extern", "_Thread_local", "thread_local"]
             .iter()

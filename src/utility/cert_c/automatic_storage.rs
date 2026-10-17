@@ -14,13 +14,17 @@
 //! automatic: the parser respells the keyword as `thread_local`, which the
 //! grammar reads as a storage class.
 //!
+//! Each question takes the caller's [`ScopeDeclarations`], so a caller that
+//! asks of every expression of a file resolves through one index of it
+//! ([`ScopeDeclarations::indexed`]) rather than a descent per name.
+//!
 //! Known misses, none reported: an array member of a local structure named
 //! as a value (`return s.a;`, which decays to an address in `s`), storage
 //! from `alloca`, and `&x` handed to a callee that stores it.
 
 use crate::utility::cert_c::ast_utils::{
-    declaration_has_storage_class, declaration_is_thread_local, get_node_text,
-    resolve_identifier_binding, resolve_identifier_declarator, IdentifierBinding,
+    ancestors, declaration_has_storage_class, declaration_is_thread_local, get_node_text,
+    IdentifierBinding, ScopeDeclarations,
 };
 use crate::utility::cert_c::guard_dominance::{dominating_assignment, WriteIndex};
 use tree_sitter::Node;
@@ -59,10 +63,14 @@ const MAX_COPY_HOPS: usize = 4;
 /// literal in a function body. `None` for static, thread or allocated
 /// storage, and for anything reached through a pointer (`p->m`, `*p`,
 /// `p[i]`, or `s.m[i]`, whose member may be a pointer).
-pub fn automatic_object<'a>(lvalue: &Node<'a>, source: &str) -> Option<AutomaticObject<'a>> {
+pub fn automatic_object<'a>(
+    lvalue: &Node<'a>,
+    scopes: &ScopeDeclarations<'a>,
+    source: &str,
+) -> Option<AutomaticObject<'a>> {
     let lvalue = strip_parens(*lvalue);
     match lvalue.kind() {
-        "identifier" => automatic_variable(&lvalue, source),
+        "identifier" => automatic_variable(&lvalue, scopes, source),
         "field_expression" => {
             let through_pointer = lvalue
                 .child_by_field_name("operator")
@@ -70,7 +78,7 @@ pub fn automatic_object<'a>(lvalue: &Node<'a>, source: &str) -> Option<Automatic
             if through_pointer {
                 return None;
             }
-            automatic_object(&lvalue.child_by_field_name("argument")?, source)
+            automatic_object(&lvalue.child_by_field_name("argument")?, scopes, source)
         }
         "subscript_expression" => {
             let (root, depth) = subscript_root(lvalue);
@@ -78,7 +86,7 @@ pub fn automatic_object<'a>(lvalue: &Node<'a>, source: &str) -> Option<Automatic
             if root.kind() != "identifier" {
                 return None;
             }
-            let object = automatic_variable(&root, source)?;
+            let object = automatic_variable(&root, scopes, source)?;
             (object.kind == AutomaticKind::Local && array_rank(&object.node) >= depth)
                 .then_some(object)
         }
@@ -97,10 +105,14 @@ pub fn automatic_object<'a>(lvalue: &Node<'a>, source: &str) -> Option<Automatic
 /// - either arm of a conditional, and the last operand of a comma.
 ///
 /// A pointer variable's own value is [`pointer_value_origin`]'s question.
-pub fn automatic_address<'a>(expr: &Node<'a>, source: &str) -> Option<AutomaticObject<'a>> {
+pub fn automatic_address<'a>(
+    expr: &Node<'a>,
+    scopes: &ScopeDeclarations<'a>,
+    source: &str,
+) -> Option<AutomaticObject<'a>> {
     let expr = strip_parens_and_casts(*expr);
     match expr.kind() {
-        "identifier" => automatic_variable(&expr, source)
+        "identifier" => automatic_variable(&expr, scopes, source)
             .filter(|o| o.kind == AutomaticKind::Local && array_rank(&o.node) > 0),
         "pointer_expression" => {
             let address_of = expr
@@ -109,15 +121,15 @@ pub fn automatic_address<'a>(expr: &Node<'a>, source: &str) -> Option<AutomaticO
             if !address_of {
                 return None;
             }
-            automatic_object(&expr.child_by_field_name("argument")?, source)
+            automatic_object(&expr.child_by_field_name("argument")?, scopes, source)
         }
         "binary_expression" => {
             let op = expr.child_by_field_name("operator")?;
             let left = expr.child_by_field_name("left")?;
             let right = expr.child_by_field_name("right")?;
             let (l, r) = (
-                automatic_address(&left, source),
-                automatic_address(&right, source),
+                automatic_address(&left, scopes, source),
+                automatic_address(&right, scopes, source),
             );
             match get_node_text(&op, source) {
                 // Two addresses added are not C; an address and an integer
@@ -134,11 +146,13 @@ pub fn automatic_address<'a>(expr: &Node<'a>, source: &str) -> Option<AutomaticO
         "conditional_expression" => {
             let arm = |field| {
                 expr.child_by_field_name(field)
-                    .and_then(|a| automatic_address(&a, source))
+                    .and_then(|a| automatic_address(&a, scopes, source))
             };
             arm("consequence").or_else(|| arm("alternative"))
         }
-        "comma_expression" => automatic_address(&expr.child_by_field_name("right")?, source),
+        "comma_expression" => {
+            automatic_address(&expr.child_by_field_name("right")?, scopes, source)
+        }
         "compound_literal_expression" => {
             let is_array = expr
                 .child_by_field_name("type")
@@ -164,6 +178,7 @@ pub fn automatic_address<'a>(expr: &Node<'a>, source: &str) -> Option<AutomaticO
 pub fn pointer_value_origin<'a>(
     ident: &Node<'a>,
     site: &Node<'a>,
+    scopes: &ScopeDeclarations<'a>,
     source: &str,
     index: &WriteIndex,
 ) -> Option<AutomaticObject<'a>> {
@@ -176,7 +191,7 @@ pub fn pointer_value_origin<'a>(
         let name = get_node_text(&ident, source);
         // Only a variable of this frame has a value the body decides; a
         // file-scope or static one may have been written by anyone.
-        let binding = resolve_identifier_binding(&ident, name, source)?;
+        let binding = scopes.resolve_identifier_binding(&ident, name, source)?;
         match binding {
             IdentifierBinding::Parameter(_) => {}
             IdentifierBinding::Local(decl) => {
@@ -189,7 +204,7 @@ pub fn pointer_value_origin<'a>(
             IdentifierBinding::Global(_) => return None,
         }
         let write = dominating_assignment(name, &site, source, index)?;
-        if let Some(object) = automatic_address(&write.value, source) {
+        if let Some(object) = automatic_address(&write.value, scopes, source) {
             return Some(object);
         }
         ident = strip_parens_and_casts(write.value);
@@ -201,24 +216,32 @@ pub fn pointer_value_origin<'a>(
 /// Whether `ident` names an array object here, so that indexing it stays
 /// inside the array's own storage: an array declarator that is not a
 /// parameter's (an array parameter is a pointer). Any storage duration.
-pub fn names_array_object(ident: &Node, source: &str) -> bool {
+pub fn names_array_object<'a>(
+    ident: &Node<'a>,
+    scopes: &ScopeDeclarations<'a>,
+    source: &str,
+) -> bool {
     let name = get_node_text(ident, source);
-    let Some((_, declarator)) = resolve_identifier_declarator(ident, name, source) else {
+    let Some((_, declarator)) = scopes.resolve_identifier_declarator(ident, name, source) else {
         return false;
     };
     array_rank(&declarator) > 0
         && !matches!(
-            resolve_identifier_binding(ident, name, source),
+            scopes.resolve_identifier_binding(ident, name, source),
             Some(IdentifierBinding::Parameter(_))
         )
 }
 
 /// The automatic variable or parameter `ident` names, by the declaration
 /// that binds it here.
-fn automatic_variable<'a>(ident: &Node<'a>, source: &str) -> Option<AutomaticObject<'a>> {
+fn automatic_variable<'a>(
+    ident: &Node<'a>,
+    scopes: &ScopeDeclarations<'a>,
+    source: &str,
+) -> Option<AutomaticObject<'a>> {
     let name = get_node_text(ident, source);
-    let binding = resolve_identifier_binding(ident, name, source)?;
-    let (decl, declarator) = resolve_identifier_declarator(ident, name, source)?;
+    let binding = scopes.resolve_identifier_binding(ident, name, source)?;
+    let (decl, declarator) = scopes.resolve_identifier_declarator(ident, name, source)?;
     if has_kind(&declarator, "function_declarator") {
         return None;
     }
@@ -241,20 +264,16 @@ fn automatic_variable<'a>(ident: &Node<'a>, source: &str) -> Option<AutomaticObj
 }
 
 /// A compound literal inside a function body. At file scope one has
-/// static storage duration.
+/// static storage duration. The function is found by one descent
+/// ([`ancestors`]), not a `parent()` climb.
 fn compound_literal<'a>(literal: &Node<'a>, source: &str) -> Option<AutomaticObject<'a>> {
-    let mut parent = literal.parent();
-    while let Some(p) = parent {
-        if p.kind() == "function_definition" {
-            return Some(AutomaticObject {
-                name: get_node_text(literal, source).to_string(),
-                node: *literal,
-                kind: AutomaticKind::CompoundLiteral,
-            });
-        }
-        parent = p.parent();
-    }
-    None
+    ancestors(literal)
+        .any(|p| p.kind() == "function_definition")
+        .then(|| AutomaticObject {
+            name: get_node_text(literal, source).to_string(),
+            node: *literal,
+            kind: AutomaticKind::CompoundLiteral,
+        })
 }
 
 /// The expression a chain of subscripts indexes, and how many subscripts
@@ -354,7 +373,8 @@ mod tests {
             .iter()
             .map(|r| {
                 let e = r.named_child(0).unwrap();
-                automatic_address(&e, source).map(|o| (o.name, o.kind))
+                automatic_address(&e, &ScopeDeclarations::default(), source)
+                    .map(|o| (o.name, o.kind))
             })
             .collect()
     }
@@ -441,7 +461,7 @@ mod tests {
         let tree = parse(src);
         let lit =
             query::find_descendants_of_kind(tree.root_node(), "compound_literal_expression")[0];
-        assert!(automatic_object(&lit, src).is_none());
+        assert!(automatic_object(&lit, &ScopeDeclarations::default(), src).is_none());
     }
 
     /// `pointer_value_origin` of each returned identifier.
@@ -453,7 +473,8 @@ mod tests {
             let index = WriteIndex::new(&body, source);
             for r in query::find_descendants_of_kind(body, "return_statement") {
                 let e = r.named_child(0).unwrap();
-                out.push(pointer_value_origin(&e, &r, source, &index).map(|o| o.name));
+                let scopes = ScopeDeclarations::default();
+                out.push(pointer_value_origin(&e, &r, &scopes, source, &index).map(|o| o.name));
             }
         }
         out

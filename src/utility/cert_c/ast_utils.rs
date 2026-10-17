@@ -538,6 +538,16 @@ impl<'a> ScopeDeclarations<'a> {
         Some(self.resolve_identifier_declarator_in(&root, &ident, name, source))
     }
 
+    /// The index of the tree this value was built for with
+    /// [`ScopeDeclarations::indexed`] or [`ScopeDeclarations::over`], built
+    /// now if no resolution has built it yet: the tree's nodes and their
+    /// parents, for a caller that also steps up the tree. `None` for a value
+    /// with no root.
+    pub fn nodes(&self) -> Option<&NodeIndex<'a>> {
+        let root = self.indexed_root?;
+        Some(&self.scope_index(root).nodes)
+    }
+
     fn scope_index(&self, root: Node<'a>) -> &ScopeIndex<'a> {
         self.index
             .get_or_init(|| std::rc::Rc::new(ScopeIndex::new(root)))
@@ -634,6 +644,71 @@ impl<'a> ScopeDeclarations<'a> {
             return resolve_identifier_declarator_climbing(ident_node, name, source);
         };
         declarator_on_path(root, &path, ident_node, name, source, self)
+    }
+
+    /// [`resolve_identifier_binding`] through this value: from the root of
+    /// `ident_node`'s own tree, so through the index when this value was
+    /// built over that tree, and the same answer either way.
+    pub fn resolve_identifier_binding(
+        &self,
+        ident_node: &Node<'a>,
+        name: &str,
+        source: &str,
+    ) -> Option<IdentifierBinding<'a>> {
+        self.resolve_identifier_binding_in(&tree_root(ident_node), ident_node, name, source)
+    }
+
+    /// [`resolve_identifier_declarator`] through this value; see
+    /// [`ScopeDeclarations::resolve_identifier_binding`].
+    pub fn resolve_identifier_declarator(
+        &self,
+        ident_node: &Node<'a>,
+        name: &str,
+        source: &str,
+    ) -> Option<(Node<'a>, Node<'a>)> {
+        self.resolve_identifier_declarator_in(&tree_root(ident_node), ident_node, name, source)
+    }
+
+    /// [`resolve_identifier_type`] through this value; see
+    /// [`ScopeDeclarations::resolve_identifier_binding`].
+    pub fn resolve_identifier_type(
+        &self,
+        ident_node: &Node<'a>,
+        name: &str,
+        source: &str,
+    ) -> Option<String> {
+        binding_type_text(
+            self.resolve_identifier_binding(ident_node, name, source)?,
+            source,
+        )
+    }
+
+    /// [`resolve_identifier_declared_type`] through this value; see
+    /// [`ScopeDeclarations::resolve_identifier_binding`].
+    pub fn resolve_identifier_declared_type(
+        &self,
+        ident_node: &Node<'a>,
+        name: &str,
+        source: &str,
+    ) -> Option<String> {
+        let (decl, declarator) = self.resolve_identifier_declarator(ident_node, name, source)?;
+        declared_type_of(&decl, declarator, source)
+    }
+
+    /// [`resolve_identifier_declared_type`] by
+    /// [`ScopeDeclarations::resolve_identifier_declarator_indexed`], for an
+    /// occurrence of any lifetime: `None` when this value has no index or
+    /// `ident_node` is not in its tree, `Some(None)` when it resolves to no
+    /// declared type.
+    #[allow(clippy::option_option)]
+    pub fn resolve_identifier_declared_type_indexed(
+        &self,
+        ident_node: &Node,
+        name: &str,
+        source: &str,
+    ) -> Option<Option<String>> {
+        let resolved = self.resolve_identifier_declarator_indexed(ident_node, name, source)?;
+        Some(resolved.and_then(|(decl, declarator)| declared_type_of(&decl, declarator, source)))
     }
 }
 
@@ -1874,7 +1949,15 @@ pub fn is_address_of_expression(node: &Node, source: &str) -> bool {
 /// Convenience wrapper over [`resolve_identifier_binding`] for callers that
 /// only need the resolved type text, not the binding site itself.
 pub fn resolve_identifier_type(ident_node: &Node, name: &str, source: &str) -> Option<String> {
-    match resolve_identifier_binding(ident_node, name, source)? {
+    binding_type_text(
+        resolve_identifier_binding(ident_node, name, source)?,
+        source,
+    )
+}
+
+/// The type text a binding declares.
+fn binding_type_text(binding: IdentifierBinding, source: &str) -> Option<String> {
+    match binding {
         IdentifierBinding::Local(decl) | IdentifierBinding::Global(decl) => {
             Some(declaration_type_text(&decl, source))
         }

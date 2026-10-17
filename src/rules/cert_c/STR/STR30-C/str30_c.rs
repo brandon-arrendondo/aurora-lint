@@ -252,6 +252,9 @@ struct Trace<'a> {
     /// answer, and is remembered nowhere.
     provisional: Cell<usize>,
     root: Node<'a>,
+    /// Every name the trace resolves and every step it takes up the tree,
+    /// through one index of the file: `Node::parent` costs the node's depth.
+    declarations: ast_utils::ScopeDeclarations<'a>,
 }
 
 /// A function answer: which of [`Trace::param_written`],
@@ -272,6 +275,23 @@ struct Answers {
 }
 
 impl<'a> Trace<'a> {
+    /// `node`'s parent, from the file's index.
+    fn parent(&self, node: &Node<'a>) -> Option<Node<'a>> {
+        match self.declarations.nodes() {
+            Some(tree) => tree.parent_or_climb(node),
+            None => node.parent(),
+        }
+    }
+
+    /// `node`'s ancestors, innermost first: the nodes a `parent()` climb
+    /// visits, from the file's index at constant cost a step.
+    fn ancestors<'n>(&'n self, node: &Node<'a>) -> Box<dyn Iterator<Item = Node<'a>> + 'n> {
+        match self.declarations.nodes() {
+            Some(tree) => tree.ancestors_or_climb(node),
+            None => Box::new(std::iter::successors(node.parent(), |n| n.parent())),
+        }
+    }
+
     fn new(root: Node<'a>, source: &'a str) -> Self {
         let mut functions = HashMap::new();
         let mut stack = vec![root];
@@ -304,6 +324,7 @@ impl<'a> Trace<'a> {
             computing: RefCell::default(),
             provisional: Cell::new(usize::MAX),
             root,
+            declarations: ast_utils::ScopeDeclarations::indexed(root),
         }
     }
 
@@ -606,18 +627,22 @@ impl<'a> Trace<'a> {
         }
         let name = get_node_text(array, self.source);
         let Some((decl, declarator)) =
-            ast_utils::resolve_identifier_declarator(array, name, self.source)
+            self.declarations
+                .resolve_identifier_declarator(array, name, self.source)
         else {
             return false;
         };
         let scope = Self::scope_of(&decl);
-        let same_array = |b: &Node| {
+        let same_array = |b: &Node<'a>| {
             b.kind() == "identifier"
                 && get_node_text(b, self.source) == name
-                && ast_utils::resolve_identifier_declarator(b, name, self.source)
+                && self
+                    .declarations
+                    .resolve_identifier_declarator(b, name, self.source)
                     .is_some_and(|(_, d)| d.id() == declarator.id())
         };
-        let loops: Vec<Node<'a>> = std::iter::successors(at.parent(), |n| n.parent())
+        let loops: Vec<Node<'a>> = self
+            .ancestors(at)
             .take_while(|n| n.kind() != "function_definition")
             .filter(|n| {
                 matches!(
@@ -633,7 +658,7 @@ impl<'a> Trace<'a> {
             let escapes = query::find_first_descendant(scope, |n| {
                 let before_or_looping =
                     n.start_byte() < at.start_byte() || loops.iter().any(|l| inside(l, &n));
-                let as_value = n.parent().is_some_and(|p| {
+                let as_value = self.parent(&n).is_some_and(|p| {
                     let base_of_subscript = p.kind() == "subscript_expression"
                         && p.child_by_field_name("argument")
                             .is_some_and(|a| a.id() == n.id());
@@ -680,7 +705,7 @@ impl<'a> Trace<'a> {
                     .filter(|(_, _, exact)| *exact)
                     .map(|(a, v, _)| (*a, *v))
                     .collect();
-                Self::last_sure_assignment(&exact, at, self.source)
+                self.last_sure_assignment(&exact, at, self.source)
             }
             _ => None,
         };
@@ -690,7 +715,7 @@ impl<'a> Trace<'a> {
                 // A global: flow-insensitive.
                 None => true,
                 Some(_) if a.start_byte() < at.start_byte() => {
-                    a.start_byte() >= from && !Self::on_another_path(a, at, sure)
+                    a.start_byte() >= from && !self.on_another_path(a, at, sure)
                 }
                 Some(_) => loops
                     .iter()
@@ -704,7 +729,7 @@ impl<'a> Trace<'a> {
         if sure.is_some() {
             return false;
         }
-        let Some(init) = Self::initializer_of(&declarator) else {
+        let Some(init) = self.initializer_of(&declarator) else {
             return false;
         };
         if init.kind() != "initializer_list" {
@@ -772,7 +797,8 @@ impl<'a> Trace<'a> {
         };
         let name = get_node_text(&object, self.source);
         let Some((decl, declarator)) =
-            ast_utils::resolve_identifier_declarator(&object, name, self.source)
+            self.declarations
+                .resolve_identifier_declarator(&object, name, self.source)
         else {
             return false;
         };
@@ -780,8 +806,9 @@ impl<'a> Trace<'a> {
         if seed.param.is_none() && members.iter().any(|(m, is_const)| *m == field && *is_const) {
             return true;
         }
-        let Some(init) =
-            Self::initializer_of(&declarator).filter(|i| i.kind() == "initializer_list")
+        let Some(init) = self
+            .initializer_of(&declarator)
+            .filter(|i| i.kind() == "initializer_list")
         else {
             return false;
         };
@@ -963,7 +990,8 @@ impl<'a> Trace<'a> {
     fn variable_derived(&self, ident: &Node<'a>, at: &Node<'a>, seed: Seed, depth: u32) -> bool {
         let name = get_node_text(ident, self.source);
         let Some((decl, declarator)) =
-            ast_utils::resolve_identifier_declarator(ident, name, self.source)
+            self.declarations
+                .resolve_identifier_declarator(ident, name, self.source)
         else {
             return false;
         };
@@ -1061,12 +1089,13 @@ impl<'a> Trace<'a> {
     fn reaching_values(&self, ident: &Node<'a>, at: &Node<'a>) -> Vec<Node<'a>> {
         let name = get_node_text(ident, self.source);
         let Some((decl, declarator)) =
-            ast_utils::resolve_identifier_declarator(ident, name, self.source)
+            self.declarations
+                .resolve_identifier_declarator(ident, name, self.source)
         else {
             return Vec::new();
         };
         let candidates = self.assignments_to(&decl, &declarator, name);
-        let init = Self::initializer_of(&declarator);
+        let init = self.initializer_of(&declarator);
         let Some(scope) = Self::scope_of(&decl) else {
             // A global: flow-insensitive.
             return init
@@ -1075,9 +1104,10 @@ impl<'a> Trace<'a> {
                 .collect();
         };
 
-        let sure = Self::last_sure_assignment(&candidates, at, self.source);
+        let sure = self.last_sure_assignment(&candidates, at, self.source);
         let from = sure.map_or(scope.start_byte(), |a| a.start_byte());
-        let loops: Vec<Node<'a>> = std::iter::successors(at.parent(), |n| n.parent())
+        let loops: Vec<Node<'a>> = self
+            .ancestors(at)
             .take_while(|n| n.kind() != "function_definition")
             .filter(|n| {
                 matches!(
@@ -1096,7 +1126,7 @@ impl<'a> Trace<'a> {
             .iter()
             .filter(|(a, _)| {
                 if a.start_byte() < at.start_byte() {
-                    a.start_byte() >= from && !Self::on_another_path(a, at, sure)
+                    a.start_byte() >= from && !self.on_another_path(a, at, sure)
                 } else {
                     loops
                         .iter()
@@ -1142,7 +1172,8 @@ impl<'a> Trace<'a> {
                 && n.child_by_field_name("argument")
                     .filter(|v| v.kind() == "identifier" && get_node_text(v, self.source) == name)
                     .is_some_and(|v| {
-                        ast_utils::resolve_identifier_declarator(&v, name, self.source)
+                        self.declarations
+                            .resolve_identifier_declarator(&v, name, self.source)
                             .is_some_and(|(_, d)| d.id() == declarator.id())
                     });
             if !(before_or_looping && is_address) {
@@ -1161,8 +1192,8 @@ impl<'a> Trace<'a> {
     /// incremented, or itself having its address taken -- so no write
     /// reaches `p` through it.
     fn read_only_alias(&self, address: &Node<'a>) -> bool {
-        let Some(mut alias) = address
-            .parent()
+        let Some(mut alias) = self
+            .parent(address)
             .filter(|p| p.kind() == "init_declarator")
             .and_then(|p| p.child_by_field_name("declarator"))
             .filter(|d| d.kind() == "pointer_declarator")
@@ -1182,8 +1213,8 @@ impl<'a> Trace<'a> {
         let Some(func) = ast_utils::find_containing_function(address) else {
             return false;
         };
-        let written = |n: &Node| {
-            n.parent().is_some_and(|p| {
+        let written = |n: &Node<'a>| {
+            self.parent(n).is_some_and(|p| {
                 (p.kind() == "assignment_expression"
                     && p.child_by_field_name("left")
                         .is_some_and(|l| l.id() == n.id()))
@@ -1197,7 +1228,7 @@ impl<'a> Trace<'a> {
             .into_iter()
             .filter(|n| n.id() != alias.id() && get_node_text(n, self.source) == alias_name)
             .all(|n| {
-                let Some(parent) = n.parent() else {
+                let Some(parent) = self.parent(&n) else {
                     return false;
                 };
                 let through = match parent.kind() {
@@ -1218,12 +1249,14 @@ impl<'a> Trace<'a> {
     fn reassigned_on_every_path(&self, ident: &Node<'a>, at: &Node<'a>) -> bool {
         let name = get_node_text(ident, self.source);
         let Some((decl, declarator)) =
-            ast_utils::resolve_identifier_declarator(ident, name, self.source)
+            self.declarations
+                .resolve_identifier_declarator(ident, name, self.source)
         else {
             return false;
         };
         let candidates = self.assignments_to(&decl, &declarator, name);
-        Self::last_sure_assignment(&candidates, at, self.source).is_some()
+        self.last_sure_assignment(&candidates, at, self.source)
+            .is_some()
     }
 
     /// The last statement before `at` that assigns the variable on every
@@ -1233,20 +1266,25 @@ impl<'a> Trace<'a> {
     /// stretch before `at` (`nonzero_facts::region_entered_by_jump`): then
     /// there is none.
     fn last_sure_assignment(
+        &self,
         candidates: &[(Node<'a>, Node<'a>)],
         at: &Node<'a>,
         source: &str,
     ) -> Option<Node<'a>> {
-        let sure = Self::last_sure_statement(candidates, at)?;
+        let sure = self.last_sure_statement(candidates, at)?;
         let func = ast_utils::find_containing_function(at)?;
         (!nonzero_facts::region_entered_by_jump(&func, sure.end_byte(), at.start_byte(), source))
             .then_some(sure)
     }
 
     /// [`Self::last_sure_assignment`] before jumps are considered.
-    fn last_sure_statement(candidates: &[(Node<'a>, Node<'a>)], at: &Node<'a>) -> Option<Node<'a>> {
+    fn last_sure_statement(
+        &self,
+        candidates: &[(Node<'a>, Node<'a>)],
+        at: &Node<'a>,
+    ) -> Option<Node<'a>> {
         let mut current = *at;
-        while let Some(parent) = current.parent() {
+        while let Some(parent) = self.parent(&current) {
             if parent.kind() == "function_definition" {
                 return None;
             }
@@ -1258,7 +1296,7 @@ impl<'a> Trace<'a> {
                 if let Some(stmt) = preceding
                     .iter()
                     .rev()
-                    .find(|stmt| Self::assigns_on_every_path(stmt, candidates))
+                    .find(|stmt| self.assigns_on_every_path(stmt, candidates))
                 {
                     return Some(*stmt);
                 }
@@ -1273,13 +1311,13 @@ impl<'a> Trace<'a> {
     /// `switch` where `a`'s case does not fall through. A loop around that
     /// construct still carries `a` round to `at`, unless `sure` (the last
     /// assignment on every path to `at`) is inside that loop.
-    fn on_another_path(a: &Node<'a>, at: &Node<'a>, sure: Option<Node<'a>>) -> bool {
+    fn on_another_path(&self, a: &Node<'a>, at: &Node<'a>, sure: Option<Node<'a>>) -> bool {
         let inside = |outer: &Node, inner: &Node| {
             inner.start_byte() >= outer.start_byte() && inner.end_byte() <= outer.end_byte()
         };
         let mut construct = None;
         let mut current = *a;
-        while let Some(parent) = current.parent() {
+        while let Some(parent) = self.parent(&current) {
             if parent.kind() == "function_definition" {
                 break;
             }
@@ -1314,7 +1352,8 @@ impl<'a> Trace<'a> {
         let Some(construct) = construct else {
             return false;
         };
-        let innermost_loop = std::iter::successors(construct.parent(), |n| n.parent())
+        let innermost_loop = self
+            .ancestors(&construct)
             .take_while(|n| n.kind() != "function_definition")
             .find(|n| {
                 matches!(
@@ -1333,11 +1372,11 @@ impl<'a> Trace<'a> {
     /// a link of a chain, `p = q = v;`, or of a comma expression), a block
     /// with such a statement, or an `if`/`else` each of whose arms makes one
     /// or always leaves.
-    fn assigns_on_every_path(stmt: &Node<'a>, candidates: &[(Node<'a>, Node<'a>)]) -> bool {
+    fn assigns_on_every_path(&self, stmt: &Node<'a>, candidates: &[(Node<'a>, Node<'a>)]) -> bool {
         match stmt.kind() {
             "expression_statement" => candidates.iter().any(|(a, _)| {
                 let mut n = *a;
-                while let Some(parent) = n.parent() {
+                while let Some(parent) = self.parent(&n) {
                     if parent.id() == stmt.id() {
                         return true;
                     }
@@ -1353,7 +1392,7 @@ impl<'a> Trace<'a> {
             }),
             "compound_statement" => stmt
                 .named_child_nodes()
-                .any(|s| Self::assigns_on_every_path(&s, candidates)),
+                .any(|s| self.assigns_on_every_path(&s, candidates)),
             "if_statement" => {
                 let arm = |field: &str| {
                     stmt.child_by_field_name(field).is_some_and(|arm| {
@@ -1366,7 +1405,7 @@ impl<'a> Trace<'a> {
                             arm
                         };
                         guard_dominance::always_diverges(&arm)
-                            || Self::assigns_on_every_path(&arm, candidates)
+                            || self.assigns_on_every_path(&arm, candidates)
                     })
                 };
                 arm("consequence") && arm("alternative")
@@ -1397,7 +1436,9 @@ impl<'a> Trace<'a> {
                     let right = a.child_by_field_name("right")?;
                     let same = left.kind() == "identifier"
                         && get_node_text(&left, self.source) == name
-                        && ast_utils::resolve_identifier_declarator(&left, name, self.source)
+                        && self
+                            .declarations
+                            .resolve_identifier_declarator(&left, name, self.source)
                             .is_some_and(|(_, d)| d.id() == declarator.id());
                     same.then_some((a, right))
                 })
@@ -1413,9 +1454,8 @@ impl<'a> Trace<'a> {
     }
 
     /// The initializer of an `init_declarator`'s declarator.
-    fn initializer_of(declarator: &Node<'a>) -> Option<Node<'a>> {
-        declarator
-            .parent()
+    fn initializer_of(&self, declarator: &Node<'a>) -> Option<Node<'a>> {
+        self.parent(declarator)
             .filter(|p| p.kind() == "init_declarator")
             .and_then(|p| p.child_by_field_name("value"))
     }
@@ -1454,7 +1494,8 @@ impl<'a> Trace<'a> {
             return false;
         }
         let name = get_node_text(&expr, self.source);
-        ast_utils::resolve_identifier_declarator(&expr, name, self.source)
+        self.declarations
+            .resolve_identifier_declarator(&expr, name, self.source)
             .is_some_and(|(_, d)| matches!(d.kind(), "pointer_declarator" | "array_declarator"))
     }
 

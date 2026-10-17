@@ -546,25 +546,18 @@ impl Arr39C {
 
         // For an identifier, we need to look at its declaration or most recent cast
         // This is a simplified heuristic - we look for cast expressions in the parent chain
-        let mut current = *node;
-
-        // Walk up the tree to find casts
-        for _ in 0..5 {
-            // Check up to 5 levels up
-            if let Some(parent) = current.parent() {
-                // Check for char* / u8* / uint8_t* casts
-                if parent.kind() == "cast_expression" {
-                    if let Some(type_node) = parent.child_by_field_name("type") {
-                        let type_text = &source[type_node.start_byte()..type_node.end_byte()];
-                        if Self::is_byte_type(type_text) {
-                            return true;
-                        }
+        // Walk up the tree to find casts, up to 5 levels: the ancestors come
+        // from one descent ([`ast_utils::ancestors`]), since a `parent()`
+        // step costs the node's depth.
+        for parent in ast_utils::ancestors(node).take(5) {
+            // Check for char* / u8* / uint8_t* casts
+            if parent.kind() == "cast_expression" {
+                if let Some(type_node) = parent.child_by_field_name("type") {
+                    let type_text = &source[type_node.start_byte()..type_node.end_byte()];
+                    if Self::is_byte_type(type_text) {
+                        return true;
                     }
                 }
-
-                current = parent;
-            } else {
-                break;
             }
         }
 
@@ -578,9 +571,12 @@ impl Arr39C {
         if node.kind() == "identifier" {
             let name = &source[node.start_byte()..node.end_byte()];
 
-            if let Some(decl) =
-                ast_utils::find_enclosing_declaration_for_identifier(node, name, source)
-            {
+            if let Some(decl) = ast_utils::find_enclosing_declaration_for_identifier_in(
+                &ast_utils::tree_root(node),
+                node,
+                name,
+                source,
+            ) {
                 if let Some((type_text, is_pointer)) =
                     Self::declaration_type_for_name(&decl, name, source)
                 {

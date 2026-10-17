@@ -25,8 +25,8 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
-    declaration_has_storage_class, declaration_is_thread_local, get_node_text,
-    resolve_identifier_binding, resolve_identifier_declarator, IdentifierBinding,
+    declaration_has_storage_class, declaration_is_thread_local, get_node_text, IdentifierBinding,
+    ScopeDeclarations,
 };
 use crate::utility::cert_c::automatic_storage::{
     automatic_address, names_array_object, pointer_value_origin, AutomaticKind, AutomaticObject,
@@ -60,6 +60,8 @@ impl CertRule for Dcl30C {
         // inside another, and each site is judged once, in the frame that
         // owns it.
         let mut seen = std::collections::HashSet::new();
+        // Every name the checks resolve, through one index of the file.
+        let scopes = ScopeDeclarations::indexed(*node);
         let functions = query::find_descendants_of_kind(*node, "function_definition");
         for func in functions.iter().rev() {
             let Some(body) = func.child_by_field_name("body") else {
@@ -74,8 +76,8 @@ impl CertRule for Dcl30C {
                     continue;
                 }
                 let violation = match found.kind() {
-                    "return_statement" => check_return(&found, source, &index),
-                    _ => check_store(&found, &body, source, &index),
+                    "return_statement" => check_return(&found, &scopes, source, &index),
+                    _ => check_store(&found, &body, &scopes, source, &index),
                 };
                 violations.extend(violation);
             }
@@ -90,18 +92,25 @@ impl CertRule for Dcl30C {
 fn escaping_object<'a>(
     value: &Node<'a>,
     site: &Node<'a>,
+    scopes: &ScopeDeclarations<'a>,
     source: &str,
     index: &WriteIndex,
 ) -> Option<AutomaticObject<'a>> {
-    automatic_address(value, source).or_else(|| pointer_value_origin(value, site, source, index))
+    automatic_address(value, scopes, source)
+        .or_else(|| pointer_value_origin(value, site, scopes, source, index))
 }
 
 /// `return E;` where E is the address of an automatic object of this call.
-fn check_return(ret: &Node, source: &str, index: &WriteIndex) -> Option<RuleViolation> {
+fn check_return<'a>(
+    ret: &Node<'a>,
+    scopes: &ScopeDeclarations<'a>,
+    source: &str,
+    index: &WriteIndex,
+) -> Option<RuleViolation> {
     let value = ret
         .named_children(&mut ret.walk())
         .find(|c| c.kind() != "comment")?;
-    let object = escaping_object(&value, ret, source, index)?;
+    let object = escaping_object(&value, ret, scopes, source, index)?;
     Some(violation(
         ret,
         format!(
@@ -113,9 +122,10 @@ fn check_return(ret: &Node, source: &str, index: &WriteIndex) -> Option<RuleViol
 
 /// `T = E;` where E is the address of an automatic object of this call and T
 /// outlives it, unless T is reset to something else before every return.
-fn check_store(
-    assign: &Node,
-    body: &Node,
+fn check_store<'a>(
+    assign: &Node<'a>,
+    body: &Node<'a>,
+    scopes: &ScopeDeclarations<'a>,
     source: &str,
     index: &WriteIndex,
 ) -> Option<RuleViolation> {
@@ -125,9 +135,9 @@ fn check_store(
     }
     let left = assign.child_by_field_name("left")?;
     let right = assign.child_by_field_name("right")?;
-    let target = outliving_target(&left, assign, source, index)?;
-    let object = escaping_object(&right, assign, source, index)?;
-    if reset_before_every_return(assign, &left, body, source, index) {
+    let target = outliving_target(&left, assign, scopes, source, index)?;
+    let object = escaping_object(&right, assign, scopes, source, index)?;
+    if reset_before_every_return(assign, &left, body, scopes, source, index) {
         return None;
     }
     Some(violation(
@@ -152,6 +162,7 @@ fn check_store(
 fn outliving_target<'a>(
     lvalue: &Node<'a>,
     site: &Node<'a>,
+    scopes: &ScopeDeclarations<'a>,
     source: &str,
     index: &WriteIndex,
 ) -> Option<&'static str> {
@@ -171,7 +182,7 @@ fn outliving_target<'a>(
             }
             "subscript_expression" => {
                 let base = strip(node.child_by_field_name("argument")?);
-                if !(base.kind() == "identifier" && names_array_object(&base, source)) {
+                if !(base.kind() == "identifier" && names_array_object(&base, scopes, source)) {
                     through_pointer = true;
                 }
                 node = base;
@@ -188,11 +199,11 @@ fn outliving_target<'a>(
         }
     }
     let name = get_node_text(&node, source);
-    let (decl, declarator) = resolve_identifier_declarator(&node, name, source)?;
+    let (decl, declarator) = scopes.resolve_identifier_declarator(&node, name, source)?;
     if declarator.kind() == "function_declarator" {
         return None;
     }
-    match resolve_identifier_binding(&node, name, source)? {
+    match scopes.resolve_identifier_binding(&node, name, source)? {
         IdentifierBinding::Global(_) => Some("file scope"),
         IdentifierBinding::Local(_)
             if declaration_has_storage_class(&decl, "static", source)
@@ -202,7 +213,8 @@ fn outliving_target<'a>(
             Some("static storage")
         }
         IdentifierBinding::Parameter(_)
-            if through_pointer && pointer_value_origin(&node, site, source, index).is_none() =>
+            if through_pointer
+                && pointer_value_origin(&node, site, scopes, source, index).is_none() =>
         {
             Some("the caller's storage")
         }
@@ -233,10 +245,11 @@ fn outliving_target<'a>(
 ///
 /// A later store of another automatic address is no reset. A reset made by
 /// a callee is not seen.
-fn reset_before_every_return(
-    assign: &Node,
-    left: &Node,
-    body: &Node,
+fn reset_before_every_return<'a>(
+    assign: &Node<'a>,
+    left: &Node<'a>,
+    body: &Node<'a>,
+    scopes: &ScopeDeclarations<'a>,
     source: &str,
     index: &WriteIndex,
 ) -> bool {
@@ -260,8 +273,8 @@ fn reset_before_every_return(
             if stmt.start_byte() <= current.start_byte() || Some(stmt.id()) == other_arm {
                 continue;
             }
-            if let Some((e, value)) = reset_of(&stmt, &target, left, source) {
-                if escaping_object(&value, &e, source, index).is_some() {
+            if let Some((e, value)) = reset_of(&stmt, &target, left, scopes, source) {
+                if escaping_object(&value, &e, scopes, source, index).is_some() {
                     return false;
                 }
                 match skipped_to {
@@ -373,7 +386,8 @@ fn jump_exit<'a>(stmt: &Node<'a>, body: &Node<'a>) -> JumpExit<'a> {
 fn reset_of<'a>(
     stmt: &Node<'a>,
     target: &str,
-    left: &Node,
+    left: &Node<'a>,
+    scopes: &ScopeDeclarations<'a>,
     source: &str,
 ) -> Option<(Node<'a>, Node<'a>)> {
     if stmt.kind() != "expression_statement" {
@@ -391,7 +405,7 @@ fn reset_of<'a>(
         || target
             .strip_prefix(spelled.as_str())
             .is_some_and(|rest| rest.starts_with('.') || rest.starts_with("->"));
-    (contains && same_root(&l, left, source))
+    (contains && same_root(&l, left, scopes, source))
         .then(|| e.child_by_field_name("right").map(|r| (e, r)))?
 }
 
@@ -402,8 +416,8 @@ fn encloses(outer: &Node, inner: &Node) -> bool {
 
 /// Whether two lvalues of the same spelling name the same root variable:
 /// each root identifier resolves to the same declarator.
-fn same_root(a: &Node, b: &Node, source: &str) -> bool {
-    let decl = |n: &Node| {
+fn same_root<'a>(a: &Node<'a>, b: &Node<'a>, scopes: &ScopeDeclarations<'a>, source: &str) -> bool {
+    let decl = |n: &Node<'a>| {
         let mut n = strip(*n);
         while n.kind() != "identifier" {
             n = strip(
@@ -412,7 +426,9 @@ fn same_root(a: &Node, b: &Node, source: &str) -> bool {
             );
         }
         let name = get_node_text(&n, source);
-        resolve_identifier_declarator(&n, name, source).map(|(_, d)| d.id())
+        scopes
+            .resolve_identifier_declarator(&n, name, source)
+            .map(|(_, d)| d.id())
     };
     match (decl(a), decl(b)) {
         (Some(x), Some(y)) => x == y,

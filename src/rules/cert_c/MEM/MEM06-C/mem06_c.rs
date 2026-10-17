@@ -64,7 +64,7 @@ use crate::analyze::function_summary::{
 use crate::analyze::init_state::strip_arg_casts;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
-    get_identifier_from_declarator, get_node_text, resolve_identifier_declarator,
+    self, get_identifier_from_declarator, get_node_text, resolve_identifier_declarator,
 };
 use crate::utility::cert_c::guard_dominance::{
     in_expression_branch_outside, preproc_choices_outside, runs_before_on_every_path, PreprocChoice,
@@ -954,6 +954,10 @@ fn call_args<'a>(call: &Node<'a>) -> Vec<Node<'a>> {
         .collect()
 }
 
+/// The nearest `function_definition` above `node`, from one descent
+/// ([`ast_utils::ancestors`]): a `parent()` climb costs the node's depth a
+/// step, so asking it of every call of a deeply nested function cost the
+/// square of the depth each.
 fn innermost_function<'a>(node: &Node<'a>) -> Option<Node<'a>> {
-    query::find_ancestor(*node, |a| a.kind() == "function_definition")
+    ast_utils::ancestors(node).find(|a| a.kind() == "function_definition")
 }
