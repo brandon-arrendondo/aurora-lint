@@ -848,7 +848,7 @@ pub fn declaration_declarator_for<'a>(
     if decl_node.kind() == "expression_statement" {
         // The name first: the declaration question reads the scopes around
         // the statement, and a scope can hold many statements of this shape.
-        let (_, _, declared, _) = misparsed_parts(decl_node)?;
+        let declared = misparsed_parts(decl_node)?.declared;
         if get_node_text(&declared, source) != name {
             return None;
         }
@@ -905,6 +905,7 @@ struct MisparsedFields {
     arguments: u16,
     operator: u16,
     left: u16,
+    right: u16,
     argument: u16,
 }
 
@@ -918,14 +919,30 @@ fn misparsed_fields() -> &'static MisparsedFields {
             arguments: id("arguments"),
             operator: id("operator"),
             left: id("left"),
+            right: id("right"),
             argument: id("argument"),
         }
     })
 }
 
-/// The parts of the `T(*x)(...)` shape: (outer call, `T`, `x`, whether an
-/// `= init` follows).
-fn misparsed_parts<'a>(stmt: &Node<'a>) -> Option<(Node<'a>, Node<'a>, Node<'a>, bool)> {
+/// The parts of the `T(*x)(...)` shape.
+struct MisparsedParts<'a> {
+    /// The call of `T(*x)` with the parameter list.
+    outer: Node<'a>,
+    /// `T`.
+    type_name: Node<'a>,
+    /// `x`.
+    declared: Node<'a>,
+    /// Whether an `= init` follows.
+    initialized: bool,
+    /// `CC` in `T(CC *x)(...)`, which tree-sitter reads as `CC * x`: a
+    /// calling convention if the statement is a declaration
+    /// ([`is_calling_convention`]).
+    convention: Option<Node<'a>>,
+}
+
+/// The parts of the `T(*x)(...)` shape, or of `T(CC *x)(...)`.
+fn misparsed_parts<'a>(stmt: &Node<'a>) -> Option<MisparsedParts<'a>> {
     let fields = misparsed_fields();
     let expr = stmt.named_child_nodes().find(|c| c.kind() != "comment")?;
     let (outer, initialized) = match expr.kind() {
@@ -955,7 +972,18 @@ fn misparsed_parts<'a>(stmt: &Node<'a>) -> Option<(Node<'a>, Node<'a>, Node<'a>,
         .named_child_nodes()
         .filter(|c| c.kind() != "comment");
     let mut target = args.next()?;
-    if args.next().is_some() || target.kind() != "pointer_expression" {
+    if args.next().is_some() {
+        return None;
+    }
+    // `(CC *x)`, `(CC **x)`: a multiplication of `CC` by `x` or `*x`.
+    let mut convention = None;
+    if target.kind() == "binary_expression" {
+        if target.child_by_field_id(fields.operator)?.kind() != "*" {
+            return None;
+        }
+        convention = Some(target.child_by_field_id(fields.left)?);
+        target = target.child_by_field_id(fields.right)?;
+    } else if target.kind() != "pointer_expression" {
         return None;
     }
     // `(*x)`, `(**x)`: each level a `*`, ending at the declared name.
@@ -965,7 +993,13 @@ fn misparsed_parts<'a>(stmt: &Node<'a>) -> Option<(Node<'a>, Node<'a>, Node<'a>,
         }
         target = target.child_by_field_id(fields.argument)?;
     }
-    (target.kind() == "identifier").then_some((outer, type_name, target, initialized))
+    (target.kind() == "identifier").then_some(MisparsedParts {
+        outer,
+        type_name,
+        declared: target,
+        initialized,
+        convention,
+    })
 }
 
 /// The name declared by a block-scope function-pointer declaration whose
@@ -991,11 +1025,27 @@ fn misparsed_parts<'a>(stmt: &Node<'a>) -> Option<(Node<'a>, Node<'a>, Node<'a>,
 /// and no keyword among the parameters (`LONG (*x)(HKEY);` with `LONG` from
 /// `<windows.h>`), is left a call: the file alone cannot tell it from
 /// `f(*p)(x)`.
+///
+/// With a calling convention inside the parentheses, `LONG (WINAPI *x)(HKEY);`
+/// parses as `LONG(WINAPI * x)`: the statement is a declaration, at any scope,
+/// exactly when that operand is a calling convention
+/// ([`is_calling_convention`]), since none can be multiplied. Any other
+/// operand leaves the statement the call it parsed as, whatever else is
+/// there: `f(a * b)(x) = 0;` is no declaration this can read.
 pub fn misparsed_function_pointer_declaration<'a>(
     stmt: &Node<'a>,
     source: &str,
 ) -> Option<Node<'a>> {
-    let (outer, type_name, declared, initialized) = misparsed_parts(stmt)?;
+    let MisparsedParts {
+        outer,
+        type_name,
+        declared,
+        initialized,
+        convention,
+    } = misparsed_parts(stmt)?;
+    if let Some(convention) = convention {
+        return is_calling_convention(&convention, source).then_some(declared);
+    }
     if initialized {
         return Some(declared);
     }
@@ -1014,6 +1064,141 @@ pub fn misparsed_function_pointer_declaration<'a>(
         return Some(declared);
     }
     None
+}
+
+/// Calling conventions, by the keyword or by the macro the platform headers
+/// spell them with. A file that uses one of the macros rarely defines it, so
+/// the name alone has to say it.
+const CALLING_CONVENTIONS: &[&str] = &[
+    "__cdecl",
+    "_cdecl",
+    "__stdcall",
+    "_stdcall",
+    "__fastcall",
+    "_fastcall",
+    "__thiscall",
+    "__vectorcall",
+    "__pascal",
+    "_pascal",
+    "__clrcall",
+    "WINAPI",
+    "WINAPIV",
+    "APIENTRY",
+    "APIPRIVATE",
+    "CALLBACK",
+    "PASCAL",
+    "CDECL",
+    "NTAPI",
+    "WSAAPI",
+    "STDMETHODCALLTYPE",
+    "STDMETHODVCALLTYPE",
+    "STDAPICALLTYPE",
+    "STDAPIVCALLTYPE",
+    "RPC_ENTRY",
+    "EFIAPI",
+    "GLAPIENTRY",
+];
+
+/// Whether `node`, read as an operand of `*`, is a calling convention: a name
+/// in [`CALLING_CONVENTIONS`], an `__attribute__((...))`, or an object-like
+/// macro this file defines, every definition of which expands to those
+/// alone (`#define MYAPI __stdcall`, `#define MYAPI WINAPI`). A definition
+/// that expands to nothing counts too: the blanking pass before the parse
+/// removes the uses of a macro empty in every arm, but not of one empty in
+/// only some.
+fn is_calling_convention(node: &Node, source: &str) -> bool {
+    match node.kind() {
+        "identifier" => names_calling_convention(get_node_text(node, source), source, 0),
+        "call_expression" => node
+            .child(0)
+            .is_some_and(|f| matches!(get_node_text(&f, source), "__attribute__" | "__attribute")),
+        _ => false,
+    }
+}
+
+/// [`is_calling_convention`] for a name, `depth` macros down.
+fn names_calling_convention(name: &str, source: &str, depth: usize) -> bool {
+    if CALLING_CONVENTIONS.contains(&name) {
+        return true;
+    }
+    // A macro of a macro of a convention is two levels; four is plenty, and
+    // stops a macro defined by its own name.
+    if depth == 4 {
+        return false;
+    }
+    let mut bodies = object_macro_bodies(source, name).peekable();
+    bodies.peek().is_some()
+        && bodies.all(|body| expands_to_calling_conventions(body, source, depth + 1))
+}
+
+/// Whether a macro body is calling conventions and attributes only: names
+/// [`names_calling_convention`] accepts, each `__attribute__` with its
+/// parenthesized arguments, or nothing.
+fn expands_to_calling_conventions(body: &str, source: &str, depth: usize) -> bool {
+    let mut rest = body.trim();
+    while !rest.is_empty() {
+        let end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let (word, after) = rest.split_at(end);
+        if word.is_empty() {
+            return false;
+        }
+        rest = after.trim_start();
+        if matches!(word, "__attribute__" | "__attribute") {
+            let Some(close) = balanced_parens_end(rest) else {
+                return false;
+            };
+            rest = rest[close..].trim_start();
+        } else if !names_calling_convention(word, source, depth) {
+            return false;
+        }
+    }
+    true
+}
+
+/// The byte just past the parenthesized group `text` opens, or `None` when
+/// it doesn't open one or never closes it.
+fn balanced_parens_end(text: &str) -> Option<usize> {
+    if !text.starts_with('(') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (i, c) in text.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The replacement text of each object-like `#define name` in `source`,
+/// with any comment after it removed. A definition continued onto the next
+/// line is returned with its `\`, which no convention spells, so it never
+/// counts as one.
+fn object_macro_bodies<'s>(source: &'s str, name: &'s str) -> impl Iterator<Item = &'s str> {
+    source.lines().filter_map(move |line| {
+        let rest = line.trim_start().strip_prefix('#')?.trim_start();
+        let rest = rest.strip_prefix("define")?;
+        if !rest.starts_with([' ', '\t']) {
+            return None;
+        }
+        let rest = rest.trim_start().strip_prefix(name)?;
+        // `#define name(` is a function-like macro, `#define named` another.
+        if !rest.is_empty() && !rest.starts_with([' ', '\t']) && !rest.starts_with("/*") {
+            return None;
+        }
+        let body = rest.find("//").map_or(rest, |i| &rest[..i]);
+        let body = body.find("/*").map_or(body, |i| &body[..i]);
+        Some(body)
+    })
 }
 
 /// Whether `stmt` is an item of the translation unit itself, directly or
@@ -1343,9 +1528,9 @@ impl FileTypedefs {
                         }
                     }
                     "expression_statement" => {
-                        if let Some((_, _, declared, _)) = misparsed_parts(&item) {
+                        if let Some(parts) = misparsed_parts(&item) {
                             bind(
-                                get_node_text_owned(&declared, source),
+                                get_node_text_owned(&parts.declared, source),
                                 ScopeBindingKind::Misparsed,
                             );
                         }
@@ -4048,6 +4233,98 @@ mod tests {
             .unwrap();
         assert!(misparsed_function_pointer_declaration(&stmt, &src).is_some());
         assert_eq!(last_occurrence_is_local(armed, "g"), None);
+    }
+
+    /// Whether the last `name` resolves to a local, by the climbing resolver
+    /// and by the one that walks down from the root, which must agree.
+    fn last_occurrence_is_local_both_ways(code: &str, name: &str) -> Option<bool> {
+        let climbing = last_occurrence_is_local(code, name);
+        let (tree, src) = parse_c_code(code);
+        let root = tree.root_node();
+        let last = query::find_descendants_of_kind(root, "identifier")
+            .into_iter()
+            .filter(|n| get_node_text(n, &src) == name)
+            .max_by_key(|n| n.start_byte())?;
+        let from_root = resolve_identifier_binding_in(&root, &last, name, &src).map(|b| {
+            matches!(
+                b,
+                IdentifierBinding::Local(_) | IdentifierBinding::Parameter(_)
+            )
+        });
+        assert_eq!(climbing, from_root, "{code}");
+        climbing
+    }
+
+    #[test]
+    fn a_function_pointer_with_a_calling_convention_misread_as_a_call_binds_its_name() {
+        // `LONG(WINAPI * g)` called with `(HKEY)`: nothing multiplies a
+        // calling convention, so it declares `g`, in a block or at file scope.
+        let in_block = |decl: &str| format!("void f(void)\n{{\n    {decl}\n    g(0);\n}}\n");
+        for decl in [
+            "LONG (WINAPI *g)(HKEY);",
+            "LONG (CALLBACK *g)(HKEY) = 0;",
+            "LONG (__stdcall **g)(HKEY);",
+            "LONG (__attribute__((stdcall)) *g)(HKEY);",
+        ] {
+            assert_eq!(
+                last_occurrence_is_local_both_ways(&in_block(decl), "g"),
+                Some(true),
+                "{decl}"
+            );
+        }
+        let at_file_scope = "LONG (APIENTRY *g)(HKEY);\nvoid f(void)\n{\n    g(0);\n}\n";
+        assert_eq!(
+            last_occurrence_is_local_both_ways(at_file_scope, "g"),
+            Some(false)
+        );
+        // A macro this file defines to conventions and attributes, in every
+        // arm that defines it.
+        for defines in [
+            "#define MYAPI __stdcall\n",
+            "#define MYAPI WINAPI /* the platform's */\n",
+            "#define MYAPI __attribute__((ms_abi)) EFIAPI\n",
+            "#ifdef _WIN32\n#define MYAPI __stdcall\n#else\n#define MYAPI\n#endif\n",
+        ] {
+            let code = format!("{defines}{}", in_block("LONG (MYAPI *g)(HKEY);"));
+            assert_eq!(
+                last_occurrence_is_local_both_ways(&code, "g"),
+                Some(true),
+                "{code}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_product_inside_a_call_of_a_call_stays_a_call() {
+        // Nothing says `a` is a calling convention, so `a * g` is a product,
+        // and `g` the object declared before it.
+        let with = |defines: &str, stmt: &str| {
+            format!("{defines}int g;\nvoid f(int a)\n{{\n    {stmt}\n    g = 1;\n}}\n")
+        };
+        for (defines, stmt) in [
+            ("", "pick(a * g)(1);"),
+            ("", "pick(a * g)(1) = 0;"),
+            ("", "pick(a * g)(int);"),
+            ("#define MYAPI 2\n", "pick(MYAPI * g)(1);"),
+            ("#define MYAPI(x) __stdcall\n", "pick(MYAPI * g)(1);"),
+            ("#define MYAPIS __stdcall\n", "pick(MYAPI * g)(1);"),
+            (
+                "#ifdef X\n#define MYAPI __stdcall\n#else\n#define MYAPI 2\n#endif\n",
+                "pick(MYAPI * g)(1);",
+            ),
+            ("#define MYAPI MYAPI\n", "pick(MYAPI * g)(1);"),
+            (
+                "#define MYAPI __stdcall \\\n    + 1\n",
+                "pick(MYAPI * g)(1);",
+            ),
+        ] {
+            let code = with(defines, stmt);
+            assert_eq!(
+                last_occurrence_is_local_both_ways(&code, "g"),
+                Some(false),
+                "{code}"
+            );
+        }
     }
 
     #[test]
