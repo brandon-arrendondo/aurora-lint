@@ -118,27 +118,146 @@ fn file_flag_macros(source: &str) -> MacroConstantMap {
         .iter()
         .map(|(name, value)| (name.to_string(), *value as i64))
         .collect();
+    // A body names flag names and other macros, and is valued once the
+    // macros it names are. A name redefining a flag keeps the flag's value.
+    let names: Vec<&String> = {
+        let mut names: Vec<&String> = bodies
+            .iter()
+            .filter(|(name, body)| body.is_some() && !known.contains_key(*name))
+            .map(|(name, _)| name)
+            .collect();
+        names.sort();
+        names
+    };
+    let mut by_stem: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, name) in names.iter().enumerate() {
+        by_stem.entry(suffix_stem(name)).or_default().push(i);
+    }
+    let body_of = |i: usize| bodies[names[i]].as_deref().unwrap_or("");
+    // The constant evaluator strips an integer suffix before a lookup, from a
+    // name as well as a number, so `FLAGS_ALL` can be read as `FLAGS_A`. A
+    // word may be looked up as itself or as any prefix left by dropping
+    // trailing `u`, `U`, `l` and `L`: exactly the names with its stem that
+    // it starts with.
+    let uses: Vec<Vec<usize>> = (0..names.len())
+        .map(|i| {
+            let mut used = Vec::new();
+            for word in identifiers(body_of(i)) {
+                for &j in by_stem.get(suffix_stem(word)).into_iter().flatten() {
+                    if word.starts_with(names[j].as_str()) {
+                        used.push(j);
+                    }
+                }
+            }
+            used
+        })
+        .collect();
     let mut out = MacroConstantMap::new();
-    // Rounds until none resolves another settle a chain of flag macros
-    // defined in terms of each other, however deep, whatever the map's order.
-    loop {
-        let mut changed = false;
-        for (name, body) in &bodies {
-            let Some(body) = body else { continue };
-            if known.contains_key(name) {
-                continue;
+    // A chain of macros defined in terms of each other is valued along it,
+    // each macro once, however deep. Macros that name each other in a cycle
+    // are retried as a group until none resolves another: a body can name a
+    // macro it does not need (`sizeof (M)` is at least 1 whatever M is).
+    for group in dependencies_first(&uses) {
+        loop {
+            let mut changed = false;
+            for &i in &group {
+                if known.contains_key(names[i]) {
+                    continue;
+                }
+                if let Some(value) = flags_text_value(body_of(i), &known) {
+                    known.insert(names[i].clone(), value);
+                    out.insert(names[i].clone(), value);
+                    changed = true;
+                }
             }
-            if let Some(value) = flags_text_value(body, &known) {
-                known.insert(name.clone(), value);
-                out.insert(name.clone(), value);
-                changed = true;
+            if !changed || group.len() == 1 {
+                break;
             }
-        }
-        if !changed {
-            break;
         }
     }
     out
+}
+
+/// `word` without its trailing `u`, `U`, `l` and `L`: what is left however
+/// many integer suffixes the constant evaluator strips from it.
+fn suffix_stem(word: &str) -> &str {
+    word.trim_end_matches(['u', 'U', 'l', 'L'])
+}
+
+/// The identifiers in `text`, skipping the letters of a number such as
+/// `0x1fUL`.
+fn identifiers(text: &str) -> impl Iterator<Item = &str> {
+    let mut rest = text;
+    std::iter::from_fn(move || loop {
+        let start = rest.find(|c: char| c.is_ascii_alphanumeric() || c == '_')?;
+        let word = &rest[start..];
+        let len = word
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(word.len());
+        rest = &word[len..];
+        if !word.starts_with(|c: char| c.is_ascii_digit()) {
+            return Some(&word[..len]);
+        }
+    })
+}
+
+/// The strongly connected groups of the graph `uses` (node `i` uses each node
+/// in `uses[i]`), each group after every group its nodes use. Tarjan's
+/// algorithm, with its own stack: a chain a million macros deep would overflow
+/// the thread's.
+fn dependencies_first(uses: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    const UNSEEN: usize = usize::MAX;
+    let n = uses.len();
+    let mut order = vec![UNSEEN; n];
+    let mut low = vec![0; n];
+    let mut on_stack = vec![false; n];
+    let mut stack = Vec::new();
+    let mut groups = Vec::new();
+    let mut next = 0;
+    // Each frame is a node and how many of its uses it has visited.
+    let mut frames: Vec<(usize, usize)> = Vec::new();
+    for root in 0..n {
+        if order[root] != UNSEEN {
+            continue;
+        }
+        frames.push((root, 0));
+        while let Some(&(node, visited)) = frames.last() {
+            if visited == 0 && order[node] == UNSEEN {
+                order[node] = next;
+                low[node] = next;
+                next += 1;
+                stack.push(node);
+                on_stack[node] = true;
+            }
+            if let Some(&used) = uses[node].get(visited) {
+                if let Some(frame) = frames.last_mut() {
+                    frame.1 += 1;
+                }
+                if order[used] == UNSEEN {
+                    frames.push((used, 0));
+                } else if on_stack[used] {
+                    low[node] = low[node].min(order[used]);
+                }
+                continue;
+            }
+            frames.pop();
+            if let Some(&(parent, _)) = frames.last() {
+                low[parent] = low[parent].min(low[node]);
+            }
+            if low[node] == order[node] {
+                let mut group = Vec::new();
+                while let Some(member) = stack.pop() {
+                    on_stack[member] = false;
+                    group.push(member);
+                    if member == node {
+                        break;
+                    }
+                }
+                groups.push(group);
+            }
+        }
+    }
+    groups
 }
 
 /// The value of a flags expression written as text: `|`-joined parts, each a
