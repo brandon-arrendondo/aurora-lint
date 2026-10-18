@@ -415,12 +415,13 @@ impl Msc13C {
     /// -- a read resolving to any of them counts as a read of
     /// all of them. `None` falls back to unscoped name matching, for
     /// callers that can't resolve a specific declaration.
-    fn count_reads(
+    fn count_reads<'a>(
         &self,
-        body: &Node,
+        body: &Node<'a>,
         source: &str,
         var_name: &str,
         decl_starts: Option<&[usize]>,
+        declarations: &ast_utils::ScopeDeclarations<'a>,
     ) -> usize {
         let mut count = 0;
         // Scopes enclosing `body`, innermost first -- the walk below extends
@@ -436,7 +437,15 @@ impl Msc13C {
             search_from = scope;
         }
         scopes.insert(0, *body);
-        self.walk_for_reads(body, source, var_name, decl_starts, &mut scopes, &mut count);
+        self.walk_for_reads(
+            body,
+            source,
+            var_name,
+            decl_starts,
+            &mut scopes,
+            &mut count,
+            declarations,
+        );
         count
     }
 
@@ -448,19 +457,21 @@ impl Msc13C {
         decl_starts: Option<&[usize]>,
         scopes: &mut Vec<Node<'a>>,
         count: &mut usize,
+        declarations: &ast_utils::ScopeDeclarations<'a>,
     ) {
         if node.kind() == "identifier" {
             let text = get_node_text(node, source);
             if text == var_name && self.is_read_context(node, source) {
                 let in_scope = match decl_starts {
                     None => true,
-                    Some(targets) => ast_utils::find_declaration_in_scope_chain(
-                        scopes,
-                        node.start_byte(),
-                        var_name,
-                        source,
-                    )
-                    .is_some_and(|d| targets.contains(&d.start_byte())),
+                    Some(targets) => declarations
+                        .find_declaration_in_scope_chain(
+                            scopes,
+                            node.start_byte(),
+                            var_name,
+                            source,
+                        )
+                        .is_some_and(|d| targets.contains(&d.start_byte())),
                 };
                 if in_scope {
                     *count += 1;
@@ -475,7 +486,15 @@ impl Msc13C {
                 if opens_scope {
                     scopes.insert(0, child);
                 }
-                self.walk_for_reads(&child, source, var_name, decl_starts, scopes, count);
+                self.walk_for_reads(
+                    &child,
+                    source,
+                    var_name,
+                    decl_starts,
+                    scopes,
+                    count,
+                    declarations,
+                );
                 if opens_scope {
                     scopes.remove(0);
                 }
@@ -704,10 +723,10 @@ impl Msc13C {
         }
     }
 
-    fn check_function_body(
+    fn check_function_body<'a>(
         &self,
-        func_node: &Node,
-        body: &Node,
+        func_node: &Node<'a>,
+        body: &Node<'a>,
         source: &str,
         macros: &HashMap<String, Vec<FunctionMacro>>,
         unused_attr_macros: &HashSet<String>,
@@ -723,6 +742,9 @@ impl Msc13C {
         // group them so a read resolving to any one of them
         // counts as a read of all of them.
         let decl_groups = self.build_decl_start_to_group(&local_vars);
+        // Each block's declarations read and indexed once for every read of
+        // every variable resolved below, rather than once per read.
+        let declarations = ast_utils::ScopeDeclarations::default();
 
         // Check each declared variable for reads
         for (name, line, has_init, decl_start, _scope_start) in &local_vars {
@@ -733,7 +755,7 @@ impl Msc13C {
             if unused_annotated.contains(decl_start) {
                 continue;
             }
-            let reads = self.count_reads(body, source, name, Some(&targets));
+            let reads = self.count_reads(body, source, name, Some(&targets), &declarations);
             if reads == 0 && !self.macro_hides_use(body, source, macros, name) {
                 let msg = if *has_init {
                     format!("Variable '{}' is initialized but never read.", name)
@@ -756,7 +778,15 @@ impl Msc13C {
         // Dead store detection: an assignment whose value never reaches a
         // read on any executable path before being overwritten or the
         // function exiting.
-        self.check_dead_stores(func_node, &decl_groups, body, source, macros, violations);
+        self.check_dead_stores(
+            func_node,
+            &decl_groups,
+            body,
+            source,
+            macros,
+            violations,
+            &declarations,
+        );
     }
 
     /// Detect dead stores using the real CFG + reaching-definitions
@@ -783,14 +813,15 @@ impl Msc13C {
     ///
     /// `p2` IS referenced again later, so a name-based check calls it
     /// "used" — but bar()'s specific definition is dead on every path.
-    fn check_dead_stores(
+    fn check_dead_stores<'a>(
         &self,
-        func_node: &Node,
+        func_node: &Node<'a>,
         decl_groups: &HashMap<(usize, String), Vec<usize>>,
-        body: &Node,
+        body: &Node<'a>,
         source: &str,
         macros: &HashMap<String, Vec<FunctionMacro>>,
         violations: &mut Vec<RuleViolation>,
+        declarations: &ast_utils::ScopeDeclarations<'a>,
     ) {
         // A macro whose body jumps (`goto exit;` / `return ret;`) gives its
         // invocation that edge, so a value read only at the label -- the
@@ -812,6 +843,7 @@ impl Msc13C {
                 source,
                 macros,
                 violations,
+                declarations,
             ),
             None => self.check_dead_stores_in_blocks(body, source, violations),
         }
@@ -828,15 +860,16 @@ impl Msc13C {
     /// goto edges, because it's derived from the actual CFG rather than a
     /// text heuristic). Any write whose definition is never marked live is
     /// a dead store.
-    fn check_dead_stores_cfg(
+    fn check_dead_stores_cfg<'a>(
         &self,
-        func_node: &Node,
+        func_node: &Node<'a>,
         cfg: &FunctionCfg,
         decl_groups: &HashMap<(usize, String), Vec<usize>>,
-        body: &Node,
+        body: &Node<'a>,
         source: &str,
         macros: &HashMap<String, Vec<FunctionMacro>>,
         violations: &mut Vec<RuleViolation>,
+        declarations: &ast_utils::ScopeDeclarations<'a>,
     ) {
         let mut definitions = extract_definitions(cfg, func_node, source);
         // A statement that invokes a macro whose body assigns one of the
@@ -972,7 +1005,13 @@ impl Msc13C {
                     .cloned()
                     .unwrap_or_else(|| vec![d])
             });
-            if self.count_reads(body, source, &def.variable, targets.as_deref()) == 0
+            if self.count_reads(
+                body,
+                source,
+                &def.variable,
+                targets.as_deref(),
+                declarations,
+            ) == 0
                 && !macro_read.contains(&def.variable)
             {
                 continue;

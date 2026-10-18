@@ -84,7 +84,7 @@ use crate::analyze::concurrency_roots;
 use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
-    declaration_has_storage_class, get_node_text, resolve_identifier_binding_in, IdentifierBinding,
+    declaration_has_storage_class, get_node_text, IdentifierBinding, ScopeDeclarations,
 };
 use crate::utility::cert_c::declarator_utils::{
     declares_function, inner_declarator, is_declared_name, object_pointer_declarator,
@@ -214,6 +214,9 @@ impl CertRule for Con03C {
         let own_typedefs = Self::own_typedef_kinds(node, source);
         let shared_vars = self.collect_shared_variables(node, source, &own_typedefs);
         let uses = Self::identifier_uses_by_function(node, source);
+        // One index of the file for every use resolved below: a fresh one
+        // per use read every file-scope declaration again for each.
+        let scopes = ScopeDeclarations::indexed(*node);
 
         // Check each shared variable for proper synchronization
         for var in &shared_vars {
@@ -229,7 +232,8 @@ impl CertRule for Con03C {
                 let reachable = self.concurrency_reachable.borrow();
                 let is_reachable = uses.get(var.name.as_str()).is_some_and(|sites| {
                     sites.iter().any(|(func, id)| {
-                        reachable.contains(func.as_str()) && Self::is_use_of(node, id, var, source)
+                        reachable.contains(func.as_str())
+                            && Self::is_use_of(&scopes, node, id, var, source)
                     })
                 });
                 drop(reachable);
@@ -305,8 +309,14 @@ impl Con03C {
     /// that binds to nothing in this file (its file-scope declaration sits
     /// in an `#if` arm, say) still names the file-scope object: there is no
     /// inner declaration for it to name instead.
-    fn is_use_of(root: &Node, id: &Node, var: &SharedVar, source: &str) -> bool {
-        match resolve_identifier_binding_in(root, id, &var.name, source) {
+    fn is_use_of<'a>(
+        scopes: &ScopeDeclarations<'a>,
+        root: &Node<'a>,
+        id: &Node<'a>,
+        var: &SharedVar,
+        source: &str,
+    ) -> bool {
+        match scopes.resolve_identifier_binding_in(root, id, &var.name, source) {
             Some(IdentifierBinding::Local(decl)) => {
                 if var.file_scope {
                     // `extern int x;` inside a block redeclares the file-scope `x`.

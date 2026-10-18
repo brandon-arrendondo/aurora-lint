@@ -555,11 +555,15 @@ impl GlobalTracker {
     /// the ancestor check below replicates the original recursive prune that
     /// skipped descending into `is_preproc_if_zero` subtrees entirely.
     fn scan_functions(&mut self, node: &Node, source: &str) {
+        // One value for every assignment target resolved below, so the
+        // file-scope declarations are read and indexed by name once: a fresh
+        // one per target read them all again for each.
+        let scopes = ast_utils::ScopeDeclarations::default();
         for func in query::find_descendants(*node, |n| {
             n.kind() == "function_definition"
                 && query::find_ancestor(n, |a| is_preproc_if_zero(&a, source)).is_none()
         }) {
-            self.analyze_function_patterns(&func, source);
+            self.analyze_function_patterns(&func, source, &scopes);
             // Check for realloc zero-size pattern
             self.check_realloc_noncompliant_pattern(&func, source);
         }
@@ -699,7 +703,12 @@ impl GlobalTracker {
         false
     }
 
-    fn analyze_function_patterns(&mut self, func_node: &Node, source: &str) {
+    fn analyze_function_patterns<'a>(
+        &mut self,
+        func_node: &Node<'a>,
+        source: &str,
+        scopes: &ast_utils::ScopeDeclarations<'a>,
+    ) {
         // Get function name
         let func_name = self.get_function_name(func_node, source);
         if func_name.is_empty() {
@@ -729,6 +738,7 @@ impl GlobalTracker {
                 &mut has_longjmp,
                 &mut has_recursive_call,
                 &mut global_access_after_recursive,
+                scopes,
             );
         }
 
@@ -777,9 +787,9 @@ impl GlobalTracker {
     /// bounded-depth concern" — does in fact overflow the native stack on
     /// the same adversarial input class the main `MemoryAnalyzer` conversion
     /// targets.
-    fn scan_function_body(
+    fn scan_function_body<'a>(
         &mut self,
-        node: &Node,
+        node: &Node<'a>,
         source: &str,
         params: &HashSet<String>,
         freed_globals: &mut HashSet<String>,
@@ -789,6 +799,7 @@ impl GlobalTracker {
         has_longjmp: &mut bool,
         has_recursive_call: &mut bool,
         global_access_after_recursive: &mut Vec<(String, usize, usize)>,
+        scopes: &ast_utils::ScopeDeclarations<'a>,
     ) {
         let mut stack: Vec<Node> = vec![*node];
         while let Some(n) = stack.pop() {
@@ -815,7 +826,7 @@ impl GlobalTracker {
                     );
                 }
                 "assignment_expression" => {
-                    self.scan_assignment_escape(&n, source);
+                    self.scan_assignment_escape(&n, source, scopes);
                 }
                 _ => {}
             }
@@ -965,7 +976,12 @@ impl GlobalTracker {
     ///   `ep = zmalloc(...)`, `Users = old_users`) holds whatever it points
     ///   at -- heap, the previous value of the global -- and "not a global and
     ///   not a parameter" said nothing about that.
-    fn scan_assignment_escape(&mut self, node: &Node, source: &str) {
+    fn scan_assignment_escape<'a>(
+        &mut self,
+        node: &Node<'a>,
+        source: &str,
+        scopes: &ast_utils::ScopeDeclarations<'a>,
+    ) {
         let (Some(left), Some(right)) = (
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
@@ -983,7 +999,7 @@ impl GlobalTracker {
             return;
         }
         if !matches!(
-            ast_utils::resolve_identifier_binding(&target, &left_var, source),
+            scopes.resolve_identifier_binding(&target, &left_var, source),
             Some(ast_utils::IdentifierBinding::Global(_))
         ) {
             // The name is shadowed here by a local or parameter of its own.

@@ -16,7 +16,7 @@ use crate::utility::cert_c::ast_utils::{
     self, get_node_text, get_sanitized_node_text, ScopeDeclarations,
 };
 use crate::utility::cert_c::data_model::{self, Rank};
-use crate::utility::cert_c::expr_type::{integer_literal_width, TypeEnv};
+use crate::utility::cert_c::expr_type::{integer_literal_width, FileTypes, TypeEnv};
 use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
@@ -380,29 +380,36 @@ impl Int30C {
     }
 
     /// [`ast_utils::identifier_type`], resolving each name once per
-    /// statement when `ident` is inside the operator being checked.
+    /// statement when `ident` is inside the operator being checked, and
+    /// through the file's index ([`FileTypes::type_spelling`]).
     ///
-    /// Resolving an occurrence descends from the root to it, which costs
-    /// its depth: a parameter used at every operator of a sum thousands of
-    /// terms long cost the square. Under one statement every occurrence of
-    /// a name resolves alike ([`resolves_alike_under`]), and the walk's
-    /// record of the statements around the operator is the path a
-    /// resolution reads -- scopes, the function and the root -- without
-    /// the expressions between, which it does not.
+    /// Resolving an occurrence by descending from the root to it costs its
+    /// depth: a parameter used at every operator of a sum thousands of terms
+    /// long cost the square. Under one statement every occurrence of a name
+    /// resolves alike ([`resolves_alike_under`]). The index finds the scopes
+    /// around an occurrence without that descent and reads each scope's
+    /// declarations once for the file; without it, the walk's record of the
+    /// statements around the operator is the path a resolution reads --
+    /// scopes, the function and the root -- without the expressions
+    /// between, which it does not.
     fn identifier_type<'m>(
         &self,
         ident: &Node,
         source: &str,
-        type_map: &'m HashMap<String, String>,
+        type_map: &'m FileTypes<'_, '_>,
     ) -> Option<std::borrow::Cow<'m, str>> {
         let name = get_node_text(ident, source);
-        let resolved = match self.resolve_under_statement(ident, name, source) {
+        let resolved = match self.resolve_under_statement(ident, name, source, type_map) {
             Some(resolved) => resolved,
-            None => ast_utils::resolve_identifier_declarator(ident, name, source).map(
-                |(decl, declarator)| {
-                    ast_utils::declaration_type_spelling(&decl, &declarator, source)
-                },
-            ),
+            None => type_map
+                .type_spelling(ident, name, source)
+                .unwrap_or_else(|| {
+                    ast_utils::resolve_identifier_declarator(ident, name, source).map(
+                        |(decl, declarator)| {
+                            ast_utils::declaration_type_spelling(&decl, &declarator, source)
+                        },
+                    )
+                }),
         };
         if let Some(spelling) = resolved {
             return spelling.map(std::borrow::Cow::Owned);
@@ -419,6 +426,7 @@ impl Int30C {
         ident: &Node,
         name: &str,
         source: &str,
+        type_map: &FileTypes,
     ) -> Option<Option<Resolution>> {
         if ident.kind() != "identifier" || self.statement_expressions.get() {
             return None;
@@ -433,6 +441,12 @@ impl Int30C {
         );
         if let Some(known) = self.identifier_types.borrow().get(&key) {
             return Some(known.clone());
+        }
+        if let Some(resolved) = type_map.type_spelling(ident, name, source) {
+            self.identifier_types
+                .borrow_mut()
+                .insert(key, resolved.clone());
+            return Some(resolved);
         }
         let root = ast_utils::tree_root(ident);
         // Outermost first, without the root itself, which ends the record.
@@ -572,7 +586,7 @@ impl Int30C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         bits: u32,
     ) -> bool {
         let mut ranges = self.vra_var_ranges_at(node, source);
@@ -730,7 +744,7 @@ impl Int30C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         var: &str,
         bits: u32,
     ) -> bool {
@@ -1036,11 +1050,14 @@ impl Int30C {
             crate::analyze::containment::checkpoint();
             *self.site.borrow_mut() = Some(Self::site(&matched, &state, source));
             let function = state.function;
-            let scoped_type_map: &HashMap<String, String> = match function {
-                Some(func_node) => fn_type_maps.entry(func_node.id()).or_insert_with(|| {
-                    overflow_helpers::collect_variable_types(&func_node, source)
-                }),
-                None => type_map,
+            let scoped_type_map = &FileTypes {
+                map: match function {
+                    Some(func_node) => fn_type_maps.entry(func_node.id()).or_insert_with(|| {
+                        overflow_helpers::collect_variable_types(&func_node, source)
+                    }),
+                    None => type_map,
+                },
+                env,
             };
 
             match matched.kind() {
@@ -1217,7 +1234,7 @@ impl Int30C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         env: &TypeEnv,
     ) {
         // INT30-C concerns unsigned integer WRAP (well-defined, but usually
@@ -1254,7 +1271,7 @@ impl Int30C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         env: &TypeEnv,
     ) {
         // See check_binary_operation: skip compound assignments whose
@@ -1287,7 +1304,7 @@ impl Int30C {
         &self,
         node: &Node<'a>,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         root: Option<&Node<'a>>,
         scopes: Option<&ScopeDeclarations>,
     ) -> bool {
@@ -1323,7 +1340,7 @@ impl Int30C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) {
         if let (Some(left), Some(right)) = (
             node.child_by_field_name("left"),
@@ -1454,7 +1471,7 @@ impl Int30C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) {
         if let (Some(left), Some(right)) = (
             node.child_by_field_name("left"),
@@ -1565,7 +1582,7 @@ impl Int30C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) {
         if let (Some(left), Some(right)) = (
             node.child_by_field_name("left"),
@@ -1672,7 +1689,7 @@ impl Int30C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) {
         if let (Some(left), Some(_right)) = (
             node.child_by_field_name("left"),
@@ -1748,7 +1765,7 @@ impl Int30C {
         left_type: &str,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) -> bool {
         if self.is_unsigned_type(left_type) {
             return true;
@@ -1764,7 +1781,7 @@ impl Int30C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) {
         if let Some(left) = node.child_by_field_name("left") {
             let left_type = self.infer_type(&left, source, type_map);
@@ -1832,7 +1849,7 @@ impl Int30C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) {
         if let Some(left) = node.child_by_field_name("left") {
             let left_type = self.infer_type(&left, source, type_map);
@@ -1909,7 +1926,7 @@ impl Int30C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) {
         if let Some(left) = node.child_by_field_name("left") {
             let left_type = self.infer_type(&left, source, type_map);
@@ -1960,7 +1977,7 @@ impl Int30C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) {
         if let Some(left) = node.child_by_field_name("left") {
             let left_type = self.infer_type(&left, source, type_map);
@@ -2006,7 +2023,7 @@ impl Int30C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) {
         // Skip increments/decrements that are the update clause of a for-loop.
         // The loop condition inherently bounds the variable.
@@ -2119,7 +2136,7 @@ impl Int30C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) {
         if let Some(function_node) = node.child_by_field_name("function") {
             let function_name = &source[function_node.start_byte()..function_node.end_byte()];
@@ -2167,7 +2184,7 @@ impl Int30C {
         source: &str,
         function_name: &str,
         violations: &mut Vec<RuleViolation>,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) {
         let is_size_arg = |idx: usize| match function_name {
             "realloc" => idx == 1,
@@ -2349,7 +2366,7 @@ impl Int30C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) -> bool {
         match node.kind() {
             "parenthesized_expression" => node
@@ -2597,7 +2614,7 @@ impl Int30C {
         const_eval::try_evaluate_range_with(node, source, &macros, &var_ranges, &self.constant)
     }
 
-    fn infer_type(&self, node: &Node, source: &str, type_map: &HashMap<String, String>) -> String {
+    fn infer_type(&self, node: &Node, source: &str, type_map: &FileTypes) -> String {
         let text = get_node_text(node, source);
 
         // Cast expressions: extract the actual target type from the type descriptor.
@@ -3068,12 +3085,7 @@ impl Int30C {
     /// For a cast_expression node, return the type of the inner (pre-cast) value.
     /// For non-cast nodes, return None. This lets callers see through widening casts
     /// like `(uint32_t)narrow_var` to detect that the original value is narrow.
-    fn get_pre_cast_type(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &HashMap<String, String>,
-    ) -> Option<String> {
+    fn get_pre_cast_type(&self, node: &Node, source: &str, type_map: &FileTypes) -> Option<String> {
         if node.kind() == "cast_expression" {
             if let Some(value) = node.child_by_field_name("value") {
                 let inner_type = self.infer_type(&value, source, type_map);
@@ -3230,12 +3242,7 @@ impl Int30C {
     }
 
     /// Return the effective (pre-cast if applicable) type of an operand.
-    fn effective_operand_type(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &HashMap<String, String>,
-    ) -> String {
+    fn effective_operand_type(&self, node: &Node, source: &str, type_map: &FileTypes) -> String {
         if let Some(pre) = self.get_pre_cast_type(node, source, type_map) {
             return pre;
         }
@@ -3253,7 +3260,7 @@ impl Int30C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) -> bool {
         if node.kind() != "cast_expression" {
             return false;
@@ -3299,7 +3306,7 @@ impl Int30C {
         left: &Node,
         right: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) -> bool {
         let l = self.effective_operand_type(left, source, type_map);
         let r = self.effective_operand_type(right, source, type_map);
@@ -3314,7 +3321,7 @@ impl Int30C {
         left: &Node,
         right: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) -> bool {
         let macros = self.current_macros.borrow();
         let check = |narrow: &Node, small: &Node| -> bool {
@@ -3341,7 +3348,7 @@ impl Int30C {
         left: &Node,
         right: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) -> bool {
         // The bound is a 32-bit int's; a model that does not fix int's width
         // proves nothing here.
@@ -3387,12 +3394,7 @@ impl Int30C {
     /// any width the operation can have on a target the model allows. Whether the width is actually
     /// KNOWN is `arith_width_known`'s question, and the one the
     /// definite-wrap channel has to ask.
-    fn arith_width_bits(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &HashMap<String, String>,
-    ) -> u32 {
+    fn arith_width_bits(&self, node: &Node, source: &str, type_map: &FileTypes) -> u32 {
         self.arith_width_known(node, source, type_map)
             .unwrap_or_else(|| self.promoted_bits())
     }
@@ -3409,12 +3411,7 @@ impl Int30C {
     /// width to definitely exceed, so the honest answer is the same one
     /// INT32-C gives an unresolvable alias -- not applicable -- rather than
     /// the narrowest guess.
-    fn arith_width_known(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &HashMap<String, String>,
-    ) -> Option<u32> {
+    fn arith_width_known(&self, node: &Node, source: &str, type_map: &FileTypes) -> Option<u32> {
         let width =
             |n: Option<Node>| -> Option<u32> { self.operand_width(&n?, source, type_map, 0) };
         match node.kind() {
@@ -3481,7 +3478,7 @@ impl Int30C {
         &self,
         node: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
         depth: u32,
     ) -> Option<u32> {
         if depth > OPERAND_TYPE_MAX_DEPTH {
@@ -3628,7 +3625,7 @@ impl Int30C {
         left: &Node,
         right: &Node,
         source: &str,
-        type_map: &HashMap<String, String>,
+        type_map: &FileTypes,
     ) -> bool {
         let left_64 = self
             .get_declared_type(left, source, type_map)
@@ -3639,12 +3636,7 @@ impl Int30C {
         left_64 || right_64
     }
 
-    fn get_declared_type(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &HashMap<String, String>,
-    ) -> Option<String> {
+    fn get_declared_type(&self, node: &Node, source: &str, type_map: &FileTypes) -> Option<String> {
         match node.kind() {
             "identifier" => self
                 .identifier_type(node, source, type_map)
