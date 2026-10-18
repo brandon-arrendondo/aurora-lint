@@ -932,6 +932,13 @@ pub(crate) fn take_climbs_and_descents() -> (usize, usize) {
     )
 }
 
+/// Items [`ScopeDeclarations`] asked whether they bind a name on this
+/// thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_binder_reads() -> usize {
+    BINDER_READS.with(|n| n.replace(0))
+}
+
 /// Statements [`ScopeDeclarations`] read on this thread since the last
 /// call: a cache per function reads each scope's once, and a resolution per
 /// identifier reads every enclosing scope's again.
