@@ -445,10 +445,20 @@ pub fn find_enclosing_declaration_for_identifier_in<'a>(
 /// around the identifier straight to the next, so a resolution costs the
 /// scopes around the identifier, not its depth. Hold such a value for a
 /// whole file; the index costs a pass over the tree.
+///
+/// Each scope's declarations, the file-scope items and each function's
+/// parameter declarations are indexed by the names they may bind once a
+/// value has asked of them twice, so a lookup reads the few that may bind
+/// its name rather than all of them: resolving every name of a block, a file
+/// or a parameter list that declares N of them was quadratic in N. A value
+/// asked once, as a free resolver's is, scans as before and builds nothing.
 #[derive(Default)]
 pub struct ScopeDeclarations<'a> {
-    by_scope: std::cell::RefCell<HashMap<usize, std::rc::Rc<[Node<'a>]>>>,
-    globals: std::cell::RefCell<HashMap<usize, std::rc::Rc<[Node<'a>]>>>,
+    by_scope: std::cell::RefCell<HashMap<usize, std::rc::Rc<Binders<'a>>>>,
+    globals: std::cell::RefCell<HashMap<usize, std::rc::Rc<Binders<'a>>>>,
+    /// Each function's parameters as [`get_function_parameters`] reads them,
+    /// and its `parameter_declaration`s, by the function's id.
+    parameters: std::cell::RefCell<HashMap<usize, std::rc::Rc<FunctionParameters<'a>>>>,
     /// The root to index, and the index once a resolution asks for it.
     indexed_root: Option<Node<'a>>,
     index: std::cell::OnceCell<std::rc::Rc<ScopeIndex<'a>>>,
@@ -487,6 +497,150 @@ impl<'a> ScopeIndex<'a> {
 /// [`containing_function_on_path`] the function definitions.
 fn read_by_resolution(node: &Node) -> bool {
     is_declaration_scope(node) || node.kind() == "function_definition"
+}
+
+/// The items of one scope, the file scope or a parameter list that may bind
+/// a name, in source order, and once asked of twice, the ones that may bind
+/// each name ([`binder_names`]), in the same order.
+pub(crate) struct Binders<'a> {
+    items: std::rc::Rc<[Node<'a>]>,
+    asked: std::cell::Cell<bool>,
+    by_name: std::cell::OnceCell<HashMap<String, Vec<Node<'a>>>>,
+}
+
+impl<'a> Binders<'a> {
+    fn new(items: std::rc::Rc<[Node<'a>]>) -> Self {
+        Self {
+            items,
+            asked: std::cell::Cell::new(false),
+            by_name: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The items that may bind `name`, in source order: every item the first
+    /// time, which costs a scan and no index; from the second, only those
+    /// [`binder_names`] lists under `name`. Every item that binds `name`
+    /// either way, so a caller asking which one does gets the same answer.
+    fn may_bind(&self, name: &str, source: &str) -> &[Node<'a>] {
+        let candidates = self.candidates(name, source);
+        #[cfg(test)]
+        BINDER_READS.with(|n| n.set(n.get() + candidates.len()));
+        candidates
+    }
+
+    fn candidates(&self, name: &str, source: &str) -> &[Node<'a>] {
+        if !self.asked.replace(true) {
+            return &self.items;
+        }
+        let by_name = self.by_name.get_or_init(|| {
+            let mut by_name: HashMap<String, Vec<Node<'a>>> = HashMap::new();
+            for item in self.items.iter() {
+                for bound in binder_names(item, source) {
+                    let candidates = by_name.entry(bound).or_default();
+                    // `int a, a;` lists one item twice under one name.
+                    if candidates.last().map(|c| c.id()) != Some(item.id()) {
+                        candidates.push(*item);
+                    }
+                }
+            }
+            by_name
+        });
+        by_name.get(name).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// One function's parameters: the `(name, type)` pairs
+/// [`get_function_parameters`] reads, and its `parameter_declaration`s.
+struct FunctionParameters<'a> {
+    listed: Option<Vec<(String, String)>>,
+    /// Each name's first pair in `listed`, once asked of twice.
+    asked: std::cell::Cell<bool>,
+    first: std::cell::OnceCell<HashMap<String, usize>>,
+    declarations: Binders<'a>,
+}
+
+impl<'a> FunctionParameters<'a> {
+    fn of(function: &Node<'a>, source: &str) -> Self {
+        let declarations: std::rc::Rc<[Node<'a>]> = find_function_declarator(function)
+            .and_then(|d| d.child_by_field_name("parameters"))
+            .map(|params| {
+                params
+                    .child_nodes()
+                    .filter(|p| p.kind() == "parameter_declaration")
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            listed: get_function_parameters(function, source),
+            asked: std::cell::Cell::new(false),
+            first: std::cell::OnceCell::new(),
+            declarations: Binders::new(declarations),
+        }
+    }
+
+    /// The type of the first parameter [`get_function_parameters`] lists
+    /// under `name`.
+    fn type_of(&self, name: &str) -> Option<&str> {
+        let listed = self.listed.as_ref()?;
+        let index = if self.asked.replace(true) {
+            *self
+                .first
+                .get_or_init(|| {
+                    let mut first = HashMap::new();
+                    for (i, (n, _)) in listed.iter().enumerate() {
+                        first.entry(n.clone()).or_insert(i);
+                    }
+                    first
+                })
+                .get(name)?
+        } else {
+            #[cfg(test)]
+            BINDER_READS.with(|n| n.set(n.get() + listed.len()));
+            listed.iter().position(|(n, _)| n == name)?
+        };
+        Some(&listed[index].1)
+    }
+
+    /// The `parameter_declaration` binding `name`, as
+    /// [`find_parameter_declaration`] finds it.
+    fn declaration(&self, name: &str, source: &str) -> Option<Node<'a>> {
+        self.declarations
+            .may_bind(name, source)
+            .iter()
+            .copied()
+            .find(|p| declaration_declarator_for(p, name, source).is_some())
+    }
+}
+
+/// Every name [`declaration_declarator_for`] compares a declarator of
+/// `decl_node` to: a superset of the names it binds, since that function
+/// asks more of a misparsed statement once the name matches. Keying an index
+/// by these loses no binding.
+fn binder_names(decl_node: &Node, source: &str) -> Vec<String> {
+    if decl_node.kind() == "expression_statement" {
+        if let Some(parts) = misparsed_parts(decl_node) {
+            return vec![get_node_text(&parts.declared, source).to_string()];
+        }
+        return paren_declarator_parts(decl_node).map_or_else(Vec::new, |parts| {
+            parts
+                .declared
+                .iter()
+                .map(|d| get_node_text(d, source).to_string())
+                .collect()
+        });
+    }
+    let mut names = Vec::new();
+    for child in decl_node.child_nodes() {
+        let declarator = match child.kind() {
+            "init_declarator" => child.child_by_field_name("declarator").unwrap_or(child),
+            "identifier" | "pointer_declarator" | "array_declarator" | "function_declarator" => {
+                child
+            }
+            _ => continue,
+        };
+        names.push(get_identifier_from_declarator(&declarator, source));
+    }
+    names
 }
 
 impl<'a> ScopeDeclarations<'a> {
@@ -574,7 +728,7 @@ impl<'a> ScopeDeclarations<'a> {
         ancestors_from_root(root, ident_node)
     }
 
-    fn of(&self, scope: &Node<'a>, source: &str) -> std::rc::Rc<[Node<'a>]> {
+    fn of(&self, scope: &Node<'a>, source: &str) -> std::rc::Rc<Binders<'a>> {
         if let Some(known) = self.by_scope.borrow().get(&scope.id()) {
             return known.clone();
         }
@@ -584,7 +738,7 @@ impl<'a> ScopeDeclarations<'a> {
         SCOPE_STATEMENT_READS.with(|n| n.set(n.get() + scope.named_child_count()));
         let mut declarations = Vec::new();
         collect_declarations_transparent_to_preproc(scope, source, &mut declarations);
-        let declarations: std::rc::Rc<[Node<'a>]> = declarations.into();
+        let declarations = std::rc::Rc::new(Binders::new(declarations.into()));
         self.by_scope
             .borrow_mut()
             .insert(scope.id(), declarations.clone());
@@ -594,15 +748,29 @@ impl<'a> ScopeDeclarations<'a> {
     /// The items among [`top_level_items_outside_arms`] of the translation
     /// unit `top` that can bind a name ([`binds_at_file_scope`]), in its
     /// order.
-    fn globals(&self, top: &Node<'a>) -> std::rc::Rc<[Node<'a>]> {
+    fn globals(&self, top: &Node<'a>) -> std::rc::Rc<Binders<'a>> {
         if let Some(known) = self.globals.borrow().get(&top.id()) {
             return known.clone();
         }
-        let globals: std::rc::Rc<[Node<'a>]> = top_level_items_outside_arms(*top)
-            .filter(binds_at_file_scope)
-            .collect();
+        let globals = std::rc::Rc::new(Binders::new(
+            top_level_items_outside_arms(*top)
+                .filter(binds_at_file_scope)
+                .collect(),
+        ));
         self.globals.borrow_mut().insert(top.id(), globals.clone());
         globals
+    }
+
+    /// `function`'s parameters, read once for every name resolved in it.
+    fn parameters(&self, function: &Node<'a>, source: &str) -> std::rc::Rc<FunctionParameters<'a>> {
+        if let Some(known) = self.parameters.borrow().get(&function.id()) {
+            return known.clone();
+        }
+        let parameters = std::rc::Rc::new(FunctionParameters::of(function, source));
+        self.parameters
+            .borrow_mut()
+            .insert(function.id(), parameters.clone());
+        parameters
     }
 
     /// [`find_enclosing_declaration_for_identifier_in`].
@@ -617,6 +785,18 @@ impl<'a> ScopeDeclarations<'a> {
             return find_enclosing_declaration_for_identifier_climbing(ident_node, name, source);
         };
         scope_chain_declaration(root, &path, ident_node, name, source, self)
+    }
+
+    /// [`find_declaration_in_scope_chain`], reading each scope's
+    /// declarations through this value.
+    pub fn find_declaration_in_scope_chain(
+        &self,
+        scopes: &[Node<'a>],
+        ident_start: usize,
+        name: &str,
+        source: &str,
+    ) -> Option<Node<'a>> {
+        declaration_in_scopes(scopes, ident_start, name, source, self)
     }
 
     /// [`resolve_identifier_binding_in`].
@@ -728,6 +908,10 @@ thread_local! {
     static CLIMBS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// How many descents [`ancestors_from_root`] made on this thread.
     static DESCENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many items [`ScopeDeclarations`] asked whether they bind a name:
+    /// a scope's, the file scope's or a parameter list's, all of them when
+    /// it scans and the name's own when it reads its index.
+    static BINDER_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Walks of a translation unit's top level outside `#if` arms
@@ -848,8 +1032,9 @@ fn declaration_in_scopes<'a>(
     declarations: &ScopeDeclarations<'a>,
 ) -> Option<Node<'a>> {
     for scope in scopes {
-        let best = declarations
-            .of(scope, source)
+        let binders = declarations.of(scope, source);
+        let best = binders
+            .may_bind(name, source)
             .iter()
             .copied()
             .filter(|child| {
@@ -2051,7 +2236,9 @@ fn declarator_on_path<'a>(
         IdentifierBinding::Local(decl) | IdentifierBinding::Global(decl) => decl,
         IdentifierBinding::Parameter(_) => {
             let func = containing_function_on_path(root, path)?;
-            find_parameter_declaration(&func, name, source)?
+            declarations
+                .parameters(&func, source)
+                .declaration(name, source)?
         }
     };
     let declarator = declaration_declarator_for(&decl, name, source)?;
@@ -2302,15 +2489,14 @@ fn binding_on_path<'a>(
         return Some(IdentifierBinding::Local(decl));
     }
     if let Some(func) = containing_function_on_path(root, path) {
-        if let Some(params) = get_function_parameters(&func, source) {
-            if let Some((_, ptype)) = params.iter().find(|(n, _)| n == name) {
-                return Some(IdentifierBinding::Parameter(ptype.clone()));
-            }
+        if let Some(ptype) = declarations.parameters(&func, source).type_of(name) {
+            return Some(IdentifierBinding::Parameter(ptype.to_string()));
         }
     }
     // The climbing version's translation unit is the topmost ancestor.
     let top = std::iter::once(*root).chain(path.iter().copied()).next()?;
-    file_scope_binder(declarations.globals(&top).iter().copied(), name, source)
+    let globals = declarations.globals(&top);
+    file_scope_binder(globals.may_bind(name, source).iter().copied(), name, source)
         .map(IdentifierBinding::Global)
 }
 
