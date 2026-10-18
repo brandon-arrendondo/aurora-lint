@@ -310,8 +310,12 @@ fn precedes_call_arguments(code: &[String], k: usize, at: usize) -> bool {
     if before.ends_with([')', ']']) {
         return true;
     }
+    // The word starts after the last character that cannot be in a name. A
+    // non-ASCII character can (a combining mark continues one, though it is
+    // not alphanumeric), and only ASCII ends one, so the start stays on a
+    // character boundary.
     let word_start = before
-        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .rfind(|c: char| c.is_ascii() && !(c.is_ascii_alphanumeric() || c == '_'))
         .map_or(0, |p| p + 1);
     let word = &before[word_start..];
     let is_name = word
@@ -805,6 +809,25 @@ void f(int a) {
 }
 ";
         assert_eq!(blank_paren_guarded_preproc(src), src);
+    }
+
+    /// A combining mark is not alphanumeric but continues a name (C11 Annex
+    /// D), and it is two bytes long: `if\u{301}` is one word, not `if`.
+    #[test]
+    fn a_multibyte_character_ending_the_word_before_the_parenthesis() {
+        let src = "\
+int f(int a) {
+  if\u{301} (a &&
+#if 1
+      a > 1
+#else
+      a > 2
+#endif
+     ) return 1;
+  return 0;
+}
+";
+        fixed(src);
     }
 
     #[test]

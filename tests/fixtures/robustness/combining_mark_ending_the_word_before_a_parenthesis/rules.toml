@@ -1,0 +1,8 @@
+[metadata]
+name = "One rule, for a crash before any rule runs"
+version = "1.0.0"
+description = "This input once crashed the parse that resolves a file's includes, before any rule ran, so any one rule reaches it"
+cert_version = "2016"
+
+[rules.cert_c.EXP33-C]
+enabled = true

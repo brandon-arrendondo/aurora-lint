@@ -874,9 +874,11 @@ fn assert_scans_cleanly_with(
     if problems.is_empty() {
         return;
     }
-    // A scan a signal ended names no case (the abort comes before any
-    // failure line), so keep them all: the culprit is among them.
-    if failed.is_empty() && !matches!(scan.end, End::Exited(_)) {
+    // A scan a signal ended, or a panic outside containment exited (101),
+    // names no case (the abort comes before any failure line), so keep them
+    // all: the culprit is among them.
+    let crashed = !matches!(scan.end, End::Exited(0 | 1 | 3));
+    if failed.is_empty() && crashed {
         failed.extend(cases);
     }
     failed.sort_by(|a, b| a.name.cmp(&b.name));
@@ -901,7 +903,22 @@ fn assert_scans_cleanly_with(
         keep.display(),
         keep.display()
     );
-    if !failed.is_empty() || !matches!(scan.end, End::Exited(_)) {
+    // A panic that escaped containment prints its message (the line after
+    // `panicked at`) wherever it fell in the output, maybe above the tail.
+    if crashed {
+        let lines: Vec<&str> = scan.stderr.lines().collect();
+        for (i, l) in lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.contains("panicked at"))
+        {
+            let _ = writeln!(msg, "panic:\n  {l}");
+            if let Some(next) = lines.get(i + 1) {
+                let _ = writeln!(msg, "  {next}");
+            }
+        }
+    }
+    if !failed.is_empty() || crashed {
         let tail: Vec<&str> = scan.stderr.lines().rev().take(20).collect();
         let _ = writeln!(
             msg,
