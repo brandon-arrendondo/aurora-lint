@@ -2233,6 +2233,9 @@ pub fn try_evaluate_expr(node: &Node, source: &str, macros: &MacroConstantMap) -
 /// A variable-range table's contents, sorted by name: what names it.
 type RangeTableContents = Vec<(String, i64, i64)>;
 
+/// The most table entries a [`ConstMemo`] keeps copies of, about 16 MB.
+const RANGE_TABLE_ENTRY_BUDGET: usize = 1 << 18;
+
 /// Facts about the sub-expressions of one tree under one macro table,
 /// remembered by node id for a caller that evaluates every operator of an
 /// expression: each evaluation otherwise walks its operand's whole subtree
@@ -2253,8 +2256,15 @@ pub struct ConstMemo {
     ranges: std::cell::RefCell<HashMap<(usize, usize), Option<ValueRange>>>,
     /// `(node id, range table id)` -> lower bound.
     lower_bounds: std::cell::RefCell<HashMap<(usize, usize), Option<i64>>>,
-    /// Range tables seen so far, by contents, sorted by name.
+    /// Range tables seen lately, by contents, sorted by name: at most
+    /// [`RANGE_TABLE_ENTRY_BUDGET`] entries of them.
     range_tables: std::cell::RefCell<HashMap<RangeTableContents, usize>>,
+    /// Entries held in `range_tables`.
+    range_table_entries: std::cell::Cell<usize>,
+    /// The id the next table read gets. Never reused before
+    /// [`ConstMemo::clear`], so forgetting a table's contents leaves every
+    /// remembered fact true of the id it was remembered under.
+    next_table: std::cell::Cell<usize>,
     /// The table the outermost evaluation in progress was given: its address,
     /// which identifies it while that evaluation borrows it, and its id.
     current_table: std::cell::Cell<Option<(usize, usize)>>,
@@ -2270,6 +2280,8 @@ impl ConstMemo {
         self.ranges.borrow_mut().clear();
         self.lower_bounds.borrow_mut().clear();
         self.range_tables.borrow_mut().clear();
+        self.range_table_entries.set(0);
+        self.next_table.set(0);
         self.current_table.set(None);
         self.pinned_tables.borrow_mut().clear();
     }
@@ -2290,7 +2302,12 @@ impl ConstMemo {
         }
     }
 
-    /// The id of the table that says what `var_ranges` says.
+    /// The id of the table that says what `var_ranges` says, if one said it
+    /// lately. Each table read keeps a copy of its contents, and a caller
+    /// asking at every statement of a long block, over a table of every name
+    /// in it, kept the square of the block; past the budget the copies are
+    /// forgotten, and a table read again gets a new id, which costs it the
+    /// facts remembered under the old one but never a wrong one.
     fn range_table_id(&self, var_ranges: &VarRangeMap) -> usize {
         let mut contents: RangeTableContents = var_ranges
             .iter()
@@ -2298,8 +2315,20 @@ impl ConstMemo {
             .collect();
         contents.sort_unstable();
         let mut tables = self.range_tables.borrow_mut();
-        let next = tables.len();
-        *tables.entry(contents).or_insert(next)
+        if let Some(&id) = tables.get(&contents) {
+            return id;
+        }
+        let held = self.range_table_entries.get() + contents.len();
+        if held > RANGE_TABLE_ENTRY_BUDGET {
+            tables.clear();
+            self.range_table_entries.set(contents.len());
+        } else {
+            self.range_table_entries.set(held);
+        }
+        let id = self.next_table.get();
+        self.next_table.set(id + 1);
+        tables.insert(contents, id);
+        id
     }
 
     /// The id under which to remember a fact about a node evaluated over
@@ -5776,5 +5805,50 @@ void foo() {
             &aliases,
             &known
         ));
+    }
+
+    #[test]
+    fn range_tables_past_the_budget_are_forgotten_and_answers_do_not_change() {
+        let code = "int f(void) { return a + b * 2; }";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+        let mut expr = None;
+        let mut stack = vec![tree.root_node()];
+        while let Some(n) = stack.pop() {
+            if n.kind() == "binary_expression" && expr.is_none() {
+                expr = Some(n);
+            }
+            stack.extend((0..n.child_count()).filter_map(|i| n.child(i)));
+        }
+        let expr = expr.unwrap();
+        let macros = MacroConstantMap::default();
+        let memo = ConstMemo::default();
+        // Tables of every name at every point of a 1000-statement block:
+        // 500,500 entries in all, twice the budget.
+        let table = |i: i64| -> VarRangeMap {
+            let mut t: VarRangeMap = (0..i)
+                .map(|k| (format!("v{k}"), ValueRange::new(k, k)))
+                .collect();
+            t.insert("a".to_string(), ValueRange::new(i % 17, i % 17 + 1));
+            t.insert("b".to_string(), ValueRange::new(-(i % 5), i % 5));
+            t
+        };
+        let mut most = 0;
+        for pass in 0..2 {
+            for i in 0..1000 {
+                let t = table(i);
+                let memoized = try_evaluate_range_with(&expr, code, &macros, &t, &memo);
+                assert_eq!(
+                    memoized,
+                    try_evaluate_range(&expr, code, &macros, &t),
+                    "{pass} {i}"
+                );
+                most = most.max(memo.range_table_entries.get());
+            }
+        }
+        assert!(most <= RANGE_TABLE_ENTRY_BUDGET, "held {most} entries");
+        let counted: usize = memo.range_tables.borrow().keys().map(Vec::len).sum();
+        assert_eq!(counted, memo.range_table_entries.get());
     }
 }
