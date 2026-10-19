@@ -596,6 +596,7 @@ fn findings_at(
         test_path,
         &tree.root_node(),
         &source,
+        &raw,
         &context,
         rule.needs_vra(),
     );

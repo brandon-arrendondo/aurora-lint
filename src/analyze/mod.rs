@@ -1433,6 +1433,7 @@ fn analyze_one_file(
             std::path::Path::new(file_path),
             &root_node,
             &source,
+            &original,
             context,
             needs_vra,
         );
@@ -1938,6 +1939,8 @@ pub(crate) struct FileAnalysis {
     pub(crate) vra_results: HashMap<usize, value_range::RangeAnalysisResult>,
     pub(crate) visible_types: context::VisibleTypes,
     pub(crate) file_path: std::path::PathBuf,
+    /// The file as read, before the parser's repair passes.
+    pub(crate) original: std::sync::Arc<str>,
 }
 
 impl FileAnalysis {
@@ -1947,6 +1950,7 @@ impl FileAnalysis {
         rule.set_function_cfgs(&self.function_cfgs);
         rule.set_visible_types(&self.visible_types);
         rule.set_file_path(&self.file_path);
+        rule.set_original_source(&self.original);
         if !self.vra_results.is_empty() {
             rule.set_vra_results(&self.vra_results);
         }
@@ -1958,6 +1962,7 @@ pub(crate) fn build_file_analysis(
     file_path: &std::path::Path,
     root_node: &tree_sitter::Node,
     source: &str,
+    original: &str,
     context: &context::ProjectContext,
     needs_vra: bool,
 ) -> FileAnalysis {
@@ -1981,6 +1986,7 @@ pub(crate) fn build_file_analysis(
         vra_results,
         visible_types: context::VisibleTypes::for_file(context, root_node, source),
         file_path: file_path.to_path_buf(),
+        original: std::sync::Arc::from(original),
     }
 }
 

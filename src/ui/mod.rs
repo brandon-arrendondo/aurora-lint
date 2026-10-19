@@ -2263,6 +2263,7 @@ impl TerminalUI {
                     std::path::Path::new(file_path),
                     &tree.root_node(),
                     &source,
+                    &original,
                     &context,
                     needs_vra,
                 );

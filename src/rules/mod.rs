@@ -116,6 +116,12 @@ pub trait CertRule {
     /// (its include closure) keeps it.
     fn set_file_path(&self, _path: &std::path::Path) {}
 
+    /// Inject the file about to be checked as read, before the parser's
+    /// repair passes: the same length and lines as the source `check` gets,
+    /// but with every directive and token the preprocessor sees. Called
+    /// with the rest of the per-file state. Default is a no-op.
+    fn set_original_source(&self, _original: &std::sync::Arc<str>) {}
+
     /// Returns true if this rule applies to the given file path.
     /// Default: applies to all files. Override for rules that are
     /// specific to a file type (e.g. header-only rules like PRE06-C).

@@ -25,6 +25,9 @@ use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Exp34C {
+    /// The file being checked as read, before the parser's repair passes:
+    /// what the preprocessor reads its directives from.
+    original_source: RefCell<Arc<str>>,
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     /// Null states for file-scope (static/global) pointer variables,
@@ -62,6 +65,7 @@ pub struct Exp34C {
 impl Exp34C {
     pub fn new() -> Self {
         Self {
+            original_source: RefCell::new(Arc::from("")),
             function_summaries: RefCell::default(),
             function_cfgs: RefCell::new(HashMap::new()),
             file_global_states: RefCell::new(StateMap::new()),
@@ -186,6 +190,10 @@ impl CertRule for Exp34C {
         *self.function_cfgs.borrow_mut() = cfgs.clone();
     }
 
+    fn set_original_source(&self, original: &Arc<str>) {
+        *self.original_source.borrow_mut() = Arc::clone(original);
+    }
+
     fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
         *self.settings.borrow_mut() = Arc::clone(settings);
     }
@@ -200,6 +208,9 @@ impl CertRule for Exp34C {
         let root = *node;
         // Built at the file's first function and shared by all of them.
         let mut declared: Option<Declared> = None;
+        // What no build evaluates is no dereference: `TRACE((..., q->fd))`
+        // under an empty `TRACE`.
+        let mut unevaluated = macro_expand::UnevaluatedArguments::default();
 
         for n in
             query::find_descendants_of_kinds(*node, &["translation_unit", "function_definition"])
@@ -219,6 +230,11 @@ impl CertRule for Exp34C {
                 }
 
                 *self.file_global_states.borrow_mut() = globals;
+                unevaluated = macro_expand::UnevaluatedArguments::of(
+                    node,
+                    source,
+                    &self.original_source.borrow(),
+                );
 
                 // Precompute write-through-param indices for the function-like
                 // macros actually invoked in this file (an earlier fix Part A).
@@ -319,6 +335,7 @@ impl CertRule for Exp34C {
                         &all_macros,
                         &settings,
                         declared,
+                        &unevaluated,
                         &mut violations,
                         &mut reported_vars,
                     );
@@ -337,6 +354,7 @@ impl CertRule for Exp34C {
                         func_name.as_deref(),
                         null_state::NullPolicy::from_settings(&settings),
                         &all_macros,
+                        &unevaluated,
                         &mut violations,
                         &mut reported_vars,
                     );
@@ -414,6 +432,7 @@ fn check_dereferences_cfg<'t>(
     macros: &HashMap<String, FunctionMacro>,
     settings: &AnalysisSettings,
     declared: &Declared<'t>,
+    unevaluated: &macro_expand::UnevaluatedArguments,
     violations: &mut Vec<RuleViolation>,
     reported_vars: &mut ReportedSites<'_>,
 ) {
@@ -426,6 +445,9 @@ fn check_dereferences_cfg<'t>(
             "call_expression",
         ],
     ) {
+        if unevaluated.contains(&n) {
+            continue;
+        }
         let node = &n;
         match node.kind() {
             "pointer_expression" => check_pointer_deref_cfg(
@@ -1658,11 +1680,17 @@ fn check_dereferences_before_null_tests<'t>(
     func_name: Option<&str>,
     policy: null_state::NullPolicy,
     macros: &HashMap<String, FunctionMacro>,
+    unevaluated: &macro_expand::UnevaluatedArguments,
     violations: &mut Vec<RuleViolation>,
     reported_vars: &mut ReportedSites<'_>,
 ) {
     for (var, test) in null_tests(declared, body, source) {
-        let Some(site) = first_dereference_before(&var, &test, declared.tree(), source) else {
+        if unevaluated.contains(&test) {
+            continue;
+        }
+        let Some(site) =
+            first_dereference_before(&var, &test, declared.tree(), source, unevaluated)
+        else {
             continue;
         };
         if asserted_by_the_same_macro(&var, &site, source, macros) {
@@ -1827,12 +1855,14 @@ fn collect_null_tests<'t>(cond: &Node<'t>, source: &str, out: &mut Vec<(String, 
 /// encloses the test (the left operand of an enclosing `&&`/`||` included),
 /// or in a straight-line statement, or an `if` chain's conditions, that
 /// precedes the test in one of its enclosing blocks. A preceding label
-/// ends the search, since a `goto` can enter below the dereference.
+/// ends the search, since a `goto` can enter below the dereference. One in
+/// an argument no build evaluates (`unevaluated`) is not executed.
 fn first_dereference_before<'t>(
     var: &str,
     test: &Node<'t>,
     tree: &NodeIndex<'t>,
     source: &str,
+    unevaluated: &macro_expand::UnevaluatedArguments,
 ) -> Option<Node<'t>> {
     let mut candidates: Vec<Node<'t>> = Vec::new();
     let mut current = *test;
@@ -1898,7 +1928,10 @@ fn first_dereference_before<'t>(
         }
         current = parent;
     }
-    let first = candidates.into_iter().min_by_key(|n| n.start_byte())?;
+    let first = candidates
+        .into_iter()
+        .filter(|n| !unevaluated.contains(n))
+        .min_by_key(|n| n.start_byte())?;
     (!written_between(&current, var, first.end_byte(), test.start_byte(), source)).then_some(first)
 }
 

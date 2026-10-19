@@ -561,7 +561,7 @@ pub fn collect_function_macro_alternatives(source: &str) -> HashMap<String, Vec<
 /// that use `#`/`##`. A question about how often a macro evaluates an
 /// argument must see those arms too, since `#define LOG(...)` in a release
 /// branch is exactly the arm that drops the argument.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct MacroArm {
     /// Named parameters in order, not counting the variadic one.
     pub params: Vec<String>,
@@ -590,7 +590,8 @@ impl From<&FunctionMacro> for MacroArm {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArgEvaluation {
     /// Never: the parameter is absent, or used only as a `#`/`##` operand
-    /// (but see [`Pasting::CallKeepsArguments`]) or inside an operand C11
+    /// (but see [`Pasting::CallKeepsArguments`] and
+    /// [`Pasting::KeepsOtherTokens`]) or inside an operand C11
     /// leaves unevaluated (`sizeof`, `_Alignof`,
     /// `typeof`, a `_Generic` controlling expression).
     Never,
@@ -707,7 +708,7 @@ fn push_arm(out: &mut HashMap<String, Vec<MacroArm>>, name: String, arm: MacroAr
 
 /// Parse one logical line as a function-like `#define`, keeping variadic
 /// and `#`/`##` definitions.
-fn parse_define_arm(line: &str) -> Option<(String, MacroArm)> {
+pub(crate) fn parse_define_arm(line: &str) -> Option<(String, MacroArm)> {
     let s = line.trim_start().strip_prefix('#')?.trim_start();
     let s = s.strip_prefix("define")?;
     if !s.starts_with(|c: char| c.is_whitespace()) {
@@ -880,6 +881,11 @@ pub enum Pasting<'a> {
         /// How a call to the pasted name evaluates its arguments.
         judge: &'a dyn Fn(&str) -> ArgEvaluation,
     },
+    /// The question is about tokens inside a longer argument, which a paste
+    /// of its first or last token leaves in place: `x ## P` with `a + q->n`
+    /// is `xa + q->n`. A parameter that is a `##` operand counts as
+    /// evaluated.
+    KeepsOtherTokens,
 }
 
 /// [`argument_evaluation_through`], told what the invocation passes: under
@@ -1045,16 +1051,8 @@ fn evaluation_at_depth(
                 top.conditional = top.inherited;
                 top.saw_question = false;
             }
-            t if t == target => {
-                let stringized = j > 0 && tokens[j - 1].text == "#";
-                let pasted_before = tokens.get(j + 1).is_some_and(|t| t.text == "##");
-                let pasted_after = j > 0 && tokens[j - 1].text == "##";
-                let pasted_call = pasted_call_evaluation(&tokens, j, pasting);
-                let pasted = pasted_before || (pasted_after && pasted_call.is_none());
-                let through = pasted_call.or(forwarded[j]);
-                if !(stringized || pasted || unevaluated[j])
-                    && through != Some(ArgEvaluation::Never)
-                {
+            t if t == target && !unevaluated[j] => {
+                if let Some(through) = evaluated_occurrence(&tokens, j, pasting, forwarded[j]) {
                     evaluations += 1;
                     conditional |= top.conditional
                         || governed[tokens[j].start]
@@ -1070,6 +1068,26 @@ fn evaluation_at_depth(
         (1, false) => ArgEvaluation::Once,
         _ => ArgEvaluation::Unpredictable,
     }
+}
+
+/// Whether the parameter occurrence at `j` is evaluated, given how the
+/// macros the body passes it to evaluate it (`forwarded`): `None` when it
+/// is not (stringized, pasted, or skipped by every such macro), else how a
+/// pasted call or those macros evaluate it, if either does.
+fn evaluated_occurrence(
+    tokens: &[BodyToken],
+    j: usize,
+    pasting: Pasting,
+    forwarded: Option<ArgEvaluation>,
+) -> Option<Option<ArgEvaluation>> {
+    let stringized = j > 0 && tokens[j - 1].text == "#";
+    let pasted_before = tokens.get(j + 1).is_some_and(|t| t.text == "##");
+    let pasted_after = j > 0 && tokens[j - 1].text == "##";
+    let pasted_call = pasted_call_evaluation(tokens, j, pasting);
+    let pasted = !matches!(pasting, Pasting::KeepsOtherTokens)
+        && (pasted_before || (pasted_after && pasted_call.is_none()));
+    let through = pasted_call.or(forwarded);
+    (!(stringized || pasted) && through != Some(ArgEvaluation::Never)).then_some(through)
 }
 
 /// How the occurrence at `j`, the right operand of `prefix ##` and no left
@@ -3809,6 +3827,179 @@ fn count_assignment_targets(text: &str, ident: &str, rhs_ok: impl Fn(usize) -> b
     found
 }
 
+/// The arguments of function-like macro invocations in one file that no
+/// build evaluates, as byte ranges, for skipping what is written inside
+/// them: `TRACE(("%d", q->fd))` where every definition of `TRACE` in force
+/// at the call drops its parameter.
+///
+/// The definitions in force come from the file's own `#define`s and
+/// `#undef`s before the call ([`ObjectMacroTimeline::function_in_force`]),
+/// every arm the file does not prove dead counting as a build (ADR-0010).
+/// An argument is skipped only when the name is function-like in every
+/// build reaching the call and each definition evaluates it
+/// [`ArgEvaluation::Never`] under [`Pasting::KeepsOtherTokens`] (absent,
+/// only stringized, or only inside `sizeof` and the like), following it
+/// into the function-like macros the definition passes it to as they stand
+/// at the call. A name some build leaves undefined or defines in a header
+/// the file does not show is a call, and its arguments are evaluated, as are
+/// a name's that a header included after its definitions may redefine, and
+/// every name's in a file holding what translation phases 1-3 do not model
+/// ([`ObjectMacroTimeline::preprocessed`]). So are those of
+/// an invocation whose arguments tree-sitter splits differently from the
+/// preprocessor (a comma inside `[]` or `{}`), or that holds an `ERROR`.
+///
+/// [`ObjectMacroTimeline::function_in_force`]:
+///     crate::analyze::check_macros::ObjectMacroTimeline::function_in_force
+/// [`ObjectMacroTimeline::preprocessed`]:
+///     crate::analyze::check_macros::ObjectMacroTimeline::preprocessed
+#[derive(Debug, Default)]
+pub struct UnevaluatedArguments {
+    /// Disjoint byte ranges, sorted.
+    ranges: Vec<(usize, usize)>,
+}
+
+impl UnevaluatedArguments {
+    /// The unevaluated arguments of `root`'s file, `source` as parsed and
+    /// `original` as read: the parser's repair passes may blank a directive
+    /// or the name in one, so the definitions are read from `original`,
+    /// which keeps `source`'s length and lines. Nothing is skipped when the
+    /// two differ in length.
+    pub fn of(root: &Node, source: &str, original: &str) -> Self {
+        if original.len() != source.len() || !original.contains("define") {
+            return Self::default();
+        }
+        let timeline = crate::analyze::check_macros::ObjectMacroTimeline::preprocessed(original);
+        // Which arguments are dropped depends on the name, its argument count
+        // and the definitions in force, which are the same at every line of
+        // one position: a file calling one macro thousands of times after
+        // thousands of definitions of it reads them once.
+        let mut dropped: HashMap<(&str, usize, usize), Option<Vec<bool>>> = HashMap::new();
+        let mut ranges = Vec::new();
+        for call in
+            lang_parsing_substrate::query::find_descendants_of_kind(*root, "call_expression")
+        {
+            let Some(name) = call
+                .child_by_field_name("function")
+                .filter(|f| f.kind() == "identifier")
+                .and_then(|f| f.utf8_text(source.as_bytes()).ok())
+            else {
+                continue;
+            };
+            let Some(list) = call
+                .child_by_field_name("arguments")
+                .filter(|l| !l.has_error())
+            else {
+                continue;
+            };
+            let args: Vec<Node> = list
+                .named_child_nodes()
+                .filter(|a| a.kind() != "comment")
+                .collect();
+            let text = &source[list.start_byte()..list.end_byte()];
+            if preprocessor_argument_count(text) != Some(args.len()) {
+                continue;
+            }
+            let line = call.start_position().row + 1;
+            let key = (name, timeline.position(line), args.len());
+            let verdicts = dropped.entry(key).or_insert_with(|| {
+                let arms = timeline
+                    .function_in_force(name, line)
+                    .filter(|a| !a.is_empty())?;
+                let definitions = |n: &str| timeline.function_in_force(n, line).unwrap_or_default();
+                Some(
+                    (0..args.len())
+                        .map(|i| {
+                            arms.iter().all(|arm| {
+                                argument_evaluation_pasting(
+                                    arm,
+                                    i,
+                                    &definitions,
+                                    Pasting::KeepsOtherTokens,
+                                ) == ArgEvaluation::Never
+                            })
+                        })
+                        .collect(),
+                )
+            });
+            for (arg, _) in args
+                .iter()
+                .zip(verdicts.iter().flatten())
+                .filter(|(_, dropped)| **dropped)
+            {
+                ranges.push((arg.start_byte(), arg.end_byte()));
+            }
+        }
+        ranges.sort_unstable();
+        let mut merged: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+        for (start, end) in ranges {
+            match merged.last_mut() {
+                Some(last) if start <= last.1 => last.1 = last.1.max(end),
+                _ => merged.push((start, end)),
+            }
+        }
+        Self { ranges: merged }
+    }
+
+    /// Whether `node` starts inside an argument no build evaluates.
+    pub fn contains(&self, node: &Node) -> bool {
+        let at = node.start_byte();
+        let k = self.ranges.partition_point(|&(start, _)| start <= at);
+        k > 0 && at < self.ranges[k - 1].1
+    }
+}
+
+/// How many arguments the preprocessor reads in `list`, an argument list's
+/// text with its parentheses: commas split it only outside nested
+/// parentheses, string and character literals and comments (C11 6.10.3p11),
+/// so one inside `[]` or `{}` splits it where tree-sitter does not. `None`
+/// when the parentheses do not balance.
+fn preprocessor_argument_count(list: &str) -> Option<usize> {
+    let bytes = list.as_bytes();
+    let (mut depth, mut commas, mut i, mut empty) = (0i32, 0usize, 0usize, true);
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' | b'\'' => {
+                let quote = bytes[i];
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+                empty = false;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'(' => {
+                depth += 1;
+                empty &= depth == 1;
+            }
+            b')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return None;
+                }
+            }
+            b',' if depth == 1 => commas += 1,
+            c if !c.is_ascii_whitespace() && depth >= 1 => empty = false,
+            _ => {}
+        }
+        i += 1;
+    }
+    if depth != 0 {
+        return None;
+    }
+    Some(if empty { 0 } else { commas + 1 })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3982,6 +4173,83 @@ mod tests {
         let mut p = CParser::new().unwrap();
         let (tree, src) = p.parse_source(src).unwrap();
         collect_function_macros(&tree.root_node(), &src)
+    }
+
+    /// The text of every identifier `q` [`UnevaluatedArguments`] skips in
+    /// `src`, by line.
+    fn skipped_q_lines(src: &str) -> Vec<usize> {
+        let mut p = CParser::new().unwrap();
+        let (tree, src) = p.parse_source(src).unwrap();
+        let root = tree.root_node();
+        let skipped = UnevaluatedArguments::of(&root, &src, &src);
+        lang_parsing_substrate::query::find_descendants_of_kind(root, "identifier")
+            .into_iter()
+            .filter(|i| i.utf8_text(src.as_bytes()) == Ok("q") && skipped.contains(i))
+            .map(|i| i.start_position().row + 1)
+            .collect()
+    }
+
+    #[test]
+    fn an_argument_every_live_definition_drops_is_unevaluated() {
+        let body = "void f(void) {\n T(q->a);\n}\n";
+        // The tracing arm is dead; the live one drops X.
+        let dead = format!("#if 0\n#define T(X) printf X\n#else\n#define T(X)\n#endif\n{body}");
+        assert_eq!(skipped_q_lines(&dead), vec![7]);
+        // An undecided arm that evaluates it counts.
+        let undecided = format!("#ifdef D\n#define T(X) g(X)\n#else\n#define T(X)\n#endif\n{body}");
+        assert!(skipped_q_lines(&undecided).is_empty());
+        // Every arm dropping it, variadic, stringized or under sizeof.
+        for defs in [
+            "#ifdef D\n#define T(X) ((void)0)\n#else\n#define T(X)\n#endif\n",
+            "#define T(...)\n",
+            "#define T(X) puts(#X)\n",
+            "#define T(X) ((void)sizeof(X))\n",
+        ] {
+            assert_eq!(skipped_q_lines(&format!("{defs}{body}")).len(), 1, "{defs}");
+        }
+    }
+
+    #[test]
+    fn an_argument_is_evaluated_where_the_name_may_be_no_macro() {
+        let body = "void f(void) {\n T(q->a);\n}\n";
+        for defs in [
+            // Undefined at the call, in every build or in one.
+            "#define T(X)\n#undef T\n",
+            "#define T(X)\n#ifdef D\n#undef T\n#endif\n",
+            // Only a header the file does not show may define it.
+            "#ifndef T\n#define T(X)\n#endif\n",
+            // Redefined to evaluate it.
+            "#define T(X)\n#undef T\n#define T(X) g(X)\n",
+            // A paste leaves the argument's other tokens in place.
+            "#define T(X) t_ ## X\n",
+        ] {
+            assert!(
+                skipped_q_lines(&format!("{defs}{body}")).is_empty(),
+                "{defs}"
+            );
+        }
+        // Defined only after the call.
+        assert!(skipped_q_lines(&format!("{body}#define T(X)\n")).is_empty());
+    }
+
+    #[test]
+    fn a_dropped_argument_holds_the_macro_calls_inside_it() {
+        let src = "#define L(X) g(X)\n#define T(X)\n#define U(X) L(X)\n\
+                   void f(void) {\n T(L(q->a));\n U(q->b);\n}\n";
+        assert_eq!(skipped_q_lines(src), vec![5]);
+    }
+
+    #[test]
+    fn a_comma_the_preprocessor_splits_on_leaves_the_call_evaluated() {
+        // `{1, q->a}` is two preprocessor arguments and one tree-sitter one.
+        let src = "#define T(X, Y, ...) X, Y\nvoid f(void) {\n T((int[]){1, q->a}, 0);\n}\n";
+        assert!(skipped_q_lines(src).is_empty());
+        assert_eq!(
+            preprocessor_argument_count("(a[1, 2], \"x,y\", /* , */ (b, c))"),
+            Some(4)
+        );
+        assert_eq!(preprocessor_argument_count("( )"), Some(0));
+        assert_eq!(preprocessor_argument_count("(a))"), None);
     }
 
     #[test]
