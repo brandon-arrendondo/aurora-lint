@@ -84,8 +84,10 @@ pub struct RangeAnalysisResult {
     /// state. Lets [`get_all_var_ranges_at`] binary-search for the state at a
     /// given offset instead of replaying the block prefix from scratch on
     /// every query -- the O(n) per-call cost was making any VRA-consuming
-    /// rule O(n^2) in statements-per-block.
-    block_checkpoints: HashMap<BlockId, Vec<(usize, RangeMap)>>,
+    /// rule O(n^2) in statements-per-block. Stored as what each statement
+    /// changed (see [`BlockCheckpoints`]), since a full copy per statement is
+    /// O(n^2) in memory instead.
+    block_checkpoints: HashMap<BlockId, BlockCheckpoints>,
     /// Every statement's byte range across all blocks, sorted by start byte,
     /// for O(log n) "which block contains this offset" lookup in
     /// [`get_all_var_ranges_at`] (replacing a linear scan over every
@@ -1708,7 +1710,7 @@ fn analyze_value_ranges_capped(
     // once here (from the now-converged entry ranges), so point queries in
     // `get_all_var_ranges_at` no longer replay each block prefix from
     // scratch.
-    let mut block_checkpoints: HashMap<BlockId, Vec<(usize, RangeMap)>> = HashMap::new();
+    let mut block_checkpoints: HashMap<BlockId, BlockCheckpoints> = HashMap::new();
     let mut statement_index: Vec<(usize, usize, BlockId)> = Vec::new();
     for block in &cfg.blocks {
         let entry = entry_ranges.get(&block.id).cloned().unwrap_or_default();
@@ -1980,21 +1982,14 @@ pub fn get_all_var_ranges_at(
     // offset (its own effects, e.g. `data = data + 1`, must not be applied
     // before evaluation). Precomputed once per block in `analyze_value_ranges`
     // instead of replayed here on every call.
-    let state = match result.block_checkpoints.get(&block_id) {
-        Some(checkpoints) => {
-            let idx = checkpoints.partition_point(|&(end, _)| end <= byte_offset);
-            if idx == 0 {
-                entry
-            } else {
-                &checkpoints[idx - 1].1
-            }
-        }
-        None => entry,
+    let ranges = match result.block_checkpoints.get(&block_id) {
+        Some(checkpoints) => checkpoints.var_ranges_before(entry, byte_offset),
+        None => extract_var_ranges_from_state(entry),
     };
-    if state.is_empty() {
+    if ranges.is_empty() {
         None
     } else {
-        Some(extract_var_ranges_from_state(state))
+        Some(ranges)
     }
 }
 
@@ -2002,10 +1997,99 @@ pub fn get_all_var_ranges_at(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// The running range-map state after each statement of one block, as what
+/// each statement changed, plus a full copy of the state now and then so a
+/// query replays a bounded run of changes.
+///
+/// A full copy after every statement is quadratic: a block of n statements
+/// that each bind or set a name holds n states of up to n entries. Here a
+/// copy is taken only once the changes since the last one add up to the size
+/// of the state itself (and at least [`SNAPSHOT_MIN_CHANGES`]), so every copy
+/// is paid for by at least as many stored changes and the whole is linear in
+/// the changes. A query starts from the nearest copy before it and replays at
+/// most that many changes, no more than the entries the map it returns
+/// already costs to build.
+#[derive(Clone, Default)]
+pub(crate) struct BlockCheckpoints {
+    /// End byte of each statement, ascending.
+    ends: Vec<usize>,
+    /// What each statement changed: every name whose range it set, with the
+    /// new range, or `None` for a name it dropped.
+    changes: Vec<Vec<(String, Option<TypedRange>)>>,
+    /// Full states after some statements, by statement index, ascending.
+    snapshots: Vec<(usize, RangeMap)>,
+}
+
+/// The fewest changes between two full copies of a block's state, so a block
+/// with a small state is not copied at every statement.
+const SNAPSHOT_MIN_CHANGES: usize = 64;
+
+impl BlockCheckpoints {
+    /// The variable ranges after every statement of the block that ends at or
+    /// before `byte_offset`, starting from the block's `entry` state.
+    fn var_ranges_before(&self, entry: &RangeMap, byte_offset: usize) -> VarRangeMap {
+        let done = self.ends.partition_point(|&end| end <= byte_offset);
+        if done == 0 {
+            return extract_var_ranges_from_state(entry);
+        }
+        let last = done - 1;
+        let copy = self.snapshots.partition_point(|&(i, _)| i <= last);
+        let (mut ranges, from) = match copy {
+            0 => (extract_var_ranges_from_state(entry), 0),
+            _ => {
+                let (i, state) = &self.snapshots[copy - 1];
+                (extract_var_ranges_from_state(state), i + 1)
+            }
+        };
+        for change in &self.changes[from..=last] {
+            for (name, typed) in change {
+                match typed {
+                    Some(typed) => ranges.insert(name.clone(), typed.range),
+                    None => ranges.remove(name),
+                };
+            }
+        }
+        ranges
+    }
+
+    /// Entries held: every stored change plus every entry of every copy.
+    #[cfg(test)]
+    fn stored_entries(&self) -> usize {
+        self.changes.iter().map(Vec::len).sum::<usize>()
+            + self.snapshots.iter().map(|(_, s)| s.len()).sum::<usize>()
+    }
+}
+
+/// What `after` changed relative to `before`: each name whose range differs
+/// or is new, and each name it no longer has.
+fn state_changes(before: &RangeMap, after: &RangeMap) -> Vec<(String, Option<TypedRange>)> {
+    let mut kept = 0;
+    let mut changes = Vec::new();
+    for (name, typed) in after {
+        match before.get(name) {
+            Some(old) => {
+                kept += 1;
+                if old != typed {
+                    changes.push((name.clone(), Some(typed.clone())));
+                }
+            }
+            None => changes.push((name.clone(), Some(typed.clone()))),
+        }
+    }
+    if kept < before.len() {
+        changes.extend(
+            before
+                .keys()
+                .filter(|name| !after.contains_key(*name))
+                .map(|name| (name.clone(), None)),
+        );
+    }
+    changes
+}
+
 /// Build the running range-map state after each statement in `block`, keyed
 /// by that statement's end byte, starting from `entry`. One forward pass per
-/// block, done once in `analyze_value_ranges` rather than once per query
-/// .
+/// block, done once in `analyze_value_ranges` rather than once per query.
 fn build_block_checkpoints(
     entry: &RangeMap,
     block: &BasicBlock,
@@ -2013,11 +2097,17 @@ fn build_block_checkpoints(
     source: &str,
     macros: &MacroConstantMap,
     replay_summaries: &HashMap<String, FunctionSummary>,
-) -> Vec<(usize, RangeMap)> {
+) -> BlockCheckpoints {
     let mut state = entry.clone();
+    let mut before = entry.clone();
     let empty_types = HashMap::new();
     let stmt_nodes = resolve_block_statement_nodes(body, block);
-    let mut checkpoints = Vec::with_capacity(block.statements.len());
+    let mut checkpoints = BlockCheckpoints {
+        ends: Vec::with_capacity(block.statements.len()),
+        changes: Vec::with_capacity(block.statements.len()),
+        snapshots: Vec::new(),
+    };
+    let mut since_copy = 0;
     for (i, &(_start, end)) in block.statements.iter().enumerate() {
         if let Some(stmt_node) = stmt_nodes[i] {
             process_statement_for_ranges(
@@ -2029,7 +2119,20 @@ fn build_block_checkpoints(
                 &empty_types,
             );
         }
-        checkpoints.push((end, state.clone()));
+        let changes = state_changes(&before, &state);
+        for (name, typed) in &changes {
+            match typed {
+                Some(typed) => before.insert(name.clone(), typed.clone()),
+                None => before.remove(name),
+            };
+        }
+        since_copy += changes.len();
+        checkpoints.ends.push(end);
+        checkpoints.changes.push(changes);
+        if since_copy >= state.len().max(SNAPSHOT_MIN_CHANGES) {
+            checkpoints.snapshots.push((i, state.clone()));
+            since_copy = 0;
+        }
     }
     checkpoints
 }
@@ -3362,5 +3465,182 @@ void f(int x) {
             Some((-2147483647, 2147483647))
         );
         assert_eq!(range_of("my_index_t i;", IntFacts::default()), None);
+    }
+
+    /// The ranges after every statement of `block` that ends at or before
+    /// `offset`, replayed from the block's entry the way the full-copy
+    /// checkpoints stored them.
+    fn replayed_ranges(
+        result: &RangeAnalysisResult,
+        block: &BasicBlock,
+        body: &Node,
+        source: &str,
+        macros: &MacroConstantMap,
+        offset: usize,
+    ) -> Option<VarRangeMap> {
+        let mut state = result.block_entry_ranges.get(&block.id)?.clone();
+        let nodes = resolve_block_statement_nodes(body, block);
+        for (i, &(_start, end)) in block.statements.iter().enumerate() {
+            if end > offset {
+                break;
+            }
+            if let Some(node) = nodes[i] {
+                let empty_types = HashMap::new();
+                process_statement_for_ranges(
+                    &node,
+                    source,
+                    macros,
+                    &*result.replay_summaries,
+                    &mut state,
+                    &empty_types,
+                );
+            }
+        }
+        (!state.is_empty()).then(|| extract_var_ranges_from_state(&state))
+    }
+
+    /// Every block's answer at every statement boundary, from the stored
+    /// changes, against a replay from the block's entry.
+    fn assert_checkpoints_replay(code: &str) -> usize {
+        let (tree, source, result) = parse_and_analyze(code);
+        let result = result.expect("the function analyses");
+        let func = find_first_function(&tree.root_node()).unwrap();
+        let body = func.child_by_field_name("body").unwrap();
+        let function_cfg = cfg::build_function_cfg(&func, &source).unwrap();
+        let macros = const_eval::collect_macro_constants(
+            &tree.root_node(),
+            &source,
+            crate::settings::IntFacts::LP64,
+        );
+        let mut queries = 0;
+        for block in &function_cfg.blocks {
+            let mut offsets: Vec<usize> = block
+                .statements
+                .iter()
+                .flat_map(|&(start, end)| [start, start + 1, end - 1, end])
+                .collect();
+            offsets.dedup();
+            for offset in offsets {
+                if find_block_id_containing(&result, &function_cfg, offset) != Some(block.id) {
+                    continue;
+                }
+                let stored =
+                    get_all_var_ranges_at(&result, &function_cfg, &body, &source, &macros, offset);
+                let replayed = replayed_ranges(&result, block, &body, &source, &macros, offset);
+                assert_eq!(stored, replayed, "at byte {offset} of block {:?}", block.id);
+                queries += 1;
+            }
+        }
+        queries
+    }
+
+    fn chained_locals(n: usize) -> String {
+        let mut code = String::from("int chain(int x)\n{\n    int a0 = x;\n");
+        for i in 1..n {
+            code.push_str(&format!("    int a{i} = a{} + x;\n", i - 1));
+        }
+        code.push_str(&format!("    return a{};\n}}\n", n - 1));
+        code
+    }
+
+    fn checkpoint_entries(code: &str) -> usize {
+        let (_tree, _source, result) = parse_and_analyze(code);
+        result
+            .expect("the function analyses")
+            .block_checkpoints
+            .values()
+            .map(BlockCheckpoints::stored_entries)
+            .sum()
+    }
+
+    #[test]
+    fn stored_changes_answer_as_a_replay_from_the_block_entry_does() {
+        // Long enough to cross several full copies, with names set again,
+        // narrowed by branches, and left alone across blocks.
+        let mut code = String::from("int f(int x, unsigned u)\n{\n    int t = 0;\n");
+        for i in 0..160 {
+            code.push_str(&format!("    int v{i} = x + {i};\n"));
+            if i % 7 == 0 {
+                code.push_str(&format!("    t = v{i} / 2;\n"));
+            }
+            if i % 40 == 0 {
+                code.push_str(&format!(
+                    "    if (u < {i}u) {{ t = (int)u; v{i} = 3; }} else {{ x = 1; }}\n"
+                ));
+            }
+        }
+        code.push_str("    for (int k = 0; k < 10; k++) { t += k; }\n    return t;\n}\n");
+        assert!(assert_checkpoints_replay(&code) > 600);
+        assert!(assert_checkpoints_replay(&chained_locals(200)) > 700);
+        assert!(assert_checkpoints_replay("int g(int x) { return x; }\n") > 0);
+
+        // Few names set many times: copies are taken, and answers between
+        // them still replay from the copy before.
+        let mut code = String::from("int h(int x)\n{\n    int p = 0, q = 1, r = 2;\n");
+        for i in 0..120 {
+            code.push_str(&format!("    p = {i};\n    q = p + 1;\n    r = q * 2;\n"));
+        }
+        code.push_str("    return p + q + r;\n}\n");
+        let (_tree, _source, result) = parse_and_analyze(&code);
+        let copies: usize = result
+            .unwrap()
+            .block_checkpoints
+            .values()
+            .map(|c| c.snapshots.len())
+            .sum();
+        assert!(copies >= 5, "{copies} copies");
+        assert!(assert_checkpoints_replay(&code) > 1200);
+    }
+
+    #[test]
+    fn a_change_that_drops_a_name_replays_as_dropped() {
+        let typed = |lo, hi| TypedRange {
+            range: ValueRange::new(lo, hi),
+            var_type: None,
+        };
+        let before: RangeMap = [
+            ("a".to_string(), typed(0, 1)),
+            ("b".to_string(), typed(2, 3)),
+        ]
+        .into();
+        let after: RangeMap = [
+            ("b".to_string(), typed(2, 4)),
+            ("c".to_string(), typed(5, 5)),
+        ]
+        .into();
+        let mut changes = state_changes(&before, &after);
+        changes.sort_by(|x, y| x.0.cmp(&y.0));
+        assert_eq!(
+            changes,
+            vec![
+                ("a".to_string(), None),
+                ("b".to_string(), Some(typed(2, 4))),
+                ("c".to_string(), Some(typed(5, 5))),
+            ]
+        );
+        let checkpoints = BlockCheckpoints {
+            ends: vec![10],
+            changes: vec![changes],
+            snapshots: Vec::new(),
+        };
+        let ranges = checkpoints.var_ranges_before(&before, 10);
+        assert_eq!(ranges, extract_var_ranges_from_state(&after));
+        assert_eq!(
+            checkpoints.var_ranges_before(&before, 9),
+            extract_var_ranges_from_state(&before)
+        );
+    }
+
+    #[test]
+    fn a_block_of_n_bindings_stores_linearly_many_entries() {
+        // One block binding n names in turn: a full copy per statement held
+        // n * (n + 1) / 2 entries (125250 at 500, 500500 at 1000).
+        for n in [500, 1000] {
+            let entries = checkpoint_entries(&chained_locals(n));
+            assert!(entries <= 3 * n, "{n} bindings stored {entries} entries");
+        }
+        let small = checkpoint_entries(&chained_locals(500));
+        let large = checkpoint_entries(&chained_locals(1000));
+        assert!(large <= 2 * small + 64, "500 -> {small}, 1000 -> {large}");
     }
 }
