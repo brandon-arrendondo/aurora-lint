@@ -164,13 +164,12 @@ impl Dcl10C {
     }
 
     fn extract_string_literal(&self, text: &str) -> Option<String> {
+        // Remove quotes. A lone `"` (an unterminated literal) is no literal:
+        // its one quote cannot both open and close it.
         let text = text.trim();
-        if text.starts_with('"') && text.ends_with('"') {
-            // Remove quotes
-            Some(text[1..text.len() - 1].to_string())
-        } else {
-            None
-        }
+        text.strip_prefix('"')?
+            .strip_suffix('"')
+            .map(str::to_string)
     }
 
     fn count_format_specifiers(&self, format_string: &str) -> usize {
