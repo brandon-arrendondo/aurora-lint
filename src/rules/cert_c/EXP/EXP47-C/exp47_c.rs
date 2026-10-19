@@ -251,9 +251,10 @@ impl Exp47C {
             let at = search_from + pos;
             search_from = at + "va_arg(".len();
             // The whole identifier ending here must be a va_arg spelling: a
-            // longer name such as `my_va_arg` is a different function.
+            // longer name such as `my_va_arg` is a different function. A
+            // non-ASCII character continues a name, so only ASCII ends one.
             let start = text[..at]
-                .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .rfind(|c: char| c.is_ascii() && !(c.is_ascii_alphanumeric() || c == '_'))
                 .map_or(0, |i| i + 1);
             if !is_va_arg_name(&text[start..at + "va_arg".len()]) {
                 continue;

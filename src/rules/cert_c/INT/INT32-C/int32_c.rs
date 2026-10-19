@@ -17,7 +17,7 @@ use crate::utility::cert_c::ast_utils::{
     self, get_node_text, get_sanitized_node_text, ScopeDeclarations,
 };
 use crate::utility::cert_c::data_model::{self, Rank};
-use crate::utility::cert_c::expr_type::{integer_literal_width, TypeEnv};
+use crate::utility::cert_c::expr_type::{integer_literal_width, FileTypes, TypeEnv};
 use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
@@ -461,35 +461,6 @@ fn quoted_expression(message: &str) -> Option<String> {
     let end = message.rfind('\'')?;
     let start = message[..end].rfind('\'')?;
     Some(message[start + 1..end].to_string())
-}
-
-/// The `name -> type` map one function's types are asked under, with the
-/// file's environment, whose index resolves each identifier to the
-/// declaration that binds that occurrence (ADR-0006) without a descent from
-/// the root per identifier. Dereferences to the map, which every type
-/// question below also reads.
-struct FileTypes<'m, 'a> {
-    map: &'m HashMap<String, String>,
-    env: &'m TypeEnv<'a>,
-}
-
-impl std::ops::Deref for FileTypes<'_, '_> {
-    type Target = HashMap<String, String>;
-
-    fn deref(&self) -> &Self::Target {
-        self.map
-    }
-}
-
-impl FileTypes<'_, '_> {
-    /// [`ast_utils::resolve_identifier_declared_type`], through the file's
-    /// index when `ident` is in its tree.
-    fn declared_type(&self, ident: &Node, name: &str, source: &str) -> Option<String> {
-        self.env
-            .declarations()
-            .and_then(|d| d.resolve_identifier_declared_type_indexed(ident, name, source))
-            .unwrap_or_else(|| ast_utils::resolve_identifier_declared_type(ident, name, source))
-    }
 }
 
 impl Int32C {

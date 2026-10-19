@@ -7254,6 +7254,32 @@ fn an_incomplete_prescan_is_reported_and_not_cached() {
     assert!(!cache.exists());
 }
 
+/// A crash while parsing a file to resolve its includes costs that file's
+/// facts and is reported once, like a crash in its prescan; it does not end
+/// the scan with the panic's exit code.
+#[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "AURORA_LINT_TEST_FAIL hook is debug-only"
+)]
+fn a_crash_reading_a_file_for_its_includes_is_contained_and_reported_once() {
+    let dir = copies_of_violation(1);
+    let (code, _, stderr) = run_failing(
+        "header-read:panic",
+        &[
+            dir.path().to_str().unwrap(),
+            "-m",
+            manifest_msc04().to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 3, "{stderr}");
+    assert_eq!(
+        stderr.matches("prescan failure (crashed): ").count(),
+        1,
+        "{stderr}"
+    );
+}
+
 // ── Input guard: non-source and oversized files (ADR-0017) ─────────────────
 
 /// The first 64 bytes of a 64-bit ELF file: enough for a magic-number match.

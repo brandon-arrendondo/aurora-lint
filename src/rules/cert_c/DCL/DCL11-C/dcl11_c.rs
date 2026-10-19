@@ -172,14 +172,12 @@ impl Dcl11C {
     fn extract_format_string<'a>(&self, node: &Node<'a>, source: &'a str) -> Option<String> {
         let text = get_node_text(node, source);
 
-        // Check if it's a string literal
-        if text.starts_with('"') && text.ends_with('"') {
-            // Remove quotes and unescape
-            let content = &text[1..text.len() - 1];
-            return Some(content.to_string());
-        }
-
-        None
+        // Check if it's a string literal, and remove its quotes. A lone `"`
+        // (an unterminated literal) is none: its one quote cannot both open
+        // and close it.
+        text.strip_prefix('"')?
+            .strip_suffix('"')
+            .map(str::to_string)
     }
 
     /// Parse format specifiers from format string

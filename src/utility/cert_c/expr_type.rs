@@ -323,6 +323,58 @@ impl<'a> TypeEnv<'a> {
     }
 }
 
+/// The `name -> type` map one function's types are asked under, with the
+/// file's environment, whose index resolves each identifier to the
+/// declaration that binds that occurrence (ADR-0006) without a descent from
+/// the root per identifier. Dereferences to the map, which every type
+/// question of the integer rules also reads.
+pub struct FileTypes<'m, 'a> {
+    /// `name -> type` for the function asked about, or the whole file.
+    pub map: &'m HashMap<String, String>,
+    /// The file's environment, built [`TypeEnv::in_tree`] for its index.
+    pub env: &'m TypeEnv<'a>,
+}
+
+impl std::ops::Deref for FileTypes<'_, '_> {
+    type Target = HashMap<String, String>;
+
+    fn deref(&self) -> &Self::Target {
+        self.map
+    }
+}
+
+impl FileTypes<'_, '_> {
+    /// [`ast_utils::resolve_identifier_declared_type`], through the file's
+    /// index when `ident` is in its tree.
+    pub fn declared_type(&self, ident: &Node, name: &str, source: &str) -> Option<String> {
+        self.env
+            .declarations()
+            .and_then(|d| d.resolve_identifier_declared_type_indexed(ident, name, source))
+            .unwrap_or_else(|| ast_utils::resolve_identifier_declared_type(ident, name, source))
+    }
+
+    /// [`ast_utils::declaration_type_spelling`] of the declaration `ident`
+    /// resolves to ([`ast_utils::resolve_identifier_declarator`]), through
+    /// the file's index: `None` when `ident` is not in the indexed tree, so
+    /// the caller resolves another way; `Some(None)` when it resolves to no
+    /// declaration.
+    #[allow(clippy::option_option)]
+    pub fn type_spelling(
+        &self,
+        ident: &Node,
+        name: &str,
+        source: &str,
+    ) -> Option<Option<Option<String>>> {
+        let resolved = self
+            .env
+            .declarations()?
+            .resolve_identifier_declarator_indexed(ident, name, source)?;
+        Some(resolved.map(|(decl, declarator)| {
+            ast_utils::declaration_type_spelling(&decl, &declarator, source)
+        }))
+    }
+}
+
 const QUALIFIERS: &[&str] = &[
     "const",
     "volatile",

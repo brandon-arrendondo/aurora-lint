@@ -1113,6 +1113,86 @@ fn a_deep_nest_is_resolved_through_one_index_of_the_file() {
     );
 }
 
+/// Resolving every name of a file that declares N of them in one place --
+/// N file-scope statics each stored to once, N parameters summed, N locals
+/// each read by the next -- asks a number of items whether they bind the
+/// name that grows linearly in N: each lookup reads the items its scope, the
+/// file scope or the parameter list declares under that name, through an
+/// index built once, not every item there. Each rule that resolves those
+/// names runs through the whole pipeline, prescan included, at N and 2N.
+#[test]
+fn resolving_n_names_declared_in_one_place_reads_linearly_many_binders() {
+    use crate::utility::cert_c::ast_utils::take_binder_reads;
+
+    let statics = |n: usize| {
+        let mut code = String::from("#include <stddef.h>\n\n");
+        for i in 0..n {
+            code += &format!("static void *s_{i};\n");
+        }
+        code += "\nvoid reset(void)\n{\n";
+        for i in 0..n {
+            code += &format!("    s_{i} = NULL;\n");
+        }
+        code + "}\n"
+    };
+    let params = |n: usize| {
+        let declared: Vec<String> = (0..n).map(|i| format!("int p{i}")).collect();
+        let summed: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
+        format!(
+            "int sum({})\n{{\n    return {};\n}}\n",
+            declared.join(", "),
+            summed.join(" + ")
+        )
+    };
+    let locals = |n: usize| {
+        let mut code = String::from("int run(int x)\n{\n    int a0 = x;\n");
+        for i in 1..n {
+            code += &format!("    int a{i} = a{} + x;\n", i - 1);
+        }
+        code + &format!("    return a{};\n}}\n", n - 1)
+    };
+    // The shape's name, its source at N, and the rules that resolve it.
+    type Shape<'s> = (&'s str, &'s dyn Fn(usize) -> String, &'s [&'s str]);
+    let cases: [Shape; 3] = [
+        (
+            "statics",
+            &statics,
+            &["CON03-C", "DCL30-C", "MEM01-C", "MEM30-C"],
+        ),
+        ("params", &params, &["INT30-C", "INT32-C"]),
+        (
+            "locals",
+            &locals,
+            &["EXP33-C", "INT30-C", "INT32-C", "MSC13-C"],
+        ),
+    ];
+    let mut grew = Vec::new();
+    for (shape, generate, rules) in cases {
+        for rule_id in rules {
+            let reads = |n: usize| {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join(format!("{shape}.c"));
+                fs::write(&path, generate(n)).unwrap();
+                take_binder_reads();
+                findings_at(rule_id, &path, "default", "");
+                take_binder_reads()
+            };
+            let small = reads(100);
+            let large = reads(200);
+            // Linear doubles the reads; a lookup scanning every item it
+            // might read quadruples them.
+            if 8 * large > 17 * small {
+                grew.push(format!("{shape} {rule_id}: {small} -> {large}"));
+            }
+        }
+    }
+    assert!(
+        grew.is_empty(),
+        "binders read grew faster than the names declared:\n{}",
+        grew.join("\n")
+    );
+}
+
 /// A rule that types what it asks about through an index of the tree builds
 /// that index once per file, however many sites in the file it asks at: an
 /// environment built per site indexes the whole tree per site, quadratic in

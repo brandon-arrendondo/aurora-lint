@@ -1816,7 +1816,8 @@ fn analyze_one_file_contained(
 /// Test hook, debug builds only: `AURORA_LINT_TEST_FAIL=RULE:panic` makes
 /// RULE's check panic, and `RULE:spin` makes it loop through checkpoints
 /// until its step budget stops it; `prescan:panic` does the same to each
-/// file's prescan. How the CLI tests exercise containment without a buggy
+/// file's prescan, and `header-read:panic` to each parse that resolves a
+/// file's includes. How the CLI tests exercise containment without a buggy
 /// rule to hand.
 #[cfg(debug_assertions)]
 pub(crate) fn test_failure_hook(rule_id: &str) {

@@ -29,6 +29,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::float_typing::is_float_literal;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -578,8 +579,15 @@ impl Dcl06C {
             return self.is_acceptable_literal(positive);
         }
 
-        // Strip float/unsigned suffixes: 0.0f, 1.0F, 0u, 0U, 0L, 0UL, etc.
-        let stripped = trimmed.trim_end_matches(['f', 'F', 'u', 'U', 'l', 'L']);
+        // An integer constant (hex included) keeps its digits: in `0x7f` the
+        // `f` is a digit, not a float suffix, and stripping it read the
+        // literal as 0x7. normalize_int_literal strips the integer suffixes.
+        if !is_float_literal(trimmed) {
+            return self.is_acceptable_integer(trimmed);
+        }
+
+        // Strip float suffixes: 0.0f, 1.0F, 1.0L.
+        let stripped = trimmed.trim_end_matches(['f', 'F', 'l', 'L']);
 
         // Accept zero in any float form: 0.0, 0.0f, 0.0F
         if stripped == "0.0" || stripped == "0." || stripped == ".0" {

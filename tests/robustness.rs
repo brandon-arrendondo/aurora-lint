@@ -874,9 +874,11 @@ fn assert_scans_cleanly_with(
     if problems.is_empty() {
         return;
     }
-    // A scan a signal ended names no case (the abort comes before any
-    // failure line), so keep them all: the culprit is among them.
-    if failed.is_empty() && !matches!(scan.end, End::Exited(_)) {
+    // A scan a signal ended, or a panic outside containment exited (101),
+    // names no case (the abort comes before any failure line), so keep them
+    // all: the culprit is among them.
+    let crashed = !matches!(scan.end, End::Exited(0 | 1 | 3));
+    if failed.is_empty() && crashed {
         failed.extend(cases);
     }
     failed.sort_by(|a, b| a.name.cmp(&b.name));
@@ -901,7 +903,22 @@ fn assert_scans_cleanly_with(
         keep.display(),
         keep.display()
     );
-    if !failed.is_empty() || !matches!(scan.end, End::Exited(_)) {
+    // A panic that escaped containment prints its message (the line after
+    // `panicked at`) wherever it fell in the output, maybe above the tail.
+    if crashed {
+        let lines: Vec<&str> = scan.stderr.lines().collect();
+        for (i, l) in lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.contains("panicked at"))
+        {
+            let _ = writeln!(msg, "panic:\n  {l}");
+            if let Some(next) = lines.get(i + 1) {
+                let _ = writeln!(msg, "  {next}");
+            }
+        }
+    }
+    if !failed.is_empty() || crashed {
         let tail: Vec<&str> = scan.stderr.lines().rev().take(20).collect();
         let _ = writeln!(
             msg,
@@ -1247,6 +1264,34 @@ fn long_chains_scan_within_budget() {
     );
 }
 
+/// How long the 100,000-deep `#define` chain may take under every rule. A
+/// linear scan takes about a minute on a slow four-core machine running the
+/// other tests beside it, which leaves room for a slower CI runner; valuing
+/// the macros in rounds, one more link of the chain per round, takes longer
+/// than this for that one rule alone.
+const MACRO_CHAIN_WALL_LIMIT: Duration = Duration::from_secs(180);
+
+/// A chain of 100,000 object-like macros, each defined from the one before,
+/// under every rule within [`MACRO_CHAIN_WALL_LIMIT`]. A rule that values the
+/// macros in rounds, one more link of the chain per round, is quadratic in
+/// its depth and once ran a chain this deep past the watchdog. The deeper
+/// chains of [`large_cases`] cost minutes and gigabytes even when linear,
+/// so this one stands in for them in CI.
+#[test]
+#[ignore = "a deep #define chain under every rule: run in release with --ignored (CI robustness job)"]
+fn deep_macro_chain_scans_within_budget() {
+    assert_scans_cleanly(
+        "macro_chain",
+        &[Case::new(
+            "c_macro_chain_100000_deep.c",
+            define_chain(100_000),
+            "macro_chain_100000_deep",
+        )],
+        "a deep macro chain",
+        wall_limit(MACRO_CHAIN_WALL_LIMIT),
+    );
+}
+
 /// Inputs too large or too deep for every `cargo test`: generated at test
 /// time, never committed. Each must be refused with a reason or analysed
 /// within budget -- never a crash, a hang or a stack overflow, which aborts
@@ -1407,6 +1452,17 @@ fn define_chain(depth: usize) -> Vec<u8> {
     out.into_bytes()
 }
 
+/// A flags macro whose body names one identifier of `length` letters, all
+/// `L`, each of which the constant evaluator could strip as an integer
+/// suffix.
+fn suffix_letter_run(length: usize) -> Vec<u8> {
+    format!(
+        "#define A ({} | 0)\nvoid f(void) {{ LoadLibraryExW(L\"x.dll\", NULL, A); }}\n",
+        "L".repeat(length)
+    )
+    .into_bytes()
+}
+
 /// Scan one generated file alone under one rule [`SIZE_SERIES_RUNS`] times,
 /// and return the fastest scan's time. A scan that does not finish cleanly
 /// fails the test outright.
@@ -1439,8 +1495,9 @@ fn time_one_file(name: &str, bytes: Vec<u8>, rule_id: &str) -> Duration {
 /// times the per-function prescan steps, the same file under INT34-C times
 /// the per-function value-range analysis the integer rules share, a file of
 /// one-line `strcpy` functions under STR31-C times that rule's per-call
-/// buffer-size lookups, and a deep `#define` chain under PRE32-C times that
-/// rule's per-directive work.
+/// buffer-size lookups, a deep `#define` chain under PRE32-C times that
+/// rule's per-directive work, and a name made of one long run of `L` under
+/// WIN00-C times that rule's reading of the names a flags macro may use.
 /// Each pair must cost under
 /// [`SIZE_SERIES_MAX_RATIO`] times as much, so a step that rescans the
 /// whole file per item fails here rather than as a watchdog hang on a large
@@ -1449,7 +1506,7 @@ fn time_one_file(name: &str, bytes: Vec<u8>, rule_id: &str) -> Duration {
 #[ignore = "size series: run in release with --ignored (CI robustness job)"]
 fn generated_size_series_scale_near_linearly() {
     type Generate = fn(usize) -> Vec<u8>;
-    let series: [(&str, &str, Generate, usize); 4] = [
+    let series: [(&str, &str, Generate, usize); 5] = [
         (
             "one_line_functions",
             "MSC04-C",
@@ -1469,6 +1526,7 @@ fn generated_size_series_scale_near_linearly() {
             8 * 1024,
         ),
         ("define_chain", "PRE32-C", define_chain, 10_000),
+        ("suffix_letter_run", "WIN00-C", suffix_letter_run, 40_000),
     ];
     let mut failures = Vec::new();
     for (name, rule_id, generate, small) in series {

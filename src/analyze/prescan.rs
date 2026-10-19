@@ -7734,7 +7734,9 @@ pub fn resolve_includes(
 /// admitted and refused the same way (ADR-0017): leaving one out changes what
 /// the scanned files' findings rest on, so a refusal joins `failures` (once
 /// per file: a file in the scanned tree was already refused under its own
-/// path) and the prescan is incomplete.
+/// path) and the prescan is incomplete. A crash while parsing it is contained
+/// the same way: it costs that file's facts and is reported once, never the
+/// scan.
 fn read_header_for_facts(
     parser: &mut CParser,
     resolved: &Path,
@@ -7742,12 +7744,35 @@ fn read_header_for_facts(
     header_key: &str,
     failures: &mut Vec<ScanFailure>,
 ) -> Option<(tree_sitter::Tree, String)> {
-    let err = match super::input_guard::admit(resolved)
-        .map_err(anyhow::Error::from)
-        .and_then(|()| parser.parse_file(header_path))
-    {
-        Ok(parsed) => return Some(parsed),
-        Err(err) => err,
+    let label = format!("prescan of {header_path}");
+    let parsed = containment::contain(&label, || {
+        super::test_failure_hook("header-read");
+        super::input_guard::admit(resolved)
+            .map_err(anyhow::Error::from)
+            .and_then(|()| parser.parse_file(header_path))
+    });
+    let err = match parsed {
+        Ok(Ok(parsed)) => return Some(parsed),
+        Ok(Err(err)) => err,
+        Err(failure) => {
+            // The parser may have unwound mid-parse; the next file gets a
+            // fresh one.
+            if let Ok(fresh) = CParser::new() {
+                *parser = fresh;
+            }
+            let reported = failures
+                .iter()
+                .any(|f| f.stage == containment::Stage::Prescan && f.file == header_path);
+            if !reported {
+                failures.push(ScanFailure::new(
+                    containment::Stage::Prescan,
+                    header_path,
+                    None,
+                    failure,
+                ));
+            }
+            return None;
+        }
     };
     let refusal = err.downcast_ref::<super::input_guard::Refusal>()?;
     let reported = failures.iter().any(|f| {
