@@ -59,7 +59,7 @@ use tree_sitter::Node;
 #[derive(Default)]
 pub struct Fio40C {
     /// The driver's per-function CFGs, keyed by the function's start byte.
-    function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
+    function_cfgs: RefCell<Arc<HashMap<usize, FunctionCfg>>>,
     /// Which parameters each function's body frees or writes.
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// The project's `#define ALIAS target` table.
@@ -92,8 +92,8 @@ impl CertRule for Fio40C {
         true
     }
 
-    fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
-        *self.function_cfgs.borrow_mut() = cfgs.clone();
+    fn set_function_cfgs(&self, cfgs: &Arc<HashMap<usize, FunctionCfg>>) {
+        *self.function_cfgs.borrow_mut() = Arc::clone(cfgs);
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {

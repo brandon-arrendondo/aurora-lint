@@ -81,8 +81,8 @@ pub struct Arr30C {
     project_names: RefCell<Option<ProjectNameTables>>,
     /// Those plus the file being scanned's own; set per file.
     static_macros: RefCell<HashSet<String>>,
-    function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
-    vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
+    function_cfgs: RefCell<Arc<HashMap<usize, FunctionCfg>>>,
+    vra_results: RefCell<Arc<HashMap<usize, RangeAnalysisResult>>>,
     /// Macro/enum/const constants gathered cross-file by the prescan
     /// (`context.macro_constants`). Merged with per-file constants so that
     /// buffer sizes defined in headers or other translation units resolve.
@@ -255,12 +255,12 @@ impl CertRule for Arr30C {
         "ARR30-C"
     }
 
-    fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
-        *self.function_cfgs.borrow_mut() = cfgs.clone();
+    fn set_function_cfgs(&self, cfgs: &Arc<HashMap<usize, FunctionCfg>>) {
+        *self.function_cfgs.borrow_mut() = Arc::clone(cfgs);
     }
 
-    fn set_vra_results(&self, results: &HashMap<usize, RangeAnalysisResult>) {
-        *self.vra_results.borrow_mut() = results.clone();
+    fn set_vra_results(&self, results: &Arc<HashMap<usize, RangeAnalysisResult>>) {
+        *self.vra_results.borrow_mut() = Arc::clone(results);
     }
 
     fn set_project_context(&self, context: &ProjectContext) {
@@ -380,8 +380,8 @@ impl Arr30C {
             project_static_macros: RefCell::new(Arc::new(HashSet::new())),
             project_names: RefCell::new(None),
             static_macros: RefCell::new(HashSet::new()),
-            function_cfgs: RefCell::new(HashMap::new()),
-            vra_results: RefCell::new(HashMap::new()),
+            function_cfgs: RefCell::new(Arc::default()),
+            vra_results: RefCell::new(Arc::default()),
             macro_constants: RefCell::new(Arc::new(HashMap::new())),
             decode_taint_cache: RefCell::new(HashMap::new()),
             param_decode_buf_cache: RefCell::new(HashMap::new()),

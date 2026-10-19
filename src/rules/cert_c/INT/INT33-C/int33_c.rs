@@ -28,9 +28,9 @@ pub struct Int33C {
     /// Cached per-file macro constants (set once per check() call, avoids re-collecting per division node)
     file_macros: RefCell<MacroConstantMap>,
     /// Per-function CFGs (set by set_function_cfgs)
-    function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
+    function_cfgs: RefCell<Arc<HashMap<usize, FunctionCfg>>>,
     /// Per-function VRA results (set by set_vra_results)
-    vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
+    vra_results: RefCell<Arc<HashMap<usize, RangeAnalysisResult>>>,
     /// The typedefs and struct fields this file sees, for typing a
     /// division's operands by declaration.
     visible: RefCell<VisibleTypes>,
@@ -62,8 +62,8 @@ impl Int33C {
         Self {
             project_macros: RefCell::new(Arc::new(MacroConstantMap::new())),
             file_macros: RefCell::new(MacroConstantMap::new()),
-            function_cfgs: RefCell::new(HashMap::new()),
-            vra_results: RefCell::new(HashMap::new()),
+            function_cfgs: RefCell::new(Arc::default()),
+            vra_results: RefCell::new(Arc::default()),
             visible: RefCell::default(),
             abort_check_macros: RefCell::default(),
             noreturn_functions: RefCell::default(),
@@ -132,12 +132,12 @@ impl CertRule for Int33C {
         *self.file_path.borrow_mut() = Some(path.to_path_buf());
     }
 
-    fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
-        *self.function_cfgs.borrow_mut() = cfgs.clone();
+    fn set_function_cfgs(&self, cfgs: &Arc<HashMap<usize, FunctionCfg>>) {
+        *self.function_cfgs.borrow_mut() = Arc::clone(cfgs);
     }
 
-    fn set_vra_results(&self, results: &HashMap<usize, RangeAnalysisResult>) {
-        *self.vra_results.borrow_mut() = results.clone();
+    fn set_vra_results(&self, results: &Arc<HashMap<usize, RangeAnalysisResult>>) {
+        *self.vra_results.borrow_mut() = Arc::clone(results);
     }
 
     fn needs_vra(&self) -> bool {

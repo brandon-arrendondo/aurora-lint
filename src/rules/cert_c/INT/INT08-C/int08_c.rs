@@ -18,12 +18,13 @@ use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 #[derive(Default)]
 pub struct Int08C {
-    function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
-    vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
+    function_cfgs: RefCell<Arc<HashMap<usize, FunctionCfg>>>,
+    vra_results: RefCell<Arc<HashMap<usize, RangeAnalysisResult>>>,
     /// The integer data model the settings credit: how wide `int` and the
     /// narrow types are guaranteed to be.
     data_model: Cell<IntFacts>,
@@ -61,12 +62,12 @@ impl CertRule for Int08C {
         *self.typedef_types.borrow_mut() = types.typedef_types.clone();
     }
 
-    fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
-        *self.function_cfgs.borrow_mut() = cfgs.clone();
+    fn set_function_cfgs(&self, cfgs: &Arc<HashMap<usize, FunctionCfg>>) {
+        *self.function_cfgs.borrow_mut() = Arc::clone(cfgs);
     }
 
-    fn set_vra_results(&self, results: &HashMap<usize, RangeAnalysisResult>) {
-        *self.vra_results.borrow_mut() = results.clone();
+    fn set_vra_results(&self, results: &Arc<HashMap<usize, RangeAnalysisResult>>) {
+        *self.vra_results.borrow_mut() = Arc::clone(results);
     }
 
     /// The truncating-store channel asks what a variable's value *is* at one

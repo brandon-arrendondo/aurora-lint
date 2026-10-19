@@ -26,7 +26,7 @@ use tree_sitter::Node;
 
 pub struct Exp34C {
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
-    function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
+    function_cfgs: RefCell<Arc<HashMap<usize, FunctionCfg>>>,
     /// Null states for file-scope (static/global) pointer variables,
     /// computed once per file by scanning all declarations and assignments.
     file_global_states: RefCell<StateMap>,
@@ -63,7 +63,7 @@ impl Exp34C {
     pub fn new() -> Self {
         Self {
             function_summaries: RefCell::default(),
-            function_cfgs: RefCell::new(HashMap::new()),
+            function_cfgs: RefCell::new(Arc::default()),
             file_global_states: RefCell::new(StateMap::new()),
             prescan_global_var_states: RefCell::new(Arc::new(HashMap::new())),
             function_macros: RefCell::new(Arc::new(HashMap::new())),
@@ -182,8 +182,8 @@ impl CertRule for Exp34C {
         *self.abort_check_macros.borrow_mut() = context.abort_check_macros.clone();
     }
 
-    fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
-        *self.function_cfgs.borrow_mut() = cfgs.clone();
+    fn set_function_cfgs(&self, cfgs: &Arc<HashMap<usize, FunctionCfg>>) {
+        *self.function_cfgs.borrow_mut() = Arc::clone(cfgs);
     }
 
     fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {

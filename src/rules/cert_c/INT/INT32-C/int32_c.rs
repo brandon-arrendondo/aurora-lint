@@ -69,8 +69,8 @@ pub struct Int32C {
     /// through to "unknown" and flagging a signed-overflow FP on
     /// arithmetic that's actually unsigned.
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
-    function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
-    vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
+    function_cfgs: RefCell<Arc<HashMap<usize, FunctionCfg>>>,
+    vra_results: RefCell<Arc<HashMap<usize, RangeAnalysisResult>>>,
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// Globals known to be written by a tainted function (file → function name
     /// set). Used by the provenance gate to treat a global operand fed from an
@@ -122,8 +122,8 @@ impl Int32C {
             visible: RefCell::default(),
             typedef_types: RefCell::new(Arc::new(HashMap::new())),
             function_macros: RefCell::new(Arc::new(HashMap::new())),
-            function_cfgs: RefCell::new(HashMap::new()),
-            vra_results: RefCell::new(HashMap::new()),
+            function_cfgs: RefCell::new(Arc::default()),
+            vra_results: RefCell::new(Arc::default()),
             function_summaries: RefCell::default(),
             global_writers: RefCell::new(Arc::new(HashMap::new())),
             risky_vars_cache: RefCell::new(HashMap::new()),
@@ -396,12 +396,12 @@ impl CertRule for Int32C {
         *self.typedef_types.borrow_mut() = types.typedef_types.clone();
     }
 
-    fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
-        *self.function_cfgs.borrow_mut() = cfgs.clone();
+    fn set_function_cfgs(&self, cfgs: &Arc<HashMap<usize, FunctionCfg>>) {
+        *self.function_cfgs.borrow_mut() = Arc::clone(cfgs);
     }
 
-    fn set_vra_results(&self, results: &HashMap<usize, RangeAnalysisResult>) {
-        *self.vra_results.borrow_mut() = results.clone();
+    fn set_vra_results(&self, results: &Arc<HashMap<usize, RangeAnalysisResult>>) {
+        *self.vra_results.borrow_mut() = Arc::clone(results);
     }
 
     fn needs_vra(&self) -> bool {

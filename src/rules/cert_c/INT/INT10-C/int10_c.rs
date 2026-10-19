@@ -78,8 +78,8 @@ pub struct Int10C {
     /// because [`needs_vra`] is true. Used to prove a signed *dividend* is
     /// non-negative at the modulo site -- e.g. a local `int` derived from a
     /// guard-bounded parameter.
-    function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
-    vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
+    function_cfgs: RefCell<Arc<HashMap<usize, FunctionCfg>>>,
+    vra_results: RefCell<Arc<HashMap<usize, RangeAnalysisResult>>>,
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
     data_model: Cell<IntFacts>,
@@ -91,8 +91,8 @@ impl Int10C {
             typedef_types: RefCell::new(Arc::new(HashMap::new())),
             project_macros: RefCell::new(Arc::new(MacroConstantMap::new())),
             current_macros: RefCell::new(MacroConstantMap::new()),
-            function_cfgs: RefCell::new(HashMap::new()),
-            vra_results: RefCell::new(HashMap::new()),
+            function_cfgs: RefCell::new(Arc::default()),
+            vra_results: RefCell::new(Arc::default()),
             data_model: Cell::new(IntFacts::default()),
         }
     }
@@ -132,12 +132,12 @@ impl CertRule for Int10C {
         *self.typedef_types.borrow_mut() = types.typedef_types.clone();
     }
 
-    fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
-        *self.function_cfgs.borrow_mut() = cfgs.clone();
+    fn set_function_cfgs(&self, cfgs: &Arc<HashMap<usize, FunctionCfg>>) {
+        *self.function_cfgs.borrow_mut() = Arc::clone(cfgs);
     }
 
-    fn set_vra_results(&self, results: &HashMap<usize, RangeAnalysisResult>) {
-        *self.vra_results.borrow_mut() = results.clone();
+    fn set_vra_results(&self, results: &Arc<HashMap<usize, RangeAnalysisResult>>) {
+        *self.vra_results.borrow_mut() = Arc::clone(results);
     }
 
     fn needs_vra(&self) -> bool {

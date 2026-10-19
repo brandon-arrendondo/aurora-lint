@@ -46,7 +46,7 @@ use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Mem01C {
-    function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
+    function_cfgs: RefCell<Arc<HashMap<usize, FunctionCfg>>>,
     /// Cross-file function summaries from prescan (an earlier fix follow-on to 320/321).
     cross_file_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// [`Mem01C::build_read_only_params`] of `cross_file_summaries`, built
@@ -197,7 +197,7 @@ impl AddressOfCallContext {
 impl Mem01C {
     pub fn new() -> Self {
         Self {
-            function_cfgs: RefCell::new(HashMap::new()),
+            function_cfgs: RefCell::new(Arc::default()),
             cross_file_summaries: RefCell::default(),
             read_only_params: RefCell::default(),
             freeing_wrappers: RefCell::default(),
@@ -322,8 +322,8 @@ impl CertRule for Mem01C {
             Arc::from(crate::analyze::compile_commands::real_path(path).as_str());
     }
 
-    fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
-        *self.function_cfgs.borrow_mut() = cfgs.clone();
+    fn set_function_cfgs(&self, cfgs: &Arc<HashMap<usize, FunctionCfg>>) {
+        *self.function_cfgs.borrow_mut() = Arc::clone(cfgs);
     }
 
     fn set_project_context(&self, context: &ProjectContext) {

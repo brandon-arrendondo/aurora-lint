@@ -179,8 +179,8 @@ pub struct Int30C {
     /// The typedefs and struct fields this file sees, for typing operands by
     /// declaration.
     visible: RefCell<VisibleTypes>,
-    function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
-    vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
+    function_cfgs: RefCell<Arc<HashMap<usize, FunctionCfg>>>,
+    vra_results: RefCell<Arc<HashMap<usize, RangeAnalysisResult>>>,
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// Globals written by a tainted function — see the INT32-C provenance gate.
     global_writers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
@@ -273,8 +273,8 @@ impl Int30C {
             current_macros: RefCell::new(MacroConstantMap::new()),
             struct_field_types: RefCell::new(Arc::new(HashMap::new())),
             visible: RefCell::default(),
-            function_cfgs: RefCell::new(HashMap::new()),
-            vra_results: RefCell::new(HashMap::new()),
+            function_cfgs: RefCell::new(Arc::default()),
+            vra_results: RefCell::new(Arc::default()),
             function_summaries: RefCell::default(),
             global_writers: RefCell::new(Arc::new(HashMap::new())),
             risky_vars_cache: RefCell::new(HashMap::new()),
@@ -857,12 +857,12 @@ impl CertRule for Int30C {
         *self.visible.borrow_mut() = types.clone();
     }
 
-    fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
-        *self.function_cfgs.borrow_mut() = cfgs.clone();
+    fn set_function_cfgs(&self, cfgs: &Arc<HashMap<usize, FunctionCfg>>) {
+        *self.function_cfgs.borrow_mut() = Arc::clone(cfgs);
     }
 
-    fn set_vra_results(&self, results: &HashMap<usize, RangeAnalysisResult>) {
-        *self.vra_results.borrow_mut() = results.clone();
+    fn set_vra_results(&self, results: &Arc<HashMap<usize, RangeAnalysisResult>>) {
+        *self.vra_results.borrow_mut() = Arc::clone(results);
     }
 
     fn needs_vra(&self) -> bool {

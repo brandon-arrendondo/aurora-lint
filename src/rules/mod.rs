@@ -15,6 +15,7 @@ use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::value_range::RangeAnalysisResult;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// One CERT C rule, BISSELL-specific rule (`BRULE-###`) or CWE-ruleset rule
@@ -101,8 +102,10 @@ pub trait CertRule {
     }
 
     /// Inject per-file function CFGs for flow-sensitive analysis.
-    /// Default is a no-op; only rules that need CFG data override this.
-    fn set_function_cfgs(&self, _cfgs: &HashMap<usize, FunctionCfg>) {}
+    /// Default is a no-op; only rules that need CFG data override this. The
+    /// scan builds one copy per file and every rule shares it: keep the
+    /// `Arc`, never a clone of the map.
+    fn set_function_cfgs(&self, _cfgs: &Arc<HashMap<usize, FunctionCfg>>) {}
 
     /// Inject the struct-field and typedef tables as this file sees them
     /// (`VisibleTypes`: the project's, with the file's own definitions
@@ -125,8 +128,9 @@ pub trait CertRule {
 
     /// Inject pre-computed value-range analysis results for flow-sensitive
     /// integer range checking. Default is a no-op; only rules that need
-    /// VRA data override this.
-    fn set_vra_results(&self, _results: &HashMap<usize, RangeAnalysisResult>) {}
+    /// VRA data override this. Shared like the CFGs: keep the `Arc`, never a
+    /// clone of the map.
+    fn set_vra_results(&self, _results: &Arc<HashMap<usize, RangeAnalysisResult>>) {}
 
     /// Returns true if this rule uses value-range analysis.
     /// Used to avoid computing VRA when no enabled rules need it.

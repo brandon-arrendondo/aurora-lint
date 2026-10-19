@@ -31,7 +31,7 @@ use tree_sitter::Node;
 type ReadOnlyDerefFns = HashMap<String, HashSet<usize>>;
 
 pub struct Exp33C {
-    function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
+    function_cfgs: RefCell<Arc<HashMap<usize, FunctionCfg>>>,
     /// File-scope static variable init states (collected at translation_unit level).
     file_scope_statics: RefCell<InitStateMap>,
     /// Functions with pointer params that are only conditionally initialized.
@@ -103,7 +103,7 @@ impl Exp33C {
 
     pub fn new() -> Self {
         Self {
-            function_cfgs: RefCell::new(HashMap::new()),
+            function_cfgs: RefCell::new(Arc::default()),
             file_scope_statics: RefCell::new(InitStateMap::new()),
             conditionally_init_fns: RefCell::new(HashMap::new()),
             cross_file_summaries: RefCell::default(),
@@ -400,8 +400,8 @@ impl CertRule for Exp33C {
         *self.project_alias_alternatives.borrow_mut() = context.macro_alias_alternatives.clone();
     }
 
-    fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
-        *self.function_cfgs.borrow_mut() = cfgs.clone();
+    fn set_function_cfgs(&self, cfgs: &Arc<HashMap<usize, FunctionCfg>>) {
+        *self.function_cfgs.borrow_mut() = Arc::clone(cfgs);
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {

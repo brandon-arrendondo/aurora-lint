@@ -36,8 +36,8 @@ pub struct Int31C {
     project_macros: RefCell<Arc<MacroConstantMap>>,
     /// `project_macros` merged with the current file's own defines (file wins).
     current_macros: RefCell<MacroConstantMap>,
-    function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
-    vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
+    function_cfgs: RefCell<Arc<HashMap<usize, FunctionCfg>>>,
+    vra_results: RefCell<Arc<HashMap<usize, RangeAnalysisResult>>>,
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     /// Reverse call graph: callee_name → set of caller names.
     callers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
@@ -67,8 +67,8 @@ impl Int31C {
         Self {
             project_macros: RefCell::new(Arc::new(MacroConstantMap::new())),
             current_macros: RefCell::new(MacroConstantMap::new()),
-            function_cfgs: RefCell::new(HashMap::new()),
-            vra_results: RefCell::new(HashMap::new()),
+            function_cfgs: RefCell::new(Arc::default()),
+            vra_results: RefCell::new(Arc::default()),
             function_summaries: RefCell::default(),
             callers: RefCell::default(),
             global_writers: RefCell::new(Arc::new(HashMap::new())),
@@ -744,12 +744,12 @@ impl CertRule for Int31C {
         "INT31-C"
     }
 
-    fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
-        *self.function_cfgs.borrow_mut() = cfgs.clone();
+    fn set_function_cfgs(&self, cfgs: &Arc<HashMap<usize, FunctionCfg>>) {
+        *self.function_cfgs.borrow_mut() = Arc::clone(cfgs);
     }
 
-    fn set_vra_results(&self, results: &HashMap<usize, RangeAnalysisResult>) {
-        *self.vra_results.borrow_mut() = results.clone();
+    fn set_vra_results(&self, results: &Arc<HashMap<usize, RangeAnalysisResult>>) {
+        *self.vra_results.borrow_mut() = Arc::clone(results);
     }
 
     fn set_project_context(&self, context: &ProjectContext) {

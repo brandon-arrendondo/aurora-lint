@@ -62,9 +62,9 @@ enum Signedness {
 #[derive(Default)]
 pub struct Int16C {
     /// Per-function CFGs for the file being checked, injected by the driver.
-    function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
+    function_cfgs: RefCell<Arc<HashMap<usize, FunctionCfg>>>,
     /// Per-function value ranges for the same file, injected alongside them.
-    vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
+    vra_results: RefCell<Arc<HashMap<usize, RangeAnalysisResult>>>,
     /// `struct tag -> {field -> type text}` from the prescan, so the
     /// assignment check can read the declared type of `s->field`.
     struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
@@ -105,12 +105,12 @@ impl CertRule for Int16C {
         *self.typedef_types.borrow_mut() = types.typedef_types.clone();
     }
 
-    fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
-        *self.function_cfgs.borrow_mut() = cfgs.clone();
+    fn set_function_cfgs(&self, cfgs: &Arc<HashMap<usize, FunctionCfg>>) {
+        *self.function_cfgs.borrow_mut() = Arc::clone(cfgs);
     }
 
-    fn set_vra_results(&self, results: &HashMap<usize, RangeAnalysisResult>) {
-        *self.vra_results.borrow_mut() = results.clone();
+    fn set_vra_results(&self, results: &Arc<HashMap<usize, RangeAnalysisResult>>) {
+        *self.vra_results.borrow_mut() = Arc::clone(results);
     }
 
     fn needs_vra(&self) -> bool {

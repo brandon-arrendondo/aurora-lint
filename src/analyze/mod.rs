@@ -1516,6 +1516,11 @@ fn analyze_one_file(
                 }
             }
         }
+        for (rule_id, _) in manifest.enabled_rules() {
+            if let Some(rule) = file_registry.get_rule(rule_id) {
+                FileAnalysis::release_from(rule);
+            }
+        }
         deallocator_candidates::flush_file(file_path);
     }
 
@@ -1934,8 +1939,8 @@ pub fn handle_generate_suppression(spec: &str) -> Result<()> {
 /// can never be exercised in tests under a context the shipped scan does not
 /// build (this repo).
 pub(crate) struct FileAnalysis {
-    pub(crate) function_cfgs: HashMap<usize, cfg::FunctionCfg>,
-    pub(crate) vra_results: HashMap<usize, value_range::RangeAnalysisResult>,
+    pub(crate) function_cfgs: Arc<HashMap<usize, cfg::FunctionCfg>>,
+    pub(crate) vra_results: Arc<HashMap<usize, value_range::RangeAnalysisResult>>,
     pub(crate) visible_types: context::VisibleTypes,
     pub(crate) file_path: std::path::PathBuf,
 }
@@ -1950,6 +1955,14 @@ impl FileAnalysis {
         if !self.vra_results.is_empty() {
             rule.set_vra_results(&self.vra_results);
         }
+    }
+
+    /// Take back what [`apply_to`](Self::apply_to) handed `rule`, so the
+    /// file's CFGs and value ranges are freed when the file is done, not
+    /// when the next file replaces them.
+    pub(crate) fn release_from<R: crate::rules::CertRule + ?Sized>(rule: &R) {
+        rule.set_function_cfgs(&Arc::default());
+        rule.set_vra_results(&Arc::default());
     }
 }
 
@@ -1977,8 +1990,8 @@ pub(crate) fn build_file_analysis(
     );
 
     FileAnalysis {
-        function_cfgs,
-        vra_results,
+        function_cfgs: Arc::new(function_cfgs),
+        vra_results: Arc::new(vra_results),
         visible_types: context::VisibleTypes::for_file(context, root_node, source),
         file_path: file_path.to_path_buf(),
     }
