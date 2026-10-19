@@ -21,45 +21,22 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tree_sitter::Node;
 
+/// The project's call graph and ambiguous callees are shared with the context,
+/// never copied: the rule runs once per file and the cycle search once per
+/// function, and a copy of the whole graph at either point made the rule
+/// quadratic in the size of the project.
 #[derive(Debug)]
 pub struct Msc04C {
-    call_graph: RefCell<HashMap<String, HashSet<String>>>,
+    call_graph: RefCell<Arc<HashMap<String, HashSet<String>>>>,
     ambiguous_call_targets: RefCell<Arc<HashSet<String>>>,
 }
 
 impl Msc04C {
     pub fn new() -> Self {
         Msc04C {
-            call_graph: RefCell::new(HashMap::new()),
+            call_graph: RefCell::new(Arc::new(HashMap::new())),
             ambiguous_call_targets: RefCell::new(Arc::new(HashSet::new())),
         }
-    }
-
-    /// Drop edges to a callee that can only be resolved to a same-named
-    /// function by coincidental name matching -- a call through a struct
-    /// field or a parameter-shadowed identifier (see
-    /// `ProjectContext::ambiguous_call_targets`). Such a callee is opaque
-    /// dispatch: it may or may not actually reach back into the caller, and
-    /// chasing it through the cycle-detection DFS fabricates recursion
-    /// cycles that don't exist in the source.
-    fn strip_ambiguous_callees(
-        graph: &HashMap<String, HashSet<String>>,
-        ambiguous: &HashSet<String>,
-    ) -> HashMap<String, HashSet<String>> {
-        if ambiguous.is_empty() {
-            return graph.clone();
-        }
-        graph
-            .iter()
-            .map(|(caller, callees)| {
-                let filtered: HashSet<String> = callees
-                    .iter()
-                    .filter(|callee| !ambiguous.contains(callee.as_str()))
-                    .cloned()
-                    .collect();
-                (caller.clone(), filtered)
-            })
-            .collect()
     }
 
     /// Extract function name from a function_definition node.
@@ -126,10 +103,21 @@ impl Msc04C {
     ///
     /// A self-loop on `start` alone is not reported here; direct recursion
     /// is detected and worded separately by the caller.
+    ///
+    /// `start`'s callees are `start_callees`, collected from the body being
+    /// checked (the prescan graph may not include its file), in place of the
+    /// graph's entry for it. Every other node's come from `graph`, less any
+    /// edge to a callee in `ambiguous`: a call through a struct field or a
+    /// parameter-shadowed identifier (see
+    /// `ProjectContext::ambiguous_call_targets`) is opaque dispatch, which
+    /// may or may not reach back into the caller, and chasing it fabricates
+    /// recursion cycles that don't exist in the source.
     fn find_cycle<'g>(
         &self,
         start: &'g str,
+        start_callees: &'g HashSet<String>,
         graph: &'g HashMap<String, HashSet<String>>,
+        ambiguous: &HashSet<String>,
     ) -> Option<Vec<String>> {
         // `parent[n]` is the node BFS first reached `n` from, so the chain
         // back from any node spells a shortest path from `start`.
@@ -141,10 +129,19 @@ impl Msc04C {
         queue.push_back(start);
 
         while let Some(current) = queue.pop_front() {
-            let Some(callees) = graph.get(current) else {
-                continue;
+            let callees = if current == start {
+                start_callees
+            } else {
+                let Some(callees) = graph.get(current) else {
+                    continue;
+                };
+                callees
             };
-            let mut callees: Vec<&'g str> = callees.iter().map(String::as_str).collect();
+            let mut callees: Vec<&'g str> = callees
+                .iter()
+                .map(String::as_str)
+                .filter(|callee| !ambiguous.contains(*callee))
+                .collect();
             callees.sort_unstable();
 
             for callee in callees {
@@ -308,20 +305,12 @@ impl Msc04C {
             return; // No prescan data — can only detect direct recursion
         }
 
-        // Build a local graph that includes this function's callees
-        // (prescan graph may not include the current file if it wasn't prescanned).
-        // Strip ambiguous (struct-field / parameter-shadowed) callees here too --
-        // `callees` was collected fresh from this function's own body and hasn't
-        // gone through `strip_ambiguous_callees` yet (see an earlier fix).
+        // This function's own callees stand in for the graph's entry (the
+        // prescan graph may not include the current file if it wasn't
+        // prescanned), and ambiguous (struct-field / parameter-shadowed)
+        // callees are left out of both.
         let ambiguous = self.ambiguous_call_targets.borrow();
-        let callees: HashSet<String> = callees
-            .into_iter()
-            .filter(|c| !ambiguous.contains(c))
-            .collect();
-        let mut local_graph = graph.clone();
-        local_graph.insert(func_name.clone(), callees);
-
-        if let Some(cycle) = self.find_cycle(&func_name, &local_graph) {
+        if let Some(cycle) = self.find_cycle(&func_name, &callees, &graph, &ambiguous) {
             let cycle_str = cycle.join(" -> ");
             violations.push(RuleViolation {
                 rule_id: self.rule_id().to_string(),
@@ -364,9 +353,8 @@ impl CertRule for Msc04C {
     }
 
     fn set_project_context(&self, context: &ProjectContext) {
-        *self.call_graph.borrow_mut() =
-            Self::strip_ambiguous_callees(&context.call_graph, &context.ambiguous_call_targets);
-        *self.ambiguous_call_targets.borrow_mut() = context.ambiguous_call_targets.clone();
+        *self.call_graph.borrow_mut() = Arc::clone(&context.call_graph);
+        *self.ambiguous_call_targets.borrow_mut() = Arc::clone(&context.ambiguous_call_targets);
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
