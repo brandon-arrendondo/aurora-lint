@@ -200,6 +200,7 @@ impl CertRule for Exp34C {
         let root = *node;
         // Built at the file's first function and shared by all of them.
         let mut declared: Option<Declared> = None;
+        FILE_MACROS.with(|m| *m.borrow_mut() = Some(Rc::new(FileMacros::of(source))));
 
         for n in
             query::find_descendants_of_kinds(*node, &["translation_unit", "function_definition"])
@@ -344,6 +345,7 @@ impl CertRule for Exp34C {
             }
         }
 
+        FILE_MACROS.with(|m| *m.borrow_mut() = None);
         violations
     }
 }
@@ -1482,7 +1484,14 @@ fn is_unsafe_at(
 /// test that leaves (return/goto/break/noreturn call) is credited by the
 /// CFG dataflow itself, which also sees any write between the test and the
 /// dereference.
+///
+/// A guard's test proves the pointer only up to where it ends: a write
+/// between it and the dereference (`p && (p = q(), *p)`) leaves it unknown
+/// again, and so does an outer test, which lies before the same write. The
+/// walk stops there rather than crediting one.
 fn is_in_expression_guard(var_name: &str, node: &Node, source: &str) -> bool {
+    let target = dereferenced_identifier(node, var_name, source);
+    let target = target.as_ref();
     let mut current = node.parent();
 
     while let Some(parent) = current {
@@ -1501,10 +1510,12 @@ fn is_in_expression_guard(var_name: &str, node: &Node, source: &str) -> bool {
                         // For &&: right executes when left is TRUE  → check left confirms non-null (negated=false)
                         // For ||: right executes when left is FALSE → check left negated confirms non-null (negated=true)
                         let negated = op == "||";
-                        if node_is_within(&right, node)
-                            && analyze_condition_for_safety(&left, var_name, source, negated)
-                        {
-                            return true;
+                        if node_is_within(&right, node) {
+                            if let Some(proof) =
+                                safety_proof(&left, var_name, source, negated, target)
+                            {
+                                return proof.survives(&parent, var_name, target, node, source);
+                            }
                         }
                     }
                 }
@@ -1517,18 +1528,51 @@ fn is_in_expression_guard(var_name: &str, node: &Node, source: &str) -> bool {
                 if let Some(checked_var) = get_null_check_var(&condition, source) {
                     if checked_var == var_name {
                         let is_safe_in_consequence =
-                            analyze_condition_for_safety(&condition, var_name, source, false);
+                            analyze_condition_for_safety(&condition, var_name, source, false, None);
+                        let unwritten = || {
+                            !target_written_between(
+                                &parent,
+                                var_name,
+                                target,
+                                (condition.end_byte(), node.start_byte()),
+                                node,
+                                source,
+                            )
+                        };
 
                         if let Some(consequence) = parent.child_by_field_name("consequence") {
                             if node_is_within(&consequence, node) {
-                                return is_safe_in_consequence;
+                                return is_safe_in_consequence && unwritten();
                             }
                         }
                         if let Some(alternative) = parent.child_by_field_name("alternative") {
                             if node_is_within(&alternative, node) {
-                                return !is_safe_in_consequence;
+                                return !is_safe_in_consequence && unwritten();
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        // The same test made on an assignment, `(ptr = e) ? *ptr : 0`: an
+        // arm is safe only when the condition holding (the consequence) or
+        // failing (the alternative) proves it.
+        if parent.kind() == "conditional_expression" {
+            if let Some(condition) = parent
+                .child_by_field_name("condition")
+                .filter(|c| assigns_target_within(c, target, var_name, source))
+            {
+                for (field, negated) in [("consequence", false), ("alternative", true)] {
+                    if !parent
+                        .child_by_field_name(field)
+                        .is_some_and(|arm| node_is_within(&arm, node))
+                    {
+                        continue;
+                    }
+                    if let Some(proof) = safety_proof(&condition, var_name, source, negated, target)
+                    {
+                        return proof.survives(&parent, var_name, target, node, source);
                     }
                 }
             }
@@ -1595,8 +1639,9 @@ fn is_inside_ast_null_guard(var_name: &str, node: &Node, source: &str) -> bool {
                         if let Some(consequence) = parent.child_by_field_name("consequence") {
                             if node_is_within(&consequence, node) {
                                 // var != NULL → true branch means var is non-null → safe
-                                if analyze_condition_for_safety(&condition, var_name, source, false)
-                                {
+                                if analyze_condition_for_safety(
+                                    &condition, var_name, source, false, None,
+                                ) {
                                     return true;
                                 }
                             }
@@ -1606,7 +1651,7 @@ fn is_inside_ast_null_guard(var_name: &str, node: &Node, source: &str) -> bool {
                             if node_is_within(&alternative, node) {
                                 // var == NULL → true branch means null, else branch means non-null → safe
                                 if !analyze_condition_for_safety(
-                                    &condition, var_name, source, false,
+                                    &condition, var_name, source, false, None,
                                 ) {
                                     return true;
                                 }
@@ -2399,18 +2444,152 @@ fn get_null_check_var(condition: &Node, source: &str) -> Option<String> {
     }
 }
 
-fn analyze_condition_for_safety(node: &Node, var_name: &str, source: &str, negated: bool) -> bool {
+/// The variable an operand of a null test tests: `p` itself, or the left
+/// operand of a plain assignment `(p = E)`, whose value is `p`'s once E is
+/// stored. Not through a cast, a comma or a compound assignment.
+fn tested_identifier<'t>(operand: &Node<'t>) -> Option<Node<'t>> {
+    let operand = crate::analyze::name_writes::strip_parens(*operand);
+    match operand.kind() {
+        "identifier" => Some(operand),
+        "assignment_expression" => {
+            let operator = operand.child_by_field_name("operator")?;
+            if operator.kind() != "=" {
+                return None;
+            }
+            let left =
+                crate::analyze::name_writes::strip_parens(operand.child_by_field_name("left")?);
+            (left.kind() == "identifier").then_some(left)
+        }
+        _ => None,
+    }
+}
+
+/// The occurrence of `var_name` that `deref` reads: `deref` itself, or the
+/// first identifier spelled so inside it (`p` of `p->f`, `*p`, `p[i]`).
+fn dereferenced_identifier<'t>(deref: &Node<'t>, var_name: &str, source: &str) -> Option<Node<'t>> {
+    let mut stack = vec![*deref];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "identifier" && ast_utils::get_node_text(&n, source) == var_name {
+            return Some(n);
+        }
+        let mut cursor = n.walk();
+        let children: Vec<Node> = n.children(&mut cursor).collect();
+        stack.extend(children.into_iter().rev());
+    }
+    None
+}
+
+/// Whether an assignment inside `expr` assigns the object `target` names
+/// ([`assigns_target`]).
+fn assigns_target_within(expr: &Node, target: Option<&Node>, var_name: &str, source: &str) -> bool {
+    let mut stack = vec![*expr];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "assignment_expression" && assigns_target(&n, target, var_name, source) {
+            return true;
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.children(&mut cursor));
+    }
+    false
+}
+
+/// Whether `operand` assigns the object `target` names: `(p = E)` whose `p`
+/// resolves to the declaration `target` resolves to (ADR-0006), so testing
+/// the assignment's value tests the pointer the dereference reads.
+fn assigns_target(operand: &Node, target: Option<&Node>, var_name: &str, source: &str) -> bool {
+    let Some(target) = target else {
+        return false;
+    };
+    if crate::analyze::name_writes::strip_parens(*operand).kind() != "assignment_expression" {
+        return false;
+    }
+    let Some(assigned) = tested_identifier(operand) else {
+        return false;
+    };
+    if ast_utils::get_node_text(&assigned, source) != var_name {
+        return false;
+    }
+    let declarator = |n: &Node| {
+        ast_utils::resolve_identifier_declarator(n, var_name, source).map(|(_, d)| d.id())
+    };
+    declarator(&assigned) == declarator(target)
+}
+
+/// Whether `node` holding (`negated`: failing) proves `var_name` non-null.
+/// `target` is the occurrence the dereference reads; given it, a plain
+/// assignment to the same declaration, `(p = E) != NULL` or `!(p = E)`,
+/// tests `p` too ([`assigns_target`]).
+fn analyze_condition_for_safety(
+    node: &Node,
+    var_name: &str,
+    source: &str,
+    negated: bool,
+    target: Option<&Node>,
+) -> bool {
+    safety_proof(node, var_name, source, negated, target).is_some()
+}
+
+/// The proof [`analyze_condition_for_safety`] finds, and the stretches a
+/// write of the pointer would undo it in.
+struct Proof {
+    /// The byte after the test it rests on: from here to the dereference.
+    end: usize,
+    /// Byte ranges inside the condition, each from where an operand's proof
+    /// ends to where that operand ends.
+    within: Vec<(usize, usize)>,
+}
+
+impl Proof {
+    fn at(node: &Node) -> Option<Self> {
+        Some(Proof {
+            end: node.end_byte(),
+            within: Vec::new(),
+        })
+    }
+
+    /// Whether no write of the pointer inside `guard` undoes it before the
+    /// dereference `deref` ([`target_written_between`]).
+    fn survives(
+        &self,
+        guard: &Node,
+        var_name: &str,
+        target: Option<&Node>,
+        deref: &Node,
+        source: &str,
+    ) -> bool {
+        self.within
+            .iter()
+            .copied()
+            .chain([(self.end, deref.start_byte())])
+            .all(|span| !target_written_between(guard, var_name, target, span, deref, source))
+    }
+}
+
+/// The proof [`analyze_condition_for_safety`] finds. When both operands of
+/// `&&`/`||` must prove the pointer, it ends at the right one's, since a
+/// write inside the right operand runs only on the path where its own test
+/// then proves the pointer (`((p = a()) == NULL && (p = b()) == NULL) ||
+/// p->f`), and the left one's must survive to the end of the left operand
+/// (`(((p = a()) == 0 || (p = 0, 0)) && (p = b()) == 0) || p->f` leaves `p`
+/// NULL on the path that skips the right test).
+fn safety_proof(
+    node: &Node,
+    var_name: &str,
+    source: &str,
+    negated: bool,
+    target: Option<&Node>,
+) -> Option<Proof> {
     match node.kind() {
         "parenthesized_expression" => {
             if let Some(child) = node.child(1) {
-                return analyze_condition_for_safety(&child, var_name, source, negated);
+                return safety_proof(&child, var_name, source, negated, target);
             }
         }
         "unary_expression" => {
             if let Some(operator) = node.child(0) {
                 if ast_utils::get_node_text_owned(&operator, source) == "!" {
                     if let Some(argument) = node.child_by_field_name("argument") {
-                        return analyze_condition_for_safety(&argument, var_name, source, !negated);
+                        return safety_proof(&argument, var_name, source, !negated, target);
                     }
                 }
             }
@@ -2418,12 +2597,13 @@ fn analyze_condition_for_safety(node: &Node, var_name: &str, source: &str, negat
         "binary_expression" => {
             if let Some(operator) = node.child_by_field_name("operator") {
                 let op = ast_utils::get_node_text_owned(&operator, source);
+                let proved = || Proof::at(node);
                 match op.as_str() {
-                    "==" if is_null_comparison(node, var_name, source) => {
-                        return negated;
+                    "==" if is_null_comparison(node, var_name, source, target) => {
+                        return if negated { proved() } else { None };
                     }
-                    "!=" if is_null_comparison(node, var_name, source) => {
-                        return !negated;
+                    "!=" if is_null_comparison(node, var_name, source, target) => {
+                        return if negated { None } else { proved() };
                     }
                     // De Morgan: `A && B` true means both hold, so either may
                     // prove it; `A && B` FALSE means only `!A || !B`, so both
@@ -2434,10 +2614,18 @@ fn analyze_condition_for_safety(node: &Node, var_name: &str, source: &str, negat
                             node.child_by_field_name("left"),
                             node.child_by_field_name("right"),
                         ) {
-                            let l = analyze_condition_for_safety(&left, var_name, source, negated);
-                            let r = analyze_condition_for_safety(&right, var_name, source, negated);
+                            let l = safety_proof(&left, var_name, source, negated, target);
+                            let r = safety_proof(&right, var_name, source, negated, target);
                             let either_proves = (op == "&&") != negated;
-                            return if either_proves { l || r } else { l && r };
+                            return if either_proves {
+                                r.or(l)
+                            } else {
+                                l.zip(r).map(|(l, mut r)| {
+                                    r.within.extend(l.within);
+                                    r.within.push((l.end, left.end_byte()));
+                                    r
+                                })
+                            };
                         }
                     }
                     _ => {}
@@ -2446,23 +2634,522 @@ fn analyze_condition_for_safety(node: &Node, var_name: &str, source: &str, negat
         }
         "identifier" => {
             let text = ast_utils::get_node_text_owned(node, source);
-            if text == var_name {
-                return !negated;
+            if text == var_name && !negated {
+                return Proof::at(node);
             }
         }
+        "assignment_expression" if !negated && assigns_target(node, target, var_name, source) => {
+            return Proof::at(node);
+        }
         _ => {}
+    }
+    None
+}
+
+/// Whether the object `target` names may be given a new value inside
+/// `guard` after byte `after` and before byte `before`, where the
+/// dereference `deref` is evaluated: a plain assignment of it, its address
+/// taken, a function-like macro this file defines handed it whose body
+/// assigns that parameter or takes its address ([`macro_writes_argument`]),
+/// or a call of anything else, unless it is an automatic object whose
+/// address its function never takes or the callee is a standard library
+/// function. Pointer arithmetic (`++`, `+=`) is no such write: a non-null
+/// pointer moved within its object stays non-null. An occurrence is the
+/// object when it resolves to the declaration `target` does (ADR-0006), or
+/// by its spelling when there is no `target`. An arm of a conditional whose
+/// other arm holds the dereference does not run on its path.
+fn target_written_between(
+    guard: &Node,
+    var_name: &str,
+    target: Option<&Node>,
+    (after, before): (usize, usize),
+    deref: &Node,
+    source: &str,
+) -> bool {
+    let declarator = |n: &Node| {
+        ast_utils::resolve_identifier_declarator(n, var_name, source).map(|(_, d)| d.id())
+    };
+    let target_declarator = target.and_then(declarator);
+    let is_target = |n: Option<Node>| {
+        n.map(crate::analyze::name_writes::strip_parens)
+            .is_some_and(|n| {
+                n.kind() == "identifier"
+                    && ast_utils::get_node_text(&n, source) == var_name
+                    && (target.is_none() || declarator(&n) == target_declarator)
+            })
+    };
+    let macros = FileMacros::current(source);
+    let calls_may_write =
+        !target.is_some_and(|t| is_unescaped_automatic(t, var_name, &macros, source));
+    let arm_holds_deref = |c: &Node, field: &str| {
+        c.child_by_field_name(field)
+            .is_some_and(|arm| node_is_within(&arm, deref))
+    };
+    let in_dead_arm = |n: &Node| {
+        n.parent()
+            .filter(|c| c.kind() == "conditional_expression")
+            .is_some_and(|c| {
+                let is_arm = |field| {
+                    c.child_by_field_name(field)
+                        .is_some_and(|a| a.id() == n.id())
+                };
+                (is_arm("consequence") && arm_holds_deref(&c, "alternative"))
+                    || (is_arm("alternative") && arm_holds_deref(&c, "consequence"))
+            })
+    };
+
+    // A GNU statement expression may loop or jump back, or define a nested
+    // function, so a write later in the text can run before the dereference:
+    // past the proof, the text no longer orders them.
+    let mut stack = vec![*guard];
+    while let Some(n) = stack.pop() {
+        if n.end_byte() <= after {
+            continue;
+        }
+        if matches!(
+            n.kind(),
+            "while_statement"
+                | "for_statement"
+                | "do_statement"
+                | "goto_statement"
+                | "function_definition"
+        ) {
+            return true;
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.children(&mut cursor));
+    }
+
+    let mut stack = vec![*guard];
+    while let Some(n) = stack.pop() {
+        if n.end_byte() <= after || n.start_byte() >= before || in_dead_arm(&n) {
+            continue;
+        }
+        if n.start_byte() >= after && n.end_byte() <= before {
+            let written = match n.kind() {
+                "assignment_expression" => {
+                    n.child_by_field_name("operator")
+                        .is_some_and(|o| o.kind() == "=")
+                        && is_target(n.child_by_field_name("left"))
+                }
+                "pointer_expression" => {
+                    ast_utils::is_address_of_expression(&n, source)
+                        && is_target(n.child_by_field_name("argument"))
+                }
+                "call_expression" => {
+                    let callee = n
+                        .child_by_field_name("function")
+                        .filter(|f| f.kind() == "identifier")
+                        .map(|f| ast_utils::get_node_text(&f, source));
+                    let handed_at: Vec<usize> = n
+                        .child_by_field_name("arguments")
+                        .map(|args| {
+                            let mut cursor = args.walk();
+                            let found = args
+                                .named_children(&mut cursor)
+                                .enumerate()
+                                .filter(|(_, a)| is_target(Some(*a)))
+                                .map(|(i, _)| i)
+                                .collect();
+                            found
+                        })
+                        .unwrap_or_default();
+                    match callee.filter(|name| macros.function.contains_key(*name)) {
+                        Some(name) => {
+                            macros.may_write(name, true, &handed_at, var_name, calls_may_write)
+                        }
+                        None if callee.is_some_and(|name| {
+                            crate::utility::cert_c::library_effects::library_call_effect(name)
+                                .is_some()
+                        }) =>
+                        {
+                            false
+                        }
+                        None => calls_may_write,
+                    }
+                }
+                // An object-like macro of the file expands in place.
+                "identifier" => {
+                    let name = ast_utils::get_node_text(&n, source);
+                    macros.object.contains_key(name)
+                        && macros.may_write(name, false, &[], var_name, calls_may_write)
+                }
+                _ => false,
+            };
+            if written {
+                return true;
+            }
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.children(&mut cursor));
     }
     false
 }
 
-fn is_null_comparison(binary_expr: &Node, var_name: &str, source: &str) -> bool {
+/// Whether `ident` names an automatic object (a parameter, or a local
+/// declared without `static`/`extern`) whose address its function never
+/// takes, so no call can write it. A function holding a nested function
+/// definition (GCC), or a use of a macro of the file whose expansion names
+/// the object, may take its address unseen, so it escapes there.
+fn is_unescaped_automatic(ident: &Node, var_name: &str, macros: &FileMacros, source: &str) -> bool {
+    let Some((decl, declarator)) =
+        ast_utils::resolve_identifier_declarator(ident, var_name, source)
+    else {
+        return false;
+    };
+    let automatic = match decl.kind() {
+        "parameter_declaration" => true,
+        "declaration" => {
+            let static_or_extern = (0..decl.child_count())
+                .filter_map(|i| decl.child(i))
+                .any(|c| {
+                    c.kind() == "storage_class_specifier"
+                        && matches!(ast_utils::get_node_text(&c, source), "static" | "extern")
+                });
+            !static_or_extern && enclosing_function_body(&decl).is_some()
+        }
+        _ => false,
+    };
+    if !automatic {
+        return false;
+    }
+    let Some(function) = enclosing_function_body(ident) else {
+        return false;
+    };
+    let mut stack = vec![function];
+    while let Some(n) = stack.pop() {
+        let escapes = match n.kind() {
+            "function_definition" => true,
+            "identifier" => {
+                let name = ast_utils::get_node_text(&n, source);
+                name != var_name
+                    && (macros.function.contains_key(name)
+                        && macros.may_write(name, true, &[], var_name, false)
+                        || macros.object.contains_key(name)
+                            && macros.may_write(name, false, &[], var_name, false))
+            }
+            _ => false,
+        };
+        if escapes {
+            return false;
+        }
+        if ast_utils::is_address_of_expression(&n, source) {
+            let operand = n
+                .child_by_field_name("argument")
+                .map(crate::analyze::name_writes::strip_parens);
+            if operand.is_some_and(|o| {
+                o.kind() == "identifier"
+                    && ast_utils::get_node_text(&o, source) == var_name
+                    && ast_utils::resolve_identifier_declarator(&o, var_name, source)
+                        .is_some_and(|(_, d)| d.id() == declarator.id())
+            }) {
+                return false;
+            }
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.children(&mut cursor));
+    }
+    true
+}
+
+thread_local! {
+    /// The macros of the file `check` is reading ([`FileMacros`]), read once
+    /// per file.
+    static FILE_MACROS: RefCell<Option<Rc<FileMacros>>> = const { RefCell::new(None) };
+}
+
+/// A question [`FileMacros::may_write`] answers: the macro's name, whether
+/// it is function-like, the argument positions holding the pointer, the
+/// pointer's name and whether a call may write it.
+type ExpansionQuestion = (String, bool, Vec<usize>, String, bool);
+
+/// Every live definition of every macro one file defines, for asking
+/// whether an expansion writes a pointer: the function-like ones' arms
+/// ([`macro_expand::collect_function_macro_arms`]: each arm of each `#if`
+/// the file does not prove dead, a redefinition kept beside the first) and
+/// the object-like ones' bodies, `None` for one the definitions reader
+/// cannot read (a `##` paste).
+struct FileMacros {
+    function: HashMap<String, Vec<macro_expand::MacroArm>>,
+    object: HashMap<String, Vec<Option<String>>>,
+    /// Answers already given for a whole expansion, by name, whether it is
+    /// function-like, the argument positions holding the pointer, the
+    /// pointer's name and whether a call may write it.
+    answered: RefCell<HashMap<ExpansionQuestion, bool>>,
+}
+
+impl FileMacros {
+    fn of(source: &str) -> Self {
+        let function = macro_expand::collect_function_macro_arms(source);
+        let mut object: HashMap<String, Vec<Option<String>>> = HashMap::new();
+        for (name, definitions) in crate::analyze::check_macros::collect_macro_definitions(source) {
+            for definition in definitions {
+                let body = match definition {
+                    crate::analyze::check_macros::MacroDefinition::Object { body } => Some(body),
+                    crate::analyze::check_macros::MacroDefinition::Opaque
+                        if !function.contains_key(&name) =>
+                    {
+                        None
+                    }
+                    _ => continue,
+                };
+                object.entry(name.clone()).or_default().push(body);
+            }
+        }
+        Self {
+            function,
+            object,
+            answered: RefCell::default(),
+        }
+    }
+
+    /// The macros of the file `source` is, as `check` read them, or read
+    /// now outside a check.
+    fn current(source: &str) -> Rc<Self> {
+        FILE_MACROS
+            .with(|m| m.borrow().clone())
+            .unwrap_or_else(|| Rc::new(Self::of(source)))
+    }
+
+    /// Whether expanding `name` (function-like or object-like) may write
+    /// `var_name`, or the expansion cannot be followed, so a credit that
+    /// rests on no write is refused. `handed` are the positions of the
+    /// arguments that are the pointer itself.
+    fn may_write(
+        &self,
+        name: &str,
+        function_like: bool,
+        handed: &[usize],
+        var_name: &str,
+        calls_may_write: bool,
+    ) -> bool {
+        let key = (
+            name.to_string(),
+            function_like,
+            handed.to_vec(),
+            var_name.to_string(),
+            calls_may_write,
+        );
+        if let Some(&known) = self.answered.borrow().get(&key) {
+            return known;
+        }
+        let written = self.expansion_may_write(
+            name,
+            function_like,
+            handed,
+            var_name,
+            calls_may_write,
+            0,
+            &mut HashSet::new(),
+        );
+        self.answered.borrow_mut().insert(key, written);
+        written
+    }
+
+    /// [`Self::may_write`] at `depth` macros in, `seen` holding the
+    /// expansions already being followed: one met again adds nothing.
+    #[allow(clippy::too_many_arguments)]
+    fn expansion_may_write(
+        &self,
+        name: &str,
+        function_like: bool,
+        handed: &[usize],
+        var_name: &str,
+        calls_may_write: bool,
+        depth: usize,
+        seen: &mut HashSet<(String, bool, Vec<usize>)>,
+    ) -> bool {
+        if depth > macro_expand::MAX_MACRO_FORWARDING {
+            return true;
+        }
+        if !seen.insert((name.to_string(), function_like, handed.to_vec())) {
+            return false;
+        }
+        let arm_may_write = |arm: &macro_expand::MacroArm, seen: &mut HashSet<_>| {
+            self.arm_may_write(arm, handed, var_name, calls_may_write, depth, seen)
+        };
+        if function_like {
+            self.function
+                .get(name)
+                .is_some_and(|arms| arms.iter().any(|arm| arm_may_write(arm, seen)))
+        } else {
+            self.object.get(name).is_some_and(|bodies| {
+                bodies.iter().any(|body| match body {
+                    Some(body) => arm_may_write(
+                        &macro_expand::MacroArm {
+                            params: Vec::new(),
+                            variadic: None,
+                            body: body.clone(),
+                        },
+                        seen,
+                    ),
+                    None => true,
+                })
+            })
+        }
+    }
+
+    /// Whether one definition may write `var_name`: it pastes tokens (`##`,
+    /// which this does not follow), assigns or takes the address of an
+    /// argument that is the pointer ([`macro_writes_argument`]), forwards one
+    /// to a macro of the file that may, names the pointer (not as a
+    /// parameter, nor as a member after `.` or `->`), makes a call while
+    /// `calls_may_write` holds, names a macro of the file that may, or
+    /// names a function-like one without its arguments.
+    fn arm_may_write(
+        &self,
+        arm: &macro_expand::MacroArm,
+        handed: &[usize],
+        var_name: &str,
+        calls_may_write: bool,
+        depth: usize,
+        seen: &mut HashSet<(String, bool, Vec<usize>)>,
+    ) -> bool {
+        if arm.body.contains("##") || handed.iter().any(|&i| macro_writes_argument(arm, i)) {
+            return true;
+        }
+        let follow = |name: &str, function_like: bool, handed: &[usize], seen: &mut HashSet<_>| {
+            self.expansion_may_write(
+                name,
+                function_like,
+                handed,
+                var_name,
+                calls_may_write,
+                depth + 1,
+                seen,
+            )
+        };
+        for (callee, arguments) in macro_expand::macro_body_calls(arm).forwarded {
+            let passed: Vec<usize> = arguments
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.is_some_and(|p| handed.contains(&p)))
+                .map(|(j, _)| j)
+                .collect();
+            if !passed.is_empty()
+                && self.function.contains_key(&callee)
+                && follow(&callee, true, &passed, seen)
+            {
+                return true;
+            }
+        }
+        let tokens = body_tokens(&arm.body);
+        for (i, &token) in tokens.iter().enumerate() {
+            let previous = i.checked_sub(1).map(|j| tokens[j]);
+            let next = tokens.get(i + 1).copied();
+            let is_name = token.starts_with(|c: char| c.is_alphabetic() || c == '_');
+            if next == Some("(")
+                && calls_may_write
+                && (token == ")" || is_name && !ast_utils::is_c_keyword(token))
+            {
+                return true;
+            }
+            if !is_name
+                || matches!(previous, Some("." | "->"))
+                || arm.params.iter().any(|p| p == token)
+            {
+                continue;
+            }
+            // A function-like macro named without its arguments (`#define R
+            // RESET`) takes them where the expansion is invoked, which this
+            // does not follow.
+            if token == var_name
+                || self.function.contains_key(token)
+                    && (next != Some("(") || follow(token, true, &[], seen))
+                || self.object.contains_key(token) && follow(token, false, &[], seen)
+            {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// A macro body's tokens: identifiers and numbers whole,
+/// `->` as one, every other punctuator a character; literals and comments
+/// are skipped.
+fn body_tokens(body: &str) -> Vec<&str> {
+    let bytes = body.as_bytes();
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c.is_ascii_whitespace() {
+            i += 1;
+        } else if c == b'"' || c == b'\'' {
+            i += 1;
+            while i < bytes.len() && bytes[i] != c {
+                i += if bytes[i] == b'\\' { 2 } else { 1 };
+            }
+            i += 1;
+        } else if body[i..].starts_with("/*") {
+            i = body[i + 2..]
+                .find("*/")
+                .map_or(bytes.len(), |e| i + 2 + e + 2);
+        } else if body[i..].starts_with("//") {
+            i = body[i..].find('\n').map_or(bytes.len(), |e| i + e);
+        } else if c.is_ascii_alphanumeric() || c == b'_' {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            tokens.push(&body[start..i]);
+        } else if body[i..].starts_with("->") {
+            tokens.push(&body[i..i + 2]);
+            i += 2;
+        } else {
+            let width = body[i..].chars().next().map_or(1, char::len_utf8);
+            tokens.push(&body[i..i + width]);
+            i += width;
+        }
+    }
+    tokens
+}
+
+/// Whether a macro's body may give a new value to its argument at
+/// `position`: it assigns the parameter whole (`macro_body_calls`), or takes
+/// its address, which a callee may write through. A position past the named
+/// parameters is a variadic argument the body may do anything with.
+fn macro_writes_argument(arm: &macro_expand::MacroArm, position: usize) -> bool {
+    let Some(param) = arm.params.get(position) else {
+        return true;
+    };
+    if macro_expand::macro_body_calls(arm)
+        .written_params
+        .contains(&position)
+    {
+        return true;
+    }
+    let body: String = arm.body.chars().filter(|c| !c.is_whitespace()).collect();
+    [format!("&{param}"), format!("&({param})")]
+        .iter()
+        .any(|taken| {
+            body.match_indices(taken.as_str()).any(|(at, _)| {
+                let after = body[at + taken.len()..].chars().next();
+                let before = body[..at].chars().last();
+                // `&p->f`, `&(p)[i]` and `&p.f` take a member's address, not `p`'s.
+                !after.is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '['))
+                    && before != Some('&')
+            })
+        })
+}
+
+fn is_null_comparison(
+    binary_expr: &Node,
+    var_name: &str,
+    source: &str,
+    target: Option<&Node>,
+) -> bool {
     if let (Some(left), Some(right)) = (
         binary_expr.child_by_field_name("left"),
         binary_expr.child_by_field_name("right"),
     ) {
         let lt = ast_utils::get_node_text_owned(&left, source);
         let rt = ast_utils::get_node_text_owned(&right, source);
-        (lt == var_name && is_null_value(&rt)) || (rt == var_name && is_null_value(&lt))
+        let tests = |operand: &Node, text: &str| {
+            text == var_name || assigns_target(operand, target, var_name, source)
+        };
+        (tests(&left, &lt) && is_null_value(&rt)) || (tests(&right, &rt) && is_null_value(&lt))
     } else {
         false
     }
@@ -2626,7 +3313,7 @@ fn assert_condition<'a>(stmt: &Node<'a>, source: &str) -> Option<Node<'a>> {
 /// either an explicit truthiness/`!= NULL` test, or an *unconditional*
 /// dereference of `base` (no `||` / ternary that could short-circuit it).
 fn assert_establishes_nonnull(cond: &Node, base: &str, source: &str) -> bool {
-    if analyze_condition_for_safety(cond, base, source, false) {
+    if analyze_condition_for_safety(cond, base, source, false, None) {
         return true;
     }
     let text = ast_utils::get_node_text_owned(cond, source);

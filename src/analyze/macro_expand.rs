@@ -896,7 +896,7 @@ pub fn argument_evaluation_pasting(
 }
 
 /// How deep [`argument_evaluation_through`] follows macros into macros.
-const MAX_MACRO_FORWARDING: usize = 4;
+pub(crate) const MAX_MACRO_FORWARDING: usize = 4;
 
 fn evaluation_at_depth(
     arm: &MacroArm,
