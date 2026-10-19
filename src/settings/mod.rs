@@ -472,6 +472,7 @@ const HASHED_ONLY_WHEN_OVERRIDDEN: &[&str] = &[
     "library_macros_evaluate_once",
     "env33_locally_constructed_command_allowed",
     "env33_exec_spawn_exempt",
+    "fio21_tmpfile_exempt_under_posix",
     "pos34_main_frame_exempt",
     "pos34_exit_path_exempt",
     "msc37_attribute_noreturn",
@@ -637,6 +638,26 @@ pub static OPTIONS: &[OptionSpec] = &[
         basis: "CERT ENV33-C: \"Do not invoke a command processor via system() or equivalent \
                 functions\"; its compliant solutions call execve() and CreateProcess(), which \
                 run a program the same way _exec* and _spawn* do.",
+    },
+    OptionSpec {
+        name: "fio21_tmpfile_exempt_under_posix",
+        axis: Axis::Policy,
+        scope: Scope::RuleSpecific("FIO21-C"),
+        source: Source::Policy {
+            default: true,
+            strict: false,
+            pedantic: false,
+        },
+        oracle_tag: "tmpfile-removed-under-posix",
+        summary: "FIO21-C: a call to tmpfile() is not reported where POSIX holds \
+                  (posix_version, or the default preset's assumption): POSIX removes the file \
+                  it creates when the stream is closed or the process ends. Off, every call is \
+                  reported as CERT's page is written. tmpnam(), tempnam() and mktemp() are \
+                  reported under either value.",
+        basis: "FIO21-C/2026-10-07/presets: a listed contributor noted on CERT's page that \
+                POSIX guarantees the file's removal (Gwyn, 2008). CERT's own table marks \
+                tmpfile's removal as guaranteed except on abnormal termination, and still lists \
+                it as noncompliant, as the strict policy does (ADR-0001).",
     },
     OptionSpec {
         name: "pos34_main_frame_exempt",

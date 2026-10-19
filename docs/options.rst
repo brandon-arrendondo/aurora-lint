@@ -81,6 +81,14 @@ Policy options
    - Oracle tag: ``exec-spawn-not-command-processor``
    - Basis: CERT ENV33-C: "Do not invoke a command processor via system() or equivalent functions"; its compliant solutions call execve() and CreateProcess(), which run a program the same way _exec* and _spawn* do.
 
+``fio21_tmpfile_exempt_under_posix``
+   FIO21-C: a call to tmpfile() is not reported where POSIX holds (posix_version, or the default preset's assumption): POSIX removes the file it creates when the stream is closed or the process ends. Off, every call is reported as CERT's page is written. tmpnam(), tempnam() and mktemp() are reported under either value.
+
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
+   - Scope: FIO21-C
+   - Oracle tag: ``tmpfile-removed-under-posix``
+   - Basis: FIO21-C/2026-10-07/presets: a listed contributor noted on CERT's page that POSIX guarantees the file's removal (Gwyn, 2008). CERT's own table marks tmpfile's removal as guaranteed except on abnormal termination, and still lists it as noncompliant, as the strict policy does (ADR-0001).
+
 ``pos34_main_frame_exempt``
    POS34-C: putenv() of an automatic object in main's own frame is not reported: main's automatic objects live until the program ends, so the environment entry does not dangle unless main is called recursively. Off, it is reported as CERT's rule is written.
 
