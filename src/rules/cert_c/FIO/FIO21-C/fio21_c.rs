@@ -180,15 +180,18 @@ enum Callee {
 }
 
 impl Callee {
+    /// The function `name` is. The large-file names are the same functions:
+    /// glibc's headers rename each call to them (`#define tmpfile
+    /// tmpfile64`) when a build sets `_FILE_OFFSET_BITS=64`.
     fn library(name: &str) -> Option<Callee> {
         Some(match name {
             "tmpnam" => Callee::TempName("tmpnam"),
             "tempnam" => Callee::TempName("tempnam"),
             "mktemp" => Callee::TempName("mktemp"),
-            "tmpfile" => Callee::Tmpfile,
-            "fopen" => Callee::Fopen,
-            "open" => Callee::Open,
-            "openat" => Callee::Openat,
+            "tmpfile" | "tmpfile64" => Callee::Tmpfile,
+            "fopen" | "fopen64" => Callee::Fopen,
+            "open" | "open64" => Callee::Open,
+            "openat" | "openat64" => Callee::Openat,
             _ => return None,
         })
     }
@@ -346,7 +349,9 @@ impl FileContext {
         if designates_object(&function, source) {
             return None;
         }
-        let spelled = (spelling != callee.name()).then(|| spelling.clone());
+        // `tmpfile` renamed to `tmpfile64` by a system header is still
+        // spelled as the call is written.
+        let spelled = (Callee::library(&spelling) != Some(callee)).then(|| spelling.clone());
         let path = match callee {
             Callee::TempName(_) => None,
             Callee::Tmpfile if self.tmpfile_reported => None,
