@@ -1,11 +1,11 @@
 /*
- * Rule: STR31-C
+ * Rule: STR32-C
  * Source: testcases
- * Status: FAIL - Should trigger STR31-C violation
+ * Status: FAIL - Should trigger STR32-C violation
  */
 
 /*
- * Rule: STR31-C - Guarantee that storage for strings has sufficient space for character data and the null terminator
+ * Rule: STR32-C - Do not pass a non-null-terminated character sequence to a library function that expects a string
  * Status: FAIL
  * Reason: strncpy may not null-terminate if source length equals or exceeds count
  */

@@ -1723,45 +1723,6 @@ impl Str31C {
         !Self::loop_has_bounds_check(node, &condition, source)
     }
 
-    /// Check for strncpy null termination issues
-    fn check_strncpy_safety(&self, arguments: &Node, source: &str, root: &Node) -> bool {
-        // Extract destination buffer and size arguments
-        let mut dest_name = None;
-        let mut copy_size = None;
-        let mut arg_count = 0;
-
-        for i in 0..arguments.child_count() {
-            if let Some(arg) = arguments.child(i) {
-                if arg.kind() == "identifier" && arg_count == 0 {
-                    dest_name = Some(&source[arg.start_byte()..arg.end_byte()]);
-                } else if arg.kind() == "number_literal" && arg_count == 2 {
-                    let size_text = &source[arg.start_byte()..arg.end_byte()];
-                    if let Ok(size) = size_text.parse::<usize>() {
-                        copy_size = Some(size);
-                    }
-                }
-
-                if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
-                    arg_count += 1;
-                }
-            }
-        }
-
-        // Check if the copy size equals the buffer size (common mistake)
-        if let (Some(dest), Some(copy_sz)) = (dest_name, copy_size) {
-            if let Some(buffer_size) =
-                self.find_buffer_size_with_alias(dest, root, source, arguments)
-            {
-                if copy_sz == buffer_size {
-                    // This is dangerous - no room for null terminator if string fills buffer
-                    return false;
-                }
-            }
-        }
-
-        true
-    }
-
     /// Check if a buffer was previously freed
     #[allow(dead_code)]
     fn was_buffer_freed(&self, var_name: &str, source: &str) -> bool {
@@ -1814,11 +1775,13 @@ impl Str31C {
         false
     }
 
-    /// Check if memcpy is being used for string operations (dangerous)
+    /// Whether a memcpy/wmemcpy copies `strlen(...)` bytes, so the copy stops
+    /// short of the source's null terminator, and the destination is not
+    /// terminated by hand on the next few lines. The names of the buffers do
+    /// not decide it: `memcpy(buf_cpy, buf, sizeof(struct buffer))` copies a
+    /// struct, not a string.
     fn is_string_memcpy(&self, arguments: &Node, source: &str, _root: &Node) -> bool {
-        // Extract arguments to see if this looks like string copying
         let mut dest_name = None;
-        let mut src_name = None;
         let mut size_arg = None;
         let mut arg_count = 0;
 
@@ -1827,8 +1790,6 @@ impl Str31C {
                 if arg.kind() == "identifier" {
                     if arg_count == 0 {
                         dest_name = Some(&source[arg.start_byte()..arg.end_byte()]);
-                    } else if arg_count == 1 {
-                        src_name = Some(&source[arg.start_byte()..arg.end_byte()]);
                     } else if arg_count == 2 {
                         size_arg = Some(&source[arg.start_byte()..arg.end_byte()]);
                     }
@@ -1888,46 +1849,6 @@ impl Str31C {
             }
         }
 
-        // Heuristic: if variables have string-like names, it's likely string copying.
-        // Exclude variables that are explicitly declared as non-char byte types (uint8_t,
-        // BYTE, etc.) — those are raw byte buffers, not null-terminated strings.
-        if let (Some(dest), Some(src)) = (dest_name, src_name) {
-            let dest_lower = dest.to_lowercase();
-            let src_lower = src.to_lowercase();
-
-            let name_match = dest_lower.contains("str")
-                || dest_lower.contains("buf")
-                || src_lower.contains("str")
-                || src_lower.contains("buf")
-                || dest_lower.contains("msg")
-                || src_lower.contains("msg");
-
-            if name_match
-                && !Self::is_byte_typed_buffer(dest, source)
-                && !Self::is_byte_typed_buffer(src, source)
-            {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    /// Returns true if the named variable is declared with an explicit non-char byte type
-    /// (uint8_t, int8_t, BYTE, uint16_t, etc.), indicating it is a raw byte buffer
-    /// rather than a null-terminated string buffer.
-    fn is_byte_typed_buffer(var_name: &str, source: &str) -> bool {
-        let byte_types = ["uint8_t", "int8_t", "BYTE", "uint16_t", "uint32_t"];
-        for line in source.lines() {
-            let trimmed = line.trim();
-            if trimmed.contains(var_name) {
-                for bt in &byte_types {
-                    if trimmed.contains(bt) {
-                        return true;
-                    }
-                }
-            }
-        }
         false
     }
 
@@ -2296,36 +2217,6 @@ impl Str31C {
         // Check for dangerous function calls
         self.check_dangerous_call(node, source, root, violations);
 
-        // Check for unvalidated argv usage (main with argv but no argc validation)
-        if node.kind() == "function_definition" {
-            let func_text = &source[node.start_byte()..node.end_byte()];
-
-            // Check if this is main() with argv parameter but no validation
-            if func_text.contains("main")
-                && func_text.contains("argc")
-                && func_text.contains("argv")
-                && func_text.contains("char *argv")
-            {
-                // Check if there's any argc validation (e.g., "argc &&" or "if (argc")
-                if !func_text.contains("argc &&")
-                    && !func_text.contains("if (argc")
-                    && !func_text.contains("if(argc")
-                {
-                    let start_point = node.start_position();
-                    violations.push(RuleViolation {
-                        rule_id: self.rule_id().to_string(),
-                        severity: Severity::Medium,
-                        message: "Program arguments (argv) used without validating argc or checking for null pointers".to_string(),
-                        file_path: String::new(),
-                        line: start_point.row + 1,
-                        column: start_point.column + 1,
-                        suggestion: Some("Validate argc and argv[0] before use: const char *prog = (argc && argv[0]) ? argv[0] : \"\"".to_string()),
-                    ..Default::default()
-                    });
-                }
-            }
-        }
-
         // Check for off-by-one errors in manual string copy (dest[i] after loop with i < n)
         if self.detect_off_by_one_error(node, source) {
             let start_point = node.start_position();
@@ -2354,28 +2245,6 @@ impl Str31C {
                 suggestion: Some("Add explicit bounds checking or use standard string functions with size limits".to_string()),
             ..Default::default()
             });
-        }
-
-        // Check for very small character arrays (less than 2)
-        if node.kind() == "array_declarator" {
-            if let Some(size_node) = node.child_by_field_name("size") {
-                let size_text = &source[size_node.start_byte()..size_node.end_byte()];
-                if let Ok(size) = size_text.parse::<i32>() {
-                    if size < 2 {
-                        let start_point = node.start_position();
-                        violations.push(RuleViolation {
-                            rule_id: self.rule_id().to_string(),
-                            severity: Severity::Medium,
-                            message: "Character array too small to hold any string data plus null terminator".to_string(),
-                            file_path: String::new(),
-                            line: start_point.row + 1,
-                            column: start_point.column + 1,
-                            suggestion: Some("Increase array size to accommodate expected string length plus null terminator".to_string()),
-                        ..Default::default()
-                        });
-                    }
-                }
-            }
         }
     }
 
@@ -2429,14 +2298,6 @@ impl Str31C {
                 if let Some(arguments) = node.child_by_field_name("arguments") {
                     if !self.check_strcat_safety(&arguments, source, &root) {
                         violations.push(self.str31_violation(node, Severity::Medium, "Potential buffer overflow with wcscat(). Cannot verify destination has space for concatenation.".to_string(), "Use wcsncat() with size limit or track remaining buffer space"));
-                    }
-                }
-            }
-
-            "wcsncpy" => {
-                if let Some(arguments) = node.child_by_field_name("arguments") {
-                    if !self.check_strncpy_safety(&arguments, source, &root) {
-                        violations.push(self.str31_violation(node, Severity::Medium, "Potential null termination issue with wcsncpy(). Size parameter equals buffer size.".to_string(), "Use size-1 as limit and explicitly null-terminate, or use wcslcpy()"));
                     }
                 }
             }
@@ -2502,14 +2363,6 @@ impl Str31C {
                             ),
                             "Use width specifier with %s (e.g., %99s) or use fgets()",
                         ));
-                    }
-                }
-            }
-
-            "strncpy" => {
-                if let Some(arguments) = node.child_by_field_name("arguments") {
-                    if !self.check_strncpy_safety(&arguments, source, &root) {
-                        violations.push(self.str31_violation(node, Severity::Medium, "Potential null termination issue with strncpy(). Size parameter equals buffer size.".to_string(), "Use size-1 as limit and explicitly null-terminate, or use strlcpy()"));
                     }
                 }
             }
