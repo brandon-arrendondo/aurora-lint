@@ -1,14 +1,14 @@
 /*
  * Rule: MSC13-C
  * Source: mbedtls library/ (real-world regression)
- * Status: FAIL - Should trigger MSC13-C violation
+ * Status: PASS - Should NOT trigger MSC13-C violation
  *
  * `int ret = ERR_CORRUPTION_DETECTED;` is written as fault-injection
- * hardening, but every path from the declaration overwrites `ret` before
- * any read: the CHK macro's `ret = (f)` runs on every path through it, and
- * the early exits return literals. The initial value can never be
- * observed, so it is a dead store whatever it names. An earlier fix exempted
- * this shape outright; an earlier fix narrowed the question to dataflow.
+ * hardening. Every path from the declaration overwrites `ret` before any
+ * read: the CHK macro's `ret = (f)` runs on every path through it, and the
+ * early exits return literals. A default value on the declaration that is
+ * a constant expression is MSC13-EX1's case: it may be inefficient, but it
+ * guards against reading an uninitialized object (EXP33-C).
  */
 
 #define ERR_CORRUPTION_DETECTED -0x006E

@@ -12,7 +12,8 @@ void use(int);
 void f(void)
 {
     int y = 7;
-    int x = 1;    /* VIOLATION: dead — LOG_Y() reads y, never x */
+    int x;
+    x = 1;        /* VIOLATION: dead — LOG_Y() reads y, never x */
     LOG_Y();
     x = 2;
     use(x);

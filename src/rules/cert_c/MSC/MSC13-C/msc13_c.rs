@@ -25,6 +25,8 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self as cfg_mod, FunctionCfg, MacroJump};
+use crate::analyze::check_macros::MacroDefinition;
+use crate::analyze::const_eval;
 use crate::analyze::dataflow::{
     compute_reaching_definitions, extract_definitions, find_node_at_range, Definition,
     DefinitionKind,
@@ -32,7 +34,7 @@ use crate::analyze::dataflow::{
 use crate::analyze::macro_expand::{
     collect_function_macro_alternatives, macro_free_identifier_must_writes,
     macro_free_identifier_reads, macro_free_identifiers_written_first,
-    macro_references_free_identifier, macro_writes_before_jump, FunctionMacro,
+    macro_references_free_identifier, macro_writes_before_jump, FunctionMacro, MacroArm,
 };
 use crate::analyze::unknown_identifier_recovery::UNUSED_ATTRIBUTE_MARKER;
 use crate::manifest::Severity;
@@ -43,7 +45,8 @@ use crate::utility::cert_c::ast_utils::{
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 use tree_sitter::Node;
 
@@ -58,6 +61,26 @@ pub struct Msc13C {
     /// included), so a macro defined in a header is known when a file
     /// invokes it. Only consulted for names this file does not define.
     project_function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
+    /// Object-like macros the prescan saw defined anywhere in the project,
+    /// so an error code from a header still reads as a constant
+    /// initializer (MSC13-EX1).
+    project_macro_names: RefCell<Arc<HashSet<String>>>,
+    /// Every `#define` the prescan saw, in every arm, so an object-like
+    /// macro's replacement list can be read before its value counts as a
+    /// default (`#define SOCKERRNO errno` is no constant).
+    project_macro_definitions: RefCell<Arc<HashMap<String, Vec<MacroDefinition>>>>,
+    /// The file-scope objects a scanned file or header declares, volatile
+    /// or not: a name from a header's `extern int g;` is a variable.
+    project_volatile_globals: RefCell<Arc<HashSet<String>>>,
+    project_non_volatile_globals: RefCell<Arc<HashSet<String>>>,
+    /// Whether each name an initializer of the file being checked reads
+    /// may stand in a default, as [`DefaultTest`] found it.
+    default_names: RefCell<HashMap<String, Reach>>,
+    /// Whether each macro name of the file being checked is a brace list,
+    /// as [`DefaultTest::is_brace_list`] found it.
+    brace_lists: RefCell<HashMap<String, bool>>,
+    /// The objects the file being checked declares, with their scopes.
+    declared_objects: RefCell<Option<Rc<DeclaredObjects>>>,
 }
 
 impl Msc13C {
@@ -65,6 +88,13 @@ impl Msc13C {
         Self {
             project_unused_attr_macros: RefCell::default(),
             project_function_macros: RefCell::default(),
+            project_macro_names: RefCell::default(),
+            project_macro_definitions: RefCell::default(),
+            project_volatile_globals: RefCell::default(),
+            project_non_volatile_globals: RefCell::default(),
+            default_names: RefCell::default(),
+            brace_lists: RefCell::default(),
+            declared_objects: RefCell::default(),
         }
     }
 
@@ -661,6 +691,9 @@ impl CertRule for Msc13C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+        self.default_names.borrow_mut().clear();
+        self.brace_lists.borrow_mut().clear();
+        *self.declared_objects.borrow_mut() = None;
 
         // Every preprocessor branch's definition of every function-like
         // macro in this file, for the macro-hidden-use check below. Built
@@ -687,6 +720,10 @@ impl CertRule for Msc13C {
     fn set_project_context(&self, context: &crate::analyze::context::ProjectContext) {
         *self.project_unused_attr_macros.borrow_mut() = context.unused_attribute_macros.clone();
         *self.project_function_macros.borrow_mut() = context.function_macros.clone();
+        *self.project_macro_names.borrow_mut() = context.defined_macro_names.clone();
+        *self.project_macro_definitions.borrow_mut() = context.macro_definitions.clone();
+        *self.project_volatile_globals.borrow_mut() = context.volatile_globals.clone();
+        *self.project_non_volatile_globals.borrow_mut() = context.non_volatile_globals.clone();
     }
 }
 
@@ -845,7 +882,7 @@ impl Msc13C {
                 violations,
                 declarations,
             ),
-            None => self.check_dead_stores_in_blocks(body, source, violations),
+            None => self.check_dead_stores_in_blocks(body, source, macros, violations),
         }
     }
 
@@ -1018,17 +1055,19 @@ impl Msc13C {
             }
             // A defensive initial value -- `int ret = MBEDTLS_ERR_ERROR_
             // CORRUPTION_DETECTED;`, `int rc = -1;` on the variable the
-            // function returns -- is exempt only when the initial value can
-            // actually reach a read, which is what the reaching-definitions
-            // pass above already decided: if it can, the definition is live
-            // and never gets here. A constant initializer that every path
-            // overwrites before any read is a dead store whatever it names
-            // (which retired an earlier by-shape exemption: on
-            // mbedtls it silenced 91 stores clang's DeadStores also proves
-            // dead). The reads the exemption used to stand in for are
-            // modelled instead: a macro-hidden `goto`/`return` is a CFG
-            // edge, and an `#if`-spliced `} else` chain is re-joined before
-            // parsing.
+            // function returns -- that some path reads is live, which the
+            // reaching-definitions pass above decides: a macro-hidden
+            // `goto`/`return` is a CFG edge, and an `#if`-spliced `} else`
+            // chain is re-joined before parsing. One that every path
+            // overwrites before a read is MSC13-EX1's case: a default value
+            // on the declaration guards against reading an uninitialized
+            // object (EXP33-C), and is exempt in every preset when it is a
+            // constant expression (`0`, `NULL`, `-1`, an error code or
+            // enumerator). Not a later assignment of one, and not a
+            // computed initializer (`= f()`).
+            if self.is_default_initializer(body, def.byte_offset, &def.variable, source, macros) {
+                continue;
+            }
             let line = Self::line_for_byte(source, def.byte_offset);
             violations.push(RuleViolation {
                 rule_id: self.rule_id().to_string(),
@@ -1047,6 +1086,70 @@ impl Msc13C {
                 ..Default::default()
             });
         }
+    }
+
+    /// Whether the declaration of `variable` whose `init_declarator` starts
+    /// at `at` initializes it with a default value in MSC13-EX1's sense
+    /// ([`is_default_value`]): a constant expression
+    /// ([`const_eval::is_compile_time_constant_expr`], with no function
+    /// call counted as one), or a brace list of them (`= {0}`). A string
+    /// literal is not one.
+    fn is_default_initializer(
+        &self,
+        root: &Node,
+        at: usize,
+        variable: &str,
+        source: &str,
+        macros: &HashMap<String, Vec<FunctionMacro>>,
+    ) -> bool {
+        let Some(value) = Self::declared_initializer(root, at, variable, source) else {
+            return false;
+        };
+        let object_macros = self.project_macro_names.borrow();
+        let function_macros: HashSet<String> = macros
+            .keys()
+            .cloned()
+            .chain(CONSTANT_OPERATORS.iter().map(|o| o.to_string()))
+            .collect();
+        let no_functions = HashSet::new();
+        let names = const_eval::ConstantNameSets {
+            object_macros: &object_macros,
+            function_macros: &function_macros,
+            constant_returning_functions: &no_functions,
+            file_macros: None,
+        };
+        let test = DefaultTest {
+            source,
+            macros,
+            definitions: &self.project_macro_definitions.borrow(),
+            globals: [
+                &self.project_volatile_globals.borrow(),
+                &self.project_non_volatile_globals.borrow(),
+            ],
+            memo: &self.default_names,
+            brace_lists: &self.brace_lists,
+            declared: &self.declared_objects,
+        };
+        is_default_value(&value, &Default::default(), names, &test)
+    }
+
+    /// The initializer of `variable` in the `init_declarator` starting at
+    /// `at`.
+    fn declared_initializer<'a>(
+        root: &Node<'a>,
+        at: usize,
+        variable: &str,
+        source: &str,
+    ) -> Option<Node<'a>> {
+        let mut node = root.descendant_for_byte_range(at, at)?;
+        while node.kind() != "init_declarator" || node.start_byte() != at {
+            node = node.parent()?;
+        }
+        let declarator = node.child_by_field_name("declarator")?;
+        if get_identifier_from_declarator(&declarator, source) != variable {
+            return None;
+        }
+        node.child_by_field_name("value")
     }
 
     /// Append a [`Definition`] for every caller variable a macro invocation
@@ -1264,23 +1367,25 @@ impl Msc13C {
         &self,
         node: &Node,
         source: &str,
+        macros: &HashMap<String, Vec<FunctionMacro>>,
         violations: &mut Vec<RuleViolation>,
     ) {
         if node.kind() == "compound_statement" {
-            self.scan_block_direct_children(node, source, violations);
+            self.scan_block_direct_children(node, source, macros, violations);
         }
         for child in node.child_nodes() {
             if child.kind() != "function_definition" {
-                self.check_dead_stores_in_blocks(&child, source, violations);
+                self.check_dead_stores_in_blocks(&child, source, macros, violations);
             }
         }
     }
 
-    /// Extract every `(name, line)` write if `stmt` is a simple (`=`, not
-    /// compound) assignment or an initialized declaration (possibly with
-    /// multiple comma-separated declarators, e.g. `char *a = NULL, *b = NULL;`),
-    /// at this statement's top level.
-    fn simple_writes(&self, stmt: &Node, source: &str) -> Vec<(String, usize)> {
+    /// Extract every `(name, line, initializer)` write if `stmt` is a simple
+    /// (`=`, not compound) assignment or an initialized declaration (possibly
+    /// with multiple comma-separated declarators, e.g. `char *a = NULL, *b =
+    /// NULL;`), at this statement's top level. `initializer` is where a
+    /// declaration's `init_declarator` starts, `None` for an assignment.
+    fn simple_writes(&self, stmt: &Node, source: &str) -> Vec<(String, usize, Option<usize>)> {
         match stmt.kind() {
             "expression_statement" => {
                 let Some(expr) = stmt.child(0) else {
@@ -1304,6 +1409,7 @@ impl Msc13C {
                 vec![(
                     get_node_text(&left, source).to_string(),
                     stmt.start_position().row + 1,
+                    None,
                 )]
             }
             "declaration" => {
@@ -1314,7 +1420,7 @@ impl Msc13C {
                         if let Some(declarator) = c.child_by_field_name("declarator") {
                             let name = get_identifier_from_declarator(&declarator, source);
                             if !name.is_empty() {
-                                writes.push((name, line));
+                                writes.push((name, line, Some(c.start_byte())));
                             }
                         }
                     }
@@ -1336,9 +1442,12 @@ impl Msc13C {
         &self,
         block: &Node,
         source: &str,
+        macros: &HashMap<String, Vec<FunctionMacro>>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        let mut pending: std::collections::HashMap<String, usize> =
+        // Each pending write's line, and whether it is a default
+        // initializer MSC13-EX1 exempts.
+        let mut pending: std::collections::HashMap<String, (usize, bool)> =
             std::collections::HashMap::new();
 
         for stmt in block.child_nodes() {
@@ -1349,7 +1458,7 @@ impl Msc13C {
             let writes = self.simple_writes(&stmt, source);
             if !writes.is_empty() {
                 let written_names: std::collections::HashSet<&str> =
-                    writes.iter().map(|(n, _)| n.as_str()).collect();
+                    writes.iter().map(|(n, _, _)| n.as_str()).collect();
                 // Any OTHER pending var mentioned anywhere in this statement
                 // (e.g. on an initializer's RHS) is now read.
                 for other in pending.keys().cloned().collect::<Vec<_>>() {
@@ -1359,8 +1468,8 @@ impl Msc13C {
                         pending.remove(&other);
                     }
                 }
-                for (name, line) in writes {
-                    if let Some(&prev_line) = pending.get(&name) {
+                for (name, line, initializer) in writes {
+                    if let Some(&(prev_line, false)) = pending.get(&name) {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             severity: self.severity(),
@@ -1378,7 +1487,10 @@ impl Msc13C {
                             ..Default::default()
                         });
                     }
-                    pending.insert(name, line);
+                    let exempt = initializer.is_some_and(|at| {
+                        self.is_default_initializer(block, at, &name, source, macros)
+                    });
+                    pending.insert(name, (line, exempt));
                 }
                 continue;
             }
@@ -1435,4 +1547,581 @@ impl Msc13C {
         }
         false
     }
+}
+
+/// Objects the standard library or POSIX declares, which a header may
+/// spell as a macro or leave undeclared on the host: their value is the
+/// program's state, never a default.
+const LIBRARY_OBJECTS: &[&str] = &[
+    "errno",
+    "stdin",
+    "stdout",
+    "stderr",
+    "optarg",
+    "optind",
+    "opterr",
+    "optopt",
+    "environ",
+    "__func__",
+    "__FUNCTION__",
+    "__PRETTY_FUNCTION__",
+];
+
+/// Names a macro body or initializer may call as if they were operators:
+/// each yields a constant from a type or an expression's type.
+const CONSTANT_OPERATORS: &[&str] = &[
+    "offsetof",
+    "__builtin_offsetof",
+    "_Alignof",
+    "alignof",
+    "__alignof__",
+    "_Generic",
+];
+
+/// The most locals and parameters a macro's expansion may read and still
+/// be a default where none of them is in scope; past it the macro is taken
+/// as no default, which only reports more.
+const MAX_READ_LOCALS: usize = 64;
+
+/// What an initializer's names are read against.
+struct DefaultTest<'a> {
+    source: &'a str,
+    /// The file's function-like macros.
+    macros: &'a HashMap<String, Vec<FunctionMacro>>,
+    /// Every `#define` the prescan saw, function-like and object-like.
+    definitions: &'a HashMap<String, Vec<MacroDefinition>>,
+    /// The file-scope objects of the project's files and headers.
+    globals: [&'a HashSet<String>; 2],
+    /// Finished answers for this file's names, shared by its initializers.
+    memo: &'a RefCell<HashMap<String, Reach>>,
+    /// Finished [`Self::is_brace_list`] answers for this file's names.
+    brace_lists: &'a RefCell<HashMap<String, bool>>,
+    /// The file's [`declared_objects`], built on first use.
+    declared: &'a RefCell<Option<Rc<DeclaredObjects>>>,
+}
+
+/// What a name is wherever it is read: `None` when no default, else the
+/// undefined names its expansion reads that the file declares as a local
+/// or a parameter, which only the place of the read can settle (a
+/// macro's `*z` is a default nowhere a `z` is in scope).
+type Reach = Option<Rc<[String]>>;
+
+impl DefaultTest<'_> {
+    /// The objects the file holding `n` declares ([`declared_objects`]).
+    fn objects(&self, n: &Node) -> Rc<DeclaredObjects> {
+        let mut declared = self.declared.borrow_mut();
+        Rc::clone(declared.get_or_insert_with(|| {
+            let mut root = *n;
+            while let Some(parent) = root.parent() {
+                root = parent;
+            }
+            Rc::new(declared_objects(&root, self.source))
+        }))
+    }
+
+    /// Whether `name`, read at `at` where no declaration of the file binds
+    /// it, may stand in a default: not a library or project object, and,
+    /// when a macro, one whose every definition calls nothing but such
+    /// macros and names nothing that is not a default in turn. A name
+    /// nothing defines is taken as a header's constant, unless the file
+    /// declares it as an object in scope at `at`: a macro body reading
+    /// `*z` reads the parameter `z` of the function it is expanded in.
+    fn name_may_be_default(&self, name: &str, at: &Node) -> bool {
+        let objects = self.objects(at);
+        let Some(locals) = self.reach(name, &objects) else {
+            return false;
+        };
+        let used_in = enclosing_function_id(at);
+        locals.iter().all(|l| {
+            objects
+                .get(l)
+                .is_none_or(|scopes| !scopes.contains(&used_in))
+        })
+    }
+
+    /// What `name` is wherever it is read ([`Reach`]), found by walking
+    /// every name it reaches through macro bodies with an explicit stack,
+    /// so a chain of any depth is read without recursion, and each name
+    /// once per file. Everything is a conjunction, so one name that is no
+    /// default makes every name on the path to it none, and the walk
+    /// stops there.
+    fn reach(&self, name: &str, objects: &DeclaredObjects) -> Reach {
+        if let Some(known) = self.memo.borrow().get(name) {
+            return known.clone();
+        }
+        // Each name met, with the one whose body named it first.
+        let mut met: HashMap<String, Option<String>> = HashMap::new();
+        // Each name met, with every name met whose body names it.
+        let mut named_by: HashMap<String, Vec<String>> = HashMap::new();
+        // The locals and parameters each name reads itself, or, for a name
+        // already settled, through its expansion.
+        let mut reads: Vec<(String, Rc<[String]>)> = Vec::new();
+        let mut pending = vec![(name.to_string(), None::<String>)];
+        while let Some((name, from)) = pending.pop() {
+            if let Some(from) = &from {
+                named_by.entry(name.clone()).or_default().push(from.clone());
+            }
+            if LIBRARY_OBJECTS.contains(&name.as_str())
+                || self.globals.iter().any(|g| g.contains(&name))
+            {
+                return self.refuse(name, from, &met);
+            }
+            let known = self.memo.borrow().get(&name).cloned();
+            match known {
+                Some(Some(locals)) => {
+                    if !locals.is_empty() {
+                        reads.push((name, locals));
+                    }
+                    continue;
+                }
+                Some(None) => return self.refuse(name, from, &met),
+                None if met.contains_key(&name) => continue,
+                None => {}
+            }
+            met.insert(name.clone(), from.clone());
+            if !self.definitions.contains_key(&name) && !self.macros.contains_key(&name) {
+                match objects.get(&name) {
+                    Some(scopes) if scopes.contains(&None) => {
+                        return self.refuse(name, from, &met);
+                    }
+                    Some(_) => reads.push((name.clone(), Rc::from([name]))),
+                    None => {}
+                }
+                continue;
+            }
+            let Some(arms) = self
+                .arms(&name)
+                .filter(|arms| arms.iter().all(|a| self.body_is_plain(a)))
+            else {
+                return self.refuse(name, from, &met);
+            };
+            for arm in &arms {
+                pending.extend(
+                    crate::analyze::macro_expand::body_identifiers(&arm.body)
+                        .into_iter()
+                        .filter(|n| {
+                            !arm.params.contains(n)
+                                && !is_c_keyword(n)
+                                && !CONSTANT_OPERATORS.contains(&n.as_str())
+                        })
+                        .map(|n| (n, Some(name.clone()))),
+                );
+            }
+        }
+        // Every name met is a default; what it reads is what the names it
+        // reaches read, carried back along the bodies that name them. A
+        // name reading more than [`MAX_READ_LOCALS`] of them is taken as no
+        // default, and so is every name reaching it, so no set grows past
+        // the bound however long the chain.
+        let mut found: HashMap<String, BTreeSet<String>> = HashMap::new();
+        let mut too_many: HashSet<String> = HashSet::new();
+        for (reader, locals) in &reads {
+            for local in locals.iter() {
+                let mut stack = vec![reader.clone()];
+                while let Some(n) = stack.pop() {
+                    if too_many.contains(&n) {
+                        continue;
+                    }
+                    let set = found.entry(n.clone()).or_default();
+                    if !set.insert(local.clone()) {
+                        continue;
+                    }
+                    if set.len() <= MAX_READ_LOCALS {
+                        stack.extend(named_by.get(&n).into_iter().flatten().cloned());
+                        continue;
+                    }
+                    let mut reaching = vec![n];
+                    while let Some(m) = reaching.pop() {
+                        if too_many.insert(m.clone()) {
+                            found.remove(&m);
+                            reaching.extend(named_by.get(&m).into_iter().flatten().cloned());
+                        }
+                    }
+                }
+            }
+        }
+        let mut memo = self.memo.borrow_mut();
+        for n in met.into_keys() {
+            let reach = (!too_many.contains(&n))
+                .then(|| found.remove(&n).unwrap_or_default().into_iter().collect());
+            memo.insert(n, reach);
+        }
+        memo.get(name).cloned().flatten()
+    }
+
+    /// Memoise `name`, and every name on the path [`Self::reach`] took to
+    /// it from `from` back, as no default.
+    fn refuse(
+        &self,
+        name: String,
+        from: Option<String>,
+        met: &HashMap<String, Option<String>>,
+    ) -> Reach {
+        let mut memo = self.memo.borrow_mut();
+        memo.insert(name, None);
+        let mut at = from;
+        while let Some(n) = at {
+            at = met.get(&n).cloned().flatten();
+            memo.insert(n, None);
+        }
+        None
+    }
+
+    /// Every replacement list `name` may expand to, or `None` when the
+    /// prescan could not read one of its definitions.
+    fn arms(&self, name: &str) -> Option<Vec<MacroArm>> {
+        let mut arms = Vec::new();
+        for d in self.definitions.get(name).into_iter().flatten() {
+            let (params, body) = match d {
+                MacroDefinition::Object { body } => (Vec::new(), body),
+                MacroDefinition::Function { params, body } => (params.clone(), body),
+                MacroDefinition::Opaque => return None,
+            };
+            arms.push(MacroArm {
+                params,
+                variadic: None,
+                body: body.clone(),
+            });
+        }
+        arms.extend(self.macros.get(name).into_iter().flatten().map(Into::into));
+        Some(arms)
+    }
+
+    /// Whether some definition of `name` is a brace list (`{ 0, 0 }`), or
+    /// names one and nothing else, which is a default only as a whole
+    /// initializer or one element of a brace list: `(T) LIST` is a
+    /// compound literal. Each name is read once per file.
+    fn is_brace_list(&self, name: &str) -> bool {
+        if let Some(&known) = self.brace_lists.borrow().get(name) {
+            return known;
+        }
+        let mut met: HashMap<String, Option<String>> = HashMap::new();
+        let mut pending = vec![(name.to_string(), None)];
+        let mut found = None;
+        while let Some((name, from)) = pending.pop() {
+            let known = self.brace_lists.borrow().get(&name).copied();
+            match known {
+                Some(true) => {
+                    found = from;
+                    break;
+                }
+                Some(false) => continue,
+                None if met.contains_key(&name) => continue,
+                None => {}
+            }
+            met.insert(name.clone(), from);
+            let bodies =
+                self.definitions
+                    .get(&name)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|d| match d {
+                        MacroDefinition::Object { body }
+                        | MacroDefinition::Function { body, .. } => Some(body.as_str()),
+                        MacroDefinition::Opaque => None,
+                    })
+                    .chain(
+                        self.macros
+                            .get(&name)
+                            .into_iter()
+                            .flatten()
+                            .map(|m| m.body.as_str()),
+                    );
+            let mut aliases = Vec::new();
+            let mut brace = false;
+            for body in bodies {
+                let body = body.trim();
+                brace |= body.starts_with('{');
+                if !body.is_empty() && body.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    aliases.push((body.to_string(), Some(name.clone())));
+                }
+            }
+            if brace {
+                found = Some(name);
+                break;
+            }
+            pending.extend(aliases);
+        }
+        let mut brace_lists = self.brace_lists.borrow_mut();
+        let Some(found) = found else {
+            // Nothing any name met reaches is a brace list.
+            brace_lists.extend(met.into_keys().map(|n| (n, false)));
+            return false;
+        };
+        let mut at = Some(found);
+        while let Some(n) = at {
+            at = met.get(&n).cloned().flatten();
+            brace_lists.insert(n, true);
+        }
+        true
+    }
+
+    /// Whether a macro's replacement list, its names aside, may be a
+    /// default: it calls nothing but a constant operator or a macro
+    /// (`sizeof(a)` reads as a call to the body reader), and it holds no
+    /// compound literal or statement expression: no `{` right after `(`
+    /// or `)`, and a brace-list macro only as the whole body or one
+    /// element of a brace list. [`Self::walk`] reads the names.
+    fn body_is_plain(&self, arm: &MacroArm) -> bool {
+        let tokens = body_tokens(&arm.body);
+        // `(type){...}` once a macro like raylib's `CLITERAL(type)` expands is
+        // a compound literal, an object; `({...})` is a statement expression.
+        // `struct {` in `sizeof(struct { ... })` is neither.
+        if tokens
+            .windows(2)
+            .any(|w| matches!(w[0], ")" | "(") && w[1] == "{")
+        {
+            return false;
+        }
+        for (i, &token) in tokens.iter().enumerate() {
+            if arm.params.iter().any(|p| p == token) || !self.is_brace_list(token) {
+                continue;
+            }
+            let previous = i.checked_sub(1).map(|j| tokens[j]);
+            let mut after = i + 1;
+            if tokens.get(after) == Some(&"(") {
+                let mut depth = 0;
+                while let Some(&t) = tokens.get(after) {
+                    after += 1;
+                    match t {
+                        "(" => depth += 1,
+                        ")" => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let next = tokens.get(after).copied();
+            let whole = previous.is_none() && next.is_none();
+            let element = matches!(previous, Some("{" | ",")) && matches!(next, Some("}" | ","));
+            if !whole && !element {
+                return false;
+            }
+        }
+        let calls = crate::analyze::macro_expand::macro_body_calls(arm);
+        let callable = |c: &String| {
+            is_c_keyword(c)
+                || CONSTANT_OPERATORS.contains(&c.as_str())
+                || self.definitions.contains_key(c)
+                || self.macros.contains_key(c)
+        };
+        calls.callees.iter().all(callable)
+            && !calls.indirect
+            && calls.param_calls.is_empty()
+            && calls.paren_param_calls.is_empty()
+    }
+}
+
+/// A macro body's tokens: identifiers and numbers whole, every other
+/// character but white space one token; string and character literals
+/// skipped.
+fn body_tokens(body: &str) -> Vec<&str> {
+    let bytes = body.as_bytes();
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c.is_ascii_whitespace() {
+            i += 1;
+        } else if c == b'"' || c == b'\'' {
+            i += 1;
+            while i < bytes.len() && bytes[i] != c {
+                i += if bytes[i] == b'\\' { 2 } else { 1 };
+            }
+            i += 1;
+        } else if c.is_ascii_alphanumeric() || c == b'_' {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            tokens.push(&body[start..i]);
+        } else {
+            let width = body[i..].chars().next().map_or(1, char::len_utf8);
+            tokens.push(&body[i..i + width]);
+            i += width;
+        }
+    }
+    tokens
+}
+
+/// Whether an initializer is a default value in MSC13-EX1's sense: a
+/// constant expression (`NULL`, which tree-sitter reads as a `null` node,
+/// included), or a brace list whose every element is one. A call counts
+/// only as a function-like macro, and a name only as an enumerator, a
+/// header's constant or an object-like macro, when no definition of the
+/// macro calls anything or names an object (`#define MKERR(n) (-(n))`,
+/// not `#define GETV() get_value()` or `#define SOCKERRNO errno`).
+fn is_default_value(
+    n: &Node,
+    folded: &const_eval::MacroConstantMap,
+    names: const_eval::ConstantNameSets,
+    test: &DefaultTest,
+) -> bool {
+    let source = test.source;
+    match n.kind() {
+        "initializer_list" => n
+            .named_child_nodes()
+            .filter(|c| c.kind() != "comment")
+            .all(|c| is_default_value(&c, folded, names, test)),
+        "initializer_pair" => n
+            .child_by_field_name("value")
+            .is_some_and(|v| is_default_value(&v, folded, names, test)),
+        "null" | "true" | "false" | "offsetof_expression" => true,
+        _ => {
+            let calls_a_macro = |call: &Node| {
+                call.child_by_field_name("function")
+                    .filter(|f| f.kind() == "identifier")
+                    .map(|f| get_node_text(&f, source))
+                    .is_some_and(|f| {
+                        CONSTANT_OPERATORS.contains(&f)
+                            || test.macros.contains_key(f) && test.name_may_be_default(f, call)
+                    })
+            };
+            let named = read_names(n);
+            // A brace list inside an expression is a compound literal, and so
+            // is a macro that is one anywhere but the whole initializer.
+            let whole_brace_list =
+                |m: &Node, name: &str| m.id() == n.id() || !test.is_brace_list(name);
+            !query::find_descendants_of_kinds(
+                *n,
+                &["initializer_list", "compound_literal_expression"],
+            )
+            .iter()
+            .any(|d| d.id() != n.id())
+                && named
+                    .iter()
+                    .all(|i| whole_brace_list(i, get_node_text(i, source)))
+                && query::find_descendants_of_kind(*n, "call_expression")
+                    .iter()
+                    .all(|call| {
+                        call.child_by_field_name("function")
+                            .filter(|f| f.kind() == "identifier")
+                            .is_none_or(|f| whole_brace_list(call, get_node_text(&f, source)))
+                    })
+                && query::find_descendants_of_kind(*n, "call_expression")
+                    .iter()
+                    .all(calls_a_macro)
+                && !names_a_declared_object(&named, &test.objects(n), source)
+                && named
+                    .iter()
+                    .all(|i| test.name_may_be_default(get_node_text(i, source), i))
+                && const_eval::is_compile_time_constant_expr(n, source, folded, names)
+        }
+    }
+}
+
+/// The identifiers `expr` reads outside a `sizeof` or `_Alignof`, a
+/// called name aside (a call is judged as one).
+fn read_names<'a>(expr: &Node<'a>) -> Vec<Node<'a>> {
+    let mut names = Vec::new();
+    let mut stack = vec![*expr];
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            "sizeof_expression" | "alignof_expression" => continue,
+            "identifier" => {
+                let called = n.parent().is_some_and(|p| {
+                    p.kind() == "call_expression"
+                        && p.child_by_field_name("function")
+                            .is_some_and(|f| f.id() == n.id())
+                });
+                if !called {
+                    names.push(n);
+                }
+            }
+            _ => {}
+        }
+        stack.extend(n.named_child_nodes());
+    }
+    names
+}
+
+/// Object names a file declares, each with the function every declaration
+/// of it is scoped to (`None` at file scope).
+type DeclaredObjects = HashMap<String, Vec<Option<usize>>>;
+
+/// Whether one of `names` is an object a declaration in scope at it
+/// declares ([`declared_objects`]): one at file scope, inside an `#if` arm
+/// or not, or a parameter or local of the function it lies in.
+/// `is_compile_time_constant_expr` reads a name it cannot bind as a
+/// header's constant; one the file declares inside an `#if` arm (curl's
+/// `static struct SocketIFace *__CurlISocket`) is a variable, and its value
+/// is no default. The test only takes the exemption away.
+fn names_a_declared_object(names: &[Node], objects: &DeclaredObjects, source: &str) -> bool {
+    let Some(first) = names.first() else {
+        return false;
+    };
+    let used_in = enclosing_function_id(first);
+    names.iter().any(|n| {
+        objects
+            .get(get_node_text(n, source))
+            .is_some_and(|scopes| scopes.iter().any(|s| s.is_none() || *s == used_in))
+    })
+}
+
+/// The `function_definition` `n` lies in, by node id.
+fn enclosing_function_id(n: &Node) -> Option<usize> {
+    let mut at = n.parent();
+    while let Some(p) = at {
+        if p.kind() == "function_definition" {
+            return Some(p.id());
+        }
+        at = p.parent();
+    }
+    None
+}
+
+/// Every object the file under `root` declares, by name, with the
+/// function each declaration is scoped to (`None` at file scope). A
+/// parameter is scoped to the definition whose own declarator lists it; a
+/// prototype's or a function pointer's parameter is in no scope a body
+/// reads.
+fn declared_objects(root: &Node, source: &str) -> DeclaredObjects {
+    let own_parameter = |d: &Node| {
+        d.parent()
+            .filter(|l| l.kind() == "parameter_list")
+            .and_then(|l| l.parent())
+            .filter(|f| f.kind() == "function_declarator")
+            .and_then(|mut f| {
+                while let Some(p) = f.parent() {
+                    match p.kind() {
+                        "function_definition" => return Some(p.id()),
+                        "pointer_declarator"
+                        | "parenthesized_declarator"
+                        | "attributed_declarator" => f = p,
+                        _ => return None,
+                    }
+                }
+                None
+            })
+    };
+    let mut objects: DeclaredObjects = HashMap::new();
+    for d in query::find_descendants_of_kinds(*root, &["declaration", "parameter_declaration"]) {
+        let scope = match d.kind() {
+            "parameter_declaration" => match own_parameter(&d) {
+                Some(function) => Some(function),
+                None => continue,
+            },
+            _ => enclosing_function_id(&d),
+        };
+        for declarator in d.children_by_field_name("declarator", &mut d.walk()) {
+            let declarator = match declarator.kind() {
+                "init_declarator" => declarator
+                    .child_by_field_name("declarator")
+                    .unwrap_or(declarator),
+                _ => declarator,
+            };
+            if crate::utility::cert_c::declarator_utils::declares_function(&declarator) {
+                continue;
+            }
+            objects
+                .entry(get_identifier_from_declarator(&declarator, source))
+                .or_default()
+                .push(scope);
+        }
+    }
+    objects
 }

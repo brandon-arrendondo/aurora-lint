@@ -1393,6 +1393,25 @@ fn large_cases() -> Vec<Case> {
             Refuse::May,
         );
     }
+    // The same chain read at a local initializer the function overwrites,
+    // which a dead-store rule values through every link: 50,000 links is
+    // past the depth at which a recursive walk of the chain overflowed the
+    // scan thread's stack.
+    for depth in [1_000, 10_000, 50_000] {
+        add(
+            &format!("macro_chain_{depth}_deep_in_a_function"),
+            (1..depth)
+                .map(|i| format!("#define M{i} (M{} + 1)\n", i - 1))
+                .chain([format!(
+                    "#define M0 1\nint get(void);\n\
+                     int f(void) {{ int z = M{}; z = get(); return z; }}\n",
+                    depth - 1
+                )])
+                .collect::<String>()
+                .into_bytes(),
+            Refuse::May,
+        );
+    }
     out
 }
 
@@ -1504,6 +1523,47 @@ fn suffix_letter_run(length: usize) -> Vec<u8> {
     .into_bytes()
 }
 
+/// A chain of `depth` object-like macros, each the one before under
+/// another name, with a local initialized from every two-hundredth link
+/// and overwritten unread: a dead-store rule reads each such initializer's
+/// macro through the whole chain below it to decide whether it is a
+/// default.
+fn alias_chain_in_functions(depth: usize) -> Vec<u8> {
+    let mut out = String::from("int get(void);\n#define M0 0\n");
+    for i in 1..depth {
+        let _ = writeln!(out, "#define M{i} M{}", i - 1);
+    }
+    for i in (0..depth).step_by(200) {
+        let _ = writeln!(
+            out,
+            "int f{i}(void) {{ int x = M{i}; x = get(); return x; }}"
+        );
+    }
+    out.into_bytes()
+}
+
+/// A chain of `depth` object-like macros, each reading the one before and
+/// a parameter of its own function, with a local initialized from every
+/// two-hundredth link and overwritten unread: a dead-store rule records
+/// which parameters each link's expansion reads, which grows with the
+/// chain below it unless bounded.
+fn parameter_chain_in_functions(depth: usize) -> Vec<u8> {
+    let mut out = String::from("int get(void);\n#define M0 (p0)\n");
+    for i in 1..depth {
+        let _ = writeln!(out, "#define M{i} (M{} + p{i})", i - 1);
+    }
+    for i in 0..depth {
+        let _ = writeln!(out, "int g{i}(int p{i}) {{ return p{i}; }}");
+    }
+    for i in (0..depth).step_by(200) {
+        let _ = writeln!(
+            out,
+            "int f{i}(void) {{ int x = M{i}; x = get(); return x; }}"
+        );
+    }
+    out.into_bytes()
+}
+
 /// The time of one scan of the files written in `dir` under the manifest
 /// `manifest`. A scan that does not finish cleanly fails the test outright.
 fn time_one_scan(dir: &Path, manifest: &str, what: &str) -> Duration {
@@ -1574,8 +1634,11 @@ fn time_series(
 /// the per-function value-range analysis the integer rules share, a file of
 /// one-line `strcpy` functions under STR31-C times that rule's per-call
 /// buffer-size lookups, a deep `#define` chain under PRE32-C times that
-/// rule's per-directive work, and a name made of one long run of `L` under
-/// WIN00-C times that rule's reading of the names a flags macro may use.
+/// rule's per-directive work, a name made of one long run of `L` under
+/// WIN00-C times that rule's reading of the names a flags macro may use,
+/// and a deep chain of macro aliases, or of macros each reading a
+/// parameter, read at local initializers under MSC13-C times its reading
+/// of each macro.
 /// Each series' time must grow no faster than [`SIZE_SERIES_MAX_SLOPE`]
 /// over its sizes, so a step that rescans the whole file per item fails
 /// here rather than as a watchdog hang on a large real file. Every series'
@@ -1586,7 +1649,7 @@ fn time_series(
 fn generated_size_series_scale_near_linearly() {
     let _runner = timed();
     type Generate = fn(usize) -> Vec<u8>;
-    let series: [(&str, &str, Generate, usize); 5] = [
+    let series: [(&str, &str, Generate, usize); 7] = [
         (
             "one_line_functions",
             "MSC04-C",
@@ -1607,6 +1670,18 @@ fn generated_size_series_scale_near_linearly() {
         ),
         ("define_chain", "PRE32-C", define_chain, 10_000),
         ("suffix_letter_run", "WIN00-C", suffix_letter_run, 40_000),
+        (
+            "alias_chain_in_functions",
+            "MSC13-C",
+            alias_chain_in_functions,
+            5_000,
+        ),
+        (
+            "parameter_chain_in_functions",
+            "MSC13-C",
+            parameter_chain_in_functions,
+            1_000,
+        ),
     ];
     let mut failures = Vec::new();
     for (name, rule_id, generate, small) in series {
