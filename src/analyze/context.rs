@@ -760,7 +760,7 @@ pub struct ProjectContext {
     /// Global constants: `[const] TYPE NAME = VALUE;` from across all scanned files.
     /// Used by init-state analysis for dead-branch elimination.
     #[serde(default)]
-    pub global_constants: HashMap<String, i64>,
+    pub global_constants: Arc<HashMap<String, i64>>,
     /// The names in `global_constants` that are constants only in a closed
     /// program (the `closed_program` setting): a non-`const` global with
     /// external linkage, or a non-static function that returns a literal.

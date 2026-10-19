@@ -144,12 +144,12 @@ impl MacroLookup for WithDefinition<'_> {
 }
 
 /// A table in which some names resolve to a chosen definition and the names
-/// in `hidden` to none at all (left as calls in an expansion); every other
-/// name resolves as before.
+/// in any of the `hidden` sets to none at all (left as calls in an
+/// expansion); every other name resolves as before.
 struct WithDefinitions<'a> {
     table: &'a HashMap<String, FunctionMacro>,
     chosen: HashMap<&'a str, &'a FunctionMacro>,
-    hidden: &'a HashSet<String>,
+    hidden: &'a [&'a HashSet<String>],
 }
 
 impl MacroLookup for WithDefinitions<'_> {
@@ -157,7 +157,7 @@ impl MacroLookup for WithDefinitions<'_> {
         if let Some(d) = self.chosen.get(name) {
             return Some(d);
         }
-        if self.hidden.contains(name) {
+        if self.hidden.iter().any(|h| h.contains(name)) {
             return None;
         }
         self.table.get(name)
@@ -184,7 +184,7 @@ fn nested_builds<'a>(
     table: &'a HashMap<String, FunctionMacro>,
     name: &str,
     definition: &'a FunctionMacro,
-    hidden: &HashSet<String>,
+    hidden: &[&HashSet<String>],
 ) -> NestedBuilds<'a> {
     let mut seen: HashSet<&str> = HashSet::from([name]);
     let mut multi: Vec<(&'a str, Vec<&'a FunctionMacro>)> = Vec::new();
@@ -195,7 +195,7 @@ fn nested_builds<'a>(
             let Some((key, inner)) = table.get_key_value(ident) else {
                 continue;
             };
-            if hidden.contains(ident) || !seen.insert(key.as_str()) {
+            if hidden.iter().any(|h| h.contains(ident)) || !seen.insert(key.as_str()) {
                 continue;
             }
             if inner.alternatives.is_empty() {
@@ -377,14 +377,14 @@ fn over_live_definitions(
         // can add to but not take away, so what holds with those macros left
         // unexpanded holds in all of them. The rest must hold in each
         // combination of their definitions.
-        let (nested, builds) = nested_builds(table, name, definition, &none);
+        let (nested, builds) = nested_builds(table, name, definition, &[&none]);
         let view = |chosen: HashMap<&str, &FunctionMacro>, hidden: &HashSet<String>| {
             let mut chosen = chosen;
             chosen.insert(name, definition);
             let view = WithDefinitions {
                 table,
                 chosen,
-                hidden,
+                hidden: &[hidden],
             };
             fact(&view, name).into_iter().collect::<BTreeSet<usize>>()
         };
@@ -2749,9 +2749,20 @@ pub fn macro_untouched_param_indices(
     name: &str,
     conditional: &HashSet<String>,
 ) -> Vec<usize> {
+    macro_untouched_param_indices_among(table, name, &[conditional])
+}
+
+/// [`macro_untouched_param_indices`] with the conditional names given as
+/// several sets, a name in any of them conditional: a caller with a
+/// project's set and a file's own reads both without merging them.
+pub fn macro_untouched_param_indices_among(
+    table: &HashMap<String, FunctionMacro>,
+    name: &str,
+    conditional: &[&HashSet<String>],
+) -> Vec<usize> {
     // A name some build leaves undefined may be a real function there, which
     // reads its arguments.
-    if conditional.contains(name) {
+    if conditional.iter().any(|c| c.contains(name)) {
         return Vec::new();
     }
     let Some(m) = table.get(name) else {
@@ -2776,8 +2787,10 @@ pub fn macro_untouched_param_indices(
         // A macro this one expands through that is conditional or has
         // several definitions stays a call: passing it the argument is
         // then a read, whatever its builds do.
-        let (mut hidden, _) = nested_builds(table, name, definition, conditional);
-        hidden.extend(conditional.iter().cloned());
+        let (nested, _) = nested_builds(table, name, definition, conditional);
+        let hidden: Vec<&HashSet<String>> = std::iter::once(&nested)
+            .chain(conditional.iter().copied())
+            .collect();
         let view = WithDefinitions {
             table,
             chosen: HashMap::from([(name, definition)]),

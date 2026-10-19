@@ -19,6 +19,44 @@ use tree_sitter::Node;
 /// Map of macro name → constant integer value.
 pub type MacroConstantMap = HashMap<String, i64>;
 
+/// Where an exact evaluation ([`try_evaluate_expr`]) looks a name up: a
+/// [`MacroConstantMap`], or a caller's view over several tables that it
+/// does not merge into one.
+pub trait ConstantLookup {
+    /// The value `name` stands for, if it is a constant.
+    fn get(&self, name: &str) -> Option<&i64>;
+}
+
+impl ConstantLookup for MacroConstantMap {
+    fn get(&self, name: &str) -> Option<&i64> {
+        HashMap::get(self, name)
+    }
+}
+
+impl<T: ConstantLookup + ?Sized> ConstantLookup for &T {
+    fn get(&self, name: &str) -> Option<&i64> {
+        (**self).get(name)
+    }
+}
+
+impl<T: ConstantLookup + ?Sized> ConstantLookup for std::sync::Arc<T> {
+    fn get(&self, name: &str) -> Option<&i64> {
+        (**self).get(name)
+    }
+}
+
+impl<T: ConstantLookup + ?Sized> ConstantLookup for std::cell::Ref<'_, T> {
+    fn get(&self, name: &str) -> Option<&i64> {
+        (**self).get(name)
+    }
+}
+
+impl<T: ConstantLookup + Clone> ConstantLookup for std::borrow::Cow<'_, T> {
+    fn get(&self, name: &str) -> Option<&i64> {
+        (**self).get(name)
+    }
+}
+
 /// Map of variable name → value range.
 pub type VarRangeMap = HashMap<String, ValueRange>;
 
@@ -473,7 +511,7 @@ pub fn builtin_constants(facts: IntFacts) -> &'static MacroConstantMap {
 /// [`builtin_constants`] filed the sizes the data model fixes. The `char`
 /// types are 1 everywhere; a pointer type has the size of `void *`. `None`
 /// for a type whose size is not fixed or not known.
-fn resolve_sizeof_type(type_text: &str, macros: &MacroConstantMap) -> Option<i64> {
+fn resolve_sizeof_type(type_text: &str, macros: &dyn ConstantLookup) -> Option<i64> {
     let t = type_text.split_whitespace().collect::<Vec<_>>().join(" ");
     if matches!(t.as_str(), "char" | "signed char" | "unsigned char") {
         return Some(1);
@@ -2226,7 +2264,7 @@ fn try_evaluate_binary_text(text: &str, macros: &MacroConstantMap) -> Option<i64
 // ---------------------------------------------------------------------------
 
 /// Try to evaluate an AST expression node to an exact integer value.
-pub fn try_evaluate_expr(node: &Node, source: &str, macros: &MacroConstantMap) -> Option<i64> {
+pub fn try_evaluate_expr(node: &Node, source: &str, macros: &dyn ConstantLookup) -> Option<i64> {
     try_evaluate_expr_with(node, source, macros, None)
 }
 
@@ -2381,7 +2419,7 @@ impl ConstMemo {
 pub fn try_evaluate_expr_with(
     node: &Node,
     source: &str,
-    macros: &MacroConstantMap,
+    macros: &dyn ConstantLookup,
     memo: Option<&ConstMemo>,
 ) -> Option<i64> {
     if let Some(known) = memo.and_then(|m| m.values.borrow().get(&node.id()).copied()) {
@@ -2397,7 +2435,7 @@ pub fn try_evaluate_expr_with(
 fn try_evaluate_expr_uncached(
     node: &Node,
     source: &str,
-    macros: &MacroConstantMap,
+    macros: &dyn ConstantLookup,
     memo: Option<&ConstMemo>,
 ) -> Option<i64> {
     #[cfg(test)]
@@ -2542,7 +2580,7 @@ fn try_evaluate_expr_uncached(
 }
 
 /// Resolve a sizeof_expression AST node to a constant value.
-fn resolve_sizeof_node(node: &Node, source: &str, macros: &MacroConstantMap) -> Option<i64> {
+fn resolve_sizeof_node(node: &Node, source: &str, macros: &dyn ConstantLookup) -> Option<i64> {
     resolve_sizeof_type(sizeof_node_type(node, source)?, macros)
 }
 

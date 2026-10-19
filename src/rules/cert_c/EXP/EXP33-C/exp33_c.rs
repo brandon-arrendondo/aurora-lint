@@ -39,8 +39,9 @@ pub struct Exp33C {
     conditionally_init_fns: RefCell<HashMap<String, HashSet<usize>>>,
     /// Cross-file function summaries from prescan (for inter-procedural init tracking).
     cross_file_summaries: RefCell<ScopedTable<FunctionSummary>>,
-    /// File-scope constants for dead-branch elimination in init-state analysis.
-    file_scope_constants: RefCell<HashMap<String, i64>>,
+    /// File-scope constants for dead-branch elimination in init-state analysis,
+    /// over the project's.
+    file_scope_constants: RefCell<init_state::FileConstants>,
     /// Cross-file function-like macro definitions (from the prescan / macro
     /// engine). Used to recognize macro output arguments (e.g. `CF_DATA_SAVE`).
     function_macros: RefCell<Arc<HashMap<String, crate::analyze::macro_expand::FunctionMacro>>>,
@@ -107,7 +108,7 @@ impl Exp33C {
             file_scope_statics: RefCell::new(InitStateMap::new()),
             conditionally_init_fns: RefCell::new(HashMap::new()),
             cross_file_summaries: RefCell::default(),
-            file_scope_constants: RefCell::new(HashMap::new()),
+            file_scope_constants: RefCell::default(),
             function_macros: RefCell::new(Arc::new(HashMap::new())),
             macro_output_params: RefCell::new(HashMap::new()),
             macro_untouched_params: RefCell::new(HashMap::new()),
@@ -173,14 +174,15 @@ impl Exp33C {
         source: &str,
         macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     ) -> HashMap<String, Vec<usize>> {
-        let mut conditional = HashSet::clone(&self.conditional_macro_names.borrow());
-        conditional.extend(crate::analyze::check_macros::collect_conditional_macro_names(source));
+        let project = Arc::clone(&self.conditional_macro_names.borrow());
+        let file = crate::analyze::check_macros::collect_conditional_macro_names(source);
+        let conditional = [&*project, &file];
         let mut invoked = HashSet::new();
         collect_invoked_macro_names(node, source, macros, &mut invoked);
         invoked
             .into_iter()
             .filter_map(|name| {
-                let untouched = crate::analyze::macro_expand::macro_untouched_param_indices(
+                let untouched = crate::analyze::macro_expand::macro_untouched_param_indices_among(
                     macros,
                     &name,
                     &conditional,
@@ -369,29 +371,25 @@ impl CertRule for Exp33C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.cross_file_summaries.borrow_mut() = context.function_summaries.clone();
-        // Merge prescan global constants into file-scope constants.
-        // File-scope constants (set later during check()) take precedence.
+        // Prescan global constants, then prescan macro constants, under the
+        // file-scope constants (set later during check()), read in place.
         let mut constants = self.file_scope_constants.borrow_mut();
         // A non-const global or a literal-returning function is a constant
         // only when the user declares the scan a closed program (ADR-0011).
         let closed = self.settings.borrow().flag("closed_program");
         *self.closure_dependent_constants.borrow_mut() =
             Arc::clone(&context.closure_dependent_constants);
-        for (k, v) in &context.global_constants {
-            if !closed && context.closure_dependent_constants.contains(k) {
-                continue;
-            }
-            constants.entry(k.clone()).or_insert(*v);
-        }
-        // Also include prescan macro constants (from #define directives),
-        // less any whose value some configuration changes: these prune
-        // branches, and pruning is a proof (ADR-0010 D8).
-        for (k, v) in context.macro_constants.iter() {
-            if context.config_dependent_constants.contains(k) {
-                continue;
-            }
-            constants.entry(k.clone()).or_insert(*v);
-        }
+        constants.globals = Arc::clone(&context.global_constants);
+        constants.withheld_globals = if closed {
+            Arc::default()
+        } else {
+            Arc::clone(&context.closure_dependent_constants)
+        };
+        // Macro constants (from #define directives) less any whose value
+        // some configuration changes: these prune branches, and pruning is a
+        // proof (ADR-0010 D8).
+        constants.macros = Arc::clone(&context.macro_constants);
+        constants.withheld_macros = Arc::clone(&context.config_dependent_constants);
         drop(constants);
         // Function-like macro definitions (for macro output-arg recognition).
         *self.function_macros.borrow_mut() = context.function_macros.clone();
@@ -436,8 +434,8 @@ impl CertRule for Exp33C {
                 {
                     let mut constants = self.file_scope_constants.borrow_mut();
                     // File-scope constants and constant functions override prescan globals
-                    constants.extend(file_constants);
-                    constants.extend(fn_constants);
+                    constants.own.extend(file_constants);
+                    constants.own.extend(fn_constants);
                 }
 
                 // Pre-scan for functions that conditionally initialize pointer params

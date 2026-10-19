@@ -442,6 +442,42 @@ pub fn is_non_initializing_function(func_name: &str) -> bool {
 // Analysis configuration
 // ---------------------------------------------------------------------------
 
+/// The constants a file's conditions fold through: the file's own, then the
+/// project's globals, then its `#define` constants, each project table read
+/// in place less the names its filter withholds. The same answers as one map
+/// built from them in that order of precedence, without copying the
+/// project's tables into every file.
+#[derive(Clone, Default)]
+pub struct FileConstants {
+    /// The file's own file-scope constants and constant functions.
+    pub own: HashMap<String, i64>,
+    /// The project's global constants, less `withheld_globals`.
+    pub globals: Arc<HashMap<String, i64>>,
+    /// The globals that are constants only in a closed program, when it is not one.
+    pub withheld_globals: Arc<HashSet<String>>,
+    /// The project's macro constants, less `withheld_macros`.
+    pub macros: Arc<HashMap<String, i64>>,
+    /// The macro constants whose value some configuration changes.
+    pub withheld_macros: Arc<HashSet<String>>,
+}
+
+impl const_eval::ConstantLookup for FileConstants {
+    fn get(&self, name: &str) -> Option<&i64> {
+        self.own
+            .get(name)
+            .or_else(|| {
+                self.globals
+                    .get(name)
+                    .filter(|_| !self.withheld_globals.contains(name))
+            })
+            .or_else(|| {
+                self.macros
+                    .get(name)
+                    .filter(|_| !self.withheld_macros.contains(name))
+            })
+    }
+}
+
 /// Configuration for init-state analysis, carrying interprocedural info.
 #[derive(Default)]
 pub struct InitAnalysisConfig {
@@ -453,9 +489,10 @@ pub struct InitAnalysisConfig {
     /// Maps function name → set of param indices that are read-only dereferenced.
     /// When `&var` is passed at these positions, var should NOT be marked initialized.
     pub read_only_deref_fns: HashMap<String, HashSet<usize>>,
-    /// File-scope constants (static const and static variables with known init values).
-    /// Used for dead-branch elimination when conditions evaluate to known constants.
-    pub file_scope_constants: HashMap<String, i64>,
+    /// File-scope constants (static const and static variables with known init values),
+    /// over the project's. Used for dead-branch elimination when conditions evaluate
+    /// to known constants.
+    pub file_scope_constants: FileConstants,
     /// Output-parameter indices for invoked function-like macros (from the
     /// macro-expansion engine, `macro_expand::macro_output_param_indices`). When
     /// a macro at one of these positions takes a bare identifier, the macro
@@ -2822,18 +2859,18 @@ pub fn collect_file_scope_constants(root: &Node, source: &str) -> HashMap<String
 /// local or a parameter rather than to the file-scope object (ADR-0006: a
 /// name is not a variable). A local `debug` shadowing a file-scope
 /// `static const int debug = 0;` must not fold to 0.
-pub fn constants_visible_at<'c>(
+pub fn constants_visible_at<'a>(
     expr: &Node,
-    source: &str,
-    constants: &'c HashMap<String, i64>,
-) -> std::borrow::Cow<'c, HashMap<String, i64>> {
+    source: &'a str,
+    constants: &'a dyn const_eval::ConstantLookup,
+) -> VisibleConstants<'a> {
     use crate::utility::cert_c::ast_utils::{resolve_identifier_binding, IdentifierBinding};
     let shadowed: Vec<&str> =
         lang_parsing_substrate::query::find_descendants_of_kind(*expr, "identifier")
             .into_iter()
             .filter_map(|id| {
                 let name = id.utf8_text(source.as_bytes()).ok()?;
-                (constants.contains_key(name)
+                (constants.get(name).is_some()
                     && matches!(
                         resolve_identifier_binding(&id, name, source),
                         Some(IdentifierBinding::Local(_)) | Some(IdentifierBinding::Parameter(_))
@@ -2841,14 +2878,26 @@ pub fn constants_visible_at<'c>(
                 .then_some(name)
             })
             .collect();
-    if shadowed.is_empty() {
-        return std::borrow::Cow::Borrowed(constants);
+    VisibleConstants {
+        constants,
+        shadowed,
     }
-    let mut visible = constants.clone();
-    for name in shadowed {
-        visible.remove(name);
+}
+
+/// [`constants_visible_at`]'s answer: the constants less the shadowed
+/// names, read through rather than copied.
+pub struct VisibleConstants<'a> {
+    constants: &'a dyn const_eval::ConstantLookup,
+    shadowed: Vec<&'a str>,
+}
+
+impl const_eval::ConstantLookup for VisibleConstants<'_> {
+    fn get(&self, name: &str) -> Option<&i64> {
+        if self.shadowed.contains(&name) {
+            return None;
+        }
+        self.constants.get(name)
     }
-    std::borrow::Cow::Owned(visible)
 }
 
 /// Line ranges (1-based, inclusive) of the arms the file itself proves are
@@ -3244,7 +3293,7 @@ pub fn try_evaluate_block_condition(
     block: &BasicBlock,
     body: &Node,
     source: &str,
-    constants: &HashMap<String, i64>,
+    constants: &dyn const_eval::ConstantLookup,
 ) -> Option<bool> {
     let (cond_start, cond_end) = block.condition_range?;
     let cond_node = body.descendant_for_byte_range(cond_start, cond_end)?;

@@ -1719,7 +1719,7 @@ fn prescan_file_list(
         attribute_noreturn_functions: Arc::new(attribute_noreturn_functions),
         keyword_noreturn_macros: Arc::new(keyword_noreturn_macros),
         keyword_noreturn_functions: Arc::new(keyword_noreturn_functions),
-        global_constants,
+        global_constants: Arc::new(global_constants),
         closure_dependent_constants: Arc::new(closure_dependent_constants),
         global_var_null_states: Arc::new(global_var_null_states),
         global_writers: Arc::new(global_writers),
