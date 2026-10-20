@@ -14,9 +14,7 @@ void init_flag(void) {
 }
   
 void toggle_flag(void) {
-  bool temp_flag = atomic_load(&flag);
-  temp_flag = !temp_flag;
-  atomic_store(&flag, temp_flag);
+  atomic_store(&flag, !atomic_load(&flag));
 }
     
 bool get_flag(void) {

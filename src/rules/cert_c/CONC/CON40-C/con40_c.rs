@@ -203,14 +203,62 @@ struct FileCx<'a, 's> {
     /// declares so, and members of any visible struct. Anything else is
     /// never resolved.
     candidate_names: HashSet<String>,
+    /// Struct and union bodies this file defines once under a tag, and
+    /// typedef names it defines as one: these are read from the tree, not
+    /// from the tables' type text.
+    tag_bodies: HashMap<String, Node<'a>>,
+    typedef_bodies: HashMap<String, Node<'a>>,
     memo: HashMap<usize, Option<Resolved<'a>>>,
 }
 
-/// Whether `name` is a `<stdatomic.h>` atomic type name. The standard
-/// reserves `atomic_` followed by a lowercase letter for them; `atomic_flag`
-/// is not usable as an operand.
+/// The `<stdatomic.h>` atomic type names (C11 7.17.6, and C23's
+/// `atomic_char8_t`). `atomic_flag` is not usable as an operand.
+const ATOMIC_TYPE_NAMES: &[&str] = &[
+    "atomic_bool",
+    "atomic_char",
+    "atomic_schar",
+    "atomic_uchar",
+    "atomic_short",
+    "atomic_ushort",
+    "atomic_int",
+    "atomic_uint",
+    "atomic_long",
+    "atomic_ulong",
+    "atomic_llong",
+    "atomic_ullong",
+    "atomic_char8_t",
+    "atomic_char16_t",
+    "atomic_char32_t",
+    "atomic_wchar_t",
+    "atomic_int_least8_t",
+    "atomic_uint_least8_t",
+    "atomic_int_least16_t",
+    "atomic_uint_least16_t",
+    "atomic_int_least32_t",
+    "atomic_uint_least32_t",
+    "atomic_int_least64_t",
+    "atomic_uint_least64_t",
+    "atomic_int_fast8_t",
+    "atomic_uint_fast8_t",
+    "atomic_int_fast16_t",
+    "atomic_uint_fast16_t",
+    "atomic_int_fast32_t",
+    "atomic_uint_fast32_t",
+    "atomic_int_fast64_t",
+    "atomic_uint_fast64_t",
+    "atomic_intptr_t",
+    "atomic_uintptr_t",
+    "atomic_size_t",
+    "atomic_ptrdiff_t",
+    "atomic_intmax_t",
+    "atomic_uintmax_t",
+];
+
+/// Whether `name` is a `<stdatomic.h>` atomic type name. Another name that
+/// starts `atomic_` (a kernel's `atomic_t`, a `struct atomic_state`) is
+/// whatever its own declaration makes it.
 fn is_atomic_type_name(name: &str) -> bool {
-    name.starts_with("atomic_") && name != "atomic_flag"
+    ATOMIC_TYPE_NAMES.contains(&name)
 }
 
 fn has_atomic_qualifier(node: &Node, source: &str) -> bool {
@@ -295,6 +343,33 @@ fn spelling(node: &Node, source: &str) -> String {
     get_node_text(node, source).split_whitespace().collect()
 }
 
+/// How an element's index keys it: by spelling, so `a[i]` twice is one
+/// element, unless evaluating the index calls, increments or assigns, when
+/// two of the same spelling may be two elements and each is its own.
+fn index_key(index: &Node, source: &str) -> String {
+    let changes = |n: &Node| {
+        matches!(
+            n.kind(),
+            "call_expression" | "update_expression" | "assignment_expression"
+        )
+    };
+    if changes(index)
+        || !query::find_descendants_of_kinds(
+            *index,
+            &[
+                "call_expression",
+                "update_expression",
+                "assignment_expression",
+            ],
+        )
+        .is_empty()
+    {
+        format!("#{}", index.id())
+    } else {
+        spelling(index, source)
+    }
+}
+
 impl<'a, 's> FileCx<'a, 's> {
     /// Whether a typedef name stands for an atomic type, through its alias
     /// chain.
@@ -324,10 +399,36 @@ impl<'a, 's> FileCx<'a, 's> {
     }
 
     /// Whether member type text, as the struct tables file it, names an
-    /// atomic type.
+    /// atomic type. Text inside `{…}` declares the members of an inline
+    /// aggregate, not the member's own type, and the word after `struct`,
+    /// `union` or `enum` is a tag, not a type name.
     fn text_atomic(&self, ty: &str) -> bool {
-        ty.split(|c: char| !(c.is_alphanumeric() || c == '_'))
-            .any(|t| t == "_Atomic" || self.typedef_is_atomic(t))
+        let mut outside = String::with_capacity(ty.len());
+        let mut depth = 0usize;
+        for c in ty.chars() {
+            match c {
+                '{' => depth += 1,
+                '}' => depth = depth.saturating_sub(1),
+                _ if depth == 0 => outside.push(c),
+                _ => {}
+            }
+        }
+        let mut after_keyword = false;
+        for t in outside
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .filter(|t| !t.is_empty())
+        {
+            if after_keyword {
+                after_keyword = false;
+                continue;
+            }
+            if matches!(t, "struct" | "union" | "enum") {
+                after_keyword = true;
+            } else if t == "_Atomic" || self.typedef_is_atomic(t) {
+                return true;
+            }
+        }
+        false
     }
 
     fn aggregate_of_decl(&self, decl: &Node<'a>) -> Option<Aggregate<'a>> {
@@ -338,20 +439,30 @@ impl<'a, 's> FileCx<'a, 's> {
                     return Some(Aggregate::Body(body));
                 }
                 let name = get_node_text(&ty.child_by_field_name("name")?, self.source);
-                Some(Aggregate::Named(name.to_string()))
+                Some(self.tagged(name))
             }
             "type_identifier" => Some(self.named(get_node_text(&ty, self.source))),
             _ => None,
         }
     }
 
+    /// The aggregate a typedef name stands for.
     fn named(&self, name: &str) -> Aggregate<'a> {
-        Aggregate::Named(
-            self.aliases
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| name.to_string()),
-        )
+        if let Some(body) = self.typedef_bodies.get(name) {
+            return Aggregate::Body(*body);
+        }
+        match self.aliases.get(name) {
+            Some(tag) => self.tagged(tag),
+            None => Aggregate::Named(name.to_string()),
+        }
+    }
+
+    /// The aggregate a struct or union tag names.
+    fn tagged(&self, tag: &str) -> Aggregate<'a> {
+        match self.tag_bodies.get(tag) {
+            Some(body) => Aggregate::Body(*body),
+            None => Aggregate::Named(tag.to_string()),
+        }
     }
 
     /// The member `name` of a struct body: its declaration and declarator,
@@ -383,6 +494,53 @@ impl<'a, 's> FileCx<'a, 's> {
             }
         }
         None
+    }
+
+    /// Files every struct or union body defined under a tag, and every
+    /// typedef of one, dropping a name defined twice: which one an object
+    /// sees then depends on scope, and the tables decide instead.
+    fn collect_bodies(&mut self, root: &Node<'a>) {
+        let mut tags: HashMap<String, Option<Node<'a>>> = HashMap::new();
+        for spec in
+            query::find_descendants_of_kinds(*root, &["struct_specifier", "union_specifier"])
+        {
+            let (Some(name), Some(body)) = (
+                spec.child_by_field_name("name"),
+                spec.child_by_field_name("body"),
+            ) else {
+                continue;
+            };
+            tags.entry(get_node_text(&name, self.source).to_string())
+                .and_modify(|b| *b = None)
+                .or_insert(Some(body));
+        }
+        let mut typedefs: HashMap<String, Option<Node<'a>>> = HashMap::new();
+        for td in query::find_descendants_of_kind(*root, "type_definition") {
+            let Some(body) = td
+                .child_by_field_name("type")
+                .filter(|t| matches!(t.kind(), "struct_specifier" | "union_specifier"))
+                .and_then(|t| t.child_by_field_name("body"))
+            else {
+                continue;
+            };
+            let mut cursor = td.walk();
+            for declarator in td.children_by_field_name("declarator", &mut cursor) {
+                if declarator.kind() == "type_identifier" {
+                    typedefs
+                        .entry(get_node_text(&declarator, self.source).to_string())
+                        .and_modify(|b| *b = None)
+                        .or_insert(Some(body));
+                }
+            }
+        }
+        self.tag_bodies = tags
+            .into_iter()
+            .filter_map(|(k, v)| Some((k, v?)))
+            .collect();
+        self.typedef_bodies = typedefs
+            .into_iter()
+            .filter_map(|(k, v)| Some((k, v?)))
+            .collect();
     }
 
     /// Member `name` of `aggregate`, typed: its derivations, whether its
@@ -420,7 +578,7 @@ impl<'a, 's> FileCx<'a, 's> {
                     Some(i) => tokens
                         .get(i + 1)
                         .filter(|t| !t.starts_with('{'))
-                        .map(|t| Aggregate::Named(t.to_string())),
+                        .map(|t| self.tagged(t)),
                     None => tokens
                         .iter()
                         .rev()
@@ -476,7 +634,7 @@ impl<'a, 's> FileCx<'a, 's> {
                 Some(inner.element("0".to_string()))
             }
             "subscript_expression" => {
-                let index = spelling(&node.child_by_field_name("index")?, self.source);
+                let index = index_key(&node.child_by_field_name("index")?, self.source);
                 let inner = self.resolve(&node.child_by_field_name("argument")?)?;
                 Some(inner.element(index))
             }
@@ -663,22 +821,52 @@ fn child_toward<'a>(ancestor: &Node<'a>, node: &Node) -> Option<Node<'a>> {
         .find(|c| c.start_byte() <= node.start_byte() && node.end_byte() <= c.end_byte())
 }
 
-/// Whether `a` and `b` lie in different arms of one `if`/`else` or `?:`,
+/// Whether `a` and `b` lie in different arms of one `if`/`else` or `?:`, or
+/// in two `case`s of a `switch` where the earlier one does not fall through,
 /// with no loop around it that could carry a value from one arm to the
 /// other.
 fn exclusive_arms(a: &Node, b: &Node) -> bool {
     let Some(lca) = common_ancestor(a, b) else {
         return false;
     };
-    if !matches!(lca.kind(), "if_statement" | "conditional_expression") {
-        return false;
-    }
     let (Some(ca), Some(cb)) = (child_toward(&lca, a), child_toward(&lca, b)) else {
         return false;
     };
-    let condition = lca.child_by_field_name("condition").map(|c| c.id());
-    if ca.id() == cb.id() || Some(ca.id()) == condition || Some(cb.id()) == condition {
+    if ca.id() == cb.id() {
         return false;
+    }
+    match lca.kind() {
+        "if_statement" | "conditional_expression" => {
+            let condition = lca.child_by_field_name("condition").map(|c| c.id());
+            if Some(ca.id()) == condition || Some(cb.id()) == condition {
+                return false;
+            }
+        }
+        "compound_statement"
+            if lca.parent().is_some_and(|p| p.kind() == "switch_statement")
+                && ca.kind() == "case_statement"
+                && cb.kind() == "case_statement" =>
+        {
+            let earlier = if ca.start_byte() < cb.start_byte() {
+                ca
+            } else {
+                cb
+            };
+            let jumps = earlier
+                .named_child_nodes()
+                .filter(|c| c.kind() != "comment")
+                .last()
+                .is_some_and(|c| {
+                    matches!(
+                        c.kind(),
+                        "break_statement" | "return_statement" | "goto_statement"
+                    )
+                });
+            if !jumps {
+                return false;
+            }
+        }
+        _ => return false,
     }
     let mut n = lca;
     while let Some(p) = n.parent() {
@@ -758,8 +946,11 @@ impl Con40C {
             atomic_typedefs: HashSet::new(),
             misread: HashMap::new(),
             candidate_names: HashSet::new(),
+            tag_bodies: HashMap::new(),
+            typedef_bodies: HashMap::new(),
             memo: HashMap::new(),
         };
+        cx.collect_bodies(root);
         let nodes = query::find_descendants_of_kinds(
             *root,
             &[
@@ -1204,6 +1395,13 @@ fn misread_atomic_declaration<'a>(error: &Node<'a>, source: &str) -> Option<Node
         || !source
             .get(error.end_byte()..cast.start_byte())
             .is_some_and(|gap| gap.trim().is_empty())
+    {
+        return None;
+    }
+    // `_Atomic(void)` declares nothing (C11 6.7.2.4p3).
+    if cast
+        .child_by_field_name("type")
+        .is_some_and(|t| spelling(&t, source) == "void")
     {
         return None;
     }
