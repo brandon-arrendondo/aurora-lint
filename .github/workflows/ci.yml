@@ -205,7 +205,8 @@ jobs:
   # fixture, so it is ignored in the plain `cargo test`), long operator and
   # `else if` chains, nesting just under and past --max-nesting-depth, and a
   # larger seeded mutant pass than the default. The large-and-deep inputs test
-  # stays out: it is run by hand, time-boxed.
+  # stays out: it is run by hand, time-boxed. --show-output prints the size
+  # series' times and slopes when it passes, so a near miss shows in the log.
   robustness:
     name: Robustness (release)
     runs-on: ubuntu-24.04
@@ -227,7 +228,7 @@ jobs:
           AURORA_LINT_ROBUSTNESS_MUTANTS: "1500"
         run: >-
           cargo test --release --test robustness --
-          --include-ignored --skip large_and_deep_inputs
+          --include-ignored --skip large_and_deep_inputs --show-output
 
   coverage:
     name: Coverage

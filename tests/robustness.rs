@@ -44,7 +44,28 @@ use std::fmt::Write as _;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
+
+/// The runner, as the tests share it. `cargo test` runs them on parallel
+/// threads, and the scans the heavy ones start keep every core busy; a scan
+/// timed beside them is slowed by however much of the runner they hold at
+/// that moment, which on a few-core CI runner turned a size series that
+/// measures 8x alone into 15x, and a 50 s scan into one past its 180 s
+/// budget. A test that times a scan holds the runner alone ([`timed`]);
+/// every other test that scans shares it ([`untimed`]), so the heavy scans
+/// still run beside one another but never beside a timed one.
+static RUNNER: RwLock<()> = RwLock::new(());
+
+/// Hold the runner alone, for a test whose verdict is a time.
+fn timed() -> RwLockWriteGuard<'static, ()> {
+    RUNNER.write().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Share the runner with the other untimed tests.
+fn untimed() -> RwLockReadGuard<'static, ()> {
+    RUNNER.read().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// The binary under test: this build's, or `AURORA_LINT_ROBUSTNESS_BIN` --
 /// on WSL, a Windows build (`aurora-lint.exe`) run on cases written under
@@ -706,6 +727,10 @@ fn scan_dir_with(dir: &Path, manifest: &str, limit: Duration) -> Scan {
         let _ = err.read_to_end(&mut s);
         String::from_utf8_lossy(&s).into_owned()
     });
+    // Each wait between polls is a fiftieth of the time so far, from 1 ms to
+    // 50 ms, so the time read is within 2% of the scan's: a fixed 50 ms made
+    // a 100 ms scan's time a multiple of 50 ms, which the size series
+    // cannot compare.
     let end = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break match status.code() {
@@ -718,7 +743,9 @@ fn scan_dir_with(dir: &Path, manifest: &str, limit: Duration) -> Scan {
             let _ = child.wait();
             break End::TimedOut(limit);
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(
+            (started.elapsed() / 50).clamp(Duration::from_millis(1), Duration::from_millis(50)),
+        );
     };
     Scan {
         end,
@@ -931,6 +958,7 @@ fn assert_scans_cleanly_with(
 
 #[test]
 fn malformed_input_table_scans_without_a_crash() {
+    let _runner = untimed();
     let seed = env_or("AURORA_LINT_ROBUSTNESS_SEED", DEFAULT_SEED);
     let cases = table_cases(&mut Rng(seed));
     assert_scans_cleanly(
@@ -943,6 +971,7 @@ fn malformed_input_table_scans_without_a_crash() {
 
 #[test]
 fn mutated_rule_fixtures_scan_without_a_crash() {
+    let _runner = untimed();
     let seed = env_or("AURORA_LINT_ROBUSTNESS_SEED", DEFAULT_SEED);
     let count = env_or("AURORA_LINT_ROBUSTNESS_MUTANTS", DEFAULT_MUTANTS);
     // A different stream from the table's, so the two never share choices.
@@ -964,6 +993,7 @@ fn mutated_rule_fixtures_scan_without_a_crash() {
 /// run, so the case costs seconds rather than every rule's minutes.
 #[test]
 fn inputs_that_once_crashed_scan_without_a_crash() {
+    let _runner = untimed();
     let root = repo().join("tests/fixtures/robustness");
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)
         .unwrap()
@@ -1008,6 +1038,7 @@ fn inputs_that_once_crashed_scan_without_a_crash() {
 #[test]
 #[ignore = "every fixture under every rule: run in release with --ignored (CI robustness job)"]
 fn every_rule_fixture_scans_under_every_rule() {
+    let _runner = untimed();
     let cases: Vec<Case> = rule_fixtures()
         .into_iter()
         .map(|p| {
@@ -1245,6 +1276,7 @@ fn deep_nesting_cases() -> Vec<Case> {
 #[test]
 #[ignore = "deep nesting under every rule: run in release with --ignored (CI robustness job)"]
 fn deep_nesting_is_refused_or_analysed() {
+    let _runner = untimed();
     assert_scans_cleanly(
         "nesting",
         &deep_nesting_cases(),
@@ -1256,6 +1288,7 @@ fn deep_nesting_is_refused_or_analysed() {
 #[test]
 #[ignore = "long chains under every rule: run in release with --ignored (CI robustness job)"]
 fn long_chains_scan_within_budget() {
+    let _runner = untimed();
     assert_scans_cleanly(
         "chains",
         &long_chain_cases(),
@@ -1265,10 +1298,10 @@ fn long_chains_scan_within_budget() {
 }
 
 /// How long the 100,000-deep `#define` chain may take under every rule. A
-/// linear scan takes about a minute on a slow four-core machine running the
-/// other tests beside it, which leaves room for a slower CI runner; valuing
-/// the macros in rounds, one more link of the chain per round, takes longer
-/// than this for that one rule alone.
+/// linear scan takes under a minute, alone on the runner ([`timed`]), which
+/// leaves room for a slower CI runner; valuing the macros in rounds, one
+/// more link of the chain per round, takes longer than this for that one
+/// rule alone.
 const MACRO_CHAIN_WALL_LIMIT: Duration = Duration::from_secs(180);
 
 /// A chain of 100,000 object-like macros, each defined from the one before,
@@ -1280,6 +1313,7 @@ const MACRO_CHAIN_WALL_LIMIT: Duration = Duration::from_secs(180);
 #[test]
 #[ignore = "a deep #define chain under every rule: run in release with --ignored (CI robustness job)"]
 fn deep_macro_chain_scans_within_budget() {
+    let _runner = timed();
     assert_scans_cleanly(
         "macro_chain",
         &[Case::new(
@@ -1365,6 +1399,7 @@ fn large_cases() -> Vec<Case> {
 #[test]
 #[ignore = "large and deep generated inputs: run in release with --ignored, time-boxed"]
 fn large_and_deep_inputs_are_refused_or_analysed_within_budget() {
+    let _runner = untimed();
     // One scan per case: a stack overflow aborts the whole process, and in a
     // shared scan it would hide every case after it.
     let cases = large_cases();
@@ -1404,17 +1439,23 @@ fn one_rule_manifest(dir: &Path, rule_id: &str) -> &'static str {
     "one-rule.toml"
 }
 
-/// How much more an input eight times larger may cost before the size
-/// series calls the scan superlinear. A linear scan costs about 8x; one step
+/// The steepest growth the size series accepts: the slope of log time over
+/// log size, fitted to its four sizes. A linear scan has slope 1; one step
 /// that rescans the file per function or per directive costs 30x and more
-/// at these sizes, which is what this catches. The slack above 8 is for a
-/// loaded runner, not for growth.
-const SIZE_SERIES_MAX_RATIO: f64 = 14.0;
+/// for 8x the input at these sizes, a slope of 1.6 and more, which is what
+/// this catches. 1.3 is the earlier bound of 14x for 8x the input, now held
+/// by four sizes rather than two; the slack above 1 is for a noisy runner,
+/// not for growth.
+const SIZE_SERIES_MAX_SLOPE: f64 = 1.3;
 
-/// Scans per size in the size series, of which the fastest counts. Other
-/// tests share the runner while this one runs, and the fastest of several
-/// scans is the one least slowed by them.
+/// Rounds of the size series. Each round scans every size once, smallest
+/// first, and the fastest scan of each size counts: a burst of load on the
+/// runner then slows one round of every size rather than every scan of
+/// one size.
 const SIZE_SERIES_RUNS: usize = 3;
+
+/// The sizes of the series, as multiples of its smallest.
+const SIZE_SERIES_STEPS: [usize; 4] = [1, 2, 4, 8];
 
 /// A file of `bytes` bytes of one-line functions.
 fn one_line_functions(bytes: usize) -> Vec<u8> {
@@ -1463,33 +1504,70 @@ fn suffix_letter_run(length: usize) -> Vec<u8> {
     .into_bytes()
 }
 
-/// Scan one generated file alone under one rule [`SIZE_SERIES_RUNS`] times,
-/// and return the fastest scan's time. A scan that does not finish cleanly
-/// fails the test outright.
-fn time_one_file(name: &str, bytes: Vec<u8>, rule_id: &str) -> Duration {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join(name), bytes).unwrap();
-    let manifest = one_rule_manifest(dir.path(), rule_id);
-    (0..SIZE_SERIES_RUNS)
-        .map(|_| {
-            let scan = scan_dir_with(dir.path(), manifest, wall_limit(SCAN_WALL_LIMIT));
-            assert!(
-                matches!(scan.end, End::Exited(0 | 1)),
-                "{name} under {rule_id} did not finish cleanly; stderr tail:\n{}",
-                scan.stderr
-                    .lines()
-                    .rev()
-                    .take(10)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            );
-            scan.elapsed
-        })
-        .min()
-        .unwrap()
+/// The time of one scan of the files written in `dir` under the manifest
+/// `manifest`. A scan that does not finish cleanly fails the test outright.
+fn time_one_scan(dir: &Path, manifest: &str, what: &str) -> Duration {
+    let scan = scan_dir_with(dir, manifest, wall_limit(SCAN_WALL_LIMIT));
+    assert!(
+        matches!(scan.end, End::Exited(0 | 1)),
+        "{what} did not finish cleanly; stderr tail:\n{}",
+        scan.stderr
+            .lines()
+            .rev()
+            .take(10)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    scan.elapsed
 }
 
-/// Generated inputs at two sizes, the larger eight times the smaller, each
+/// The least-squares slope of `ln t` over `ln n` for the points `(n, t)`:
+/// how fast the time grows with the size, 1 for linear and 2 for quadratic.
+fn log_log_slope(points: &[(usize, Duration)]) -> f64 {
+    let xy: Vec<(f64, f64)> = points
+        .iter()
+        .map(|&(n, t)| ((n as f64).ln(), t.as_secs_f64().max(0.001).ln()))
+        .collect();
+    let mx = xy.iter().map(|p| p.0).sum::<f64>() / xy.len() as f64;
+    let my = xy.iter().map(|p| p.1).sum::<f64>() / xy.len() as f64;
+    let sxy: f64 = xy.iter().map(|&(x, y)| (x - mx) * (y - my)).sum();
+    let sxx: f64 = xy.iter().map(|&(x, _)| (x - mx) * (x - mx)).sum();
+    sxy / sxx
+}
+
+/// The fastest time of each size of one series, in [`SIZE_SERIES_STEPS`]
+/// order: every size written to a directory of its own, then
+/// [`SIZE_SERIES_RUNS`] rounds that scan each size once under one rule.
+fn time_series(
+    name: &str,
+    rule_id: &str,
+    generate: fn(usize) -> Vec<u8>,
+    small: usize,
+) -> Vec<(usize, Duration)> {
+    let sizes: Vec<(usize, tempfile::TempDir, &str)> = SIZE_SERIES_STEPS
+        .iter()
+        .map(|&step| {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                dir.path().join(format!("{name}_{step}x.c")),
+                generate(step * small),
+            )
+            .unwrap();
+            let manifest = one_rule_manifest(dir.path(), rule_id);
+            (step * small, dir, manifest)
+        })
+        .collect();
+    let mut fastest = vec![Duration::MAX; sizes.len()];
+    for _ in 0..SIZE_SERIES_RUNS {
+        for (i, (size, dir, manifest)) in sizes.iter().enumerate() {
+            let what = format!("{name} ({size}) under {rule_id}");
+            fastest[i] = fastest[i].min(time_one_scan(dir.path(), manifest, &what));
+        }
+    }
+    sizes.iter().map(|s| s.0).zip(fastest).collect()
+}
+
+/// Generated inputs at four sizes, from the smallest to eight times it, each
 /// scanned under the one rule that exercises what grows: the prescan runs
 /// whatever rule is enabled, so a file of one-line functions under MSC04-C
 /// times the per-function prescan steps, the same file under INT34-C times
@@ -1498,13 +1576,15 @@ fn time_one_file(name: &str, bytes: Vec<u8>, rule_id: &str) -> Duration {
 /// buffer-size lookups, a deep `#define` chain under PRE32-C times that
 /// rule's per-directive work, and a name made of one long run of `L` under
 /// WIN00-C times that rule's reading of the names a flags macro may use.
-/// Each pair must cost under
-/// [`SIZE_SERIES_MAX_RATIO`] times as much, so a step that rescans the
-/// whole file per item fails here rather than as a watchdog hang on a large
-/// real file.
+/// Each series' time must grow no faster than [`SIZE_SERIES_MAX_SLOPE`]
+/// over its sizes, so a step that rescans the whole file per item fails
+/// here rather than as a watchdog hang on a large real file. Every series'
+/// times and slope are printed, passing or not, so a near miss shows in
+/// the CI log.
 #[test]
 #[ignore = "size series: run in release with --ignored (CI robustness job)"]
 fn generated_size_series_scale_near_linearly() {
+    let _runner = timed();
     type Generate = fn(usize) -> Vec<u8>;
     let series: [(&str, &str, Generate, usize); 5] = [
         (
@@ -1530,17 +1610,21 @@ fn generated_size_series_scale_near_linearly() {
     ];
     let mut failures = Vec::new();
     for (name, rule_id, generate, small) in series {
-        let base = time_one_file(&format!("{name}_small.c"), generate(small), rule_id);
-        let large = time_one_file(&format!("{name}_large.c"), generate(8 * small), rule_id);
-        let ratio = large.as_secs_f64() / base.as_secs_f64().max(0.001);
-        eprintln!(
-            "{name} under {rule_id}: {base:.1?} -> {large:.1?} for 8x the input ({ratio:.1}x)"
+        let points = time_series(name, rule_id, generate, small);
+        let slope = log_log_slope(&points);
+        let times = points
+            .iter()
+            .map(|(_, t)| format!("{t:.1?}"))
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        let ratio = points[points.len() - 1].1.as_secs_f64() / points[0].1.as_secs_f64().max(0.001);
+        let line = format!(
+            "{name} under {rule_id}: {times} for 1x/2x/4x/8x the input \
+             (slope {slope:.2}, 8x took {ratio:.1}x)"
         );
-        if ratio > SIZE_SERIES_MAX_RATIO {
-            failures.push(format!(
-                "{name} under {rule_id}: 8x the input took {ratio:.1}x as long \
-                 ({base:.1?} -> {large:.1?}), over {SIZE_SERIES_MAX_RATIO}x"
-            ));
+        println!("{line}");
+        if slope > SIZE_SERIES_MAX_SLOPE {
+            failures.push(format!("{line}, steeper than {SIZE_SERIES_MAX_SLOPE}"));
         }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
