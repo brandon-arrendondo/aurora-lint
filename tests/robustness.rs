@@ -1670,6 +1670,22 @@ fn parameter_chain_in_functions(depth: usize) -> Vec<u8> {
     out.into_bytes()
 }
 
+/// `count` functions, each a chain of 32 fixed-size arrays sized by the
+/// `sizeof` of the one before, twice: an array-size rule that reads a
+/// `sizeof` operand's own size anew at every reference doubles its work per
+/// link.
+fn sizeof_chains_in_functions(count: usize) -> Vec<u8> {
+    let mut out = String::new();
+    for i in 0..count {
+        let _ = writeln!(out, "void s{i}(void) {{\n    char a0[4];");
+        for k in 1..32 {
+            let _ = writeln!(out, "    char a{k}[sizeof a{} + sizeof a{}];", k - 1, k - 1);
+        }
+        let _ = writeln!(out, "}}");
+    }
+    out.into_bytes()
+}
+
 /// The time of one scan of the files written in `dir` under the manifest
 /// `manifest`. A scan that does not finish cleanly fails the test outright.
 fn time_one_scan(dir: &Path, manifest: &str, what: &str) -> Duration {
@@ -1756,9 +1772,10 @@ fn time_series(
 /// times that rule's per-open callee resolution and path tracing, a deep
 /// `#define` chain under PRE32-C times that rule's per-directive work, a
 /// name made of one long run of `L` under WIN00-C times that rule's reading
-/// of the names a flags macro may use, and a deep chain of macro aliases,
-/// or of macros each reading a parameter, read at local initializers under
-/// MSC13-C times its reading of each macro.
+/// of the names a flags macro may use, a deep chain of macro aliases, or of
+/// macros each reading a parameter, read at local initializers under MSC13-C
+/// times its reading of each macro, and functions of `sizeof`-sized array
+/// chains under MEM05-C time its reading of each array size.
 /// Each series' time must grow no faster than [`SIZE_SERIES_MAX_SLOPE`]
 /// over its sizes, so a step that rescans the whole file per item fails
 /// here rather than as a watchdog hang on a large real file. Every series'
@@ -1768,7 +1785,7 @@ fn time_series(
 #[ignore = "size series: run in release with --ignored (CI robustness job)"]
 fn generated_size_series_scale_near_linearly() {
     let _runner = timed();
-    let series: [Series; 8] = [
+    let series: [Series; 9] = [
         (
             "one_line_functions",
             Some("MSC04-C"),
@@ -1811,6 +1828,12 @@ fn generated_size_series_scale_near_linearly() {
             Some("MSC13-C"),
             parameter_chain_in_functions,
             1_000,
+        ),
+        (
+            "sizeof_chains_in_functions",
+            Some("MEM05-C"),
+            sizeof_chains_in_functions,
+            200,
         ),
     ];
     assert_series_near_linear(&series);

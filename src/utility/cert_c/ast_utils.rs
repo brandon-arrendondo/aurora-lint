@@ -1685,7 +1685,7 @@ fn macro_definitions_named<'s>(
 
 /// Whether an enumerator named `name` is declared before `node` in a scope
 /// enclosing it: `enum { NTAPI = 3 };` makes `NTAPI` a constant there.
-fn enumerator_in_scope(node: &Node, name: &str, source: &str) -> bool {
+pub fn enumerator_in_scope(node: &Node, name: &str, source: &str) -> bool {
     let mut root = *node;
     while let Some(parent) = root.parent() {
         root = parent;
@@ -1792,14 +1792,24 @@ fn file_scope_binder<'a>(
 /// file, so a name no typedef in the file declares is answered at once and
 /// another costs a binary search per enclosing scope.
 fn typedef_in_scope(node: &Node, name: &str, source: &str) -> bool {
+    typedef_definition_in_scope(node, name, source).is_some()
+}
+
+/// The `type_definition` that makes `name` a type at `node`, when
+/// [`typedef_in_scope`] holds: the nearest binding, by the same scope walk.
+/// `None` when no typedef in this file is in scope there, as for a type a
+/// header defines.
+pub fn typedef_definition_in_scope<'a>(
+    node: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<Node<'a>> {
     let mut root = *node;
     while let Some(parent) = root.parent() {
         root = parent;
     }
     let file = FileTypedefs::of(&root, source);
-    let Some(bindings) = file.bindings.get(name) else {
-        return false;
-    };
+    let bindings = file.bindings.get(name)?;
     let before = node.start_byte();
     let mut child = *node;
     while let Some(scope) = child.parent() {
@@ -1817,11 +1827,18 @@ fn typedef_in_scope(node: &Node, name: &str, source: &str) -> bool {
                     #[cfg(test)]
                     count_typedef_work(|w| w.steps += 1);
                     match binding.kind {
-                        ScopeBindingKind::Typedef => return true,
-                        ScopeBindingKind::Ordinary => return false,
+                        ScopeBindingKind::Typedef => {
+                            return root
+                                .descendant_for_byte_range(binding.start, binding.end)
+                                .and_then(|n| {
+                                    std::iter::successors(Some(n), Node::parent)
+                                        .find(|n| n.kind() == "type_definition")
+                                })
+                        }
+                        ScopeBindingKind::Ordinary => return None,
                         ScopeBindingKind::Misparsed => {
                             if file.misparsed_declares(&root, binding, source) {
-                                return false;
+                                return None;
                             }
                         }
                     }
@@ -1831,7 +1848,7 @@ fn typedef_in_scope(node: &Node, name: &str, source: &str) -> bool {
                 let is_parameter = get_function_parameters(&scope, source)
                     .is_some_and(|params| params.iter().any(|(n, _)| n == name));
                 if is_parameter {
-                    return false;
+                    return None;
                 }
             }
             "for_statement" => {
@@ -1843,14 +1860,14 @@ fn typedef_in_scope(node: &Node, name: &str, source: &str) -> bool {
                             && declaration_binds_name(&init, name, source)
                     });
                 if in_initializer {
-                    return false;
+                    return None;
                 }
             }
             _ => {}
         }
         child = scope;
     }
-    false
+    None
 }
 
 /// The work [`typedef_in_scope`] did on this thread: [`FileTypedefs`]
