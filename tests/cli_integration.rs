@@ -235,14 +235,21 @@ fn a_finding_names_what_it_names_in_one_order_in_every_run() {
         ),
     ] {
         let fixture = rules.join(fixture);
+        // EXP30-C is withheld from the default manifest, so it runs from
+        // one that enables it.
+        let manifest = fixtures().join("manifest_exp30.toml");
         let findings = || {
-            let (code, _, stderr) = run_aurora_lint(&[
+            let mut args = vec![
                 fixture.to_str().unwrap(),
                 "--rules",
                 rule,
                 "-e",
                 out.to_str().unwrap(),
-            ]);
+            ];
+            if rule == "EXP30-C" {
+                args.extend(["--manifest", manifest.to_str().unwrap()]);
+            }
+            let (code, _, stderr) = run_aurora_lint(&args);
             assert_eq!(code, 0, "{rule}: {stderr}");
             let violations: Vec<serde_json::Value> =
                 serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();

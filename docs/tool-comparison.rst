@@ -31,7 +31,7 @@ The Tools
    * - `aurora-lint <https://github.com/brandon-arrendondo/aurora-lint>`_
      - 0.4.321 / 0.4.332
      - **No**
-     - |rules_enabled| implemented
+     - |rules_implemented| implemented
      - tree-sitter, no preprocessor. Uses ``compile_commands.json`` and
        ``-I``/``-D`` when given; never requires them.
    * - `cppcheck <https://cppcheck.sourceforge.io/>`_

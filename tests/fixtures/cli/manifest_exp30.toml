@@ -1,0 +1,8 @@
+[metadata]
+name = "CLI Integration Test - EXP30-C only"
+version = "1.0.0"
+description = "Minimal manifest for EXP30-C, which the default manifest withholds"
+cert_version = "2016"
+
+[rules.cert_c.EXP30-C]
+enabled = true

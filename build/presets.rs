@@ -126,10 +126,10 @@ impl Block {
 pub const PENDING: &[&str] = &[];
 
 /// Rules the table declines under every preset that the tree still ships
-/// (`enabled = true`): decided cuts whose removal has not been made. Removing
+/// (implemented, whether or not enabled by default): decided cuts whose removal has not been made. Removing
 /// a rule (ADR-0013 Decision 4) takes it out of this list in the same change;
 /// a rule that is neither removed nor listed here may not decline everywhere,
-/// and an entry here whose rule is no longer enabled and declined everywhere
+/// and an entry here whose rule is no longer implemented and declined everywhere
 /// is stale.
 pub const DECLINED_BUT_STILL_SHIPPED: &[&str] = &[
     "API03-C", "API04-C", "API07-C", "API09-C", "API10-C", "ARR00-C", "CON03-C", "CON06-C",
@@ -147,7 +147,8 @@ pub struct Context<'a> {
     pub rules: &'a BTreeSet<String>,
     /// Every name in `settings::OPTIONS`.
     pub options: &'a BTreeSet<String>,
-    /// Whether each rule is implemented (`enabled = true`).
+    /// Whether each rule is implemented (has a `.rs` file), whether or not
+    /// the default manifest enables it.
     pub enabled: &'a BTreeMap<String, bool>,
 }
 
@@ -349,12 +350,12 @@ pub fn problems(rule: &str, block: Option<&Block>, ctx: &Context) -> Vec<String>
     let listed = DECLINED_BUT_STILL_SHIPPED.contains(&rule);
     if all_off && shipped && !listed {
         out.push(format!(
-            "{rule}: enabled, but every preset declines it; remove the rule, or list it in DECLINED_BUT_STILL_SHIPPED until it is removed"
+            "{rule}: implemented, but every preset declines it; remove the rule, or list it in DECLINED_BUT_STILL_SHIPPED until it is removed"
         ));
     }
     if listed && !(all_off && shipped) {
         out.push(format!(
-            "{rule}: listed in DECLINED_BUT_STILL_SHIPPED but it is not enabled and declined by every preset; drop the entry"
+            "{rule}: listed in DECLINED_BUT_STILL_SHIPPED but it is not implemented and declined by every preset; drop the entry"
         ));
     }
     for (what, text) in [

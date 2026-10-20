@@ -6,7 +6,8 @@ Manifest File
 
 The rules manifest TOML file controls which rules are active and their severity.
 The default manifest (``rules_templates/rules-all.toml``) enables |rules_enabled| of the |rules_total| tracked rules.
-The other |rules_disabled| are tracked but not implemented — see `Tracked but not implemented`_ below.
+Of the other |rules_disabled|, |rules_withheld| are implemented but withheld until rewritten (see `Withheld until rewritten`_ below)
+and |rules_unimplemented| are tracked but not implemented (see `Tracked but not implemented`_ below).
 
 ::
 
@@ -563,9 +564,11 @@ Supported CERT C Rules
 ----------------------
 
 |rules_total| rules are tracked across 17 categories (API, ARR, CON, DCL, ENV,
-ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, and WIN); |rules_enabled|
-are implemented and enabled by default (the remaining |rules_disabled| are
-tracked but not implemented; see `Tracked but not implemented`_ below).
+ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, and WIN); |rules_implemented|
+are implemented, and |rules_enabled| of those are enabled by default (the other
+|rules_withheld| are withheld until rewritten; see `Withheld until rewritten`_
+below). The remaining |rules_unimplemented| are tracked but not implemented;
+see `Tracked but not implemented`_ below.
 ``aurora-lint --list-rules`` lists every rule aurora-lint implements, with its
 default setting and severity (``--list-rules json`` for tooling). The rule
 source files are in ``src/rules/cert_c/``.
@@ -650,10 +653,37 @@ The rules removed so far:
 
 .. REMOVED-RULES:END
 
+Withheld until rewritten
+------------------------
+
+A rule that misfires, reporting a construct that is not in the code
+(ADR-0005), and whose fix is a rewrite of its detection rather than a
+correction to it, is withheld: it still ships, with its code, but
+``enabled = false`` in the default manifest, so a scan with the default
+manifest does not run it. Unlike a removed rule, its block loads with no
+warning, and ``aurora-lint --list-rules`` lists it as ``off`` among the
+shipped rules. ``--rules`` only narrows the enabled set, so it does not run
+a withheld rule. To run one anyway, copy ``rules_templates/rules-all.toml``,
+set ``enabled = true`` in the rule's block, and pass the copy with
+``--manifest``.
+
+Withheld in v0.7.0, until their rewrites in v0.8.0:
+
+- **EXP30-C** — *Do not depend on the order of evaluation for side effects*
+- **FIO01-C** — *Be careful using functions that use file names for identification*
+- **FIO08-C** — *Take care when calling remove() on an open file*
+- **FIO30-C** — *Exclude user input from format strings*
+- **FIO32-C** — *Do not perform operations on devices that are only appropriate for files*
+- **FLP32-C** — *Prevent or detect domain and range errors in math functions*
+- **INT15-C** — *Use intmax_t or uintmax_t for formatted IO on programmer-defined integer types*
+- **MEM35-C** — *Allocate sufficient memory for an object*
+- **STR34-C** — *Cast characters to unsigned char before converting to larger integer sizes*
+- **WIN30-C** — *Properly pair allocation and deallocation functions*
+
 Tracked but not implemented
 ----------------------------
 
-|rules_disabled| of the |rules_total| tracked rules have a rule directory and a manifest entry but no
+|rules_unimplemented| of the |rules_total| tracked rules have a rule directory and a manifest entry but no
 detection logic (no ``.rs`` file). This is a deliberate policy, not a gap:
 aurora-lint does not implement against incomplete CERT-C rule content, since there is
 ample well-established work to do and a stub implementation would mean

@@ -775,8 +775,14 @@ mod tests {
         for id in CON_RULE_IDS {
             assert!(toml.contains(&format!("[rules.cert_c.{id}]\nenabled = true")));
         }
+        // Gating leaves each WIN rule as the base manifest has it, which
+        // withholds some from the default (ADR-0005).
         for id in WIN_RULE_IDS {
-            assert!(toml.contains(&format!("[rules.cert_c.{id}]\nenabled = true")));
+            let enabled = manifest.get_rule(id).unwrap().enabled;
+            assert!(
+                toml.contains(&format!("[rules.cert_c.{id}]\nenabled = {enabled}")),
+                "expected {id} left as the base has it ({enabled}):\n{toml}"
+            );
         }
     }
 

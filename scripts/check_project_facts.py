@@ -136,14 +136,12 @@ TARGETS = [
 #   enabled      manifest says `enabled = true`                  (304)
 #   implemented  has a real .rs file under src/rules/cert_c/      (304)
 #
-# `enabled` and `implemented` coincide today (every enabled rule has code,
-# and this project's workflow never enables a rule before writing one --
-# see CLAUDE.md's rule-implementation checklist), so both pattern lists
-# below check against the same `enabled` count. They stay separate lists
-# because "implemented" and "enabled by default" are different claims that
-# could diverge in the future (e.g. a rule shipped but disabled pending
-# more testing) -- if that ever happens, split their expected values here
-# too, don't just merge the lists back to make a failure go away.
+# `enabled` and `implemented` coincided until v0.7.0 withheld rules that
+# misfire (ADR-0005) until their rewrites: such a rule ships, with its code,
+# but is disabled in the default manifest. So "implemented" claims are
+# checked against the rules that have code and "enabled by default" claims
+# against the manifest, and "not yet implemented" is the tracked rules with
+# no code, not the tracked rules that are disabled.
 TRACKED_PATTERNS = [
     r"\((\d{3})\s+tracked[;)]",
     r"(\d{3})\s+tracked rules?",
@@ -202,6 +200,15 @@ def manifest_counts(text: str) -> tuple[int, int]:
         1 for _, body in blocks
         if re.search(r"^\s*enabled\s*=\s*true", body, re.M))
     return len(blocks), enabled
+
+
+def implemented_count(text: str) -> int:
+    """[rules.cert_c.<ID>] blocks whose rule has a .rs file under
+    src/rules/cert_c/<CATEGORY>/<ID>/, enabled by default or not."""
+    ids = re.findall(r"^\[rules\.cert_c\.([A-Z]+[0-9]+-C)\]", text, re.M)
+    rules = ROOT / "src" / "rules" / "cert_c"
+    return sum(1 for rule_id in ids
+               if any(rules.glob(f"*/{rule_id}/*.rs")))
 
 
 def cwe_counts(text: str) -> tuple[int, int]:
@@ -268,6 +275,7 @@ def git_head() -> str:
 
 def export_facts() -> dict:
     tracked, enabled = manifest_counts(MANIFEST.read_text())
+    implemented = implemented_count(MANIFEST.read_text())
     cwe_total, cwe_enabled = cwe_counts(MANIFEST.read_text())
     macro_rules = macro_expand_consumers()
     return {
@@ -275,6 +283,9 @@ def export_facts() -> dict:
         "rules_total": tracked,
         "rules_enabled": enabled,
         "rules_disabled": tracked - enabled,
+        "rules_implemented": implemented,
+        "rules_withheld": implemented - enabled,
+        "rules_unimplemented": tracked - implemented,
         "cwe_rules_total": cwe_total,
         "cwe_rules_enabled": cwe_enabled,
         "rules_removed": len(removed_rule_ids()),
@@ -309,11 +320,11 @@ def untracked(rels: list[str]) -> set[str]:
 
 def lint(include_generated: bool = False) -> int:
     tracked, enabled = manifest_counts(MANIFEST.read_text())
+    implemented = implemented_count(MANIFEST.read_text())
     _, cwe_enabled = cwe_counts(MANIFEST.read_text())
     print(f"{MANIFEST.relative_to(ROOT)}: "
-          f"{tracked} tracked, {enabled} enabled by default (== implemented, "
-          f"per this project's convention -- see the module docstring); "
-          f"{cwe_enabled} CWE-ruleset rule(s) enabled")
+          f"{tracked} tracked, {implemented} implemented, {enabled} enabled by "
+          f"default; {cwe_enabled} CWE-ruleset rule(s) enabled")
 
     # A removed rule is gone from the tool, so a block for it here would put
     # it back in both counts while the loader drops it with a warning.
@@ -353,8 +364,8 @@ def lint(include_generated: bool = False) -> int:
             for pats, expect, what in (
                     (TRACKED_PATTERNS, tracked, "tracked"),
                     (ENABLED_PATTERNS, enabled, "enabled"),
-                    (IMPLEMENTED_PATTERNS, enabled, "implemented"),
-                    (UNIMPLEMENTED_PATTERNS, tracked - enabled, "not yet implemented"),
+                    (IMPLEMENTED_PATTERNS, implemented, "implemented"),
+                    (UNIMPLEMENTED_PATTERNS, tracked - implemented, "not yet implemented"),
                     (CWE_PATTERNS, cwe_enabled, "CWE-ruleset")):
                 for pat in pats:
                     for m in re.finditer(pat, line, re.M):

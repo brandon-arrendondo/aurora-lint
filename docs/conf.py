@@ -39,6 +39,9 @@ rst_epilog = f"""
 .. |rules_total| replace:: {_facts['rules_total']}
 .. |rules_enabled| replace:: {_facts['rules_enabled']}
 .. |rules_disabled| replace:: {_facts['rules_disabled']}
+.. |rules_implemented| replace:: {_facts['rules_implemented']}
+.. |rules_withheld| replace:: {_facts['rules_withheld']}
+.. |rules_unimplemented| replace:: {_facts['rules_unimplemented']}
 .. |macro_expand_rule_count| replace:: {_facts['macro_expand_rule_count']}
 .. |macro_expand_rule_list| replace:: {_oxford_list(_facts['macro_expand_rules'])}
 """

@@ -29,7 +29,8 @@ cert_version = "2016 Edition (Wiki)"
 last_modified = "Aug 31, 2025"
 
 [rules.cert_c.MEM35-C]
-enabled = true
+# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+enabled = false
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MEM35-C.+Allocate+sufficient+memory+for+an+object"

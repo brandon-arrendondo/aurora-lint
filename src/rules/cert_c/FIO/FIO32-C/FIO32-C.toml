@@ -30,7 +30,8 @@ cert_version = "2016 Edition (Wiki)"
 last_modified = "Jun 02, 2025"
 
 [rules.cert_c.FIO32-C]
-enabled = true
+# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+enabled = false
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO32-C.+Do+not+perform+operations+on+devices+that+are+only+appropriate+for+files"

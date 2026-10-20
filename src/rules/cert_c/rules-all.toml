@@ -440,7 +440,8 @@ enabled = true
 
 
 [rules.cert_c.EXP30-C]
-enabled = true
+# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+enabled = false
 
 
 [rules.cert_c.EXP32-C]
@@ -500,7 +501,8 @@ enabled = true
 
 
 [rules.cert_c.FIO01-C]
-enabled = true
+# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+enabled = false
 
 
 [rules.cert_c.FIO02-C]
@@ -520,7 +522,8 @@ enabled = true
 
 
 [rules.cert_c.FIO08-C]
-enabled = true
+# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+enabled = false
 
 
 [rules.cert_c.FIO09-C]
@@ -580,11 +583,13 @@ enabled = true
 
 
 [rules.cert_c.FIO30-C]
-enabled = true
+# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+enabled = false
 
 
 [rules.cert_c.FIO32-C]
-enabled = true
+# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+enabled = false
 
 
 [rules.cert_c.FIO34-C]
@@ -668,7 +673,8 @@ enabled = true
 
 
 [rules.cert_c.FLP32-C]
-enabled = true
+# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+enabled = false
 
 
 [rules.cert_c.FLP34-C]
@@ -736,7 +742,8 @@ enabled = true
 
 
 [rules.cert_c.INT15-C]
-enabled = true
+# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+enabled = false
 
 
 [rules.cert_c.INT16-C]
@@ -840,7 +847,8 @@ enabled = true
 
 
 [rules.cert_c.MEM35-C]
-enabled = true
+# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+enabled = false
 
 
 [rules.cert_c.MEM36-C]
@@ -1192,7 +1200,8 @@ enabled = true
 
 
 [rules.cert_c.STR34-C]
-enabled = true
+# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+enabled = false
 
 
 [rules.cert_c.STR37-C]
@@ -1224,6 +1233,7 @@ enabled = true
 
 
 [rules.cert_c.WIN30-C]
-enabled = true
+# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+enabled = false
 
 

@@ -12,22 +12,6 @@ use walkdir::WalkDir;
 #[path = "build/presets.rs"]
 mod presets;
 
-#[derive(Deserialize)]
-struct RuleConfig {
-    rules: Option<HashMap<String, HashMap<String, RuleSettings>>>,
-    rule: Option<RuleSingleSettings>,
-}
-
-#[derive(Deserialize)]
-struct RuleSettings {
-    enabled: bool,
-}
-
-#[derive(Deserialize)]
-struct RuleSingleSettings {
-    enabled: bool,
-}
-
 // ---------------------------------------------------------------------------
 // Build-time manifest validation (see `validate_rule_manifest`).
 //
@@ -190,7 +174,7 @@ fn generate_rule_presets() -> Result<()> {
             .context("rule file name")?
             .to_string();
         let content = fs::read_to_string(path)?;
-        enabled.insert(id.clone(), check_if_rule_enabled(&path.to_string_lossy())?);
+        enabled.insert(id.clone(), rule_is_implemented(&path.to_string_lossy())?);
         let block = presets::parse(&content)
             .with_context(|| format!("invalid [presets] block in {}", path.display()))?;
         rules.insert(id.clone());
@@ -937,15 +921,15 @@ fn generate_test_function(
         .context("Invalid test filename")?;
     let relative_path = format!("{}/tests/{}/{}", rule_base_path, test_type, test_filename);
 
-    // Check if rule is implemented by reading the TOML file
+    // Check if rule is implemented: it has a .rs file beside its TOML
     let toml_path = format!("{}/{}.toml", rule_base_path, rule_id);
-    let is_enabled = check_if_rule_enabled(&toml_path)?;
+    let is_implemented = rule_is_implemented(&toml_path)?;
 
     writeln!(f, "#[test]")?;
     writeln!(f, "#[allow(non_snake_case)]")?;
 
-    // If rule is not enabled/implemented, mark test as ignored
-    if !is_enabled {
+    // If rule is not implemented, mark test as ignored
+    if !is_implemented {
         writeln!(f, "#[ignore = \"Rule {} not yet implemented\"]", rule_id)?;
     } else if test_type == "expected_fail" {
         writeln!(
@@ -990,7 +974,7 @@ fn generate_test_function(
         if *preset != "default" {
             writeln!(f, "#[test]")?;
             writeln!(f, "#[allow(non_snake_case)]")?;
-            if !is_enabled {
+            if !is_implemented {
                 writeln!(f, "#[ignore = \"Rule {} not yet implemented\"]", rule_id)?;
             } else if test_type == "expected_fail" {
                 writeln!(
@@ -1112,40 +1096,18 @@ fn fixture_header(path: &std::path::Path) -> Result<FixtureHeader> {
     Ok(header)
 }
 
-fn check_if_rule_enabled(toml_path: &str) -> Result<bool> {
-    // Read the TOML file and check if rule is enabled
-    let content = match fs::read_to_string(toml_path) {
-        Ok(content) => content,
-        Err(_) => return Ok(false), // If TOML file doesn't exist, assume not implemented
+/// Whether the rule whose manifest is `toml_path` has detection logic: a
+/// `.rs` file beside the manifest. This is not the manifest's `enabled`
+/// flag: a rule withheld from the default manifest still ships, and its
+/// fixtures still run.
+fn rule_is_implemented(toml_path: &str) -> Result<bool> {
+    let Some(dir) = std::path::Path::new(toml_path).parent() else {
+        return Ok(false);
     };
-
-    // Parse TOML properly using serde
-    let config: RuleConfig = match toml::from_str(&content) {
-        Ok(config) => config,
-        Err(e) => {
-            eprintln!("Warning: Failed to parse TOML {}: {}", toml_path, e);
-            eprintln!("         Falling back to string matching");
-            // Fallback to string matching if TOML parse fails
-            return Ok(content.contains("[rules.") && content.contains("enabled = true"));
-        }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Ok(false);
     };
-
-    // Check for implemented rule format: [rules.<namespace>.RULE-ID] enabled = true
-    if let Some(rules) = config.rules {
-        for namespace_rules in rules.values() {
-            for settings in namespace_rules.values() {
-                if settings.enabled {
-                    return Ok(true);
-                }
-            }
-        }
-    }
-
-    // Check for unimplemented rule format: [rule] enabled = false
-    if let Some(rule_settings) = config.rule {
-        return Ok(rule_settings.enabled);
-    }
-
-    // Default to false if format is unclear
-    Ok(false)
+    Ok(entries
+        .filter_map(|e| e.ok())
+        .any(|e| e.path().extension().is_some_and(|x| x == "rs")))
 }
