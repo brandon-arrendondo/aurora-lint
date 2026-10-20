@@ -6,8 +6,9 @@
  * Each function hands the handle it opens to something that outlives the
  * call: it returns it (directly, in parentheses, or through a copy), stores
  * it through a pointer, into a field or into a file-scope variable, takes
- * its address, or passes it to a function whose body keeps it. Closing it is
- * then the job of whoever holds it.
+ * its address or the address of a local array holding it, or passes it to a
+ * function whose body keeps it. Closing it is then the job of whoever holds
+ * it.
  */
 #include <stdio.h>
 #include <fcntl.h>
@@ -136,4 +137,31 @@ void open_closed_through_a_pointer_to_a_local(const char *path)
         *slot = opened;
     }
     fclose(*slot);
+}
+
+void open_stored_through_an_output_array(FILE **out, const char *path)
+{
+    FILE *f = fopen(path, "r");
+    out[0] = f;
+}
+
+void open_closed_through_a_local_array(const char *path)
+{
+    FILE *streams[2];
+    FILE *f = fopen(path, "r");
+    streams[0] = f;
+    fclose(streams[0]);
+}
+
+void stream_table_close(FILE *streams[])
+{
+    fclose(streams[2]);
+}
+
+void open_handed_over_in_a_local_array(const char *path)
+{
+    FILE *streams[3];
+    FILE *f = fopen(path, "r");
+    streams[2] = f;
+    stream_table_close(streams);
 }

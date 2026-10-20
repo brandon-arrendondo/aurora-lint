@@ -4,9 +4,9 @@
  * Status: PASS - Should NOT trigger FIO42-C violation
  *
  * No callee here has a body in the scan: one is defined in another
- * translation unit, one is reached through a pointer, and one is a macro
- * whose expansion makes a call. Each may close or keep the stream, so
- * handing it over ends this function's obligation.
+ * translation unit, one is reached through a pointer, and one is reached
+ * through a macro that expands to a call of such a function. Each may close
+ * or keep the stream, so handing it over ends this function's obligation.
  */
 #include <stdio.h>
 
@@ -32,10 +32,10 @@ void open_handed_through_a_pointer(const struct ops *ops, const char *path)
     ops->done(f);
 }
 
-#define CLOSE_STREAM(f) do { if ((f) != NULL) { fclose(f); } } while (0)
+#define ARCHIVE(f) archive_close(f)
 
-void open_closed_by_a_macro(const char *path)
+void open_handed_through_a_macro(const char *path)
 {
     FILE *f = fopen(path, "r");
-    CLOSE_STREAM(f);
+    ARCHIVE(f);
 }

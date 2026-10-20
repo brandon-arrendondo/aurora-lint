@@ -36,11 +36,14 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::const_eval::resolve_macro_alias;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::context::ScopedTable;
 use crate::analyze::context::SummaryLookup;
 use crate::analyze::function_summary::FunctionSummary;
-use crate::analyze::macro_expand::FunctionMacro;
+use crate::analyze::macro_expand::{
+    collect_function_macro_names, macro_param_indices_released_at, FunctionMacro, Live,
+};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
     declaration_has_storage_class, get_node_text, ScopeDeclarations,
@@ -58,6 +61,7 @@ use tree_sitter::Node;
 pub struct Fio42C {
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
+    macro_aliases: RefCell<Arc<HashMap<String, String>>>,
 }
 
 impl Fio42C {
@@ -90,6 +94,7 @@ impl CertRule for Fio42C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.function_macros.borrow_mut() = Arc::clone(&context.function_macros);
+        *self.macro_aliases.borrow_mut() = Arc::clone(&context.macro_aliases);
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -98,7 +103,10 @@ impl CertRule for Fio42C {
 
         // Track file resources across the AST
         let macros = self.function_macros.borrow();
-        let mut tracker = FileResourceTracker::new(*node, &macros);
+        let macro_aliases = self.macro_aliases.borrow();
+        let mut own_macros = HashSet::new();
+        collect_function_macro_names(source, &mut own_macros);
+        let mut tracker = FileResourceTracker::new(*node, &macros, &macro_aliases, own_macros);
         tracker.analyze_node(node, source, &summaries, &mut violations);
 
         violations
@@ -112,6 +120,13 @@ type ObjectKey = (usize, String);
 struct FileResourceTracker<'t, 'm> {
     root: Node<'t>,
     macros: &'m HashMap<String, FunctionMacro>,
+    // `#define CLOSE close`: an object-like macro naming another function.
+    macro_aliases: &'m HashMap<String, String>,
+    // The function-like macros this file itself defines.
+    own_macros: HashSet<String>,
+    // The function is `main`: its handles are still open when the program
+    // ends, which no escape answers for (see `analyze_function`).
+    terminates: bool,
     declarations: ScopeDeclarations<'t>,
     // Opened handles in the current function, one per object, in the order
     // first opened; a later open into the same object takes its position.
@@ -143,10 +158,18 @@ enum ResourceType {
 }
 
 impl<'t, 'm> FileResourceTracker<'t, 'm> {
-    fn new(root: Node<'t>, macros: &'m HashMap<String, FunctionMacro>) -> Self {
+    fn new(
+        root: Node<'t>,
+        macros: &'m HashMap<String, FunctionMacro>,
+        macro_aliases: &'m HashMap<String, String>,
+        own_macros: HashSet<String>,
+    ) -> Self {
         Self {
             root,
             macros,
+            macro_aliases,
+            own_macros,
+            terminates: false,
             declarations: ScopeDeclarations::indexed(root),
             resources: Vec::new(),
             released: HashSet::new(),
@@ -180,6 +203,15 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
         self.released.clear();
         self.aliases.clear();
         self.pointers.clear();
+        // A handle `main` returns, stores or hands to a callee the scan cannot
+        // read is still open when the program ends; whether that termination
+        // is a leak is decided separately, so `main` is judged only by its
+        // closes, as before escapes were followed, and a file-scope object it
+        // opens into stays tracked.
+        self.terminates = func_node
+            .child_by_field_name("declarator")
+            .and_then(|d| declared_identifier(&d))
+            .is_some_and(|name| get_node_text(&name, source) == "main");
 
         // Get function body
         if let Some(body) = func_node.child_by_field_name("body") {
@@ -230,6 +262,39 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
         (inside && !lasting).then(|| (declaration.id(), name.to_string()))
     }
 
+    /// The object `ident` names that this function answers for: a local, or
+    /// in `main` any object, a file-scope or `static` one included, and one
+    /// the scan cannot resolve keyed by its name alone.
+    fn tracked_object(&self, func: &Node, ident: &Node<'t>, source: &str) -> Option<ObjectKey> {
+        if !self.terminates {
+            return self.local_object(func, ident, source);
+        }
+        let name = get_node_text(ident, source);
+        let declaration = self
+            .declarations
+            .resolve_identifier_declarator_in(&self.root, ident, name, source)
+            .map_or(usize::MAX, |(d, _)| d.id());
+        Some((declaration, name.to_string()))
+    }
+
+    /// In `main`, an lvalue that is not a name (`c->f`, `*out`, `fds[1]`),
+    /// keyed by its spelling, as `main`'s handles were before escapes were
+    /// followed.
+    fn spelled_object(&self, expr: &Node, source: &str) -> Option<ObjectKey> {
+        (self.terminates
+            && matches!(
+                expr.kind(),
+                "field_expression" | "pointer_expression" | "subscript_expression"
+            ))
+        .then(|| {
+            let text: String = get_node_text(expr, source)
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            (usize::MAX - 1, text)
+        })
+    }
+
     fn collect_resources(&mut self, func: &Node, body: &Node<'t>, source: &str) {
         for n in
             query::find_descendants_of_kinds(*body, &["init_declarator", "assignment_expression"])
@@ -261,10 +326,12 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
             };
             // `c->f = fopen(...)`, `*out = open(...)` and `g_log = fopen(...)`
             // store the handle somewhere the caller still reaches.
-            if target.kind() != "identifier" {
-                continue;
-            }
-            let Some(key) = self.local_object(func, &target, source) else {
+            let key = if target.kind() == "identifier" {
+                self.tracked_object(func, &target, source)
+            } else {
+                self.spelled_object(&target, source)
+            };
+            let Some(key) = key else {
                 continue;
             };
             let at = if n.kind() == "init_declarator" {
@@ -305,7 +372,7 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
                     stack.extend(e.child_by_field_name("alternative"));
                 }
                 "identifier" => {
-                    if let Some(key) = self.local_object(func, &e, source) {
+                    if let Some(key) = self.tracked_object(func, &e, source) {
                         // The pointer reaches the local it points to.
                         if let Some(pointee) = self.pointers.get(&key) {
                             if self.is_tracked(pointee) {
@@ -317,15 +384,13 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
                         }
                     }
                 }
-                "field_expression" => {
-                    if let Some(key) = self.member_owner(func, &e, source) {
-                        if self.is_tracked(&key) {
-                            held.push(key);
-                        }
-                    }
-                }
-                "pointer_expression" => {
-                    if let Some(key) = self.pointee(func, &e, source) {
+                "field_expression" | "subscript_expression" | "pointer_expression" => {
+                    let key = if e.kind() == "pointer_expression" {
+                        self.pointee(func, &e, source)
+                    } else {
+                        self.member_owner(func, &e, source)
+                    };
+                    if let Some(key) = key.or_else(|| self.spelled_object(&e, source)) {
                         if self.is_tracked(&key) {
                             held.push(key);
                         }
@@ -367,29 +432,59 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
     fn copy_target(&self, func: &Node, target: &Node<'t>, source: &str) -> Option<ObjectKey> {
         match target.kind() {
             "identifier" => self.local_object(func, target, source),
-            "field_expression" => self.member_owner(func, target, source),
+            "field_expression" | "subscript_expression" => self.member_owner(func, target, source),
             _ => self.pointee(func, target, source),
         }
     }
 
-    /// The local aggregate a `.` member access lies inside (`u.first`,
-    /// `s.in.fp`): a handle stored there is still this function's, the whole
-    /// aggregate standing for it. Through `->` the member is in storage the
-    /// local only points to.
+    /// The local aggregate a `.` member access or an element of a local
+    /// array lies inside (`u.first`, `s.in.fp`, `fds[1]`, `files[i].f`): a
+    /// handle stored there is still this function's, the whole aggregate
+    /// standing for it. Through `->`, or a subscript of a pointer, it is in
+    /// storage the local only points to.
     fn member_owner(&self, func: &Node, expr: &Node<'t>, source: &str) -> Option<ObjectKey> {
         let mut e = *expr;
-        while e.kind() == "field_expression" {
-            let dot = e
-                .child_by_field_name("operator")
-                .map(|o| get_node_text(&o, source));
-            if dot != Some(".") {
-                return None;
+        loop {
+            match e.kind() {
+                "field_expression" => {
+                    let dot = e
+                        .child_by_field_name("operator")
+                        .map(|o| get_node_text(&o, source));
+                    if dot != Some(".") {
+                        return None;
+                    }
+                    e = unwrap_held(&e.child_by_field_name("argument")?);
+                }
+                "subscript_expression" => {
+                    let array = unwrap_held(&e.child_by_field_name("argument")?);
+                    if !self.names_array(&array, source) {
+                        return None;
+                    }
+                    e = array;
+                }
+                _ => break,
             }
-            e = unwrap_held(&e.child_by_field_name("argument")?);
         }
         (e.kind() == "identifier")
             .then(|| self.local_object(func, &e, source))
             .flatten()
+    }
+
+    /// Whether `expr` is a name declared as an array, which a call receives
+    /// as the address of its elements.
+    fn names_array(&self, expr: &Node<'t>, source: &str) -> bool {
+        expr.kind() == "identifier"
+            && self
+                .declarations
+                .resolve_identifier_declarator_in(
+                    &self.root,
+                    expr,
+                    get_node_text(expr, source),
+                    source,
+                )
+                .and_then(|(_, declarator)| declared_identifier(&declarator))
+                .and_then(|bound| bound.parent())
+                .is_some_and(|p| p.kind() == "array_declarator")
     }
 
     /// The local `*p` designates when `p` is in [`Self::pointers`].
@@ -456,6 +551,35 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
         addresses
     }
 
+    /// Whether `ret` runs only where the open into `key` failed: a condition
+    /// already evaluated there pins it to its failure value (`!f`,
+    /// `f == NULL`, `fd < 0`, `fd == -1`, `h == INVALID_HANDLE_VALUE`, or the
+    /// negation of a success test on the other branch), the condition's
+    /// name resolving to the same object. Returning a failed handle hands
+    /// nothing over.
+    fn returned_on_failure(
+        &self,
+        func: &Node,
+        ret: &Node<'t>,
+        key: &ObjectKey,
+        source: &str,
+    ) -> bool {
+        let root = self.alias_root(key);
+        let names_var = |n: &Node<'t>| {
+            let n = unwrap_held(n);
+            n.kind() == "identifier"
+                && self
+                    .local_object(func, &n, source)
+                    .is_some_and(|k| self.alias_root(&k) == root)
+        };
+        dominating_conditions_with_branches(ret)
+            .into_iter()
+            .any(|(cond, branch)| match branch {
+                Some(taken) => failure_test(&cond, &names_var, source) == Some(taken),
+                None => false,
+            })
+    }
+
     fn release(&mut self, key: &ObjectKey) {
         self.released.insert(self.alias_root(key));
     }
@@ -498,7 +622,7 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
                 _ => continue,
             };
             let Some(value) = value else { continue };
-            if value.kind() == "initializer_list" {
+            if value.kind() == "initializer_list" && !self.terminates {
                 // `struct conn c = { .f = f }` puts the handle in an object
                 // this scan does not follow.
                 for ident in query::find_descendants_of_kind(value, "identifier") {
@@ -516,7 +640,8 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
             for key in held {
                 match &copy {
                     Some(copy) => self.alias(copy.clone(), &key),
-                    None => self.release(&key),
+                    None if !self.terminates => self.release(&key),
+                    None => {}
                 }
             }
         }
@@ -526,12 +651,13 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
             &["call_expression", "return_statement", "pointer_expression"],
         ) {
             match n.kind() {
+                _ if self.terminates && n.kind() != "call_expression" => {}
                 "return_statement" => {
                     let Some(value) = n.named_child(0) else {
                         continue;
                     };
                     for key in self.held_objects(func, &value, source) {
-                        if !returned_on_failure(&n, &key.1, source) {
+                        if !self.returned_on_failure(func, &n, &key, source) {
                             self.release(&key);
                         }
                     }
@@ -556,7 +682,8 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
 
     /// A close (`fclose`/`close`/`CloseHandle` on the handle), a call to a
     /// function whose summary closes or keeps the parameter the handle is
-    /// passed in, or a call to a function nothing in the scan speaks for.
+    /// passed in, or a call to a function nothing in the scan speaks for. In
+    /// `main` only a close counts.
     fn credit_call(
         &mut self,
         func: &Node<'t>,
@@ -570,43 +697,148 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
         ) else {
             return;
         };
-        let callee_name = get_node_text(&function, source).trim();
+        let line = call.start_position().row + 1;
+        let spelled = get_node_text(&function, source).trim();
+        let arguments: Vec<Node<'t>> = arguments
+            .named_children(&mut arguments.walk())
+            .filter(|a| a.kind() != "comment")
+            .collect();
+        // A function-like macro is read through its expansion. The macro
+        // table is the whole project's, so one named like a library function
+        // is taken over the library only when this file defines it
+        // (`#define CLOSE(f) fclose(f)`): a bundled library's
+        // `#define fclose(a) fl_fclose(a)` does not reach every file.
+        if function.kind() == "identifier"
+            && self.macros.contains_key(spelled)
+            && (self.own_macros.contains(spelled) || !is_known_standard_function(spelled))
+        {
+            self.credit_macro(func, spelled, &arguments, line, source, summaries);
+            return;
+        }
+        let callee_name = resolve_macro_alias(self.macro_aliases, spelled);
         // Each close releases only its own kind of handle: `_close((int)fp)`
         // or `CloseHandle((HANDLE)fp)` leaves the stream open (CERT asks for
         // the matching close).
-        let closes = match callee_name {
-            "fclose" => Some(ResourceType::FilePointer),
-            "close" | "_close" => Some(ResourceType::FileDescriptor),
-            "CloseHandle" => Some(ResourceType::FileHandle),
-            _ => None,
-        };
+        let closes = closer_kind(callee_name);
         let closer = closes.is_some();
         // A release credited here stops a leak report, so every definition
         // this call can link with must close or keep the handle.
-        let summary = summaries
-            .get(callee_name)
-            .map(|s| s.at_all(source, call.start_position().row + 1));
+        let summary = summaries.get(callee_name).map(|s| s.at_all(source, line));
         // A callee the scan has no body for, and no library contract speaks
         // for, may close or keep what it is handed: a call through a pointer,
-        // a function another translation unit defines, a macro. A library
-        // function (`fgetc`, `read`, `fstat`) uses the handle and gives it
-        // back, and so does a macro that makes no call and assigns nothing
-        // (`#define UNUSED(V) ((void)V)`).
+        // a function another translation unit defines. A library function
+        // (`fgetc`, `read`, `fstat`) uses the handle and gives it back.
         let unknown = !closer
             && summary.is_none()
-            && (function.kind() != "identifier"
-                || !(is_known_standard_function(callee_name)
-                    || self.macros.get(callee_name).is_some_and(only_reads)));
-        let mut cursor = arguments.walk();
-        for (idx, arg) in arguments.named_children(&mut cursor).enumerate() {
-            let releases = unknown
-                || (!closer
-                    && summary.as_ref().is_some_and(|s| {
-                        s.closes_params.contains(&idx) || s.stores_params.contains(&idx)
-                    }));
-            for key in self.held_objects(func, &arg, source) {
+            && (function.kind() != "identifier" || !is_known_standard_function(callee_name));
+        for (idx, arg) in arguments.iter().enumerate() {
+            // A local array is passed as the address of its elements, which
+            // the callee may close or keep, as with `&f`.
+            let decays = self.names_array(&unwrap_held(arg), source);
+            let releases = !self.terminates
+                && (unknown
+                    || decays
+                    || (!closer
+                        && summary.as_ref().is_some_and(|s| {
+                            s.closes_params.contains(&idx) || s.stores_params.contains(&idx)
+                        })));
+            let summary_closes = !closer
+                && summary
+                    .as_ref()
+                    .is_some_and(|s| s.closes_params.contains(&idx));
+            for key in self.held_objects(func, arg, source) {
                 let closed = idx == 0 && closes.as_ref().is_some_and(|k| self.holds_kind(&key, k));
-                if releases || closed {
+                if releases || closed || summary_closes {
+                    self.release(&key);
+                }
+            }
+        }
+    }
+
+    /// [`Self::credit_call`] for an invocation of the file's function-like
+    /// macro `name`, read through its expansion: an argument every definition
+    /// hands to its own kind of close, or to a function whose summary closes
+    /// it, is closed; outside `main`, one some definition hands to a callee
+    /// the scan cannot read or that keeps it, stores, takes the address of
+    /// or returns, or that a definition the expander cannot read receives,
+    /// has left this function. An argument the expansion only gives to
+    /// library functions (`#define LOG_FD(fd) printf("%d", fd)`) is used,
+    /// not taken.
+    fn credit_macro(
+        &mut self,
+        func: &Node<'t>,
+        name: &str,
+        arguments: &[Node<'t>],
+        line: usize,
+        source: &str,
+        summaries: &(impl SummaryLookup + ?Sized),
+    ) {
+        let aliases = self.macro_aliases;
+        let macros = self.macros;
+        let summary_at = |callee: &str| summaries.get(callee).map(|s| s.at_all(source, line));
+        let closed_by = |kind: ResourceType| {
+            macro_param_indices_released_at(
+                macros,
+                name,
+                |callee, k| {
+                    let callee = resolve_macro_alias(aliases, callee);
+                    match closer_kind(callee) {
+                        Some(c) => k == 0 && c == kind,
+                        None => summary_at(callee).is_some_and(|s| s.closes_params.contains(&k)),
+                    }
+                },
+                Live::All,
+            )
+        };
+        let closed = [
+            ResourceType::FilePointer,
+            ResourceType::FileDescriptor,
+            ResourceType::FileHandle,
+        ]
+        .map(|kind| (closed_by(kind.clone()), kind));
+        let mut handed_off: Option<Vec<usize>> = None;
+        if !self.terminates {
+            let opaque = macros.get(name).is_some_and(|m| !macro_keeps_to_calls(m));
+            handed_off = Some(if opaque {
+                (0..arguments.len()).collect()
+            } else {
+                macro_param_indices_released_at(
+                    macros,
+                    name,
+                    |callee, k| {
+                        // The expansion's text is read for calls, so a
+                        // keyword that takes parentheses looks like one.
+                        if NOT_CALLEES.contains(&callee) {
+                            return false;
+                        }
+                        // A nested macro is followed into, unless it could
+                        // keep an argument where its calls do not show it.
+                        if let Some(nested) = macros.get(callee) {
+                            return !macro_keeps_to_calls(nested);
+                        }
+                        let callee = resolve_macro_alias(aliases, callee);
+                        if closer_kind(callee).is_some() {
+                            return false;
+                        }
+                        match summary_at(callee) {
+                            Some(s) => s.closes_params.contains(&k) || s.stores_params.contains(&k),
+                            None => !is_known_standard_function(callee),
+                        }
+                    },
+                    Live::Any,
+                )
+            });
+        }
+        for (idx, arg) in arguments.iter().enumerate() {
+            let decays = self.names_array(&unwrap_held(arg), source);
+            for key in self.held_objects(func, arg, source) {
+                let closes = closed
+                    .iter()
+                    .any(|(at, kind)| at.contains(&idx) && self.holds_kind(&key, kind));
+                let leaves = handed_off
+                    .as_ref()
+                    .is_some_and(|h| h.contains(&idx) || decays);
+                if closes || leaves {
                     self.release(&key);
                 }
             }
@@ -795,29 +1027,15 @@ fn declared_identifier<'t>(declarator: &Node<'t>) -> Option<Node<'t>> {
     }
 }
 
-/// Whether `ret` runs only where the open into `var` failed: a condition
-/// already evaluated there pins `var` to its failure value (`!f`,
-/// `f == NULL`, `fd < 0`, `fd == -1`, `h == INVALID_HANDLE_VALUE`, or the
-/// negation of a success test on the other branch). Returning a failed
-/// handle hands nothing over.
-fn returned_on_failure(ret: &Node, var: &str, source: &str) -> bool {
-    dominating_conditions_with_branches(ret)
-        .into_iter()
-        .any(|(cond, branch)| match branch {
-            Some(taken) => failure_test(&cond, var, source) == Some(taken),
-            None => false,
-        })
-}
-
-/// `Some(true)` when `cond` holds exactly where `var` is the failed handle,
-/// `Some(false)` when it holds exactly where it is a good one, `None` when
-/// it is not such a test.
-fn failure_test(cond: &Node, var: &str, source: &str) -> Option<bool> {
+/// `Some(true)` when `cond` holds exactly where the handle `names_var`
+/// recognizes is the failed one, `Some(false)` when it holds exactly where
+/// it is a good one, `None` when it is not such a test.
+fn failure_test<'t>(
+    cond: &Node<'t>,
+    names_var: &dyn Fn(&Node<'t>) -> bool,
+    source: &str,
+) -> Option<bool> {
     let cond = unwrap_held(cond);
-    let names_var = |n: &Node| {
-        let n = unwrap_held(n);
-        n.kind() == "identifier" && get_node_text(&n, source) == var
-    };
     match cond.kind() {
         "identifier" if names_var(&cond) => Some(false),
         "unary_expression" => {
@@ -829,7 +1047,7 @@ fn failure_test(cond: &Node, var: &str, source: &str) -> Option<bool> {
             if names_var(&arg) {
                 return Some(true);
             }
-            failure_test(&arg, var, source).map(|b| !b)
+            failure_test(&arg, names_var, source).map(|b| !b)
         }
         "binary_expression" => {
             let op = get_node_text(&cond.child_by_field_name("operator")?, source);
@@ -874,26 +1092,53 @@ fn address_of_identifier<'t>(expr: &Node<'t>, source: &str) -> Option<Node<'t>> 
     (operand.kind() == "identifier").then_some(operand)
 }
 
-/// Whether every definition of `m` only reads its arguments: no call (an
-/// identifier followed by `(`, which may be another macro) and no assignment
-/// or increment. A definition the expander cannot read could do either.
-fn only_reads(m: &FunctionMacro) -> bool {
-    let body_only_reads = |body: &str| {
+/// Keywords a macro's text can follow with `(`, which are not calls.
+const NOT_CALLEES: &[&str] = &[
+    "if",
+    "while",
+    "for",
+    "switch",
+    "return",
+    "sizeof",
+    "_Alignof",
+    "alignof",
+    "typeof",
+    "__typeof__",
+    "_Generic",
+    "defined",
+];
+
+/// The close that releases a handle of its kind, by the closing function.
+fn closer_kind(name: &str) -> Option<ResourceType> {
+    match name {
+        "fclose" => Some(ResourceType::FilePointer),
+        "close" | "_close" => Some(ResourceType::FileDescriptor),
+        "CloseHandle" => Some(ResourceType::FileHandle),
+        _ => None,
+    }
+}
+
+/// Whether every definition of `m` can be read and hands its arguments on
+/// only through the calls in its expansion: none assigns, increments, takes
+/// an address or returns, any of which could keep an argument where the
+/// calls do not show it.
+fn macro_keeps_to_calls(m: &FunctionMacro) -> bool {
+    let plain = |body: &str| {
         let tokens = lex_replacement_list(body, true);
-        !tokens.iter().enumerate().any(|(i, t)| {
-            let calls =
-                t.kind == PpKind::Identifier && tokens.get(i + 1).is_some_and(|next| next.is("("));
-            let writes = t.kind == PpKind::Punctuator
-                && (t.is("++")
-                    || t.is("--")
-                    || (t.text.ends_with('=') && !matches!(&*t.text, "==" | "!=" | "<=" | ">=")));
-            calls || writes
+        !tokens.iter().any(|t| {
+            (t.kind == PpKind::Identifier && t.is("return"))
+                || (t.kind == PpKind::Punctuator
+                    && (t.is("++")
+                        || t.is("--")
+                        || t.is("&")
+                        || (t.text.ends_with('=')
+                            && !matches!(&*t.text, "==" | "!=" | "<=" | ">="))))
         })
     };
     if m.alternatives.is_empty() {
-        return body_only_reads(&m.body);
+        return plain(&m.body);
     }
     m.alternatives
         .iter()
-        .all(|alt| alt.as_ref().is_some_and(|d| body_only_reads(&d.body)))
+        .all(|alt| alt.as_ref().is_some_and(|d| plain(&d.body)))
 }
