@@ -970,6 +970,37 @@ pub fn dominating_assignment_in<'a>(
     dominating_assignment_from(var, &site.site, source, index, site.ancestors())
 }
 
+/// [`dominating_assignment`] for a caller that also counts some statement
+/// the index does not record as a write to `var` as setting its value:
+/// `classify` is asked first of each straight-line statement preceding
+/// `site`, and answers `Some(Some(_))` for the value that statement sets,
+/// `Some(None)` when it leaves the value unknown, and `None` when the
+/// statement is to be judged as [`dominating_assignment`] judges it.
+/// FIO21-C counts `tmpnam(buf);` as writing the generated name into `buf`.
+pub fn dominating_write<'a, T>(
+    var: &str,
+    site: &Node<'a>,
+    source: &str,
+    index: &WriteIndex,
+    classify: impl Fn(&Node<'a>) -> Option<Option<T>>,
+) -> Option<Dominating<'a, T>> {
+    dominating_from(site, index, climb(site), var, |stmt| {
+        classify(stmt)
+            .map(|found| found.map(Dominating::Other))
+            .or_else(|| assignment_of(stmt, var, source).map(|a| a.map(Dominating::Assignment)))
+    })
+}
+
+/// What [`dominating_write`] found.
+#[derive(Debug, Clone, Copy)]
+pub enum Dominating<'a, T> {
+    /// A plain assignment or initialized declaration, as
+    /// [`dominating_assignment`] finds one.
+    Assignment(DominatingAssignment<'a>),
+    /// A statement the caller's `classify` recognized.
+    Other(T),
+}
+
 fn dominating_assignment_from<'a>(
     var: &str,
     site: &Node<'a>,
@@ -977,6 +1008,18 @@ fn dominating_assignment_from<'a>(
     index: &WriteIndex,
     ancestors: impl Iterator<Item = Node<'a>>,
 ) -> Option<DominatingAssignment<'a>> {
+    dominating_from(site, index, ancestors, var, |stmt| {
+        assignment_of(stmt, var, source)
+    })
+}
+
+fn dominating_from<'a, T>(
+    site: &Node<'a>,
+    index: &WriteIndex,
+    ancestors: impl Iterator<Item = Node<'a>>,
+    var: &str,
+    classify: impl Fn(&Node<'a>) -> Option<Option<T>>,
+) -> Option<T> {
     let mut loops: Vec<Node<'a>> = Vec::new();
     let mut current = *site;
     for parent in ancestors {
@@ -1005,7 +1048,7 @@ fn dominating_assignment_from<'a>(
                 return None;
             }
             if straight_line {
-                match assignment_of(&stmt, var, source) {
+                match classify(&stmt) {
                     Some(Some(found)) => {
                         return loops
                             .iter()

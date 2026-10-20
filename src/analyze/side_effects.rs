@@ -1206,6 +1206,17 @@ pub fn designates_object(ident: &Node, source: &str) -> bool {
     )
 }
 
+/// [`designates_object`] for the name `name` as seen at `at`, an
+/// occurrence spelled otherwise: a callee a macro invoked at `at` expands
+/// to, which resolves where the invocation is written.
+pub fn name_designates_object_at(at: &Node, name: &str, source: &str) -> bool {
+    binding_designates_object(
+        ast_utils::resolve_identifier_binding(at, name, source),
+        name,
+        source,
+    )
+}
+
 /// [`designates_object`] resolving through `declarations`, a caller's
 /// cache over the tree whose root is `root`
 /// ([`ast_utils::ScopeDeclarations`]): asked at every call of a function, a

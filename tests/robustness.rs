@@ -1502,6 +1502,20 @@ fn one_line_string_copies(bytes: usize) -> Vec<u8> {
     out.into_bytes()
 }
 
+/// One function of `bytes` bytes, each line assigning a path variable and
+/// opening it to write.
+fn one_function_of_creating_opens(bytes: usize) -> Vec<u8> {
+    let mut out =
+        String::from("#include <stdio.h>\nvoid f(void) {\n    const char *p;\n    FILE *fp;\n");
+    let mut i = 0;
+    while out.len() < bytes {
+        let _ = writeln!(out, "    p = \"/home/u/out{i}\"; fp = fopen(p, \"w\");");
+        i += 1;
+    }
+    out.push_str("}\n");
+    out.into_bytes()
+}
+
 /// A chain of `depth` object-like macros, each defined from the one before.
 fn define_chain(depth: usize) -> Vec<u8> {
     let mut out = String::new();
@@ -1633,12 +1647,13 @@ fn time_series(
 /// times the per-function prescan steps, the same file under INT34-C times
 /// the per-function value-range analysis the integer rules share, a file of
 /// one-line `strcpy` functions under STR31-C times that rule's per-call
-/// buffer-size lookups, a deep `#define` chain under PRE32-C times that
-/// rule's per-directive work, a name made of one long run of `L` under
-/// WIN00-C times that rule's reading of the names a flags macro may use,
-/// and a deep chain of macro aliases, or of macros each reading a
-/// parameter, read at local initializers under MSC13-C times its reading
-/// of each macro.
+/// buffer-size lookups, one long function of `fopen` calls under FIO21-C
+/// times that rule's per-open callee resolution and path tracing, a deep
+/// `#define` chain under PRE32-C times that rule's per-directive work, a
+/// name made of one long run of `L` under WIN00-C times that rule's reading
+/// of the names a flags macro may use, and a deep chain of macro aliases,
+/// or of macros each reading a parameter, read at local initializers under
+/// MSC13-C times its reading of each macro.
 /// Each series' time must grow no faster than [`SIZE_SERIES_MAX_SLOPE`]
 /// over its sizes, so a step that rescans the whole file per item fails
 /// here rather than as a watchdog hang on a large real file. Every series'
@@ -1649,7 +1664,7 @@ fn time_series(
 fn generated_size_series_scale_near_linearly() {
     let _runner = timed();
     type Generate = fn(usize) -> Vec<u8>;
-    let series: [(&str, &str, Generate, usize); 7] = [
+    let series: [(&str, &str, Generate, usize); 8] = [
         (
             "one_line_functions",
             "MSC04-C",
@@ -1667,6 +1682,12 @@ fn generated_size_series_scale_near_linearly() {
             "STR31-C",
             one_line_string_copies,
             8 * 1024,
+        ),
+        (
+            "one_function_of_creating_opens",
+            "FIO21-C",
+            one_function_of_creating_opens,
+            4 * 1024,
         ),
         ("define_chain", "PRE32-C", define_chain, 10_000),
         ("suffix_letter_run", "WIN00-C", suffix_letter_run, 40_000),

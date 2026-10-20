@@ -16,9 +16,11 @@
 //! definition of a function-like macro (`macro_expand`), and not when the
 //! name designates an object or the file defines a function of that name
 //! (ADR-0006). A path argument is judged by its value, never its spelling:
-//! a literal, a call of form (a), or a variable whose last write before the
-//! open, resolved to the same declaration, is one of those (`tmpnam(buf)`
-//! and `mktemp(buf)` write the name into `buf`). An open that creates nothing
+//! a literal, a call of form (a), or a variable whose write dominating the
+//! open is one of those (`dominating_assignment`; `tmpnam(buf)` and
+//! `mktemp(buf)` write the name into `buf`). A write that only some paths
+//! to the open run, in an `if` or loop body, leaves the value unknown and
+//! the open unreported, as does a parameter. An open that creates nothing
 //! is not reported.
 //!
 //! ## Presets
@@ -32,14 +34,18 @@ use crate::analyze::const_eval;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::noreturn::{callee_spelling, library_names_redefined_among};
-use crate::analyze::side_effects::designates_object;
+use crate::analyze::side_effects::{
+    designates_object, designates_object_in, name_designates_object_at,
+};
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
-use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declarator};
+use crate::utility::cert_c::ast_utils::{get_node_text, ScopeDeclarations};
+use crate::utility::cert_c::guard_dominance::{dominating_write, Dominating, WriteIndex};
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 use tree_sitter::Node;
 
@@ -125,6 +131,8 @@ impl CertRule for Fio21C {
         });
         let settings = self.settings.borrow();
         let file = FileContext {
+            root: *node,
+            declarations: ScopeDeclarations::indexed(*node),
             aliases,
             local_macros: macro_expand::collect_function_macros(node, source),
             project_macros: Arc::clone(&self.project_function_macros.borrow()),
@@ -134,6 +142,7 @@ impl CertRule for Fio21C {
             string_macros: const_eval::collect_string_literal_macros(node, source),
             tmpfile_reported: !(settings.flag(TMPFILE_OPTION) && settings.posix_holds_project()),
             reaches: RefCell::new(HashMap::new()),
+            writes: RefCell::new(HashMap::new()),
         };
 
         let mut violations = Vec::new();
@@ -230,6 +239,9 @@ struct Finding {
 impl Finding {
     fn display(&self) -> String {
         match &self.spelled {
+            // `tmpfile64()` as written: the same function under its
+            // large-file name.
+            Some(s) if Callee::library(s) == Some(self.callee) => format!("{s}()"),
             Some(s) => format!("{s} (expanding to {}())", self.callee.name()),
             None => format!("{}()", self.callee.name()),
         }
@@ -264,6 +276,8 @@ impl Finding {
 /// so a path the expansion names can be judged at the call site, where its
 /// declaration is.
 struct Invocation<'a, 't> {
+    /// The invocation's callee, where a name its expansion calls resolves.
+    at: Node<'t>,
     args: Vec<(String, Node<'t>)>,
     source: &'a str,
 }
@@ -278,7 +292,11 @@ impl<'t> Invocation<'_, 't> {
     }
 }
 
-struct FileContext {
+struct FileContext<'f> {
+    /// The scanned file's tree, whose callees resolve through
+    /// `declarations`, read once for the file.
+    root: Node<'f>,
+    declarations: ScopeDeclarations<'f>,
     aliases: HashMap<String, String>,
     local_macros: HashMap<String, FunctionMacro>,
     project_macros: Arc<HashMap<String, FunctionMacro>>,
@@ -288,9 +306,22 @@ struct FileContext {
     /// Whether a function-like macro's expansion can reach a callee of this
     /// rule, by name.
     reaches: RefCell<HashMap<String, bool>>,
+    /// The writes in each function body, by the body's start byte.
+    writes: RefCell<HashMap<usize, Rc<FunctionWrites>>>,
 }
 
-impl FileContext {
+/// One function body's writes.
+struct FunctionWrites {
+    index: WriteIndex,
+    /// The variables some write in the body could give a value this rule
+    /// judges: a path ([`FileContext::value_origin`], or a form (a) call
+    /// filling it) or flags naming `O_CREAT`. Only these are asked which
+    /// write dominates a use, which is what keeps a long function linear.
+    paths: HashSet<String>,
+    flags: HashSet<String>,
+}
+
+impl<'f> FileContext<'f> {
     fn macro_definition(&self, name: &str) -> Option<&FunctionMacro> {
         self.local_macros
             .get(name)
@@ -338,7 +369,7 @@ impl FileContext {
     }
 
     /// What `call`, in the scanned file, is.
-    fn finding_at(&self, call: &Node, source: &str) -> Option<Finding> {
+    fn finding_at(&self, call: &Node<'f>, source: &str) -> Option<Finding> {
         let (function, spelling) = callee_spelling(call, source)?;
         if self.macro_definition(&spelling).is_some() {
             return self.macro_finding(call, &spelling, source);
@@ -346,12 +377,11 @@ impl FileContext {
         let callee = self.library_callee(&spelling)?;
         // A parameter, local or function pointer spelled `tmpnam` calls
         // whatever it points at (ADR-0006).
-        if designates_object(&function, source) {
+        if designates_object_in(&self.root, &function, source, &self.declarations) {
             return None;
         }
-        // `tmpfile` renamed to `tmpfile64` by a system header is still
-        // spelled as the call is written.
-        let spelled = (Callee::library(&spelling) != Some(callee)).then(|| spelling.clone());
+        // Named as the call is written: an alias, or a large-file name.
+        let spelled = (spelling != callee.name()).then(|| spelling.clone());
         let path = match callee {
             Callee::TempName(_) => None,
             Callee::Tmpfile if self.tmpfile_reported => None,
@@ -380,7 +410,8 @@ impl FileContext {
             .map(|a| (get_node_text(&a, source).trim().to_string(), a))
             .collect();
         let texts: Vec<String> = args.iter().map(|(t, _)| t.clone()).collect();
-        let frame = Invocation { args, source };
+        let (at, _) = callee_spelling(call, source)?;
+        let frame = Invocation { at, args, source };
         let definition = self.macro_definition(name)?;
         for d in Self::definitions(definition) {
             // This definition alone: a macro its body invokes is judged in
@@ -420,6 +451,11 @@ impl FileContext {
             return self.nested_macro_finding(call, &spelling, text, frame, depth + 1);
         }
         let callee = self.library_callee(&spelling)?;
+        // `#define TN(b) tmpnam(b)` invoked where a parameter is named
+        // `tmpnam` calls the parameter (ADR-0006).
+        if name_designates_object_at(&frame.at, &spelling, frame.source) {
+            return None;
+        }
         let path = match callee {
             Callee::TempName(_) => None,
             Callee::Tmpfile if self.tmpfile_reported => None,
@@ -517,7 +553,10 @@ impl FileContext {
                 // `int flags = O_WRONLY | O_CREAT; open(path, flags, 0600)`.
                 traced
                     && arg.kind() == "identifier"
-                    && last_value(&arg, source).is_some_and(|v| mentions_o_creat(&v, source))
+                    && matches!(
+                        self.reaching(&arg, source, false),
+                        Some(Definition::Value(v)) if mentions_o_creat(&strip(v), source)
+                    )
             }
         }
     }
@@ -544,11 +583,156 @@ impl FileContext {
         if path.kind() != "identifier" {
             return None;
         }
-        // A variable: its value is the last write before this use, to the
-        // same declaration, or the name a form (a) call wrote into it.
-        match last_definition(&path, source, |call| self.temp_name_call(call, source))? {
+        // A variable: the value its write dominating this use stores, or
+        // the name a form (a) call wrote into it.
+        match self.reaching(&path, source, true)? {
             Definition::Value(v) => self.value_origin(&strip(v), source),
             Definition::Filled(name) => Some(PathOrigin::TempName(name)),
+        }
+    }
+
+    /// What the variable `ident`, in a scanned file, holds where it is used:
+    /// the write that every path to the use runs last
+    /// ([`dominating_write`]), or nothing when no single write is known.
+    /// With `fills`, a statement whose form (a) call writes a name into it
+    /// (`tmpnam(buf);`) counts as one.
+    fn reaching<'t>(&self, ident: &Node<'t>, source: &str, fills: bool) -> Option<Definition<'t>> {
+        let name = get_node_text(ident, source).trim();
+        let body = crate::utility::cert_c::ast_utils::ancestors(ident)
+            .find(|a| a.kind() == "function_definition")?
+            .child_by_field_name("body")?;
+        let known = self.writes.borrow().get(&body.start_byte()).cloned();
+        let writes = match known {
+            Some(w) => w,
+            None => {
+                let w = Rc::new(self.function_writes(&body, source));
+                self.writes
+                    .borrow_mut()
+                    .insert(body.start_byte(), Rc::clone(&w));
+                w
+            }
+        };
+        let candidates = if fills { &writes.paths } else { &writes.flags };
+        if !candidates.contains(name) {
+            return None;
+        }
+        let found = dominating_write(name, ident, source, &writes.index, |stmt| {
+            fills
+                .then(|| self.fill_of(stmt, name, source))
+                .flatten()
+                .map(|from| Some(Definition::Filled(from)))
+        })?;
+        Some(match found {
+            Dominating::Assignment(a) => Definition::Value(a.value),
+            Dominating::Other(d) => d,
+        })
+    }
+
+    /// Index `body`'s writes, and the variables a write could give a value
+    /// this rule judges.
+    fn function_writes(&self, body: &Node, source: &str) -> FunctionWrites {
+        let mut paths = HashSet::new();
+        let mut flags = HashSet::new();
+        let mut filled = Vec::new();
+        let mut note = |name: Option<Node>, value: Node| {
+            let Some(name) = name.filter(|n| n.kind() == "identifier") else {
+                return;
+            };
+            let name = get_node_text(&name, source).trim().to_string();
+            let value = strip(value);
+            if self.value_origin(&value, source).is_some() {
+                paths.insert(name.clone());
+            }
+            if mentions_o_creat(&value, source) {
+                flags.insert(name);
+            }
+        };
+        let mut stack = vec![*body];
+        while let Some(node) = stack.pop() {
+            match node.kind() {
+                "assignment_expression" => {
+                    if let Some(value) = node.child_by_field_name("right") {
+                        note(node.child_by_field_name("left").map(strip), value);
+                    }
+                }
+                "init_declarator" => {
+                    if let Some(value) = node.child_by_field_name("value") {
+                        note(
+                            node.child_by_field_name("declarator").and_then(declared),
+                            value,
+                        );
+                    }
+                }
+                "call_expression" if self.temp_name_call(&node, source).is_some() => {
+                    let first = node
+                        .child_by_field_name("arguments")
+                        .and_then(|a| a.named_child_nodes().find(|a| a.kind() != "comment"));
+                    if let Some(first) = first.map(strip).filter(|f| f.kind() == "identifier") {
+                        filled.push(get_node_text(&first, source).trim().to_string());
+                    }
+                }
+                _ => {}
+            }
+            stack.extend(node.named_child_nodes());
+        }
+        paths.extend(filled);
+        FunctionWrites {
+            index: WriteIndex::new(body, source),
+            paths,
+            flags,
+        }
+    }
+
+    /// The form (a) function a statement calls to write a name into `var`:
+    /// `tmpnam(var);`, `r = mktemp(var);`, `char *r = tmpnam(var);`, or an
+    /// `if` whose condition makes that call outside any `&&`, `||` or `?:`
+    /// operand, which runs it on every path.
+    fn fill_of(&self, stmt: &Node, var: &str, source: &str) -> Option<&'static str> {
+        let fill = |call: &Node| -> Option<&'static str> {
+            let call = strip(*call);
+            if call.kind() != "call_expression" {
+                return None;
+            }
+            let from = self.temp_name_call(&call, source)?;
+            let first = call
+                .child_by_field_name("arguments")?
+                .named_child_nodes()
+                .find(|a| a.kind() != "comment")?;
+            let first = strip(first);
+            (first.kind() == "identifier" && get_node_text(&first, source).trim() == var)
+                .then_some(from)
+        };
+        match stmt.kind() {
+            "expression_statement" => {
+                let expr = strip(stmt.named_child(0)?);
+                match expr.kind() {
+                    "assignment_expression" => fill(&expr.child_by_field_name("right")?),
+                    _ => fill(&expr),
+                }
+            }
+            "declaration" => stmt
+                .named_child_nodes()
+                .filter(|d| d.kind() == "init_declarator")
+                .find_map(|d| fill(&d.child_by_field_name("value")?)),
+            "if_statement" => {
+                let condition = stmt.child_by_field_name("condition")?;
+                let mut stack = vec![condition];
+                while let Some(node) = stack.pop() {
+                    if let Some(from) = fill(&node) {
+                        return Some(from);
+                    }
+                    let conditional = node.kind() == "conditional_expression"
+                        || (node.kind() == "binary_expression"
+                            && node
+                                .child_by_field_name("operator")
+                                .is_some_and(|op| matches!(op.kind(), "&&" | "||")));
+                    if !conditional {
+                        stack.extend(node.named_child_nodes());
+                    }
+                }
+                None
+            }
+            _ => None,
         }
     }
 
@@ -620,88 +804,45 @@ enum Definition<'t> {
     Filled(&'static str),
 }
 
-/// The last write before `ident`'s use in its function, in byte order, to
-/// the declaration `ident` resolves to (ADR-0006): an assignment, the
-/// initializer of that declaration, or a call `fills` names whose first
-/// argument is the variable.
-fn last_definition<'t>(
-    ident: &Node<'t>,
-    source: &str,
-    fills: impl Fn(&Node<'t>) -> Option<&'static str>,
-) -> Option<Definition<'t>> {
-    let name = get_node_text(ident, source).trim().to_string();
-    let (_, declarator) = resolve_identifier_declarator(ident, &name, source)?;
-    let same = |n: &Node<'t>| {
-        n.kind() == "identifier"
-            && get_node_text(n, source).trim() == name
-            && resolve_identifier_declarator(n, &name, source)
-                .is_some_and(|(_, d)| d.id() == declarator.id())
-    };
-    let body = crate::utility::cert_c::ast_utils::ancestors(ident)
-        .find(|a| a.kind() == "function_definition")?
-        .child_by_field_name("body")?;
-    let before = ident.start_byte();
-    let mut last: Option<(usize, Definition<'t>)> = None;
-    let mut stack = vec![body];
+/// The identifier a declarator declares, through pointer and array
+/// declarators.
+fn declared(declarator: Node) -> Option<Node> {
+    let mut node = declarator;
+    loop {
+        if node.kind() == "identifier" {
+            return Some(node);
+        }
+        node = match node.kind() {
+            "pointer_declarator" | "array_declarator" | "attributed_declarator" => {
+                node.child_by_field_name("declarator")?
+            }
+            "parenthesized_declarator" => node.named_child(0)?,
+            _ => return None,
+        };
+    }
+}
+
+/// Whether a flags expression sets `O_CREAT` (or the Windows CRT's
+/// `_O_CREAT`): names it outside a `~`, which clears it
+/// (`flags & ~O_CREAT`).
+fn mentions_o_creat(expr: &Node, source: &str) -> bool {
+    let mut stack = vec![*expr];
     while let Some(node) = stack.pop() {
-        if node.start_byte() >= before {
+        if node.kind() == "unary_expression"
+            && node
+                .child_by_field_name("operator")
+                .is_some_and(|op| op.kind() == "~")
+        {
             continue;
         }
-        let found = match node.kind() {
-            "init_declarator" if node.end_byte() <= before => node
-                .child_by_field_name("value")
-                .filter(|_| {
-                    node.child_by_field_name("declarator").is_some_and(|d| {
-                        d.start_byte() <= declarator.start_byte()
-                            && declarator.end_byte() <= d.end_byte()
-                    })
-                })
-                .map(Definition::Value),
-            "assignment_expression" if node.end_byte() <= before => {
-                let is_plain = node
-                    .child_by_field_name("operator")
-                    .is_some_and(|op| op.kind() == "=");
-                node.child_by_field_name("left")
-                    .map(strip)
-                    .filter(|l| is_plain && same(l))
-                    .and_then(|_| node.child_by_field_name("right"))
-                    .map(Definition::Value)
-            }
-            "call_expression" if node.end_byte() <= before => fills(&node).and_then(|from| {
-                let first = node
-                    .child_by_field_name("arguments")?
-                    .named_child_nodes()
-                    .find(|a| a.kind() != "comment")?;
-                same(&strip(first)).then_some(Definition::Filled(from))
-            }),
-            _ => None,
-        };
-        if let Some(d) = found {
-            if last.as_ref().is_none_or(|(at, _)| *at < node.start_byte()) {
-                last = Some((node.start_byte(), d));
-            }
+        if node.kind() == "identifier"
+            && matches!(get_node_text(&node, source), "O_CREAT" | "_O_CREAT")
+        {
+            return true;
         }
-        let mut cursor = node.walk();
-        stack.extend(node.children(&mut cursor));
+        stack.extend(node.named_child_nodes());
     }
-    last.map(|(_, d)| d)
-}
-
-/// The value a variable holds at its use, when it is a written value.
-fn last_value<'t>(ident: &Node<'t>, source: &str) -> Option<Node<'t>> {
-    match last_definition(ident, source, |_| None)? {
-        Definition::Value(v) => Some(strip(v)),
-        Definition::Filled(_) => None,
-    }
-}
-
-/// Whether a flags expression names `O_CREAT` (or the Windows CRT's
-/// `_O_CREAT`).
-fn mentions_o_creat(expr: &Node, source: &str) -> bool {
-    query::find_first_descendant(*expr, |n| {
-        n.kind() == "identifier" && matches!(get_node_text(&n, source), "O_CREAT" | "_O_CREAT")
-    })
-    .is_some()
+    false
 }
 
 /// `expr` without the parentheses and casts around it.
