@@ -58,6 +58,6 @@ default = "as_written"
 strict = "as_written"
 pedantic = "as_written"
 differs = false
-overlap = "ERR06-C covers the abort pair more specifically (CERT 2008)"
+overlap = "ERR06-C, which covered the abort pair more specifically (CERT 2008), was removed in v0.7.0"
 basis = "no. Default, strict and pedantic coincide (P/coincide)."
 ruling = "P/coincide"

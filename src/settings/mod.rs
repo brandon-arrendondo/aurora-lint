@@ -2987,19 +2987,20 @@ mod tests {
     fn exact_include_names_leave_every_preset_hash_as_it_was() {
         // The presets' hashes with the current option table and preset table
         // (each policy's column of the table, and the default preset's
-        // assumed data model, moved all three once). Benchmark run ids carry
+        // assumed data model, moved all three once, and so does removing a
+        // rule the table lists). Benchmark run ids carry
         // them, so exact include-name matching must not move them.
         assert_eq!(
             AnalysisSettings::preset(Preset::Default).settings_hash(),
-            "15339eecadd9161e2748b3b95607661786324c115247a0bfb3f0f5f40e4c8cf0"
+            "2ffb18442685adcd5e9260fa68fc7cf0f6f161f0ccb3ade2a2c351f37029e382"
         );
         assert_eq!(
             AnalysisSettings::preset(Preset::Strict).settings_hash(),
-            "15b0ac02df540d6853765588555d6cbfd548cf3287ca21b3433db235d37bbeaf"
+            "dcc831ea64df85460fb728e142fe9aceca3eab466c376832405170abeef1fa31"
         );
         assert_eq!(
             AnalysisSettings::preset(Preset::Pedantic).settings_hash(),
-            "cf60a9257d5c1de9add673f6871f6f4090bbbc5b18213cbfcecfc3e6b843ff26"
+            "8b6e9f95dc621f730b61a7d5cb6b800f4243296fb5653471d0a822dcec7d1c49"
         );
         assert_eq!(
             with_names(Preset::Default, Some(IncludeNames::Exact)).settings_hash(),

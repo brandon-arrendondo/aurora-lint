@@ -352,10 +352,6 @@ enabled = true
 enabled = true
 
 
-[rules.cert_c.ERR06-C]
-enabled = true
-
-
 [rules.cert_c.ERR07-C]
 enabled = true
 
@@ -510,10 +506,6 @@ enabled = false
 enabled = true
 
 
-[rules.cert_c.FIO03-C]
-enabled = true
-
-
 [rules.cert_c.FIO05-C]
 enabled = true
 
@@ -657,10 +649,6 @@ enabled = true
 enabled = true
 
 
-[rules.cert_c.FLP05-C]
-enabled = true
-
-
 [rules.cert_c.FLP06-C]
 enabled = true
 
@@ -735,10 +723,6 @@ enabled = true
 
 
 [rules.cert_c.INT13-C]
-enabled = true
-
-
-[rules.cert_c.INT14-C]
 enabled = true
 
 
@@ -897,10 +881,6 @@ enabled = true
 
 
 [rules.cert_c.MSC13-C]
-enabled = true
-
-
-[rules.cert_c.MSC14-C]
 enabled = true
 
 
@@ -1100,14 +1080,6 @@ enabled = true
 enabled = true
 
 
-[rules.cert_c.PRE12-C]
-enabled = true
-
-
-[rules.cert_c.PRE13-C]
-enabled = true
-
-
 [rules.cert_c.PRE30-C]
 enabled = true
 
@@ -1157,10 +1129,6 @@ enabled = true
 
 
 [rules.cert_c.STR02-C]
-enabled = true
-
-
-[rules.cert_c.STR03-C]
 enabled = true
 
 

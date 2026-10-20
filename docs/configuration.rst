@@ -645,10 +645,18 @@ The rules removed so far:
 
 .. REMOVED-RULES:START
 
+- **ERR06-C** (removed in v0.7.0, unenforceable): Its checkable form reports every assert in a program that registers an exit handler, which contradicts MSC11-C, and a narrower form needs the programmer's intent.
+- **FIO03-C** (removed in v0.7.0, unenforceable): Whether opening a file for writing may replace an existing one is the programmer's intent, which the code does not show; the race on creating a file is FIO45-C's.
 - **FIO50-C** (removed in v0.7.0, not a CERT C guideline (C++ id)): CERT C has no FIO50-C; it is CERT C++'s FIO50-CPP. FIO39-C reports the same alternation of input and output on one stream. Now covered by FIO39-C.
 - **FIO51-C** (removed in v0.7.0, not a CERT C guideline (C++ id)): CERT C has no FIO51-C; it is CERT C++'s FIO51-CPP. FIO42-C reports the same file left open. Now covered by FIO42-C.
+- **FLP05-C** (removed in v0.7.0, fails the criterion): Its checkable form, a constant below the normal minimum of its type, cannot reach CERT's example, where the value is computed at run time.
+- **INT14-C** (removed in v0.7.0, fails the criterion): A readability recommendation, whose check reported CERT's own compliant exception for bit-vector serialization.
+- **MSC14-C** (removed in v0.7.0, unenforceable): An unnecessary platform dependency has no checkable form; C23 settles CERT's two's-complement example, and the integer rules cover it.
 - **MSC42-C** (removed in v0.7.0, moved to CWE ruleset): MSC42-C is not a CERT C identifier; the weak-cipher check is unchanged. Now reported as CWE-327 in the CWE ruleset.
 - **POS55-C** (removed in v0.7.0, moved to CWE ruleset): CERT C never published a POS55-C; the socket-ordering check is unchanged. Now reported as CWE-666 in the CWE ruleset.
+- **PRE12-C** (removed in v0.7.0, fails the criterion): CERT demoted it to a recommendation: a macro that evaluates a parameter more than once is a matter of style, and the hazard, an argument with side effects, is PRE31-C's.
+- **PRE13-C** (removed in v0.7.0, fails the criterion): CERT's noncompliant example is well defined (an undefined macro in #if evaluates to 0), and the check reported a common, correct idiom.
+- **STR03-C** (removed in v0.7.0, unenforceable): Whether truncating a string is acceptable is the programmer's intent (CERT's EX1), and CERT marks the rule unenforceable.
 - **WIN05-C** (removed in v0.7.0, moved to CWE ruleset): CERT C never published a WIN05-C; its unquoted CreateProcess path check is unchanged, and its registry check now reports only a write under HKEY_LOCAL_MACHINE or HKEY_CLASSES_ROOT, as CWE-272. Now reported as CWE-428 in the CWE ruleset.
 
 .. REMOVED-RULES:END

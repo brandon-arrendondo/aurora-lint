@@ -922,11 +922,16 @@ fn list_rules_lists_shipped_rules_then_removed_ones() {
     assert!(stdout.starts_with("Rules ("), "stdout: {stdout}");
     assert!(stdout.contains("  ARR30-C    on "), "stdout: {stdout}");
     assert!(stdout.contains("\nRemoved rules"), "stdout: {stdout}");
+    let shipped: usize = stdout["Rules (".len()..]
+        .split_once(" shipped")
+        .and_then(|(n, _)| n.parse().ok())
+        .unwrap_or_else(|| panic!("stdout: {stdout}"));
 
     let (code, stdout, _) = run_aurora_lint(&["--list-rules", "json"]);
     assert_eq!(code, 0);
     let listing: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert!(listing["rules"].as_array().unwrap().len() > 300);
+    // Every shipped rule, enabled by default or not.
+    assert_eq!(listing["rules"].as_array().unwrap().len(), shipped);
     assert!(listing["removed"].is_array());
 }
 

@@ -1013,10 +1013,10 @@ fn a_deep_sum_costs_each_rule_work_linear_in_its_length() {
     };
     // The rules whose identifiers resolve only through the indexed paths.
     let indexed = [
-        "API00-C", "DCL30-C", "EXP30-C", "FLP03-C", "INT14-C", "INT30-C", "INT32-C", "MSC05-C",
+        "API00-C", "DCL30-C", "EXP30-C", "FLP03-C", "INT30-C", "INT32-C", "MSC05-C",
     ];
     for rule_id in [
-        "API00-C", "DCL30-C", "EXP30-C", "FLP03-C", "INT14-C", "INT30-C", "INT32-C", "MSC05-C",
+        "API00-C", "DCL30-C", "EXP30-C", "FLP03-C", "INT30-C", "INT32-C", "MSC05-C",
     ] {
         let small = work(rule_id, 150);
         let large = work(rule_id, 300);

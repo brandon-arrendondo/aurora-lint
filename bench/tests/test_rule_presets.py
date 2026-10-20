@@ -4,17 +4,22 @@
 `[presets]` block; bench reads it and never links the crate.
 """
 import json
+import tomllib
 import unittest
 from unittest import mock
 
 from bench import rule_presets
+from bench.config import RULES_ALL_TOML
 from bench.db import BenchDB
 
 
 class TestTable(unittest.TestCase):
     def test_every_rule_has_a_cell_per_preset_and_differs_is_derived(self):
         table = rule_presets.load()
-        self.assertGreater(len(table), 300)
+        # One row for every CERT C rule the default manifest tracks.
+        with RULES_ALL_TOML.open("rb") as fh:
+            tracked = tomllib.load(fh)["rules"]["cert_c"]
+        self.assertEqual(set(table), set(tracked))
         cells = {"as_written", "narrowed", "widened", "stricter", "not_enforced"}
         for rule, row in table.items():
             for preset in rule_presets.PRESETS:

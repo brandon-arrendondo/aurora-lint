@@ -926,9 +926,6 @@
       "CWE-116",
       "CWE-176"
     ],
-    "MSC14-C": [
-      "CWE-758"
-    ],
     "MSC15-C": [
       "CWE-758"
     ],
@@ -1022,10 +1019,6 @@
     "STR02-C": [
       "CWE-88"
     ],
-    "STR03-C": [
-      "CWE-170",
-      "CWE-464"
-    ],
     "STR06-C": [
       "CWE-464"
     ],
@@ -1068,9 +1061,9 @@
     ]
   },
   "stats": {
-    "toml_count": 312,
+    "toml_count": 304,
     "rules_with_cwe": 74,
     "unique_cwes": 79,
-    "rules_with_related_cwe": 120
+    "rules_with_related_cwe": 118
   }
 }

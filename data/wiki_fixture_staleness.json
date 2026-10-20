@@ -2840,25 +2840,6 @@
       }
     ]
   },
-  "ERR06-C": {
-    "status": "checked",
-    "current_block_count": 2,
-    "any_stale": false,
-    "fixtures": [
-      {
-        "file": "src/rules/cert_c/ERR/ERR06-C/tests/fail/wiki_noncompliant_1.c",
-        "best_match": "noncompliant_1",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/ERR/ERR06-C/tests/pass/wiki_compliant_1.c",
-        "best_match": "compliant_1",
-        "containment": 1.0,
-        "stale": false
-      }
-    ]
-  },
   "ERR07-C": {
     "status": "checked",
     "current_block_count": 6,
@@ -4463,43 +4444,6 @@
       }
     ]
   },
-  "FIO03-C": {
-    "status": "checked",
-    "current_block_count": 5,
-    "any_stale": false,
-    "fixtures": [
-      {
-        "file": "src/rules/cert_c/FIO/FIO03-C/tests/fail/wiki_fopen.c",
-        "best_match": "fopen",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/FIO/FIO03-C/tests/pass/wiki_fdopen_posix.c",
-        "best_match": "open_posix",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/FIO/FIO03-C/tests/pass/wiki_fopenx_c11.c",
-        "best_match": "fopenx_c11",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/FIO/FIO03-C/tests/pass/wiki_open_posix.c",
-        "best_match": "open_posix",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/FIO/FIO03-C/tests/pass/wiki_windows.c",
-        "best_match": "windows",
-        "containment": 1.0,
-        "stale": false
-      }
-    ]
-  },
   "FIO05-C": {
     "status": "checked",
     "current_block_count": 5,
@@ -5452,25 +5396,6 @@
       }
     ]
   },
-  "FLP05-C": {
-    "status": "checked",
-    "current_block_count": 2,
-    "any_stale": false,
-    "fixtures": [
-      {
-        "file": "src/rules/cert_c/FLP/FLP05-C/tests/fail/wiki_noncompliant_1.c",
-        "best_match": "noncompliant_1",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/FLP/FLP05-C/tests/pass/wiki_compliant_1.c",
-        "best_match": "compliant_1",
-        "containment": 1.0,
-        "stale": false
-      }
-    ]
-  },
   "FLP06-C": {
     "status": "checked",
     "current_block_count": 3,
@@ -6002,55 +5927,6 @@
       },
       {
         "file": "src/rules/cert_c/INT/INT13-C/tests/pass/wiki_right_shift.c",
-        "best_match": "right_shift",
-        "containment": 1.0,
-        "stale": false
-      }
-    ]
-  },
-  "INT14-C": {
-    "status": "checked",
-    "current_block_count": 7,
-    "any_stale": false,
-    "fixtures": [
-      {
-        "file": "src/rules/cert_c/INT/INT14-C/tests/fail/wiki_left_shift.c",
-        "best_match": "left_shift",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/INT/INT14-C/tests/fail/wiki_right_shift.c",
-        "best_match": "right_shift",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/INT/INT14-C/tests/pass/wiki_exceptions_2.c",
-        "best_match": "exceptions_2",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/INT/INT14-C/tests/pass/wiki_exceptions_3.c",
-        "best_match": "exceptions_3",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/INT/INT14-C/tests/pass/wiki_exceptions_4.c",
-        "best_match": "exceptions_4",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/INT/INT14-C/tests/pass/wiki_left_shift.c",
-        "best_match": "left_shift",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/INT/INT14-C/tests/pass/wiki_right_shift.c",
         "best_match": "right_shift",
         "containment": 1.0,
         "stale": false
@@ -7545,31 +7421,6 @@
       }
     ]
   },
-  "MSC14-C": {
-    "status": "checked",
-    "current_block_count": 4,
-    "any_stale": false,
-    "fixtures": [
-      {
-        "file": "src/rules/cert_c/MSC/MSC14-C/tests/fail/wiki_strerror_r.c",
-        "best_match": "strerror_r",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/MSC/MSC14-C/tests/pass/wiki_compliant_1.c",
-        "best_match": "compliant_1",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/MSC/MSC14-C/tests/pass/wiki_strerror_r.c",
-        "best_match": "strerror_r",
-        "containment": 1.0,
-        "stale": false
-      }
-    ]
-  },
   "MSC15-C": {
     "status": "checked",
     "current_block_count": 2,
@@ -8938,68 +8789,6 @@
       }
     ]
   },
-  "PRE12-C": {
-    "status": "checked",
-    "current_block_count": 4,
-    "any_stale": false,
-    "fixtures": [
-      {
-        "file": "src/rules/cert_c/PRE/PRE12-C/tests/fail/wiki_multiple_argument_evaluation.c",
-        "best_match": "multiple_argument_evaluation",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/PRE/PRE12-C/tests/fail/wiki_multiple_argument_evaluation_2.c",
-        "best_match": "multiple_argument_evaluation_2",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/PRE/PRE12-C/tests/pass/wiki_inline_function.c",
-        "best_match": "inline_function",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/PRE/PRE12-C/tests/pass/wiki_language_extension.c",
-        "best_match": "language_extension",
-        "containment": 1.0,
-        "stale": false
-      }
-    ]
-  },
-  "PRE13-C": {
-    "status": "checked",
-    "current_block_count": 5,
-    "any_stale": false,
-    "fixtures": [
-      {
-        "file": "src/rules/cert_c/PRE/PRE13-C/tests/fail/wiki_checking_value_of_predefined_macro.c",
-        "best_match": "checking_value_of_predefined_macro",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/PRE/PRE13-C/tests/pass/wiki_optional_language_features.c",
-        "best_match": "optional_language_features",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/PRE/PRE13-C/tests/pass/wiki_test_for_optional_feature.c",
-        "best_match": "test_for_optional_feature",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/PRE/PRE13-C/tests/pass/wiki_testing_for_definition_of_macro.c",
-        "best_match": "testing_for_definition_of_macro",
-        "containment": 1.0,
-        "stale": false
-      }
-    ]
-  },
   "PRE30-C": {
     "status": "checked",
     "current_block_count": 2,
@@ -9348,25 +9137,6 @@
       {
         "file": "src/rules/cert_c/STR/STR02-C/tests/pass/wiki_compliant_2.c",
         "best_match": "compliant_2",
-        "containment": 1.0,
-        "stale": false
-      }
-    ]
-  },
-  "STR03-C": {
-    "status": "checked",
-    "current_block_count": 2,
-    "any_stale": false,
-    "fixtures": [
-      {
-        "file": "src/rules/cert_c/STR/STR03-C/tests/fail/wiki_noncompliant_1.c",
-        "best_match": "noncompliant_1",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/STR/STR03-C/tests/pass/wiki_adequate_space.c",
-        "best_match": "adequate_space",
         "containment": 1.0,
         "stale": false
       }

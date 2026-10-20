@@ -820,7 +820,7 @@ couldn't see).
 **Deliberately NOT migrated** (confirmed different concepts, not
 duplicates despite similar names): `FLP04-C` (`%f`/`%lf` format
 *specifiers*, an unrelated classification axis), `FLP05-C` (`float`
-specifically, deliberately excluding `double`), `FLP07-C` (`long double`
+specifically, deliberately excluding `double`; removed in v0.7.0), `FLP07-C` (`long double`
 specifically), `FLP36-C` (integer `long`, the *other* operand in a
 float-conversion-precision check, not float classification at all),
 `FLP38-C` (see below). `FLP03-C` overlaps conceptually but is

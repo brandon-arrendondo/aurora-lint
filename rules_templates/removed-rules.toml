@@ -39,6 +39,18 @@
 #
 
 [[removed]]
+id = "ERR06-C"
+removed_in = "0.7.0"
+disposition = "unenforceable"
+reason = "Its checkable form reports every assert in a program that registers an exit handler, which contradicts MSC11-C, and a narrower form needs the programmer's intent"
+
+[[removed]]
+id = "FIO03-C"
+removed_in = "0.7.0"
+disposition = "unenforceable"
+reason = "Whether opening a file for writing may replace an existing one is the programmer's intent, which the code does not show; the race on creating a file is FIO45-C's"
+
+[[removed]]
 id = "FIO50-C"
 removed_in = "0.7.0"
 disposition = "not-cert-c"
@@ -53,6 +65,24 @@ reason = "CERT C has no FIO51-C; it is CERT C++'s FIO51-CPP. FIO42-C reports the
 covered_by = ["FIO42-C"]
 
 [[removed]]
+id = "FLP05-C"
+removed_in = "0.7.0"
+disposition = "fails-criterion"
+reason = "Its checkable form, a constant below the normal minimum of its type, cannot reach CERT's example, where the value is computed at run time"
+
+[[removed]]
+id = "INT14-C"
+removed_in = "0.7.0"
+disposition = "fails-criterion"
+reason = "A readability recommendation, whose check reported CERT's own compliant exception for bit-vector serialization"
+
+[[removed]]
+id = "MSC14-C"
+removed_in = "0.7.0"
+disposition = "unenforceable"
+reason = "An unnecessary platform dependency has no checkable form; C23 settles CERT's two's-complement example, and the integer rules cover it"
+
+[[removed]]
 id = "MSC42-C"
 removed_in = "0.7.0"
 disposition = "moved-to-cwe"
@@ -65,6 +95,24 @@ removed_in = "0.7.0"
 disposition = "moved-to-cwe"
 reason = "CERT C never published a POS55-C; the socket-ordering check is unchanged"
 moved_to = "CWE-666"
+
+[[removed]]
+id = "PRE12-C"
+removed_in = "0.7.0"
+disposition = "fails-criterion"
+reason = "CERT demoted it to a recommendation: a macro that evaluates a parameter more than once is a matter of style, and the hazard, an argument with side effects, is PRE31-C's"
+
+[[removed]]
+id = "PRE13-C"
+removed_in = "0.7.0"
+disposition = "fails-criterion"
+reason = "CERT's noncompliant example is well defined (an undefined macro in #if evaluates to 0), and the check reported a common, correct idiom"
+
+[[removed]]
+id = "STR03-C"
+removed_in = "0.7.0"
+disposition = "unenforceable"
+reason = "Whether truncating a string is acceptable is the programmer's intent (CERT's EX1), and CERT marks the rule unenforceable"
 
 [[removed]]
 id = "WIN05-C"

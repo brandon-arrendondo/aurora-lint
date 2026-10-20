@@ -29,7 +29,8 @@ Tagged pairs (all `related`, none cleared the `defers_to` bar):
 `MSC24-C`↔`STR31-C`/`STR32-C`, and the `PRE00-C`/`PRE01-C`/`PRE02-C`/
 `PRE10-C`/`PRE12-C` macro-hygiene cluster (all pairwise — CERT's own
 macro-authoring recommendations naturally co-fire on the same badly-written
-macro).
+macro). `INT14-C` and `PRE12-C` were removed in v0.7.0, so their pairs no
+longer apply.
 
 The `defers_to`+`rationale` schema (declared exceptions) exists in this doc's
 sketch but was **not instantiated for any pair** — re-examining the 5 known
@@ -190,8 +191,8 @@ only two have any ground-truth-labeled co-located data at all
 (`ARR38-C`→`STR31-C`: 8 labeled lines, all agree-FP; `INT08-C`→`INT32-C`: 16
 labeled lines, all agree-FP), and even those samples are far too thin to
 claim subsumption under bar #2 above — 8-16 lines is not "every instance."
-`MSC14-C`→`INT13-C` and `ERR33-C`→`FLP32-C` have **zero** labeled co-located
-data. **None of the five clear this bar today.** They should not be treated
+`MSC14-C`→`INT13-C` (MSC14-C was removed in v0.7.0) and `ERR33-C`→`FLP32-C`
+have **zero** labeled co-located data. **None of the five clear this bar today.** They should not be treated
 as validated; the rollout should re-examine each with either more targeted
 sampling or an argument from the rules' own detection logic (not just "no
 counterexample found yet in a sample this small").

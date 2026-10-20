@@ -39,6 +39,6 @@ default = "not_enforced"
 strict = "not_enforced"
 pedantic = "not_enforced"
 differs = false
-overlap = "STR32-C, STR03-C, MEM34-C, EXP39-C"
+overlap = "STR32-C, MEM34-C, EXP39-C"
 basis = "no. Not enforced in any preset."
 ruling = "API07-C/2026-09-26/disposition, API07-C/2026-09-26/removal"

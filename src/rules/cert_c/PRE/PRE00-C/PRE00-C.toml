@@ -45,6 +45,6 @@ default = "as_written"
 strict = "as_written"
 pedantic = "as_written"
 differs = false
-overlap = "PRE12-C's multi-evaluation half moved out"
+overlap = "PRE12-C's multi-evaluation half moved out; PRE12-C was removed in v0.7.0, and that hazard is PRE31-C's"
 basis = "no. Default, strict and pedantic coincide (P/coincide)."
 ruling = "P/coincide"

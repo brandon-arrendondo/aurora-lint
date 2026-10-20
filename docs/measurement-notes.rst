@@ -256,7 +256,8 @@ run ids even where the findings do not move.
 
 - **Every settings hash changes once.** The settings now carry a hash of the
   policy's column of the per-rule preset table (:doc:`rule-presets`), so a
-  changed cell moves the hash of the runs that read with it. A default-preset
+  changed cell, or a rule removed from the table, moves the hash of the runs
+  that read with it. A default-preset
   scan with no data model declared now records the LP64 model the preset
   assumes, and where it came from. Each preset's hash, and every run id that
   carries one, therefore differs from v0.6.x with nothing else changed.
@@ -268,9 +269,9 @@ run ids even where the findings do not move.
   ========  ============================  ============================
   Preset    Before (first 12 digits)      After (first 12 digits)
   ========  ============================  ============================
-  default   ``6a42bd4cf1e0``              ``15339eecadd9``
-  strict    ``f017c4b47de7``              ``15b0ac02df54``
-  pedantic  ``7d5d09905362``              ``cf60a9257d5c``
+  default   ``6a42bd4cf1e0``              ``2ffb18442685``
+  strict    ``f017c4b47de7``              ``dcc831ea64df``
+  pedantic  ``7d5d09905362``              ``8b6e9f95dc62``
   ========  ============================  ============================
 - **Declined rules do not run.** A rule a preset declines while another
   preset enforces it (``not_enforced`` in :doc:`rule-presets`) no longer
