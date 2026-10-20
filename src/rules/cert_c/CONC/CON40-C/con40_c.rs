@@ -558,6 +558,31 @@ impl Con40C {
         if loads.is_empty() {
             return;
         }
+        // Plain assignments that give a local a value not computed from its
+        // own: past one of these, the local no longer holds what was loaded.
+        let mut overwrites: Vec<(ObjectKey, usize)> = Vec::new();
+        for assignment in query::find_descendants_of_kind(*func, "assignment_expression") {
+            let (Some(left), Some(op), Some(right)) = (
+                assignment.child_by_field_name("left"),
+                assignment.child_by_field_name("operator"),
+                assignment.child_by_field_name("right"),
+            ) else {
+                continue;
+            };
+            if left.kind() != "identifier" || op.kind() != "=" {
+                continue;
+            }
+            let Some(key) = cx.resolve(&left).map(|r| r.key) else {
+                continue;
+            };
+            let names_itself = query::find_descendants_of_kind(right, "identifier")
+                .iter()
+                .chain(std::iter::once(&right).filter(|r| r.kind() == "identifier"))
+                .any(|id| cx.resolve(id).is_some_and(|r| r.key == key));
+            if !names_itself {
+                overwrites.push((key, assignment.start_byte()));
+            }
+        }
         let mut reported = HashSet::new();
         for call in &calls {
             let Some(name) = callee_name(call, cx.source) else {
@@ -585,7 +610,12 @@ impl Con40C {
                 let inside =
                     load.start_byte() >= value.start_byte() && load.end_byte() <= value.end_byte();
                 let through_local = load.end_byte() <= call.start_byte()
-                    && receiver.as_ref().is_some_and(|r| value_names.contains(r));
+                    && receiver.as_ref().is_some_and(|r| {
+                        value_names.contains(r)
+                            && !overwrites.iter().any(|(key, at)| {
+                                key == r && *at >= load.end_byte() && *at < call.start_byte()
+                            })
+                    });
                 if !(inside || through_local) || !reported.insert(load.id()) {
                     continue;
                 }
