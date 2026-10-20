@@ -6,23 +6,33 @@
 // Two forms are reported:
 //
 // 1. One full expression that accesses the same atomic object two or more
-//    times. An access is a name or member path whose declaration gives it an
-//    atomic type, resolved by declaration (ADR-0006), so a struct that merely
-//    has `_Atomic` members is not itself atomic and `config.x` is not an
-//    access to `config.live`. The left operand of a compound assignment is
-//    one access (`flag ^= 1`); a call's arguments are separate operations.
-//    Each full expression is reported once, at its outermost expression.
+//    times. An access is a name, member path, element or dereference whose
+//    declaration gives it an atomic type, resolved by declaration
+//    (ADR-0006), so a struct that merely has `_Atomic` members is not itself
+//    atomic and `config.x` is not an access to `config.live`; or an
+//    `atomic_*` operation on the object it is handed. The left operand of a
+//    compound assignment is one access (`flag ^= 1`). The operands of
+//    `sizeof`, `_Alignof`, `typeof` and `&` are not accesses, nor is a
+//    `_Generic` controlling expression. A call's arguments belong to the
+//    call's full expression; a statement inside a GNU statement expression
+//    is a full expression of its own. Each full expression is reported
+//    once, at its outermost expression.
 // 2. CERT's split-statement form, reported for review: an `atomic_load` of
-//    an object whose value, through a local, is what a later `atomic_store`
+//    an object whose value, through locals, is what a later `atomic_store`
 //    of the same object writes (`t = atomic_load(&f); t = !t;
 //    atomic_store(&f, t);`).
+//
+// Not seen: an atomic typedef declared in a header (`atomic_*` names and
+// aliases of them are), a member of a header's struct reached through a
+// pointer or array member, and a declaration the parser misreads other
+// than `_Atomic(T) x;` without a storage class.
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::{ProjectContext, VisibleTypes};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{get_node_text, ScopeDeclarations};
+use crate::utility::cert_c::declarator_utils::inner_declarator;
 use crate::utility::cert_c::node_children::NodeChildren;
-use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -36,10 +46,62 @@ const EXPR_KINDS: &[&str] = &[
     "conditional_expression",
     "unary_expression",
     "parenthesized_expression",
+    "call_expression",
+];
+
+/// Expressions whose operand is not evaluated.
+const UNEVALUATED_KINDS: &[&str] = &[
+    "sizeof_expression",
+    "alignof_expression",
+    "offsetof_expression",
+];
+
+/// Calls the grammar reads where the operand is not evaluated: `typeof` in
+/// an expression statement parses as a call.
+const UNEVALUATED_CALLEES: &[&str] = &[
+    "typeof",
+    "__typeof__",
+    "__typeof",
+    "typeof_unqual",
+    "__typeof_unqual__",
+    "_Alignof",
+    "alignof",
+    "__alignof__",
+    "__alignof",
+    "offsetof",
+    "__builtin_offsetof",
+    "__builtin_types_compatible_p",
+    "__builtin_constant_p",
 ];
 
 const LOAD_FUNCTIONS: &[&str] = &["atomic_load", "atomic_load_explicit"];
 const STORE_FUNCTIONS: &[&str] = &["atomic_store", "atomic_store_explicit"];
+
+/// The `<stdatomic.h>` generic functions that access the object their first
+/// argument points at (C11 7.17.7, 7.17.8 excluded: `atomic_flag` is not an
+/// operand).
+const ATOMIC_OPERATIONS: &[&str] = &[
+    "atomic_load",
+    "atomic_load_explicit",
+    "atomic_store",
+    "atomic_store_explicit",
+    "atomic_exchange",
+    "atomic_exchange_explicit",
+    "atomic_compare_exchange_strong",
+    "atomic_compare_exchange_strong_explicit",
+    "atomic_compare_exchange_weak",
+    "atomic_compare_exchange_weak_explicit",
+    "atomic_fetch_add",
+    "atomic_fetch_add_explicit",
+    "atomic_fetch_sub",
+    "atomic_fetch_sub_explicit",
+    "atomic_fetch_or",
+    "atomic_fetch_or_explicit",
+    "atomic_fetch_xor",
+    "atomic_fetch_xor_explicit",
+    "atomic_fetch_and",
+    "atomic_fetch_and_explicit",
+];
 
 type FieldTable = Arc<HashMap<String, HashMap<String, String>>>;
 
@@ -55,12 +117,28 @@ pub struct Con40C {
     typedef_types: RefCell<Arc<HashMap<String, String>>>,
 }
 
-/// The object an access names: the declarator its root name resolves to
-/// and the members after it. `p->m` and `(*p).m` are the same object.
+/// The object an access names: the declarator its root name resolves to,
+/// then each member, and `[i]` for each element or dereference. `p->m`,
+/// `(*p).m` and `p[0].m` are the same object; an element is keyed by its
+/// index's spelling.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct ObjectKey {
     root: usize,
     members: Vec<String>,
+}
+
+/// One step between a declared name and its declaration's specifiers,
+/// nearest the name first: `int *_Atomic a[4]` is an array of atomic
+/// pointers to `int`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Derivation {
+    Array,
+    Pointer {
+        atomic: bool,
+    },
+    Function,
+    /// A shape read from type text, which says no more.
+    Unknown,
 }
 
 /// Where the members of a struct- or union-typed object are declared.
@@ -75,8 +153,35 @@ enum Aggregate<'a> {
 #[derive(Clone)]
 struct Resolved<'a> {
     key: ObjectKey,
-    atomic: bool,
+    /// The derivations still between this object and the specifiers.
+    derivations: Vec<Derivation>,
+    /// Whether the specifiers give an atomic type.
+    base_atomic: bool,
     aggregate: Option<Aggregate<'a>>,
+}
+
+impl Resolved<'_> {
+    fn atomic(&self) -> bool {
+        match self.derivations.first() {
+            None => self.base_atomic,
+            Some(Derivation::Pointer { atomic }) => *atomic,
+            Some(_) => false,
+        }
+    }
+
+    /// The object one subscript or dereference away: the element of an
+    /// array, the object a pointer points at.
+    fn element(mut self, index: String) -> Self {
+        match self.derivations.first() {
+            Some(Derivation::Array | Derivation::Pointer { .. }) => {
+                self.derivations.remove(0);
+            }
+            Some(Derivation::Unknown) => {}
+            None | Some(Derivation::Function) => self.derivations = vec![Derivation::Unknown],
+        }
+        self.key.members.push(format!("[{index}]"));
+        self
+    }
 }
 
 /// Per-file state: the scope index, the struct tables and every resolution
@@ -88,6 +193,12 @@ struct FileCx<'a, 's> {
     shapes: FieldTable,
     aliases: Arc<HashMap<String, String>>,
     typedefs: Arc<HashMap<String, String>>,
+    /// Typedef names this file declares with `_Atomic`, which the typedef
+    /// table (specifiers only) does not record.
+    atomic_typedefs: HashSet<String>,
+    /// `_Atomic(T) x;` with no storage class, which the grammar reads as
+    /// an `ERROR` and a cast: name -> (the name's node, its scope).
+    misread: HashMap<String, Vec<(Node<'a>, Node<'a>)>>,
     /// Names something in reach declares atomic: identifiers this file
     /// declares so, and members of any visible struct. Anything else is
     /// never resolved.
@@ -108,40 +219,115 @@ fn has_atomic_qualifier(node: &Node, source: &str) -> bool {
 }
 
 fn is_name_node(node: &Node) -> bool {
-    matches!(node.kind(), "identifier" | "field_identifier")
+    matches!(
+        node.kind(),
+        "identifier" | "field_identifier" | "type_identifier"
+    )
+}
+
+/// The name a declarator declares.
+fn declared_name<'a>(declarator: &Node<'a>) -> Option<Node<'a>> {
+    let mut d = *declarator;
+    for _ in 0..64 {
+        if is_name_node(&d) {
+            return Some(d);
+        }
+        d = inner_declarator(&d)?;
+    }
+    None
+}
+
+/// The derivations `declarator` applies to its name, nearest the name
+/// first.
+fn derivations(declarator: &Node, source: &str) -> Vec<Derivation> {
+    let mut outer_first = Vec::new();
+    let mut d = *declarator;
+    for _ in 0..64 {
+        match d.kind() {
+            _ if is_name_node(&d) => break,
+            "init_declarator" => {}
+            "pointer_declarator" => outer_first.push(Derivation::Pointer {
+                atomic: has_atomic_qualifier(&d, source),
+            }),
+            "array_declarator" => outer_first.push(Derivation::Array),
+            "function_declarator" => outer_first.push(Derivation::Function),
+            "parenthesized_declarator" | "attributed_declarator" => {}
+            _ => return vec![Derivation::Unknown],
+        }
+        match inner_declarator(&d) {
+            Some(inner) if inner.id() != d.id() => d = inner,
+            _ => return vec![Derivation::Unknown],
+        }
+    }
+    outer_first.reverse();
+    outer_first
+}
+
+/// The node an access's spelling ends in, which names what it accesses:
+/// the identifier, the member, or that of the object subscripted or
+/// dereferenced.
+fn access_name<'a>(node: &Node<'a>, source: &str) -> Option<Node<'a>> {
+    match node.kind() {
+        "identifier" => Some(*node),
+        "field_expression" => node.child_by_field_name("field"),
+        "subscript_expression" => access_name(&node.child_by_field_name("argument")?, source),
+        "pointer_expression" if is_deref(node, source) => {
+            access_name(&node.child_by_field_name("argument")?, source)
+        }
+        "parenthesized_expression" => access_name(&node.named_child(0)?, source),
+        _ => None,
+    }
+}
+
+fn is_deref(node: &Node, source: &str) -> bool {
+    node.child_by_field_name("operator")
+        .is_some_and(|o| get_node_text(&o, source) == "*")
+}
+
+fn is_address_of(node: &Node, source: &str) -> bool {
+    node.kind() == "pointer_expression"
+        && node
+            .child_by_field_name("operator")
+            .is_some_and(|o| get_node_text(&o, source) == "&")
+}
+
+fn spelling(node: &Node, source: &str) -> String {
+    get_node_text(node, source).split_whitespace().collect()
 }
 
 impl<'a, 's> FileCx<'a, 's> {
-    /// Whether the object `declarator` names, in `decl` (a declaration,
-    /// parameter or member), has an atomic type: the specifiers say
-    /// `_Atomic` or name an atomic type and the declarator is the bare name,
-    /// or the pointer nearest the name is itself `_Atomic` (`int *_Atomic
-    /// p`). A pointer to an atomic object, an array of them and a struct
-    /// with atomic members are not atomic objects.
-    fn declares_atomic_object(&self, decl: &Node, declarator: &Node) -> bool {
-        if is_name_node(declarator) {
-            return has_atomic_qualifier(decl, self.source)
-                || decl
-                    .child_by_field_name("type")
-                    .filter(|t| t.kind() == "type_identifier")
-                    .is_some_and(|t| {
-                        is_atomic_type_name(&resolve_typedef_chain(
-                            get_node_text(&t, self.source),
-                            &self.typedefs,
-                        ))
-                    });
-        }
-        let mut d = *declarator;
-        while d.kind() == "pointer_declarator" {
-            let Some(inner) = d.child_by_field_name("declarator") else {
-                return false;
-            };
-            if is_name_node(&inner) {
-                return has_atomic_qualifier(&d, self.source);
+    /// Whether a typedef name stands for an atomic type, through its alias
+    /// chain.
+    fn typedef_is_atomic(&self, name: &str) -> bool {
+        let mut current = name.trim();
+        for _ in 0..16 {
+            if is_atomic_type_name(current) || self.atomic_typedefs.contains(current) {
+                return true;
             }
-            d = inner;
+            match self.typedefs.get(current) {
+                Some(next) => current = next.trim(),
+                None => return false,
+            }
         }
         false
+    }
+
+    /// Whether the specifiers of `decl` (a declaration, parameter, member
+    /// or typedef) give an atomic type: `_Atomic`, `_Atomic(T)`, or a type
+    /// name that is or aliases an atomic type.
+    fn specifiers_atomic(&self, decl: &Node) -> bool {
+        has_atomic_qualifier(decl, self.source)
+            || decl
+                .child_by_field_name("type")
+                .filter(|t| t.kind() == "type_identifier")
+                .is_some_and(|t| self.typedef_is_atomic(get_node_text(&t, self.source)))
+    }
+
+    /// Whether member type text, as the struct tables file it, names an
+    /// atomic type.
+    fn text_atomic(&self, ty: &str) -> bool {
+        ty.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .any(|t| t == "_Atomic" || self.typedef_is_atomic(t))
     }
 
     fn aggregate_of_decl(&self, decl: &Node<'a>) -> Option<Aggregate<'a>> {
@@ -177,14 +363,9 @@ impl<'a, 's> FileCx<'a, 's> {
         {
             let mut cursor = field.walk();
             for declarator in field.children_by_field_name("declarator", &mut cursor) {
-                let mut d = declarator;
-                while !is_name_node(&d) {
-                    match d.child_by_field_name("declarator") {
-                        Some(inner) => d = inner,
-                        None => break,
-                    }
-                }
-                if is_name_node(&d) && get_node_text(&d, self.source) == name {
+                if declared_name(&declarator)
+                    .is_some_and(|d| get_node_text(&d, self.source) == name)
+                {
                     return Some((field, declarator));
                 }
             }
@@ -204,20 +385,26 @@ impl<'a, 's> FileCx<'a, 's> {
         None
     }
 
-    /// Whether member `name` of `aggregate` is an atomic object, and the
-    /// aggregate its own members are declared in.
-    fn member(&self, aggregate: &Aggregate<'a>, name: &str) -> (bool, Option<Aggregate<'a>>) {
+    /// Member `name` of `aggregate`, typed: its derivations, whether its
+    /// specifiers are atomic, and the aggregate its own members are
+    /// declared in.
+    fn member(
+        &self,
+        aggregate: &Aggregate<'a>,
+        name: &str,
+    ) -> (Vec<Derivation>, bool, Option<Aggregate<'a>>) {
         match aggregate {
             Aggregate::Body(body) => match self.member_in_body(body, name) {
                 Some((field, declarator)) => (
-                    self.declares_atomic_object(&field, &declarator),
+                    derivations(&declarator, self.source),
+                    self.specifiers_atomic(&field),
                     self.aggregate_of_decl(&field),
                 ),
-                None => (false, None),
+                None => (vec![Derivation::Unknown], false, None),
             },
             Aggregate::Named(tag) => {
                 let Some(ty) = self.fields.get(tag).and_then(|f| f.get(name)) else {
-                    return (false, None);
+                    return (vec![Derivation::Unknown], false, None);
                 };
                 let shape = self
                     .shapes
@@ -225,13 +412,10 @@ impl<'a, 's> FileCx<'a, 's> {
                     .and_then(|s| s.get(name))
                     .map(String::as_str)
                     .unwrap_or("");
+                // Type text says whether there is a pointer or array, not
+                // what is qualified where, so such a member is not typed.
+                let derived = !shape.is_empty() || ty.contains('*');
                 let tokens: Vec<&str> = ty.split_whitespace().collect();
-                let atomic = shape.is_empty()
-                    && !tokens.contains(&"*")
-                    && tokens.iter().any(|t| {
-                        *t == "_Atomic"
-                            || is_atomic_type_name(&resolve_typedef_chain(t, &self.typedefs))
-                    });
                 let next = match tokens.iter().position(|t| *t == "struct" || *t == "union") {
                     Some(i) => tokens
                         .get(i + 1)
@@ -243,14 +427,19 @@ impl<'a, 's> FileCx<'a, 's> {
                         .find(|t| !matches!(**t, "*" | "const" | "volatile" | "_Atomic"))
                         .map(|t| self.named(t)),
                 };
-                (atomic, next)
+                if derived {
+                    (vec![Derivation::Unknown], false, next)
+                } else {
+                    (Vec::new(), self.text_atomic(ty), next)
+                }
             }
         }
     }
 
     /// The object `node` names, when it names one by declaration: an
-    /// identifier, or a member path from one through `.`, `->`, `*` and
-    /// parentheses. Anything else (a subscript, a call's result) is `None`.
+    /// identifier, or a path from one through members, subscripts,
+    /// dereferences and parentheses. Anything else (a call's result) is
+    /// `None`.
     fn resolve(&mut self, node: &Node<'a>) -> Option<Resolved<'a>> {
         if let Some(r) = self.memo.get(&node.id()) {
             return r.clone();
@@ -264,37 +453,45 @@ impl<'a, 's> FileCx<'a, 's> {
         match node.kind() {
             "identifier" => {
                 let name = get_node_text(node, self.source);
-                let (decl, declarator) = self
+                match self
                     .scopes
                     .resolve_identifier_declarator_indexed(node, name, self.source)
-                    .flatten()?;
-                Some(Resolved {
-                    key: ObjectKey {
-                        root: declarator.id(),
-                        members: Vec::new(),
-                    },
-                    atomic: self.declares_atomic_object(&decl, &declarator),
-                    aggregate: self.aggregate_of_decl(&decl),
-                })
+                    .flatten()
+                {
+                    Some((decl, declarator)) => Some(Resolved {
+                        key: ObjectKey {
+                            root: declarator.id(),
+                            members: Vec::new(),
+                        },
+                        derivations: derivations(&declarator, self.source),
+                        base_atomic: self.specifiers_atomic(&decl),
+                        aggregate: self.aggregate_of_decl(&decl),
+                    }),
+                    None => self.resolve_misread(node, name),
+                }
             }
             "parenthesized_expression" => self.resolve(&node.named_child(0)?),
-            "pointer_expression" => {
-                let op = node.child_by_field_name("operator")?;
-                if get_node_text(&op, self.source) != "*" {
-                    return None;
-                }
+            "pointer_expression" if is_deref(node, self.source) => {
                 let inner = self.resolve(&node.child_by_field_name("argument")?)?;
-                Some(Resolved {
-                    atomic: false,
-                    ..inner
-                })
+                Some(inner.element("0".to_string()))
+            }
+            "subscript_expression" => {
+                let index = spelling(&node.child_by_field_name("index")?, self.source);
+                let inner = self.resolve(&node.child_by_field_name("argument")?)?;
+                Some(inner.element(index))
             }
             "field_expression" => {
-                let base = self.resolve(&node.child_by_field_name("argument")?)?;
+                let mut base = self.resolve(&node.child_by_field_name("argument")?)?;
+                let arrow = node
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "->");
+                if arrow {
+                    base = base.element("0".to_string());
+                }
                 let field = get_node_text(&node.child_by_field_name("field")?, self.source);
-                let (atomic, aggregate) = match &base.aggregate {
+                let (derivations, base_atomic, aggregate) = match &base.aggregate {
                     Some(agg) => self.member(agg, field),
-                    None => (false, None),
+                    None => (vec![Derivation::Unknown], false, None),
                 };
                 let mut members = base.key.members;
                 members.push(field.to_string());
@@ -303,7 +500,8 @@ impl<'a, 's> FileCx<'a, 's> {
                         root: base.key.root,
                         members,
                     },
-                    atomic,
+                    derivations,
+                    base_atomic,
                     aggregate,
                 })
             }
@@ -311,40 +509,74 @@ impl<'a, 's> FileCx<'a, 's> {
         }
     }
 
-    /// The atomic object `node` accesses, if it is a name or member path
-    /// that something in reach declares atomic.
+    /// A name no declaration binds, resolved to a misread `_Atomic(T) x;`
+    /// in a scope around it and before it, the innermost.
+    fn resolve_misread(&self, node: &Node<'a>, name: &str) -> Option<Resolved<'a>> {
+        let (ident, _) = self
+            .misread
+            .get(name)?
+            .iter()
+            .filter(|(ident, scope)| {
+                ident.start_byte() <= node.start_byte()
+                    && scope.start_byte() <= node.start_byte()
+                    && node.end_byte() <= scope.end_byte()
+            })
+            .max_by_key(|(_, scope)| scope.start_byte())?;
+        Some(Resolved {
+            key: ObjectKey {
+                root: ident.id(),
+                members: Vec::new(),
+            },
+            derivations: Vec::new(),
+            base_atomic: true,
+            aggregate: None,
+        })
+    }
+
+    /// The atomic object `node` accesses, if it is a name, member path,
+    /// element or dereference that something in reach declares atomic.
     fn atomic_access(&mut self, node: &Node<'a>) -> Option<ObjectKey> {
-        let name_node = match node.kind() {
-            "identifier" => *node,
-            "field_expression" => node.child_by_field_name("field")?,
-            _ => return None,
-        };
+        if !matches!(
+            node.kind(),
+            "identifier" | "field_expression" | "subscript_expression" | "pointer_expression"
+        ) {
+            return None;
+        }
+        let name_node = access_name(node, self.source)?;
         if !self
             .candidate_names
             .contains(get_node_text(&name_node, self.source))
         {
             return None;
         }
-        self.resolve(node).filter(|r| r.atomic).map(|r| r.key)
+        self.resolve(node).filter(|r| r.atomic()).map(|r| r.key)
     }
 
-    /// The object an `atomic_load`/`atomic_store` call's first argument
-    /// points at: `&x` names `x`, and a pointer `p` names `*p`.
+    /// The object an `atomic_*` call's first argument points at: `&x` names
+    /// `x`, and a pointer `p` names `*p`.
     fn pointed_object(&mut self, arg: &Node<'a>) -> Option<ObjectKey> {
         let arg = strip_parens(arg);
-        if arg.kind() == "pointer_expression"
-            && arg
-                .child_by_field_name("operator")
-                .is_some_and(|o| get_node_text(&o, self.source) == "&")
-        {
+        if is_address_of(&arg, self.source) {
             return self
                 .resolve(&arg.child_by_field_name("argument")?)
                 .map(|r| r.key);
         }
         let mut key = self.resolve(&arg)?.key;
-        key.members.push("*".to_string());
+        key.members.push("[0]".to_string());
         Some(key)
     }
+}
+
+/// How an `atomic_*` call's first argument names its object in a message:
+/// `&(w.cnt)` as `w.cnt`, a pointer `p` as `*p`.
+fn object_text(arg: &Node, source: &str) -> String {
+    let arg = strip_parens(arg);
+    if is_address_of(&arg, source) {
+        if let Some(inner) = arg.child_by_field_name("argument") {
+            return spelling(&strip_parens(&inner), source);
+        }
+    }
+    format!("*{}", spelling(&arg, source))
 }
 
 fn strip_parens<'a>(node: &Node<'a>) -> Node<'a> {
@@ -373,6 +605,147 @@ fn call_args<'a>(call: &Node<'a>) -> Vec<Node<'a>> {
         .unwrap_or_default()
 }
 
+/// Whether nothing under `node` is evaluated.
+fn unevaluated(node: &Node, source: &str) -> bool {
+    UNEVALUATED_KINDS.contains(&node.kind())
+        || node.kind() == "call_expression"
+            && callee_name(node, source).is_some_and(|n| UNEVALUATED_CALLEES.contains(&n))
+}
+
+/// Whether the children of `node` belong to the full expression `node` is
+/// part of: through operators, member paths, calls and their arguments,
+/// and a compound literal's initializer, but not into a statement (a GNU
+/// statement expression's body is full expressions of its own) or a
+/// `_Generic` association, of which only one is evaluated.
+fn continues_expression(node: &Node) -> bool {
+    match node.kind() {
+        "argument_list" => true,
+        "generic_expression" => false,
+        "initializer_list" | "initializer_pair" => node.parent().is_some_and(|p| {
+            matches!(
+                p.kind(),
+                "compound_literal_expression" | "initializer_list" | "initializer_pair"
+            )
+        }),
+        kind => kind.ends_with("_expression"),
+    }
+}
+
+/// The children of `node` a walk of its expression visits: none of an
+/// unevaluated operand, and not a `_Generic` controlling expression.
+fn evaluated_children<'a>(node: &Node<'a>, source: &str) -> Vec<Node<'a>> {
+    if unevaluated(node, source) {
+        return Vec::new();
+    }
+    let children = node.child_nodes();
+    if node.kind() == "generic_expression" {
+        let controlling = node.named_child(0).map(|c| c.id());
+        return children.filter(|c| Some(c.id()) != controlling).collect();
+    }
+    children.collect()
+}
+
+/// The lowest node containing both `a` and `b`.
+fn common_ancestor<'a>(a: &Node<'a>, b: &Node) -> Option<Node<'a>> {
+    let mut n = *a;
+    loop {
+        if n.start_byte() <= b.start_byte() && b.end_byte() <= n.end_byte() {
+            return Some(n);
+        }
+        n = n.parent()?;
+    }
+}
+
+/// The child of `ancestor` that contains `node`.
+fn child_toward<'a>(ancestor: &Node<'a>, node: &Node) -> Option<Node<'a>> {
+    ancestor
+        .child_nodes()
+        .find(|c| c.start_byte() <= node.start_byte() && node.end_byte() <= c.end_byte())
+}
+
+/// Whether `a` and `b` lie in different arms of one `if`/`else` or `?:`,
+/// with no loop around it that could carry a value from one arm to the
+/// other.
+fn exclusive_arms(a: &Node, b: &Node) -> bool {
+    let Some(lca) = common_ancestor(a, b) else {
+        return false;
+    };
+    if !matches!(lca.kind(), "if_statement" | "conditional_expression") {
+        return false;
+    }
+    let (Some(ca), Some(cb)) = (child_toward(&lca, a), child_toward(&lca, b)) else {
+        return false;
+    };
+    let condition = lca.child_by_field_name("condition").map(|c| c.id());
+    if ca.id() == cb.id() || Some(ca.id()) == condition || Some(cb.id()) == condition {
+        return false;
+    }
+    let mut n = lca;
+    while let Some(p) = n.parent() {
+        match p.kind() {
+            "for_statement" | "while_statement" | "do_statement" => return false,
+            "function_definition" => break,
+            _ => {}
+        }
+        n = p;
+    }
+    true
+}
+
+/// Whether `node` runs on every path that reaches `target` from where they
+/// part: no arm, loop body, `case` or right operand of `&&`/`||` lies
+/// between it and the lowest node containing both.
+fn runs_before_reaching(node: &Node, target: &Node) -> bool {
+    let Some(lca) = common_ancestor(node, target) else {
+        return false;
+    };
+    let mut child = *node;
+    while let Some(parent) = child.parent() {
+        if parent.id() == lca.id() {
+            return true;
+        }
+        let in_condition = parent
+            .child_by_field_name("condition")
+            .is_some_and(|c| c.id() == child.id());
+        let conditional = match parent.kind() {
+            "if_statement" | "conditional_expression" | "while_statement" => !in_condition,
+            "for_statement" => {
+                !in_condition
+                    && parent
+                        .child_by_field_name("initializer")
+                        .is_none_or(|c| c.id() != child.id())
+            }
+            "switch_statement" => !in_condition,
+            "case_statement" | "else_clause" => true,
+            "binary_expression" => {
+                parent
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| matches!(o.kind(), "&&" | "||"))
+                    && parent
+                        .child_by_field_name("right")
+                        .is_some_and(|r| r.id() == child.id())
+            }
+            _ => false,
+        };
+        if conditional {
+            return false;
+        }
+        child = parent;
+    }
+    false
+}
+
+/// One way a local's value is set within a function: by `=` or an
+/// initializer from what the right side names, by a compound assignment
+/// (which keeps its own value), or through `&x` handed to a call, which may
+/// write anything.
+struct Flow<'a> {
+    dest: ObjectKey,
+    sources: Vec<ObjectKey>,
+    keeps_own: bool,
+    node: Node<'a>,
+}
+
 impl Con40C {
     fn file_cx<'a, 's>(&self, root: &Node<'a>, source: &'s str) -> FileCx<'a, 's> {
         let mut cx = FileCx {
@@ -382,41 +755,63 @@ impl Con40C {
             shapes: self.struct_field_shapes.borrow().clone(),
             aliases: self.struct_typedef_aliases.borrow().clone(),
             typedefs: self.typedef_types.borrow().clone(),
+            atomic_typedefs: HashSet::new(),
+            misread: HashMap::new(),
             candidate_names: HashSet::new(),
             memo: HashMap::new(),
         };
-        let mut names = HashSet::new();
-        for decl in query::find_descendants_of_kinds(
+        let nodes = query::find_descendants_of_kinds(
             *root,
-            &["declaration", "parameter_declaration", "field_declaration"],
-        ) {
-            let mut cursor = decl.walk();
-            for declarator in decl.children_by_field_name("declarator", &mut cursor) {
-                let declarator = if declarator.kind() == "init_declarator" {
-                    match declarator.child_by_field_name("declarator") {
-                        Some(d) => d,
-                        None => continue,
+            &[
+                "declaration",
+                "parameter_declaration",
+                "field_declaration",
+                "type_definition",
+                "ERROR",
+            ],
+        );
+        // Typedefs first, so a declaration through one sees it.
+        for td in nodes.iter().filter(|n| n.kind() == "type_definition") {
+            if cx.specifiers_atomic(td) {
+                let mut cursor = td.walk();
+                for declarator in td.children_by_field_name("declarator", &mut cursor) {
+                    if declarator.kind() == "type_identifier" {
+                        cx.atomic_typedefs
+                            .insert(get_node_text(&declarator, source).to_string());
                     }
-                } else {
-                    declarator
-                };
-                if cx.declares_atomic_object(&decl, &declarator) {
-                    let mut d = declarator;
-                    while !is_name_node(&d) {
-                        match d.child_by_field_name("declarator") {
-                            Some(inner) => d = inner,
-                            None => break,
+                }
+            }
+        }
+        let mut names = HashSet::new();
+        for decl in &nodes {
+            match decl.kind() {
+                "type_definition" => {}
+                "ERROR" => {
+                    if let Some(ident) = misread_atomic_declaration(decl, source) {
+                        let name = get_node_text(&ident, source).to_string();
+                        names.insert(name.clone());
+                        let scope = decl.parent().unwrap_or(*root);
+                        cx.misread.entry(name).or_default().push((ident, scope));
+                    }
+                }
+                _ => {
+                    let mut cursor = decl.walk();
+                    for declarator in decl.children_by_field_name("declarator", &mut cursor) {
+                        let derivs = derivations(&declarator, source);
+                        let may_be_atomic = cx.specifiers_atomic(decl)
+                            || derivs.contains(&Derivation::Pointer { atomic: true });
+                        if may_be_atomic {
+                            if let Some(d) = declared_name(&declarator) {
+                                names.insert(get_node_text(&d, source).to_string());
+                            }
                         }
                     }
-                    names.insert(get_node_text(&d, source).to_string());
                 }
             }
         }
         for fields in cx.fields.values() {
             for (name, ty) in fields {
-                if ty.split_whitespace().any(|t| {
-                    t == "_Atomic" || is_atomic_type_name(&resolve_typedef_chain(t, &cx.typedefs))
-                }) {
+                if cx.text_atomic(ty) {
                     names.insert(name.clone());
                 }
             }
@@ -425,41 +820,85 @@ impl Con40C {
         cx
     }
 
-    /// Every expression that is the outermost of the operator expressions
-    /// around it: one per full expression, and one per call argument,
-    /// since a call's arguments are separate operations.
-    fn report_roots<'a>(root: &Node<'a>) -> Vec<Node<'a>> {
+    /// Every expression that is the outermost of the expressions around it:
+    /// one per full expression.
+    fn report_roots<'a>(root: &Node<'a>, source: &str) -> Vec<Node<'a>> {
         let mut roots = Vec::new();
         let mut stack = vec![(*root, false)];
         while let Some((node, inside)) = stack.pop() {
-            let kind = node.kind();
-            let is_expr = EXPR_KINDS.contains(&kind);
+            let is_expr = EXPR_KINDS.contains(&node.kind());
             if is_expr && !inside {
                 roots.push(node);
             }
-            let continues_chain = kind.ends_with("_expression") && kind != "call_expression";
-            let child_inside = continues_chain && (inside || is_expr);
-            let children: Vec<Node<'a>> = node.child_nodes().collect();
+            let child_inside = (inside || is_expr) && continues_expression(&node);
+            let children = evaluated_children(&node, source);
             stack.extend(children.into_iter().rev().map(|c| (c, child_inside)));
         }
         roots
     }
 
-    /// The atomic accesses under `expr`, outside any call it makes.
-    fn accesses<'a>(cx: &mut FileCx<'a, '_>, expr: &Node<'a>) -> Vec<(ObjectKey, Node<'a>)> {
+    /// The atomic accesses in the full expression `expr`, each with how a
+    /// message names its object.
+    fn accesses<'a>(cx: &mut FileCx<'a, '_>, expr: &Node<'a>) -> Vec<(ObjectKey, String)> {
         let mut found = Vec::new();
         let mut stack = vec![*expr];
         while let Some(node) = stack.pop() {
-            if node.kind() == "call_expression" {
+            if let Some(key) = cx.atomic_access(&node) {
+                found.push((key, spelling(&node, cx.source)));
+            } else if node.kind() == "call_expression"
+                && callee_name(&node, cx.source).is_some_and(|n| ATOMIC_OPERATIONS.contains(&n))
+            {
+                if let Some(arg) = call_args(&node).first() {
+                    if let Some(key) = cx.pointed_object(arg) {
+                        found.push((key, object_text(arg, cx.source)));
+                    }
+                }
+            }
+            if node.id() != expr.id() && !continues_expression(&node) {
                 continue;
             }
-            if let Some(key) = cx.atomic_access(&node) {
-                found.push((key, node));
+            if is_address_of(&node, cx.source) {
+                if let Some(operand) = node.child_by_field_name("argument") {
+                    Self::push_designated(cx, &operand, &mut stack);
+                }
+                continue;
             }
-            let children: Vec<Node<'a>> = node.child_nodes().collect();
+            let children = evaluated_children(&node, cx.source);
             stack.extend(children.into_iter().rev());
         }
         found
+    }
+
+    /// The operand of `&`: the object it designates is not accessed, but
+    /// what computes it is (`&p->m` reads `p`, `&a[i]` reads `i`).
+    fn push_designated<'a>(cx: &FileCx<'a, '_>, node: &Node<'a>, stack: &mut Vec<Node<'a>>) {
+        match node.kind() {
+            "identifier" => {}
+            "parenthesized_expression" => {
+                if let Some(inner) = node.named_child(0) {
+                    Self::push_designated(cx, &inner, stack);
+                }
+            }
+            "field_expression" => {
+                let Some(argument) = node.child_by_field_name("argument") else {
+                    return;
+                };
+                if node
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "->")
+                {
+                    stack.push(argument);
+                } else {
+                    Self::push_designated(cx, &argument, stack);
+                }
+            }
+            "pointer_expression" if is_deref(node, cx.source) => {
+                if let Some(argument) = node.child_by_field_name("argument") {
+                    stack.push(argument);
+                }
+            }
+            _ => stack.push(*node),
+        }
     }
 
     fn check_expressions<'a>(
@@ -468,18 +907,15 @@ impl Con40C {
         root: &Node<'a>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        for expr in Self::report_roots(root) {
-            let mut counts: Vec<(ObjectKey, Node, usize)> = Vec::new();
-            for (key, node) in Self::accesses(cx, &expr) {
+        for expr in Self::report_roots(root, cx.source) {
+            let mut counts: Vec<(ObjectKey, String, usize)> = Vec::new();
+            for (key, name) in Self::accesses(cx, &expr) {
                 match counts.iter_mut().find(|(k, _, _)| *k == key) {
                     Some(entry) => entry.2 += 1,
-                    None => counts.push((key, node, 1)),
+                    None => counts.push((key, name, 1)),
                 }
             }
-            for (_, first, n) in counts.into_iter().filter(|(_, _, n)| *n >= 2) {
-                let name: String = get_node_text(&first, cx.source)
-                    .split_whitespace()
-                    .collect();
+            for (_, name, n) in counts.into_iter().filter(|(_, _, n)| *n >= 2) {
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     line: expr.start_position().row + 1,
@@ -530,9 +966,132 @@ impl Con40C {
         None
     }
 
-    /// CERT's split-statement form: a load whose value a later store of the
-    /// same object writes, through a local or directly. A presumption,
-    /// reported for review.
+    /// The names `node` reads, resolved.
+    fn names_in<'a>(cx: &mut FileCx<'a, '_>, node: &Node<'a>) -> Vec<ObjectKey> {
+        query::find_descendants_of_kind(*node, "identifier")
+            .iter()
+            .chain(std::iter::once(node).filter(|n| n.kind() == "identifier"))
+            .filter_map(|id| cx.resolve(id).map(|r| r.key))
+            .collect()
+    }
+
+    /// Every way `func` sets a local's value, in source order.
+    fn flows<'a>(cx: &mut FileCx<'a, '_>, func: &Node<'a>) -> Vec<Flow<'a>> {
+        let mut flows = Vec::new();
+        for node in query::find_descendants_of_kinds(
+            *func,
+            &[
+                "assignment_expression",
+                "init_declarator",
+                "call_expression",
+            ],
+        ) {
+            match node.kind() {
+                "assignment_expression" => {
+                    let (Some(left), Some(op), Some(right)) = (
+                        node.child_by_field_name("left"),
+                        node.child_by_field_name("operator"),
+                        node.child_by_field_name("right"),
+                    ) else {
+                        continue;
+                    };
+                    if left.kind() != "identifier" {
+                        continue;
+                    }
+                    let Some(dest) = cx.resolve(&left).map(|r| r.key) else {
+                        continue;
+                    };
+                    let sources = Self::names_in(cx, &right);
+                    flows.push(Flow {
+                        dest,
+                        sources,
+                        keeps_own: op.kind() != "=",
+                        node,
+                    });
+                }
+                "init_declarator" => {
+                    let (Some(declarator), Some(value)) = (
+                        node.child_by_field_name("declarator"),
+                        node.child_by_field_name("value"),
+                    ) else {
+                        continue;
+                    };
+                    if declarator.kind() != "identifier" {
+                        continue;
+                    }
+                    let sources = Self::names_in(cx, &value);
+                    flows.push(Flow {
+                        dest: ObjectKey {
+                            root: declarator.id(),
+                            members: Vec::new(),
+                        },
+                        sources,
+                        keeps_own: false,
+                        node,
+                    });
+                }
+                _ => {
+                    for arg in call_args(&node) {
+                        let arg = strip_parens(&arg);
+                        if !is_address_of(&arg, cx.source) {
+                            continue;
+                        }
+                        let Some(operand) = arg.child_by_field_name("argument") else {
+                            continue;
+                        };
+                        if operand.kind() != "identifier" {
+                            continue;
+                        }
+                        if let Some(dest) = cx.resolve(&operand).map(|r| r.key) {
+                            flows.push(Flow {
+                                dest,
+                                sources: Vec::new(),
+                                keeps_own: false,
+                                node,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        flows.sort_by_key(|f| f.node.start_byte());
+        flows
+    }
+
+    /// Whether the value `load` put in `receiver` can still be, through
+    /// locals, in what `store` writes from `value`.
+    fn carried<'a>(
+        flows: &[Flow<'a>],
+        load: &Node,
+        receiver: &ObjectKey,
+        store: &Node,
+        value_names: &[ObjectKey],
+    ) -> bool {
+        let mut carriers = vec![receiver.clone()];
+        for flow in flows {
+            let at = flow.node.start_byte();
+            if at < load.end_byte() || at >= store.start_byte() {
+                continue;
+            }
+            let from_carrier = flow.sources.iter().any(|s| carriers.contains(s));
+            let dest_carries = carriers.contains(&flow.dest);
+            if from_carrier && !dest_carries {
+                carriers.push(flow.dest.clone());
+            } else if dest_carries
+                && !from_carrier
+                && !flow.keeps_own
+                && runs_before_reaching(&flow.node, store)
+            {
+                carriers.retain(|c| *c != flow.dest);
+            }
+        }
+        value_names.iter().any(|n| carriers.contains(n))
+    }
+
+    /// CERT's split-statement form: a load whose value, through locals, a
+    /// later store of the same object writes. A presumption, reported for
+    /// review. A load and a store in the same full expression are the
+    /// expression form's.
     fn check_split_statements<'a>(
         &self,
         cx: &mut FileCx<'a, '_>,
@@ -541,7 +1100,7 @@ impl Con40C {
     ) {
         let calls = query::find_descendants_of_kind(*func, "call_expression");
         // (object, load call, the local its value went to)
-        let mut loads: Vec<(ObjectKey, Node<'a>, Option<ObjectKey>)> = Vec::new();
+        let mut loads: Vec<(ObjectKey, Node<'a>, ObjectKey)> = Vec::new();
         for call in &calls {
             let Some(name) = callee_name(call, cx.source) else {
                 continue;
@@ -552,37 +1111,14 @@ impl Con40C {
             let Some(object) = call_args(call).first().and_then(|a| cx.pointed_object(a)) else {
                 continue;
             };
-            let receiver = Self::receiver(cx, call);
-            loads.push((object, *call, receiver));
+            if let Some(receiver) = Self::receiver(cx, call) {
+                loads.push((object, *call, receiver));
+            }
         }
         if loads.is_empty() {
             return;
         }
-        // Plain assignments that give a local a value not computed from its
-        // own: past one of these, the local no longer holds what was loaded.
-        let mut overwrites: Vec<(ObjectKey, usize)> = Vec::new();
-        for assignment in query::find_descendants_of_kind(*func, "assignment_expression") {
-            let (Some(left), Some(op), Some(right)) = (
-                assignment.child_by_field_name("left"),
-                assignment.child_by_field_name("operator"),
-                assignment.child_by_field_name("right"),
-            ) else {
-                continue;
-            };
-            if left.kind() != "identifier" || op.kind() != "=" {
-                continue;
-            }
-            let Some(key) = cx.resolve(&left).map(|r| r.key) else {
-                continue;
-            };
-            let names_itself = query::find_descendants_of_kind(right, "identifier")
-                .iter()
-                .chain(std::iter::once(&right).filter(|r| r.kind() == "identifier"))
-                .any(|id| cx.resolve(id).is_some_and(|r| r.key == key));
-            if !names_itself {
-                overwrites.push((key, assignment.start_byte()));
-            }
-        }
+        let flows = Self::flows(cx, func);
         let mut reported = HashSet::new();
         for call in &calls {
             let Some(name) = callee_name(call, cx.source) else {
@@ -598,31 +1134,17 @@ impl Con40C {
             let Some(object) = cx.pointed_object(target) else {
                 continue;
             };
-            let value_names: Vec<ObjectKey> = query::find_descendants_of_kind(*value, "identifier")
-                .iter()
-                .chain(std::iter::once(value).filter(|v| v.kind() == "identifier"))
-                .filter_map(|id| cx.resolve(id).map(|r| r.key))
-                .collect();
+            let value_names = Self::names_in(cx, value);
             for (loaded, load, receiver) in &loads {
-                if *loaded != object {
+                if *loaded != object
+                    || load.end_byte() > call.start_byte()
+                    || exclusive_arms(load, call)
+                    || !Self::carried(&flows, load, receiver, call, &value_names)
+                    || !reported.insert(load.id())
+                {
                     continue;
                 }
-                let inside =
-                    load.start_byte() >= value.start_byte() && load.end_byte() <= value.end_byte();
-                let through_local = load.end_byte() <= call.start_byte()
-                    && receiver.as_ref().is_some_and(|r| {
-                        value_names.contains(r)
-                            && !overwrites.iter().any(|(key, at)| {
-                                key == r && *at >= load.end_byte() && *at < call.start_byte()
-                            })
-                    });
-                if !(inside || through_local) || !reported.insert(load.id()) {
-                    continue;
-                }
-                let object_text: String = get_node_text(target, cx.source)
-                    .trim_start_matches('&')
-                    .split_whitespace()
-                    .collect();
+                let object_text = object_text(target, cx.source);
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     line: load.start_position().row + 1,
@@ -642,6 +1164,39 @@ impl Con40C {
             }
         }
     }
+}
+
+/// `_Atomic(T) x;` or `_Atomic(T) x = v;` with no storage class, which the
+/// grammar reads as an `ERROR` holding the `_Atomic` and then an expression
+/// statement casting `x` to `T`: the name's node.
+fn misread_atomic_declaration<'a>(error: &Node<'a>, source: &str) -> Option<Node<'a>> {
+    let mut named = error.named_child_nodes();
+    let only = named.next()?;
+    if named.next().is_some()
+        || only.kind() != "type_qualifier"
+        || get_node_text(&only, source) != "_Atomic"
+    {
+        return None;
+    }
+    let statement = error.next_named_sibling()?;
+    if statement.kind() != "expression_statement" {
+        return None;
+    }
+    let cast = statement.named_child(0)?;
+    if cast.kind() != "cast_expression"
+        || !source
+            .get(error.end_byte()..cast.start_byte())
+            .is_some_and(|gap| gap.trim().is_empty())
+    {
+        return None;
+    }
+    let value = cast.child_by_field_name("value")?;
+    let ident = match value.kind() {
+        "identifier" => value,
+        "assignment_expression" => value.child_by_field_name("left")?,
+        _ => return None,
+    };
+    (ident.kind() == "identifier").then_some(ident)
 }
 
 impl CertRule for Con40C {
@@ -677,7 +1232,7 @@ impl CertRule for Con40C {
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         let mut cx = self.file_cx(node, source);
-        if !cx.candidate_names.is_empty() {
+        if !cx.candidate_names.is_empty() || source.contains("atomic_") {
             self.check_expressions(&mut cx, node, violations);
         }
         if source.contains("atomic_store") {
