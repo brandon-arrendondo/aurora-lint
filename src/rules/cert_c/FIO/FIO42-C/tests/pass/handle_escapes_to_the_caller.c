@@ -19,6 +19,8 @@ struct conn {
 
 FILE *log_file;
 
+void stream_adopt(FILE **slot);
+
 void conn_keep(struct conn *c, FILE *f)
 {
     c->f = f;
@@ -99,9 +101,39 @@ void open_in_an_initializer(struct conn *out, const char *path)
     *out = c;
 }
 
+void open_address_handed_over(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    stream_adopt(&f);
+}
+
+union stream_slot {
+    FILE *in;
+    FILE *out;
+};
+
+union stream_slot open_returned_inside_a_local_union(const char *path)
+{
+    union stream_slot slot;
+    FILE *f = fopen(path, "r");
+    slot.in = f;
+    return slot;
+}
+
 void open_closed_through_a_copy(const char *path)
 {
     FILE *f = fopen(path, "r");
     FILE *g = f;
     fclose(g);
+}
+
+void open_closed_through_a_pointer_to_a_local(const char *path)
+{
+    FILE *f;
+    FILE **slot = &f;
+    {
+        FILE *opened = fopen(path, "r");
+        *slot = opened;
+    }
+    fclose(*slot);
 }

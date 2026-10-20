@@ -114,6 +114,8 @@ struct FileResourceTracker<'t> {
     // Plain copies between locals (`FILE *out = f;`): a close or escape of
     // either name is one of the handle.
     aliases: HashMap<ObjectKey, ObjectKey>,
+    // Local pointers that only ever hold a local's address, to that local.
+    pointers: HashMap<ObjectKey, ObjectKey>,
 }
 
 #[derive(Clone)]
@@ -141,6 +143,7 @@ impl<'t> FileResourceTracker<'t> {
             resources: Vec::new(),
             released: HashSet::new(),
             aliases: HashMap::new(),
+            pointers: HashMap::new(),
         }
     }
 
@@ -168,6 +171,7 @@ impl<'t> FileResourceTracker<'t> {
         self.resources.clear();
         self.released.clear();
         self.aliases.clear();
+        self.pointers.clear();
 
         // Get function body
         if let Some(body) = func_node.child_by_field_name("body") {
@@ -294,6 +298,26 @@ impl<'t> FileResourceTracker<'t> {
                 }
                 "identifier" => {
                     if let Some(key) = self.local_object(func, &e, source) {
+                        // The pointer reaches the local it points to.
+                        if let Some(pointee) = self.pointers.get(&key) {
+                            if self.is_tracked(pointee) {
+                                held.push(pointee.clone());
+                            }
+                        }
+                        if self.is_tracked(&key) {
+                            held.push(key);
+                        }
+                    }
+                }
+                "field_expression" => {
+                    if let Some(key) = self.member_owner(func, &e, source) {
+                        if self.is_tracked(&key) {
+                            held.push(key);
+                        }
+                    }
+                }
+                "pointer_expression" => {
+                    if let Some(key) = self.pointee(func, &e, source) {
                         if self.is_tracked(&key) {
                             held.push(key);
                         }
@@ -320,6 +344,110 @@ impl<'t> FileResourceTracker<'t> {
         key
     }
 
+    /// Whether a handle of kind `kind` was opened into `key`'s object or a
+    /// copy of it.
+    fn holds_kind(&self, key: &ObjectKey, kind: &ResourceType) -> bool {
+        let root = self.alias_root(key);
+        self.resources
+            .iter()
+            .any(|(k, info)| info.resource_type == *kind && self.alias_root(k) == root)
+    }
+
+    /// The local an assignment or initializer copies a handle into, or `None`
+    /// when the destination outlives the call. A store through a pointer that
+    /// only ever holds a local's address lands in that local.
+    fn copy_target(&self, func: &Node, target: &Node<'t>, source: &str) -> Option<ObjectKey> {
+        match target.kind() {
+            "identifier" => self.local_object(func, target, source),
+            "field_expression" => self.member_owner(func, target, source),
+            _ => self.pointee(func, target, source),
+        }
+    }
+
+    /// The local aggregate a `.` member access lies inside (`u.first`,
+    /// `s.in.fp`): a handle stored there is still this function's, the whole
+    /// aggregate standing for it. Through `->` the member is in storage the
+    /// local only points to.
+    fn member_owner(&self, func: &Node, expr: &Node<'t>, source: &str) -> Option<ObjectKey> {
+        let mut e = *expr;
+        while e.kind() == "field_expression" {
+            let dot = e
+                .child_by_field_name("operator")
+                .map(|o| get_node_text(&o, source));
+            if dot != Some(".") {
+                return None;
+            }
+            e = unwrap_held(&e.child_by_field_name("argument")?);
+        }
+        (e.kind() == "identifier")
+            .then(|| self.local_object(func, &e, source))
+            .flatten()
+    }
+
+    /// The local `*p` designates when `p` is in [`Self::pointers`].
+    fn pointee(&self, func: &Node, expr: &Node<'t>, source: &str) -> Option<ObjectKey> {
+        if expr.kind() != "pointer_expression"
+            || expr
+                .child_by_field_name("operator")
+                .is_none_or(|o| get_node_text(&o, source) != "*")
+        {
+            return None;
+        }
+        let pointer = unwrap_held(&expr.child_by_field_name("argument")?);
+        if pointer.kind() != "identifier" {
+            return None;
+        }
+        let key = self.local_object(func, &pointer, source)?;
+        self.pointers.get(&key).cloned()
+    }
+
+    /// Local pointers set once, where they are declared, to the address of
+    /// another local (`FILE **pp = &f;`) and never assigned again: `*pp` is
+    /// that local, and taking its address there hands it to nobody. Returns
+    /// the `&local` expressions those declarations hold.
+    fn collect_pointers(&mut self, func: &Node, body: &Node<'t>, source: &str) -> HashSet<usize> {
+        let mut assigned = HashSet::new();
+        for a in
+            query::find_descendants_of_kinds(*body, &["assignment_expression", "update_expression"])
+        {
+            let left = a
+                .child_by_field_name("left")
+                .or_else(|| a.child_by_field_name("argument"));
+            if let Some(left) = left.map(|l| unwrap_held(&l)) {
+                if left.kind() == "identifier" {
+                    assigned.extend(self.local_object(func, &left, source));
+                }
+            }
+        }
+        let mut addresses = HashSet::new();
+        for init in query::find_descendants_of_kind(*body, "init_declarator") {
+            let Some(pointer) = init
+                .child_by_field_name("declarator")
+                .and_then(|d| declared_identifier(&d))
+            else {
+                continue;
+            };
+            let Some(value) = init.child_by_field_name("value").map(|v| unwrap_held(&v)) else {
+                continue;
+            };
+            let Some(pointee) = address_of_identifier(&value, source) else {
+                continue;
+            };
+            let (Some(pointer_key), Some(pointee_key)) = (
+                self.local_object(func, &pointer, source),
+                self.local_object(func, &pointee, source),
+            ) else {
+                continue;
+            };
+            if assigned.contains(&pointer_key) {
+                continue;
+            }
+            self.pointers.insert(pointer_key, pointee_key);
+            addresses.insert(value.id());
+        }
+        addresses
+    }
+
     fn release(&mut self, key: &ObjectKey) {
         self.released.insert(self.alias_root(key));
     }
@@ -343,6 +471,7 @@ impl<'t> FileResourceTracker<'t> {
         source: &str,
         summaries: &(impl SummaryLookup + ?Sized),
     ) {
+        let local_addresses = self.collect_pointers(func, body, source);
         // Copies first, in source order, so a close of the copy credits the
         // original wherever it is written.
         for n in
@@ -375,9 +504,7 @@ impl<'t> FileResourceTracker<'t> {
             if held.is_empty() {
                 continue;
             }
-            let copy = target
-                .filter(|t| t.kind() == "identifier")
-                .and_then(|t| self.local_object(func, &t, source));
+            let copy = target.and_then(|t| self.copy_target(func, &t, source));
             for key in held {
                 match &copy {
                     Some(copy) => self.alias(copy.clone(), &key),
@@ -403,8 +530,9 @@ impl<'t> FileResourceTracker<'t> {
                 }
                 // `&f` lets whatever receives the address close or keep it.
                 "pointer_expression" => {
-                    if n.child_by_field_name("operator")
-                        .is_some_and(|o| get_node_text(&o, source) == "&")
+                    if !local_addresses.contains(&n.id())
+                        && n.child_by_field_name("operator")
+                            .is_some_and(|o| get_node_text(&o, source) == "&")
                     {
                         if let Some(arg) = n.child_by_field_name("argument") {
                             for key in self.held_objects(func, &arg, source) {
@@ -435,7 +563,16 @@ impl<'t> FileResourceTracker<'t> {
             return;
         };
         let callee_name = get_node_text(&function, source).trim();
-        let closer = matches!(callee_name, "fclose" | "close" | "CloseHandle");
+        // Each close releases only its own kind of handle: `_close((int)fp)`
+        // or `CloseHandle((HANDLE)fp)` leaves the stream open (CERT asks for
+        // the matching close).
+        let closes = match callee_name {
+            "fclose" => Some(ResourceType::FilePointer),
+            "close" | "_close" => Some(ResourceType::FileDescriptor),
+            "CloseHandle" => Some(ResourceType::FileHandle),
+            _ => None,
+        };
+        let closer = closes.is_some();
         // A release credited here stops a leak report, so every definition
         // this call can link with must close or keep the handle.
         let summary = summaries
@@ -452,12 +589,13 @@ impl<'t> FileResourceTracker<'t> {
         let mut cursor = arguments.walk();
         for (idx, arg) in arguments.named_children(&mut cursor).enumerate() {
             let releases = unknown
-                || (closer && idx == 0)
-                || summary.as_ref().is_some_and(|s| {
-                    s.closes_params.contains(&idx) || s.stores_params.contains(&idx)
-                });
-            if releases {
-                for key in self.held_objects(func, &arg, source) {
+                || (!closer
+                    && summary.as_ref().is_some_and(|s| {
+                        s.closes_params.contains(&idx) || s.stores_params.contains(&idx)
+                    }));
+            for key in self.held_objects(func, &arg, source) {
+                let closed = idx == 0 && closes.as_ref().is_some_and(|k| self.holds_kind(&key, k));
+                if releases || closed {
                     self.release(&key);
                 }
             }
@@ -710,4 +848,17 @@ fn failure_test(cond: &Node, var: &str, source: &str) -> Option<bool> {
         }
         _ => None,
     }
+}
+
+/// `x` when `expr` is `&x`.
+fn address_of_identifier<'t>(expr: &Node<'t>, source: &str) -> Option<Node<'t>> {
+    if expr.kind() != "pointer_expression"
+        || expr
+            .child_by_field_name("operator")
+            .is_none_or(|o| get_node_text(&o, source) != "&")
+    {
+        return None;
+    }
+    let operand = unwrap_held(&expr.child_by_field_name("argument")?);
+    (operand.kind() == "identifier").then_some(operand)
 }
