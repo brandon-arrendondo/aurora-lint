@@ -1074,8 +1074,13 @@ impl Flp03C {
         violations: &mut Vec<RuleViolation>,
         env: &TypeEnv,
     ) {
-        // Check for floating-point division without error checking
-        for binary_expr in query::find_descendants_of_kind(*node, "binary_expression") {
+        // Check for floating-point division without error checking.
+        // Innermost first: each operator's operands are then typed already
+        // (`expr_type` remembers them per node), so typing a sum thousands
+        // of terms deep recurses one level rather than through every term.
+        let mut divisions = query::find_descendants_of_kind(*node, "binary_expression");
+        divisions.reverse();
+        for binary_expr in divisions {
             self.check_fp_division(&binary_expr, source, violations, env);
         }
     }
