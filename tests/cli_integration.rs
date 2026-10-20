@@ -127,6 +127,70 @@ fn con07_judges_each_pointer_of_one_declaration_by_its_own_pointees() {
 }
 
 #[test]
+fn fio21_does_not_report_an_open_of_a_buffer_overwritten_after_its_temporary_name() {
+    // `tmpnam(buf)` itself is reported (form a); the opens are judged by
+    // what `buf` holds when they run. After `strcpy`/`snprintf` that is no
+    // longer the generated name; an overwrite some path skips, or a call
+    // that only reads the buffer (`puts`), leaves it reaching the open.
+    let src_text = "#include <fcntl.h>\n\
+                    #include <stdio.h>\n\
+                    #include <string.h>\n\
+                    void copied(void) {\n\
+                    \x20   char buf[64];\n\
+                    \x20   tmpnam(buf);\n\
+                    \x20   strcpy(buf, \"/home/u/out\");\n\
+                    \x20   int fd = open(buf, O_WRONLY | O_CREAT, 0600);\n\
+                    \x20   (void)fd;\n\
+                    }\n\
+                    void printed(int n) {\n\
+                    \x20   char buf[64];\n\
+                    \x20   tmpnam(buf);\n\
+                    \x20   snprintf(buf, sizeof buf, \"/home/u/out%d\", n);\n\
+                    \x20   FILE *fp = fopen(buf, \"w\");\n\
+                    \x20   (void)fp;\n\
+                    }\n\
+                    void copied_on_one_path(int c) {\n\
+                    \x20   char buf[64];\n\
+                    \x20   tmpnam(buf);\n\
+                    \x20   if (c)\n\
+                    \x20       strcpy(buf, \"/home/u/out\");\n\
+                    \x20   int fd = open(buf, O_WRONLY | O_CREAT, 0600);\n\
+                    \x20   (void)fd;\n\
+                    }\n\
+                    void only_read(void) {\n\
+                    \x20   char buf[64];\n\
+                    \x20   tmpnam(buf);\n\
+                    \x20   puts(buf);\n\
+                    \x20   int fd = open(buf, O_WRONLY | O_CREAT, 0600);\n\
+                    \x20   (void)fd;\n\
+                    }\n";
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("overwritten.c");
+    std::fs::write(&src, src_text).unwrap();
+    for preset in ["default", "strict"] {
+        let out = dir.path().join(format!("{preset}.json"));
+        let (code, _, stderr) = run_aurora_lint(&[
+            src.to_str().unwrap(),
+            "--rules",
+            "FIO21-C",
+            "--profile",
+            preset,
+            "-e",
+            out.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 0, "{preset}: {stderr}");
+        let violations: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        let mut lines: Vec<u64> = violations
+            .iter()
+            .map(|v| v["line"].as_u64().unwrap())
+            .collect();
+        lines.sort_unstable();
+        assert_eq!(lines, [6, 13, 20, 23, 28, 30], "{preset}: {violations:?}");
+    }
+}
+
+#[test]
 fn a_finding_names_what_it_names_in_one_order_in_every_run() {
     // Each process seeds its hash sets differently, so only separate runs
     // show an order that comes from iterating one: in the names a message

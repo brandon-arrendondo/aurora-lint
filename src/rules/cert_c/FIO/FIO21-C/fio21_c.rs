@@ -31,7 +31,8 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval;
-use crate::analyze::context::ProjectContext;
+use crate::analyze::context::{ProjectContext, ScopedTable};
+use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::noreturn::{callee_spelling, library_names_redefined_among};
 use crate::analyze::side_effects::{
@@ -40,8 +41,10 @@ use crate::analyze::side_effects::{
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::{get_node_text, ScopeDeclarations};
+use crate::utility::cert_c::call_roles::writes_through_arg;
 use crate::utility::cert_c::guard_dominance::{dominating_write, Dominating, WriteIndex};
 use crate::utility::cert_c::node_children::NodeChildren;
+use crate::utility::cert_c::std_functions::is_known_standard_function;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -65,6 +68,7 @@ pub struct Fio21C {
     /// reaches in some build.
     project_alias_alternatives: RefCell<Arc<HashMap<String, Vec<String>>>>,
     project_function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
+    function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     settings: RefCell<Arc<AnalysisSettings>>,
 }
 
@@ -74,6 +78,7 @@ impl Fio21C {
             project_aliases: RefCell::new(Arc::new(HashMap::new())),
             project_alias_alternatives: RefCell::new(Arc::new(HashMap::new())),
             project_function_macros: RefCell::new(Arc::new(HashMap::new())),
+            function_summaries: RefCell::new(ScopedTable::default()),
             settings: RefCell::new(Arc::new(AnalysisSettings::default())),
         }
     }
@@ -110,6 +115,7 @@ impl CertRule for Fio21C {
         *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
         *self.project_alias_alternatives.borrow_mut() = context.macro_alias_alternatives.clone();
         *self.project_function_macros.borrow_mut() = context.function_macros.clone();
+        *self.function_summaries.borrow_mut() = context.function_summaries.clone();
     }
 
     fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
@@ -143,6 +149,7 @@ impl CertRule for Fio21C {
             tmpfile_reported: !(settings.flag(TMPFILE_OPTION) && settings.posix_holds_project()),
             reaches: RefCell::new(HashMap::new()),
             writes: RefCell::new(HashMap::new()),
+            summaries: self.function_summaries.borrow().clone(),
         };
 
         let mut violations = Vec::new();
@@ -308,6 +315,9 @@ struct FileContext<'f> {
     reaches: RefCell<HashMap<String, bool>>,
     /// The writes in each function body, by the body's start byte.
     writes: RefCell<HashMap<usize, Rc<FunctionWrites>>>,
+    /// The project's function summaries, for what a callee writes through
+    /// its parameters.
+    summaries: ScopedTable<FunctionSummary>,
 }
 
 /// One function body's writes.
@@ -617,10 +627,17 @@ impl<'f> FileContext<'f> {
             return None;
         }
         let found = dominating_write(name, ident, source, &writes.index, |stmt| {
-            fills
-                .then(|| self.fill_of(stmt, name, source))
-                .flatten()
-                .map(|from| Some(Definition::Filled(from)))
+            if !fills {
+                return None;
+            }
+            if let Some(from) = self.fill_of(stmt, name, source) {
+                return Some(Some(Definition::Filled(from)));
+            }
+            // Another call that may write through the buffer
+            // (`strcpy(buf, ...)`, `snprintf(buf, ...)`) leaves what it holds
+            // past that statement unknown; one that only reads it
+            // (`puts(buf)`) does not.
+            self.writes_through(stmt, name, source).then_some(None)
         })?;
         Some(match found {
             Dominating::Assignment(a) => Definition::Value(a.value),
@@ -786,12 +803,86 @@ impl<'f> FileContext<'f> {
         }
     }
 
+    /// Whether `stmt` hands `var`, as a bare identifier, to a call that may
+    /// write through it: anywhere in an expression statement or declaration,
+    /// or in an `if`'s condition. A function the project defines writes
+    /// through a parameter its summary says it modifies; a library function
+    /// through an argument [`writes_through_arg`] names (and `memset`'s
+    /// destination); any other callee, which the scan cannot read, may.
+    fn writes_through(&self, stmt: &Node, var: &str, source: &str) -> bool {
+        let scope = match stmt.kind() {
+            "expression_statement" | "declaration" => Some(*stmt),
+            "if_statement" => stmt.child_by_field_name("condition"),
+            _ => None,
+        };
+        let Some(scope) = scope else {
+            return false;
+        };
+        let mut stack = vec![scope];
+        while let Some(node) = stack.pop() {
+            stack.extend(node.named_child_nodes());
+            if node.kind() != "call_expression" {
+                continue;
+            }
+            let Some(args) = node.child_by_field_name("arguments") else {
+                continue;
+            };
+            let Some(idx) = args
+                .named_child_nodes()
+                .filter(|a| a.kind() != "comment")
+                .position(|a| {
+                    let a = strip(a);
+                    a.kind() == "identifier" && get_node_text(&a, source).trim() == var
+                })
+            else {
+                continue;
+            };
+            let callee = node
+                .child_by_field_name("function")
+                .map(strip)
+                .filter(|f| f.kind() == "identifier")
+                .map(|f| get_node_text(&f, source).trim().to_string());
+            let writes = match callee {
+                Some(name) => match self.summaries.get(&name) {
+                    Some(summary) => summary
+                        .at(source, node.start_position().row + 1)
+                        .modifies_params
+                        .contains(&idx),
+                    None if is_known_standard_function(&name) => {
+                        writes_through_arg(&name, idx) || (name == "memset" && idx == 0)
+                    }
+                    None => true,
+                },
+                None => true,
+            };
+            if writes {
+                return true;
+            }
+        }
+        false
+    }
+
     /// The form (a) function a call names, when it produces a file name.
     fn temp_name_call(&self, call: &Node, source: &str) -> Option<&'static str> {
         let (function, spelling) = callee_spelling(call, source)?;
         match self.library_callee(&spelling)? {
-            Callee::TempName(n) if !designates_object(&function, source) => Some(n),
+            Callee::TempName(n) if !self.callee_designates_object(&function, source) => Some(n),
             _ => None,
+        }
+    }
+
+    /// [`designates_object`] through the file's declaration index when
+    /// `ident` is in the file's tree, which a function of thousands of form
+    /// (a) calls asks once per call; an expansion's own tree resolves the
+    /// plain way.
+    fn callee_designates_object(&self, ident: &Node, source: &str) -> bool {
+        let own = self
+            .declarations
+            .nodes()
+            .and_then(|nodes| nodes.row(ident).map(|row| nodes.node(row)));
+        match own {
+            Some(own) => designates_object_in(&self.root, &own, source, &self.declarations),
+            None => designates_object(ident, source),
         }
     }
 }
