@@ -993,7 +993,7 @@ impl RuleRegistry {
         registry.register(Box::new(env02_c::Env02C::new()));
         registry.register(Box::new(env03_c::Env03C::new()));
         registry.register(Box::new(err07_c::Err07C));
-        registry.register(Box::new(err30_c::Err30C));
+        registry.register(Box::new(err30_c::Err30C::default()));
         registry.register(Box::new(err32_c::Err32C));
         registry.register(Box::new(err33_c::Err33C::new()));
         registry.register(Box::new(err34_c::Err34C));

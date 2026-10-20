@@ -21,16 +21,27 @@
 //! - while ((c = getc()) != EOF) where c is int
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::const_eval;
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::Node;
 
-pub struct Fio34C;
+#[derive(Default)]
+pub struct Fio34C {
+    /// The project's `#define ALIAS target` map, from the prescan.
+    project_aliases: RefCell<Arc<HashMap<String, String>>>,
+    /// That map merged with the scanned file's own aliases, for this scan.
+    aliases: RefCell<HashMap<String, String>>,
+}
 
 impl Fio34C {
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 }
 
@@ -51,6 +62,10 @@ impl CertRule for Fio34C {
         "FIO34-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
+    }
+
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.check_node(node, source, violations);
     }
@@ -58,6 +73,8 @@ impl CertRule for Fio34C {
 
 impl Fio34C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        *self.aliases.borrow_mut() =
+            const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
         let matched = query::find_descendants_of_kinds(
             *node,
             &[
@@ -279,11 +296,16 @@ impl Fio34C {
     }
 
     /// Whether `node` contains the `EOF` or `WEOF` macro as an identifier
-    /// token, not merely a name containing the spelling (`AVERROR_EOF`,
-    /// `Z_STREAM_EOF`, `is_eof`).
+    /// token, or a project alias of one (`#define MY_EOF EOF`), not merely a
+    /// name containing the spelling (`AVERROR_EOF`, `Z_STREAM_EOF`, `is_eof`).
     fn names_eof(&self, node: &Node, source: &str) -> bool {
+        let aliases = self.aliases.borrow();
         query::find_first_descendant(*node, |n| {
-            n.kind() == "identifier" && matches!(get_node_text(&n, source), "EOF" | "WEOF")
+            n.kind() == "identifier"
+                && matches!(
+                    const_eval::resolve_macro_alias(&aliases, get_node_text(&n, source)),
+                    "EOF" | "WEOF"
+                )
         })
         .is_some()
     }

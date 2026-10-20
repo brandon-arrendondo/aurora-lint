@@ -26,12 +26,23 @@
 //! - In-band: `errno = 0; val = strtoul(str, &end, 10); if (errno == ERANGE) { ... }`
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::const_eval;
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::Node;
 
-pub struct Err30C;
+#[derive(Default)]
+pub struct Err30C {
+    /// The project's `#define ALIAS target` map, from the prescan.
+    project_aliases: RefCell<Arc<HashMap<String, String>>>,
+    /// That map merged with the scanned file's own aliases, for this scan.
+    aliases: RefCell<HashMap<String, String>>,
+}
 
 impl CertRule for Err30C {
     fn rule_id(&self) -> &'static str {
@@ -50,6 +61,10 @@ impl CertRule for Err30C {
         "ERR30-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
+    }
+
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.check_node(node, source, violations);
     }
@@ -57,6 +72,8 @@ impl CertRule for Err30C {
 
 impl Err30C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        *self.aliases.borrow_mut() =
+            const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
         for n in query::find_descendants_of_kinds(*node, &["if_statement", "call_expression"]) {
             match n.kind() {
                 // Check for errno usage in if conditions
@@ -113,10 +130,13 @@ impl Err30C {
         }
     }
 
-    /// Whether `node` contains an `errno` identifier token.
+    /// Whether `node` contains an `errno` identifier token, or a project
+    /// alias of it (`#define ERRNO errno`).
     fn mentions_errno(&self, node: &Node, source: &str) -> bool {
+        let aliases = self.aliases.borrow();
         query::find_first_descendant(*node, |n| {
-            n.kind() == "identifier" && get_node_text(&n, source) == "errno"
+            n.kind() == "identifier"
+                && const_eval::resolve_macro_alias(&aliases, get_node_text(&n, source)) == "errno"
         })
         .is_some()
     }
