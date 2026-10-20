@@ -130,7 +130,8 @@ fn con07_judges_each_pointer_of_one_declaration_by_its_own_pointees() {
 fn fio21_does_not_report_an_open_of_a_buffer_overwritten_after_its_temporary_name() {
     // `tmpnam(buf)` itself is reported (form a); the opens are judged by
     // what `buf` holds when they run. After `strcpy`/`snprintf` that is no
-    // longer the generated name; an overwrite some path skips, or a call
+    // longer the generated name, nor after `getcwd`/`realpath` fill it; an
+    // overwrite some path skips, or a call
     // that only reads the buffer (`puts`), leaves it reaching the open.
     let src_text = "#include <fcntl.h>\n\
                     #include <stdio.h>\n\
@@ -163,6 +164,20 @@ fn fio21_does_not_report_an_open_of_a_buffer_overwritten_after_its_temporary_nam
                     \x20   puts(buf);\n\
                     \x20   int fd = open(buf, O_WRONLY | O_CREAT, 0600);\n\
                     \x20   (void)fd;\n\
+                    }\n\
+                    void cwd(void) {\n\
+                    \x20   char buf[64];\n\
+                    \x20   tmpnam(buf);\n\
+                    \x20   getcwd(buf, sizeof buf);\n\
+                    \x20   int fd = open(buf, O_WRONLY | O_CREAT, 0600);\n\
+                    \x20   (void)fd;\n\
+                    }\n\
+                    void resolved(const char *p) {\n\
+                    \x20   char buf[4096];\n\
+                    \x20   tmpnam(buf);\n\
+                    \x20   realpath(p, buf);\n\
+                    \x20   FILE *fp = fopen(buf, \"w\");\n\
+                    \x20   (void)fp;\n\
                     }\n";
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("overwritten.c");
@@ -186,7 +201,11 @@ fn fio21_does_not_report_an_open_of_a_buffer_overwritten_after_its_temporary_nam
             .map(|v| v["line"].as_u64().unwrap())
             .collect();
         lines.sort_unstable();
-        assert_eq!(lines, [6, 13, 20, 23, 28, 30], "{preset}: {violations:?}");
+        assert_eq!(
+            lines,
+            [6, 13, 20, 23, 28, 30, 35, 42],
+            "{preset}: {violations:?}"
+        );
     }
 }
 

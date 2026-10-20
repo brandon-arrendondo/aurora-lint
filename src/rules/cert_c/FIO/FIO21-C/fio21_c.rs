@@ -62,6 +62,26 @@ const MAX_MACRO_DEPTH: usize = 4;
 /// The shared directories a literal path may begin with.
 const SHARED_DIRECTORIES: &[&str] = &["/tmp/", "/var/tmp/"];
 
+/// Library functions that write a name or string into a buffer argument
+/// [`writes_through_arg`] does not list, as (function, argument index).
+const FILLS_BUFFER: &[(&str, usize)] = &[
+    ("getcwd", 0),
+    ("getwd", 0),
+    ("realpath", 1),
+    ("readlink", 1),
+    ("readlinkat", 2),
+    ("strftime", 0),
+    ("wcsftime", 0),
+    ("confstr", 1),
+    ("gethostname", 0),
+    ("getlogin_r", 0),
+    ("ttyname_r", 1),
+    ("strerror_r", 1),
+    ("mkstemp", 0),
+    ("mkstemps", 0),
+    ("mkdtemp", 0),
+];
+
 pub struct Fio21C {
     project_aliases: RefCell<Arc<HashMap<String, String>>>,
     /// Every live target of each project alias, for the names an alias
@@ -807,8 +827,8 @@ impl<'f> FileContext<'f> {
     /// write through it: anywhere in an expression statement or declaration,
     /// or in an `if`'s condition. A function the project defines writes
     /// through a parameter its summary says it modifies; a library function
-    /// through an argument [`writes_through_arg`] names (and `memset`'s
-    /// destination); any other callee, which the scan cannot read, may.
+    /// through an argument [`writes_through_arg`] or [`FILLS_BUFFER`] names
+    /// (and `memset`'s destination); any other callee, which the scan cannot read, may.
     fn writes_through(&self, stmt: &Node, var: &str, source: &str) -> bool {
         let scope = match stmt.kind() {
             "expression_statement" | "declaration" => Some(*stmt),
@@ -849,7 +869,9 @@ impl<'f> FileContext<'f> {
                         .modifies_params
                         .contains(&idx),
                     None if is_known_standard_function(&name) => {
-                        writes_through_arg(&name, idx) || (name == "memset" && idx == 0)
+                        writes_through_arg(&name, idx)
+                            || FILLS_BUFFER.contains(&(name.as_str(), idx))
+                            || (name == "memset" && idx == 0)
                     }
                     None => true,
                 },
