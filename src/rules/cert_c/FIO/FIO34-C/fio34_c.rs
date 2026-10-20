@@ -176,10 +176,8 @@ impl Fio34C {
 
     /// Check for direct comparison of getc/fgetc result with EOF
     fn check_comparison(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        let node_text = get_node_text(node, source);
-
         // Look for patterns like: getc(file) == EOF or getc(file) != EOF
-        if node_text.contains("EOF") || node_text.contains("WEOF") {
+        if self.names_eof(node, source) {
             if let Some(operator) = node.child_by_field_name("operator") {
                 let op_text = get_node_text(&operator, source);
                 if op_text == "==" || op_text == "!=" {
@@ -214,8 +212,6 @@ impl Fio34C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        let node_text = get_node_text(node, source);
-
         // Look for assignment within condition
         if node.kind() == "parenthesized_expression" {
             if let Some(inner) = node.child(1) {
@@ -224,7 +220,7 @@ impl Fio34C {
             }
         } else if node.kind() == "binary_expression" {
             // Check for pattern: (c = getc(...)) != EOF where c is char
-            if node_text.contains("EOF") || node_text.contains("WEOF") {
+            if self.names_eof(node, source) {
                 if let Some(left) = node.child_by_field_name("left") {
                     // Need to check if the assignment uses a char variable
                     self.check_assignment_expression_for_char(&left, source, violations, node);
@@ -280,6 +276,16 @@ impl Fio34C {
                 }
             }
         }
+    }
+
+    /// Whether `node` contains the `EOF` or `WEOF` macro as an identifier
+    /// token, not merely a name containing the spelling (`AVERROR_EOF`,
+    /// `Z_STREAM_EOF`, `is_eof`).
+    fn names_eof(&self, node: &Node, source: &str) -> bool {
+        query::find_first_descendant(*node, |n| {
+            n.kind() == "identifier" && matches!(get_node_text(&n, source), "EOF" | "WEOF")
+        })
+        .is_some()
     }
 
     /// Character input functions that read from streams
@@ -621,7 +627,7 @@ impl Fio34C {
             let node_text = get_node_text(&n, source);
 
             // Check for patterns like: (c = getchar()) != EOF or c != EOF
-            if node_text.contains("EOF") || node_text.contains("WEOF") {
+            if self.names_eof(&n, source) {
                 // Also check for character input function calls
                 if node_text.contains("getchar")
                     || node_text.contains("getc")

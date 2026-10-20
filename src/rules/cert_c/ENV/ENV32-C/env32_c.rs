@@ -28,7 +28,8 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declarator};
+use crate::utility::cert_c::declarator_utils::declares_function;
 use crate::utility::cert_c::signal_handlers::RegisteredHandlers;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
@@ -130,7 +131,9 @@ impl Env32C {
             if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
-                if self.is_non_returning_function(&func_name) {
+                if self.is_non_returning_function(&func_name)
+                    && !self.callee_is_declared_object(&function, func_name, source)
+                {
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
                         message: format!(
@@ -152,6 +155,17 @@ impl Env32C {
                 }
             }
         }
+    }
+
+    /// Whether the callee resolves (ADR-0006) to a declaration of an object
+    /// rather than a function: a local, parameter or global named `exit`,
+    /// a function pointer included, is not the library function, whatever
+    /// it is spelled. An unresolved name or a function declaration is still
+    /// taken as the library call.
+    fn callee_is_declared_object(&self, function: &Node, name: &str, source: &str) -> bool {
+        function.kind() == "identifier"
+            && resolve_identifier_declarator(function, name, source)
+                .is_some_and(|(_, declarator)| !declares_function(&declarator))
     }
 
     /// Check if a function prevents normal return

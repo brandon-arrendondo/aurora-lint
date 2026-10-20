@@ -75,10 +75,10 @@ impl Err30C {
     /// Check if errno is examined in an if condition without prior error return value check
     fn check_errno_in_if(&self, if_node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         if let Some(condition) = if_node.child_by_field_name("condition") {
-            let condition_text = get_node_text(&condition, source);
-
-            // Check if condition examines errno
-            if condition_text.contains("errno") {
+            // Check if condition examines errno: the `errno` token itself,
+            // not any identifier that merely contains the spelling
+            // (`my_errno_count`, `last_errno`).
+            if self.mentions_errno(&condition, source) {
                 // Look backwards to find the most recent out-of-band function call
                 if let Some(recent_call) = self.find_recent_outofband_call(if_node, source) {
                     let function_name =
@@ -111,6 +111,14 @@ impl Err30C {
                 }
             }
         }
+    }
+
+    /// Whether `node` contains an `errno` identifier token.
+    fn mentions_errno(&self, node: &Node, source: &str) -> bool {
+        query::find_first_descendant(*node, |n| {
+            n.kind() == "identifier" && get_node_text(&n, source) == "errno"
+        })
+        .is_some()
     }
 
     /// Check if an in-band function is called without errno being reset first

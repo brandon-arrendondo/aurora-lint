@@ -26,6 +26,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::overflow_helpers::contains_word;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -230,11 +231,10 @@ impl Pos39C {
                     if let Some(args) = node.child_by_field_name("arguments") {
                         let args_text = get_node_text(&args, source);
 
-                        // Check if receiving into a multi-byte variable (look for &var pattern)
+                        // Check if receiving into a multi-byte variable (look for &var pattern),
+                        // as a whole token: `&id` is not inside `&idx`.
                         for (var_name, var_type) in multi_byte_vars {
-                            if args_text.contains(&format!("&{}", var_name))
-                                || args_text.contains(&format!("(void *)&{}", var_name))
-                            {
+                            if contains_word(args_text, &format!("&{}", var_name)) {
                                 // Check if this variable has byte order conversion
                                 if !converted_vars.contains(var_name) {
                                     violations.push(RuleViolation {
