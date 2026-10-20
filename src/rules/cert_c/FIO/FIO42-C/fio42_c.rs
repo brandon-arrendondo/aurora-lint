@@ -41,7 +41,11 @@ use crate::analyze::context::ScopedTable;
 use crate::analyze::context::SummaryLookup;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{
+    declaration_has_storage_class, get_node_text, ScopeDeclarations,
+};
+use crate::utility::cert_c::guard_dominance::dominating_conditions_with_branches;
+use crate::utility::cert_c::std_functions::is_known_standard_function;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -88,22 +92,28 @@ impl CertRule for Fio42C {
         let summaries = self.function_summaries.borrow();
 
         // Track file resources across the AST
-        let mut tracker = FileResourceTracker::new();
+        let mut tracker = FileResourceTracker::new(*node);
         tracker.analyze_node(node, source, &summaries, &mut violations);
 
         violations
     }
 }
 
-struct FileResourceTracker {
-    // Track FILE* variables from fopen/freopen
-    file_pointers: HashMap<String, ResourceInfo>,
-    // Track file descriptors from open()
-    file_descriptors: HashMap<String, ResourceInfo>,
-    // Track HANDLEs from CreateFile()
-    file_handles: HashMap<String, ResourceInfo>,
-    // Track which resources have been closed
-    closed_resources: HashSet<String>,
+/// The object a handle is held in: the declaration that binds the name and
+/// the name it binds there (one declaration can declare several).
+type ObjectKey = (usize, String);
+
+struct FileResourceTracker<'t> {
+    root: Node<'t>,
+    declarations: ScopeDeclarations<'t>,
+    // Opened handles in the current function, one per object, in the order
+    // first opened; a later open into the same object takes its position.
+    resources: Vec<(ObjectKey, ResourceInfo)>,
+    // Objects whose handle was closed or left this function's ownership.
+    released: HashSet<ObjectKey>,
+    // Plain copies between locals (`FILE *out = f;`): a close or escape of
+    // either name is one of the handle.
+    aliases: HashMap<ObjectKey, ObjectKey>,
 }
 
 #[derive(Clone)]
@@ -123,19 +133,20 @@ enum ResourceType {
     FileHandle,     // HANDLE from CreateFile()
 }
 
-impl FileResourceTracker {
-    fn new() -> Self {
+impl<'t> FileResourceTracker<'t> {
+    fn new(root: Node<'t>) -> Self {
         Self {
-            file_pointers: HashMap::new(),
-            file_descriptors: HashMap::new(),
-            file_handles: HashMap::new(),
-            closed_resources: HashSet::new(),
+            root,
+            declarations: ScopeDeclarations::indexed(root),
+            resources: Vec::new(),
+            released: HashSet::new(),
+            aliases: HashMap::new(),
         }
     }
 
     fn analyze_node(
         &mut self,
-        node: &Node,
+        node: &Node<'t>,
         source: &str,
         summaries: &(impl SummaryLookup + ?Sized),
         violations: &mut Vec<RuleViolation>,
@@ -148,25 +159,27 @@ impl FileResourceTracker {
 
     fn analyze_function(
         &mut self,
-        func_node: &Node,
+        func_node: &Node<'t>,
         source: &str,
         summaries: &(impl SummaryLookup + ?Sized),
         violations: &mut Vec<RuleViolation>,
     ) {
         // Reset tracking for this function scope
-        self.file_pointers.clear();
-        self.file_descriptors.clear();
-        self.file_handles.clear();
-        self.closed_resources.clear();
+        self.resources.clear();
+        self.released.clear();
+        self.aliases.clear();
 
         // Get function body
         if let Some(body) = func_node.child_by_field_name("body") {
             // Collect all resource allocations
-            self.collect_resources(&body, source);
+            self.collect_resources(func_node, &body, source);
 
-            // Collect all resource deallocations
-            self.collect_closes(&body, source);
-
+            // Collect closes, and the uses that hand the handle to something
+            // that outlives this function: once a handle is returned, stored
+            // through a pointer, a field or a file-scope variable, or given to
+            // a callee that keeps it, closing it is no longer this function's
+            // job.
+            //
             // Interprocedural: a resource passed by value to a sink function
             // that closes the corresponding parameter (directly, or
             // transitively through a chain of forwarding helpers) is closed
@@ -175,7 +188,9 @@ impl FileResourceTracker {
             // callee's body (e.g. Juliet CWE-773 variants 21/22/
             // 41/42/45/51-54/63-66, where a goodB2GSink helper closes the
             // FILE* it's handed).
-            self.collect_passthrough_closes(&body, source, summaries);
+            if !self.resources.is_empty() {
+                self.collect_releases(func_node, &body, source, summaries);
+            }
 
             // Check for unclosed resources
             self.check_unclosed_resources(violations);
@@ -185,133 +200,268 @@ impl FileResourceTracker {
         }
     }
 
-    /// Scan call sites in `body` for a tracked resource variable passed
-    /// (verbatim, by identifier) as an argument. If the callee's
-    /// `FunctionSummary` says it closes that parameter position, mark the
-    /// resource closed in this function's scope too.
-    fn collect_passthrough_closes(
-        &mut self,
-        body: &Node,
-        source: &str,
-        summaries: &(impl SummaryLookup + ?Sized),
-    ) {
-        if summaries.is_empty() {
-            return;
-        }
-        for call in query::find_descendants_of_kind(*body, "call_expression") {
-            let Some(function) = call.child_by_field_name("function") else {
-                continue;
-            };
-            let callee_name = get_node_text(&function, source).trim().to_string();
-            let Some(summary) = summaries.get(&callee_name) else {
-                continue;
-            };
-            // A close credited here stops a leak report, so every definition
-            // this call can link with must close.
-            let summary = summary.at_all(source, call.start_position().row + 1);
-            if summary.closes_params.is_empty() {
-                continue;
-            }
-            let Some(arguments) = call.child_by_field_name("arguments") else {
-                continue;
-            };
-            let mut arg_idx = 0usize;
-            for i in 0..arguments.child_count() {
-                let Some(arg) = arguments.child(i) else {
-                    continue;
-                };
-                if matches!(arg.kind(), "," | "(" | ")") {
-                    continue;
-                }
-                if arg.kind() == "identifier" {
-                    let var_name = get_node_text(&arg, source).to_string();
-                    if summary.closes_params.contains(&arg_idx)
-                        && self.is_tracked_resource(&var_name)
-                    {
-                        self.closed_resources.insert(var_name);
-                    }
-                }
-                arg_idx += 1;
-            }
-        }
+    /// The local object `ident` names in `func`: its declaration lies inside
+    /// the function (a parameter or a block-scope variable) and has automatic
+    /// storage. A file-scope variable, a `static` or `extern` one, or a name
+    /// the scan cannot resolve outlives the call, so a handle in it is not
+    /// this function's to close.
+    fn local_object(&self, func: &Node, ident: &Node<'t>, source: &str) -> Option<ObjectKey> {
+        let name = get_node_text(ident, source);
+        let (declaration, _) = self
+            .declarations
+            .resolve_identifier_declarator_in(&self.root, ident, name, source)?;
+        let inside = declaration.start_byte() >= func.start_byte()
+            && declaration.end_byte() <= func.end_byte();
+        let lasting = declaration.kind() == "declaration"
+            && (declaration_has_storage_class(&declaration, "static", source)
+                || declaration_has_storage_class(&declaration, "extern", source));
+        (inside && !lasting).then(|| (declaration.id(), name.to_string()))
     }
 
-    fn is_tracked_resource(&self, var_name: &str) -> bool {
-        self.file_pointers.contains_key(var_name)
-            || self.file_descriptors.contains_key(var_name)
-            || self.file_handles.contains_key(var_name)
-    }
-
-    fn collect_resources(&mut self, node: &Node, source: &str) {
-        for n in query::find_descendants_of_kinds(*node, &["declaration", "assignment_expression"])
+    fn collect_resources(&mut self, func: &Node, body: &Node<'t>, source: &str) {
+        for n in
+            query::find_descendants_of_kinds(*body, &["init_declarator", "assignment_expression"])
         {
-            match n.kind() {
-                "declaration" => {
-                    self.check_file_pointer_declaration(&n, source);
+            // Classify by the actual function called. Substring matching is
+            // unsound here because `fopen(`/`freopen(` both contain `open(`,
+            // which would otherwise track a FILE* as both a FILE pointer and
+            // a POSIX file descriptor.
+            let (target, value) = match n.kind() {
+                "init_declarator" => (
+                    n.child_by_field_name("declarator")
+                        .and_then(|d| declared_identifier(&d)),
+                    n.child_by_field_name("value"),
+                ),
+                _ if is_plain_assignment(&n) => (
+                    n.child_by_field_name("left").map(|l| unwrap_held(&l)),
+                    n.child_by_field_name("right"),
+                ),
+                _ => continue,
+            };
+            let (Some(target), Some(value)) = (target, value) else {
+                continue;
+            };
+            let Some(rtype) = Self::callee_name(&value, source)
+                .as_deref()
+                .and_then(Self::classify_callee)
+            else {
+                continue;
+            };
+            // `c->f = fopen(...)`, `*out = open(...)` and `g_log = fopen(...)`
+            // store the handle somewhere the caller still reaches.
+            if target.kind() != "identifier" {
+                continue;
+            }
+            let Some(key) = self.local_object(func, &target, source) else {
+                continue;
+            };
+            let at = if n.kind() == "init_declarator" {
+                n.parent().unwrap_or(n)
+            } else {
+                n
+            };
+            self.track_resource(key, rtype, &at);
+        }
+    }
+
+    /// Record an opened resource of the given kind, keyed on the object that
+    /// holds it, positioned at `node`.
+    fn track_resource(&mut self, key: ObjectKey, rtype: ResourceType, node: &Node) {
+        let info = ResourceInfo {
+            var_name: key.1.clone(),
+            resource_type: rtype,
+            line: node.start_position().row + 1,
+            column: node.start_position().column + 1,
+        };
+        match self.resources.iter_mut().find(|(k, _)| *k == key) {
+            Some(slot) => slot.1 = info,
+            None => self.resources.push((key, info)),
+        }
+    }
+
+    /// The tracked objects whose handle `expr` evaluates to: through
+    /// parentheses, casts and either arm of a `?:`.
+    fn held_objects(&self, func: &Node, expr: &Node<'t>, source: &str) -> Vec<ObjectKey> {
+        let mut held = Vec::new();
+        let mut stack = vec![*expr];
+        while let Some(e) = stack.pop() {
+            match e.kind() {
+                "parenthesized_expression" => stack.extend(e.named_child(0)),
+                "cast_expression" => stack.extend(e.child_by_field_name("value")),
+                "conditional_expression" => {
+                    stack.extend(e.child_by_field_name("consequence"));
+                    stack.extend(e.child_by_field_name("alternative"));
                 }
-                "assignment_expression" => {
-                    self.check_file_pointer_assignment(&n, source);
+                "identifier" => {
+                    if let Some(key) = self.local_object(func, &e, source) {
+                        if self.is_tracked(&key) {
+                            held.push(key);
+                        }
+                    }
                 }
                 _ => {}
             }
         }
+        held
     }
 
-    fn check_file_pointer_declaration(&mut self, node: &Node, source: &str) {
-        // Classify each initialized declarator by the actual function it calls.
-        // Substring matching is unsound here because `fopen(`/`freopen(` both
-        // contain `open(`, which would otherwise track a FILE* as both a FILE
-        // pointer and a POSIX file descriptor.
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(value) = child.child_by_field_name("value") {
-                        if let Some(rtype) = Self::callee_name(&value, source)
-                            .as_deref()
-                            .and_then(Self::classify_callee)
-                        {
-                            if let Some(var_name) = self.extract_declarator_name(&child, source) {
-                                self.track_resource(var_name, rtype, node);
+    fn is_tracked(&self, key: &ObjectKey) -> bool {
+        let root = self.alias_root(key);
+        self.resources
+            .iter()
+            .any(|(k, _)| self.alias_root(k) == root)
+    }
+
+    fn alias_root(&self, key: &ObjectKey) -> ObjectKey {
+        let mut key = key.clone();
+        while let Some(next) = self.aliases.get(&key) {
+            key = next.clone();
+        }
+        key
+    }
+
+    fn release(&mut self, key: &ObjectKey) {
+        self.released.insert(self.alias_root(key));
+    }
+
+    fn alias(&mut self, copy: ObjectKey, of: &ObjectKey) {
+        let (copy, of) = (self.alias_root(&copy), self.alias_root(of));
+        if copy == of {
+            return;
+        }
+        // A copy that already let go of its handle lets go of this one.
+        if self.released.contains(&copy) {
+            self.released.insert(of.clone());
+        }
+        self.aliases.insert(copy, of);
+    }
+
+    fn collect_releases(
+        &mut self,
+        func: &Node<'t>,
+        body: &Node<'t>,
+        source: &str,
+        summaries: &(impl SummaryLookup + ?Sized),
+    ) {
+        // Copies first, in source order, so a close of the copy credits the
+        // original wherever it is written.
+        for n in
+            query::find_descendants_of_kinds(*body, &["init_declarator", "assignment_expression"])
+        {
+            let (target, value) = match n.kind() {
+                "init_declarator" => (
+                    n.child_by_field_name("declarator")
+                        .and_then(|d| declared_identifier(&d)),
+                    n.child_by_field_name("value"),
+                ),
+                _ if is_plain_assignment(&n) => (
+                    n.child_by_field_name("left").map(|l| unwrap_held(&l)),
+                    n.child_by_field_name("right"),
+                ),
+                _ => continue,
+            };
+            let Some(value) = value else { continue };
+            if value.kind() == "initializer_list" {
+                // `struct conn c = { .f = f }` puts the handle in an object
+                // this scan does not follow.
+                for ident in query::find_descendants_of_kind(value, "identifier") {
+                    for key in self.held_objects(func, &ident, source) {
+                        self.release(&key);
+                    }
+                }
+                continue;
+            }
+            let held = self.held_objects(func, &value, source);
+            if held.is_empty() {
+                continue;
+            }
+            let copy = target
+                .filter(|t| t.kind() == "identifier")
+                .and_then(|t| self.local_object(func, &t, source));
+            for key in held {
+                match &copy {
+                    Some(copy) => self.alias(copy.clone(), &key),
+                    None => self.release(&key),
+                }
+            }
+        }
+
+        for n in query::find_descendants_of_kinds(
+            *body,
+            &["call_expression", "return_statement", "pointer_expression"],
+        ) {
+            match n.kind() {
+                "return_statement" => {
+                    let Some(value) = n.named_child(0) else {
+                        continue;
+                    };
+                    for key in self.held_objects(func, &value, source) {
+                        if !returned_on_failure(&n, &key.1, source) {
+                            self.release(&key);
+                        }
+                    }
+                }
+                // `&f` lets whatever receives the address close or keep it.
+                "pointer_expression" => {
+                    if n.child_by_field_name("operator")
+                        .is_some_and(|o| get_node_text(&o, source) == "&")
+                    {
+                        if let Some(arg) = n.child_by_field_name("argument") {
+                            for key in self.held_objects(func, &arg, source) {
+                                self.release(&key);
                             }
                         }
                     }
                 }
+                _ => self.credit_call(func, &n, source, summaries),
             }
         }
     }
 
-    fn check_file_pointer_assignment(&mut self, node: &Node, source: &str) {
-        if let (Some(left), Some(right)) = (
-            node.child_by_field_name("left"),
-            node.child_by_field_name("right"),
-        ) {
-            // Classify by the called function, not by substring, so an `fopen`
-            // RHS is tracked only as a FILE pointer and not also as a POSIX file
-            // descriptor (`fopen(` contains `open(`) — see an earlier fix.
-            if let Some(rtype) = Self::callee_name(&right, source)
-                .as_deref()
-                .and_then(Self::classify_callee)
-            {
-                let var_name = get_node_text(&left, source).to_string();
-                self.track_resource(var_name, rtype, node);
+    /// A close (`fclose`/`close`/`CloseHandle` on the handle), a call to a
+    /// function whose summary closes or keeps the parameter the handle is
+    /// passed in, or a call to a function nothing in the scan speaks for.
+    fn credit_call(
+        &mut self,
+        func: &Node<'t>,
+        call: &Node<'t>,
+        source: &str,
+        summaries: &(impl SummaryLookup + ?Sized),
+    ) {
+        let (Some(function), Some(arguments)) = (
+            call.child_by_field_name("function"),
+            call.child_by_field_name("arguments"),
+        ) else {
+            return;
+        };
+        let callee_name = get_node_text(&function, source).trim();
+        let closer = matches!(callee_name, "fclose" | "close" | "CloseHandle");
+        // A release credited here stops a leak report, so every definition
+        // this call can link with must close or keep the handle.
+        let summary = summaries
+            .get(callee_name)
+            .map(|s| s.at_all(source, call.start_position().row + 1));
+        // A callee the scan has no body for, and no library contract speaks
+        // for, may close or keep what it is handed: a call through a pointer,
+        // a function another translation unit defines, a macro. A library
+        // function (`fgetc`, `read`, `fstat`) uses the handle and gives it
+        // back.
+        let unknown = !closer
+            && summary.is_none()
+            && (function.kind() != "identifier" || !is_known_standard_function(callee_name));
+        let mut cursor = arguments.walk();
+        for (idx, arg) in arguments.named_children(&mut cursor).enumerate() {
+            let releases = unknown
+                || (closer && idx == 0)
+                || summary.as_ref().is_some_and(|s| {
+                    s.closes_params.contains(&idx) || s.stores_params.contains(&idx)
+                });
+            if releases {
+                for key in self.held_objects(func, &arg, source) {
+                    self.release(&key);
+                }
             }
         }
-    }
-
-    /// Record an opened resource of the given kind, keyed on the variable that
-    /// holds it, positioned at `node`.
-    fn track_resource(&mut self, var_name: String, rtype: ResourceType, node: &Node) {
-        let info = ResourceInfo {
-            var_name: var_name.clone(),
-            resource_type: rtype.clone(),
-            line: node.start_position().row + 1,
-            column: node.start_position().column + 1,
-        };
-        match rtype {
-            ResourceType::FilePointer => self.file_pointers.insert(var_name, info),
-            ResourceType::FileDescriptor => self.file_descriptors.insert(var_name, info),
-            ResourceType::FileHandle => self.file_handles.insert(var_name, info),
-        };
     }
 
     /// Name of the first function called within an initializer / RHS expression
@@ -343,130 +493,55 @@ impl FileResourceTracker {
         }
     }
 
-    fn collect_closes(&mut self, node: &Node, source: &str) {
-        for call in query::find_descendants_of_kind(*node, "call_expression") {
-            if let Some(function) = call.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-
-                // Track fclose() calls
-                if func_name == "fclose" {
-                    if let Some(args) = call.child_by_field_name("arguments") {
-                        let args_text = get_node_text(&args, source);
-                        let var_name = args_text.trim_matches(|c| c == '(' || c == ')').trim();
-                        self.closed_resources.insert(var_name.to_string());
-                    }
-                }
-
-                // Track POSIX close() calls
-                if func_name == "close" {
-                    if let Some(args) = call.child_by_field_name("arguments") {
-                        let args_text = get_node_text(&args, source);
-                        let var_name = args_text.trim_matches(|c| c == '(' || c == ')').trim();
-                        self.closed_resources.insert(var_name.to_string());
-                    }
-                }
-
-                // Track Windows CloseHandle() calls
-                if func_name == "CloseHandle" {
-                    if let Some(args) = call.child_by_field_name("arguments") {
-                        let args_text = get_node_text(&args, source);
-                        let var_name = args_text.trim_matches(|c| c == '(' || c == ')').trim();
-                        self.closed_resources.insert(var_name.to_string());
-                    }
-                }
-            }
-        }
-    }
-
     fn check_unclosed_resources(&self, violations: &mut Vec<RuleViolation>) {
-        // Check FILE* pointers
-        for (var_name, info) in &self.file_pointers {
-            if !self.closed_resources.contains(var_name) {
-                violations.push(RuleViolation {
-                    rule_id: "FIO42-C".to_string(),
-                    message: format!(
+        for (key, info) in &self.resources {
+            if self.released.contains(&self.alias_root(key)) {
+                continue;
+            }
+            let var_name = &info.var_name;
+            let (message, suggestion) = match info.resource_type {
+                ResourceType::FilePointer => (
+                    format!(
                         "FILE pointer '{}' opened with fopen/freopen but never closed with fclose()",
                         var_name
                     ),
-                    severity: Severity::High,
-                    line: info.line,
-                    column: info.column,
-                    file_path: String::new(),
-                    suggestion: Some(format!(
+                    format!(
                         "Add fclose({}) before function returns or program exits",
                         var_name
-                    )),
-                    requires_manual_review: None,
-                });
-            }
-        }
-
-        // Check file descriptors
-        for (var_name, info) in &self.file_descriptors {
-            if !self.closed_resources.contains(var_name) {
-                violations.push(RuleViolation {
-                    rule_id: "FIO42-C".to_string(),
-                    message: format!(
+                    ),
+                ),
+                ResourceType::FileDescriptor => (
+                    format!(
                         "File descriptor '{}' opened with open() but never closed with close()",
                         var_name
                     ),
-                    severity: Severity::High,
-                    line: info.line,
-                    column: info.column,
-                    file_path: String::new(),
-                    suggestion: Some(format!(
+                    format!(
                         "Add close({}) before function returns or program exits",
                         var_name
-                    )),
-                    requires_manual_review: None,
-                });
-            }
-        }
-
-        // Check Windows HANDLEs
-        for (var_name, info) in &self.file_handles {
-            if !self.closed_resources.contains(var_name) {
-                violations.push(RuleViolation {
-                    rule_id: "FIO42-C".to_string(),
-                    message: format!(
+                    ),
+                ),
+                ResourceType::FileHandle => (
+                    format!(
                         "File HANDLE '{}' opened with CreateFile() but never closed with CloseHandle()",
                         var_name
                     ),
-                    severity: Severity::High,
-                    line: info.line,
-                    column: info.column,
-                    file_path: String::new(),
-                    suggestion: Some(format!(
+                    format!(
                         "Add CloseHandle({}) before function returns or program exits",
                         var_name
-                    )),
-                    requires_manual_review: None,
-                });
-            }
+                    ),
+                ),
+            };
+            violations.push(RuleViolation {
+                rule_id: "FIO42-C".to_string(),
+                message,
+                severity: Severity::High,
+                line: info.line,
+                column: info.column,
+                file_path: String::new(),
+                suggestion: Some(suggestion),
+                requires_manual_review: None,
+            });
         }
-    }
-
-    fn extract_declarator_name(&self, node: &Node, source: &str) -> Option<String> {
-        if let Some(declarator) = node.child_by_field_name("declarator") {
-            return self.find_identifier(&declarator, source);
-        }
-        None
-    }
-
-    fn find_identifier(&self, node: &Node, source: &str) -> Option<String> {
-        if node.kind() == "identifier" {
-            return Some(get_node_text(node, source).to_string());
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(name) = self.find_identifier(&child, source) {
-                    return Some(name);
-                }
-            }
-        }
-
-        None
     }
 
     // ── CWE-459: Temp file creation without cleanup ─────────────────────────
@@ -530,5 +605,109 @@ impl FileResourceTracker {
                 }
             }
         }
+    }
+}
+
+/// A plain `=`, not a compound assignment (`fd += 1` does not copy a handle).
+fn is_plain_assignment(node: &Node) -> bool {
+    node.child_by_field_name("operator")
+        .is_some_and(|o| o.kind() == "=")
+}
+
+/// `expr` without enclosing parentheses: the lvalue `(f)` is `f`.
+fn unwrap_held<'t>(expr: &Node<'t>) -> Node<'t> {
+    let mut e = *expr;
+    while e.kind() == "parenthesized_expression" {
+        match e.named_child(0) {
+            Some(inner) => e = inner,
+            None => break,
+        }
+    }
+    e
+}
+
+/// The identifier a declarator declares, through pointer, array and
+/// parenthesized declarators (`*f`, `fds[2]`, `(*f)`).
+fn declared_identifier<'t>(declarator: &Node<'t>) -> Option<Node<'t>> {
+    let mut d = *declarator;
+    loop {
+        if d.kind() == "identifier" {
+            return Some(d);
+        }
+        d = match d.child_by_field_name("declarator") {
+            Some(inner) => inner,
+            None => d.named_children(&mut d.walk()).find(|c| {
+                matches!(
+                    c.kind(),
+                    "identifier" | "pointer_declarator" | "parenthesized_declarator"
+                )
+            })?,
+        };
+    }
+}
+
+/// Whether `ret` runs only where the open into `var` failed: a condition
+/// already evaluated there pins `var` to its failure value (`!f`,
+/// `f == NULL`, `fd < 0`, `fd == -1`, `h == INVALID_HANDLE_VALUE`, or the
+/// negation of a success test on the other branch). Returning a failed
+/// handle hands nothing over.
+fn returned_on_failure(ret: &Node, var: &str, source: &str) -> bool {
+    dominating_conditions_with_branches(ret)
+        .into_iter()
+        .any(|(cond, branch)| match branch {
+            Some(taken) => failure_test(&cond, var, source) == Some(taken),
+            None => false,
+        })
+}
+
+/// `Some(true)` when `cond` holds exactly where `var` is the failed handle,
+/// `Some(false)` when it holds exactly where it is a good one, `None` when
+/// it is not such a test.
+fn failure_test(cond: &Node, var: &str, source: &str) -> Option<bool> {
+    let cond = unwrap_held(cond);
+    let names_var = |n: &Node| {
+        let n = unwrap_held(n);
+        n.kind() == "identifier" && get_node_text(&n, source) == var
+    };
+    match cond.kind() {
+        "identifier" if names_var(&cond) => Some(false),
+        "unary_expression" => {
+            let op = cond.child_by_field_name("operator")?;
+            let arg = cond.child_by_field_name("argument")?;
+            if get_node_text(&op, source) != "!" {
+                return None;
+            }
+            if names_var(&arg) {
+                return Some(true);
+            }
+            failure_test(&arg, var, source).map(|b| !b)
+        }
+        "binary_expression" => {
+            let op = get_node_text(&cond.child_by_field_name("operator")?, source);
+            let left = cond.child_by_field_name("left")?;
+            let right = cond.child_by_field_name("right")?;
+            let (other, var_on_left) = if names_var(&left) {
+                (right, true)
+            } else if names_var(&right) {
+                (left, false)
+            } else {
+                return None;
+            };
+            let other = get_node_text(&unwrap_held(&other), source).replace(' ', "");
+            let failure_value = matches!(
+                other.as_str(),
+                "NULL" | "0" | "-1" | "INVALID_HANDLE_VALUE" | "nullptr" | "((void*)0)"
+            );
+            match op {
+                "==" if failure_value => Some(true),
+                "!=" if failure_value => Some(false),
+                "<" if var_on_left && other == "0" => Some(true),
+                ">=" if var_on_left && other == "0" => Some(false),
+                ">" if !var_on_left && other == "0" => Some(true),
+                "<=" if !var_on_left && other == "0" => Some(false),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
