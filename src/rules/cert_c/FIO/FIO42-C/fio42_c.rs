@@ -40,20 +40,24 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::context::ScopedTable;
 use crate::analyze::context::SummaryLookup;
 use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::macro_expand::FunctionMacro;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
     declaration_has_storage_class, get_node_text, ScopeDeclarations,
 };
 use crate::utility::cert_c::guard_dominance::dominating_conditions_with_branches;
+use crate::utility::cert_c::pp_tokens::{lex_replacement_list, PpKind};
 use crate::utility::cert_c::std_functions::is_known_standard_function;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 #[derive(Default)]
 pub struct Fio42C {
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
+    function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
 }
 
 impl Fio42C {
@@ -85,6 +89,7 @@ impl CertRule for Fio42C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.function_macros.borrow_mut() = Arc::clone(&context.function_macros);
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -92,7 +97,8 @@ impl CertRule for Fio42C {
         let summaries = self.function_summaries.borrow();
 
         // Track file resources across the AST
-        let mut tracker = FileResourceTracker::new(*node);
+        let macros = self.function_macros.borrow();
+        let mut tracker = FileResourceTracker::new(*node, &macros);
         tracker.analyze_node(node, source, &summaries, &mut violations);
 
         violations
@@ -103,8 +109,9 @@ impl CertRule for Fio42C {
 /// the name it binds there (one declaration can declare several).
 type ObjectKey = (usize, String);
 
-struct FileResourceTracker<'t> {
+struct FileResourceTracker<'t, 'm> {
     root: Node<'t>,
+    macros: &'m HashMap<String, FunctionMacro>,
     declarations: ScopeDeclarations<'t>,
     // Opened handles in the current function, one per object, in the order
     // first opened; a later open into the same object takes its position.
@@ -135,10 +142,11 @@ enum ResourceType {
     FileHandle,     // HANDLE from CreateFile()
 }
 
-impl<'t> FileResourceTracker<'t> {
-    fn new(root: Node<'t>) -> Self {
+impl<'t, 'm> FileResourceTracker<'t, 'm> {
+    fn new(root: Node<'t>, macros: &'m HashMap<String, FunctionMacro>) -> Self {
         Self {
             root,
+            macros,
             declarations: ScopeDeclarations::indexed(root),
             resources: Vec::new(),
             released: HashSet::new(),
@@ -582,10 +590,13 @@ impl<'t> FileResourceTracker<'t> {
         // for, may close or keep what it is handed: a call through a pointer,
         // a function another translation unit defines, a macro. A library
         // function (`fgetc`, `read`, `fstat`) uses the handle and gives it
-        // back.
+        // back, and so does a macro that makes no call and assigns nothing
+        // (`#define UNUSED(V) ((void)V)`).
         let unknown = !closer
             && summary.is_none()
-            && (function.kind() != "identifier" || !is_known_standard_function(callee_name));
+            && (function.kind() != "identifier"
+                || !(is_known_standard_function(callee_name)
+                    || self.macros.get(callee_name).is_some_and(only_reads)));
         let mut cursor = arguments.walk();
         for (idx, arg) in arguments.named_children(&mut cursor).enumerate() {
             let releases = unknown
@@ -861,4 +872,28 @@ fn address_of_identifier<'t>(expr: &Node<'t>, source: &str) -> Option<Node<'t>> 
     }
     let operand = unwrap_held(&expr.child_by_field_name("argument")?);
     (operand.kind() == "identifier").then_some(operand)
+}
+
+/// Whether every definition of `m` only reads its arguments: no call (an
+/// identifier followed by `(`, which may be another macro) and no assignment
+/// or increment. A definition the expander cannot read could do either.
+fn only_reads(m: &FunctionMacro) -> bool {
+    let body_only_reads = |body: &str| {
+        let tokens = lex_replacement_list(body, true);
+        !tokens.iter().enumerate().any(|(i, t)| {
+            let calls =
+                t.kind == PpKind::Identifier && tokens.get(i + 1).is_some_and(|next| next.is("("));
+            let writes = t.kind == PpKind::Punctuator
+                && (t.is("++")
+                    || t.is("--")
+                    || (t.text.ends_with('=') && !matches!(&*t.text, "==" | "!=" | "<=" | ">=")));
+            calls || writes
+        })
+    };
+    if m.alternatives.is_empty() {
+        return body_only_reads(&m.body);
+    }
+    m.alternatives
+        .iter()
+        .all(|alt| alt.as_ref().is_some_and(|d| body_only_reads(&d.body)))
 }
