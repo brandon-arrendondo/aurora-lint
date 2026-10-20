@@ -870,8 +870,9 @@ impl Con40C {
     }
 
     /// The operand of `&`: the object it designates is not accessed, but
-    /// what computes it is (`&p->m` reads `p`, `&a[i]` reads `i`).
-    fn push_designated<'a>(cx: &FileCx<'a, '_>, node: &Node<'a>, stack: &mut Vec<Node<'a>>) {
+    /// what computes it is (`&p->m` reads `p`, `&a[i]` reads `i`, and `p`
+    /// too when it is a pointer rather than an array).
+    fn push_designated<'a>(cx: &mut FileCx<'a, '_>, node: &Node<'a>, stack: &mut Vec<Node<'a>>) {
         match node.kind() {
             "identifier" => {}
             "parenthesized_expression" => {
@@ -894,6 +895,22 @@ impl Con40C {
             }
             "pointer_expression" if is_deref(node, cx.source) => {
                 if let Some(argument) = node.child_by_field_name("argument") {
+                    stack.push(argument);
+                }
+            }
+            "subscript_expression" => {
+                if let Some(index) = node.child_by_field_name("index") {
+                    stack.push(index);
+                }
+                let Some(argument) = node.child_by_field_name("argument") else {
+                    return;
+                };
+                let array = cx
+                    .resolve(&argument)
+                    .is_some_and(|r| r.derivations.first() == Some(&Derivation::Array));
+                if array {
+                    Self::push_designated(cx, &argument, stack);
+                } else {
                     stack.push(argument);
                 }
             }
