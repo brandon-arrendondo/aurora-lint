@@ -676,6 +676,9 @@ struct Scan {
     end: End,
     stderr: String,
     elapsed: Duration,
+    /// The scan's peak resident size in KiB, as Linux reports it
+    /// (`VmHWM`); `None` where there is no `/proc` to read it from.
+    peak_rss_kib: Option<u64>,
 }
 
 /// How a scan ended.
@@ -731,7 +734,11 @@ fn scan_dir_with(dir: &Path, manifest: &str, limit: Duration) -> Scan {
     // 50 ms, so the time read is within 2% of the scan's: a fixed 50 ms made
     // a 100 ms scan's time a multiple of 50 ms, which the size series
     // cannot compare.
+    // The high-water mark only rises, so the last reading before the scan
+    // exits is its peak, short of what it took in its last poll interval.
+    let mut peak_rss_kib = None;
     let end = loop {
+        peak_rss_kib = peak_rss(child.id()).or(peak_rss_kib);
         if let Some(status) = child.try_wait().unwrap() {
             break match status.code() {
                 Some(code) => End::Exited(code),
@@ -751,7 +758,22 @@ fn scan_dir_with(dir: &Path, manifest: &str, limit: Duration) -> Scan {
         end,
         stderr: reader.join().unwrap(),
         elapsed: started.elapsed(),
+        peak_rss_kib,
     }
+}
+
+/// Process `pid`'s peak resident size in KiB so far, from Linux's
+/// `/proc/PID/status`. `None` elsewhere, and for a Windows build run
+/// through WSL, whose memory the Linux side does not see.
+fn peak_rss(pid: u32) -> Option<u64> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let line = status.lines().find(|l| l.starts_with("VmHWM:"))?;
+    line.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// `kib` as megabytes for a report, or `?` when it was not measured.
+fn megabytes(kib: Option<u64>) -> String {
+    kib.map_or_else(|| "?".into(), |k| format!("{:.0}", k as f64 / 1024.0))
 }
 
 /// What one line of a scan's stderr says about whether the scan finished.
@@ -819,9 +841,10 @@ fn keep_failures(label: &str, failed: &[&Case]) -> PathBuf {
 }
 
 /// Write `cases` to a fresh directory, scan it, and fail with every bug line,
-/// the case and recipe behind each, and how to reproduce the run.
-fn assert_scans_cleanly(label: &str, cases: &[Case], how: &str, limit: Duration) {
-    assert_scans_cleanly_with(label, cases, how, limit, None);
+/// the case and recipe behind each, and how to reproduce the run. Returns
+/// the scan, for a caller that reports its time or memory.
+fn assert_scans_cleanly(label: &str, cases: &[Case], how: &str, limit: Duration) -> Scan {
+    assert_scans_cleanly_with(label, cases, how, limit, None)
 }
 
 /// [`assert_scans_cleanly`], under the rules `manifest` enables instead of
@@ -832,7 +855,7 @@ fn assert_scans_cleanly_with(
     how: &str,
     limit: Duration,
     manifest: Option<&Path>,
-) {
+) -> Scan {
     let dir = tempfile::tempdir().unwrap();
     let mut names = BTreeMap::new();
     for c in cases {
@@ -899,7 +922,7 @@ fn assert_scans_cleanly_with(
         problems.push("exit 3 with no failure line this suite recognises".into());
     }
     if problems.is_empty() {
-        return;
+        return scan;
     }
     // A scan a signal ended, or a panic outside containment exited (101),
     // names no case (the abort comes before any failure line), so keep them
@@ -912,10 +935,11 @@ fn assert_scans_cleanly_with(
     failed.dedup_by(|a, b| a.name == b.name);
     let keep = keep_failures(label, &failed);
     let mut msg = format!(
-        "\n{} problem(s) scanning {} {label} case(s) ({how}; {:.1?}):\n",
+        "\n{} problem(s) scanning {} {label} case(s) ({how}; {:.1?}, peak {} MB):\n",
         problems.len(),
         cases.len(),
-        scan.elapsed
+        scan.elapsed,
+        megabytes(scan.peak_rss_kib)
     );
     for p in &problems {
         let _ = writeln!(msg, "  {p}");
@@ -1326,6 +1350,35 @@ fn deep_macro_chain_scans_within_budget() {
     );
 }
 
+/// How long a large case may take per byte of input, in microseconds:
+/// three times the slowest rate measured, so a slower or busier runner
+/// still passes and a step that grows faster than the input does not. Every
+/// rule scanning one file is linear in its size, at 93 us/B for a file of
+/// one-line functions (8 MiB in 780 s) and 52 us/B for one line of
+/// declarations (21.8 MB in 1127 s) on the slowest machine measured, and at
+/// 65 and 35 us/B on another: every rule walks the whole file, so a larger
+/// file costs proportionally more however few findings it holds. A single
+/// wall limit either fails large linear inputs on a slower machine or is too
+/// loose to mean anything for small ones;
+/// [`every_rule_size_series_scales_near_linearly`] is what catches a step
+/// that grows faster than the input.
+const LARGE_CASE_MICROS_PER_BYTE: u64 = 280;
+
+/// The most any one large case may take, so a hand-run test ends: a case
+/// built to be refused that is not would otherwise be given hours.
+const LARGE_CASE_MAX_WALL: Duration = Duration::from_secs(2 * 3600);
+
+/// The wall limit for `case`: [`LARGE_CASE_MICROS_PER_BYTE`] of its size,
+/// between [`SCAN_WALL_LIMIT`] and [`LARGE_CASE_MAX_WALL`]. A case the
+/// input guard must refuse is never analysed, so its size buys it nothing.
+fn large_case_wall_limit(case: &Case) -> Duration {
+    if case.refuse == Refuse::Must {
+        return SCAN_WALL_LIMIT;
+    }
+    Duration::from_micros(case.bytes.len() as u64 * LARGE_CASE_MICROS_PER_BYTE)
+        .clamp(SCAN_WALL_LIMIT, LARGE_CASE_MAX_WALL)
+}
+
 /// Inputs too large or too deep for every `cargo test`: generated at test
 /// time, never committed. Each must be refused with a reason or analysed
 /// within budget -- never a crash, a hang or a stack overflow, which aborts
@@ -1418,21 +1471,31 @@ fn large_cases() -> Vec<Case> {
 #[test]
 #[ignore = "large and deep generated inputs: run in release with --ignored, time-boxed"]
 fn large_and_deep_inputs_are_refused_or_analysed_within_budget() {
-    let _runner = untimed();
+    let _runner = timed();
     // One scan per case: a stack overflow aborts the whole process, and in a
     // shared scan it would hide every case after it.
     let cases = large_cases();
     let mut failures = Vec::new();
     for c in cases {
         let name = c.name.clone();
+        let limit = wall_limit(large_case_wall_limit(&c));
+        let megabytes_in = c.bytes.len() as f64 / 1e6;
         let result = std::panic::catch_unwind(|| {
             assert_scans_cleanly(
                 "large",
                 std::slice::from_ref(&c),
-                "large case",
-                wall_limit(SCAN_WALL_LIMIT),
+                &format!("large case, limit {limit:.0?}"),
+                limit,
             )
         });
+        if let Ok(scan) = &result {
+            println!(
+                "{name}: {megabytes_in:.1} MB in {:.1?} ({:.0} us/B, limit {limit:.0?}), peak {} MB",
+                scan.elapsed,
+                scan.elapsed.as_secs_f64() * 1e6 / c.bytes.len().max(1) as f64,
+                megabytes(scan.peak_rss_kib)
+            );
+        }
         if let Err(e) = result {
             let msg = e
                 .downcast_ref::<String>()
@@ -1482,6 +1545,18 @@ fn one_line_functions(bytes: usize) -> Vec<u8> {
     let mut i = 0;
     while out.len() < bytes {
         let _ = writeln!(out, "int f{i}(int a) {{ return a * {i} + 1; }}");
+        i += 1;
+    }
+    out.into_bytes()
+}
+
+/// A file of `bytes` bytes of file-scope declarations on one line, the
+/// shape of the large case `one_sixteen_mib_line`.
+fn one_line_declarations(bytes: usize) -> Vec<u8> {
+    let mut out = String::new();
+    let mut i = 0;
+    while out.len() < bytes {
+        let _ = write!(out, "int a{i} = {i}; ");
         i += 1;
     }
     out.into_bytes()
@@ -1609,12 +1684,22 @@ fn log_log_slope(points: &[(usize, Duration)]) -> f64 {
     sxy / sxx
 }
 
+/// One size series: a name, the one rule to scan under (`None` for every
+/// rule), the generator, and the smallest size it is given.
+type Series = (
+    &'static str,
+    Option<&'static str>,
+    fn(usize) -> Vec<u8>,
+    usize,
+);
+
 /// The fastest time of each size of one series, in [`SIZE_SERIES_STEPS`]
 /// order: every size written to a directory of its own, then
-/// [`SIZE_SERIES_RUNS`] rounds that scan each size once under one rule.
+/// [`SIZE_SERIES_RUNS`] rounds that scan each size once under one rule, or
+/// under every rule when `rule_id` is `None`.
 fn time_series(
     name: &str,
-    rule_id: &str,
+    rule_id: Option<&str>,
     generate: fn(usize) -> Vec<u8>,
     small: usize,
 ) -> Vec<(usize, Duration)> {
@@ -1627,14 +1712,17 @@ fn time_series(
                 generate(step * small),
             )
             .unwrap();
-            let manifest = one_rule_manifest(dir.path(), rule_id);
+            let manifest = match rule_id {
+                Some(rule_id) => one_rule_manifest(dir.path(), rule_id),
+                None => manifest_arg(dir.path()),
+            };
             (step * small, dir, manifest)
         })
         .collect();
     let mut fastest = vec![Duration::MAX; sizes.len()];
     for _ in 0..SIZE_SERIES_RUNS {
         for (i, (size, dir, manifest)) in sizes.iter().enumerate() {
-            let what = format!("{name} ({size}) under {rule_id}");
+            let what = format!("{name} ({size}) under {}", rule_id.unwrap_or("every rule"));
             fastest[i] = fastest[i].min(time_one_scan(dir.path(), manifest, &what));
         }
     }
@@ -1663,49 +1751,60 @@ fn time_series(
 #[ignore = "size series: run in release with --ignored (CI robustness job)"]
 fn generated_size_series_scale_near_linearly() {
     let _runner = timed();
-    type Generate = fn(usize) -> Vec<u8>;
-    let series: [(&str, &str, Generate, usize); 8] = [
+    let series: [Series; 8] = [
         (
             "one_line_functions",
-            "MSC04-C",
+            Some("MSC04-C"),
             one_line_functions,
             256 * 1024,
         ),
         (
             "one_line_functions",
-            "INT34-C",
+            Some("INT34-C"),
             one_line_functions,
             128 * 1024,
         ),
         (
             "one_line_string_copies",
-            "STR31-C",
+            Some("STR31-C"),
             one_line_string_copies,
             8 * 1024,
         ),
         (
             "one_function_of_creating_opens",
-            "FIO21-C",
+            Some("FIO21-C"),
             one_function_of_creating_opens,
             4 * 1024,
         ),
-        ("define_chain", "PRE32-C", define_chain, 10_000),
-        ("suffix_letter_run", "WIN00-C", suffix_letter_run, 40_000),
+        ("define_chain", Some("PRE32-C"), define_chain, 10_000),
+        (
+            "suffix_letter_run",
+            Some("WIN00-C"),
+            suffix_letter_run,
+            40_000,
+        ),
         (
             "alias_chain_in_functions",
-            "MSC13-C",
+            Some("MSC13-C"),
             alias_chain_in_functions,
             5_000,
         ),
         (
             "parameter_chain_in_functions",
-            "MSC13-C",
+            Some("MSC13-C"),
             parameter_chain_in_functions,
             1_000,
         ),
     ];
+    assert_series_near_linear(&series);
+}
+
+/// Time every series in `series` and fail if any grows faster than
+/// [`SIZE_SERIES_MAX_SLOPE`]. Every series' times and slope are printed,
+/// passing or not, so a near miss shows in the log.
+fn assert_series_near_linear(series: &[Series]) {
     let mut failures = Vec::new();
-    for (name, rule_id, generate, small) in series {
+    for &(name, rule_id, generate, small) in series {
         let points = time_series(name, rule_id, generate, small);
         let slope = log_log_slope(&points);
         let times = points
@@ -1715,8 +1814,9 @@ fn generated_size_series_scale_near_linearly() {
             .join(" -> ");
         let ratio = points[points.len() - 1].1.as_secs_f64() / points[0].1.as_secs_f64().max(0.001);
         let line = format!(
-            "{name} under {rule_id}: {times} for 1x/2x/4x/8x the input \
-             (slope {slope:.2}, 8x took {ratio:.1}x)"
+            "{name} under {}: {times} for 1x/2x/4x/8x the input \
+             (slope {slope:.2}, 8x took {ratio:.1}x)",
+            rule_id.unwrap_or("every rule")
         );
         println!("{line}");
         if slope > SIZE_SERIES_MAX_SLOPE {
@@ -1724,4 +1824,44 @@ fn generated_size_series_scale_near_linearly() {
         }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// The two shapes of the large cases, a file of one-line functions and one
+/// line of declarations, scanned under every rule from 64 KiB to 512 KiB.
+/// A rule or analysis that does more than a linear amount of work per
+/// function or per declaration fails here, under whichever rule it is: the
+/// per-rule series above time only the rules picked for them. Every rule
+/// scanning one file takes about 65 us per byte of these inputs, so the
+/// largest is a 35 s scan and the test takes about five minutes.
+#[test]
+#[ignore = "size series: run in release with --ignored (CI robustness job)"]
+fn every_rule_size_series_scales_near_linearly() {
+    let _runner = timed();
+    assert_series_near_linear(&[
+        ("one_line_functions", None, one_line_functions, 64 * 1024),
+        (
+            "one_line_declarations",
+            None,
+            one_line_declarations,
+            64 * 1024,
+        ),
+    ]);
+}
+
+/// [`every_rule_size_series_scales_near_linearly`] at the sizes of the large
+/// cases, from 256 KiB to 2 MiB: about twenty minutes, so run by hand with
+/// the large cases, not in CI. Its name keeps it in the set CI skips.
+#[test]
+#[ignore = "large size series: run in release with --ignored, time-boxed"]
+fn large_and_deep_inputs_scale_near_linearly_under_every_rule() {
+    let _runner = timed();
+    assert_series_near_linear(&[
+        ("one_line_functions", None, one_line_functions, 256 * 1024),
+        (
+            "one_line_declarations",
+            None,
+            one_line_declarations,
+            256 * 1024,
+        ),
+    ]);
 }
