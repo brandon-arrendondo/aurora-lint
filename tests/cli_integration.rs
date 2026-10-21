@@ -763,6 +763,128 @@ fn a_rule_the_policy_declines_does_not_run_and_every_output_says_why() {
     );
 }
 
+fn manifest_disabled() -> PathBuf {
+    fixtures().join("manifest_disabled.toml")
+}
+
+#[test]
+fn rules_naming_a_disabled_rule_warns_instead_of_reporting_clean() {
+    // The default configuration withholds EXP30-C, with a reason.
+    let clean = fixtures().join("clean.c");
+    let (code, _, stderr) = run_aurora_lint(&["--rules", "EXP30-C", clean.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+    let warning = stderr
+        .lines()
+        .find(|l| l.starts_with("Warning: --rules names EXP30-C"))
+        .unwrap_or_else(|| panic!("{stderr}"));
+    assert!(
+        warning.contains("which this configuration disables, so it does not run: withheld"),
+        "{warning}"
+    );
+    assert!(
+        warning.contains("set `enabled = true` in its [rules.cert_c.EXP30-C] block"),
+        "{warning}"
+    );
+
+    // Any rule a manifest disables, with or without a reason; an enabled
+    // rule named beside them says nothing.
+    let (code, _, stderr) = run_aurora_lint(&[
+        "--manifest",
+        manifest_disabled().to_str().unwrap(),
+        "--rules",
+        "MSC04-C,DCL31-C,ARR30-C",
+        clean.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stderr.contains(
+            "--rules names MSC04-C, which this configuration disables, so it does not run: \
+             the project's comment style is checked by its own linter."
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "--rules names DCL31-C, which this configuration disables, so it does not run: \
+             (no reason given)."
+        ),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("--rules names ARR30-C"), "{stderr}");
+}
+
+#[test]
+fn check_config_lists_each_disabled_rule_with_its_reason() {
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        "--check-config",
+        "--manifest",
+        manifest_disabled().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let disabled: Vec<&str> = stdout
+        .lines()
+        .filter(|l| l.starts_with("this configuration disables "))
+        .collect();
+    assert_eq!(
+        disabled,
+        [
+            "this configuration disables DCL31-C, which does not run: (no reason given)",
+            "this configuration disables MSC04-C, which does not run: \
+             the project's comment style is checked by its own linter",
+        ],
+        "{stdout}"
+    );
+
+    // The default configuration: the withheld rules, and not the tracked
+    // rules with no code, which no configuration can run.
+    let (code, stdout, stderr) = run_aurora_lint(&["--check-config"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l
+                .starts_with("this configuration disables EXP30-C, which does not run: withheld")),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("disables ENV04-C"),
+        "a tracked rule with no code is listed: {stdout}"
+    );
+}
+
+#[test]
+fn sarif_marks_each_disabled_rule_not_enabled_with_its_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.sarif");
+    let (code, _, stderr) = run_aurora_lint(&[
+        fixtures().join("clean.c").to_str().unwrap(),
+        "--manifest",
+        manifest_disabled().to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let sarif: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let rules = sarif["runs"][0]["tool"]["driver"]["rules"]
+        .as_array()
+        .unwrap();
+    let rule = |id: &str| rules.iter().find(|r| r["id"] == id);
+    let msc04 = rule("MSC04-C").expect("MSC04-C listed");
+    assert_eq!(msc04["defaultConfiguration"]["enabled"], false);
+    assert_eq!(
+        msc04["properties"]["disabledReason"],
+        "the project's comment style is checked by its own linter"
+    );
+    assert_ne!(msc04["shortDescription"]["text"], "Unknown rule");
+    assert_eq!(
+        rule("DCL31-C").expect("DCL31-C listed")["properties"]["disabledReason"],
+        "(no reason given)"
+    );
+    // An enabled rule with no results is not listed, as before.
+    assert!(rule("ARR30-C").is_none(), "{rules:?}");
+}
+
 #[test]
 fn check_config_names_the_data_model_and_where_it_came_from() {
     for (args, line) in [

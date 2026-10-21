@@ -32,6 +32,7 @@ last_modified = "Jun 02, 2025"
 [rules.cert_c.FIO32-C]
 # withheld until rewrite (v0.8.0): misfires, see ADR-0005
 enabled = false
+disabled_reason = "withheld until its rewrite in v0.8.0: it misfires, reporting a construct that is not in the code (ADR-0005)"
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FIO32-C.+Do+not+perform+operations+on+devices+that+are+only+appropriate+for+files"

@@ -138,6 +138,29 @@ pub struct RuleConfig {
     pub severity: Option<Severity>,
     /// Overrides the rule's default description.
     pub description: Option<String>,
+    /// Why the rule is disabled, for a block with `enabled = false`:
+    /// `--check-config`, a `--rules` that names the rule, and SARIF's rule
+    /// metadata give it, so "not run" reads apart from "ran, found nothing".
+    /// Ignored while the rule is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
+}
+
+/// A rule a manifest has a block for and disables, with the block's
+/// `disabled_reason`, if it gives one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisabledRule {
+    /// The rule's id.
+    pub id: String,
+    /// The block's `disabled_reason`.
+    pub reason: Option<String>,
+}
+
+impl DisabledRule {
+    /// The reason, or a placeholder saying the manifest gives none.
+    pub fn reason_text(&self) -> &str {
+        self.reason.as_deref().unwrap_or("(no reason given)")
+    }
 }
 
 /// How serious a violation of a rule is.
@@ -441,6 +464,9 @@ impl RuleManifest {
                 if let Some(description) = &config.description {
                     out.push_str(&format!("description = {description:?}\n"));
                 }
+                if let Some(reason) = &config.disabled_reason {
+                    out.push_str(&format!("disabled_reason = {reason:?}\n"));
+                }
             }
         }
         out
@@ -454,6 +480,25 @@ impl RuleManifest {
             .chain(self.rules.brules.iter())
             .chain(self.rules.cwe.iter())
             .filter(|(_, config)| config.enabled)
+    }
+
+    /// Every rule `shipped` names that this manifest has a block for and
+    /// disables, sorted by id. A rule with no block is not listed: a
+    /// manifest that names five rules does not disable the rest one by one.
+    pub fn disabled_rules(&self, shipped: impl Fn(&str) -> bool) -> Vec<DisabledRule> {
+        let mut disabled: Vec<DisabledRule> = self
+            .rules
+            .families()
+            .into_iter()
+            .flat_map(|(_, rules)| rules.iter())
+            .filter(|(id, config)| !config.enabled && shipped(id))
+            .map(|(id, config)| DisabledRule {
+                id: id.clone(),
+                reason: config.disabled_reason.clone(),
+            })
+            .collect();
+        disabled.sort_by(|a, b| a.id.cmp(&b.id));
+        disabled
     }
 
     /// The config for `rule_id`, checked against every namespace.
@@ -526,6 +571,7 @@ impl Default for RuleManifest {
                 enabled: true,
                 severity: None,    // Use rule's default severity
                 description: None, // Use rule's default description
+                disabled_reason: None,
             },
         );
 
@@ -535,6 +581,7 @@ impl Default for RuleManifest {
                 enabled: true,
                 severity: None,    // Use rule's default severity
                 description: None, // Use rule's default description
+                disabled_reason: None,
             },
         );
 
@@ -603,6 +650,45 @@ category = "Recommendation"
         let enabled: Vec<&String> = manifest.enabled_rules().map(|(id, _)| id).collect();
         assert_eq!(enabled, ["STR31-C"]);
         assert!(manifest.declined_rules(declines).is_empty());
+    }
+
+    const WITH_DISABLED: &str =
+        "[metadata]\nname = \"t\"\nversion = \"1\"\ncert_version = \"2016\"\n\n\
+         [rules.cert_c.STR31-C]\nenabled = false\ndisabled_reason = \"checked by review\"\n\n\
+         [rules.cert_c.ARR30-C]\nenabled = false\n\n\
+         [rules.cert_c.ENV04-C]\nenabled = false\n\n\
+         [rules.cert_c.MEM30-C]\nenabled = true\ndisabled_reason = \"stale\"\n\n\
+         [rules.cwe.\"CWE-327\"]\nenabled = false\ndisabled_reason = \"no crypto here\"\n";
+
+    #[test]
+    fn disabled_rules_are_the_shipped_rules_a_block_disables_with_their_reasons() {
+        let manifest = RuleManifest::from_toml_str(WITH_DISABLED).unwrap();
+        // ENV04-C stands for a tracked rule with no code; an enabled rule's
+        // reason is ignored.
+        let disabled = manifest.disabled_rules(|id| id != "ENV04-C");
+        let listed: Vec<(&str, &str)> = disabled
+            .iter()
+            .map(|d| (d.id.as_str(), d.reason_text()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("ARR30-C", "(no reason given)"),
+                ("CWE-327", "no crypto here"),
+                ("STR31-C", "checked by review"),
+            ]
+        );
+    }
+
+    #[test]
+    fn write_config_keeps_a_disabled_reason() {
+        let manifest = RuleManifest::from_toml_str(WITH_DISABLED).unwrap();
+        let settings = crate::settings::AnalysisSettings::preset(crate::settings::Preset::Default);
+        let reloaded = RuleManifest::from_toml_str(&manifest.render_config(&settings)).unwrap();
+        assert_eq!(
+            reloaded.disabled_rules(|_| true),
+            manifest.disabled_rules(|_| true)
+        );
     }
 
     #[test]

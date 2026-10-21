@@ -43,6 +43,7 @@ struct ValidatedRuleConfig {
     enabled: bool,
     severity: Option<ValidatedSeverity>,
     description: Option<String>,
+    disabled_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -322,7 +323,9 @@ fn check_fixture_matrix(table: &std::collections::BTreeMap<String, presets::Bloc
 /// 3. unknown / malformed fields and invalid enum values in that section
 ///    (via `deny_unknown_fields` + the typed `Validated*` schema);
 /// 4. a section count other than one, or a rule id that does not match the
-///    file name (a common copy-paste error).
+///    file name (a common copy-paste error);
+/// 5. a `disabled_reason` on a rule the manifest enables, which would ship a
+///    reason nothing ever prints.
 fn validate_rule_manifest(path: &std::path::Path, content: &str) -> Result<()> {
     // 1. Whole-file TOML syntax.
     let value: toml::Value = toml::from_str(content)
@@ -355,6 +358,20 @@ fn validate_rule_manifest(path: &std::path::Path, content: &str) -> Result<()> {
         .chain(table.brules.keys())
         .chain(table.cwe.keys())
         .collect();
+    // 5. A reason only where the rule is disabled.
+    let configs = table
+        .cert_c
+        .values()
+        .chain(table.brules.values())
+        .chain(table.cwe.values());
+    for config in configs {
+        if config.enabled && config.disabled_reason.is_some() {
+            anyhow::bail!(
+                "Rule manifest {} gives a disabled_reason for a rule it enables",
+                path.display()
+            );
+        }
+    }
     match ids.as_slice() {
         [id] if **id == *stem => Ok(()),
         [id] => anyhow::bail!(

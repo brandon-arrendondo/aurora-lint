@@ -1,0 +1,15 @@
+[metadata]
+name = "CLI Integration Test - disabled rules"
+version = "1.0.0"
+description = "One rule disabled with a reason, one without, one enabled"
+cert_version = "2016"
+
+[rules.cert_c.MSC04-C]
+enabled = false
+disabled_reason = "the project's comment style is checked by its own linter"
+
+[rules.cert_c.DCL31-C]
+enabled = false
+
+[rules.cert_c.ARR30-C]
+enabled = true

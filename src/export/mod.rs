@@ -2,6 +2,7 @@ mod json;
 mod sarif;
 
 use super::analyze::SuppressedViolation;
+use super::manifest::DisabledRule;
 use super::rules::RuleViolation;
 use super::settings::AnalysisSettings;
 use json::export_all_violations_to_json;
@@ -57,7 +58,8 @@ impl Headers<'_> {
 /// `.json` for a plain array of violation objects.
 ///
 /// SARIF is the one full-fidelity report. Spreadsheet formats are derived
-/// from it outside the tool by `scripts/sarif_convert.py`.
+/// from it outside the tool by `scripts/sarif_convert.py`. Only SARIF
+/// records the rules the configuration `disabled`.
 pub fn export_all_violations(
     violations: &[RuleViolation],
     suppressed: &[SuppressedViolation],
@@ -65,6 +67,7 @@ pub fn export_all_violations(
     settings: &AnalysisSettings,
     incomplete: Incomplete<'_>,
     headers: Headers<'_>,
+    disabled: &[DisabledRule],
 ) -> Result<()> {
     if export_path.ends_with(".sarif") || export_path.ends_with(".sarif.json") {
         return export_all_violations_to_sarif(
@@ -74,6 +77,7 @@ pub fn export_all_violations(
             settings,
             incomplete,
             headers,
+            disabled,
         );
     }
     if export_path.ends_with(".json") {

@@ -184,6 +184,14 @@ fn rule_enabled(manifest: &RuleManifest, rule_id: &str) -> bool {
     manifest.get_rule(rule_id).is_some_and(|c| c.enabled)
 }
 
+/// The shipped rules `manifest` disables, each with its `disabled_reason`.
+/// A disabled block for a rule with no code is left out: it is tracked but
+/// not implemented, and enabling it would run nothing.
+fn disabled_rules(manifest: &RuleManifest) -> Vec<manifest::DisabledRule> {
+    let registry = aurora_lint::rules::RuleRegistry::new();
+    manifest.disabled_rules(|id| registry.get_rule(id).is_some())
+}
+
 /// The manifest's settings with the command line's layered over them, before
 /// anything is resolved. A scan resolves these; `--detect-relevance` writes
 /// them out, so the manifest it generates scans the way this run would have.
@@ -819,6 +827,14 @@ fn run() -> Result<i32> {
             ));
             // Valid, and each rule the policy declines would not run.
             meaning.extend(settings.decline_notices(|r| rule_enabled(&manifest, r)));
+            // And each rule the manifest itself disables.
+            meaning.extend(disabled_rules(&manifest).iter().map(|d| {
+                format!(
+                    "this configuration disables {}, which does not run: {}",
+                    d.id,
+                    d.reason_text()
+                )
+            }));
             if let Some(notice) = settings.posix_notice(|r| rule_enabled(&manifest, r)) {
                 eprintln!("warning: {notice}");
             }
@@ -963,12 +979,25 @@ fn run() -> Result<i32> {
     println!("Detected {} at: {}", project_source.source_type(), path);
 
     let mut manifest = load_manifest(manifest_path)?;
+    // Before --rules narrows the manifest: what the configuration disables.
+    let disabled = disabled_rules(&manifest);
     if let Some(ref rules) = rule_filter {
-        // A removed id would silently cut the scan to nothing.
+        // A removed id would silently cut the scan to nothing, and a
+        // disabled one would read as a clean report.
         let mut ids: Vec<&String> = rules.iter().collect();
         ids.sort();
         for id in ids {
             manifest::removed::warn_if_removed(id, "--rules");
+            if let Some(rule) = disabled.iter().find(|d| &d.id == id) {
+                let family = manifest.rules.family_of(id).unwrap_or("cert_c");
+                eprintln!(
+                    "Warning: --rules names {id}, which this configuration disables, so it \
+                     does not run: {}. To run it, set `enabled = true` in its \
+                     [rules.{family}.{id}] block in a manifest passed with --manifest \
+                     (--write-config writes this configuration out to start from).",
+                    rule.reason_text()
+                );
+            }
         }
         manifest.restrict_to(rules);
     }
@@ -1174,6 +1203,7 @@ fn run() -> Result<i32> {
                 report: Some(&include_report),
                 dependence: Some(&header_dependence),
             },
+            &disabled,
         )?;
         println!(
             "Exported {} violations ({} suppressed) to: {}",

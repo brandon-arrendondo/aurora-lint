@@ -1,5 +1,5 @@
 use crate::analyze::SuppressedViolation;
-use crate::manifest::Severity;
+use crate::manifest::{DisabledRule, Severity};
 use crate::rules::{get_rule_description, RuleRegistry, RuleViolation};
 use crate::settings::AnalysisSettings;
 use crate::utility::hash::sha256_hex;
@@ -225,7 +225,11 @@ fn invocation(incomplete: super::Incomplete<'_>, headers: super::Headers<'_>) ->
 /// The run's `properties` record the policy and environment `settings` the
 /// findings were produced under, since the same code yields different
 /// findings under each, and the `#include`s the scan could not resolve
-/// (`headers`), since a host's missing headers do too.
+/// (`headers`), since a host's missing headers do too. Each rule the
+/// configuration `disabled` is in the driver's rules with
+/// `defaultConfiguration.enabled` false and its reason, after the rules
+/// results point at, so a rule with no results reads as not run rather than
+/// clean.
 pub fn export_all_violations_to_sarif(
     violations: &[RuleViolation],
     suppressed: &[SuppressedViolation],
@@ -233,6 +237,7 @@ pub fn export_all_violations_to_sarif(
     settings: &AnalysisSettings,
     incomplete: super::Incomplete<'_>,
     headers: super::Headers<'_>,
+    disabled: &[DisabledRule],
 ) -> Result<()> {
     // Collect unique rules from both active and suppressed violations
     let mut rules_map: BTreeMap<String, &RuleViolation> = BTreeMap::new();
@@ -255,7 +260,7 @@ pub fn export_all_violations_to_sarif(
     // The rule's own description, not a finding's message: viewers show
     // shortDescription as the rule's title for every result under it.
     let registry = RuleRegistry::new();
-    let rules_array: Vec<serde_json::Value> = rules_map
+    let mut rules_array: Vec<serde_json::Value> = rules_map
         .iter()
         .map(|(rule_id, v)| {
             serde_json::json!({
@@ -270,6 +275,29 @@ pub fn export_all_violations_to_sarif(
             })
         })
         .collect();
+    // Appended, so every ruleIndex above still points where it did. A
+    // disabled rule never runs, so none has a result.
+    rules_array.extend(
+        disabled
+            .iter()
+            .filter(|d| !rules_map.contains_key(&d.id))
+            .map(|d| {
+                let mut configuration = serde_json::json!({ "enabled": false });
+                if let Some(rule) = registry.get_rule(&d.id) {
+                    configuration["level"] =
+                        serde_json::json!(severity_to_sarif_level(&rule.severity()));
+                }
+                serde_json::json!({
+                    "id": d.id,
+                    "shortDescription": {
+                        "text": get_rule_description(&registry, &d.id)
+                    },
+                    "defaultConfiguration": configuration,
+                    "helpUri": help_uri(&d.id),
+                    "properties": { "disabledReason": d.reason_text() }
+                })
+            }),
+    );
 
     let (artifact_infos, artifacts_array) = collect_artifacts(
         violations

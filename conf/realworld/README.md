@@ -16,7 +16,8 @@ wrote for it.
 
 1. **This config = categorical policy.** A *whole-rule* disable is allowed for
    exactly three reasons, and each one must be stated in a comment on the
-   `enabled = false` line:
+   `enabled = false` line (or in the block's `disabled_reason`, which
+   `--check-config` prints):
 
    1. **Categorically inapplicable** to the codebase — Windows-only rules on a
       POSIX target, `CWE-666` (socket operation ordering) on code that makes no socket

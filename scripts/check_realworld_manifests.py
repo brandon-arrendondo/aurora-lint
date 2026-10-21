@@ -34,7 +34,7 @@ Against the rule ids in ``rules_templates/rules-all.toml``:
 2. **Stale** -- a block naming a rule that no longer exists in the base. It
    reads as a decision and decides nothing; a rename leaves one behind.
 3. **Undocumented disable** -- ``enabled = false`` with no comment anywhere in
-   its block or immediately above it. ``conf/realworld/README.md`` allows a
+   its block or immediately above it, and no ``disabled_reason`` key. ``conf/realworld/README.md`` allows a
    whole-rule disable for exactly three reasons and requires the line to state
    which; a bare ``false`` is the same "decision or oversight?" ambiguity one
    step along.
@@ -74,6 +74,7 @@ REMOVED = ROOT / "rules_templates" / "removed-rules.toml"
 FAMILIES = ("cert_c", "cwe")
 BLOCK_RE = re.compile(r"^\[rules\.(?:cert_c\.([A-Z]+[0-9]+-C)|cwe\.(CWE-[0-9]+))\]\s*$")
 DISABLED_RE = re.compile(r"^\s*enabled\s*=\s*false")
+REASON_RE = re.compile(r"^\s*disabled_reason\s*=")
 
 
 def removed_rules() -> dict[str, dict]:
@@ -102,11 +103,12 @@ def declared_data_model(path: Path) -> str | None:
 
 
 def undocumented_disables(path: Path) -> list[str]:
-    """Rule ids disabled without a comment stating why.
+    """Rule ids disabled without a comment or a `disabled_reason` stating why.
 
     A comment counts if it is trailing on the `enabled = false` line, anywhere
     else inside the rule's own block, or in the run of comment lines directly
     above the block header -- all three are used in the existing manifests.
+    A `disabled_reason` key in the block counts too: the tool prints it.
     """
     lines = path.read_text().splitlines()
     starts = [(i, m.group(1) or m.group(2)) for i, ln in enumerate(lines)
@@ -118,7 +120,7 @@ def undocumented_disables(path: Path) -> list[str]:
         block = lines[start + 1:end]
         if not any(DISABLED_RE.match(ln) for ln in block):
             continue
-        if any("#" in ln for ln in block):
+        if any("#" in ln or REASON_RE.match(ln) for ln in block):
             continue
         preamble_end = starts[n - 1][0] if n else -1
         preceding = lines[preamble_end + 1:start]

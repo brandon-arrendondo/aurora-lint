@@ -275,6 +275,7 @@ impl TerminalUI {
                     enabled: true,
                     severity: None, // Categories don't have severity
                     description: Some(format!("{} Rules", category)),
+                    disabled_reason: None,
                 },
                 level: 0,
                 is_category: true,
@@ -2432,6 +2433,7 @@ impl TerminalUI {
             &self.settings,
             Default::default(),
             Default::default(),
+            &[],
         )
     }
 
