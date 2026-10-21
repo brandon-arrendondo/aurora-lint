@@ -108,6 +108,9 @@ pub struct Int32C {
     function_return_types: RefCell<HashMap<String, String>>,
     /// Answers about sub-expressions within one scope's candidates.
     memo: ScopeMemo,
+    /// Each identifier's enclosing declarations, for
+    /// [`Self::find_variable_declaration`]; built on its first use in a file.
+    enclosing_declarations: RefCell<Option<EnclosingDeclarations>>,
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
     data_model: Cell<IntFacts>,
@@ -134,6 +137,7 @@ impl Int32C {
             project_arrays: RefCell::new(Arc::new(HashSet::new())),
             function_return_types: RefCell::new(HashMap::new()),
             memo: ScopeMemo::default(),
+            enclosing_declarations: RefCell::new(None),
             data_model: Cell::new(IntFacts::default()),
         }
     }
@@ -233,6 +237,12 @@ impl ScopeMemo {
         self.scope.get().is_some()
     }
 
+    /// The function (`None` for file scope) the candidate loop is in, or
+    /// `None` outside it.
+    fn function(&self) -> Option<Option<usize>> {
+        self.scope.get()
+    }
+
     fn get_type(&self, node: &Node) -> Option<String> {
         if !self.active() {
             return None;
@@ -256,6 +266,63 @@ impl ScopeMemo {
 
     fn constant(&self) -> Option<&const_eval::ConstMemo> {
         self.active().then_some(&self.constant)
+    }
+}
+
+/// The `declaration` nodes around each identifier of one file, read in one
+/// walk of its tree: [`Int32C::find_variable_declaration`]'s fallback asks
+/// each identifier for them, nearest first.
+struct EnclosingDeclarations {
+    /// Node id -> the nearest `declaration` that strictly encloses it, for
+    /// every node inside one.
+    around: HashMap<usize, usize>,
+    /// Declaration node id -> its sanitized text.
+    text: HashMap<usize, String>,
+}
+
+impl EnclosingDeclarations {
+    fn collect(root: &Node, source: &str) -> Self {
+        let mut found = Self {
+            around: HashMap::new(),
+            text: HashMap::new(),
+        };
+        let mut cursor = root.walk();
+        // The nearest declaration enclosing the cursor's node, one entry per
+        // level of the walk.
+        let mut nearest: Vec<Option<usize>> = vec![None];
+        loop {
+            crate::analyze::containment::checkpoint();
+            let node = cursor.node();
+            let outer = *nearest.last().unwrap_or(&None);
+            let is_declaration = node.kind() == "declaration";
+            if let Some(outer) = outer {
+                found.around.insert(node.id(), outer);
+            }
+            if is_declaration {
+                found
+                    .text
+                    .insert(node.id(), get_sanitized_node_text(&node, source));
+            }
+            if cursor.goto_first_child() {
+                nearest.push(if is_declaration {
+                    Some(node.id())
+                } else {
+                    outer
+                });
+                continue;
+            }
+            while !cursor.goto_next_sibling() {
+                if !cursor.goto_parent() {
+                    return found;
+                }
+                nearest.pop();
+            }
+        }
+    }
+
+    /// The nearest declaration strictly enclosing the node `id`.
+    fn around(&self, id: usize) -> Option<usize> {
+        self.around.get(&id).copied()
     }
 }
 
@@ -425,6 +492,7 @@ impl CertRule for Int32C {
         self.risky_vars_cache.borrow_mut().clear();
         self.param_names_cache.borrow_mut().clear();
         self.function_text_cache.borrow_mut().clear();
+        *self.enclosing_declarations.borrow_mut() = None;
 
         *self.pointer_facts.borrow_mut() = PointerFacts::collect(node, source).with_project(
             self.project_arrays.borrow().clone(),
@@ -510,6 +578,9 @@ impl Int32C {
             // Every type asked for below is asked under `scoped_type_map`,
             // which only the enclosing function decides.
             self.memo.enter(facts.function.map(|f| f.id()));
+            if let Some(function) = facts.function {
+                self.function_text(&function, source);
+            }
             let scoped_type_map = &FileTypes {
                 map: scoped_type_map,
                 env,
@@ -2332,7 +2403,9 @@ impl Int32C {
 
         // Fall back to old heuristic for variable names not in the type map
         if text.chars().all(|c| c.is_ascii_alphabetic() || c == '_') {
-            if let Some(declared_type) = self.find_variable_declaration(node, source, text) {
+            if let Some(declared_type) =
+                self.find_variable_declaration(node, source, text, type_map.env.root())
+            {
                 return declared_type;
             }
         }
@@ -2672,56 +2745,41 @@ impl Int32C {
         None
     }
 
+    /// The signedness the nearest enclosing declaration that names
+    /// `var_name` in its text spells, for an identifier the type map does
+    /// not answer for. The declarations come from
+    /// [`EnclosingDeclarations`], built once per file, so each identifier
+    /// costs the number of declarations around it rather than a climb of
+    /// `Node::parent()` (which costs the node's depth) to the root: on a long
+    /// sum outside any function body that climb made the rule cubic in the
+    /// sum's length.
     fn find_variable_declaration(
         &self,
         node: &Node,
         source: &str,
         var_name: &str,
+        root: Option<&Node>,
     ) -> Option<String> {
-        // Look for the function that contains this node
-        let mut current = node.parent();
-        while let Some(parent) = current {
-            if parent.kind() == "function_definition" {
-                // Look in function parameters
-                if let Some(params) = parent.child_by_field_name("parameters") {
-                    // Sanitized so a comment/string literal in the parameter
-                    // list can't spoof "unsigned"/"signed" and silently
-                    // misclassify a variable's signedness.
-                    let params_text = get_sanitized_node_text(&params, source);
-                    if params_text.contains("unsigned") && params_text.contains(var_name) {
-                        return Some("unsigned".to_string());
-                    }
-                    if (params_text.contains("signed") || params_text.contains("int"))
-                        && params_text.contains(var_name)
-                        && !params_text.contains("unsigned")
-                    {
-                        return Some("signed".to_string());
-                    }
-                }
-                break;
-            }
-            current = parent.parent();
+        let mut enclosing = self.enclosing_declarations.borrow_mut();
+        if enclosing.is_none() {
+            *enclosing = root.map(|root| EnclosingDeclarations::collect(root, source));
         }
-
-        // Look in local declarations (simplified)
-        current = node.parent();
-        while let Some(parent) = current {
-            if parent.kind() == "declaration" {
-                // Sanitized: a comment/string literal inside the declaration
-                // (e.g. an initializer) can't spoof "unsigned"/"signed".
-                let decl_text = get_sanitized_node_text(&parent, source);
-                if decl_text.contains(var_name) {
-                    if decl_text.contains("unsigned") {
-                        return Some("unsigned".to_string());
-                    }
-                    if decl_text.contains("signed") || decl_text.contains("int") {
-                        return Some("signed".to_string());
-                    }
+        let enclosing = enclosing.as_ref()?;
+        let mut current = enclosing.around(node.id());
+        while let Some(declaration) = current {
+            // Sanitized: a comment/string literal inside the declaration
+            // (e.g. an initializer) can't spoof "unsigned"/"signed".
+            let decl_text = &enclosing.text[&declaration];
+            if decl_text.contains(var_name) {
+                if decl_text.contains("unsigned") {
+                    return Some("unsigned".to_string());
+                }
+                if decl_text.contains("signed") || decl_text.contains("int") {
+                    return Some("signed".to_string());
                 }
             }
-            current = parent.parent();
+            current = enclosing.around(declaration);
         }
-
         None
     }
 
@@ -3945,8 +4003,7 @@ impl Int32C {
         source: &str,
         patterns: &[&str],
     ) -> bool {
-        let operand_names = self.extract_operand_names(node, source);
-        self.has_function_level_overflow_check_scoped(node, source, patterns, &operand_names)
+        self.has_function_level_overflow_check_scoped(node, source, patterns)
     }
 
     /// Check if the function containing this node has overflow checking code (all patterns must match).
@@ -3957,8 +4014,7 @@ impl Int32C {
         source: &str,
         patterns: &[&str],
     ) -> bool {
-        let operand_names = self.extract_operand_names(node, source);
-        self.has_function_level_overflow_check_scoped(node, source, patterns, &operand_names)
+        self.has_function_level_overflow_check_scoped(node, source, patterns)
     }
 
     /// Core operand-scoped function-level overflow check.
@@ -3971,75 +4027,83 @@ impl Int32C {
         node: &Node,
         source: &str,
         patterns: &[&str],
-        operand_names: &[String],
     ) -> bool {
-        // Find the containing function
+        let Some(func_text) = self.enclosing_function_text(node, source) else {
+            return false;
+        };
+
+        // First: do the patterns even exist in this function?
+        if !patterns.iter().all(|p| func_text.contains(p)) {
+            return false;
+        }
+
+        // Collecting the operand names walks the whole operation, so it
+        // waits until the patterns are found.
+        let operand_names = self.extract_operand_names(node, source);
+
+        // If we have no operand names to scope against, fall back to
+        // the old behavior (patterns found anywhere in the function)
+        if operand_names.is_empty() {
+            return true;
+        }
+
+        // The overflow-guard keywords we look for near operand names
+        let guard_keywords = [
+            "INT_MAX",
+            "INT_MIN",
+            "LONG_MAX",
+            "LONG_MIN",
+            "LLONG_MAX",
+            "LLONG_MIN",
+            "UINT_MAX",
+            "SIZE_MAX",
+            "CHAR_MAX",
+            "CHAR_MIN",
+            "SCHAR_MAX",
+            "SCHAR_MIN",
+            "SHRT_MAX",
+            "SHRT_MIN",
+        ];
+
+        // Search for lines that contain an overflow guard keyword AND
+        // at least one operand name from the flagged expression.
+        func_text.lines().any(|line| {
+            let trimmed = line.trim();
+            guard_keywords.iter().any(|kw| trimmed.contains(kw))
+                && operand_names
+                    .iter()
+                    .any(|name| self.contains_word(trimmed, name))
+        })
+    }
+
+    /// The sanitized text of the innermost function enclosing `node`,
+    /// memoized per function so a comment/string literal elsewhere in the
+    /// function can't spoof an overflow-guard pattern and silently suppress
+    /// a real violation. Inside the candidate loop that function is the
+    /// candidate's, which the walk carried down and [`Self::check_node`]
+    /// stored the text of; climbing `Node::parent()` to it from every
+    /// candidate instead cost the cube of a long sum's length.
+    fn enclosing_function_text(&self, node: &Node, source: &str) -> Option<std::rc::Rc<str>> {
+        if let Some(function) = self.memo.function() {
+            return function.and_then(|id| self.function_text_cache.borrow().get(&id).cloned());
+        }
         let mut current = node.parent();
         while let Some(parent) = current {
             if parent.kind() == "function_definition" {
-                // Sanitized so a comment/string literal elsewhere in the
-                // function can't spoof an overflow-guard pattern and
-                // silently suppress a real violation. Memoized per function:
-                // this used to re-walk the whole function body
-                // for every risky-operand candidate.
-                let func_text = {
-                    let mut cache = self.function_text_cache.borrow_mut();
-                    cache
-                        .entry(parent.id())
-                        .or_insert_with(|| get_sanitized_node_text(&parent, source).into())
-                        .clone()
-                };
-
-                // First: do the patterns even exist in this function?
-                if !patterns.iter().all(|p| func_text.contains(p)) {
-                    return false;
-                }
-
-                // If we have no operand names to scope against, fall back to
-                // the old behavior (patterns found anywhere in the function)
-                if operand_names.is_empty() {
-                    return true;
-                }
-
-                // The overflow-guard keywords we look for near operand names
-                let guard_keywords = [
-                    "INT_MAX",
-                    "INT_MIN",
-                    "LONG_MAX",
-                    "LONG_MIN",
-                    "LLONG_MAX",
-                    "LLONG_MIN",
-                    "UINT_MAX",
-                    "SIZE_MAX",
-                    "CHAR_MAX",
-                    "CHAR_MIN",
-                    "SCHAR_MAX",
-                    "SCHAR_MIN",
-                    "SHRT_MAX",
-                    "SHRT_MIN",
-                ];
-
-                // Search for lines that contain an overflow guard keyword AND
-                // at least one operand name from the flagged expression.
-                for line in func_text.lines() {
-                    let trimmed = line.trim();
-                    let has_guard = guard_keywords.iter().any(|kw| trimmed.contains(kw));
-                    if !has_guard {
-                        continue;
-                    }
-                    if operand_names
-                        .iter()
-                        .any(|name| self.contains_word(trimmed, name))
-                    {
-                        return true;
-                    }
-                }
-
-                return false;
+                return Some(self.function_text(&parent, source));
             }
             current = parent.parent();
         }
-        false
+        None
+    }
+
+    /// [`get_sanitized_node_text`] of `function`, memoized by node id.
+    fn function_text(&self, function: &Node, source: &str) -> std::rc::Rc<str> {
+        self.function_text_cache
+            .borrow_mut()
+            .entry(function.id())
+            .or_insert_with(|| get_sanitized_node_text(function, source).into())
+            .clone()
     }
 
     /// Check if `text` contains `word` as a whole word (not a substring of another identifier).
@@ -4182,6 +4246,18 @@ impl Int32C {
     fn has_surrounding_check(&self, node: &Node, source: &str, patterns: &[&str]) -> bool {
         if let Some(parent) = node.parent() {
             if let Some(grandparent) = parent.parent() {
+                // Sanitizing only blanks bytes to spaces, so a pattern with
+                // no space in it that the raw text lacks, the sanitized text
+                // lacks too. Checking that first skips the sanitizing walk
+                // of the whole context for nearly every operator, which on a
+                // long sum cost the square of its length.
+                let raw = get_node_text(&grandparent, source);
+                if patterns
+                    .iter()
+                    .any(|pattern| !pattern.contains(' ') && !raw.contains(pattern))
+                {
+                    return false;
+                }
                 // Sanitized so a comment/string literal in the surrounding
                 // context can't spoof an overflow-guard pattern and
                 // silently suppress a real violation.

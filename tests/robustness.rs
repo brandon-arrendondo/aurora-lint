@@ -1190,6 +1190,11 @@ fn table_fragment(rows: usize) -> Vec<u8> {
 /// in a loop, generated tracing, macro-call ladders and table fragments
 /// ([`self_reassigned_pointer`], [`address_taken_reassignments`],
 /// [`format_calls`], [`macro_call_ladder`], [`table_fragment`]).
+///
+/// A sum of a declared name repeated, in a function body and in a function
+/// that lost its opening brace, makes each operand a name to type: climbing
+/// `Node::parent()` from each one to find its function or declaration once
+/// ran INT32-C past the watchdog on a mutant of this shape.
 fn long_chain_cases() -> Vec<Case> {
     let case = |name: &str, bytes: Vec<u8>| Case::new(format!("c_{name}.c"), bytes, name);
     vec![
@@ -1215,7 +1220,26 @@ fn long_chain_cases() -> Vec<Case> {
         case("format_calls_20000", format_calls(20_000)),
         case("macro_call_ladder_1000_long", macro_call_ladder(1_000)),
         case("table_fragment_400_rows", table_fragment(400)),
+        case(
+            "signed_sum_in_a_body_1000_long",
+            repeated_sum("int f(int x) {", 1_000),
+        ),
+        // Without its `{` the function, the parameter and the sum parse as
+        // one top-level error node.
+        case(
+            "sum_in_a_function_without_its_brace_3000_long",
+            repeated_sum("unsigned long long f(unsigned int x)", 3_000),
+        ),
     ]
+}
+
+/// `head`, then a `return` of `x` added to itself `terms - 1` times, then `}`.
+fn repeated_sum(head: &str, terms: usize) -> Vec<u8> {
+    format!(
+        "{head}\n    return ({}x) << 4;\n}}\n",
+        "x + ".repeat(terms - 1)
+    )
+    .into_bytes()
 }
 
 /// Nesting from a thousand levels to a million: braces, parentheses, an
