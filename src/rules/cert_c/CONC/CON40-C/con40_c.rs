@@ -347,26 +347,52 @@ fn spelling(node: &Node, source: &str) -> String {
 /// element, unless evaluating the index calls, increments or assigns, when
 /// two of the same spelling may be two elements and each is its own.
 fn index_key(index: &Node, source: &str) -> String {
-    let changes = |n: &Node| {
-        matches!(
+    let mut stack = vec![*index];
+    while let Some(n) = stack.pop() {
+        if unevaluated(&n, source) {
+            continue;
+        }
+        if matches!(
             n.kind(),
             "call_expression" | "update_expression" | "assignment_expression"
-        )
-    };
-    if changes(index)
-        || !query::find_descendants_of_kinds(
-            *index,
-            &[
-                "call_expression",
-                "update_expression",
-                "assignment_expression",
-            ],
-        )
-        .is_empty()
+        ) {
+            return format!("#{}", index.id());
+        }
+        stack.extend(n.child_nodes());
+    }
+    spelling(index, source)
+}
+
+/// Whether `node` is declared at file scope: in no block, function body or
+/// parameter list.
+fn at_file_scope(node: &Node) -> bool {
+    let mut n = *node;
+    while let Some(p) = n.parent() {
+        if matches!(
+            p.kind(),
+            "compound_statement" | "function_definition" | "parameter_list"
+        ) {
+            return false;
+        }
+        n = p;
+    }
+    true
+}
+
+/// Whether control cannot leave `statement` at its end: its last statement,
+/// looking into a trailing block, is a `break`, `return` or `goto`.
+fn ends_in_jump(statement: &Node) -> bool {
+    match statement
+        .named_child_nodes()
+        .filter(|c| c.kind() != "comment")
+        .last()
     {
-        format!("#{}", index.id())
-    } else {
-        spelling(index, source)
+        Some(last) if last.kind() == "compound_statement" => ends_in_jump(&last),
+        Some(last) => matches!(
+            last.kind(),
+            "break_statement" | "return_statement" | "goto_statement"
+        ),
+        None => false,
     }
 }
 
@@ -496,10 +522,22 @@ impl<'a, 's> FileCx<'a, 's> {
         None
     }
 
-    /// Files every struct or union body defined under a tag, and every
-    /// typedef of one, dropping a name defined twice: which one an object
-    /// sees then depends on scope, and the tables decide instead.
+    /// Files every struct or union body defined under a tag at file scope,
+    /// and every file-scope typedef of one. A name defined twice, or also
+    /// defined in a block or a parameter list, is dropped: which definition
+    /// an object sees then depends on scope, and the tables decide instead.
     fn collect_bodies(&mut self, root: &Node<'a>) {
+        fn file_body<'a>(
+            bodies: &mut HashMap<String, Option<Node<'a>>>,
+            name: String,
+            body: Node<'a>,
+            file_scope: bool,
+        ) {
+            bodies
+                .entry(name)
+                .and_modify(|b| *b = None)
+                .or_insert(file_scope.then_some(body));
+        }
         let mut tags: HashMap<String, Option<Node<'a>>> = HashMap::new();
         for spec in
             query::find_descendants_of_kinds(*root, &["struct_specifier", "union_specifier"])
@@ -510,9 +548,8 @@ impl<'a, 's> FileCx<'a, 's> {
             ) else {
                 continue;
             };
-            tags.entry(get_node_text(&name, self.source).to_string())
-                .and_modify(|b| *b = None)
-                .or_insert(Some(body));
+            let name = get_node_text(&name, self.source).to_string();
+            file_body(&mut tags, name, body, at_file_scope(&spec));
         }
         let mut typedefs: HashMap<String, Option<Node<'a>>> = HashMap::new();
         for td in query::find_descendants_of_kind(*root, "type_definition") {
@@ -523,13 +560,12 @@ impl<'a, 's> FileCx<'a, 's> {
             else {
                 continue;
             };
+            let file_scope = at_file_scope(&td);
             let mut cursor = td.walk();
             for declarator in td.children_by_field_name("declarator", &mut cursor) {
                 if declarator.kind() == "type_identifier" {
-                    typedefs
-                        .entry(get_node_text(&declarator, self.source).to_string())
-                        .and_modify(|b| *b = None)
-                        .or_insert(Some(body));
+                    let name = get_node_text(&declarator, self.source).to_string();
+                    file_body(&mut typedefs, name, body, file_scope);
                 }
             }
         }
@@ -852,17 +888,7 @@ fn exclusive_arms(a: &Node, b: &Node) -> bool {
             } else {
                 cb
             };
-            let jumps = earlier
-                .named_child_nodes()
-                .filter(|c| c.kind() != "comment")
-                .last()
-                .is_some_and(|c| {
-                    matches!(
-                        c.kind(),
-                        "break_statement" | "return_statement" | "goto_statement"
-                    )
-                });
-            if !jumps {
+            if !ends_in_jump(&earlier) {
                 return false;
             }
         }
