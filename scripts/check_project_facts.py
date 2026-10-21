@@ -158,11 +158,14 @@ ENABLED_PATTERNS = [
     r"enables?\s+(\d{3})\s+of the \d{3} tracked rules",
     r"\((\d{3})\s+enabled by default\)",
     r"all\s+(\d{3})\s+enabled rules",
-    r"#\s*(\d{3})\s+of \d{3} rules enabled",
+    r"#\s*(\d{3})\s+of \d{3} (?:CERT C\s+)?rules enabled",
     r"-->\s*(\d{3})\s+CERT C rules applied",
     r"\*\*Enabled By Default:\*\*\s+(\d{3})",
     r"(\d{3})\s+enabled\s*/\s*\d+\s+implemented",
     r"rules,\s+(\d{3})\s+enabled by default",
+    r"implemented,\s+(\d{3})\s+enabled by default",
+    r"(\d{3})\s+of them enabled by default",
+    r"\((\d{3})\s+implemented and enabled by default",
 ]
 # The CWE ruleset is counted on its own: its rules are not CERT C rules, so
 # they are in none of the counts above.
@@ -177,7 +180,7 @@ UNIMPLEMENTED_PATTERNS = [
 IMPLEMENTED_PATTERNS = [
     r"\*\*(\d{3})\s+(?:CERT C\s+)?rules?\*\*\s+implemented",
     r"(\d{3})\s+rules? (?:are )?implemented",
-    r"\((\d{3})\s+implemented\)",
+    r"\((\d{3})\s+implemented\b",
     r"implements\s+(\d{3})\s+rules",
     r"of the (\d{3}) implemented rules",
     r"\*\*Implemented Rules:\*\*\s+(\d{3})",

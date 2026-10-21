@@ -99,6 +99,33 @@ class TrackedOnlyTests(unittest.TestCase):
         with mock.patch.object(facts.subprocess, "run", side_effect=FileNotFoundError):
             self.assertEqual(self._lint()[0], 1)
 
+    def _implement(self, count):
+        for i in range(count):
+            rule = self.root / "src" / "rules" / "cert_c" / "ABC" / f"ABC{i:02d}-C"
+            rule.mkdir(parents=True)
+            (rule / f"abc{i:02d}_c.rs").write_text("")
+
+    def test_implemented_and_enabled_are_read_apart(self):
+        # One rule has code but is disabled by default, so "implemented and
+        # enabled by default" with a single count is a claim about both.
+        self._implement(ENABLED + 1)
+        index = self.root / "docs" / "index.rst"
+        index.write_text(f"({ENABLED + 1} implemented and enabled by default)\n")
+        code, out = self._lint()
+        self.assertEqual(code, 1)
+        self.assertIn(f"docs/index.rst:1  says {ENABLED + 1} enabled", out)
+        index.write_text(f"({ENABLED + 1} implemented, {ENABLED} enabled by default)\n")
+        self.assertEqual(self._lint()[0], 0)
+        index.write_text(f"{ENABLED + 1} implemented, {ENABLED + 1} of them enabled by default\n")
+        self.assertEqual(self._lint()[0], 1)
+
+    def test_a_tree_comment_is_read_as_an_enabled_count(self):
+        (self.root / "docs" / "index.rst").write_text(
+            f"# {ENABLED + 1} of {TRACKED} CERT C rules enabled\n")
+        code, out = self._lint()
+        self.assertEqual(code, 1)
+        self.assertIn(f"docs/index.rst:1  says {ENABLED + 1} enabled", out)
+
 
 if __name__ == "__main__":
     unittest.main()

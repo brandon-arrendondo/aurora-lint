@@ -4,7 +4,7 @@
 [![Latest Release](https://img.shields.io/github/v/release/brandon-arrendondo/aurora-lint)](https://github.com/brandon-arrendondo/aurora-lint/releases/latest)
 [![License](https://img.shields.io/github/license/brandon-arrendondo/aurora-lint)](LICENSE)
 
-A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). aurora-lint tracks 306 CERT C rules across 17 categories (302 implemented and enabled by default), plus a CWE ruleset of 4 rules for weaknesses CERT C has no identifier for, with a CI/CD-ready command-line interface and an optional interactive terminal UI.
+A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). aurora-lint tracks 306 CERT C rules across 17 categories (302 implemented, 292 enabled by default), plus a CWE ruleset of 4 rules for weaknesses CERT C has no identifier for, with a CI/CD-ready command-line interface and an optional interactive terminal UI.
 
 ## Does It Find Real Bugs?
 
@@ -120,7 +120,7 @@ nonsense on a C++ header it encounters.
 
 ## Key Features
 
-- **302 CERT C rules** implemented (306 tracked; see [Configuration](docs/configuration.rst) for the 4 tracked but not yet implemented), 292 of them enabled by default and 10 withheld until rewritten across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
+- **302 CERT C rules** implemented (306 tracked; see [Configuration](docs/configuration.rst) for the 4 tracked but not yet implemented) across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN), 292 of them enabled by default and 10 withheld until rewritten
 - **Optional interactive terminal UI** for browsing and managing violations (build with `--features tui`)
 - **SARIF 2.1.0 export** (plus a plain JSON array); `scripts/sarif_convert.py` turns a report into CSV/XLSX
 - **CI/CD ready**: exit codes, severity thresholds, diff-only mode, SARIF output
