@@ -676,9 +676,6 @@ implementation cannot detect them correctly.
 - **EXP40-C**: ``is_const_qualified()`` returns false for identifiers — cannot
   determine if a variable was declared ``const`` without a symbol table.
 
-- **STR03-C**: ``strncpy()`` and ``snprintf()`` always trigger violations
-  regardless of whether null-termination is manually added afterward.
-
 
 Benchmark Caveats And Rule-Suite Coverage
 -----------------------------------------

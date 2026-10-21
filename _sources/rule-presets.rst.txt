@@ -551,12 +551,6 @@ behind a departure.
      - stricter
      - 
      - ERR05-C/2026-10-07/presets, ERR05-C/2026-10-07/assert
-   * - ERR06-C
-     - not_enforced
-     - not_enforced
-     - not_enforced
-     - 
-     - ERR06-C/2026-10-07/disposition
    * - ERR07-C
      - narrowed
      - as_written
@@ -785,12 +779,6 @@ behind a departure.
      - as_written
      - 
      - P/coincide
-   * - FIO03-C
-     - not_enforced
-     - not_enforced
-     - not_enforced
-     - 
-     - FIO03-C/2026-10-07/disposition
    * - FIO05-C
      - as_written
      - as_written
@@ -1001,12 +989,6 @@ behind a departure.
      - as_written
      - 
      - P/coincide
-   * - FLP05-C
-     - not_enforced
-     - not_enforced
-     - not_enforced
-     - 
-     - FLP05-C/2026-10-07/disposition
    * - FLP06-C
      - as_written
      - as_written
@@ -1121,12 +1103,6 @@ behind a departure.
      - as_written
      - 
      - INT13-C/2026-10-07/api-flags, P/open-cells
-   * - INT14-C
-     - not_enforced
-     - not_enforced
-     - not_enforced
-     - 
-     - INT14-C/2026-10-07/disposition
    * - INT15-C
      - as_written
      - as_written
@@ -1361,12 +1337,6 @@ behind a departure.
      - as_written
      - 
      - P/coincide
-   * - MSC14-C
-     - not_enforced
-     - not_enforced
-     - not_enforced
-     - 
-     - MSC14-C/2026-10-07/disposition
    * - MSC15-C
      - not_enforced
      - not_enforced
@@ -1661,18 +1631,6 @@ behind a departure.
      - stricter
      - 
      - PRE11-C/2026-10-07/1, PRE11-C/2026-10-07/presets
-   * - PRE12-C
-     - not_enforced
-     - not_enforced
-     - not_enforced
-     - 
-     - PRE12-C/2026-10-07/disposition
-   * - PRE13-C
-     - not_enforced
-     - not_enforced
-     - not_enforced
-     - 
-     - PRE13-C/2026-10-07/disposition
    * - PRE30-C
      - as_written
      - as_written
@@ -1751,12 +1709,6 @@ behind a departure.
      - stricter
      - 
      - STR02-C/2026-10-07/presets
-   * - STR03-C
-     - not_enforced
-     - not_enforced
-     - not_enforced
-     - 
-     - STR03-C/2026-10-07/disposition
    * - STR04-C
      - as_written
      - as_written

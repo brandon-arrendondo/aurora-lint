@@ -574,7 +574,7 @@ names the current set and its figures:</p>
 </tbody>
 </table>
 <p><em>Data from aurora-lint v0.4.120, cppcheck 2.10, clang-tidy 21.1.6 (run #118).</em></p>
-<p><strong>Why aurora-lint reports more violations</strong>: aurora-lint tracks 306 CERT C rules, 292 enabled by default (both
+<p><strong>Why aurora-lint reports more violations</strong>: aurora-lint tracks 298 CERT C rules, 284 enabled by default (both
 advisory and mandatory) while cppcheck and clang-tidy implement ~20 checks each.
 The difference reflects rule coverage breadth, not false positive rate.</p>
 <p><strong>Measured precision/recall</strong>: 6.2% precision / 91.7% recall against the
@@ -619,7 +619,7 @@ as representative.</p>
 <h3>Apples-to-Apples Concerns<a class="headerlink" href="#apples-to-apples-concerns" title="Link to this heading"></a></h3>
 <ol class="arabic simple">
 <li><p><strong>Rule coverage</strong>: cppcheck/clang-tidy implement ~20 checks each vs. aurora-lint’s
-292 enabled rules. Raw violation counts are not directly comparable.</p></li>
+284 enabled rules. Raw violation counts are not directly comparable.</p></li>
 <li><p><strong>Translation unit scope</strong>: Use consistent scope (cross-file <code class="docutils literal notranslate"><span class="pre">-d</span></code> flag or
 single-file) when comparing.</p></li>
 <li><p><strong>Preprocessor handling</strong>: cppcheck evaluates all <code class="docutils literal notranslate"><span class="pre">#ifdef</span></code> configs;
@@ -836,8 +836,6 @@ automatic storage. Static locals passed to <code class="docutils literal notrans
 statements or assignments.</p></li>
 <li><p><strong>EXP40-C</strong>: <code class="docutils literal notranslate"><span class="pre">is_const_qualified()</span></code> returns false for identifiers — cannot
 determine if a variable was declared <code class="docutils literal notranslate"><span class="pre">const</span></code> without a symbol table.</p></li>
-<li><p><strong>STR03-C</strong>: <code class="docutils literal notranslate"><span class="pre">strncpy()</span></code> and <code class="docutils literal notranslate"><span class="pre">snprintf()</span></code> always trigger violations
-regardless of whether null-termination is manually added afterward.</p></li>
 </ul>
 </section>
 </section>
@@ -903,7 +901,7 @@ projects; not refreshed, and only the <em>Implemented</em> row is today’s coun
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Implemented</p></td>
-<td><p>306 (292 enabled by default)</p></td>
+<td><p>298 (284 enabled by default)</p></td>
 </tr>
 <tr class="row-odd"><td><p>Have true-positive evidence somewhere</p></td>
 <td><p><strong>186</strong> — 127 from Juliet, 144 from real-world TP/FN labels</p></td>
