@@ -602,17 +602,18 @@ each fixed crash under every rule, so it, not the default ``cargo test``, is
 what catches those crashes coming back. A sixth, ignored test generates
 inputs too large for CI (a file over the size limit, 200 MiB of random
 bytes, a 16 MiB line, macro chains up to a million definitions long); run it
-by hand with ``cargo test --release --test robustness -- --ignored``. Every
-rule walks the whole of a file, so a scan of one file is linear in its size
-and an 8 MiB file takes minutes. Each large case is therefore given time in
+by hand with ``cargo test --release --test robustness -- --ignored
+--show-output`` (without ``--show-output`` a passing test prints nothing).
+Every rule walks the whole of a file, so a scan of one file is linear in its
+size and an 8 MiB file takes minutes. Each large case is therefore given time in
 proportion to its size, with a margin over the slowest machine measured,
 and prints its time and peak memory. What would make a large file slow
 beyond that is a step that grows faster than the file, and the size series
 catch it: CI times generated inputs at four sizes, each under the rule that
 exercises it, and both shapes of the large cases under every rule from
-64 KiB to 512 KiB, and fails a series whose time grows faster than its
-size. The same every-rule series from 256 KiB to 2 MiB runs by hand with the
-large cases.
+64 KiB to 512 KiB, and fails a series whose time against size has a
+log-log slope above 1.3. The same every-rule series from 256 KiB to 2 MiB
+runs by hand with the large cases.
 ``AURORA_LINT_ROBUSTNESS_BIN`` points the suite at another build, such as a
 Windows ``aurora-lint.exe`` run through WSL on cases written under
 ``/mnt/c``.

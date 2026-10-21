@@ -1368,11 +1368,20 @@ const LARGE_CASE_MICROS_PER_BYTE: u64 = 280;
 /// built to be refused that is not would otherwise be given hours.
 const LARGE_CASE_MAX_WALL: Duration = Duration::from_secs(2 * 3600);
 
+/// The default `--max-file-size`, in bytes: a larger file is refused unread.
+const DEFAULT_MAX_FILE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Whether `case` is analysed at all: the input guard refuses a case built
+/// to be refused, and any file over the size limit, before reading it.
+fn large_case_is_analysed(case: &Case) -> bool {
+    case.refuse != Refuse::Must && case.bytes.len() <= DEFAULT_MAX_FILE_BYTES
+}
+
 /// The wall limit for `case`: [`LARGE_CASE_MICROS_PER_BYTE`] of its size,
-/// between [`SCAN_WALL_LIMIT`] and [`LARGE_CASE_MAX_WALL`]. A case the
-/// input guard must refuse is never analysed, so its size buys it nothing.
+/// between [`SCAN_WALL_LIMIT`] and [`LARGE_CASE_MAX_WALL`]. A case that is
+/// never analysed keeps [`SCAN_WALL_LIMIT`], since its size buys it nothing.
 fn large_case_wall_limit(case: &Case) -> Duration {
-    if case.refuse == Refuse::Must {
+    if !large_case_is_analysed(case) {
         return SCAN_WALL_LIMIT;
     }
     Duration::from_micros(case.bytes.len() as u64 * LARGE_CASE_MICROS_PER_BYTE)
@@ -1383,7 +1392,9 @@ fn large_case_wall_limit(case: &Case) -> Duration {
 /// time, never committed. Each must be refused with a reason or analysed
 /// within budget -- never a crash, a hang or a stack overflow, which aborts
 /// the scan before containment can see it. Run in release, time-boxed:
-/// `cargo test --release --test robustness -- --ignored`.
+/// `cargo test --release --test robustness -- --ignored --show-output`,
+/// since a passing test's per-case times and memory print only with
+/// `--show-output`.
 fn large_cases() -> Vec<Case> {
     let mut rng = Rng(DEFAULT_SEED);
     let mut out = Vec::new();
@@ -1392,7 +1403,7 @@ fn large_cases() -> Vec<Case> {
         c.refuse = refuse;
         out.push(c);
     };
-    let limit = 64 * 1024 * 1024; // the default --max-file-size
+    let limit = DEFAULT_MAX_FILE_BYTES;
     let function = |i: usize| format!("int f{i}(int a) {{ return a * {i} + 1; }}\n");
     let mut over = String::new();
     let mut i = 0;
@@ -1489,10 +1500,16 @@ fn large_and_deep_inputs_are_refused_or_analysed_within_budget() {
             )
         });
         if let Ok(scan) = &result {
+            // A refused case's time is the guard's, not a rate per byte.
+            let rate = if large_case_is_analysed(&c) {
+                let micros = scan.elapsed.as_secs_f64() * 1e6 / c.bytes.len().max(1) as f64;
+                format!("{micros:.0} us/B")
+            } else {
+                "refused unread".into()
+            };
             println!(
-                "{name}: {megabytes_in:.1} MB in {:.1?} ({:.0} us/B, limit {limit:.0?}), peak {} MB",
+                "{name}: {megabytes_in:.1} MB in {:.1?} ({rate}, limit {limit:.0?}), peak {} MB",
                 scan.elapsed,
-                scan.elapsed.as_secs_f64() * 1e6 / c.bytes.len().max(1) as f64,
                 megabytes(scan.peak_rss_kib)
             );
         }
@@ -1799,8 +1816,8 @@ fn generated_size_series_scale_near_linearly() {
     assert_series_near_linear(&series);
 }
 
-/// Time every series in `series` and fail if any grows faster than
-/// [`SIZE_SERIES_MAX_SLOPE`]. Every series' times and slope are printed,
+/// Time every series in `series` and fail any whose time against size has a
+/// log-log slope above [`SIZE_SERIES_MAX_SLOPE`]. Every series' times and slope are printed,
 /// passing or not, so a near miss shows in the log.
 fn assert_series_near_linear(series: &[Series]) {
     let mut failures = Vec::new();
@@ -1831,8 +1848,9 @@ fn assert_series_near_linear(series: &[Series]) {
 /// A rule or analysis that does more than a linear amount of work per
 /// function or per declaration fails here, under whichever rule it is: the
 /// per-rule series above time only the rules picked for them. Every rule
-/// scanning one file takes about 65 us per byte of these inputs, so the
-/// largest is a 35 s scan and the test takes about five minutes.
+/// scanning one file takes about 65 us per byte of the functions and 35 us
+/// per byte of the declaration line, so the largest is a 35 s scan and the
+/// test takes about five minutes.
 #[test]
 #[ignore = "size series: run in release with --ignored (CI robustness job)"]
 fn every_rule_size_series_scales_near_linearly() {
