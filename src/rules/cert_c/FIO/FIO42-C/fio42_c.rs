@@ -41,9 +41,8 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::context::ScopedTable;
 use crate::analyze::context::SummaryLookup;
 use crate::analyze::function_summary::FunctionSummary;
-use crate::analyze::macro_expand::{
-    collect_function_macro_names, macro_param_indices_released_at, FunctionMacro, Live,
-};
+use crate::analyze::macro_expand::{macro_param_indices_released_at, FunctionMacro, Live};
+use crate::analyze::noreturn::library_macro_replaces;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{
     declaration_has_storage_class, get_node_text, ScopeDeclarations,
@@ -54,6 +53,7 @@ use crate::utility::cert_c::std_functions::is_known_standard_function;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tree_sitter::Node;
 
@@ -62,6 +62,9 @@ pub struct Fio42C {
     function_summaries: RefCell<ScopedTable<FunctionSummary>>,
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     macro_aliases: RefCell<Arc<HashMap<String, String>>>,
+    project: RefCell<Option<ProjectContext>>,
+    // The file being checked, for the headers it includes.
+    file_path: RefCell<Option<PathBuf>>,
 }
 
 impl Fio42C {
@@ -95,6 +98,11 @@ impl CertRule for Fio42C {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.function_macros.borrow_mut() = Arc::clone(&context.function_macros);
         *self.macro_aliases.borrow_mut() = Arc::clone(&context.macro_aliases);
+        *self.project.borrow_mut() = Some(context.clone());
+    }
+
+    fn set_file_path(&self, path: &std::path::Path) {
+        *self.file_path.borrow_mut() = Some(path.to_path_buf());
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -104,8 +112,19 @@ impl CertRule for Fio42C {
         // Track file resources across the AST
         let macros = self.function_macros.borrow();
         let macro_aliases = self.macro_aliases.borrow();
-        let mut own_macros = HashSet::new();
-        collect_function_macro_names(source, &mut own_macros);
+        // The project's macros named like a library function that replace it
+        // in this file: defined here or in a header the file includes, not
+        // only in a bundled library elsewhere in the tree.
+        let project = self.project.borrow();
+        let file_path = self.file_path.borrow();
+        let own_macros: HashSet<String> = macros
+            .keys()
+            .filter(|name| is_known_standard_function(name) && source.contains(name.as_str()))
+            .filter(|name| {
+                library_macro_replaces(node, source, name, project.as_ref(), file_path.as_deref())
+            })
+            .cloned()
+            .collect();
         let mut tracker = FileResourceTracker::new(*node, &macros, &macro_aliases, own_macros);
         tracker.analyze_node(node, source, &summaries, &mut violations);
 
@@ -122,7 +141,7 @@ struct FileResourceTracker<'t, 'm> {
     macros: &'m HashMap<String, FunctionMacro>,
     // `#define CLOSE close`: an object-like macro naming another function.
     macro_aliases: &'m HashMap<String, String>,
-    // The function-like macros this file itself defines.
+    // The macros named like a library function that replace it in this file.
     own_macros: HashSet<String>,
     // The function is `main`: its handles are still open when the program
     // ends, which no escape answers for (see `analyze_function`).
@@ -390,7 +409,10 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
                     } else {
                         self.member_owner(func, &e, source)
                     };
-                    if let Some(key) = key.or_else(|| self.spelled_object(&e, source)) {
+                    // In `main` an open into `c.f` is keyed by its spelling,
+                    // which a close of `c.f` must reach even though `c` is a
+                    // local aggregate.
+                    for key in key.into_iter().chain(self.spelled_object(&e, source)) {
                         if self.is_tracked(&key) {
                             held.push(key);
                         }
@@ -471,7 +493,8 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
     }
 
     /// Whether `expr` is a name declared as an array, which a call receives
-    /// as the address of its elements.
+    /// as the address of its elements. A parameter written with array syntax
+    /// is a pointer, so its elements are the caller's.
     fn names_array(&self, expr: &Node<'t>, source: &str) -> bool {
         expr.kind() == "identifier"
             && self
@@ -482,6 +505,7 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
                     get_node_text(expr, source),
                     source,
                 )
+                .filter(|(declaration, _)| declaration.kind() != "parameter_declaration")
                 .and_then(|(_, declarator)| declared_identifier(&declarator))
                 .and_then(|bound| bound.parent())
                 .is_some_and(|p| p.kind() == "array_declarator")
@@ -705,9 +729,10 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
             .collect();
         // A function-like macro is read through its expansion. The macro
         // table is the whole project's, so one named like a library function
-        // is taken over the library only when this file defines it
-        // (`#define CLOSE(f) fclose(f)`): a bundled library's
-        // `#define fclose(a) fl_fclose(a)` does not reach every file.
+        // is taken over the library only when this file or a header it
+        // includes defines it (`#define CLOSE(f) fclose(f)`): a bundled
+        // library's `#define fclose(a) fl_fclose(a)` does not reach every
+        // file.
         if function.kind() == "identifier"
             && self.macros.contains_key(spelled)
             && (self.own_macros.contains(spelled) || !is_known_standard_function(spelled))
@@ -733,8 +758,10 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
             && (function.kind() != "identifier" || !is_known_standard_function(callee_name));
         for (idx, arg) in arguments.iter().enumerate() {
             // A local array is passed as the address of its elements, which
-            // the callee may close or keep, as with `&f`.
-            let decays = self.names_array(&unwrap_held(arg), source);
+            // a function of the project's own may close or keep, as with
+            // `&f`; its summary does not follow an element. A library
+            // function (`memset(fs, 0, sizeof fs)`) leaves them be.
+            let decays = summary.is_some() && self.names_array(&unwrap_held(arg), source);
             let releases = !self.terminates
                 && (unknown
                     || decays
@@ -829,15 +856,29 @@ impl<'t, 'm> FileResourceTracker<'t, 'm> {
                 )
             });
         }
+        // The arguments some definition hands to a function of the project's
+        // own, which may close or keep the elements of an array it is given.
+        let to_project = if self.terminates {
+            Vec::new()
+        } else {
+            macro_param_indices_released_at(
+                macros,
+                name,
+                |callee, _| {
+                    !NOT_CALLEES.contains(&callee)
+                        && !macros.contains_key(callee)
+                        && summary_at(resolve_macro_alias(aliases, callee)).is_some()
+                },
+                Live::Any,
+            )
+        };
         for (idx, arg) in arguments.iter().enumerate() {
-            let decays = self.names_array(&unwrap_held(arg), source);
+            let decays = to_project.contains(&idx) && self.names_array(&unwrap_held(arg), source);
             for key in self.held_objects(func, arg, source) {
                 let closes = closed
                     .iter()
                     .any(|(at, kind)| at.contains(&idx) && self.holds_kind(&key, kind));
-                let leaves = handed_off
-                    .as_ref()
-                    .is_some_and(|h| h.contains(&idx) || decays);
+                let leaves = decays || handed_off.as_ref().is_some_and(|h| h.contains(&idx));
                 if closes || leaves {
                     self.release(&key);
                 }
@@ -1126,7 +1167,7 @@ fn macro_keeps_to_calls(m: &FunctionMacro) -> bool {
     let plain = |body: &str| {
         let tokens = lex_replacement_list(body, true);
         !tokens.iter().any(|t| {
-            (t.kind == PpKind::Identifier && t.is("return"))
+            (t.kind == PpKind::Identifier && &*t.text == "return")
                 || (t.kind == PpKind::Punctuator
                     && (t.is("++")
                         || t.is("--")

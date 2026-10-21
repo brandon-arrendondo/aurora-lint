@@ -1038,7 +1038,7 @@ fn file_redefines_in_every_build(root: &Node, source: &str, name: &str) -> bool 
 
 /// The macro half of [`library_function_replaced`]: a macro named `name`
 /// replaces the library function for this file.
-fn library_macro_replaces(
+pub fn library_macro_replaces(
     root: &Node,
     source: &str,
     name: &str,

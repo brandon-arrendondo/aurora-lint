@@ -3867,6 +3867,43 @@ fn fio46_macro_header_is_found_by_quoted_include_without_a_search_path() {
     assert_eq!(fio46_unreached_macro_findings(false), vec!["f.c:5"]);
 }
 
+/// FIO42-C findings, as `file:line`, for a directory where `close.h`
+/// defines `CLOSE(f)` as `fclose(f)`, `a.c` includes it and `b.c` does not.
+fn fio42_header_macro_findings() -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let tree = fixtures().join("fio42_header_macro").join("f");
+    let manifest = fixtures().join("manifest_fio42.toml");
+    let (code, _, _) = run_aurora_lint(&[
+        tree.to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    let mut found: Vec<String> = violations
+        .iter()
+        .filter(|v| v["rule_id"] == "FIO42-C")
+        .map(|v| {
+            let file = v["file"].as_str().unwrap();
+            let name = Path::new(file).file_name().unwrap().to_str().unwrap();
+            format!("{name}:{}", v["line"])
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+#[test]
+fn fio42_close_macro_counts_where_its_header_is_included() {
+    // `a.c` closes through the header's `CLOSE`; in `b.c` the name reaches
+    // no definition, so nothing shows the stream closed.
+    assert_eq!(fio42_header_macro_findings(), vec!["b.c:4"]);
+}
+
 fn manifest_sig30() -> PathBuf {
     fixtures().join("manifest_sig30.toml")
 }
