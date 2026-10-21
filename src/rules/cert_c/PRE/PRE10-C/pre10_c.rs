@@ -30,6 +30,16 @@ use tree_sitter::Node;
 
 pub struct Pre10C;
 
+/// What [`Pre10C::count_semicolons_outside_strings`] reads in a macro body.
+struct Semicolons {
+    /// Semicolons outside literals and `for` headers.
+    count: usize,
+    /// Whether the body has a `for` header.
+    for_header: bool,
+    /// Whether anything follows the last counted semicolon.
+    text_after_last: bool,
+}
+
 impl CertRule for Pre10C {
     fn rule_id(&self) -> &'static str {
         "PRE10-C"
@@ -99,8 +109,15 @@ impl Pre10C {
         // Remove line continuations (backslash-newline)
         let cleaned = text.replace("\\\n", " ").replace("\\\r\n", " ");
 
-        // Count semicolons (excluding those in strings)
-        let semicolon_count = self.count_semicolons_outside_strings(&cleaned);
+        // Count semicolons (excluding those in strings and for headers).
+        // A statement after a `for` statement's own semicolon is a second
+        // statement even with no semicolon of its own, as in
+        // `for (...) f(); g()`.
+        let semicolons = self.count_semicolons_outside_strings(&cleaned);
+        let semicolon_count = semicolons.count
+            + usize::from(
+                semicolons.for_header && semicolons.count > 0 && semicolons.text_after_last,
+            );
 
         // Multiple statements if we have more than 1 semicolon
         // OR if we have curly braces (compound statement)
@@ -116,14 +133,24 @@ impl Pre10C {
         false
     }
 
-    fn count_semicolons_outside_strings(&self, text: &str) -> usize {
+    /// Semicolons that end a statement: outside string and character
+    /// literals, and outside the parentheses of a `for` header, whose two
+    /// semicolons separate its clauses, not statements.
+    fn count_semicolons_outside_strings(&self, text: &str) -> Semicolons {
         let mut count = 0;
         let mut in_string = false;
         let mut in_char = false;
         let mut escaped = false;
-        let chars: Vec<char> = text.chars().collect();
+        // The identifier or keyword just read, and whether the last token was `for`.
+        let mut word = String::new();
+        let mut after_for = false;
+        // Parenthesis depth, and the depths at which a `for` header opened.
+        let mut depth = 0usize;
+        let mut for_headers: Vec<usize> = Vec::new();
+        let mut for_header = false;
+        let mut text_after_last = false;
 
-        for c in chars {
+        for c in text.chars() {
             if escaped {
                 escaped = false;
                 continue;
@@ -134,16 +161,58 @@ impl Pre10C {
                 continue;
             }
 
-            if c == '"' && !in_char {
-                in_string = !in_string;
-            } else if c == '\'' && !in_string {
-                in_char = !in_char;
-            } else if c == ';' && !in_string && !in_char {
-                count += 1;
+            if in_string || in_char {
+                if (c == '"' && in_string) || (c == '\'' && in_char) {
+                    in_string = false;
+                    in_char = false;
+                }
+                continue;
             }
+
+            if c.is_ascii_alphanumeric() || c == '_' {
+                word.push(c);
+                text_after_last = true;
+                continue;
+            }
+            if !word.is_empty() {
+                after_for = word == "for";
+                word.clear();
+            }
+            if c.is_whitespace() {
+                continue;
+            }
+
+            text_after_last = true;
+            match c {
+                '"' => in_string = true,
+                '\'' => in_char = true,
+                '(' => {
+                    depth += 1;
+                    if after_for {
+                        for_headers.push(depth);
+                        for_header = true;
+                    }
+                }
+                ')' => {
+                    if for_headers.last() == Some(&depth) {
+                        for_headers.pop();
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+                ';' if for_headers.is_empty() => {
+                    count += 1;
+                    text_after_last = false;
+                }
+                _ => {}
+            }
+            after_for = false;
         }
 
-        count
+        Semicolons {
+            count,
+            for_header,
+            text_after_last,
+        }
     }
 
     fn is_wrapped_in_do_while(&self, text: &str) -> bool {

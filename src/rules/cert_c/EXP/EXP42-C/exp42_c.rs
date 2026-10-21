@@ -3,7 +3,7 @@
 
 use crate::manifest::Severity;
 use crate::rules::{CertRule, RuleViolation};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declarator};
 use lang_parsing_substrate::query;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Query, QueryCursor};
@@ -130,7 +130,19 @@ fn is_struct_comparison(args_node: &Node, source: &str) -> bool {
     // Check if the third argument (size) is sizeof(struct ...)
     // This is a strong indicator of struct comparison
     let size_arg = arguments[2];
-    if has_sizeof_struct(&size_arg, source) {
+
+    // An operand that is the address of a variable declared with a scalar
+    // type compares that scalar's bytes, which hold no padding, unless the
+    // size names a struct type outright.
+    if !has_struct_specifier(&size_arg)
+        && arguments[..2]
+            .iter()
+            .any(|arg| is_address_of_scalar(arg, source))
+    {
+        return false;
+    }
+
+    if has_sizeof_struct(&size_arg) {
         return true;
     }
 
@@ -206,12 +218,70 @@ fn is_pack_one_active_before(root: &Node, byte_pos: usize, source: &str) -> bool
     active
 }
 
-/// Checks if a node contains sizeof with a struct type
-fn has_sizeof_struct(node: &Node, source: &str) -> bool {
-    let text = get_node_text(node, source);
+/// Whether `node` names a struct type with the `struct` keyword: a
+/// `struct_specifier` token, not the letters "struct" inside an identifier
+/// such as `restructure_count`.
+fn has_struct_specifier(node: &Node) -> bool {
+    query::find_first_descendant(*node, |n| n.kind() == "struct_specifier").is_some()
+}
 
-    // Look for "sizeof" followed by "struct" pattern
-    if text.contains("sizeof") && text.contains("struct") {
+/// Whether `arg` is `&name` (parentheses aside) for a `name` declared, in
+/// its own scope, as a scalar: an arithmetic or enumerated type, or any
+/// pointer (ADR-0006). A typedef'd type is not resolved, so it is not
+/// counted as scalar here.
+fn is_address_of_scalar(arg: &Node, source: &str) -> bool {
+    let mut expr = *arg;
+    while expr.kind() == "parenthesized_expression" {
+        match expr.named_child(0) {
+            Some(inner) => expr = inner,
+            None => return false,
+        }
+    }
+    if expr.kind() != "pointer_expression"
+        || expr
+            .child_by_field_name("operator")
+            .is_none_or(|op| get_node_text(&op, source) != "&")
+    {
+        return false;
+    }
+    let Some(ident) = expr
+        .child_by_field_name("argument")
+        .filter(|a| a.kind() == "identifier")
+    else {
+        return false;
+    };
+    let name = get_node_text(&ident, source);
+    let Some((decl, declarator)) = resolve_identifier_declarator(&ident, name, source) else {
+        return false;
+    };
+    let mut d = declarator;
+    loop {
+        match d.kind() {
+            "pointer_declarator" => return true,
+            "array_declarator" | "function_declarator" => return false,
+            _ => {}
+        }
+        match d.child_by_field_name("declarator") {
+            Some(inner) => d = inner,
+            None => break,
+        }
+    }
+    decl.child_by_field_name("type").is_some_and(|t| {
+        matches!(
+            t.kind(),
+            "primitive_type" | "sized_type_specifier" | "enum_specifier"
+        )
+    })
+}
+
+/// Checks if a node contains sizeof with a struct type
+fn has_sizeof_struct(node: &Node) -> bool {
+    // A sizeof whose operand names a struct type with the keyword
+    if query::find_first_descendant(*node, |n| {
+        n.kind() == "sizeof_expression" && has_struct_specifier(&n)
+    })
+    .is_some()
+    {
         return true;
     }
 
@@ -219,11 +289,6 @@ fn has_sizeof_struct(node: &Node, source: &str) -> bool {
     query::find_first_descendant(*node, |n| {
         if n.kind() != "sizeof_expression" {
             return false;
-        }
-        // Check if the type is a struct
-        let sizeof_text = get_node_text(&n, source);
-        if sizeof_text.contains("struct") {
-            return true;
         }
         // Look for struct_specifier or type_identifier that might reference a struct
         let mut cursor = n.walk();
@@ -245,11 +310,11 @@ fn looks_like_sizeof_usage(node: &Node, source: &str) -> bool {
 fn looks_like_struct_pointer(node: &Node, source: &str) -> bool {
     query::find_first_descendant(*node, |n| {
         // Check for cast expressions to struct types
-        if n.kind() == "cast_expression" {
-            let text = get_node_text(&n, source);
-            if text.contains("struct") {
-                return true;
-            }
+        if n.kind() == "cast_expression"
+            && n.child_by_field_name("type")
+                .is_some_and(|t| has_struct_specifier(&t))
+        {
+            return true;
         }
 
         // Check for address-of operator (&) on identifiers

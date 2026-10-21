@@ -24,7 +24,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declarator};
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
@@ -269,7 +269,9 @@ impl Int07C {
         let operand_text = get_node_text(operand, source);
 
         // Check if this operand is a plain char variable
-        if plain_char_vars.contains_key(operand_text) {
+        if plain_char_vars.contains_key(operand_text)
+            && self.binds_plain_char(operand, operand_text, source)
+        {
             violations.push(RuleViolation {
                 rule_id: self.rule_id().to_string(),
                 message: format!(
@@ -297,7 +299,9 @@ impl Int07C {
             for child in operand.child_nodes() {
                 if child.kind() == "identifier" {
                     let child_text = get_node_text(&child, source);
-                    if plain_char_vars.contains_key(child_text) {
+                    if plain_char_vars.contains_key(child_text)
+                        && self.binds_plain_char(&child, child_text, source)
+                    {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             message: format!(
@@ -318,6 +322,24 @@ impl Int07C {
                     }
                 }
             }
+        }
+    }
+
+    /// Whether the occurrence `ident` of `name` is bound, in its own scope,
+    /// by a plain char declaration: a name that matches a plain char
+    /// variable can be another variable that shadows it, such as a local
+    /// `int` in an inner block (ADR-0006). An occurrence that resolves to no
+    /// declaration keeps the name's reading.
+    fn binds_plain_char(&self, ident: &Node, name: &str, source: &str) -> bool {
+        if ident.kind() != "identifier" {
+            return true;
+        }
+        match resolve_identifier_declarator(ident, name, source) {
+            Some((decl, _)) => {
+                self.is_plain_char_declaration(get_node_text(&decl, source))
+                    && !self.is_pointer_or_array_declaration(&decl)
+            }
+            None => true,
         }
     }
 
