@@ -604,6 +604,14 @@ with <code class="docutils literal notranslate"><span class="pre">--exclude-all<
 SHA-256 (<code class="docutils literal notranslate"><span class="pre">artifacts[].hashes</span></code>), so the report stands on its own without the
 scanned tree. Both formats name aurora-lint as their producer: SARIF in
 <code class="docutils literal notranslate"><span class="pre">tool.driver</span></code>, JSON in a <code class="docutils literal notranslate"><span class="pre">tool</span></code> key on each object.</p>
+<p>A rule with no results in a SARIF report either ran and found nothing or did
+not run. Each rule the configuration disables is listed in
+<code class="docutils literal notranslate"><span class="pre">tool.driver.rules</span></code> with <code class="docutils literal notranslate"><span class="pre">defaultConfiguration.enabled</span></code> set to <code class="docutils literal notranslate"><span class="pre">false</span></code>
+and the block’s <code class="docutils literal notranslate"><span class="pre">disabled_reason</span></code> as <code class="docutils literal notranslate"><span class="pre">properties.disabledReason</span></code>, after
+the rules the results point at. A rule the configuration has no block for,
+and an enabled one that <code class="docutils literal notranslate"><span class="pre">--rules</span></code> leaves out, is not listed. A rule the
+policy declines is named in the run’s settings instead (see
+<a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a>).</p>
 <p>For a spreadsheet, convert the SARIF report (<code class="docutils literal notranslate"><span class="pre">.xlsx</span></code> needs <code class="docutils literal notranslate"><span class="pre">openpyxl</span></code>):</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">python</span> <span class="n">scripts</span><span class="o">/</span><span class="n">sarif_convert</span><span class="o">.</span><span class="n">py</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span> <span class="n">findings</span><span class="o">.</span><span class="n">csv</span>
 <span class="n">python</span> <span class="n">scripts</span><span class="o">/</span><span class="n">sarif_convert</span><span class="o">.</span><span class="n">py</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span> <span class="n">findings</span><span class="o">.</span><span class="n">xlsx</span>
@@ -657,7 +665,12 @@ Not Find</em>) appear only on a finding they apply to.</p>
 <p><code class="docutils literal notranslate"><span class="pre">--rules</span></code> selects among the rules the manifest enables. A rule withheld
 from the default manifest (<code class="docutils literal notranslate"><span class="pre">off</span></code> in <code class="docutils literal notranslate"><span class="pre">--list-rules</span></code>) runs only from a
 manifest that enables it; see “Withheld until rewritten” in
-<a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a>.</p>
+<a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a>. Naming a rule the manifest disables, withheld or not,
+leaves the exit status as it is and warns on stderr, with the block’s
+<code class="docutils literal notranslate"><span class="pre">disabled_reason</span></code>, so an empty report is not read as a clean one:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Warning: --rules names EXP30-C, which this configuration disables, so it does not run: withheld until its rewrite in v0.8.0: ... To run it, set `enabled = true` in its [rules.cert_c.EXP30-C] block in a manifest passed with --manifest (--write-config writes this configuration out to start from).
+</pre></div>
+</div>
 </section>
 <section id="diff-mode">
 <h2>Diff Mode<a class="headerlink" href="#diff-mode" title="Link to this heading"></a></h2>

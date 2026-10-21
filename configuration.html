@@ -136,11 +136,21 @@ and 4 are tracked but not implemented (see <a class="reference internal" href="#
 <span class="n">description</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Do not form or use out-of-bounds pointers or array subscripts&quot;</span>
 
 <span class="k">[rules.cert_c.STR31-C]</span>
-<span class="n">enabled</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="w">  </span><span class="c1"># Disable this rule</span>
+<span class="n">enabled</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
+<span class="n">disabled_reason</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;string sizes are checked by our own allocator wrapper&quot;</span>
 <span class="n">severity</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Medium&quot;</span>
 <span class="n">description</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Guarantee that storage for strings has sufficient space&quot;</span>
 </pre></div>
 </div>
+<p>A disabled rule’s block may say why in <code class="docutils literal notranslate"><span class="pre">disabled_reason</span></code>. Nothing reads a
+comment, but <code class="docutils literal notranslate"><span class="pre">--check-config</span></code> prints this key for each rule the
+configuration disables, a <code class="docutils literal notranslate"><span class="pre">--rules</span></code> that names the rule repeats it in its
+warning, a SARIF export records it as the rule’s <code class="docutils literal notranslate"><span class="pre">disabledReason</span></code>
+(<code class="docutils literal notranslate"><span class="pre">(no</span> <span class="pre">reason</span> <span class="pre">given)</span></code> when the block has none), and <code class="docutils literal notranslate"><span class="pre">--list-rules</span> <span class="pre">json</span></code>
+gives it as the rule’s <code class="docutils literal notranslate"><span class="pre">disabled_reason</span></code> (<code class="docutils literal notranslate"><span class="pre">null</span></code> when the block has
+none). It changes nothing about
+what runs, and is not part of the settings hash. A rule that is enabled keeps
+the key without effect.</p>
 <p>A misspelled table or key is refused, except under <code class="docutils literal notranslate"><span class="pre">[metadata]</span></code>, in a
 rule’s block, and under an unknown <code class="docutils literal notranslate"><span class="pre">[rules.*]</span></code> family (for example
 <code class="docutils literal notranslate"><span class="pre">[rules.certc.ARR30-C]</span></code>), where it is ignored. In a rule’s block,
@@ -479,8 +489,9 @@ credit; <code class="docutils literal notranslate"><span class="pre">--list-opti
 <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--check-config</span></code> resolves the settings from the manifest and the
 command line exactly as a scan would, validates them, and exits without
 scanning: <code class="docutils literal notranslate"><span class="pre">configuration</span> <span class="pre">ok</span></code> and status 0 when valid, followed by the data
-model in force and where it came from and each rule the policy declines with
-the reason, otherwise status 1 and one <code class="docutils literal notranslate"><span class="pre">error:</span></code> line per problem. Both use the code a scan runs, so they cannot
+model in force and where it came from, each rule the policy declines with
+the reason, and each rule the configuration disables with its
+<code class="docutils literal notranslate"><span class="pre">disabled_reason</span></code>, otherwise status 1 and one <code class="docutils literal notranslate"><span class="pre">error:</span></code> line per problem. Both use the code a scan runs, so they cannot
 disagree with it.</p>
 <p><code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--write-config</span> <span class="pre">FILE</span></code> writes a complete configuration with every
 settings key and a one-line description of each. A key at its built-in default
@@ -742,8 +753,10 @@ correction to it, is withheld: it still ships, with its code, but
 <code class="docutils literal notranslate"><span class="pre">enabled</span> <span class="pre">=</span> <span class="pre">false</span></code> in the default manifest, so a scan with the default
 manifest does not run it. Unlike a removed rule, its block loads with no
 warning, and <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--list-rules</span></code> lists it as <code class="docutils literal notranslate"><span class="pre">off</span></code> among the
-shipped rules. <code class="docutils literal notranslate"><span class="pre">--rules</span></code> only narrows the enabled set, so it does not run
-a withheld rule. To run one anyway, copy <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code>,
+shipped rules; its <code class="docutils literal notranslate"><span class="pre">disabled_reason</span></code> says it is withheld, and
+<code class="docutils literal notranslate"><span class="pre">--check-config</span></code> and a SARIF export give it. <code class="docutils literal notranslate"><span class="pre">--rules</span></code> only narrows the
+enabled set, so it does not run a withheld rule, and warns when it names
+one. To run one anyway, copy <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code>,
 set <code class="docutils literal notranslate"><span class="pre">enabled</span> <span class="pre">=</span> <span class="pre">true</span></code> in the rule’s block, and pass the copy with
 <code class="docutils literal notranslate"><span class="pre">--manifest</span></code>.</p>
 <p>Withheld in v0.7.0, until their rewrites in v0.8.0:</p>

@@ -514,6 +514,15 @@ SHA-256 (``artifacts[].hashes``), so the report stands on its own without the
 scanned tree. Both formats name aurora-lint as their producer: SARIF in
 ``tool.driver``, JSON in a ``tool`` key on each object.
 
+A rule with no results in a SARIF report either ran and found nothing or did
+not run. Each rule the configuration disables is listed in
+``tool.driver.rules`` with ``defaultConfiguration.enabled`` set to ``false``
+and the block's ``disabled_reason`` as ``properties.disabledReason``, after
+the rules the results point at. A rule the configuration has no block for,
+and an enabled one that ``--rules`` leaves out, is not listed. A rule the
+policy declines is named in the run's settings instead (see
+:doc:`configuration`).
+
 For a spreadsheet, convert the SARIF report (``.xlsx`` needs ``openpyxl``)::
 
     python scripts/sarif_convert.py results.sarif findings.csv
@@ -576,7 +585,11 @@ Restrict analysis to specific rules:
 ``--rules`` selects among the rules the manifest enables. A rule withheld
 from the default manifest (``off`` in ``--list-rules``) runs only from a
 manifest that enables it; see "Withheld until rewritten" in
-:doc:`configuration`.
+:doc:`configuration`. Naming a rule the manifest disables, withheld or not,
+leaves the exit status as it is and warns on stderr, with the block's
+``disabled_reason``, so an empty report is not read as a clean one::
+
+    Warning: --rules names EXP30-C, which this configuration disables, so it does not run: withheld until its rewrite in v0.8.0: ... To run it, set `enabled = true` in its [rules.cert_c.EXP30-C] block in a manifest passed with --manifest (--write-config writes this configuration out to start from).
 
 
 Diff Mode
