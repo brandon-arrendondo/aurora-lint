@@ -74,7 +74,8 @@ REMOVED = ROOT / "rules_templates" / "removed-rules.toml"
 FAMILIES = ("cert_c", "cwe")
 BLOCK_RE = re.compile(r"^\[rules\.(?:cert_c\.([A-Z]+[0-9]+-C)|cwe\.(CWE-[0-9]+))\]\s*$")
 DISABLED_RE = re.compile(r"^\s*enabled\s*=\s*false")
-REASON_RE = re.compile(r"^\s*disabled_reason\s*=")
+# A disabled_reason with something in it: an empty one states nothing.
+REASON_RE = re.compile(r"""^\s*disabled_reason\s*=\s*(["'])\s*[^"'\s]""")
 
 
 def removed_rules() -> dict[str, dict]:

@@ -42,8 +42,10 @@ Custom Manifest Format
 A disabled rule's block may say why in ``disabled_reason``. Nothing reads a
 comment, but ``--check-config`` prints this key for each rule the
 configuration disables, a ``--rules`` that names the rule repeats it in its
-warning, and a SARIF export records it as the rule's ``disabledReason``
-(``(no reason given)`` when the block has none). It changes nothing about
+warning, a SARIF export records it as the rule's ``disabledReason``
+(``(no reason given)`` when the block has none), and ``--list-rules json``
+gives it as the rule's ``disabled_reason`` (``null`` when the block has
+none). It changes nothing about
 what runs, and is not part of the settings hash. A rule that is enabled keeps
 the key without effect.
 

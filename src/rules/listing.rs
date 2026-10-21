@@ -63,7 +63,9 @@ pub fn render_text(
     out
 }
 
-/// The listing as JSON: `{"rules": [...], "removed": [...]}`.
+/// The listing as JSON: `{"rules": [...], "removed": [...]}`. A rule the
+/// configuration disables carries its block's `disabled_reason`, `null`
+/// when the block gives none.
 pub fn render_json(
     registry: &RuleRegistry,
     manifest: &RuleManifest,
@@ -72,12 +74,18 @@ pub fn render_json(
     let mut rules: Vec<_> = registry.all_rules().iter().collect();
     rules.sort_by_key(|r| r.rule_id());
     json!({
-        "rules": rules.iter().map(|r| json!({
-            "id": r.rule_id(),
-            "enabled": enabled_in(manifest, r.rule_id()),
-            "severity": r.severity().to_string(),
-            "description": r.description(),
-        })).collect::<Vec<_>>(),
+        "rules": rules.iter().map(|r| {
+            let mut entry = json!({
+                "id": r.rule_id(),
+                "enabled": enabled_in(manifest, r.rule_id()),
+                "severity": r.severity().to_string(),
+                "description": r.description(),
+            });
+            if let Some(config) = manifest.get_rule(r.rule_id()).filter(|c| !c.enabled) {
+                entry["disabled_reason"] = json!(config.disabled_reason);
+            }
+            entry
+        }).collect::<Vec<_>>(),
         "removed": removed,
     })
 }

@@ -886,6 +886,52 @@ fn sarif_marks_each_disabled_rule_not_enabled_with_its_reason() {
 }
 
 #[test]
+fn list_rules_json_carries_each_disabled_rule_s_reason() {
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        "--list-rules",
+        "json",
+        "--manifest",
+        manifest_disabled().to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let listing: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let rules = listing["rules"].as_array().unwrap();
+    let rule = |id: &str| {
+        rules
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("{id} not listed"))
+    };
+    assert_eq!(rule("MSC04-C")["enabled"], false);
+    assert_eq!(
+        rule("MSC04-C")["disabled_reason"],
+        "the project's comment style is checked by its own linter"
+    );
+    // Disabled with no reason: the key is there, and null.
+    assert!(rule("DCL31-C")["disabled_reason"].is_null());
+    assert!(rule("DCL31-C").get("disabled_reason").is_some());
+    // Enabled, or with no block in this configuration: no key.
+    assert!(rule("ARR30-C").get("disabled_reason").is_none());
+    assert!(rule("STR31-C").get("disabled_reason").is_none());
+
+    // The default configuration gives each withheld rule its reason.
+    let (_, stdout, _) = run_aurora_lint(&["--list-rules", "json"]);
+    let listing: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let exp30 = listing["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "EXP30-C")
+        .unwrap();
+    assert!(
+        exp30["disabled_reason"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("withheld until its rewrite")),
+        "{exp30}"
+    );
+}
+
+#[test]
 fn check_config_names_the_data_model_and_where_it_came_from() {
     for (args, line) in [
         (vec![], "data model: lp64 (assumed by the preset)"),
