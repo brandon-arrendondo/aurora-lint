@@ -57,6 +57,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#supported-cert-c-rules">Supported CERT C Rules</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#strict-vs-relaxed-onboarding">Strict vs. Relaxed Onboarding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#removed-rules">Removed rules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#withheld-until-rewritten">Withheld until rewritten</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#tracked-but-not-implemented">Tracked but not implemented</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#enabled-but-out-of-scope">Enabled but out of scope</a></li>
 </ul>
@@ -110,8 +111,9 @@
 <section id="manifest-file">
 <h2>Manifest File<a class="headerlink" href="#manifest-file" title="Link to this heading"></a></h2>
 <p>The rules manifest TOML file controls which rules are active and their severity.
-The default manifest (<code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code>) enables 302 of the 306 tracked rules.
-The other 4 are tracked but not implemented — see <a class="reference internal" href="#tracked-but-not-implemented">Tracked but not implemented</a> below.</p>
+The default manifest (<code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code>) enables 292 of the 306 tracked rules.
+Of the other 14, 10 are implemented but withheld until rewritten (see <a class="reference internal" href="#withheld-until-rewritten">Withheld until rewritten</a> below)
+and 4 are tracked but not implemented (see <a class="reference internal" href="#tracked-but-not-implemented">Tracked but not implemented</a> below).</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Use default (all rules enabled)</span>
 <span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">code</span>
 
@@ -645,8 +647,10 @@ and says when each one fits.</p>
 <h2>Supported CERT C Rules<a class="headerlink" href="#supported-cert-c-rules" title="Link to this heading"></a></h2>
 <p>306 rules are tracked across 17 categories (API, ARR, CON, DCL, ENV,
 ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, and WIN); 302
-are implemented and enabled by default (the remaining 4 are
-tracked but not implemented; see <a class="reference internal" href="#tracked-but-not-implemented">Tracked but not implemented</a> below).
+are implemented, and 292 of those are enabled by default (the other
+10 are withheld until rewritten; see <a class="reference internal" href="#withheld-until-rewritten">Withheld until rewritten</a>
+below). The remaining 4 are tracked but not implemented;
+see <a class="reference internal" href="#tracked-but-not-implemented">Tracked but not implemented</a> below.
 <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--list-rules</span></code> lists every rule aurora-lint implements, with its
 default setting and severity (<code class="docutils literal notranslate"><span class="pre">--list-rules</span> <span class="pre">json</span></code> for tooling). The rule
 source files are in <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/</span></code>.</p>
@@ -722,6 +726,32 @@ rule with its reason (<code class="docutils literal notranslate"><span class="pr
 <li><p><strong>WIN05-C</strong> (removed in v0.7.0, moved to CWE ruleset): CERT C never published a WIN05-C; its unquoted CreateProcess path check is unchanged, and its registry check now reports only a write under HKEY_LOCAL_MACHINE or HKEY_CLASSES_ROOT, as CWE-272. Now reported as CWE-428 in the CWE ruleset.</p></li>
 </ul>
 </section>
+<section id="withheld-until-rewritten">
+<h2>Withheld until rewritten<a class="headerlink" href="#withheld-until-rewritten" title="Link to this heading"></a></h2>
+<p>A rule that misfires, reporting a construct that is not in the code
+(ADR-0005), and whose fix is a rewrite of its detection rather than a
+correction to it, is withheld: it still ships, with its code, but
+<code class="docutils literal notranslate"><span class="pre">enabled</span> <span class="pre">=</span> <span class="pre">false</span></code> in the default manifest, so a scan with the default
+manifest does not run it. Unlike a removed rule, its block loads with no
+warning, and <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--list-rules</span></code> lists it as <code class="docutils literal notranslate"><span class="pre">off</span></code> among the
+shipped rules. <code class="docutils literal notranslate"><span class="pre">--rules</span></code> only narrows the enabled set, so it does not run
+a withheld rule. To run one anyway, copy <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code>,
+set <code class="docutils literal notranslate"><span class="pre">enabled</span> <span class="pre">=</span> <span class="pre">true</span></code> in the rule’s block, and pass the copy with
+<code class="docutils literal notranslate"><span class="pre">--manifest</span></code>.</p>
+<p>Withheld in v0.7.0, until their rewrites in v0.8.0:</p>
+<ul class="simple">
+<li><p><strong>EXP30-C</strong> — <em>Do not depend on the order of evaluation for side effects</em></p></li>
+<li><p><strong>FIO01-C</strong> — <em>Be careful using functions that use file names for identification</em></p></li>
+<li><p><strong>FIO08-C</strong> — <em>Take care when calling remove() on an open file</em></p></li>
+<li><p><strong>FIO30-C</strong> — <em>Exclude user input from format strings</em></p></li>
+<li><p><strong>FIO32-C</strong> — <em>Do not perform operations on devices that are only appropriate for files</em></p></li>
+<li><p><strong>FLP32-C</strong> — <em>Prevent or detect domain and range errors in math functions</em></p></li>
+<li><p><strong>INT15-C</strong> — <em>Use intmax_t or uintmax_t for formatted IO on programmer-defined integer types</em></p></li>
+<li><p><strong>MEM35-C</strong> — <em>Allocate sufficient memory for an object</em></p></li>
+<li><p><strong>STR34-C</strong> — <em>Cast characters to unsigned char before converting to larger integer sizes</em></p></li>
+<li><p><strong>WIN30-C</strong> — <em>Properly pair allocation and deallocation functions</em></p></li>
+</ul>
+</section>
 <section id="tracked-but-not-implemented">
 <h2>Tracked but not implemented<a class="headerlink" href="#tracked-but-not-implemented" title="Link to this heading"></a></h2>
 <p>4 of the 306 tracked rules have a rule directory and a manifest entry but no
@@ -758,7 +788,7 @@ the closest of the 4 to being implementable.</p></li>
 <h2>Enabled but out of scope<a class="headerlink" href="#enabled-but-out-of-scope" title="Link to this heading"></a></h2>
 <p>The four rules above have no detection logic <em>yet</em>. This is a different
 list: rules that <strong>do</strong> have a <code class="docutils literal notranslate"><span class="pre">.rs</span></code> file, <strong>are</strong> enabled by default, and
-count toward 302 above, but are not claimed as working
+count toward 292 above, but are not claimed as working
 detection — because no amount of further work makes them one. A rule
 belongs here only when there is a specific, checkable reason automated
 analysis cannot do the job, not merely because it has produced few or no

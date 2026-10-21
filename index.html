@@ -94,7 +94,7 @@
 <h1>aurora-lint Developer Guide<a class="headerlink" href="#aurora-lint-developer-guide" title="Link to this heading"></a></h1>
 <p>aurora-lint is a terminal-based static analysis tool that validates
 C code compliance with <a class="reference external" href="https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard">SEI CERT C Coding Standards</a>.
-It tracks 306 rules (302 implemented and enabled by default) across 17 CERT C categories, using tree-sitter for fast
+It tracks 306 rules (302 implemented, 292 of them enabled by default) across 17 CERT C categories, using tree-sitter for fast
 AST-based analysis with cross-file context, control-flow graphs, and
 inter-procedural reasoning.</p>
 <p>This guide covers advanced usage, CI/CD integration, the interactive console UI,
@@ -148,6 +148,7 @@ for example <code class="docutils literal notranslate"><span class="pre">.../aur
 <li class="toctree-l2"><a class="reference internal" href="configuration.html#supported-cert-c-rules">Supported CERT C Rules</a></li>
 <li class="toctree-l2"><a class="reference internal" href="configuration.html#strict-vs-relaxed-onboarding">Strict vs. Relaxed Onboarding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="configuration.html#removed-rules">Removed rules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html#withheld-until-rewritten">Withheld until rewritten</a></li>
 <li class="toctree-l2"><a class="reference internal" href="configuration.html#tracked-but-not-implemented">Tracked but not implemented</a></li>
 <li class="toctree-l2"><a class="reference internal" href="configuration.html#enabled-but-out-of-scope">Enabled but out of scope</a></li>
 </ul>

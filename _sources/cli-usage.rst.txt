@@ -573,6 +573,11 @@ Restrict analysis to specific rules:
     # Combine with severity and export
     aurora-lint /path/to/repo --rules STR31-C,STR32-C --min-severity High --export str-results.sarif
 
+``--rules`` selects among the rules the manifest enables. A rule withheld
+from the default manifest (``off`` in ``--list-rules``) runs only from a
+manifest that enables it; see "Withheld until rewritten" in
+:doc:`configuration`.
+
 
 Diff Mode
 ---------

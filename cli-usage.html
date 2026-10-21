@@ -654,6 +654,10 @@ Not Find</em>) appear only on a finding they apply to.</p>
 <span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> <span class="o">--</span><span class="n">rules</span> <span class="n">STR31</span><span class="o">-</span><span class="n">C</span><span class="p">,</span><span class="n">STR32</span><span class="o">-</span><span class="n">C</span> <span class="o">--</span><span class="nb">min</span><span class="o">-</span><span class="n">severity</span> <span class="n">High</span> <span class="o">--</span><span class="n">export</span> <span class="nb">str</span><span class="o">-</span><span class="n">results</span><span class="o">.</span><span class="n">sarif</span>
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">--rules</span></code> selects among the rules the manifest enables. A rule withheld
+from the default manifest (<code class="docutils literal notranslate"><span class="pre">off</span></code> in <code class="docutils literal notranslate"><span class="pre">--list-rules</span></code>) runs only from a
+manifest that enables it; see “Withheld until rewritten” in
+<a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a>.</p>
 </section>
 <section id="diff-mode">
 <h2>Diff Mode<a class="headerlink" href="#diff-mode" title="Link to this heading"></a></h2>
