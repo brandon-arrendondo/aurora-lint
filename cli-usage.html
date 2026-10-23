@@ -608,10 +608,11 @@ scanned tree. Both formats name aurora-lint as their producer: SARIF in
 not run. Each rule the configuration disables is listed in
 <code class="docutils literal notranslate"><span class="pre">tool.driver.rules</span></code> with <code class="docutils literal notranslate"><span class="pre">defaultConfiguration.enabled</span></code> set to <code class="docutils literal notranslate"><span class="pre">false</span></code>
 and the block’s <code class="docutils literal notranslate"><span class="pre">disabled_reason</span></code> as <code class="docutils literal notranslate"><span class="pre">properties.disabledReason</span></code>, after
-the rules the results point at. A rule the configuration has no block for,
-and an enabled one that <code class="docutils literal notranslate"><span class="pre">--rules</span></code> leaves out, is not listed. A rule the
-policy declines is named in the run’s settings instead (see
-<a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a>).</p>
+the rules the results point at. So is each rule the manifest enables and the
+policy in force declines (see <a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a>), with
+<code class="docutils literal notranslate"><span class="pre">properties.disabledReason</span></code> reading <code class="docutils literal notranslate"><span class="pre">the</span> <span class="pre">&lt;policy&gt;</span> <span class="pre">policy</span> <span class="pre">declines</span> <span class="pre">&lt;rule&gt;:</span></code>
+and the decline’s reason. A rule the configuration has no block for, and an
+enabled one that <code class="docutils literal notranslate"><span class="pre">--rules</span></code> leaves out, is not listed.</p>
 <p>For a spreadsheet, convert the SARIF report (<code class="docutils literal notranslate"><span class="pre">.xlsx</span></code> needs <code class="docutils literal notranslate"><span class="pre">openpyxl</span></code>):</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">python</span> <span class="n">scripts</span><span class="o">/</span><span class="n">sarif_convert</span><span class="o">.</span><span class="n">py</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span> <span class="n">findings</span><span class="o">.</span><span class="n">csv</span>
 <span class="n">python</span> <span class="n">scripts</span><span class="o">/</span><span class="n">sarif_convert</span><span class="o">.</span><span class="n">py</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span> <span class="n">findings</span><span class="o">.</span><span class="n">xlsx</span>
@@ -669,6 +670,14 @@ manifest that enables it; see “Withheld until rewritten” in
 leaves the exit status as it is and warns on stderr, with the block’s
 <code class="docutils literal notranslate"><span class="pre">disabled_reason</span></code>, so an empty report is not read as a clean one:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Warning: --rules names EXP30-C, which this configuration disables, so it does not run: withheld until its rewrite in v0.8.0: ... To run it, set `enabled = true` in its [rules.cert_c.EXP30-C] block in a manifest passed with --manifest (--write-config writes this configuration out to start from).
+</pre></div>
+</div>
+<p>Naming a rule the policy in force declines warns the same way, with the
+decline’s reason and the policies that run it. Enabling the rule’s block
+does not run it; a policy that does not decline it does, whether from
+<code class="docutils literal notranslate"><span class="pre">--policy</span></code> or <code class="docutils literal notranslate"><span class="pre">--profile</span></code> or the manifest’s own <code class="docutils literal notranslate"><span class="pre">profile</span></code> or
+<code class="docutils literal notranslate"><span class="pre">policy</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="ne">Warning</span><span class="p">:</span> <span class="o">--</span><span class="n">rules</span> <span class="n">names</span> <span class="n">ERR33</span><span class="o">-</span><span class="n">C</span><span class="p">,</span> <span class="n">which</span> <span class="n">the</span> <span class="n">pedantic</span> <span class="n">policy</span> <span class="n">declines</span><span class="p">,</span> <span class="n">so</span> <span class="n">it</span> <span class="n">does</span> <span class="ow">not</span> <span class="n">run</span><span class="p">:</span> <span class="o">...</span> <span class="n">To</span> <span class="n">run</span> <span class="n">it</span><span class="p">,</span> <span class="n">scan</span> <span class="k">with</span> <span class="o">--</span><span class="n">policy</span> <span class="n">default</span> <span class="ow">or</span> <span class="o">--</span><span class="n">policy</span> <span class="n">strict</span><span class="o">.</span>
 </pre></div>
 </div>
 </section>
