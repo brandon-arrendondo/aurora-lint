@@ -344,7 +344,12 @@ pub fn analyze_project(
         &inside,
     );
     if let Some(generated) = &generated {
-        let sources = |files: &[String]| files.iter().filter(|f| f.ends_with(".c")).count();
+        let sources = |files: &[String]| {
+            files
+                .iter()
+                .filter(|f| crate::files::is_c_translation_unit(f))
+                .count()
+        };
         eprintln!(
             "Note: {} build-generated header(s) recognised; {} of {} scanned .c files are \
              not compiled by the build configuration that generated them, and are analysed \
@@ -387,7 +392,10 @@ pub fn analyze_project(
                  definitions resolve under a configuration that excludes them, so a macro \
                  defined only in an arm that configuration rules out will not resolve at all.",
                 uncovered.len(),
-                c_files.iter().filter(|p| p.ends_with(".c")).count(),
+                c_files
+                    .iter()
+                    .filter(|p| crate::files::is_c_translation_unit(p))
+                    .count(),
                 uncovered[0],
             );
         }
@@ -1027,9 +1035,10 @@ fn load_project_context(
                 &c_files,
             );
             let needed = membership.has_arms()
-                || c_files
-                    .iter()
-                    .any(|f| f.ends_with(".c") && !membership.contains(std::path::Path::new(f)));
+                || c_files.iter().any(|f| {
+                    crate::files::is_c_translation_unit(f)
+                        && !membership.contains(std::path::Path::new(f))
+                });
             members = Some(membership);
             if !needed {
                 outside = None;
@@ -1420,7 +1429,9 @@ fn analyze_one_file(
         // skip such files entirely rather than analyzing nonsense --
         // aurora-lint is CERT-C only, so a file that can only be C++ is out
         // of scope, not a source of findings.
-        if file_path.ends_with(".h") && lang_parsing_substrate::looks_like_cpp(source.as_bytes()) {
+        if crate::files::is_c_header(file_path)
+            && lang_parsing_substrate::looks_like_cpp(source.as_bytes())
+        {
             return (file_violations, file_suppressed, file_failures);
         }
 
@@ -1986,7 +1997,7 @@ pub(crate) fn build_file_analysis(
         &context.macro_constants,
         Some(context),
         context.settings.facts,
-        file_path.extension().is_some_and(|ext| ext == "h"),
+        crate::files::is_c_header(file_path),
     );
 
     FileAnalysis {

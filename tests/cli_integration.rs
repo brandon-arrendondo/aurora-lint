@@ -9210,3 +9210,83 @@ fn cwe272_cyclic_and_fanned_out_macros_finish_quickly() {
         assert_eq!(!found.is_empty(), reports, "{macros}");
     }
 }
+
+/// Scan `dir` as a whole project and return each finding as
+/// `(rule, lowercased file name, line)`, with the prescan's stderr line
+/// naming how many function definitions it found.
+fn project_findings(dir: &Path) -> (Vec<(String, String, u64)>, String) {
+    let out = dir.with_extension("json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        dir.to_str().unwrap(),
+        "-d",
+        dir.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{}: {stderr}", dir.display());
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let mut found: Vec<(String, String, u64)> = violations
+        .iter()
+        .map(|v| {
+            let file = Path::new(v["file"].as_str().unwrap());
+            let name = file.file_name().unwrap().to_string_lossy().to_lowercase();
+            let rule = v["rule_id"].as_str().unwrap().to_string();
+            (rule, name, v["line"].as_u64().unwrap())
+        })
+        .collect();
+    found.sort();
+    let prescan = stderr
+        .lines()
+        .find(|l| l.contains("function definitions"))
+        .unwrap_or_default()
+        .to_string();
+    (found, prescan)
+}
+
+#[test]
+fn a_tree_with_uppercase_extensions_is_scanned_as_c() {
+    // A supplier tree built on Windows names its files A.C and B.H. Those
+    // are C, so the tree must report exactly what its lowercase twin does:
+    // the header rule runs on B.H, and a macro defined in A.C stays private
+    // to A.C instead of reaching c.c as if A.C were a header.
+    let dir = tempfile::tempdir().unwrap();
+    let a = "#include \"B.H\"\n#define FINISH(v) return (v)\n\
+             int f(int a) { if (a) { return X; } FINISH(0); }\n";
+    let b = "#define X 1\nint f(int a);\n";
+    let c = "int g(int a) { if (a) { return 1; } FINISH(0); }\n";
+    let upper = dir.path().join("upper");
+    let lower = dir.path().join("lower");
+    std::fs::create_dir(&upper).unwrap();
+    std::fs::create_dir(&lower).unwrap();
+    std::fs::write(upper.join("A.C"), a).unwrap();
+    std::fs::write(upper.join("B.H"), b).unwrap();
+    std::fs::write(upper.join("c.c"), c).unwrap();
+    std::fs::write(lower.join("a.c"), a.replace("B.H", "b.h")).unwrap();
+    std::fs::write(lower.join("b.h"), b).unwrap();
+    std::fs::write(lower.join("c.c"), c).unwrap();
+    // A header whose content is C++ is out of scope in either case.
+    let cpp = "namespace n {\nclass K {\npublic:\n  int v;\n};\n}\n";
+    std::fs::write(upper.join("D.H"), cpp).unwrap();
+    std::fs::write(lower.join("d.h"), cpp).unwrap();
+
+    let (upper_found, upper_prescan) = project_findings(&upper);
+    let (lower_found, lower_prescan) = project_findings(&lower);
+    assert_eq!(upper_found, lower_found);
+    assert_eq!(upper_prescan, lower_prescan);
+    assert!(
+        !upper_prescan.contains("found 0 "),
+        "no functions found: {upper_prescan}"
+    );
+    let has = |rule: &str, file: &str| upper_found.iter().any(|(r, f, _)| r == rule && f == file);
+    assert!(has("PRE06-C", "b.h"), "{upper_found:?}");
+    assert!(has("MSC37-C", "c.c"), "{upper_found:?}");
+    assert!(
+        upper_found.iter().all(|(_, f, _)| f != "d.h"),
+        "{upper_found:?}"
+    );
+
+    // A single file named on the command line is accepted the same way.
+    let (code, _, stderr) = run_aurora_lint(&[upper.join("A.C").to_str().unwrap()]);
+    assert_eq!(code, 0, "{stderr}");
+}

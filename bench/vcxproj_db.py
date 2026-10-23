@@ -65,7 +65,7 @@ def database(project: Path, config: str, target: str = "i686-pc-windows-msvc") -
     for group in root.findall("m:ItemGroup", NS):
         for item in group.findall("m:ClCompile", NS):
             src = item.get("Include").replace("\\", "/")
-            if not src.endswith(".c"):
+            if not src.lower().endswith(".c"):
                 continue
             path = str((proj_dir / src).resolve())
             entries.append({"directory": str(proj_dir), "file": path,

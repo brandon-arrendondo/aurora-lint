@@ -1100,11 +1100,7 @@ mod tests {
         for dir in ["tests", "src/rules"] {
             for entry in walkdir::WalkDir::new(manifest.join(dir)) {
                 let entry = entry.unwrap();
-                if entry
-                    .path()
-                    .extension()
-                    .is_some_and(|e| e == "c" || e == "h")
-                {
+                if crate::files::is_c_file(entry.path()) {
                     files.push(entry.into_path());
                 }
             }

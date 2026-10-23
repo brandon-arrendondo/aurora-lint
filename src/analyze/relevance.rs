@@ -293,12 +293,7 @@ pub fn detect(dirs: &[String], threads: &ThreadDeclarations) -> Result<ProjectPr
             .sort_by_file_name()
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                matches!(
-                    e.path().extension().and_then(|ext| ext.to_str()),
-                    Some("c") | Some("h")
-                )
-            })
+            .filter(|e| crate::files::is_c_file(e.path()))
         {
             files.push(entry.path().to_path_buf());
         }

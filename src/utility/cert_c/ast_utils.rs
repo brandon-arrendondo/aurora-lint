@@ -4525,7 +4525,7 @@ mod tests {
                 let path = entry.path();
                 if path.is_dir() {
                     pending.push(path);
-                } else if path.extension().is_some_and(|e| e == "c" || e == "h") {
+                } else if crate::files::is_c_file(&path) {
                     let Ok(code) = std::fs::read_to_string(&path) else {
                         continue;
                     };

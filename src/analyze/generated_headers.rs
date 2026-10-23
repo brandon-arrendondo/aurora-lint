@@ -243,7 +243,7 @@ impl Membership {
         while let Some(file) = stack.pop() {
             for next in include_edges.get(&file).into_iter().flatten() {
                 if seen.insert(next.clone()) {
-                    if next.ends_with(".c") {
+                    if crate::files::is_c_translation_unit(next) {
                         members.insert(next.clone());
                     }
                     stack.push(next.clone());
@@ -305,7 +305,7 @@ impl Membership {
         while let Some(file) = stack.pop() {
             for next in include_edges.get(&file).into_iter().flatten() {
                 if seen.insert(next.clone()) {
-                    if !next.ends_with(".c")
+                    if !crate::files::is_c_translation_unit(next)
                         && !generated.files.contains(Path::new(next))
                         && !outside_headers.contains(next.as_str())
                     {
@@ -320,7 +320,10 @@ impl Membership {
             generated.files.iter().map(PathBuf::as_path),
             headers.iter().map(Path::new),
         );
-        for file in scanned.iter().filter(|f| f.ends_with(".c")) {
+        for file in scanned
+            .iter()
+            .filter(|f| crate::files::is_c_translation_unit(f))
+        {
             let key = real_path(Path::new(file));
             if !self.members.contains(&key) {
                 continue;
@@ -384,13 +387,13 @@ fn unit_named_sources(tu: &Path) -> Vec<String> {
             if let Some(found) = parts
                 .next()
                 .and_then(quoted)
-                .filter(|n| n.ends_with(".c"))
+                .filter(|n| crate::files::is_c_translation_unit(n))
                 .and_then(|n| resolve(&n))
             {
                 out.push(found);
             }
         } else if let Some(rest) = rest.strip_prefix("include") {
-            if let Some(name) = quoted(rest).filter(|n| n.ends_with(".c")) {
+            if let Some(name) = quoted(rest).filter(|n| crate::files::is_c_translation_unit(n)) {
                 if let Some(found) = resolve(&name) {
                     out.push(found);
                 }

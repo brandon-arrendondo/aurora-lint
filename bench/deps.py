@@ -209,7 +209,7 @@ def spellings(project: str, checkout=None, other_platform=None,
             inc_dirs.append(val[len("{path}"):].lstrip("/"))
     found = set()
     for f in in_scope:
-        if not f.endswith((".c", ".h")):
+        if not f.lower().endswith((".c", ".h")):
             continue
         if any(corpus._match(f, pat) for pat in other_platform):
             continue

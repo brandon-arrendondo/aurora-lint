@@ -1127,7 +1127,7 @@ def _count_c_source(cfg: dict) -> tuple[int, int]:
     for d in dirs:
         for root, _dirs, files in os.walk(d):
             for f in files:
-                if not f.endswith((".c", ".h")):
+                if not f.lower().endswith((".c", ".h")):
                     continue
                 fp = os.path.join(root, f)
                 if fp in seen:
@@ -1135,7 +1135,7 @@ def _count_c_source(cfg: dict) -> tuple[int, int]:
                 seen.add(fp)
                 if any(p.search(fp.replace("\\", "/")) for p in excludes):
                     continue
-                if f.endswith(".c"):
+                if f.lower().endswith(".c"):
                     c_files += 1
                 try:
                     with open(fp, "rb") as fh:
@@ -1168,12 +1168,12 @@ def _count_sqc_scanned(cfg: dict) -> tuple[int, int]:
     loc = 0
     for root, _dirs, files in os.walk(scan_path):
         for f in files:
-            if not f.endswith((".c", ".h")):
+            if not f.lower().endswith((".c", ".h")):
                 continue
             fp = os.path.join(root, f)
             if any(p.search(fp.replace("\\", "/")) for p in excludes):
                 continue
-            if f.endswith(".c"):
+            if f.lower().endswith(".c"):
                 c_files += 1
             try:
                 with open(fp, "rb") as fh:
@@ -1247,7 +1247,7 @@ def _filtered_compile_db(cfg: dict, dest: Path) -> tuple[Path | None, int, int]:
     seen: set[str] = set()
     for e in entries:
         src = e.get("file", "")
-        if not src.endswith(".c"):
+        if not src.lower().endswith(".c"):
             continue
         if not os.path.isabs(src):
             src = os.path.join(e.get("directory", ""), src)
