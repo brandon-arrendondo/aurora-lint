@@ -12,6 +12,7 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/DCL41-C.+Do+not+declare+variables+inside+a+switch+statement+before+the+first+case+label>
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::check_macros::{collect_macro_definitions, MacroDefinition};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::{macro_expands_to_case_label, FunctionMacro};
 use crate::manifest::Severity;
@@ -28,6 +29,9 @@ pub struct Dcl41C {
     /// expand to a real `case i:` label aurora-lint's tree-sitter-based parse can't
     /// see directly — the invocation parses as an ordinary call expression.
     function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
+    /// Every definition of every macro name across the scanned files, so a
+    /// label-generating macro is recognized whichever arm defines it.
+    macro_definitions: RefCell<Arc<HashMap<String, Vec<MacroDefinition>>>>,
 }
 
 impl Dcl41C {
@@ -65,6 +69,50 @@ impl Dcl41C {
         macro_expands_to_case_label(&macros, name)
     }
 
+    /// True if `node` begins with a macro every definition of which begins
+    /// with a `case` or `default` label: `#define CASE_AB case 'a': case 'b':`
+    /// used as `CASE_AB f(1);`, or `#define DEFAULT_ARM default:`. Written
+    /// with no `;` and no argument list, such an invocation glues itself to
+    /// the statement after it, so tree-sitter reads the pair as one
+    /// `declaration` whose type is the macro's name. The label is in the
+    /// expansion, which every configuration shares; a name some definition
+    /// expands to anything else stays a statement.
+    fn begins_with_label_macro(
+        &self,
+        node: &Node,
+        source: &str,
+        file_defs: &HashMap<String, Vec<MacroDefinition>>,
+    ) -> bool {
+        let mut first = *node;
+        while let Some(child) = first.child(0) {
+            first = child;
+        }
+        if !matches!(first.kind(), "identifier" | "type_identifier") {
+            return false;
+        }
+        let Ok(name) = first.utf8_text(source.as_bytes()) else {
+            return false;
+        };
+        let project = self.macro_definitions.borrow();
+        let defs: Vec<&MacroDefinition> = [project.get(name), file_defs.get(name)]
+            .into_iter()
+            .flatten()
+            .flatten()
+            .collect();
+        !defs.is_empty()
+            && defs.iter().all(|def| match def {
+                MacroDefinition::Object { body } | MacroDefinition::Function { body, .. } => {
+                    let body = body.trim_start();
+                    ["case", "default"].iter().any(|label| {
+                        body.strip_prefix(label).is_some_and(|rest| {
+                            !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_')
+                        })
+                    })
+                }
+                MacroDefinition::Opaque => false,
+            })
+    }
+
     /// Check if a node is a declaration or executable statement
     fn is_statement_or_declaration(&self, node: &Node) -> bool {
         matches!(
@@ -90,6 +138,7 @@ impl Dcl41C {
         &self,
         node: &Node,
         source: &str,
+        file_defs: &HashMap<String, Vec<MacroDefinition>>,
         violations: &mut Vec<RuleViolation>,
     ) {
         if node.kind() != "switch_statement" {
@@ -122,7 +171,9 @@ impl Dcl41C {
                 // Check if this is a macro invocation that expands to a case
                 // label (e.g. sqlite's `CASE(i,str)`) — hidden from the plain
                 // AST, so treat it the same as a real case label.
-                if self.is_case_label_macro_invocation(&child, source) {
+                if self.is_case_label_macro_invocation(&child, source)
+                    || self.begins_with_label_macro(&child, source, file_defs)
+                {
                     found_first_label = true;
                     continue;
                 }
@@ -158,8 +209,13 @@ impl Dcl41C {
 
     /// Recursively traverse AST
     fn traverse(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        for n in query::find_descendants_of_kind(*node, "switch_statement") {
-            self.check_switch_statement(&n, source, violations);
+        let switches = query::find_descendants_of_kind(*node, "switch_statement");
+        if switches.is_empty() {
+            return;
+        }
+        let file_defs = collect_macro_definitions(source);
+        for n in switches {
+            self.check_switch_statement(&n, source, &file_defs, violations);
         }
     }
 }
@@ -191,5 +247,6 @@ impl CertRule for Dcl41C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_macros.borrow_mut() = context.function_macros.clone();
+        *self.macro_definitions.borrow_mut() = context.macro_definitions.clone();
     }
 }
