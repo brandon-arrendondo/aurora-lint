@@ -50,28 +50,18 @@ impl CertRule for Exp00C {
                         }
                     }
                 }
-                // Check if this is a bitwise operator with comparison in operands or constant 0
+                // A bitwise operator with a comparison as a direct operand:
+                // `a & b == c` reads as `a & (b == c)`. A comparison inside
+                // parentheses or a call's arguments is already grouped, and
+                // a node with two such operands is one finding, not two.
                 else if is_bitwise_operator(operator) {
-                    // Check if either operand contains a comparison operator
-                    if let Some(left) = bin_node.child_by_field_name("left") {
-                        if contains_comparison_operator(&left, source) {
-                            report_violation(&bin_node, source, &mut violations);
-                        }
-                    }
-                    if let Some(right) = bin_node.child_by_field_name("right") {
-                        if contains_comparison_operator(&right, source) {
-                            report_violation(&bin_node, source, &mut violations);
-                        }
-                    }
-
-                    // Check for bitwise AND/OR/XOR with constant 0
-                    if operator == "&" || operator == "|" || operator == "^" {
-                        if let Some(right) = bin_node.child_by_field_name("right") {
-                            let right_text = get_node_text(&right, source).trim();
-                            if right_text == "0" {
-                                report_violation(&bin_node, source, &mut violations);
-                            }
-                        }
+                    let direct_comparison = |field| {
+                        bin_node
+                            .child_by_field_name(field)
+                            .is_some_and(|operand| is_comparison(&operand, source))
+                    };
+                    if direct_comparison("left") || direct_comparison("right") {
+                        report_violation(&bin_node, source, &mut violations);
                     }
                 }
             }
@@ -110,20 +100,12 @@ fn has_unparenthesized_bitwise_operator(node: &Node, source: &str) -> bool {
     }
 }
 
-/// Check if a node or its children contain a comparison operator
-fn contains_comparison_operator(node: &Node, source: &str) -> bool {
-    query::find_first_descendant(*node, |n| {
-        if n.kind() == "binary_expression" {
-            if let Some(operator_node) = n.child_by_field_name("operator") {
-                let operator = get_node_text(&operator_node, source);
-                if is_comparison_operator(operator) {
-                    return true;
-                }
-            }
-        }
-        false
-    })
-    .is_some()
+/// Whether `node` is itself a comparison, not one nested anywhere under it.
+fn is_comparison(node: &Node, source: &str) -> bool {
+    node.kind() == "binary_expression"
+        && node
+            .child_by_field_name("operator")
+            .is_some_and(|op| is_comparison_operator(get_node_text(&op, source)))
 }
 
 /// Report a violation for operator precedence issues

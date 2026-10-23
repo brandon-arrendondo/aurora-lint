@@ -20,7 +20,9 @@
 use std::collections::HashSet;
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::side_effects::designates_object_in;
 use crate::manifest::Severity;
+use crate::utility::cert_c::ast_utils::ScopeDeclarations;
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
@@ -46,10 +48,23 @@ impl CertRule for Exp16C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        let function_names = self.collect_function_names(node, source);
-        self.check_node(node, source, &function_names, &mut violations);
+        let names = FunctionNames {
+            names: self.collect_function_names(node, source),
+            root: *node,
+            declarations: ScopeDeclarations::indexed(*node),
+        };
+        self.check_node(node, source, &names, &mut violations);
         violations
     }
+}
+
+/// The names this file declares as functions, and what resolves an
+/// occurrence of one to the declaration that binds it there: a local or a
+/// parameter spelled like a function is an object (ADR-0006).
+struct FunctionNames<'a> {
+    names: HashSet<String>,
+    root: Node<'a>,
+    declarations: ScopeDeclarations<'a>,
 }
 
 impl Exp16C {
@@ -116,16 +131,15 @@ impl Exp16C {
         query::find_first_descendant(*node, |n| n.kind() == "function_declarator").is_some()
     }
 
-    fn check_node(
+    fn check_node<'a>(
         &self,
-        node: &Node,
+        node: &Node<'a>,
         source: &str,
-        function_names: &HashSet<String>,
+        function_names: &FunctionNames<'a>,
         violations: &mut Vec<RuleViolation>,
     ) {
         let kinds = [
             "binary_expression",
-            "expression_statement",
             "if_statement",
             "while_statement",
             "parenthesized_expression",
@@ -147,24 +161,9 @@ impl Exp16C {
                 "binary_expression" => {
                     self.check_binary_expression(&n, source, function_names, violations);
                 }
-                // Check for standalone comparison as expression statement (CWE-482)
-                // e.g., `x == 5;` where the result is discarded
-                "expression_statement" => {
-                    self.check_dead_comparison(&n, source, violations);
-                }
-                // Check if/while conditions for implicit boolean conversion
-                "if_statement" | "while_statement" => {
-                    if let Some(condition) = n.child_by_field_name("condition") {
-                        self.check_condition_for_implicit_conversion(
-                            &condition,
-                            source,
-                            function_names,
-                            violations,
-                        );
-                    }
-                }
-                // Check parenthesized expressions in conditions: directly
-                // inside an if/while (the condition)
+                // An if/while condition that is a bare identifier, tested
+                // against 0. Read once, here: the statement itself has no
+                // check of its own.
                 "parenthesized_expression" if conditions.contains(&n.id()) => {
                     // Check the inner expression
                     for child in n.child_nodes() {
@@ -183,11 +182,11 @@ impl Exp16C {
         }
     }
 
-    fn check_binary_expression(
+    fn check_binary_expression<'a>(
         &self,
-        node: &Node,
+        node: &Node<'a>,
         source: &str,
-        function_names: &HashSet<String>,
+        function_names: &FunctionNames<'a>,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Get the operator
@@ -262,66 +261,11 @@ impl Exp16C {
         }
     }
 
-    /// Detect `x == value;` as a standalone expression statement (CWE-482).
-    /// The comparison result is discarded — likely meant `x = value;`.
-    fn check_dead_comparison(
+    fn check_identifier_as_condition<'a>(
         &self,
-        node: &Node,
+        node: &Node<'a>,
         source: &str,
-        violations: &mut Vec<RuleViolation>,
-    ) {
-        // expression_statement wraps one child expression + ";"
-        for child in node.child_nodes() {
-            if child.kind() == "binary_expression" {
-                // Check if operator is == or !=
-                for op in child.child_nodes() {
-                    if op.kind() == "==" {
-                        let expr_text = child.utf8_text(source.as_bytes()).unwrap_or("unknown");
-                        violations.push(RuleViolation {
-                            rule_id: self.rule_id().to_string(),
-                            severity: self.severity(),
-                            line: child.start_position().row + 1,
-                            column: child.start_position().column + 1,
-                            file_path: String::new(),
-                            message: format!(
-                                "Comparison '{}' used as statement with result discarded; did you mean '=' (assignment)?",
-                                expr_text
-                            ),
-                            suggestion: Some(
-                                "Use '=' for assignment instead of '==' for comparison"
-                                    .to_string(),
-                            ),
-                            requires_manual_review: None,
-                        });
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
-    fn check_condition_for_implicit_conversion(
-        &self,
-        node: &Node,
-        source: &str,
-        function_names: &HashSet<String>,
-        violations: &mut Vec<RuleViolation>,
-    ) {
-        // Check for parenthesized expression containing just an identifier
-        if node.kind() == "parenthesized_expression" {
-            for child in node.child_nodes() {
-                if child.kind() == "identifier" {
-                    self.check_identifier_as_condition(&child, source, function_names, violations);
-                }
-            }
-        }
-    }
-
-    fn check_identifier_as_condition(
-        &self,
-        node: &Node,
-        source: &str,
-        function_names: &HashSet<String>,
+        function_names: &FunctionNames<'a>,
         violations: &mut Vec<RuleViolation>,
     ) {
         // An identifier used directly in a condition is implicitly compared to 0
@@ -346,11 +290,11 @@ impl Exp16C {
         }
     }
 
-    fn is_function_identifier(
+    fn is_function_identifier<'a>(
         &self,
-        node: &Node,
+        node: &Node<'a>,
         source: &str,
-        function_names: &HashSet<String>,
+        function_names: &FunctionNames<'a>,
     ) -> bool {
         if node.kind() != "identifier" {
             return false;
@@ -366,7 +310,17 @@ impl Exp16C {
             "printf", "scanf", "malloc", "free", "strlen", "strcpy", "strcat", "strcmp", "memcpy",
             "memset", "fopen", "fclose", "fread", "fwrite", "rand", "srand",
         ];
-        if !function_names.contains(name) && !KNOWN_FUNCTIONS.contains(&name) {
+        if !function_names.names.contains(name) && !KNOWN_FUNCTIONS.contains(&name) {
+            return false;
+        }
+        // A parameter, a local or a function pointer of that name is an
+        // object, and testing or comparing an object is not this rule's.
+        if designates_object_in(
+            &function_names.root,
+            node,
+            source,
+            &function_names.declarations,
+        ) {
             return false;
         }
 
