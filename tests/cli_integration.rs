@@ -421,6 +421,33 @@ fn export_sarif_structure() {
     assert_eq!(sha.len(), 64);
 }
 
+/// A suggestion is prose with no edit to apply, so it is a property: SARIF
+/// 2.1.0 requires every `fixes` entry to carry `artifactChanges`, and one
+/// without them fails the whole log against the schema.
+#[test]
+fn sarif_carries_a_suggestion_as_a_property_not_a_fix() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.sarif");
+    let (code, _, stderr) = run_aurora_lint(&[
+        fixtures().join("violation.c").to_str().unwrap(),
+        "-m",
+        manifest_msc04().to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let sarif: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let result = &sarif["runs"][0]["results"][0];
+    assert!(result.get("fixes").is_none(), "{result}");
+    assert!(
+        result["properties"]["suggestion"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "{result}"
+    );
+}
+
 /// A header the scan cannot find is loud: one stderr line by default, every
 /// row with -v, a SARIF note that leaves the run successful, and the whole
 /// report with --report-headers. None of it changes a finding.

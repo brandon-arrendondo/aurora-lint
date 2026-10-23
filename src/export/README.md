@@ -11,8 +11,10 @@ The full report, for IDEs, CI code-scanning and anything downstream:
 - `tool.driver` names aurora-lint, its version and repository URL
 - `tool.driver.rules[]`: each rule's CERT description and SEI wiki `helpUri`
 - `results[]`: rule, level, message, location, and the flagged source line as
-  `region.snippet`; `fixes` when the rule has a suggestion;
-  `properties.requiresManualReview` when the rule could not decide confidently
+  `region.snippet`; `properties.suggestion` when the rule has one (prose,
+  not an edit, so not a SARIF `fix`, which must carry the replacements that
+  apply it); `properties.requiresManualReview` when the rule could not
+  decide confidently
 - suppressed findings are included, each carrying an in-source `suppressions` entry
 - `artifacts[]`: every file a finding points into, with its SHA-256
 

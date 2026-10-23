@@ -109,11 +109,10 @@ fn violation_to_sarif_result(
             serde_json::json!({ "text": line.trim() });
     }
     if let Some(suggestion) = &v.suggestion {
-        result["fixes"] = serde_json::json!([{
-            "description": {
-                "text": suggestion
-            }
-        }]);
+        // Prose, not an edit: a SARIF `fix` must carry `artifactChanges`
+        // (2.1.0 §3.55), the replacements that apply it, and a fix without
+        // them makes the whole log fail the schema.
+        result["properties"]["suggestion"] = serde_json::json!(suggestion);
     }
     if v.needs_manual_review() {
         // SARIF's own extension point for tool-defined metadata that

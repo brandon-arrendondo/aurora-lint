@@ -514,6 +514,11 @@ SHA-256 (``artifacts[].hashes``), so the report stands on its own without the
 scanned tree. Both formats name aurora-lint as their producer: SARIF in
 ``tool.driver``, JSON in a ``tool`` key on each object.
 
+A result's suggestion is ``properties.suggestion`` in SARIF, as it is
+``suggestion`` in JSON. It is prose, not an edit, so it is not a SARIF
+``fixes`` entry: the format requires a fix to carry the replacements that
+apply it, and a report with one lacking them fails the SARIF 2.1.0 schema.
+
 A rule with no results in a SARIF report either ran and found nothing or did
 not run. Each rule the configuration disables is listed in
 ``tool.driver.rules`` with ``defaultConfiguration.enabled`` set to ``false``
