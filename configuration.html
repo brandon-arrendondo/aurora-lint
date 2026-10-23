@@ -169,7 +169,7 @@ strip it). <code class="docutils literal notranslate"><span class="pre">strict</
 the rule’s text and the C standard credit (a function declared
 <code class="docutils literal notranslate"><span class="pre">_Noreturn</span></code> does not return), not a strippable <code class="docutils literal notranslate"><span class="pre">assert</span></code>: the reading
 MISRA-style and certified code needs. <code class="docutils literal notranslate"><span class="pre">pedantic</span></code> goes beyond a rule’s
-text where the rule has a sound or closed-form reading stricter than the
+text where the rule has a closed-form reading stricter than the
 text (only a body shown never to return ends a path), and may decline a
 rule that has none.</p></li>
 <li><p><strong>Environment</strong> says what the analyzer may believe about the platform the
@@ -205,9 +205,9 @@ does for the library. A declared data model, or one a compile database states,
 always wins, and a freestanding target is never assumed to be LP64. The scan’s
 summary, its SARIF settings and <code class="docutils literal notranslate"><span class="pre">--check-config</span></code> name the data model in force
 and where it came from.</p>
-<p>A preset may decline a rule rather than run a reading it cannot make sound
-(<code class="docutils literal notranslate"><span class="pre">not_enforced</span></code> in <a class="reference internal" href="rule-presets.html"><span class="doc">Rule readings by preset</span></a>). A scan under that preset does not
-run the rule, whatever the manifest enables: its summary lists each declined
+<p>A preset may decline a rule rather than run a reading it cannot state in
+closed form (<code class="docutils literal notranslate"><span class="pre">not_enforced</span></code> in <a class="reference internal" href="rule-presets.html"><span class="doc">Rule readings by preset</span></a>). A scan under that preset
+does not run the rule, whatever the manifest enables: its summary lists each declined
 rule with the reason, its SARIF settings carry them, and <code class="docutils literal notranslate"><span class="pre">--check-config</span></code>
 names them. The summary and <code class="docutils literal notranslate"><span class="pre">--check-config</span></code> list only the declined rules the
 manifest enables. The SARIF settings (<code class="docutils literal notranslate"><span class="pre">declined</span></code> and the hashed

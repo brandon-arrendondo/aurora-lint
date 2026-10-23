@@ -68,7 +68,7 @@ assume (ADR-0015):
   the rule's text and the C standard credit (a function declared
   ``_Noreturn`` does not return), not a strippable ``assert``: the reading
   MISRA-style and certified code needs. ``pedantic`` goes beyond a rule's
-  text where the rule has a sound or closed-form reading stricter than the
+  text where the rule has a closed-form reading stricter than the
   text (only a body shown never to return ends a path), and may decline a
   rule that has none.
 - **Environment** says what the analyzer may believe about the platform the
@@ -106,9 +106,9 @@ always wins, and a freestanding target is never assumed to be LP64. The scan's
 summary, its SARIF settings and ``--check-config`` name the data model in force
 and where it came from.
 
-A preset may decline a rule rather than run a reading it cannot make sound
-(``not_enforced`` in :doc:`rule-presets`). A scan under that preset does not
-run the rule, whatever the manifest enables: its summary lists each declined
+A preset may decline a rule rather than run a reading it cannot state in
+closed form (``not_enforced`` in :doc:`rule-presets`). A scan under that preset
+does not run the rule, whatever the manifest enables: its summary lists each declined
 rule with the reason, its SARIF settings carry them, and ``--check-config``
 names them. The summary and ``--check-config`` list only the declined rules the
 manifest enables. The SARIF settings (``declined`` and the hashed
