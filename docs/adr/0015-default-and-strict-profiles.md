@@ -288,7 +288,9 @@ not a flag.
   O'Hearn's words, under-approximate reasoning "can prove the presence of
   bugs but not their absence" (O'Hearn, "Incorrectness Logic", Proceedings
   of the ACM on Programming Languages, 2020, echoing Dijkstra), or it aims
-  at a narrower specification.
+  at a narrower specification. The 2026-10-22 amendment below restates this
+  bullet: a preset chooses the target, and these relations describe the
+  report.
 - **What can be checked exactly.** For a rule about a program's behavior,
   exact checking is impossible in general: every non-trivial semantic
   property of programs is undecidable (Rice, "Classes of Recursively
@@ -627,3 +629,62 @@ under "For Brandon's ruling" below.
   the exemptions. The release that ships the change says so in its changelog.
 - `rule-disposition.md` already reads POSIX this way (its E6, and the
   FIO08-C, FIO14-C, FIO19-C, FIO24-C, MSC05-C, CON37-C and SIG30-C rows).
+
+## Amendment (2026-10-22): a preset chooses the reading; soundness describes the report
+
+**Status:** proposed. The direction is Brandon's (2026-10-11 and
+2026-10-09). It changes no behavior, fixture, or oracle label; it restates
+the first Rationale bullet of the 2026-10-07 amendment.
+
+### Context
+
+That bullet maps each preset onto a relation between the report and the
+rule's text: `--pedantic` aims at V(R) ⊆ A, `--default` at A ⊆ V(R). The
+mapping mixes two questions. Soundness and under-approximation are
+properties of an analysis measured against a specification; a preset is a
+choice of the specification. Under the old mapping a `--strict` run that
+over-reports would look like `--pedantic`, and a `--pedantic` run that
+misses findings would look like `--default`, though neither changed its
+reading of the rule.
+
+### Decision
+
+1. **A preset chooses the target set, per rule.** Let V(R) be the set of
+   program points that violate rule R as written. `--strict` targets V(R).
+   `--pedantic` may target a closed reading V′ ⊇ V(R), and `--default` a
+   narrower reading V″ ⊆ V(R), each narrowing a named option (Decision 7).
+   Any preset may decline the rule (Decision 3 of the 2026-10-07
+   amendment). The choice is a reading of the rule's text, made by recorded
+   rulings, and the oracle labels V(R) without reference to the tool.
+2. **The presets may coincide.** For a well-formed rule, `--pedantic`
+   equals `--strict` where the text already has a single closed reading,
+   and `--default` equals `--strict` unless an everyday idiom needs an
+   exemption. A rule record that says its verdict does not differ by preset
+   is a normal outcome, not a gap.
+3. **The approximation terms describe the report.** For the target T a
+   preset chose, a report A with T ⊆ A is sound for T, the relation a sound
+   abstract interpretation keeps (Cousot and Cousot, POPL 1977, cited
+   above), and a report with A ⊆ T under-approximates T (O'Hearn, 2020,
+   cited above). The 2026-10-07 point on exactness (Rice) applies to A
+   against T, unchanged. aurora-lint claims neither soundness nor
+   completeness for any preset; the distance between A and T is measured
+   against the oracle, with `--default` and `--pedantic` scored as
+   differences from it (Decision 5 of the 2026-10-07 amendment).
+
+### Points this amendment does not settle
+
+- The 2026-10-07 amendment calls `--pedantic` "a sound or closed-form
+  reading beyond the text" (Decision 1), and says a strict-only rule is out
+  under `--pedantic` "because it cannot meet the sound standard" (Decision
+  3). Under this amendment, "sound" there can only describe the reading
+  (a closed form that the text supports), not the report. Whether to
+  reword both phrases, and the matching "a reading it cannot make sound"
+  in `docs/configuration.rst`, is left for Brandon's ruling.
+
+### Consequences
+
+- The first Rationale bullet of the 2026-10-07 amendment is read through
+  this one. Its citations stay.
+- Rule records and documentation describe a preset by the reading it
+  targets, and describe a detector's precision or recall against that
+  target. They do not call a preset sound or unsound.
