@@ -12,8 +12,10 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/DCL36-C.+Do+not+declare+an+identifier+with+conflicting+linkage+classifications>
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::preproc_arms::PreprocArms;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
+use crate::utility::cert_c::declarator_utils::declares_function;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -22,7 +24,7 @@ use tree_sitter::Node;
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Linkage {
     Internal, // static
-    External, // non-static
+    External, // extern, or no storage-class specifier
 }
 
 #[allow(dead_code)]
@@ -32,34 +34,70 @@ struct IdentifierInfo {
     linkage: Linkage,
     line: usize,
     column: usize,
+    byte: usize,
+}
+
+/// What a declaration's specifiers say about linkage; see
+/// `Dcl36C::linkage_specifiers`.
+#[derive(Debug, Clone, Copy, Default)]
+struct LinkageSpecifiers {
+    is_static: bool,
+    is_extern: bool,
+    is_constexpr: bool,
 }
 
 #[derive(Debug)]
 pub struct Dcl36C {
     // Track all identifier declarations with their linkage
     declarations: RefCell<HashMap<String, Vec<IdentifierInfo>>>,
+    /// The file's `#if` arms, so declarations no translation unit holds
+    /// together are not compared.
+    arms: RefCell<PreprocArms>,
 }
 
 impl Dcl36C {
     pub fn new() -> Self {
         Dcl36C {
             declarations: RefCell::new(HashMap::new()),
+            arms: RefCell::new(PreprocArms::default()),
         }
     }
 
-    /// Determine the linkage of a declaration
-    fn get_linkage(&self, node: &Node) -> Option<Linkage> {
-        // Check if declaration has 'static' storage class specifier
+    /// The storage-class specifiers and qualifiers that bear on linkage, as
+    /// C23 6.2.2 reads them: `static` (and `constexpr` on an object) gives
+    /// internal linkage (p3); `extern` takes the linkage of a visible prior
+    /// declaration (p4). `inline`, `thread_local` and the rest name no
+    /// linkage, so they leave the declaration where p4/p5 put it.
+    fn linkage_specifiers(&self, node: &Node, source: &str) -> LinkageSpecifiers {
+        let mut specifiers = LinkageSpecifiers::default();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "storage_class_specifier" {
-                // This is a static declaration (internal linkage)
-                return Some(Linkage::Internal);
+            match (child.kind(), get_node_text(&child, source)) {
+                ("storage_class_specifier", "static") => specifiers.is_static = true,
+                ("storage_class_specifier", "extern") => specifiers.is_extern = true,
+                ("type_qualifier", "constexpr") => specifiers.is_constexpr = true,
+                _ => {}
             }
         }
+        specifiers
+    }
 
-        // No static specifier means external linkage (for file-scope identifiers)
-        Some(Linkage::External)
+    /// The linkage one declarator of a file-scope declaration gives its name.
+    ///
+    /// `None` is "whatever a visible prior declaration says": `extern` (p4),
+    /// and a function with no storage-class specifier, which p5 reads as if
+    /// it were `extern`. Such a declaration cannot disagree with the
+    /// declaration it inherits from, so it is only ever a prior.
+    fn declarator_linkage(specifiers: LinkageSpecifiers, declarator: &Node) -> Option<Linkage> {
+        let is_function = declares_function(declarator);
+        if specifiers.is_static || (specifiers.is_constexpr && !is_function) {
+            Some(Linkage::Internal)
+        } else if specifiers.is_extern || is_function {
+            None
+        } else {
+            // p5: an object at file scope with no storage-class specifier.
+            Some(Linkage::External)
+        }
     }
 
     /// Extract identifier name from a declarator
@@ -113,62 +151,75 @@ impl Dcl36C {
             return;
         }
 
-        // Get linkage for this declaration
-        let linkage = match self.get_linkage(node) {
-            Some(l) => l,
-            None => return,
-        };
+        let specifiers = self.linkage_specifiers(node, source);
 
         // Extract all identifiers from this declaration
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "init_declarator" {
-                if let Some(declarator) = child.child_by_field_name("declarator") {
-                    if let Some(name) = self.extract_identifier(&declarator, source) {
-                        self.record_identifier(name, linkage, node, violations);
-                    }
+            let declarator = if child.kind() == "init_declarator" {
+                match child.child_by_field_name("declarator") {
+                    Some(declarator) => declarator,
+                    None => continue,
                 }
-            } else if let Some(name) = self.extract_identifier(&child, source) {
+            } else {
+                child
+            };
+            if let Some(name) = self.extract_identifier(&declarator, source) {
+                let linkage = Self::declarator_linkage(specifiers, &declarator);
                 self.record_identifier(name, linkage, node, violations);
             }
         }
     }
 
-    /// Record an identifier and check for linkage conflicts
+    /// Record an identifier and check for linkage conflicts.
+    ///
+    /// A declaration in the other arm of an `#if`/`#else` is not a prior of
+    /// this one: no translation unit holds both, so the two never meet.
     fn record_identifier(
         &self,
         name: String,
-        linkage: Linkage,
+        linkage: Option<Linkage>,
         node: &Node,
         violations: &mut Vec<RuleViolation>,
     ) {
+        let arms = self.arms.borrow();
         let mut decls = self.declarations.borrow_mut();
         let entry = decls.entry(name.clone()).or_default();
+        let at = node.start_byte();
+        let mut visible = entry.iter().filter(|prev| !arms.exclusive(prev.byte, at));
+
+        let linkage = match linkage {
+            Some(linkage) => linkage,
+            // p4: the linkage of the prior declaration, or external when
+            // none is visible.
+            None => visible
+                .clone()
+                .next_back()
+                .map_or(Linkage::External, |prev| prev.linkage),
+        };
 
         // Check if this identifier already has a declaration with different linkage
-        for prev in entry.iter() {
-            if prev.linkage != linkage {
-                violations.push(RuleViolation {
-                    rule_id: "DCL36-C".to_string(),
-                    severity: Severity::Medium,
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
-                    message: format!(
-                        "Identifier '{}' has conflicting linkage: previously declared as {} at line {}, now declared as {}",
-                        name,
-                        if prev.linkage == Linkage::Internal { "static (internal)" } else { "non-static (external)" },
-                        prev.line,
-                        if linkage == Linkage::Internal { "static (internal)" } else { "non-static (external)" }
-                    ),
-                    file_path: String::new(),
-                    suggestion: Some(
-                        "Use consistent storage-class specifiers for all declarations of the same identifier"
-                            .to_string(),
-                    ),
-                    requires_manual_review: Some(false),
-                });
-                return;
-            }
+        if let Some(prev) = visible.find(|prev| prev.linkage != linkage) {
+            violations.push(RuleViolation {
+                rule_id: "DCL36-C".to_string(),
+                severity: Severity::Medium,
+                line: node.start_position().row + 1,
+                column: node.start_position().column + 1,
+                message: format!(
+                    "Identifier '{}' has conflicting linkage: previously declared as {} at line {}, now declared as {}",
+                    name,
+                    if prev.linkage == Linkage::Internal { "static (internal)" } else { "non-static (external)" },
+                    prev.line,
+                    if linkage == Linkage::Internal { "static (internal)" } else { "non-static (external)" }
+                ),
+                file_path: String::new(),
+                suggestion: Some(
+                    "Use consistent storage-class specifiers for all declarations of the same identifier"
+                        .to_string(),
+                ),
+                requires_manual_review: Some(false),
+            });
+            return;
         }
 
         // Record this declaration
@@ -177,6 +228,7 @@ impl Dcl36C {
             linkage,
             line: node.start_position().row + 1,
             column: node.start_position().column + 1,
+            byte: at,
         });
     }
 
@@ -208,6 +260,7 @@ impl CertRule for Dcl36C {
     fn check(&self, root: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
         self.declarations.borrow_mut().clear();
+        *self.arms.borrow_mut() = PreprocArms::collect(root);
         self.traverse(root, source, &mut violations);
         violations
     }
