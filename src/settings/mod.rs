@@ -383,8 +383,9 @@ impl fmt::Display for EditionConflict {
 /// The rules whose findings depend on POSIX being declared: under `strict`
 /// or `pedantic` with `posix_version` unknown, none of them credits it. The
 /// first three read a POSIX-only entry of a library contract today (`_exit`
-/// ends a path; a POSIX call's side effects); the others are ruled to
-/// exempt a construct under POSIX and do not read the fact yet.
+/// ends a path; a POSIX call's side effects); FIO14-C exempts its
+/// constructs when POSIX holds; the others are ruled to exempt a construct
+/// under POSIX and do not read the fact yet.
 pub static POSIX_DEPENDENT_RULES: &[&str] = &[
     "API00-C", "CON37-C", "FIO08-C", "FIO14-C", "FIO19-C", "FIO24-C", "MSC05-C", "MSC37-C",
     "PRE31-C", "SIG30-C",

@@ -36,6 +36,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declared_type};
 use crate::utility::cert_c::call_roles;
+use crate::utility::cert_c::float_typing::is_float_literal;
 use crate::utility::cert_c::format_slots;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
@@ -511,8 +512,8 @@ impl Fio47C {
                     .unwrap_or(TypeCategory::Unknown)
             }
             "number_literal" => {
-                let text = get_node_text(node, source);
-                if text.contains('.') || text.contains('e') || text.contains('E') {
+                // A hex literal's `e`/`E` is a digit, not an exponent.
+                if is_float_literal(get_node_text(node, source)) {
                     TypeCategory::Float
                 } else {
                     TypeCategory::Integer
