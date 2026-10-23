@@ -2,12 +2,24 @@
 // Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::VisibleTypes;
 use crate::manifest::Severity;
+use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::expr_type::{self, CType, TypeEnv};
 use lang_parsing_substrate::query;
+use std::cell::{Cell, RefCell};
 use tree_sitter::Node;
 
-pub struct Exp35C;
+#[derive(Default)]
+pub struct Exp35C {
+    /// The struct fields this file sees, so a member of a call's result is
+    /// typed by its declaration: only an array member is one whose address
+    /// outlives the temporary.
+    visible: RefCell<VisibleTypes>,
+    /// The integer data model the settings credit, for typing.
+    data_model: Cell<IntFacts>,
+}
 
 impl CertRule for Exp35C {
     fn rule_id(&self) -> &'static str {
@@ -26,11 +38,21 @@ impl CertRule for Exp35C {
         "EXP35-C"
     }
 
+    fn set_visible_types(&self, types: &VisibleTypes) {
+        *self.visible.borrow_mut() = types.clone();
+    }
+
+    fn set_analysis_settings(&self, settings: &std::sync::Arc<AnalysisSettings>) {
+        self.data_model.set(settings.facts);
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         // Compute once — avoids O(N × source_len) if done inside the recursion.
         let has_c11_guard = source.contains("__STDC_VERSION__") && source.contains("201112L");
+        let visible = self.visible.borrow();
+        let env = TypeEnv::visible(&visible, self.data_model.get()).in_tree(*node);
         let mut violations = Vec::new();
-        self.check_node(node, source, has_c11_guard, &mut violations);
+        self.check_node(node, source, &env, has_c11_guard, &mut violations);
         violations
     }
 }
@@ -40,6 +62,7 @@ impl Exp35C {
         &self,
         node: &Node,
         source: &str,
+        env: &TypeEnv,
         has_c11_guard: bool,
         violations: &mut Vec<RuleViolation>,
     ) {
@@ -54,13 +77,13 @@ impl Exp35C {
         ) {
             match n.kind() {
                 "unary_expression" => {
-                    self.check_unary_expression(&n, source, violations);
+                    self.check_unary_expression(&n, source, env, violations);
                 }
                 "init_declarator" | "assignment_expression" => {
-                    self.check_pointer_assignment(&n, source, violations);
+                    self.check_pointer_assignment(&n, source, env, violations);
                 }
                 "call_expression" if !has_c11_guard => {
-                    self.check_c99_temporary_access(&n, source, violations);
+                    self.check_c99_temporary_access(&n, source, env, violations);
                 }
                 _ => {}
             }
@@ -76,6 +99,7 @@ impl Exp35C {
         &self,
         node: &Node,
         source: &str,
+        env: &TypeEnv,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for function calls (like printf) that have arguments accessing temporary arrays
@@ -83,7 +107,7 @@ impl Exp35C {
             // Check each argument
             for i in 0..arguments.child_count() {
                 if let Some(arg) = arguments.child(i) {
-                    if self.contains_temporary_array_access(&arg, source) {
+                    if self.contains_temporary_array_access(&arg, source, env) {
                         let start_point = arg.start_position();
                         violations.push(RuleViolation {
                             rule_id: "EXP35-C".to_string(),
@@ -109,6 +133,7 @@ impl Exp35C {
         &self,
         node: &Node,
         source: &str,
+        env: &TypeEnv,
         violations: &mut Vec<RuleViolation>,
     ) {
         if let Some(operator) = node.child(0) {
@@ -119,7 +144,7 @@ impl Exp35C {
                 if let Some(argument) = node.child_by_field_name("argument") {
                     // Check if modifying/taking address of a temporary's array member
                     // Use contains_temporary_array_access to check deeply nested patterns
-                    if self.contains_temporary_array_access(&argument, source) {
+                    if self.contains_temporary_array_access(&argument, source, env) {
                         let start_point = node.start_position();
                         let message = if op_text == "&" {
                             "Taking address of array member from temporary object".to_string()
@@ -154,6 +179,7 @@ impl Exp35C {
         &self,
         node: &Node,
         source: &str,
+        env: &TypeEnv,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Get the right-hand side value
@@ -167,7 +193,7 @@ impl Exp35C {
 
         if let Some(value) = value_node {
             // Check if assigning a temporary's array member to a pointer
-            if self.is_temporary_array_access(&value, source) {
+            if self.is_temporary_array_access(&value, source, env) {
                 let start_point = value.start_position();
                 violations.push(RuleViolation {
                     rule_id: "EXP35-C".to_string(),
@@ -200,40 +226,65 @@ impl Exp35C {
         false
     }
 
-    /// Check if a node represents accessing an array member from a temporary
-    fn is_temporary_array_access(&self, node: &Node, source: &str) -> bool {
-        match node.kind() {
-            "field_expression" => {
-                // Check if the argument is a call expression
-                // Pattern: func().array — temporary struct member access
-                // Skip: func()->field — function returns pointer, not temporary
-                if let Some(argument) = node.child_by_field_name("argument") {
-                    if argument.kind() == "call_expression" {
-                        return !self.uses_arrow_operator(node, source);
-                    }
-                }
-            }
-            "subscript_expression" => {
-                // Check if subscripting a field from a call expression
-                // Pattern: func().array[index]
-                if let Some(array) = node.child(0) {
-                    if array.kind() == "field_expression" {
-                        if let Some(argument) = array.child_by_field_name("argument") {
-                            if argument.kind() == "call_expression" {
-                                return !self.uses_arrow_operator(&array, source);
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-        false
+    /// `f().a` with `a` an array member of the struct `f` returns: the one
+    /// member of a temporary whose address, by decay, outlives it. The
+    /// member is typed by its declaration (ADR-0006); a scalar member, an
+    /// element `f().a[i]` (a value), and a member whose type is not in reach
+    /// are not reported.
+    fn is_temporary_array_access(&self, node: &Node, source: &str, env: &TypeEnv) -> bool {
+        node.kind() == "field_expression"
+            && node
+                .child_by_field_name("argument")
+                .is_some_and(|argument| argument.kind() == "call_expression")
+            && !self.uses_arrow_operator(node, source)
+            && matches!(
+                expr_type::expr_type(node, source, env),
+                Some(CType::Array(_))
+            )
     }
 
-    /// Check if a node or its ancestors represent accessing an array member from a temporary
-    fn contains_temporary_array_access(&self, node: &Node, _source: &str) -> bool {
-        query::find_first_descendant(*node, |n| self.is_temporary_array_access(&n, _source))
-            .is_some()
+    /// Whether `node` or anything under it is such a member access. An
+    /// element of the member that is only read, `use(f().a[i])`, is a copy
+    /// taken before the call and keeps no pointer into the temporary; one
+    /// that is modified or whose address is taken does.
+    fn contains_temporary_array_access(&self, node: &Node, source: &str, env: &TypeEnv) -> bool {
+        query::find_first_descendant(*node, |n| {
+            self.is_temporary_array_access(&n, source, env) && !is_element_read(&n, source)
+        })
+        .is_some()
+    }
+}
+
+/// Whether the member `field` is subscripted, `f().a[i]`, and the element is
+/// only read: not the operand of `++`/`--` or `&`, and not assigned to.
+fn is_element_read(field: &Node, source: &str) -> bool {
+    let Some(subscript) = field
+        .parent()
+        .filter(|p| p.kind() == "subscript_expression")
+        .filter(|p| {
+            p.child_by_field_name("argument")
+                .is_some_and(|a| a.id() == field.id())
+        })
+    else {
+        return false;
+    };
+    let mut operand = subscript;
+    let mut user = subscript.parent();
+    while let Some(p) = user.filter(|p| p.kind() == "parenthesized_expression") {
+        operand = p;
+        user = p.parent();
+    }
+    let Some(user) = user else {
+        return true;
+    };
+    match user.kind() {
+        "update_expression" => false,
+        "pointer_expression" => user
+            .child_by_field_name("operator")
+            .is_none_or(|op| ast_utils::get_node_text(&op, source) != "&"),
+        "assignment_expression" => user
+            .child_by_field_name("left")
+            .is_none_or(|left| left.id() != operand.id()),
+        _ => true,
     }
 }

@@ -987,7 +987,7 @@ impl RuleRegistry {
         registry.register(Box::new(exp32_c::Exp32C));
         registry.register(Box::new(exp33_c::Exp33C::new()));
         registry.register(Box::new(exp34_c::Exp34C::new()));
-        registry.register(Box::new(exp35_c::Exp35C));
+        registry.register(Box::new(exp35_c::Exp35C::default()));
         registry.register(Box::new(exp36_c::Exp36C::new()));
         registry.register(Box::new(exp10_c::Exp10C::new()));
         registry.register(Box::new(exp11_c::Exp11C));
@@ -1036,7 +1036,7 @@ impl RuleRegistry {
         registry.register(Box::new(fio41_c::Fio41C));
         registry.register(Box::new(fio44_c::Fio44C));
         registry.register(Box::new(flp37_c::Flp37C));
-        registry.register(Box::new(flp07_c::Flp07C));
+        registry.register(Box::new(flp07_c::Flp07C::default()));
         registry.register(Box::new(flp00_c::Flp00C));
         registry.register(Box::new(flp01_c::Flp01C));
         registry.register(Box::new(flp02_c::Flp02C::new()));
