@@ -140,6 +140,89 @@ fn is_braced(body: Node, source: &str, macros: &Macros<'_>) -> bool {
         .is_some_and(|name| macros.expands_to_block(name))
 }
 
+/// Whether `body` is the empty statement tree-sitter recovers for a control
+/// statement whose real body sits in every arm of the `#if` chain that
+/// follows it:
+///
+/// ```c
+/// if (x)
+/// #ifdef A
+///     { a(); }
+/// #else
+///     { b(); }
+/// #endif
+/// ```
+///
+/// `preproc_if` is a block item, not a statement, so the chain parses as the
+/// statement's next SIBLING and the statement gets a zero-width
+/// `(expression_statement (MISSING ";"))` body. Every configuration picks one
+/// arm, so the body is braced when every arm holds exactly one braced
+/// statement and nothing else, and the chain ends in an `#else` — without
+/// one, some configuration gives the statement whatever follows the
+/// `#endif`. One unbraced arm keeps the finding (ADR-0010).
+fn braced_in_every_arm(statement: Node, body: Node, source: &str, macros: &Macros<'_>) -> bool {
+    let recovered = body.kind() == "expression_statement"
+        && body.named_child_count() == 0
+        && (0..body.child_count())
+            .filter_map(|i| body.child(i))
+            .all(|c| c.is_missing());
+    if !recovered {
+        return false;
+    }
+    // The chain follows the outermost statement that ends where the body
+    // does: `for (...) if (x)` hands the `for` the `if`, and the chain comes
+    // after both.
+    let mut item = statement;
+    let chain = loop {
+        let mut next = item.next_named_sibling();
+        while let Some(n) = next.filter(|n| n.kind() == "comment") {
+            next = n.next_named_sibling();
+        }
+        if let Some(next) = next {
+            break next;
+        }
+        match item.parent() {
+            Some(parent)
+                if parent.end_byte() == item.end_byte()
+                    && parent.kind().ends_with("_statement") =>
+            {
+                item = parent
+            }
+            _ => return false,
+        }
+    };
+    if !matches!(chain.kind(), "preproc_if" | "preproc_ifdef") {
+        return false;
+    }
+    let mut arm = chain;
+    loop {
+        let mut cursor = arm.walk();
+        let mut held = Vec::new();
+        let mut alternative = None;
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                match cursor.field_name() {
+                    Some("alternative") => alternative = Some(child),
+                    Some("name") | Some("condition") => {}
+                    _ if child.is_named() && child.kind() != "comment" => held.push(child),
+                    _ => {}
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        if held.len() != 1 || !is_braced(held[0], source, macros) {
+            return false;
+        }
+        match alternative {
+            Some(next) => arm = next,
+            None => return arm.kind() == "preproc_else",
+        }
+    }
+}
+
 impl CertRule for Exp19C {
     fn reads_header_facts(&self) -> bool {
         true
@@ -231,7 +314,9 @@ impl Exp19C {
         // Get the consequence (then-branch) of the if statement
         if let Some(consequence) = if_node.child_by_field_name("consequence") {
             // If the consequence is not a compound_statement (braced block), it's a violation
-            if !is_braced(consequence, source, macros) {
+            if !is_braced(consequence, source, macros)
+                && !braced_in_every_arm(if_node, consequence, source, macros)
+            {
                 return Some(self.create_violation(
                     if_node,
                     "if",
@@ -276,7 +361,9 @@ impl Exp19C {
                     return None;
                 }
                 // Check if the body is a compound_statement (braced block)
-                if !is_braced(body, source, macros) {
+                if !is_braced(body, source, macros)
+                    && !braced_in_every_arm(if_node, body, source, macros)
+                {
                     return Some(self.create_violation(
                         if_node,
                         "else",
@@ -297,7 +384,9 @@ impl Exp19C {
         macros: &Macros,
     ) -> Option<RuleViolation> {
         if let Some(body) = for_node.child_by_field_name("body") {
-            if !is_braced(body, source, macros) {
+            if !is_braced(body, source, macros)
+                && !braced_in_every_arm(for_node, body, source, macros)
+            {
                 return Some(self.create_violation(
                     for_node,
                     "for",
@@ -320,7 +409,9 @@ impl Exp19C {
             return None;
         }
         if let Some(body) = while_node.child_by_field_name("body") {
-            if !is_braced(body, source, macros) {
+            if !is_braced(body, source, macros)
+                && !braced_in_every_arm(while_node, body, source, macros)
+            {
                 return Some(self.create_violation(
                     while_node,
                     "while",
