@@ -1107,7 +1107,7 @@ impl RuleRegistry {
         registry.register(Box::new(msc10_c::Msc10C::default()));
         registry.register(Box::new(msc11_c::Msc11C));
         registry.register(Box::new(msc15_c::Msc15C));
-        registry.register(Box::new(msc17_c::Msc17C));
+        registry.register(Box::new(msc17_c::Msc17C::new()));
         registry.register(Box::new(msc20_c::Msc20C));
         registry.register(Box::new(msc21_c::Msc21C));
         registry.register(Box::new(msc22_c::Msc22C));
