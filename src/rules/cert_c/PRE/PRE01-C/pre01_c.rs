@@ -36,7 +36,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
-use crate::utility::cert_c::pp_tokens::{define_at, PpToken};
+use crate::utility::cert_c::pp_tokens::{define_at, LineIndex, PpKind, PpToken};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -49,7 +49,9 @@ impl Pre01C {
 
     /// Whether the parameter use at `k` needs no parentheses: it is already
     /// parenthesized, or it is followed by `,` or `)` inside some `(` (a
-    /// function-call argument; commas have the lowest precedence).
+    /// function-call argument; commas have the lowest precedence), or it sits
+    /// where parentheses would not compile: in a string concatenation or a
+    /// type position.
     fn is_exempt_position(tokens: &[PpToken], k: usize) -> bool {
         let prev = k.checked_sub(1).map(|p| &tokens[p]);
         let next = tokens.get(k + 1);
@@ -69,11 +71,48 @@ impl Pre01C {
             }
             false
         });
-        inside_parens && (closes || next.is_some_and(|t| t.is(",")))
+        (inside_parens && (closes || next.is_some_and(|t| t.is(","))))
+            || Self::is_concatenated_with_literal(tokens, k)
+            || Self::is_type_position(tokens, k)
+    }
+
+    /// Whether the use at `k` is next to a string literal: `puts(a "\n")`
+    /// pastes the argument into a string concatenation, and `(a) "\n"`, the
+    /// parenthesized form, does not compile. Only a literal argument can
+    /// make sense there, and a literal has no precedence to protect.
+    fn is_concatenated_with_literal(tokens: &[PpToken], k: usize) -> bool {
+        let is_string = |t: &PpToken| t.kind == PpKind::StringLiteral;
+        k.checked_sub(1).is_some_and(|p| is_string(&tokens[p]))
+            || tokens.get(k + 1).is_some_and(is_string)
+    }
+
+    /// Whether the use at `k` names a type, where parentheses would not
+    /// compile: followed by an identifier (`T n`, a declaration), or the
+    /// whole of a cast's type name up to its pointer declarators
+    /// (`(T *)0`, `sizeof(T **)`). `T * x` is a declaration or a
+    /// multiplication, and stays reported.
+    fn is_type_position(tokens: &[PpToken], k: usize) -> bool {
+        if tokens
+            .get(k + 1)
+            .is_some_and(|t| t.kind == PpKind::Identifier)
+        {
+            return true;
+        }
+        if !k.checked_sub(1).is_some_and(|p| tokens[p].is("(")) {
+            return false;
+        }
+        let stars = tokens[k + 1..].iter().take_while(|t| t.is("*")).count();
+        stars > 0 && tokens.get(k + 1 + stars).is_some_and(|t| t.is(")"))
     }
 
     /// Check a function-like macro definition for unparenthesized parameters
-    fn check_function_macro(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn check_function_macro(
+        &self,
+        node: &Node,
+        source: &str,
+        lines: &LineIndex,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         // The directive's own text, not tree-sitter's fields: a comment in a
         // function-like macro's body can make it misparse the directive.
         let Some(define) = define_at(node, source) else {
@@ -84,15 +123,16 @@ impl Pre01C {
         };
         let tokens = define.tokens();
 
-        // Every use of each parameter in the replacement list. A spelling in
-        // a string or character literal or a comment is not a use, and the
-        // operand of `#` or `##` must stay a bare identifier.
+        // Every use of each parameter in the replacement list, each reported
+        // where it is written. A spelling in a string or character literal
+        // or a comment is not a use, and the operand of `#` or `##` must stay
+        // a bare identifier.
         for param in params.iter().filter(|p| !p.ends_with("...")) {
-            let unparenthesized = tokens
-                .iter()
-                .enumerate()
-                .any(|(k, t)| t.is_plain_use_of(param) && !Self::is_exempt_position(&tokens, k));
-            if unparenthesized {
+            for (k, token) in tokens.iter().enumerate() {
+                if !token.is_plain_use_of(param) || Self::is_exempt_position(&tokens, k) {
+                    continue;
+                }
+                let at = lines.point(define.body_start + token.start);
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: self.severity(),
@@ -101,8 +141,8 @@ impl Pre01C {
                         param
                     ),
                     file_path: String::new(),
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
+                    line: at.row + 1,
+                    column: at.column + 1,
                     suggestion: Some(format!(
                         "Wrap parameter '{}' in parentheses: ({}) instead of {}",
                         param, param, param
@@ -133,10 +173,11 @@ impl CertRule for Pre01C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+        let lines = LineIndex::new(source);
         for macro_node in
             query::find_descendants_of_kinds(*node, &["preproc_function_def", "preproc_def"])
         {
-            self.check_function_macro(&macro_node, source, &mut violations);
+            self.check_function_macro(&macro_node, source, &lines, &mut violations);
         }
         violations
     }
