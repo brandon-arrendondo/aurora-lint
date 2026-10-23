@@ -16,7 +16,8 @@
 //!     resolved to its declaration (ADR-0006): a file-scope, `static` or
 //!     `extern` object outlives the function and is never flagged, and
 //!     nothing may follow the clear in any block up to the one that declares
-//!     it. `memset_s` and `SecureZeroMemory` are guaranteed not to be
+//!     it, nor may a loop lie between them (its next iteration still has the
+//!     buffer). `memset_s` and `SecureZeroMemory` are guaranteed not to be
 //!     optimized away and are never flagged.
 //!   - an empty-body spin loop (`while (cond) { }`) whose controlling
 //!     expression is a plain variable whose resolved declaration is not
@@ -152,6 +153,21 @@ impl Msc06C {
                 .filter(|p| p.kind() == "compound_statement")
                 .or_else(|| function.child_by_field_name("body"));
             let Some(home) = home else { continue };
+            // A loop between the clear and the buffer's own block runs again
+            // with the buffer still alive, so the clear is not its last use
+            // before it goes out of scope.
+            let in_loop = query::find_ancestor(call, |a| {
+                matches!(
+                    a.kind(),
+                    "for_statement" | "while_statement" | "do_statement"
+                )
+            })
+            .is_some_and(|l| {
+                home.start_byte() <= l.start_byte() && l.end_byte() <= home.end_byte()
+            });
+            if in_loop {
+                continue;
+            }
 
             // The clear is only flagged if nothing after it, in its own
             // block and in every enclosing block up to the buffer's own,

@@ -5,7 +5,8 @@
  *
  * A buffer of the function body cleared inside an inner block, with nothing
  * after the clear in either block, so the clear is the buffer's last use
- * before it goes out of scope. The spin loop's flag is a plain global whose
+ * before it goes out of scope, and a buffer declared inside a loop body,
+ * whose lifetime ends with each iteration. The spin loop's flag is a plain global whose
  * name merely appears in an unrelated volatile declaration.
  */
 #include <string.h>
@@ -19,6 +20,17 @@ void nested(void)
     if (check()) {
         use(pwd);
         memset(pwd, 0, sizeof pwd);
+    }
+}
+
+int more(void);
+
+void per_iteration(void)
+{
+    while (more()) {
+        char line[16];
+        use(line);
+        memset(line, 0, sizeof line);
     }
 }
 

@@ -5,8 +5,9 @@
  *
  * Clears that are not the last use of an object about to go out of scope,
  * so no compiler may drop them as dead stores: a static local, a file-scope
- * object, an extern object, and a buffer of an enclosing block that is read
- * again after the inner block ends. Each sits in its own function, so no
+ * object, an extern object, a buffer of an enclosing block that is read
+ * again after the inner block ends, and a buffer that a loop's next
+ * iteration still holds. Each sits in its own function, so no
  * later statement in that function hides the case.
  */
 #include <string.h>
@@ -43,4 +44,15 @@ void enclosing_block(void)
         memset(outer, 0, sizeof outer);
     }
     use(outer);
+}
+
+int more(void);
+
+void loop_reuse(void)
+{
+    char buf[16];
+    while (more()) {
+        use(buf);
+        memset(buf, 0, sizeof buf);
+    }
 }
