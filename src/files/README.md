@@ -62,9 +62,9 @@ let files = discover_c_files(".")?;
 // Analyze specific project
 let files = discover_c_files("/path/to/project")?;
 
-// Filter by specific patterns
+// Filter by specific patterns (`B.H` is a header too)
 let headers = files.iter()
-    .filter(|f| f.ends_with(".h"))
+    .filter(|f| is_c_header(f))
     .collect();
 ```
 

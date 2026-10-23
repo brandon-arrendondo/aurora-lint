@@ -626,7 +626,7 @@ impl CompileDb {
         }
         scanned
             .iter()
-            .filter(|p| p.ends_with(".c"))
+            .filter(|p| crate::files::is_c_translation_unit(p))
             .filter(|p| !self.configured_sources.contains(&real_path(Path::new(p))))
             .map(|p| p.as_str())
             .collect()

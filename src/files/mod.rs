@@ -21,6 +21,38 @@ pub(crate) fn is_c_source_extension(ext: &std::ffi::OsStr) -> bool {
     lang_parsing_substrate::is_extension_for_language(ext, "c")
 }
 
+// Extensions are matched without regard to case, as the substrate matches
+// them: a supplier tree built on Windows names its files `X.C` and `X.H`,
+// and those are C. GCC's convention that `.C` is C++ is not followed. Every
+// path test below goes through these, never a literal `".c"` compare.
+
+/// Whether `path` has a C source or header extension (`.c`/`.h`, any case).
+pub(crate) fn is_c_file(path: impl AsRef<std::path::Path>) -> bool {
+    path.as_ref().extension().is_some_and(is_c_source_extension)
+}
+
+/// Whether `path` is a C translation unit: a `.c` file, in any case.
+pub(crate) fn is_c_translation_unit(path: impl AsRef<std::path::Path>) -> bool {
+    has_extension(path.as_ref(), &["c"])
+}
+
+/// Whether `path` is a C header: a `.h` file, in any case.
+pub(crate) fn is_c_header(path: impl AsRef<std::path::Path>) -> bool {
+    has_extension(path.as_ref(), &["h"])
+}
+
+/// Whether `path` is a C or C++ header (`.h`, `.hh`, `.hpp`, `.hxx`, any
+/// case).
+pub(crate) fn is_any_header(path: impl AsRef<std::path::Path>) -> bool {
+    has_extension(path.as_ref(), &["h", "hh", "hpp", "hxx"])
+}
+
+fn has_extension(path: &std::path::Path, extensions: &[&str]) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| extensions.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
 /// Where the project's C files are being read from.
 pub enum ProjectSource {
     /// A git repository (enables `get_modified_c_files`/diff-only scoping).

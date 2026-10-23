@@ -1143,8 +1143,7 @@ impl Int33C {
             .file_path
             .borrow()
             .as_ref()
-            .and_then(|p| p.extension())
-            .is_some_and(|ext| ext == "c");
+            .is_some_and(crate::files::is_c_translation_unit);
         if !in_c_file {
             return false;
         }

@@ -282,7 +282,7 @@ fn process_file(
         collect_value_position_identifiers(&root, &source, &mut result.value_position_identifiers);
         result.included_c_files = extract_include_directives(&root, &source)
             .into_iter()
-            .filter(|path| path.ends_with(".c"))
+            .filter(|path| crate::files::is_c_translation_unit(path))
             .map(|path| file_name_of(&path).to_string())
             .collect();
 
@@ -575,19 +575,14 @@ pub fn prescan_directories(
             .sort_by_file_name()
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                matches!(
-                    e.path().extension().and_then(|ext| ext.to_str()),
-                    Some("c") | Some("h")
-                )
-            })
+            .filter(|e| crate::files::is_c_file(e.path()))
             // A file the scope leaves out of the prescan does not stand for
             // the functions and macros other files see. A header of it that
             // a scanned file includes is still read, by include resolution:
             // it is part of that file's translation unit.
             .filter(|e| !scoped_out(e.path(), dir))
         {
-            let is_header = entry.path().extension().and_then(|ext| ext.to_str()) == Some("h");
+            let is_header = crate::files::is_c_header(entry.path());
             all_files.push((entry.path().to_path_buf(), is_header));
         }
     }
@@ -671,7 +666,7 @@ pub fn prescan_files(
         .into_iter()
         .filter(|p| seen.insert(std::fs::canonicalize(p).unwrap_or_else(|_| p.clone())))
         .map(|p| {
-            let is_header = p.extension().and_then(|ext| ext.to_str()) == Some("h");
+            let is_header = crate::files::is_c_header(&p);
             (p, is_header)
         })
         .collect();
@@ -1116,7 +1111,7 @@ fn prescan_file_list(
         let is_c_file = r
             .source_path
             .as_ref()
-            .is_some_and(|path| path.extension().is_some_and(|e| e == "c"));
+            .is_some_and(crate::files::is_c_translation_unit);
         if is_c_file {
             let statics = &r.local_static_functions;
             let own = r
@@ -1835,7 +1830,7 @@ pub fn sibling_headers(parent_dir: &str) -> Vec<PathBuf> {
         .sort_by_file_name()
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("h"))
+        .filter(|e| crate::files::is_c_header(e.path()))
         .map(|e| e.path().to_path_buf())
         .collect()
 }
@@ -2172,7 +2167,7 @@ pub(crate) fn mark_address_taken_scoped(
             None => (None, key.as_str()),
         };
         let own_file_only = file.and_then(|f| {
-            (f.ends_with(".c") && !included_c_files.contains(file_name_of(f)))
+            (crate::files::is_c_translation_unit(f) && !included_c_files.contains(file_name_of(f)))
                 .then(|| by_file.get(f))
                 .flatten()
         });
@@ -2186,9 +2181,7 @@ pub(crate) fn mark_address_taken_scoped(
 /// Whether `path` names a header, whose definitions every file that
 /// includes it sees.
 fn is_header_path(path: &str) -> bool {
-    [".h", ".hh", ".hpp", ".hxx"]
-        .iter()
-        .any(|ext| path.ends_with(ext))
+    crate::files::is_any_header(path)
 }
 
 /// The last path component of `path`, `/` or `\\` separated.

@@ -397,7 +397,7 @@ impl PrescannedHeaders {
                 .sort_by_file_name()
                 .into_iter()
                 .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("h"))
+                .filter(|e| crate::files::is_c_header(e.path()))
             {
                 paths.push(entry.into_path());
             }

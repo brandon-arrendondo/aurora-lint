@@ -22,12 +22,7 @@ impl CertRule for Pre06C {
     }
 
     fn applies_to_file(&self, file_path: &str) -> bool {
-        matches!(
-            std::path::Path::new(file_path)
-                .extension()
-                .and_then(|e| e.to_str()),
-            Some("h" | "hpp" | "hh" | "hxx")
-        )
+        crate::files::is_any_header(file_path)
     }
 
     fn check(&self, _node: &Node, source: &str) -> Vec<RuleViolation> {

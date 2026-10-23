@@ -105,8 +105,9 @@ from bench.config import BENCH_ROOT, PROJECT_DIR
 
 REPOS_JSON = PROJECT_DIR / "data" / "benchmark_repos.json"
 
-# Extensions sqc actually analyzes; an untracked file with one of these is a
-# real contamination risk, anything else is inert clutter.
+# Extensions sqc actually analyzes, in any case (a Windows tree's X.C is C);
+# an untracked file with one of these is a real contamination risk, anything
+# else is inert clutter.
 SCANNED_SUFFIXES = (".c", ".h")
 
 _ORDER = ["MISSING", "NOT_GIT", "PIN_ABSENT", "DRIFTED", "UNPINNED", "OK"]
@@ -306,7 +307,7 @@ def check_repo(entry, bench_root=None):
         if rel in sub_paths:
             continue  # reported per submodule, not as a modified file
         if line.startswith("??"):
-            if not rel.endswith(SCANNED_SUFFIXES):
+            if not rel.lower().endswith(SCANNED_SUFFIXES):
                 res["untracked_ignored"] += 1
             elif _excluded(rel, excludes):
                 res["untracked_scanned_but_excluded"] += 1
@@ -321,7 +322,7 @@ def check_repo(entry, bench_root=None):
                    "--exclude-standard") or ""
     for line in ignored.splitlines():
         rel = line.strip()
-        if not rel.endswith(SCANNED_SUFFIXES):
+        if not rel.lower().endswith(SCANNED_SUFFIXES):
             continue
         if _excluded(rel, excludes):
             res["gitignored_scanned_but_excluded"] += 1

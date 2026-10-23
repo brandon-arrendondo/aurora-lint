@@ -80,13 +80,13 @@ def generated_files(src: Path, build: Path, untracked: set[str] | None = None) -
     """{'build/<rel>' or 'src/<rel>': path} for each header the build made."""
     out = {}
     for p in sorted(build.rglob("*")):
-        if p.is_file() and p.suffix in HEADER_SUFFIXES:
+        if p.is_file() and p.suffix.lower() in HEADER_SUFFIXES:
             out[f"build/{p.relative_to(build).as_posix()}"] = p
     if untracked is None:
         untracked = untracked_files(src)
     for rel in sorted(untracked):
         p = src / rel
-        if p.is_file() and p.suffix in HEADER_SUFFIXES:
+        if p.is_file() and p.suffix.lower() in HEADER_SUFFIXES:
             out[f"src/{rel}"] = p
     return out
 

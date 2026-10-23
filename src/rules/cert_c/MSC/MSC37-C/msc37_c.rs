@@ -233,7 +233,7 @@ impl Msc37C {
             for e in entries.iter().filter(|e| {
                 e.files
                     .iter()
-                    .any(|f| !f.ends_with(".c") || closure.may_include(f))
+                    .any(|f| !crate::files::is_c_translation_unit(f) || closure.may_include(f))
             }) {
                 bodies
                     .entry(name.clone())

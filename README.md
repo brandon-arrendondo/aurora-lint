@@ -114,9 +114,11 @@ to your codebase instead of accepting one global verdict. That same property
 is what makes it cheap to drop into a CI gate or an AI-assisted development
 loop as a repeated check.
 
-**Scope: C.** aurora-lint analyzes `.c` and `.h` against CERT C. It is not a C++
-checker — it recognizes C++ constructs only well enough to avoid reporting
-nonsense on a C++ header it encounters.
+**Scope: C.** aurora-lint analyzes `.c` and `.h` against CERT C, in any case: a
+tree built on Windows that names its files `X.C` and `X.H` is C, not C++ as
+GCC's convention would have it. It is not a C++ checker — it recognizes C++
+constructs only well enough to avoid reporting nonsense on a C++ header it
+encounters.
 
 ## Key Features
 
