@@ -518,6 +518,8 @@ A result's suggestion is ``properties.suggestion`` in SARIF, as it is
 ``suggestion`` in JSON. It is prose, not an edit, so it is not a SARIF
 ``fixes`` entry: the format requires a fix to carry the replacements that
 apply it, and a report with one lacking them fails the SARIF 2.1.0 schema.
+A result's location gives ``startColumn`` only when the rule reports a
+column; without one, the region names the line alone.
 
 A rule with no results in a SARIF report either ran and found nothing or did
 not run. Each rule the configuration disables is listed in

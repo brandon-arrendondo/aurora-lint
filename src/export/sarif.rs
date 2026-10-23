@@ -101,6 +101,14 @@ fn violation_to_sarif_result(
             }
         }]
     });
+    // Columns are 1-indexed, and SARIF's minimum is 1. A rule that reports
+    // column 0 has no column to give, so the region gives none rather than
+    // failing the log against the schema.
+    if v.column == 0 {
+        if let Some(region) = result["locations"][0]["physicalLocation"]["region"].as_object_mut() {
+            region.remove("startColumn");
+        }
+    }
     let snippet = artifact
         .and_then(|a| a.lines.as_ref())
         .and_then(|lines| lines.get(v.line.checked_sub(1)?));
@@ -364,7 +372,30 @@ pub fn export_all_violations_to_sarif(
 
 #[cfg(test)]
 mod tests {
-    use super::help_uri;
+    use super::{help_uri, violation_to_sarif_result};
+    use crate::rules::RuleViolation;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn a_region_gives_no_column_for_a_violation_at_column_zero() {
+        let region = |column| {
+            let v = RuleViolation {
+                rule_id: "DCL05-C".into(),
+                file_path: "a.c".into(),
+                line: 3,
+                column,
+                ..Default::default()
+            };
+            violation_to_sarif_result(&v, &BTreeMap::new(), &BTreeMap::new(), Default::default())
+                ["locations"][0]["physicalLocation"]["region"]
+                .clone()
+        };
+        assert_eq!(region(0), serde_json::json!({ "startLine": 3 }));
+        assert_eq!(
+            region(5),
+            serde_json::json!({ "startLine": 3, "startColumn": 5 })
+        );
+    }
 
     #[test]
     fn a_cwe_rule_links_to_its_cwe_entry_and_a_cert_rule_to_cert() {

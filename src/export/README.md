@@ -10,8 +10,8 @@ The full report, for IDEs, CI code-scanning and anything downstream:
 
 - `tool.driver` names aurora-lint, its version and repository URL
 - `tool.driver.rules[]`: each rule's CERT description and SEI wiki `helpUri`
-- `results[]`: rule, level, message, location, and the flagged source line as
-  `region.snippet`; `properties.suggestion` when the rule has one (prose,
+- `results[]`: rule, level, message, location (with no `startColumn` when the
+  rule reports no column), and the flagged source line as `region.snippet`; `properties.suggestion` when the rule has one (prose,
   not an edit, so not a SARIF `fix`, which must carry the replacements that
   apply it); `properties.requiresManualReview` when the rule could not
   decide confidently
