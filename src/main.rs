@@ -187,9 +187,22 @@ fn rule_enabled(manifest: &RuleManifest, rule_id: &str) -> bool {
 /// The shipped rules `manifest` disables, each with its `disabled_reason`.
 /// A disabled block for a rule with no code is left out: it is tracked but
 /// not implemented, and enabling it would run nothing.
-fn disabled_rules(manifest: &RuleManifest) -> Vec<manifest::DisabledRule> {
-    let registry = aurora_lint::rules::RuleRegistry::new();
+fn disabled_rules(
+    manifest: &RuleManifest,
+    registry: &aurora_lint::rules::RuleRegistry,
+) -> Vec<manifest::DisabledRule> {
     manifest.disabled_rules(|id| registry.get_rule(id).is_some())
+}
+
+/// The `--policy` choices under which `rule_id` runs, for a warning that the
+/// policy in force declines it.
+fn policies_running(rule_id: &str) -> Vec<String> {
+    let row = settings::PRESET_TABLE.iter().find(|r| r.rule == rule_id);
+    settings::Policy::ALL
+        .into_iter()
+        .filter(|p| row.is_none_or(|r| !r.declined_under(*p)))
+        .map(|p| format!("--policy {p}"))
+        .collect()
 }
 
 /// The manifest's settings with the command line's layered over them, before
@@ -828,13 +841,17 @@ fn run() -> Result<i32> {
             // Valid, and each rule the policy declines would not run.
             meaning.extend(settings.decline_notices(|r| rule_enabled(&manifest, r)));
             // And each rule the manifest itself disables.
-            meaning.extend(disabled_rules(&manifest).iter().map(|d| {
-                format!(
-                    "this configuration disables {}, which does not run: {}",
-                    d.id,
-                    d.reason_text()
-                )
-            }));
+            meaning.extend(
+                disabled_rules(&manifest, &aurora_lint::rules::RuleRegistry::new())
+                    .iter()
+                    .map(|d| {
+                        format!(
+                            "this configuration disables {}, which does not run: {}",
+                            d.id,
+                            d.reason_text()
+                        )
+                    }),
+            );
             if let Some(notice) = settings.posix_notice(|r| rule_enabled(&manifest, r)) {
                 eprintln!("warning: {notice}");
             }
@@ -980,10 +997,14 @@ fn run() -> Result<i32> {
 
     let mut manifest = load_manifest(manifest_path)?;
     // Before --rules narrows the manifest: what the configuration disables.
-    let disabled = disabled_rules(&manifest);
+    let registry = aurora_lint::rules::RuleRegistry::new();
+    let disabled = disabled_rules(&manifest, &registry);
+    // Resolved before --rules narrows the manifest, which the settings do
+    // not read, so a warning can say which policy declines a named rule.
+    let mut analysis_settings = resolve_settings(&manifest, &settings_cli, compile_db.as_ref())?;
     if let Some(ref rules) = rule_filter {
         // A removed id would silently cut the scan to nothing, and a
-        // disabled one would read as a clean report.
+        // disabled or declined one would read as a clean report.
         let mut ids: Vec<&String> = rules.iter().collect();
         ids.sort();
         for id in ids {
@@ -998,13 +1019,37 @@ fn run() -> Result<i32> {
                     rule.reason_text()
                 );
             }
+            // A tracked rule with no code runs under no policy.
+            if analysis_settings.declines(id) && registry.get_rule(id).is_some() {
+                eprintln!(
+                    "Warning: --rules names {id}, which the {} policy declines, so it \
+                     does not run: {}. To run it, scan with {}.",
+                    analysis_settings.policy,
+                    analysis_settings
+                        .decline_reason(id)
+                        .unwrap_or_default()
+                        .trim_end_matches('.'),
+                    policies_running(id).join(" or ")
+                );
+            }
         }
         manifest.restrict_to(rules);
     }
-    let mut analysis_settings = resolve_settings(&manifest, &settings_cli, compile_db.as_ref())?;
     let scope = scan_scope(&matches, &manifest);
     analysis_settings.set_prescan_scope(scope.prescan_scope());
     let declined = manifest.declined_rules(|id| analysis_settings.declines(id));
+    // What a SARIF export lists as not run: each rule the configuration
+    // disables, and each the policy declines that would otherwise have run.
+    let mut not_run = disabled;
+    not_run.extend(declined.iter().map(|id| manifest::DisabledRule {
+        id: id.clone(),
+        reason: Some(format!(
+            "the {} policy declines {id}: {}",
+            analysis_settings.policy,
+            analysis_settings.decline_reason(id).unwrap_or_default()
+        )),
+    }));
+    not_run.sort_by(|a, b| a.id.cmp(&b.id));
     if let Some(notice) = analysis_settings.libc_notice(|r| rule_enabled(&manifest, r)) {
         eprintln!("warning: {notice}");
     }
@@ -1203,7 +1248,7 @@ fn run() -> Result<i32> {
                 report: Some(&include_report),
                 dependence: Some(&header_dependence),
             },
-            &disabled,
+            &not_run,
         )?;
         println!(
             "Exported {} violations ({} suppressed) to: {}",

@@ -225,11 +225,11 @@ fn invocation(incomplete: super::Incomplete<'_>, headers: super::Headers<'_>) ->
 /// The run's `properties` record the policy and environment `settings` the
 /// findings were produced under, since the same code yields different
 /// findings under each, and the `#include`s the scan could not resolve
-/// (`headers`), since a host's missing headers do too. Each rule the
-/// configuration `disabled` is in the driver's rules with
-/// `defaultConfiguration.enabled` false and its reason, after the rules
-/// results point at, so a rule with no results reads as not run rather than
-/// clean.
+/// (`headers`), since a host's missing headers do too. Each rule that did
+/// not run (`disabled`: the configuration disables it, or the policy declines
+/// it) is in the driver's rules with `defaultConfiguration.enabled` false and
+/// its reason, after the rules results point at, so a rule with no results
+/// reads as not run rather than clean.
 pub fn export_all_violations_to_sarif(
     violations: &[RuleViolation],
     suppressed: &[SuppressedViolation],

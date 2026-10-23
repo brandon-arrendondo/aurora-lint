@@ -518,10 +518,11 @@ A rule with no results in a SARIF report either ran and found nothing or did
 not run. Each rule the configuration disables is listed in
 ``tool.driver.rules`` with ``defaultConfiguration.enabled`` set to ``false``
 and the block's ``disabled_reason`` as ``properties.disabledReason``, after
-the rules the results point at. A rule the configuration has no block for,
-and an enabled one that ``--rules`` leaves out, is not listed. A rule the
-policy declines is named in the run's settings instead (see
-:doc:`configuration`).
+the rules the results point at. So is each rule the manifest enables and the
+policy in force declines (see :doc:`configuration`), with
+``properties.disabledReason`` reading ``the <policy> policy declines <rule>:``
+and the decline's reason. A rule the configuration has no block for, and an
+enabled one that ``--rules`` leaves out, is not listed.
 
 For a spreadsheet, convert the SARIF report (``.xlsx`` needs ``openpyxl``)::
 
@@ -590,6 +591,14 @@ leaves the exit status as it is and warns on stderr, with the block's
 ``disabled_reason``, so an empty report is not read as a clean one::
 
     Warning: --rules names EXP30-C, which this configuration disables, so it does not run: withheld until its rewrite in v0.8.0: ... To run it, set `enabled = true` in its [rules.cert_c.EXP30-C] block in a manifest passed with --manifest (--write-config writes this configuration out to start from).
+
+Naming a rule the policy in force declines warns the same way, with the
+decline's reason and the policies that run it. Enabling the rule's block
+does not run it; a policy that does not decline it does, whether from
+``--policy`` or ``--profile`` or the manifest's own ``profile`` or
+``policy``::
+
+    Warning: --rules names ERR33-C, which the pedantic policy declines, so it does not run: ... To run it, scan with --policy default or --policy strict.
 
 
 Diff Mode

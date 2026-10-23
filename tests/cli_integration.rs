@@ -814,6 +814,135 @@ fn rules_naming_a_disabled_rule_warns_instead_of_reporting_clean() {
 }
 
 #[test]
+fn rules_naming_a_rule_the_policy_declines_warns_under_each_preset() {
+    // Pedantic declines ERR33-C; default and strict run it.
+    let clean = fixtures().join("clean.c");
+    for (profile, declines) in [("default", false), ("strict", false), ("pedantic", true)] {
+        let (code, _, stderr) = run_aurora_lint(&[
+            "--profile",
+            profile,
+            "--libc",
+            "glibc",
+            "--data-model",
+            "lp64",
+            "--rules",
+            "ERR33-C,ARR30-C",
+            clean.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 0, "{profile}: {stderr}");
+        let warning = stderr
+            .lines()
+            .find(|l| l.starts_with("Warning: --rules names ERR33-C"));
+        assert_eq!(warning.is_some(), declines, "{profile}: {stderr}");
+        if let Some(warning) = warning {
+            assert!(
+                warning.contains(
+                    "which the pedantic policy declines, so it does not run: \
+                     Default narrows"
+                ),
+                "{warning}"
+            );
+            assert!(
+                warning.ends_with("To run it, scan with --policy default or --policy strict."),
+                "{warning}"
+            );
+            assert!(!warning.contains(".."), "{warning}");
+        }
+        assert!(
+            !stderr.contains("--rules names ARR30-C"),
+            "{profile}: {stderr}"
+        );
+    }
+
+    // A rule the default configuration withholds and pedantic declines gets
+    // both warnings: enabling it alone would still not run it.
+    let (code, _, stderr) = run_aurora_lint(&[
+        "--policy",
+        "pedantic",
+        "--rules",
+        "FIO30-C",
+        clean.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stderr.contains("--rules names FIO30-C, which this configuration disables"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("--rules names FIO30-C, which the pedantic policy declines"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn sarif_marks_each_rule_the_policy_declines_not_enabled_with_its_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.sarif");
+    // A file with results, so the declined entries have indices to keep
+    // clear of.
+    let (code, _, stderr) = run_aurora_lint(&[
+        fixtures().join("violation.c").to_str().unwrap(),
+        "--profile",
+        "pedantic",
+        "--libc",
+        "glibc",
+        "--data-model",
+        "lp64",
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let sarif: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let rules = sarif["runs"][0]["tool"]["driver"]["rules"]
+        .as_array()
+        .unwrap();
+    let results = sarif["runs"][0]["results"].as_array().unwrap();
+    assert!(!results.is_empty(), "{sarif}");
+    // Every ruleIndex still names its result's rule, and every rule that
+    // did not run is listed after the last of them.
+    let mut highest = 0;
+    for result in results {
+        let index = result["ruleIndex"].as_u64().unwrap() as usize;
+        assert_eq!(rules[index]["id"], result["ruleId"], "{result}");
+        assert_ne!(rules[index]["defaultConfiguration"]["enabled"], false);
+        highest = highest.max(index);
+    }
+    for (index, rule) in rules.iter().enumerate() {
+        if rule["defaultConfiguration"]["enabled"] == false {
+            assert!(index > highest, "{} at {index}", rule["id"]);
+        }
+    }
+    let rule = |id: &str| rules.iter().find(|r| r["id"] == id);
+    let err33 = rule("ERR33-C").expect("ERR33-C listed");
+    assert_eq!(err33["defaultConfiguration"]["enabled"], false);
+    assert!(
+        err33["properties"]["disabledReason"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("the pedantic policy declines ERR33-C: ")),
+        "{err33}"
+    );
+    // Still listed once, with the configuration's reason, when it is
+    // withheld as well as declined.
+    assert_eq!(rules.iter().filter(|r| r["id"] == "FIO30-C").count(), 1);
+    // Under a policy that declines nothing, ERR33-C ran and is not listed.
+    let (code, _, stderr) = run_aurora_lint(&[
+        fixtures().join("clean.c").to_str().unwrap(),
+        "--profile",
+        "strict",
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let sarif: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let rules = sarif["runs"][0]["tool"]["driver"]["rules"]
+        .as_array()
+        .unwrap();
+    assert!(!rules.iter().any(|r| r["id"] == "ERR33-C"), "{rules:?}");
+}
+
+#[test]
 fn check_config_lists_each_disabled_rule_with_its_reason() {
     let (code, stdout, stderr) = run_aurora_lint(&[
         "--check-config",

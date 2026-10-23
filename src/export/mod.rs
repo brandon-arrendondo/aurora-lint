@@ -59,7 +59,8 @@ impl Headers<'_> {
 ///
 /// SARIF is the one full-fidelity report. Spreadsheet formats are derived
 /// from it outside the tool by `scripts/sarif_convert.py`. Only SARIF
-/// records the rules the configuration `disabled`.
+/// records the rules that did not run (`disabled`), whether the configuration
+/// disables them or the policy declines them.
 pub fn export_all_violations(
     violations: &[RuleViolation],
     suppressed: &[SuppressedViolation],
