@@ -6,6 +6,11 @@
 //!
 //! A `case` section that doesn't end in `break`/`return`/`continue`/`goto`
 //! falls through into the next case, silently, with no compiler diagnostic.
+//! A section also ends where control cannot reach the next label: a call to a
+//! function that never returns (the shared noreturn set
+//! `crate::analyze::noreturn`, so `exit`/`abort`/`longjmp` count only under
+//! `stdlib_noreturn`, and a project's own noreturn functions count too) or a
+//! loop that never ends ([`guard_dominance::loops_forever`]).
 //! This rule flags any non-empty case section that falls through to the next
 //! label without one of those terminating statements and without a trailing
 //! comment marking the fallthrough as intentional (the wiki's own
@@ -18,18 +23,32 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/MSC17-C.+Finish+every+set+of+statements+associated+with+a+case+label+with+a+break+statement>
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::noreturn::{self, ByNoreturnTrust};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils;
+use crate::settings::AnalysisSettings;
+use crate::utility::cert_c::{ast_utils, guard_dominance};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::sync::Arc;
 use tree_sitter::Node;
 
-#[derive(Debug)]
-pub struct Msc17C;
+pub struct Msc17C {
+    /// The prescan's cross-file noreturn functions
+    /// (`ProjectContext::noreturn_functions`), under each noreturn setting.
+    noreturn_functions: RefCell<ByNoreturnTrust<Arc<HashSet<String>>>>,
+    /// The run's settings: which functions count as noreturn
+    /// (`stdlib_noreturn`, `trust_noreturn_keyword`).
+    settings: RefCell<Arc<AnalysisSettings>>,
+}
 
 impl Msc17C {
-    #[allow(dead_code)]
     pub fn new() -> Self {
-        Msc17C
+        Self {
+            noreturn_functions: RefCell::default(),
+            settings: RefCell::default(),
+        }
     }
 
     /// Items belonging to one case section, in source order.
@@ -108,15 +127,21 @@ impl Msc17C {
     /// if/else, since a case section hidden behind a conditional that
     /// *can* compile away with no `#else` can fall through either way. An
     /// `if` with no `else`, or a `#if`/`#ifdef` with no `#else`, is
-    /// therefore never treated as terminating.
-    fn terminates_section(&self, node: &Node) -> bool {
+    /// therefore never treated as terminating. A direct call to one of
+    /// `noreturn` and a loop that never ends terminate too: control cannot
+    /// reach the next label from either.
+    fn terminates_section(&self, node: &Node, source: &str, noreturn: &HashSet<String>) -> bool {
         match node.kind() {
             "break_statement" | "return_statement" | "continue_statement" | "goto_statement" => {
                 true
             }
+            "expression_statement" => noreturn::is_noreturn_call_statement(node, source, noreturn),
+            "for_statement" | "while_statement" | "do_statement" => {
+                guard_dominance::loops_forever(node, source)
+            }
             "compound_statement" => self
                 .last_meaningful_child(node)
-                .map(|n| self.terminates_section(&n))
+                .map(|n| self.terminates_section(&n, source, noreturn))
                 .unwrap_or(false),
             "if_statement" => {
                 let (Some(consequence), Some(alternative)) = (
@@ -126,20 +151,21 @@ impl Msc17C {
                     return false;
                 };
                 let alt_stmt = alternative.named_child(0).unwrap_or(alternative);
-                self.terminates_section(&consequence) && self.terminates_section(&alt_stmt)
+                self.terminates_section(&consequence, source, noreturn)
+                    && self.terminates_section(&alt_stmt, source, noreturn)
             }
             "preproc_if" | "preproc_ifdef" | "preproc_elif" => {
                 let Some(alternative) = node.child_by_field_name("alternative") else {
                     return false;
                 };
                 self.last_meaningful_preproc_body_child(node)
-                    .map(|n| self.terminates_section(&n))
+                    .map(|n| self.terminates_section(&n, source, noreturn))
                     .unwrap_or(false)
-                    && self.terminates_section(&alternative)
+                    && self.terminates_section(&alternative, source, noreturn)
             }
             "preproc_else" => self
                 .last_meaningful_preproc_body_child(node)
-                .map(|n| self.terminates_section(&n))
+                .map(|n| self.terminates_section(&n, source, noreturn))
                 .unwrap_or(false),
             _ => false,
         }
@@ -322,7 +348,13 @@ impl Msc17C {
         }
     }
 
-    fn check_switch(&self, switch_stmt: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn check_switch(
+        &self,
+        switch_stmt: &Node,
+        source: &str,
+        noreturn: &HashSet<String>,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         let Some(body) = switch_stmt.child_by_field_name("body") else {
             return;
         };
@@ -362,7 +394,7 @@ impl Msc17C {
                 .rev()
                 .find(|n| !Self::is_stray_empty_statement(n) && n.kind() != "comment");
             let terminated = last_non_comment
-                .map(|n| self.terminates_section(n))
+                .map(|n| self.terminates_section(n, source, noreturn))
                 .unwrap_or(false);
             if terminated {
                 continue;
@@ -403,8 +435,15 @@ impl Msc17C {
     }
 
     fn traverse(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let settings = Arc::clone(&self.settings.borrow());
+        let noreturn_names = noreturn::noreturn_names_for_file(
+            self.noreturn_functions.borrow().get(&settings),
+            root,
+            source,
+            &settings,
+        );
         for switch_stmt in query::find_descendants_of_kind(*root, "switch_statement") {
-            self.check_switch(&switch_stmt, source, violations);
+            self.check_switch(&switch_stmt, source, &noreturn_names, violations);
         }
     }
 }
@@ -428,5 +467,13 @@ impl CertRule for Msc17C {
 
     fn scan(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.traverse(root, source, violations);
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.noreturn_functions.borrow_mut() = context.noreturn_functions.clone();
+    }
+
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        *self.settings.borrow_mut() = Arc::clone(settings);
     }
 }
