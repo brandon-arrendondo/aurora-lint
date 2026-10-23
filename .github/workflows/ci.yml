@@ -157,6 +157,17 @@ jobs:
       - name: Generated test summary states the manifest's rule counts
         run: python3 scripts/check_project_facts.py --generated
 
+      # Here rather than in the Python job, which builds no binary to scan
+      # with. The variable makes a missing jsonschema or binary a failure,
+      # not a skip.
+      - name: SARIF export validates against the SARIF 2.1.0 schema
+        env:
+          AURORA_LINT_BIN: target/debug/aurora-lint
+          AURORA_LINT_REQUIRE_SCHEMA_CHECK: "1"
+        run: |
+          pip install jsonschema==4.26.0
+          python3 -W error::ResourceWarning -m unittest scripts/test_sarif_schema.py -v
+
       - name: cargo test (tui feature)
         run: cargo test --features tui
 
