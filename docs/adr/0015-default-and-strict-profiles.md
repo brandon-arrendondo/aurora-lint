@@ -237,7 +237,8 @@ not a flag.
    - **`--strict`:** the rule as written, for any ruleset. It accepts the
      false positives that follow from enforcing the text.
    - **`--pedantic`:** a documented disagreement in the stricter direction:
-     a sound or closed-form reading beyond the text. For example, where a
+     a closed-form reading beyond the text (reworded 2026-10-22; see that
+     amendment). For example, where a
      standard permits `goto` under conditions, a reading that bans every
      `goto` is pedantic; so is holding a rule to the items its list names
      where that yields more findings (Decision 3).
@@ -252,8 +253,9 @@ not a flag.
    detector implements it.
 3. **The presets are not nested.** Any preset may take a rule out of play.
    A strict-only rule is legitimate: out under `--default` because it is
-   too noisy for everyday use, out under `--pedantic` because it cannot meet
-   the sound standard. Pedantic may decline a rule rather than run a weaker
+   too noisy for everyday use, out under `--pedantic` because the rule has
+   no closed-form reading (reworded 2026-10-22; see that amendment).
+   Pedantic may decline a rule rather than run a weaker
    form of it.
 4. **A list in a rule's text is authoritative as written,** even when the
    text calls it open ("such as", "for example"). `--strict` may extend it
@@ -671,15 +673,25 @@ reading of the rule.
    against the oracle, with `--default` and `--pedantic` scored as
    differences from it (Decision 5 of the 2026-10-07 amendment).
 
-### Points this amendment does not settle
+### Ruled (2026-10-22, Brandon): "sound" no longer describes a reading
 
-- The 2026-10-07 amendment calls `--pedantic` "a sound or closed-form
-  reading beyond the text" (Decision 1), and says a strict-only rule is out
-  under `--pedantic` "because it cannot meet the sound standard" (Decision
-  3). Under this amendment, "sound" there can only describe the reading
-  (a closed form that the text supports), not the report. Whether to
-  reword both phrases, and the matching "a reading it cannot make sound"
-  in `docs/configuration.rst`, is left for Brandon's ruling.
+The 2026-10-07 amendment called `--pedantic` "a sound or closed-form
+reading beyond the text" (Decision 1), and said a strict-only rule is out
+under `--pedantic` "because it cannot meet the sound standard" (Decision
+3). That wording came from the mapping this amendment retires, in which
+"sound" described the report. What pedantic needs is a closed-form reading:
+one a checker can apply to the code without a judgment call. Where a rule
+has none, pedantic declines it. Both phrases are reworded in place, each
+marked with this date:
+
+- Decision 1: "a closed-form reading beyond the text";
+- Decision 3: "out under `--pedantic` because the rule has no closed-form
+  reading".
+
+The same wording is applied in `docs/configuration.rst` (the policy
+description and the paragraph on declined rules), in `README.md`'s
+example comment for `--profile pedantic`, and in the doc comment on the
+pedantic preset in `src/settings/mod.rs`.
 
 ### Consequences
 

@@ -374,8 +374,8 @@ aurora-lint /path/to/project
 # MISRA-style and certified code
 aurora-lint /path/to/project --profile strict
 
-# The pedantic preset reads a rule beyond its text where the rule has a sound
-# or closed-form reading stricter than the text, and trusts only the C library
+# The pedantic preset reads a rule beyond its text where the rule has a
+# closed-form reading stricter than the text, and trusts only the C library
 # you declare
 aurora-lint /path/to/project --profile pedantic --libc newlib-nano
 

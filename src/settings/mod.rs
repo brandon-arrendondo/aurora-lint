@@ -36,8 +36,8 @@ pub enum Preset {
     /// Strict policy, hosted environment: each rule as written, trusting the
     /// ISO C library, and the POSIX contracts only where POSIX is declared.
     Strict,
-    /// Pedantic policy, hosted environment: a sound or closed-form reading
-    /// beyond each rule's text (ADR-0015, 2026-10-07 amendment). No library
+    /// Pedantic policy, hosted environment: a closed-form reading beyond
+    /// each rule's text (ADR-0015, 2026-10-07 amendment). No library
     /// contract is trusted unless a `libc` is declared.
     Pedantic,
 }
