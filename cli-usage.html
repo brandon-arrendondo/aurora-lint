@@ -604,6 +604,12 @@ with <code class="docutils literal notranslate"><span class="pre">--exclude-all<
 SHA-256 (<code class="docutils literal notranslate"><span class="pre">artifacts[].hashes</span></code>), so the report stands on its own without the
 scanned tree. Both formats name aurora-lint as their producer: SARIF in
 <code class="docutils literal notranslate"><span class="pre">tool.driver</span></code>, JSON in a <code class="docutils literal notranslate"><span class="pre">tool</span></code> key on each object.</p>
+<p>A result’s suggestion is <code class="docutils literal notranslate"><span class="pre">properties.suggestion</span></code> in SARIF, as it is
+<code class="docutils literal notranslate"><span class="pre">suggestion</span></code> in JSON. It is prose, not an edit, so it is not a SARIF
+<code class="docutils literal notranslate"><span class="pre">fixes</span></code> entry: the format requires a fix to carry the replacements that
+apply it, and a report with one lacking them fails the SARIF 2.1.0 schema.
+A result’s location gives <code class="docutils literal notranslate"><span class="pre">startColumn</span></code> only when the rule reports a
+column; without one, the region names the line alone.</p>
 <p>A rule with no results in a SARIF report either ran and found nothing or did
 not run. Each rule the configuration disables is listed in
 <code class="docutils literal notranslate"><span class="pre">tool.driver.rules</span></code> with <code class="docutils literal notranslate"><span class="pre">defaultConfiguration.enabled</span></code> set to <code class="docutils literal notranslate"><span class="pre">false</span></code>

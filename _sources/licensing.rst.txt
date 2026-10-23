@@ -31,6 +31,10 @@ Summary
      - ``MIT``
      - the C snippets embedded in those ``description`` fields, and the
        wiki-derived fixtures under ``src/rules/cert_c/*/*/tests/``
+   * - OASIS SARIF 2.1.0 JSON schema (test data, not in the binary)
+     - OASIS IPR Policy; copied unmodified with its notices
+     - ``tests/schemas/sarif-schema-2.1.0.json``; source, hash and notices in
+       ``tests/schemas/README.md``
 
 Copyright in all of it is held by **BISSELL Homecare, Inc.** aurora-lint is company
 work: it is written by BISSELL employees under BISSELL direction, so the
@@ -100,7 +104,7 @@ University. The copyright licenses above grant nothing here.
 What a packager needs to write
 ------------------------------
 
-Debian ``debian/copyright`` (DEP-5) needs four stanzas rather than one:
+Debian ``debian/copyright`` (DEP-5) needs five stanzas rather than one:
 
 .. code-block:: none
 
@@ -123,6 +127,13 @@ Debian ``debian/copyright`` (DEP-5) needs four stanzas rather than one:
    Comment: metadata.title and metadata.description are lifted from the SEI
     CERT C Coding Standard and reflowed. Embedded C snippets are Expat.
    License: CC-BY-4.0 and Expat
+
+   Files: tests/schemas/*
+   Copyright: 2023 OASIS Open
+   Comment: The SARIF 2.1.0 Plus Errata 01 JSON schema, unmodified, used as
+    test data. Its notices, which require being carried with every copy, are
+    in tests/schemas/README.md.
+   License: OASIS-IPR-Policy
 
 The fixture stanza is deliberately broader than reality: most fixtures are
 locally authored rather than wiki-derived, and each declares which it is in a

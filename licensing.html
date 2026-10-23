@@ -139,6 +139,11 @@ string in each rule’s <code class="docutils literal notranslate"><span class="
 <td><p>the C snippets embedded in those <code class="docutils literal notranslate"><span class="pre">description</span></code> fields, and the
 wiki-derived fixtures under <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/</span></code></p></td>
 </tr>
+<tr class="row-even"><td><p>OASIS SARIF 2.1.0 JSON schema (test data, not in the binary)</p></td>
+<td><p>OASIS IPR Policy; copied unmodified with its notices</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tests/schemas/sarif-schema-2.1.0.json</span></code>; source, hash and notices in
+<code class="docutils literal notranslate"><span class="pre">tests/schemas/README.md</span></code></p></td>
+</tr>
 </tbody>
 </table>
 <p>Copyright in all of it is held by <strong>BISSELL Homecare, Inc.</strong> aurora-lint is company
@@ -204,7 +209,7 @@ is an internal path, not a published name.</p></li>
 </section>
 <section id="what-a-packager-needs-to-write">
 <h2>What a packager needs to write<a class="headerlink" href="#what-a-packager-needs-to-write" title="Link to this heading"></a></h2>
-<p>Debian <code class="docutils literal notranslate"><span class="pre">debian/copyright</span></code> (DEP-5) needs four stanzas rather than one:</p>
+<p>Debian <code class="docutils literal notranslate"><span class="pre">debian/copyright</span></code> (DEP-5) needs five stanzas rather than one:</p>
 <div class="highlight-none notranslate"><div class="highlight"><pre><span></span>Files: *
 Copyright: 2025-2026 BISSELL Homecare, Inc.
 License: Apache-2.0
@@ -224,6 +229,13 @@ Copyright: Carnegie Mellon University
 Comment: metadata.title and metadata.description are lifted from the SEI
  CERT C Coding Standard and reflowed. Embedded C snippets are Expat.
 License: CC-BY-4.0 and Expat
+
+Files: tests/schemas/*
+Copyright: 2023 OASIS Open
+Comment: The SARIF 2.1.0 Plus Errata 01 JSON schema, unmodified, used as
+ test data. Its notices, which require being carried with every copy, are
+ in tests/schemas/README.md.
+License: OASIS-IPR-Policy
 </pre></div>
 </div>
 <p>The fixture stanza is deliberately broader than reality: most fixtures are
