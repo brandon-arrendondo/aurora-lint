@@ -50,6 +50,21 @@ University. aurora-lint is not affiliated with, endorsed by, or certified by
 Carnegie Mellon University or its Software Engineering Institute; the marks
 are used nominatively to name the standard the tool checks against.
 
+-------------------------------------------------------------------------
+Third-party content: OASIS SARIF 2.1.0 schema
+-------------------------------------------------------------------------
+
+tests/schemas/sarif-schema-2.1.0.json is the JSON schema of the OASIS
+Standard "Static Analysis Results Interchange Format (SARIF) Version 2.1.0
+Plus Errata 01", Copyright (c) OASIS Open 2023, copied unmodified. It is
+distributed under the OASIS IPR Policy
+(https://www.oasis-open.org/policies-guidelines/ipr/), AS IS, without any
+warranty. tests/schemas/README.md gives its source URL and SHA-256 and
+reproduces the specification's notices in full, as those notices require.
+
+It is test data: the test suite validates aurora-lint's SARIF output
+against it. It is not compiled into the aurora-lint binary.
+
 aurora-lint itself is licensed Apache-2.0; the CERT material above is third-party
 content carried under its own upstream terms. A packager describing the
 contents of a binary package would write the union of the two,

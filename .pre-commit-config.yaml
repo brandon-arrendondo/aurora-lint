@@ -24,6 +24,11 @@ default_install_hook_types: [pre-commit, commit-msg]
 # default removes the misleading half; nothing about what runs changes.
 default_stages: [pre-commit]
 
+# Vendored third-party files, which the OASIS notice forbids modifying: no
+# hook may rewrite them (for example a whitespace or end-of-file fixer), and
+# none checks them as this project's own text.
+exclude: ^tests/schemas/
+
 repos:
   - repo: local
     hooks:
