@@ -45,20 +45,72 @@
 //! ```
 //!
 //! ## Detection Strategy:
-//! - Track file descriptors from open/fopen calls
+//! - Track descriptors a call resolving to open/openat/creat/fopen/fdopen
+//!   initializes or assigns ([`thread_api::library_call`]: `popen` is not
+//!   `open`, nor is a project's own `open`), keyed by the declaration the
+//!   name resolves to, or by the whole field path (`s->fd`) when it has none
 //! - Detect fork() calls
-//! - Check if file descriptors are used after fork in both parent/child branches
+//! - Check if file descriptors are used after fork in both parent/child
+//!   branches: an identifier in a branch counts only when it resolves to the
+//!   descriptor's declaration (ADR-0006), so a shadowing local or the same
+//!   letters inside a string literal is not a use; `close()` likewise
 //! - Report violations when shared file descriptor usage is detected
 
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declarator};
+use crate::utility::cert_c::thread_api::{self, ProjectFunctions};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
-pub struct Pos38C;
+/// The library functions whose result is a fresh file descriptor or stream.
+const OPEN_FUNCTIONS: &[&str] = &["open", "openat", "creat", "fopen", "fdopen"];
+
+/// One descriptor the function opens.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum Descriptor {
+    /// A name and the start of the declaration it resolves to, `None` when
+    /// nothing in reach declares it.
+    Named(String, Option<usize>),
+    /// A field path with no declarator of its own (`s->fd`, `ctx.fp`),
+    /// compared as a whole token sequence.
+    Path(String),
+}
+
+/// `expr` with any enclosing parentheses and casts removed.
+fn strip_parens_and_casts<'a>(expr: Node<'a>) -> Node<'a> {
+    let mut expr = expr;
+    loop {
+        let inner = match expr.kind() {
+            "parenthesized_expression" => expr.named_child(0),
+            "cast_expression" => expr.child_by_field_name("value"),
+            _ => None,
+        };
+        match inner {
+            Some(inner) => expr = inner,
+            None => return expr,
+        }
+    }
+}
+
+/// `node`'s text with whitespace removed, so `s -> fd` and `s->fd` agree.
+fn token_text(node: &Node, source: &str) -> String {
+    get_node_text(node, source)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect()
+}
+
+#[derive(Default)]
+pub struct Pos38C {
+    /// The project's function definitions in every scanned file, for a
+    /// library name the project defines itself.
+    project: RefCell<Option<ProjectFunctions>>,
+}
 
 impl CertRule for Pos38C {
     fn rule_id(&self) -> &'static str {
@@ -75,6 +127,10 @@ impl CertRule for Pos38C {
 
     fn severity(&self) -> Severity {
         Severity::Medium
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = Some(context.function_summaries.clone());
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
@@ -109,7 +165,7 @@ impl Pos38C {
         };
 
         // Collect file descriptors opened in this scope
-        let mut file_descriptors = HashSet::new();
+        let mut file_descriptors: HashSet<Descriptor> = HashSet::new();
         self.collect_file_descriptors(&scope_node, source, &mut file_descriptors);
 
         // Check for fork() calls and subsequent fd usage
@@ -120,50 +176,92 @@ impl Pos38C {
         &self,
         node: &Node,
         source: &str,
-        file_descriptors: &mut HashSet<String>,
+        file_descriptors: &mut HashSet<Descriptor>,
     ) {
         for n in query::find_descendants(*node, |_| true) {
-            // Look for variable declarations with file opening calls
-            if n.kind() == "declaration" {
-                // Get the full declaration text to check for open() calls
-                let decl_text = get_node_text(&n, source);
-                if self.is_file_opening_call(&decl_text) {
-                    // Find init_declarator children
-                    let mut cursor = n.walk();
-                    for child in n.children(&mut cursor) {
-                        if child.kind() == "init_declarator" {
-                            // Get the declarator to extract variable name
-                            if let Some(declarator) = child.child_by_field_name("declarator") {
-                                if let Some(var_name) =
-                                    self.extract_variable_name(&declarator, source)
-                                {
-                                    file_descriptors.insert(var_name);
-                                }
-                            }
-                        }
-                    }
+            if n.kind() == "init_declarator" {
+                let (Some(declarator), Some(value)) = (
+                    n.child_by_field_name("declarator"),
+                    n.child_by_field_name("value"),
+                ) else {
+                    continue;
+                };
+                if !self.opens_file(&value, source) {
+                    continue;
+                }
+                let Some(declaration) = n.parent() else {
+                    continue;
+                };
+                if let Some(var_name) = self.extract_variable_name(&declarator, source) {
+                    file_descriptors
+                        .insert(Descriptor::Named(var_name, Some(declaration.start_byte())));
                 }
             } else if n.kind() == "assignment_expression" {
-                if let Some(left) = n.child_by_field_name("left") {
-                    if let Some(right) = n.child_by_field_name("right") {
-                        let right_text = get_node_text(&right, source);
-                        if self.is_file_opening_call(&right_text) {
-                            let var_name = get_node_text(&left, source).trim().to_string();
-                            file_descriptors.insert(var_name);
-                        }
+                let (Some(left), Some(right)) = (
+                    n.child_by_field_name("left"),
+                    n.child_by_field_name("right"),
+                ) else {
+                    continue;
+                };
+                if !self.opens_file(&right, source) {
+                    continue;
+                }
+                let left = strip_parens_and_casts(left);
+                match left.kind() {
+                    "identifier" => {
+                        file_descriptors.insert(self.named_descriptor(&left, source));
                     }
+                    "field_expression" => {
+                        file_descriptors.insert(Descriptor::Path(token_text(&left, source)));
+                    }
+                    _ => {}
                 }
             }
         }
     }
 
-    fn is_file_opening_call(&self, text: &str) -> bool {
-        let text = text.trim();
-        text.contains("open(")
-            || text.contains("fopen(")
-            || text.contains("fdopen(")
-            || text.contains("creat(")
-            || text.contains("openat(")
+    /// True when `value` holds a call that resolves to one of
+    /// [`OPEN_FUNCTIONS`], directly or as an argument of a wrapper.
+    fn opens_file(&self, value: &Node, source: &str) -> bool {
+        let project = self.project.borrow();
+        query::find_descendants_of_kind(*value, "call_expression")
+            .into_iter()
+            .chain(std::iter::once(*value).filter(|v| v.kind() == "call_expression"))
+            .any(|call| {
+                let named = call
+                    .child_by_field_name("function")
+                    .is_some_and(|f| OPEN_FUNCTIONS.contains(&get_node_text(&f, source)));
+                named
+                    && thread_api::library_call(&call, source, project.as_ref())
+                        .is_some_and(|name| OPEN_FUNCTIONS.contains(&name))
+            })
+    }
+
+    /// The descriptor an identifier occurrence names: its spelling and the
+    /// declaration it resolves to.
+    fn named_descriptor(&self, ident: &Node, source: &str) -> Descriptor {
+        let name = get_node_text(ident, source).to_string();
+        let declaration =
+            resolve_identifier_declarator(ident, &name, source).map(|(decl, _)| decl.start_byte());
+        Descriptor::Named(name, declaration)
+    }
+
+    /// True when `expr` (an identifier or a field path) names one of
+    /// `file_descriptors`.
+    fn names_descriptor(
+        &self,
+        expr: &Node,
+        source: &str,
+        file_descriptors: &HashSet<Descriptor>,
+    ) -> bool {
+        let expr = strip_parens_and_casts(*expr);
+        match expr.kind() {
+            "identifier" => file_descriptors.contains(&self.named_descriptor(&expr, source)),
+            "field_expression" => {
+                file_descriptors.contains(&Descriptor::Path(token_text(&expr, source)))
+            }
+            _ => false,
+        }
     }
 
     #[allow(dead_code)]
@@ -208,7 +306,7 @@ impl Pos38C {
         &self,
         node: &Node,
         source: &str,
-        file_descriptors: &HashSet<String>,
+        file_descriptors: &HashSet<Descriptor>,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for fork() calls
@@ -227,7 +325,7 @@ impl Pos38C {
         &self,
         fork_node: &Node,
         source: &str,
-        file_descriptors: &HashSet<String>,
+        file_descriptors: &HashSet<Descriptor>,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for the parent statement containing the fork call
@@ -325,7 +423,7 @@ impl Pos38C {
         &self,
         if_stmt: &Node,
         source: &str,
-        file_descriptors: &HashSet<String>,
+        file_descriptors: &HashSet<Descriptor>,
         check_else: bool,
     ) -> bool {
         let branch = if check_else {
@@ -347,31 +445,28 @@ impl Pos38C {
         &self,
         node: &Node,
         source: &str,
-        file_descriptors: &HashSet<String>,
+        file_descriptors: &HashSet<Descriptor>,
     ) -> bool {
         // Check for close() calls first - if fd is closed, it's not being used (safe pattern)
         if self.subtree_closes_file_descriptor(node, source, file_descriptors) {
             return false;
         }
 
-        let node_text = get_node_text(node, source);
-
-        // Check if any of the file descriptors are mentioned in this subtree
-        // in a context that uses them (not just closes them)
-        for fd in file_descriptors {
-            if node_text.contains(fd) {
-                return true;
-            }
-        }
-
-        false
+        // A use is an identifier or field path in this subtree that names a
+        // descriptor: resolved, so a shadowing local or the descriptor's
+        // letters inside a string literal is not one.
+        query::find_first_descendant(*node, |n| {
+            matches!(n.kind(), "identifier" | "field_expression")
+                && self.names_descriptor(&n, source, file_descriptors)
+        })
+        .is_some()
     }
 
     fn subtree_closes_file_descriptor(
         &self,
         node: &Node,
         source: &str,
-        file_descriptors: &HashSet<String>,
+        file_descriptors: &HashSet<Descriptor>,
     ) -> bool {
         query::find_first_descendant(*node, |n| {
             if n.kind() != "call_expression" {
@@ -385,11 +480,9 @@ impl Pos38C {
                 return false;
             }
             // Check if the argument is one of our file descriptors
-            let Some(args) = n.child_by_field_name("arguments") else {
-                return false;
-            };
-            let args_text = get_node_text(&args, source);
-            file_descriptors.iter().any(|fd| args_text.contains(fd))
+            n.child_by_field_name("arguments")
+                .and_then(|args| args.named_child(0))
+                .is_some_and(|fd| self.names_descriptor(&fd, source, file_descriptors))
         })
         .is_some()
     }
