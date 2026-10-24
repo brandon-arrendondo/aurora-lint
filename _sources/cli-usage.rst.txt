@@ -19,8 +19,8 @@ type declarations, and macro aliases before analysis begins. This
 significantly reduces false positives from rules like DCL31-C (unused identifiers)
 and DCL07-C (type mismatches) that would otherwise flag externally-defined symbols.
 
-With no ``-d``, the target is pre-scanned itself: every ``.c``/``.h`` file under
-a directory target, or the file plus the headers beside it for a single-file
+With no ``-d``, the target is pre-scanned itself: every ``.c``/``.h`` file (in
+any case) under a directory target, or the file plus the headers beside it for a single-file
 target. So ``aurora-lint foo.c`` already knows the definitions in ``foo.c``,
 and ``aurora-lint src/`` knows everything under ``src/``, without naming the
 target a second time.

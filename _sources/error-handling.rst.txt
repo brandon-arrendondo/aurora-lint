@@ -66,8 +66,8 @@ order the work.
 Files that are not source
 -------------------------
 
-aurora-lint picks files by extension, so anything named ``.c`` or ``.h`` is
-offered to the parser. Before parsing, each file is checked:
+aurora-lint picks files by extension, so anything named ``.c`` or ``.h``, in
+any case, is offered to the parser. Before parsing, each file is checked:
 
 - **too large**: larger than ``--max-file-size`` MiB (default 64; ``0``
   removes the limit). The largest real C files are amalgamations and SDK

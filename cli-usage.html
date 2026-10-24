@@ -124,8 +124,8 @@ options work together.</p>
 type declarations, and macro aliases before analysis begins. This
 significantly reduces false positives from rules like DCL31-C (unused identifiers)
 and DCL07-C (type mismatches) that would otherwise flag externally-defined symbols.</p>
-<p>With no <code class="docutils literal notranslate"><span class="pre">-d</span></code>, the target is pre-scanned itself: every <code class="docutils literal notranslate"><span class="pre">.c</span></code>/<code class="docutils literal notranslate"><span class="pre">.h</span></code> file under
-a directory target, or the file plus the headers beside it for a single-file
+<p>With no <code class="docutils literal notranslate"><span class="pre">-d</span></code>, the target is pre-scanned itself: every <code class="docutils literal notranslate"><span class="pre">.c</span></code>/<code class="docutils literal notranslate"><span class="pre">.h</span></code> file (in
+any case) under a directory target, or the file plus the headers beside it for a single-file
 target. So <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">foo.c</span></code> already knows the definitions in <code class="docutils literal notranslate"><span class="pre">foo.c</span></code>,
 and <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">src/</span></code> knows everything under <code class="docutils literal notranslate"><span class="pre">src/</span></code>, without naming the
 target a second time.</p>
