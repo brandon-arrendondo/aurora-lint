@@ -232,6 +232,14 @@ impl Exp35C {
     /// element `f().a[i]` (a value), and a member whose type is not in reach
     /// are not reported.
     fn is_temporary_array_access(&self, node: &Node, source: &str, env: &TypeEnv) -> bool {
+        // A row of a multidimensional member, `f().m[i]` with `m` declared
+        // `int m[2][3]`, is itself an array and decays the same way.
+        if node.kind() == "subscript_expression" {
+            return is_array(node, source, env)
+                && node
+                    .child_by_field_name("argument")
+                    .is_some_and(|a| self.is_temporary_array_access(&a, source, env));
+        }
         node.kind() == "field_expression"
             && node
                 .child_by_field_name("argument")
@@ -249,25 +257,44 @@ impl Exp35C {
     /// that is modified or whose address is taken does.
     fn contains_temporary_array_access(&self, node: &Node, source: &str, env: &TypeEnv) -> bool {
         query::find_first_descendant(*node, |n| {
-            self.is_temporary_array_access(&n, source, env) && !is_element_read(&n, source)
+            self.is_temporary_array_access(&n, source, env) && !is_element_read(&n, source, env)
         })
         .is_some()
     }
 }
 
-/// Whether the member `field` is subscripted, `f().a[i]`, and the element is
-/// only read: not the operand of `++`/`--` or `&`, and not assigned to.
-fn is_element_read(field: &Node, source: &str) -> bool {
-    let Some(subscript) = field
+/// Whether `node` is typed an array by its declaration.
+fn is_array(node: &Node, source: &str, env: &TypeEnv) -> bool {
+    matches!(
+        expr_type::expr_type(node, source, env),
+        Some(CType::Array(_))
+    )
+}
+
+/// Whether the member `field` is subscripted down to an element, `f().a[i]`
+/// or `f().m[i][j]`, and the element is only read: not the operand of
+/// `++`/`--` or `&`, and not assigned to. A subscript that still names an
+/// array, a row `f().m[i]`, is not an element: it decays to a pointer into
+/// the temporary.
+fn is_element_read(field: &Node, source: &str, env: &TypeEnv) -> bool {
+    let mut element = *field;
+    while let Some(subscript) = element
         .parent()
         .filter(|p| p.kind() == "subscript_expression")
         .filter(|p| {
             p.child_by_field_name("argument")
-                .is_some_and(|a| a.id() == field.id())
+                .is_some_and(|a| a.id() == element.id())
         })
-    else {
+    {
+        element = subscript;
+        if !is_array(&element, source, env) {
+            break;
+        }
+    }
+    if element.id() == field.id() || is_array(&element, source, env) {
         return false;
-    };
+    }
+    let subscript = element;
     let mut operand = subscript;
     let mut user = subscript.parent();
     while let Some(p) = user.filter(|p| p.kind() == "parenthesized_expression") {
