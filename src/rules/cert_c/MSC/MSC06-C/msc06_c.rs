@@ -332,12 +332,31 @@ impl Msc06C {
 
     /// Whether the loop-controlling identifier at this use site resolves to
     /// a declaration (local, parameter or file scope, ADR-0006) qualified
-    /// `volatile`, `_Atomic` or `constexpr`. A name nothing in reach
-    /// declares is not.
+    /// `volatile`, `_Atomic` or `constexpr`, or, when none binds it, to an
+    /// `_Atomic(T) name;` the grammar misread
+    /// ([`ast_utils::misread_atomic_declaration`]) earlier in a scope around
+    /// the use. A name nothing in reach declares is not.
     fn is_declared_spin_safe(&self, ident: &Node, source: &str) -> bool {
         let name = ast_utils::get_node_text(ident, source);
-        ast_utils::resolve_identifier_declarator(ident, name, source)
-            .is_some_and(|(decl, _)| Self::decl_has_spin_safe_qualifier(&decl, source))
+        if let Some((decl, _)) = ast_utils::resolve_identifier_declarator(ident, name, source) {
+            return Self::decl_has_spin_safe_qualifier(&decl, source);
+        }
+        let mut root = *ident;
+        while let Some(p) = root.parent() {
+            root = p;
+        }
+        query::find_descendants_of_kind(root, "ERROR")
+            .iter()
+            .any(|error| {
+                ast_utils::misread_atomic_declaration(error, source).is_some_and(|declared| {
+                    ast_utils::get_node_text(&declared, source) == name
+                        && declared.start_byte() <= ident.start_byte()
+                        && error.parent().is_some_and(|scope| {
+                            scope.start_byte() <= ident.start_byte()
+                                && ident.end_byte() <= scope.end_byte()
+                        })
+                })
+            })
     }
 
     fn traverse(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {

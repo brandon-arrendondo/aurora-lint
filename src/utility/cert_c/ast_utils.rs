@@ -2181,6 +2181,48 @@ pub fn stream_key(stream: &Node, source: &str) -> String {
     format!("text:{text}")
 }
 
+/// `_Atomic(T) x;` or `_Atomic(T) x = v;` with no storage class, which the
+/// grammar reads as an `ERROR` holding the `_Atomic` and then an expression
+/// statement casting `x` to `T`: the name's node. CON40-C and MSC06-C.
+pub fn misread_atomic_declaration<'a>(error: &Node<'a>, source: &str) -> Option<Node<'a>> {
+    let mut named = error.named_child_nodes();
+    let only = named.next()?;
+    if named.next().is_some()
+        || only.kind() != "type_qualifier"
+        || get_node_text(&only, source) != "_Atomic"
+    {
+        return None;
+    }
+    let statement = error.next_named_sibling()?;
+    if statement.kind() != "expression_statement" {
+        return None;
+    }
+    let cast = statement.named_child(0)?;
+    if cast.kind() != "cast_expression"
+        || !source
+            .get(error.end_byte()..cast.start_byte())
+            .is_some_and(|gap| gap.trim().is_empty())
+    {
+        return None;
+    }
+    // `_Atomic(void)` declares nothing (C11 6.7.2.4p3).
+    if cast.child_by_field_name("type").is_some_and(|t| {
+        get_node_text(&t, source)
+            .split_whitespace()
+            .collect::<String>()
+            == "void"
+    }) {
+        return None;
+    }
+    let value = cast.child_by_field_name("value")?;
+    let ident = match value.kind() {
+        "identifier" => value,
+        "assignment_expression" => value.child_by_field_name("left")?,
+        _ => return None,
+    };
+    (ident.kind() == "identifier").then_some(ident)
+}
+
 /// Resolve `ident_node` (an occurrence of `name`) to the node that declares
 /// it AND the declarator within that node which binds this name:
 /// `(declaration | parameter_declaration, declarator)`. Same three-way

@@ -30,7 +30,9 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::{ProjectContext, VisibleTypes};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::{get_node_text, ScopeDeclarations};
+use crate::utility::cert_c::ast_utils::{
+    get_node_text, misread_atomic_declaration, ScopeDeclarations,
+};
 use crate::utility::cert_c::declarator_utils::inner_declarator;
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
@@ -1398,46 +1400,6 @@ impl Con40C {
             }
         }
     }
-}
-
-/// `_Atomic(T) x;` or `_Atomic(T) x = v;` with no storage class, which the
-/// grammar reads as an `ERROR` holding the `_Atomic` and then an expression
-/// statement casting `x` to `T`: the name's node.
-fn misread_atomic_declaration<'a>(error: &Node<'a>, source: &str) -> Option<Node<'a>> {
-    let mut named = error.named_child_nodes();
-    let only = named.next()?;
-    if named.next().is_some()
-        || only.kind() != "type_qualifier"
-        || get_node_text(&only, source) != "_Atomic"
-    {
-        return None;
-    }
-    let statement = error.next_named_sibling()?;
-    if statement.kind() != "expression_statement" {
-        return None;
-    }
-    let cast = statement.named_child(0)?;
-    if cast.kind() != "cast_expression"
-        || !source
-            .get(error.end_byte()..cast.start_byte())
-            .is_some_and(|gap| gap.trim().is_empty())
-    {
-        return None;
-    }
-    // `_Atomic(void)` declares nothing (C11 6.7.2.4p3).
-    if cast
-        .child_by_field_name("type")
-        .is_some_and(|t| spelling(&t, source) == "void")
-    {
-        return None;
-    }
-    let value = cast.child_by_field_name("value")?;
-    let ident = match value.kind() {
-        "identifier" => value,
-        "assignment_expression" => value.child_by_field_name("left")?,
-        _ => return None,
-    };
-    (ident.kind() == "identifier").then_some(ident)
 }
 
 impl CertRule for Con40C {
