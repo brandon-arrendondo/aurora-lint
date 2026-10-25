@@ -76,3 +76,34 @@ void push_back_eof(void) {
         fclose(fp);
     }
 }
+
+static FILE *shared;
+
+static void skip_header(void) {
+    (void)fgetc(shared);
+}
+
+void push_back_after_a_call_that_can_read_a_shared_stream(void) {
+    shared = fopen("data.bin", "rb");
+    if (shared == NULL) {
+        return;
+    }
+    skip_header();
+    ungetc('x', shared);
+}
+
+void push_back_after_a_read_through_a_pointer_to_the_stream(void) {
+    FILE *fp;
+    FILE **alias = &fp;
+    fp = fopen("data.bin", "rb");
+    if (fp != NULL) {
+        (void)fgetc(*alias);
+        ungetc('x', fp);
+    }
+}
+
+void push_back_after_a_mode_change(FILE *fp) {
+    if (freopen(NULL, "rb", fp) != NULL) {
+        ungetc('x', fp);
+    }
+}

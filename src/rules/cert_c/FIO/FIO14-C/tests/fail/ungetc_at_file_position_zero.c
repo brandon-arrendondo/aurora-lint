@@ -45,3 +45,20 @@ void push_back_onto_stream_opened_by_fopen_s(const char *name) {
     ungetc('x', fp);
     fclose(fp);
 }
+
+static FILE *shared;
+
+void push_back_onto_new_shared_stream(void) {
+    shared = fopen("data.bin", "rb");
+    if (shared != NULL) {
+        ungetc('x', shared);
+    }
+}
+
+void push_back_in_a_loop_that_never_reads(int tries) {
+    FILE *fp = fopen("data.bin", "rb");
+    while (tries > 0 && fp) {
+        ungetc('x', fp);
+        tries--;
+    }
+}

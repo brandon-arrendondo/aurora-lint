@@ -24,7 +24,7 @@
 //! - Using fseek() with 0 or ftell() values in text mode
 //!
 //! ## Stream mode:
-//! A finding needs the stream's mode: the stream argument must resolve, by
+//! An fseek() finding needs the stream's mode: the stream argument must resolve, by
 //! its declaration (ADR-0006), to an fopen()/freopen()/fopen_s() whose mode is a string
 //! literal, and every such open of it must agree on text or binary. A stream
 //! whose mode is not known (a parameter, a member, a mode chosen at run time)
@@ -36,10 +36,13 @@
 //! indeterminate after it (C11 7.21.7.10p5) and a text stream's unspecified
 //! after any ungetc(); POSIX keeps the position-0 clause and applies it to
 //! every stream. The position is known to be 0 only conservatively: the
-//! write every path to the call runs last is an fopen()/freopen()/fopen_s()
-//! of the stream with a literal, non-append mode, and the stream is not used
-//! between that open and the call (nor in a loop around the call that does
-//! not also hold the open) except to test it against NULL.
+//! write every path to the call runs last, in the same function, is an
+//! fopen()/freopen()/fopen_s() of the stream with a literal, non-append mode
+//! (not freopen(NULL, ...), which changes only the mode); the stream is not
+//! used between that open and the call (nor in a loop around the call that
+//! does not also hold the open) except to test it against NULL; its address
+//! is not taken in the function; and, unless it is an automatic local, no
+//! function is called in between, since one could read it.
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
@@ -73,7 +76,7 @@ impl CertRule for Fio14C {
     }
 
     fn severity(&self) -> Severity {
-        Severity::Medium
+        Severity::Low
     }
 
     fn cert_id(&self) -> &'static str {
@@ -158,6 +161,24 @@ impl Fio14C {
         if !opens_at_start(&open, source) {
             return;
         }
+        // A pointer to the stream variable reads it out of sight of the
+        // names checked below (`FILE **pp = &fp;` ... `fgetc(*pp)`), wherever
+        // in the function it is taken; only fopen_s's `&fp` is the open itself.
+        let within = |n: &Node, outer: &Node| {
+            outer.start_byte() <= n.start_byte() && n.end_byte() <= outer.end_byte()
+        };
+        let address_taken = !query::find_descendants(body, |n| {
+            n.kind() == "pointer_expression"
+                && n.child_by_field_name("operator")
+                    .is_some_and(|op| get_node_text(&op, source) == "&")
+                && n.child_by_field_name("argument")
+                    .is_some_and(|a| is_stream(&strip_parens(a)))
+                && !within(&n, &open)
+        })
+        .is_empty();
+        if address_taken {
+            return;
+        }
 
         // Nothing may read, write or position the stream after the open: not
         // between it and the call, not in the call's own first argument
@@ -173,21 +194,39 @@ impl Fio14C {
                 regions.push(byte_range(&a));
             }
         }
-        let moves_stream = query::find_descendants(body, |n| {
+        let in_regions = |n: &Node| {
             regions
                 .iter()
                 .any(|&(lo, hi)| lo <= n.start_byte() && n.end_byte() <= hi)
+        };
+        // The call's own stream argument is not a use before it, even in a
+        // loop: the first pass still pushes back at position 0.
+        let moves_stream = query::find_descendants(body, |n| {
+            in_regions(&n)
+                && n.id() != stream.id()
                 && is_stream(&n)
                 && !only_tests_stream(&n, source)
         });
         if !moves_stream.is_empty() {
             return;
         }
+        // A stream any function can reach (file scope, `static`, or a
+        // parameter's caller-owned stream) may be read by a function called
+        // in between, out of sight here; only an automatic local is safe
+        // from that.
+        if !is_automatic_local(&decl, &body, source)
+            && !query::find_descendants(body, |n| {
+                n.kind() == "call_expression" && n.id() != call.id() && in_regions(&n)
+            })
+            .is_empty()
+        {
+            return;
+        }
 
         let start_point = call.start_position();
         violations.push(RuleViolation {
             rule_id: self.rule_id().to_string(),
-            severity: Severity::Medium,
+            severity: self.severity(),
             message: format!(
                 "ungetc() on '{}' at file position 0: nothing has read or positioned the stream since it was opened, so neither ISO C nor POSIX says where its file position is after the call",
                 name
@@ -220,7 +259,7 @@ impl Fio14C {
                     let start_point = node.start_position();
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
-                        severity: Severity::Medium,
+                        severity: self.severity(),
                         message: "fseek() with SEEK_END should not be used on binary streams (undefined behavior with null padding)".to_string(),
                         file_path: String::new(),
                         line: start_point.row + 1,
@@ -242,7 +281,7 @@ impl Fio14C {
                     let start_point = node.start_position();
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
-                        severity: Severity::Medium,
+                        severity: self.severity(),
                         message: format!(
                             "fseek() with arbitrary offset '{}' and SEEK_SET may not work correctly in text mode (only 0 or ftell() values allowed)",
                             offset_text
@@ -456,10 +495,21 @@ fn open_in_statement<'a>(
 /// Whether an open leaves its stream at file position 0 for input: its
 /// mode is a literal that reads (`r`, or any update mode) and does not
 /// append, since where an append-mode stream starts is
-/// implementation-defined (C11 7.21.3p1).
+/// implementation-defined (C11 7.21.3p1). `freopen(NULL, mode, fp)` only
+/// changes the mode of the file already open, and need not move it.
 fn opens_at_start(open: &Node, source: &str) -> bool {
-    if !matches!(callee(open, source), Some("fopen" | "freopen" | "fopen_s")) {
-        return false;
+    match callee(open, source) {
+        Some("fopen" | "fopen_s") => {}
+        Some("freopen") => {
+            let path = open
+                .child_by_field_name("arguments")
+                .and_then(|a| a.named_child(0))
+                .map(strip_parens);
+            if path.is_none_or(|p| matches!(get_node_text(&p, source).trim(), "NULL" | "0")) {
+                return false;
+            }
+        }
+        _ => return false,
     }
     let Some(mode) = opener_mode_arg(open, source).filter(|m| m.kind() == "string_literal") else {
         return false;
@@ -469,6 +519,19 @@ fn opens_at_start(open: &Node, source: &str) -> bool {
         return false;
     };
     body.starts_with('r') || (body.contains('+') && !body.starts_with('a'))
+}
+
+/// Whether `decl`, the stream's declaration, declares an automatic object
+/// of the function whose body is `body`: inside the body, not `static` or
+/// `extern`. A parameter is not one: it points at the caller's stream.
+fn is_automatic_local(decl: &Node, body: &Node, source: &str) -> bool {
+    decl.kind() == "declaration"
+        && body.start_byte() <= decl.start_byte()
+        && decl.end_byte() <= body.end_byte()
+        && !decl.named_children(&mut decl.walk()).any(|c| {
+            c.kind() == "storage_class_specifier"
+                && matches!(get_node_text(&c, source), "static" | "extern")
+        })
 }
 
 /// A use of the stream that cannot move it: a test against NULL or of its
