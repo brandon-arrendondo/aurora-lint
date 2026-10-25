@@ -278,9 +278,7 @@ impl Exp19C {
             // Check if this is a control flow statement that needs braces
             match n.kind() {
                 "if_statement" => {
-                    if let Some(violation) = self.check_if_statement(n, source, macros) {
-                        violations.push(violation);
-                    }
+                    violations.extend(self.check_if_statement(n, source, macros));
                 }
                 "for_statement" => {
                     if let Some(violation) = self.check_for_statement(n, source, macros) {
@@ -304,20 +302,24 @@ impl Exp19C {
         violations
     }
 
-    /// Check if an if_statement has braces around its body
+    /// Check that each arm of an if_statement has braces around its body.
+    /// Both arms are read: an unbraced `if` does not excuse its `else`, and
+    /// the `else` is reported at its own keyword, not at the `if`.
     fn check_if_statement(
         &self,
         if_node: Node,
         source: &str,
         macros: &Macros,
-    ) -> Option<RuleViolation> {
+    ) -> Vec<RuleViolation> {
+        let mut violations = Vec::new();
+
         // Get the consequence (then-branch) of the if statement
         if let Some(consequence) = if_node.child_by_field_name("consequence") {
             // If the consequence is not a compound_statement (braced block), it's a violation
             if !is_braced(consequence, source, macros)
                 && !braced_in_every_arm(if_node, consequence, source, macros)
             {
-                return Some(self.create_violation(
+                violations.push(self.create_violation(
                     if_node,
                     "if",
                     "if statement body should be enclosed in braces {}",
@@ -326,54 +328,43 @@ impl Exp19C {
         }
 
         // Check the else-branch if it exists
-        if let Some(alternative) = if_node.child_by_field_name("alternative") {
-            // Skip checking if the alternative is another if_statement (else if)
-            // We'll check that if_statement separately in recursion
-            if alternative.kind() == "if_statement" {
-                return None; // else-if chain, will be checked recursively
-            }
+        let Some(alternative) = if_node.child_by_field_name("alternative") else {
+            return violations;
+        };
+        // The alternative can be wrapped in an else_clause node in tree-sitter-c
+        // We need to check the actual body inside it
+        let body = if alternative.kind() == "else_clause" {
+            // Find the actual statement inside the else_clause
+            let mut cursor = alternative.walk();
+            let body = alternative.children(&mut cursor).find(|child| {
+                // Skip the "else" keyword and any comment between it and
+                // the statement (`} else /* why */ {`, or sqlite's
+                // `}else` / `#endif` / `/*if( !pIncr->bUseThread )*/{`):
+                // a comment is a node here, and taking it as the body
+                // reported a braced else as unbraced.
+                child.kind() != "else" && child.kind() != "comment"
+            });
+            body
+        } else {
+            Some(alternative)
+        };
 
-            // The alternative can be wrapped in an else_clause node in tree-sitter-c
-            // We need to check the actual body inside it
-            let body_to_check = if alternative.kind() == "else_clause" {
-                // Find the actual statement inside the else_clause
-                let mut body = None;
-                let mut cursor = alternative.walk();
-                for child in alternative.children(&mut cursor) {
-                    // Skip the "else" keyword and any comment between it and
-                    // the statement (`} else /* why */ {`, or sqlite's
-                    // `}else` / `#endif` / `/*if( !pIncr->bUseThread )*/{`):
-                    // a comment is a node here, and taking it as the body
-                    // reported a braced else as unbraced.
-                    if child.kind() != "else" && child.kind() != "comment" {
-                        body = Some(child);
-                        break;
-                    }
-                }
-                body
-            } else {
-                Some(alternative)
-            };
-
-            if let Some(body) = body_to_check {
-                // Skip if it's an if_statement (else if case inside else_clause)
-                if body.kind() == "if_statement" {
-                    return None;
-                }
-                // Check if the body is a compound_statement (braced block)
-                if !is_braced(body, source, macros)
-                    && !braced_in_every_arm(if_node, body, source, macros)
-                {
-                    return Some(self.create_violation(
-                        if_node,
-                        "else",
-                        "else statement body should be enclosed in braces {}",
-                    ));
-                }
+        // An `else if` is an if_statement of its own, checked when the walk
+        // reaches it.
+        if let Some(body) = body.filter(|b| b.kind() != "if_statement") {
+            // Check if the body is a compound_statement (braced block)
+            if !is_braced(body, source, macros)
+                && !braced_in_every_arm(if_node, body, source, macros)
+            {
+                violations.push(self.create_violation(
+                    alternative,
+                    "else",
+                    "else statement body should be enclosed in braces {}",
+                ));
             }
         }
 
-        None
+        violations
     }
 
     /// Check if a for_statement has braces around its body
