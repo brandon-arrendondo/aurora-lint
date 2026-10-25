@@ -16,6 +16,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::call_roles;
+use crate::utility::cert_c::format_slots::{self, Reading, SlotUse};
 use crate::utility::cert_c::node_children::NodeChildren;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -101,14 +102,22 @@ impl Dcl11C {
 
             // Try to extract format string
             if let Some(format_str) = self.extract_format_string(&arg_nodes[format_idx], source) {
-                // Parse format specifiers
-                let specifiers = self.parse_format_specifiers(&format_str);
+                // One entry per argument the format consumes. A `*` width or
+                // precision takes an `int` argument of its own ahead of its
+                // conversion's (C11 7.21.6.1p5), so `"%*s"` consumes two.
+                let Reading::Parsed(slots) = format_slots::printf_reading(&format_str) else {
+                    return;
+                };
+                let specifiers = Self::slot_expectations(&slots);
 
                 // Get actual argument types
                 let actual_args = &arg_nodes[format_idx + 1..];
 
-                // Check if argument count matches
-                if specifiers.len() != actual_args.len() {
+                // A count is only claimed when every slot was read: a
+                // positional `%n$` or an unterminated directive leaves the
+                // number the format consumes unknown.
+                let count_known = slots.iter().all(|(use_, _)| *use_ != SlotUse::Unknown);
+                if count_known && specifiers.len() != actual_args.len() {
                     // Argument count mismatch - likely swapped or missing args
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
@@ -127,18 +136,30 @@ impl Dcl11C {
                 }
 
                 // Check each argument against its format specifier
-                for (idx, (spec, arg)) in specifiers.iter().zip(actual_args.iter()).enumerate() {
-                    if let Some(expected_type) = self.format_spec_to_type(spec) {
+                for (idx, ((spec, star), arg)) in
+                    specifiers.iter().zip(actual_args.iter()).enumerate()
+                {
+                    let expected_type = if *star {
+                        Some("int".to_string())
+                    } else {
+                        self.format_spec_to_type(spec)
+                    };
+                    if let Some(expected_type) = expected_type {
                         let actual_type = self.infer_argument_type(arg, source);
 
                         if !self.types_compatible(&expected_type, &actual_type) {
+                            let what = if *star {
+                                format!("the '*' in format specifier '{spec}'")
+                            } else {
+                                format!("format specifier '{spec}'")
+                            };
                             violations.push(RuleViolation {
                                 rule_id: self.rule_id().to_string(),
                                 line: arg.start_position().row + 1,
                                 column: arg.start_position().column + 1,
                                 message: format!(
-                                    "Type mismatch in variadic function call: format specifier '{}' expects {} but argument {} is {}",
-                                    spec, expected_type, idx + 1, actual_type
+                                    "Type mismatch in variadic function call: {} expects {} but argument {} is {}",
+                                    what, expected_type, idx + 1, actual_type
                                 ),
                                 severity: self.severity(),
                                 file_path: String::new(),
@@ -180,84 +201,31 @@ impl Dcl11C {
             .map(str::to_string)
     }
 
-    /// Parse format specifiers from format string
-    fn parse_format_specifiers(&self, format: &str) -> Vec<String> {
-        let mut specs = Vec::new();
-        let mut chars = format.chars().peekable();
-
-        while let Some(ch) = chars.next() {
-            if ch == '%' {
-                if let Some(&next) = chars.peek() {
-                    if next == '%' {
-                        // Escaped %
-                        chars.next();
-                        continue;
-                    }
-
-                    // Parse format specifier
-                    let mut spec = String::from("%");
-
-                    // Skip flags (-, +, space, #, 0)
-                    while let Some(&c) = chars.peek() {
-                        if matches!(c, '-' | '+' | ' ' | '#' | '0') {
-                            spec.push(c);
-                            chars.next();
-                        } else {
-                            break;
-                        }
-                    }
-
-                    // Skip width
-                    while let Some(&c) = chars.peek() {
-                        if c.is_ascii_digit() || c == '*' {
-                            spec.push(c);
-                            chars.next();
-                        } else {
-                            break;
-                        }
-                    }
-
-                    // Skip precision
-                    if let Some(&'.') = chars.peek() {
-                        spec.push('.');
-                        chars.next();
-                        while let Some(&c) = chars.peek() {
-                            if c.is_ascii_digit() || c == '*' {
-                                spec.push(c);
-                                chars.next();
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-
-                    // Length modifier (hh, h, l, ll, L, z, t, j)
-                    let mut length_mod = String::new();
-                    if let Some(&c) = chars.peek() {
-                        if matches!(c, 'h' | 'l' | 'L' | 'z' | 't' | 'j') {
-                            length_mod.push(c);
-                            spec.push(c);
-                            chars.next();
-
-                            // Check for double (hh, ll)
-                            if (c == 'h' || c == 'l') && chars.peek() == Some(&c) {
-                                length_mod.push(c);
-                                spec.push(c);
-                                chars.next();
-                            }
-                        }
-                    }
-
-                    // Conversion specifier
-                    if let Some(c) = chars.next() {
-                        spec.push(c);
-                        specs.push(spec);
-                    }
-                }
+    /// Pair each consumed slot with its directive and whether it is a `*`
+    /// width or precision rather than the conversion's own argument.
+    /// `printf_reading` gives every slot of a directive the directive's text,
+    /// so a directive with `k` stars accounts for `k + 1` consecutive slots,
+    /// the last being the conversion's (`k` for `%m`, which takes none).
+    fn slot_expectations(slots: &[(SlotUse, String)]) -> Vec<(String, bool)> {
+        let mut out = Vec::with_capacity(slots.len());
+        let mut i = 0;
+        while i < slots.len() {
+            let spec = &slots[i].1;
+            let stars = spec.matches('*').count();
+            let width = if spec.ends_with('m') {
+                stars
+            } else {
+                stars + 1
             }
+            .max(1);
+            let end = (i + width).min(slots.len());
+            for (k, (_, slot_spec)) in slots[i..end].iter().enumerate() {
+                let is_star = k < stars;
+                out.push((slot_spec.clone(), is_star));
+            }
+            i = end;
         }
-
-        specs
+        out
     }
 
     /// Convert format specifier to expected type
