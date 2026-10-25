@@ -28,7 +28,6 @@ import sys
 import time
 import json
 import argparse
-import requests
 import textwrap
 import tomllib
 from pathlib import Path
@@ -141,6 +140,11 @@ class WikiScraper:
     """Client for the CERT C secure-coding-standards site's Nuxt payload API"""
 
     def __init__(self, delay: float = DEFAULT_DELAY):
+        # requests is imported here, not at module level, so the module's
+        # TOML-writing half loads without it: bench's test suite is
+        # stdlib-only and exercises that half.
+        import requests
+
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": USER_AGENT})
         self.delay = delay
@@ -158,6 +162,8 @@ class WikiScraper:
         dict at `data[2]` in every Nuxt payload we've seen from this site --
         it holds keys like `page-{path}`, `sidebar-...`, `global-navigation`).
         """
+        import requests
+
         self._rate_limit()
         url = f"{BASE_URL}{path}/_payload.json"
         try:
