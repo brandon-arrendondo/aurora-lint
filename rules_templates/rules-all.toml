@@ -209,7 +209,9 @@ enabled = true
 
 
 [rules.cert_c.DCL11-C]
-enabled = true
+# withheld until removal: its type check misfires, see ADR-0005
+enabled = false
+disabled_reason = "withheld until its removal, once FIO47-C checks argument types itself: its type check misfires, guessing an argument's type from its name (ADR-0005)"
 
 
 [rules.cert_c.DCL12-C]
