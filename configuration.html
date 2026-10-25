@@ -111,7 +111,7 @@
 <section id="manifest-file">
 <h2>Manifest File<a class="headerlink" href="#manifest-file" title="Link to this heading"></a></h2>
 <p>The rules manifest TOML file controls which rules are active and their severity.
-The default manifest (<code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code>) enables 284 of the 298 tracked rules.
+The default manifest (<code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code>) enables 283 of the 297 tracked rules.
 Of the other 14, 10 are implemented but withheld until rewritten (see <a class="reference internal" href="#withheld-until-rewritten">Withheld until rewritten</a> below)
 and 4 are tracked but not implemented (see <a class="reference internal" href="#tracked-but-not-implemented">Tracked but not implemented</a> below).</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Use default (all rules enabled)</span>
@@ -656,9 +656,9 @@ and says when each one fits.</p>
 </section>
 <section id="supported-cert-c-rules">
 <h2>Supported CERT C Rules<a class="headerlink" href="#supported-cert-c-rules" title="Link to this heading"></a></h2>
-<p>298 rules are tracked across 17 categories (API, ARR, CON, DCL, ENV,
-ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, and WIN); 294
-are implemented, and 284 of those are enabled by default (the other
+<p>297 rules are tracked across 17 categories (API, ARR, CON, DCL, ENV,
+ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, and WIN); 293
+are implemented, and 283 of those are enabled by default (the other
 10 are withheld until rewritten; see <a class="reference internal" href="#withheld-until-rewritten">Withheld until rewritten</a>
 below). The remaining 4 are tracked but not implemented;
 see <a class="reference internal" href="#tracked-but-not-implemented">Tracked but not implemented</a> below.
@@ -730,6 +730,7 @@ rule with its reason (<code class="docutils literal notranslate"><span class="pr
 <code class="docutils literal notranslate"><span class="pre">rules_templates/removed-rules.toml</span></code>.</p>
 <p>The rules removed so far:</p>
 <ul class="simple">
+<li><p><strong>CON50-C</strong> (removed in v0.7.0, not a CERT C guideline (C++ id)): CERT C has no CON50-C; it is CERT C++’s CON50-CPP. CON31-C reports a mutex destroyed while locked, and CON34-C an automatic mutex shared with a thread. Now covered by CON31-C, CON34-C.</p></li>
 <li><p><strong>ERR06-C</strong> (removed in v0.7.0, unenforceable): Its checkable form reports every assert in a program that registers an exit handler, which contradicts MSC11-C, and a narrower form needs the programmer’s intent.</p></li>
 <li><p><strong>FIO03-C</strong> (removed in v0.7.0, unenforceable): Whether opening a file for writing may replace an existing one is the programmer’s intent, which the code does not show; the race on creating a file is FIO45-C’s.</p></li>
 <li><p><strong>FIO50-C</strong> (removed in v0.7.0, not a CERT C guideline (C++ id)): CERT C has no FIO50-C; it is CERT C++’s FIO50-CPP. FIO39-C reports the same alternation of input and output on one stream. Now covered by FIO39-C.</p></li>
@@ -775,7 +776,7 @@ set <code class="docutils literal notranslate"><span class="pre">enabled</span> 
 </section>
 <section id="tracked-but-not-implemented">
 <h2>Tracked but not implemented<a class="headerlink" href="#tracked-but-not-implemented" title="Link to this heading"></a></h2>
-<p>4 of the 298 tracked rules have a rule directory and a manifest entry but no
+<p>4 of the 297 tracked rules have a rule directory and a manifest entry but no
 detection logic (no <code class="docutils literal notranslate"><span class="pre">.rs</span></code> file). This is a deliberate policy, not a gap:
 aurora-lint does not implement against incomplete CERT-C rule content, since there is
 ample well-established work to do and a stub implementation would mean
@@ -809,7 +810,7 @@ the closest of the 4 to being implementable.</p></li>
 <h2>Enabled but out of scope<a class="headerlink" href="#enabled-but-out-of-scope" title="Link to this heading"></a></h2>
 <p>The four rules above have no detection logic <em>yet</em>. This is a different
 list: rules that <strong>do</strong> have a <code class="docutils literal notranslate"><span class="pre">.rs</span></code> file, <strong>are</strong> enabled by default, and
-count toward 284 above, but are not claimed as working
+count toward 283 above, but are not claimed as working
 detection — because no amount of further work makes them one. A rule
 belongs here only when there is a specific, checkable reason automated
 analysis cannot do the job, not merely because it has produced few or no

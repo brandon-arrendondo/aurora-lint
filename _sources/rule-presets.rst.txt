@@ -269,12 +269,6 @@ behind a departure.
      - as_written
      - 
      - P/coincide
-   * - CON50-C
-     - not_enforced
-     - not_enforced
-     - not_enforced
-     - 
-     - CON50-C/2026-09-26/disposition, CON50-C/2026-09-26/removal
    * - DCL00-C
      - as_written
      - as_written

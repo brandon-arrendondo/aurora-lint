@@ -269,9 +269,9 @@ run ids even where the findings do not move.
   ========  ============================  ============================
   Preset    Before (first 12 digits)      After (first 12 digits)
   ========  ============================  ============================
-  default   ``6a42bd4cf1e0``              ``2ffb18442685``
-  strict    ``f017c4b47de7``              ``dcc831ea64df``
-  pedantic  ``7d5d09905362``              ``8b6e9f95dc62``
+  default   ``6a42bd4cf1e0``              ``7d08afdd8e5c``
+  strict    ``f017c4b47de7``              ``6c79791963ab``
+  pedantic  ``7d5d09905362``              ``a1262c049310``
   ========  ============================  ============================
 - **Declined rules do not run.** A rule a preset declines while another
   preset enforces it (``not_enforced`` in :doc:`rule-presets`) no longer
