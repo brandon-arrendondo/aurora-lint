@@ -135,17 +135,6 @@ impl Msc37C {
         }
     }
 
-    /// Whether the C23 edition is declared for this file: by the
-    /// configuration, which wins, or by the compile database's entry for it.
-    /// Undeclared is read strictly (C11), where `unreachable()` is no macro
-    /// of the standard library.
-    fn c23_declared(&self) -> bool {
-        self.settings
-            .borrow()
-            .declared_c_standard(&self.file_path.borrow())
-            .is_some_and(|edition| edition >= crate::settings::CStandard::C23)
-    }
-
     /// Whether the function returns `void`: the type specifier is `void`
     /// (directly, through a macro that precedes it, or through a typedef) and
     /// the declarator adds no pointer. `void *f()` returns a value.
@@ -811,21 +800,6 @@ fn declarator_returns_pointer(declarator: Option<Node>) -> bool {
     false
 }
 
-/// Whether the translation unit declares or defines a function, or defines a
-/// macro, called `name`.
-fn defines_name(root: &Node, source: &str, name: &str) -> bool {
-    query::find_first_descendant(*root, |n| match n.kind() {
-        "function_declarator" => n
-            .child_by_field_name("declarator")
-            .is_some_and(|d| get_node_text(&d, source) == name),
-        "preproc_def" | "preproc_function_def" => n
-            .child_by_field_name("name")
-            .is_some_and(|d| get_node_text(&d, source) == name),
-        _ => false,
-    })
-    .is_some()
-}
-
 /// A loop whose condition is a nonzero constant (`while (1)`, `for (;;)`,
 /// `do ... while (true)`) and that nothing leaves except a `return` (or a
 /// call that does not return): control never reaches the end after it.
@@ -1128,7 +1102,12 @@ impl Msc37C {
         // C23 `unreachable()` (C23 7.21.1) ends a path, where the edition is
         // declared and the file does not define a function or macro of that
         // name itself: CERT's EX2 helper named `unreachable` is that case.
-        if self.c23_declared() && !defines_name(node, source, "unreachable") {
+        if crate::analyze::noreturn::c23_unreachable_ends_path(
+            node,
+            source,
+            &settings,
+            &self.file_path.borrow(),
+        ) {
             noreturn_names.insert("unreachable".to_string());
         }
         // Check function definitions

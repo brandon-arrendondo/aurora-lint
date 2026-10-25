@@ -10,7 +10,11 @@
 //! function that never returns (the shared noreturn set
 //! `crate::analyze::noreturn`, so `exit`/`abort`/`longjmp` count only under
 //! `stdlib_noreturn`, and a project's own noreturn functions count too) or a
-//! loop that never ends ([`guard_dominance::loops_forever`]).
+//! loop that never ends ([`guard_dominance::loops_forever`]), or a call to
+//! C23 `unreachable()` where the C23 edition is declared and the file defines
+//! no `unreachable` of its own
+//! ([`noreturn::c23_unreachable_ends_path`]); GNU `__builtin_unreachable()`
+//! is not credited.
 //! This rule flags any non-empty case section that falls through to the next
 //! label without one of those terminating statements and without a trailing
 //! comment marking the fallthrough as intentional (the wiki's own
@@ -41,6 +45,9 @@ pub struct Msc17C {
     /// The run's settings: which functions count as noreturn
     /// (`stdlib_noreturn`, `trust_noreturn_keyword`).
     settings: RefCell<Arc<AnalysisSettings>>,
+    /// The file being scanned, whose compile database entry may declare its
+    /// edition.
+    file_path: RefCell<String>,
 }
 
 impl Msc17C {
@@ -48,6 +55,7 @@ impl Msc17C {
         Self {
             noreturn_functions: RefCell::default(),
             settings: RefCell::default(),
+            file_path: RefCell::default(),
         }
     }
 
@@ -436,12 +444,15 @@ impl Msc17C {
 
     fn traverse(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         let settings = Arc::clone(&self.settings.borrow());
-        let noreturn_names = noreturn::noreturn_names_for_file(
+        let mut noreturn_names = noreturn::noreturn_names_for_file(
             self.noreturn_functions.borrow().get(&settings),
             root,
             source,
             &settings,
         );
+        if noreturn::c23_unreachable_ends_path(root, source, &settings, &self.file_path.borrow()) {
+            noreturn_names.insert("unreachable".to_string());
+        }
         for switch_stmt in query::find_descendants_of_kind(*root, "switch_statement") {
             self.check_switch(&switch_stmt, source, &noreturn_names, violations);
         }
@@ -475,5 +486,9 @@ impl CertRule for Msc17C {
 
     fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
         *self.settings.borrow_mut() = Arc::clone(settings);
+    }
+
+    fn set_file_path(&self, path: &std::path::Path) {
+        *self.file_path.borrow_mut() = path.to_string_lossy().into_owned();
     }
 }

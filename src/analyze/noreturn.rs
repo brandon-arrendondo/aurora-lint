@@ -278,6 +278,42 @@ pub fn noreturn_names_for_file(
     names
 }
 
+/// Whether a call to `unreachable()` in the file at `file_path` is C23's
+/// (C23 7.21.1), which ends a path: the C23 edition is declared for the
+/// file ([`AnalysisSettings::declared_c_standard`]: by the configuration,
+/// which wins, or by the compile database's entry for it), and the file does
+/// not declare or define a function, or define a macro, of that name itself
+/// (CERT's MSC37-C EX2 helper named `unreachable` is that case). Undeclared
+/// is read strictly (C11), where `unreachable()` is no macro of the standard
+/// library; the host's compiler is never asked. GNU `__builtin_unreachable()`
+/// is not this call.
+pub fn c23_unreachable_ends_path(
+    root: &Node,
+    source: &str,
+    settings: &AnalysisSettings,
+    file_path: &str,
+) -> bool {
+    settings
+        .declared_c_standard(file_path)
+        .is_some_and(|edition| edition >= crate::settings::CStandard::C23)
+        && !defines_name(root, source, "unreachable")
+}
+
+/// Whether the translation unit declares or defines a function, or defines a
+/// macro, called `name`.
+fn defines_name(root: &Node, source: &str, name: &str) -> bool {
+    query::find_first_descendant(*root, |n| match n.kind() {
+        "function_declarator" => n
+            .child_by_field_name("declarator")
+            .is_some_and(|d| get_node_text(&d, source) == name),
+        "preproc_def" | "preproc_function_def" => n
+            .child_by_field_name("name")
+            .is_some_and(|d| get_node_text(&d, source) == name),
+        _ => false,
+    })
+    .is_some()
+}
+
 /// The functions `root` declares or defines noreturn with an ISO spelling
 /// ([`has_noreturn_keyword`]).
 pub fn collect_keyword_noreturn_names(root: &Node, source: &str) -> HashSet<String> {

@@ -211,14 +211,14 @@ the rules today read one project-wide answer:
   same one. A unit that states none leaves it unknown; it is never inferred
   from the units that do.
 - ``c_standard`` is read per unit: the configuration's, else the compile
-  database's entry for the file. MSC37-C reads it (whether ``unreachable`` is
-  a macro the standard defines), and so does the expression typing the
-  floating-point and integer rules share: a call to a floating function C99
-  added (``round``, ``cbrt``, ``wcstod``, ...) whose header was not expanded
-  has the standard's return type only under a declared C99 or later, since
-  C90 left those names to programs. An undeclared edition withholds that
-  type rather than taking an exemption, which is why ``--pedantic`` names
-  only the missing ``posix_version``.
+  database's entry for the file. MSC17-C and MSC37-C read it (whether
+  ``unreachable`` is a macro the standard defines), and so does the expression
+  typing the floating-point and integer rules share: a call to a floating
+  function C99 added (``round``, ``cbrt``, ``wcstod``, ...) whose header was
+  not expanded has the standard's return type only under a declared C99 or
+  later, since C90 left those names to programs. An undeclared edition
+  withholds that type rather than taking an exemption, which is why
+  ``--pedantic`` names only the missing ``posix_version``.
 
 The settings record where each declared fact came from (``cli``, ``config`` or
 ``compile database``), and that source is part of the settings hash; a scan
