@@ -2004,7 +2004,7 @@ pub(crate) fn build_file_analysis(
     FileAnalysis {
         function_cfgs: Arc::new(function_cfgs),
         vra_results: Arc::new(vra_results),
-        visible_types: context::VisibleTypes::for_file(context, root_node, source),
+        visible_types: context::VisibleTypes::for_file(context, file_path, root_node, source),
         file_path: file_path.to_path_buf(),
     }
 }

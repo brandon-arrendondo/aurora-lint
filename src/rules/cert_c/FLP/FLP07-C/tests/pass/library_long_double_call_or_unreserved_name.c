@@ -6,9 +6,9 @@
  *
  * strtold() and floorl() return long double, so their results need no
  * conversion. The atof() result is cast. round() and cbrt() are C99
- * additions under names C90 left to programs, so without a prototype in
- * reach their return types are not known and nothing is reported. The
- * file's own floor() returns int.
+ * additions under names C90 left to programs, and no edition is declared,
+ * so without a prototype in reach their return types are not known and
+ * nothing is reported. The file's own floor() returns int.
  */
 #include <stdlib.h>
 

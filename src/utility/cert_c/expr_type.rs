@@ -27,6 +27,7 @@
 
 use crate::analyze::context::VisibleTypes;
 use crate::analyze::dead_regions::DeadRegions;
+use crate::settings::CStandard;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, ScopeDeclarations};
 use crate::utility::cert_c::float_typing::EXTENDED_FLOAT_TYPES;
 use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
@@ -232,7 +233,8 @@ pub fn standard_alias(model: IntFacts, name: &str) -> Option<CType> {
 }
 
 /// What an expression is typed against: the typedefs and struct fields this
-/// file sees ([`VisibleTypes`]) and the data model.
+/// file sees ([`VisibleTypes`]), the data model, and the edition of ISO C
+/// declared for the file.
 ///
 /// Built once per file: it memoizes the file's own function definitions on
 /// first use.
@@ -248,6 +250,10 @@ pub struct TypeEnv<'a> {
     pub struct_aliases: &'a HashMap<String, String>,
     /// The target's integer data model.
     pub model: IntFacts,
+    /// The edition of ISO C declared for the file, which decides the library
+    /// names a call is typed by ([`library_float_return`]); `None` when none
+    /// is declared.
+    pub edition: Option<CStandard>,
     /// `name -> return type` for the functions this file defines; see
     /// [`file_function_type`].
     file_functions: OnceCell<HashMap<String, Option<CType>>>,
@@ -264,7 +270,8 @@ pub struct TypeEnv<'a> {
 }
 
 impl<'a> TypeEnv<'a> {
-    /// An environment over these tables under `model`.
+    /// An environment over these tables under `model`, with no edition
+    /// declared.
     pub fn new(
         typedefs: &'a HashMap<String, String>,
         fields: &'a HashMap<String, HashMap<String, String>>,
@@ -278,6 +285,7 @@ impl<'a> TypeEnv<'a> {
             shapes,
             struct_aliases,
             model,
+            edition: None,
             file_functions: OnceCell::new(),
             root: None,
             types: RefCell::new(HashMap::new()),
@@ -298,6 +306,12 @@ impl<'a> TypeEnv<'a> {
         self
     }
 
+    /// This environment, under the declared edition `edition`.
+    pub fn under_edition(mut self, edition: Option<CStandard>) -> Self {
+        self.edition = edition;
+        self
+    }
+
     /// The tree root given to [`TypeEnv::in_tree`], if any.
     pub fn root(&self) -> Option<&Node<'a>> {
         self.root.as_ref()
@@ -311,7 +325,7 @@ impl<'a> TypeEnv<'a> {
     }
 
     /// An environment over what one file sees, under `model` (the settings'
-    /// `data_model`).
+    /// `data_model`) and the edition declared for the file.
     pub fn visible(types: &'a VisibleTypes, model: IntFacts) -> Self {
         Self::new(
             &types.typedef_types,
@@ -320,6 +334,7 @@ impl<'a> TypeEnv<'a> {
             &types.struct_typedef_aliases,
             model,
         )
+        .under_edition(types.c_standard)
     }
 }
 
@@ -831,7 +846,7 @@ fn expr_type_uncached(node: &Node, source: &str, env: &TypeEnv) -> Option<CType>
                     .flatten()
             });
             let Some(callee_type) = callee_type else {
-                return math_call_type(node, source);
+                return math_call_type(node, source, env.edition);
             };
             match callee_type {
                 CType::Function(ret) => ret.map(|b| *b),
@@ -990,36 +1005,81 @@ const C90_MATH_FUNCTIONS: &[&str] = &[
     "ldexp", "log", "log10", "modf", "pow", "sqrt", "ceil", "fabs", "floor", "fmod",
 ];
 
-/// The real floating type the standard library gives a call to `name`, for
-/// a name every edition reserves: the C90 `<math.h>` functions and their
-/// `f`/`l` forms ([`C90_MATH_FUNCTIONS`]), and `<stdlib.h>`'s `atof` and
-/// `strtod` with `strtof` and `strtold`, whose `str` prefix C90 reserved
-/// (7.13.7). The functions C99 added under names C90 left to programs
-/// (`round`, `cbrt`, `wcstod`, ...) are not here, since a C90 program may
-/// define its own.
-fn library_float_return(name: &str) -> Option<FloatKind> {
+/// The `<math.h>` functions C99 added that return `double`, with `float`
+/// and `long double` forms suffixed `f` and `l` (C99 7.12). C90 left these
+/// names to programs, so a call is typed by them only under a declared
+/// edition that reserves them.
+const C99_MATH_FUNCTIONS: &[&str] = &[
+    "acosh",
+    "asinh",
+    "atanh",
+    "exp2",
+    "expm1",
+    "log1p",
+    "log2",
+    "logb",
+    "scalbn",
+    "scalbln",
+    "cbrt",
+    "hypot",
+    "erf",
+    "erfc",
+    "lgamma",
+    "tgamma",
+    "nearbyint",
+    "rint",
+    "round",
+    "trunc",
+    "remainder",
+    "remquo",
+    "copysign",
+    "nan",
+    "nextafter",
+    "nexttoward",
+    "fdim",
+    "fmax",
+    "fmin",
+    "fma",
+];
+
+/// The real floating type the standard library gives a call to `name` under
+/// the declared `edition`. Every edition reserves the C90 `<math.h>`
+/// functions and their `f`/`l` forms ([`C90_MATH_FUNCTIONS`]), and
+/// `<stdlib.h>`'s `atof` and `strtod` with `strtof` and `strtold`, whose
+/// `str` prefix C90 reserved (7.13.7). The functions C99 added under names
+/// C90 left to programs ([`C99_MATH_FUNCTIONS`] and `<wchar.h>`'s `wcstod`,
+/// `wcstof` and `wcstold`) count only under a declared C99 or later: a C90
+/// program may define its own, and with no edition declared nothing says
+/// which one the file is.
+fn library_float_return(name: &str, edition: Option<CStandard>) -> Option<FloatKind> {
+    let c99 = edition.is_some_and(|e| e >= CStandard::C99);
     match name {
         "atof" | "strtod" => return Some(FloatKind::Double),
         "strtof" => return Some(FloatKind::Float),
         "strtold" => return Some(FloatKind::LongDouble),
+        "wcstod" if c99 => return Some(FloatKind::Double),
+        "wcstof" if c99 => return Some(FloatKind::Float),
+        "wcstold" if c99 => return Some(FloatKind::LongDouble),
         _ => {}
     }
+    let reserved =
+        |n: &str| C90_MATH_FUNCTIONS.contains(&n) || (c99 && C99_MATH_FUNCTIONS.contains(&n));
     // Whole name first: `modf` is the double function, `modff` its float.
-    if C90_MATH_FUNCTIONS.contains(&name) {
+    if reserved(name) {
         return Some(FloatKind::Double);
     }
     let (base, kind) = match name.strip_suffix('f') {
         Some(base) => (base, FloatKind::Float),
         None => (name.strip_suffix('l')?, FloatKind::LongDouble),
     };
-    C90_MATH_FUNCTIONS.contains(&base).then_some(kind)
+    reserved(base).then_some(kind)
 }
 
 /// The standard's return type for a call to a library function
 /// [`library_float_return`] knows, or `None`. The names are reserved to the
 /// library (C11 7.1.3), so the name answers only when no declaration in
 /// reach does: [`expr_type`] consults it last.
-fn math_call_type(node: &Node, source: &str) -> Option<CType> {
+fn math_call_type(node: &Node, source: &str, edition: Option<CStandard>) -> Option<CType> {
     let mut n = *node;
     while n.kind() == "parenthesized_expression" {
         n = n.named_child(0)?;
@@ -1031,7 +1091,7 @@ fn math_call_type(node: &Node, source: &str) -> Option<CType> {
     if callee.kind() != "identifier" {
         return None;
     }
-    library_float_return(get_node_text(&callee, source)).map(CType::Float)
+    library_float_return(get_node_text(&callee, source), edition).map(CType::Float)
 }
 
 /// `s.f` / `p->f`: the field's type in the struct the base names -- its
@@ -1583,7 +1643,53 @@ mod tests {
             ("f", None),
             ("l", None),
         ] {
-            assert_eq!(library_float_return(name), kind, "{name}");
+            assert_eq!(library_float_return(name, None), kind, "{name}");
+            assert_eq!(
+                library_float_return(name, Some(CStandard::C89)),
+                kind,
+                "{name} under C89"
+            );
+        }
+    }
+
+    #[test]
+    fn a_library_function_c99_added_has_the_standard_s_type_only_from_c99() {
+        use FloatKind::*;
+        for (name, kind) in [
+            ("round", Double),
+            ("cbrtf", Float),
+            ("hypotl", LongDouble),
+            // The trailing f is erf's own; erff is its float form.
+            ("erf", Double),
+            ("erff", Float),
+            ("fmal", LongDouble),
+            ("nan", Double),
+            ("wcstod", Double),
+            ("wcstof", Float),
+            ("wcstold", LongDouble),
+        ] {
+            for edition in [None, Some(CStandard::C89)] {
+                assert_eq!(
+                    library_float_return(name, edition),
+                    None,
+                    "{name} {edition:?}"
+                );
+            }
+            for edition in [CStandard::C99, CStandard::C11, CStandard::C23] {
+                assert_eq!(
+                    library_float_return(name, Some(edition)),
+                    Some(kind),
+                    "{name} {edition:?}"
+                );
+            }
+        }
+        // Not floating in any edition.
+        for name in ["ilogb", "lround", "llrint", "wcstol"] {
+            assert_eq!(
+                library_float_return(name, Some(CStandard::C23)),
+                None,
+                "{name}"
+            );
         }
     }
 

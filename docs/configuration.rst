@@ -210,10 +210,15 @@ the rules today read one project-wide answer:
 - The data model comes from a compile database only when every unit states the
   same one. A unit that states none leaves it unknown; it is never inferred
   from the units that do.
-- A compile database's ``c_standard`` is recorded per unit. Only MSC37-C reads
-  it so far (whether ``unreachable`` is a macro the standard defines); no other
-  rule does, which is why ``--pedantic`` names only the missing
-  ``posix_version``.
+- ``c_standard`` is read per unit: the configuration's, else the compile
+  database's entry for the file. MSC37-C reads it (whether ``unreachable`` is
+  a macro the standard defines), and so does the expression typing the
+  floating-point and integer rules share: a call to a floating function C99
+  added (``round``, ``cbrt``, ``wcstod``, ...) whose header was not expanded
+  has the standard's return type only under a declared C99 or later, since
+  C90 left those names to programs. An undeclared edition withholds that
+  type rather than taking an exemption, which is why ``--pedantic`` names
+  only the missing ``posix_version``.
 
 The settings record where each declared fact came from (``cli``, ``config`` or
 ``compile database``), and that source is part of the settings hash; a scan

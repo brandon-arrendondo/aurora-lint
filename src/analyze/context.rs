@@ -1928,7 +1928,8 @@ impl<A: SummaryLookup + ?Sized, B: SummaryLookup + ?Sized> SummaryLookup
 }
 
 /// The struct-field and typedef tables as one file sees them: the project's,
-/// with this file's own definitions on top.
+/// with this file's own definitions on top, and the edition of ISO C the file
+/// is declared to be compiled under.
 ///
 /// The project tables are keyed by NAME across the whole tree, and a name is
 /// not a type: two files may define the same struct tag or typedef name
@@ -1954,11 +1955,22 @@ pub struct VisibleTypes {
     /// reason [`ProjectContext::struct_typedef_aliases`] gives; a consumer
     /// opts in by resolving through it.
     pub struct_typedef_aliases: Arc<HashMap<String, String>>,
+    /// The edition of ISO C declared for this file
+    /// ([`AnalysisSettings::declared_c_standard`](crate::settings::AnalysisSettings::declared_c_standard)),
+    /// which decides the library names that edition reserves; `None` when
+    /// none is declared.
+    pub c_standard: Option<crate::settings::CStandard>,
 }
 
 impl VisibleTypes {
-    /// `context`'s tables overlaid with the definitions in `root`.
-    pub fn for_file(context: &ProjectContext, root: &tree_sitter::Node, source: &str) -> Self {
+    /// `context`'s tables overlaid with the definitions in `root`, the file
+    /// at `path`.
+    pub fn for_file(
+        context: &ProjectContext,
+        path: &std::path::Path,
+        root: &tree_sitter::Node,
+        source: &str,
+    ) -> Self {
         let mut own_fields = HashMap::new();
         let mut own_shapes = HashMap::new();
         crate::analyze::prescan::collect_struct_tables(
@@ -1976,6 +1988,9 @@ impl VisibleTypes {
             typedef_types: overlay(&context.typedef_types, own_typedefs),
             struct_field_shapes: overlay(&context.struct_field_shapes, own_shapes),
             struct_typedef_aliases: overlay(&context.struct_typedef_aliases, own_aliases),
+            c_standard: context
+                .settings
+                .declared_c_standard(&path.to_string_lossy()),
         }
     }
 }

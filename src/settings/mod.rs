@@ -292,8 +292,8 @@ pub struct CompileFacts {
     /// strips from each unit's path so equal declarations on two machines
     /// hash alike. Empty when the database compiles no unit.
     pub root: String,
-    /// The facts each unit's command states, by absolute path. A unit that
-    /// states none is absent.
+    /// The facts each unit's command states, by the path the file system
+    /// resolves the unit to. A unit that states none is absent.
     pub per_tu: BTreeMap<String, TuFacts>,
     /// How many units the database compiles.
     pub unit_count: usize,
@@ -303,9 +303,17 @@ pub struct CompileFacts {
 }
 
 impl CompileFacts {
-    /// The facts of the file at `path`, if its command states any.
+    /// The facts of the file at `path`, if its command states any. `path` is
+    /// spelled as the scan walk spelled it, relative to the working directory
+    /// when the scan was given a relative path, so it is resolved the way
+    /// the units were before it is looked up.
     pub fn of(&self, path: &str) -> Option<&TuFacts> {
-        self.per_tu.get(path)
+        self.per_tu.get(path).or_else(|| {
+            self.per_tu
+                .get(&crate::analyze::compile_commands::real_path(
+                    std::path::Path::new(path),
+                ))
+        })
     }
 
     /// Whether every compiled unit's command states `pick`'s fact.
@@ -1778,6 +1786,17 @@ impl AnalysisSettings {
         Some(text)
     }
 
+    /// The edition of ISO C declared for the file at `path`: by the
+    /// configuration, which wins, or by the compile database's entry for it.
+    /// `None` when neither declares one.
+    pub fn declared_c_standard(&self, path: &str) -> Option<CStandard> {
+        self.c_standard.or_else(|| {
+            self.compile_facts
+                .of(path)
+                .and_then(|facts| facts.c_standard)
+        })
+    }
+
     /// The warnings a scan prints about the editions it was given: edition
     /// declarations in a compile database that name no known edition, and
     /// each conflict the configuration won, summarized past the first few so
@@ -3103,6 +3122,47 @@ mod tests {
         assert_eq!(json["libc_version"], "2.39");
         assert_ne!(s.settings_hash(), base.settings_hash());
         assert!(base.to_json()["c_standard"].is_null());
+    }
+
+    #[test]
+    fn a_unit_s_edition_is_found_however_the_scan_spells_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let unit = dir.path().join("a.c");
+        std::fs::write(&unit, "").unwrap();
+        let key = crate::analyze::compile_commands::real_path(&unit);
+        let mut s = AnalysisSettings::preset(Preset::Default);
+        s.compile_facts.per_tu.insert(
+            key.clone(),
+            TuFacts {
+                c_standard: Some(CStandard::C99),
+                ..Default::default()
+            },
+        );
+        let detour = dir.path().join("sub").join("..").join("a.c");
+        // The unit as written (a symlinked temporary directory on macOS), and
+        // with a detour through a subdirectory.
+        for spelling in [
+            key,
+            unit.to_string_lossy().into_owned(),
+            detour.to_string_lossy().into_owned(),
+        ] {
+            assert_eq!(
+                s.declared_c_standard(&spelling),
+                Some(CStandard::C99),
+                "{spelling}"
+            );
+        }
+        assert_eq!(
+            s.declared_c_standard(&dir.path().join("b.c").to_string_lossy()),
+            None
+        );
+        // The configuration's edition wins over the unit's.
+        s.c_standard = Some(CStandard::C89);
+        assert_eq!(
+            s.declared_c_standard(&unit.to_string_lossy()),
+            Some(CStandard::C89)
+        );
     }
 
     #[test]

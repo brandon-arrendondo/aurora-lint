@@ -140,14 +140,10 @@ impl Msc37C {
     /// Undeclared is read strictly (C11), where `unreachable()` is no macro
     /// of the standard library.
     fn c23_declared(&self) -> bool {
-        let settings = self.settings.borrow();
-        let declared = settings.c_standard.or_else(|| {
-            settings
-                .compile_facts
-                .of(&self.file_path.borrow())
-                .and_then(|facts| facts.c_standard)
-        });
-        declared.is_some_and(|edition| edition >= crate::settings::CStandard::C23)
+        self.settings
+            .borrow()
+            .declared_c_standard(&self.file_path.borrow())
+            .is_some_and(|edition| edition >= crate::settings::CStandard::C23)
     }
 
     /// Whether the function returns `void`: the type specifier is `void`
