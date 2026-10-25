@@ -10667,6 +10667,36 @@ void caller(char *other) {
         assert!(ctx.header_declared_functions.contains("public_api"));
     }
 
+    /// An annotation whose argument names `return`, written after another
+    /// annotation, parsed as the declarator of a function named for the
+    /// annotation, and the prototype after it as a call inside that one.
+    #[test]
+    fn test_prescan_header_prototype_after_annotation_naming_return() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("api.h"),
+            "typedef int status_t;\n\
+             typedef struct record record;\n\
+             \n\
+             CHECKED_RESULT\n\
+             ON_SUCCESS(return == 0)\n\
+             status_t open_record(\n\
+             \x20   OUT_PTR_NULL_ON_FAILURE record **out,\n\
+             \x20   IN_STRING const char *name\n\
+             \x20   );\n\
+             \n\
+             ON_SUCCESS(return != 0)\n\
+             CHECKED_RESULT\n\
+             status_t close_record(record *r);\n",
+        )
+        .unwrap();
+        let dirs = vec![dir.path().to_string_lossy().to_string()];
+        let ctx = prescan_directories(&dirs, None, &|_, _| false, Default::default()).unwrap();
+        assert!(ctx.header_declared_functions.contains("open_record"));
+        assert!(ctx.header_declared_functions.contains("close_record"));
+        assert!(!ctx.header_declared_functions.contains("ON_SUCCESS"));
+    }
+
     #[test]
     fn test_prescan_directories_struct() {
         let dir = tempfile::TempDir::new().unwrap();

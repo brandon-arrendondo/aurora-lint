@@ -290,6 +290,105 @@ fn error_node_count(node: &Node) -> usize {
     query::find_descendants(*node, |n| n.is_error() || n.is_missing()).len()
 }
 
+/// The byte range of every macro invocation `NAME(...)` whose parentheses
+/// hold the keyword `return`, which the parser stranded as an identifier
+/// inside an `ERROR` node.
+///
+/// No C expression or declarator can contain `return` between parentheses:
+/// it begins a statement, and a statement in parentheses needs braces
+/// (`({ ... })`). So such an invocation is a macro whose argument is not C,
+/// the way an annotation language writes a postcondition: the Windows
+/// SDK's `_Success_(return == 0)` and `_When_(return != 0, ...)`, defined in
+/// a header no single-file parse sees. Placement decides how far the damage
+/// spreads. After another annotation (`_Check_return_wat_ _Success_(return
+/// == 0) errno_t fopen_s(...);`), tree-sitter reads the invocation as the
+/// declarator of a function named `_Success_` and the real prototype as a
+/// call inside it, so the header declares `_Success_` and not `fopen_s`.
+/// The invocation was already unusable to every rule, so blanking it loses
+/// nothing and lets the declaration after it parse.
+///
+/// Keyed on the keyword, never on the macro's name. The enclosing `(` is
+/// found in the source with literals and comments masked
+/// (`pp_tokens::mask_source`). The search gives up at a `{`, `}` or `;`,
+/// which no single macro argument holds, so a real `return` statement is
+/// never mistaken for an argument. A `return` on a directive line is left
+/// alone, and so is one inside a keyword's parentheses (`if (... return`).
+fn find_keyword_argument_macro_invocations(node: &Node, source: &str) -> Vec<(usize, usize)> {
+    let stranded = query::find_descendants(*node, |n| {
+        matches!(n.kind(), "identifier" | "type_identifier")
+            && &source[n.start_byte()..n.end_byte()] == "return"
+            && query::nearest_ancestor_of_kind(n, "ERROR").is_some()
+    });
+    if stranded.is_empty() {
+        return Vec::new();
+    }
+    let masked = crate::utility::cert_c::pp_tokens::mask_source(source);
+    let bytes = masked.as_bytes();
+    let mut ranges: Vec<(usize, usize)> = stranded
+        .iter()
+        .filter(|n| !line_is_preprocessor_directive(source, n.start_byte()))
+        .filter_map(|n| enclosing_invocation(bytes, n.start_byte()))
+        .collect();
+    ranges.sort_unstable();
+    ranges.dedup();
+    // A `return` nested in another such invocation's argument yields the
+    // inner range too; the outer one already covers it.
+    let mut outermost: Vec<(usize, usize)> = Vec::new();
+    for range in ranges {
+        match outermost.last() {
+            Some(&(_, end)) if range.0 < end => {}
+            _ => outermost.push(range),
+        }
+    }
+    outermost
+}
+
+/// The range of `NAME(...)` around the byte at `at` in masked source: the
+/// nearest unclosed `(` before it, the identifier right before that, and
+/// the `)` that closes it. `None` at a `{`, `}` or `;` first, at a keyword
+/// before the `(`, or when the `)` never comes.
+fn enclosing_invocation(bytes: &[u8], at: usize) -> Option<(usize, usize)> {
+    let mut depth = 0usize;
+    let mut open = None;
+    for i in (0..at).rev() {
+        match bytes[i] {
+            b')' => depth += 1,
+            b'(' if depth == 0 => {
+                open = Some(i);
+                break;
+            }
+            b'(' => depth -= 1,
+            b'{' | b'}' | b';' => return None,
+            _ => {}
+        }
+    }
+    let open = open?;
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut name_end = open;
+    while name_end > 0 && bytes[name_end - 1].is_ascii_whitespace() {
+        name_end -= 1;
+    }
+    let mut name_start = name_end;
+    while name_start > 0 && is_ident(bytes[name_start - 1]) {
+        name_start -= 1;
+    }
+    let name = std::str::from_utf8(&bytes[name_start..name_end]).ok()?;
+    if !is_bare_identifier(name) {
+        return None;
+    }
+    depth = 0;
+    for (i, &b) in bytes.iter().enumerate().skip(open + 1) {
+        match b {
+            b'(' => depth += 1,
+            b')' if depth == 0 => return Some((name_start, i + 1)),
+            b')' => depth -= 1,
+            b'{' | b'}' | b';' => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Depth-first search for a `preproc_if`/`preproc_ifdef`/`preproc_elif`-style
 /// conditional node whose entire guarded content is a single ERROR-wrapped
 /// bare brace (`{` or `}`). This is the dual-C/C++-header idiom for
@@ -416,7 +515,16 @@ pub fn parse_with_recovery(
         if !tree.root_node().has_error() {
             break;
         }
-        if let Some((start, end)) = find_blankable_identifier_error(&tree.root_node(), &text) {
+        // First, and all at once: each is certain on its own, and blanking
+        // one per pass would spend the iteration budget on a header that
+        // annotates every prototype.
+        let invocations = find_keyword_argument_macro_invocations(&tree.root_node(), &text);
+        if !invocations.is_empty() {
+            for (start, end) in invocations {
+                text = blank_range(&text, start, end);
+            }
+        } else if let Some((start, end)) = find_blankable_identifier_error(&tree.root_node(), &text)
+        {
             let (repaired, repaired_tree) = choose_repair(parser, &text, start, end, macros)?;
             text = repaired;
             tree = repaired_tree;
@@ -520,6 +628,41 @@ mod tests {
         let (has_error, text) = recover(src);
         assert!(!has_error);
         assert_eq!(text, src);
+    }
+
+    #[test]
+    fn blanks_an_annotation_whose_argument_names_return() {
+        let src = "CHECKED\nON_SUCCESS(return == 0)\nint open_it(int **out);\n";
+        let (_, text) = recover(src);
+        assert_eq!(text.len(), src.len());
+        assert!(!text.contains("ON_SUCCESS"));
+        assert!(text.contains("int open_it(int **out);"));
+        let mut parser = Parser::new();
+        parser.set_language(&c_language()).unwrap();
+        let tree = parser.parse(&text, None).unwrap();
+        let declarators = query::find_descendants_of_kind(tree.root_node(), "function_declarator");
+        assert_eq!(declarators.len(), 1);
+        assert!(text[declarators[0].byte_range()].starts_with("open_it"));
+    }
+
+    #[test]
+    fn blanks_the_outer_annotation_when_return_is_nested() {
+        let src = "CHECKED\nWHEN(return != 0, POST(return > 1))\nint f(int x);\n";
+        let (_, text) = recover(src);
+        assert!(!text.contains("WHEN") && !text.contains("POST"));
+        assert!(text.contains("int f(int x);"));
+    }
+
+    #[test]
+    fn leaves_a_real_return_statement_alone() {
+        // A `return` the parser cannot place inside a damaged body is not
+        // in any macro's parentheses: the search stops at the `;` or `{`.
+        let src = "int g(int x) {\n    LOOP(x) return (x);\n}\n";
+        let (_, text) = recover(src);
+        assert!(text.contains("return (x);"));
+        let src = "#define RET(x) (return x)\nint h(void);\n";
+        let (_, text) = recover(src);
+        assert!(text.starts_with("#define RET(x) (return x)"));
     }
 
     #[test]
