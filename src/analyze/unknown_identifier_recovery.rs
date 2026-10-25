@@ -312,7 +312,10 @@ fn error_node_count(node: &Node) -> usize {
 /// (`pp_tokens::mask_source`). The search gives up at a `{`, `}` or `;`,
 /// which no single macro argument holds, so a real `return` statement is
 /// never mistaken for an argument. A `return` on a directive line is left
-/// alone, and so is one inside a keyword's parentheses (`if (... return`).
+/// alone, and so is one inside a keyword's parentheses (`if (... return`)
+/// or anywhere in a function body: an annotation sits on a declaration,
+/// and a body the parser damaged (an `if (` split across `#if` arms) can
+/// strand a real `return` beside an unclosed `(`.
 ///
 /// An invocation that a `;` ends is a statement, not an annotation: a
 /// macro that takes a statement as its argument and expands it or not by
@@ -324,6 +327,7 @@ fn find_keyword_argument_macro_invocations(node: &Node, source: &str) -> Vec<(us
         matches!(n.kind(), "identifier" | "type_identifier")
             && &source[n.start_byte()..n.end_byte()] == "return"
             && query::nearest_ancestor_of_kind(n, "ERROR").is_some()
+            && query::nearest_ancestor_of_kind(n, "compound_statement").is_none()
     });
     if stranded.is_empty() {
         return Vec::new();
@@ -333,13 +337,13 @@ fn find_keyword_argument_macro_invocations(node: &Node, source: &str) -> Vec<(us
     let mut ranges: Vec<(usize, usize)> = stranded
         .iter()
         .filter(|n| !line_is_preprocessor_directive(source, n.start_byte()))
-        .filter_map(|n| enclosing_invocation(bytes, n.start_byte()))
+        .filter_map(|n| outermost_annotation(bytes, n.start_byte()))
         .filter(|&(_, end)| next_non_space(bytes, end) != Some(b';'))
         .collect();
     ranges.sort_unstable();
     ranges.dedup();
-    // A `return` nested in another such invocation's argument yields the
-    // inner range too; the outer one already covers it.
+    // Two `return`s in one annotation (`_When_(return != 0, _Post_(return
+    // > 1))`) yield overlapping ranges; keep the first, which encloses.
     let mut outermost: Vec<(usize, usize)> = Vec::new();
     for range in ranges {
         match outermost.last() {
@@ -348,6 +352,27 @@ fn find_keyword_argument_macro_invocations(node: &Node, source: &str) -> Vec<(us
         }
     }
     outermost
+}
+
+/// The invocation around the byte at `at` (see [`enclosing_invocation`]),
+/// widened to each invocation enclosing it while that one is followed by a
+/// name, as an annotation is by what it annotates. `_When_(x > 0,
+/// _Success_(return != 0)) int h(int x);` blanks all of `_When_(...)`: the
+/// inner `_Success_(...)` alone leaves `_When_(x > 0, )` to misparse as the
+/// declarator. The widening stops at a function's own parameter list,
+/// which a `;` or `{` follows, so an annotated parameter is blanked and not
+/// the prototype around it.
+fn outermost_annotation(bytes: &[u8], at: usize) -> Option<(usize, usize)> {
+    let mut range = enclosing_invocation(bytes, at)?;
+    while let Some(outer) = enclosing_invocation(bytes, range.0) {
+        let followed_by_name =
+            next_non_space(bytes, outer.1).is_some_and(|b| b.is_ascii_alphabetic() || b == b'_');
+        if !followed_by_name {
+            break;
+        }
+        range = outer;
+    }
+    Some(range)
 }
 
 /// The first byte at or after `at` that is not whitespace.
@@ -666,6 +691,22 @@ mod tests {
         let (_, text) = recover(src);
         assert!(!text.contains("WHEN") && !text.contains("POST"));
         assert!(text.contains("int f(int x);"));
+    }
+
+    #[test]
+    fn blanks_the_annotation_around_one_whose_argument_names_return() {
+        let src = "CHECKED\nWHEN(x > 0, ON_SUCCESS(return != 0)) EXPORTED int CC h(int x);\n";
+        let (_, text) = recover(src);
+        assert!(!text.contains("WHEN") && !text.contains("ON_SUCCESS"));
+        assert!(text.contains("h(int x);"));
+    }
+
+    #[test]
+    fn keeps_a_prototype_whose_parameter_annotation_names_return() {
+        let src = "CHECKED\nint fill(OUT_TO(n, return) char *buf, int n);\nint other(void);\n";
+        let (_, text) = recover(src);
+        assert!(text.contains("int fill("));
+        assert!(text.contains("char *buf, int n);"));
     }
 
     #[test]
