@@ -1170,15 +1170,24 @@ fn run() -> Result<i32> {
     let mut violations = results.violations;
     let suppressed = results.suppressed;
     let macro_gap_report = results.macro_gaps;
-    let failures = results.failures;
     let abandoned_rules = results.abandoned_rules;
     let not_converged = results.not_converged;
     let header_dependence = results.header_dependence;
     let cwd = std::env::current_dir().unwrap_or_default();
-    // Paths under the current directory are shown relative to it, as the
-    // scanned files are, so a report does not depend on where the tree is
-    // checked out.
+    // Paths under the current directory are shown relative to it, as text
+    // output shows finding paths, so a report does not depend on where the
+    // tree is checked out. A header the scan refused is named by the path it
+    // was found at, under an absolute `-I` too.
     let include_report = results.include_report.relative_to(&cwd);
+    let shown = analyze::context::ShownPaths::under(&cwd);
+    let failures: Vec<_> = results
+        .failures
+        .into_iter()
+        .map(|mut f| {
+            f.file = shown.show(&f.file);
+            f
+        })
+        .collect();
 
     // Headers the scan could not find change what rules can see, so they are
     // loud: one stderr line whenever a live #include did not resolve, every

@@ -292,9 +292,14 @@ diff to the header that explains a difference in their findings::
     aurora-lint src/ -d src/ -I include/ -I /usr/include --report-headers headers.json
 
 In all of these, a path under the current directory (an includer, a search
-directory, an outside header) is given relative to it, as finding paths are,
-so the same tree scanned from its root reports the same wherever it is
-checked out; a path elsewhere, such as ``/usr/include``, is given in full.
+directory, an outside header, an input the scan refused) is given relative
+to it, as text output gives finding paths, so the same tree scanned from
+its root reports the same wherever it is checked out. A search directory
+spelled with ``..`` is resolved first. A path elsewhere, such as
+``/usr/include``, is given in full, and so is an includer reached through a
+symlink in the tree that points outside it, since includers are real paths.
+SARIF result URIs are unaffected: they keep each scanned file's path as the
+scan was given it, so ``aurora-lint "$PWD/src"`` gives absolute URIs.
 
 Each finding that may depend on a missing header says so. A rule that reads
 facts headers supply (function declarations, macros and macro constants,

@@ -103,6 +103,64 @@ pub fn in_compiler_directory(spelling: &str) -> bool {
     TREES.iter().any(|tree| spelling.starts_with(tree)) || FREESTANDING.contains(&spelling)
 }
 
+/// How a path is shown in output: relative to a directory (the current
+/// one) when it lies under it, as text output shows finding paths, and as
+/// it is when it lies elsewhere (a system header is a fact about the host).
+pub struct ShownPaths {
+    /// The directory as given and as its real path: a real path is
+    /// canonical, and a spelled `-I` may pass through a symlink.
+    bases: Vec<std::path::PathBuf>,
+}
+
+impl ShownPaths {
+    /// Paths shown relative to `dir`.
+    pub fn under(dir: &Path) -> Self {
+        Self {
+            bases: std::iter::once(dir.to_path_buf())
+                .chain(dir.canonicalize().ok())
+                .collect(),
+        }
+    }
+
+    /// `path` relative to the directory, or `path` itself when it does not
+    /// lie under it. The path is resolved first, then taken lexically (`..`
+    /// dropped against what precedes it), then as written, and a result that
+    /// still climbs out (`..`) is not taken: `$PWD/../proj/inc` is `inc` when
+    /// the current directory is `proj`, and `$PWD/../../other/inc` stays as
+    /// written.
+    pub fn show(&self, path: &str) -> String {
+        use std::path::Component;
+        let written = Path::new(path);
+        let candidates = [
+            written.canonicalize().ok(),
+            written
+                .is_absolute()
+                .then(|| crate::analyze::compile_commands::lexically_normal(written)),
+            Some(written.to_path_buf()),
+        ];
+        candidates
+            .iter()
+            .flatten()
+            .find_map(|p| {
+                self.bases.iter().find_map(|base| {
+                    p.strip_prefix(base)
+                        .ok()
+                        .filter(|rest| !rest.components().any(|c| c == Component::ParentDir))
+                })
+            })
+            .map_or_else(
+                || path.to_string(),
+                |rest| {
+                    if rest.as_os_str().is_empty() {
+                        ".".to_string()
+                    } else {
+                        rest.to_string_lossy().into_owned()
+                    }
+                },
+            )
+    }
+}
+
 impl UnresolvedInclude {
     /// Whether this miss is one of the compiler's built-in or multiarch
     /// headers ([`in_compiler_directory`]), and not a missing project header
@@ -202,34 +260,13 @@ impl IncludeReport {
         ))
     }
 
-    /// This report as it is shown: every path that lies under `dir` (the
-    /// current directory) relative to it, the way the scanned files are
-    /// spelled, and re-sorted, so the same tree checked out in two places
-    /// reports the same. A path elsewhere (a system header) is a fact about
-    /// the host and stays as it is. The scan keys its own lookups by real
-    /// path, so only output goes through here.
+    /// This report as it is shown: each path [`ShownPaths::show`] gives
+    /// relative to `dir` (the current directory), and re-sorted, so the same
+    /// tree checked out in two places reports the same. The scan keys its own
+    /// lookups by real path, so only output goes through here.
     pub fn relative_to(&self, dir: &Path) -> Self {
-        // Real paths are canonical and a spelled `-I` may not be (it may
-        // pass through a symlink), so both forms of each are tried.
-        let bases: Vec<std::path::PathBuf> = std::iter::once(dir.to_path_buf())
-            .chain(dir.canonicalize().ok())
-            .collect();
-        let shown = |path: &String| -> String {
-            let real = Path::new(path).canonicalize().ok();
-            std::iter::once(Path::new(path))
-                .chain(real.as_deref())
-                .find_map(|p| bases.iter().find_map(|base| p.strip_prefix(base).ok()))
-                .map_or_else(
-                    || path.clone(),
-                    |rest| {
-                        if rest.as_os_str().is_empty() {
-                            ".".to_string()
-                        } else {
-                            rest.to_string_lossy().into_owned()
-                        }
-                    },
-                )
-        };
+        let paths = ShownPaths::under(dir);
+        let shown = |path: &String| paths.show(path);
         let mut unresolved: Vec<UnresolvedInclude> = self
             .unresolved
             .iter()
@@ -1983,6 +2020,55 @@ fn overlay<V: Clone + PartialEq>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_is_shown_relative_to_the_directory_only_when_it_lies_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("proj");
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(proj.join("inc")).unwrap();
+        std::fs::create_dir_all(other.join("inc")).unwrap();
+        let shown = ShownPaths::under(&proj);
+        let p = proj.to_str().unwrap();
+        // The real path (tempdirs sit behind a symlink on macOS) and the
+        // path as spelled are both under the directory.
+        let real = proj.canonicalize().unwrap().join("inc/a.h");
+        assert_eq!(shown.show(real.to_str().unwrap()), "inc/a.h");
+        assert_eq!(shown.show(&format!("{p}/inc/a.h")), "inc/a.h");
+        assert_eq!(shown.show(p), ".");
+        // `..` back into the directory resolves into it; out of it, the
+        // path stays as written rather than climbing.
+        assert_eq!(shown.show(&format!("{p}/../proj/inc")), "inc");
+        let outside = format!("{p}/../other/inc");
+        assert_eq!(shown.show(&outside), outside);
+        let missing = format!("{p}/../gone/inc");
+        assert_eq!(shown.show(&missing), missing);
+        // Elsewhere, and already relative, are left alone.
+        assert_eq!(shown.show("/usr/include"), "/usr/include");
+        assert_eq!(shown.show("inc"), "inc");
+        assert_eq!(shown.show(""), "");
+
+        let report = IncludeReport {
+            search_paths: vec![format!("{p}/inc"), "/usr/include".to_string()],
+            forced_includes: vec![format!("{p}/inc/force.h")],
+            unresolved: vec![UnresolvedInclude {
+                spelling: "gen.h".to_string(),
+                form: IncludeForm::Quoted,
+                includer: real.to_string_lossy().into_owned(),
+                line: 1,
+                in_dead_arm: false,
+                includer_outside_project: false,
+                project_header: true,
+            }],
+            outside_headers: vec![format!("{p}/inc/b.h"), "/usr/include/stdio.h".to_string()],
+        }
+        .relative_to(&proj);
+        assert_eq!(report.search_paths, ["inc", "/usr/include"]);
+        assert_eq!(report.forced_includes, ["inc/force.h"]);
+        assert_eq!(report.unresolved[0].includer, "inc/a.h");
+        // Re-sorted once rewritten.
+        assert_eq!(report.outside_headers, ["/usr/include/stdio.h", "inc/b.h"]);
+    }
 
     #[test]
     fn the_context_outside_the_configuration_survives_a_prescan_cache() {

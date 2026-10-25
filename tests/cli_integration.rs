@@ -576,10 +576,81 @@ fn missing_headers_are_reported_on_stderr_in_sarif_and_on_request() {
     );
 }
 
+/// A header the scan refuses, found through an absolute `-I`, is named
+/// relative to the current directory in the stderr line, the header report
+/// and the SARIF notification, and a search directory spelled with `..` is
+/// resolved before it is shown: back into the tree it is relative, out of it
+/// it stays as written.
+#[test]
+fn a_refused_header_and_a_dotted_search_path_are_shown_relative_to_the_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let proj = dir.path().join("proj");
+    std::fs::create_dir_all(proj.join("src")).unwrap();
+    std::fs::create_dir_all(proj.join("inc")).unwrap();
+    std::fs::create_dir_all(dir.path().join("other")).unwrap();
+    std::fs::write(
+        proj.join("src/main.c"),
+        "#include <big.h>\nint main(void) { return 0; }\n",
+    )
+    .unwrap();
+    // Over the 1 MiB --max-file-size below, so it is refused.
+    std::fs::write(proj.join("inc/big.h"), "x".repeat(1_200_000)).unwrap();
+    let inc = proj.join("inc");
+    let back_in = format!("{}/../proj/inc", proj.display());
+    let out_of = format!("{}/../other", proj.display());
+    let manifest = manifest_msc04();
+    let output = Command::new(aurora_lint_bin())
+        .current_dir(&proj)
+        .args([
+            "src",
+            "-I",
+            inc.to_str().unwrap(),
+            "-I",
+            &back_in,
+            "-I",
+            &out_of,
+            "-m",
+            manifest.to_str().unwrap(),
+            "--max-file-size",
+            "1",
+            "-e",
+            "out.sarif",
+            "--report-headers",
+            "headers.json",
+        ])
+        .output()
+        .expect("failed to execute aurora-lint");
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert_eq!(output.status.code(), Some(3), "incomplete: {stderr}");
+    assert!(
+        stderr.contains("input skipped (too large): inc/big.h:"),
+        "{stderr}"
+    );
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(proj.join("headers.json")).unwrap()).unwrap();
+    assert_eq!(report["refused"][0]["path"], "inc/big.h", "{report}");
+    assert_eq!(
+        report["search_paths"],
+        serde_json::json!(["inc", "inc", out_of]),
+        "{report}"
+    );
+    let sarif: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(proj.join("out.sarif")).unwrap()).unwrap();
+    let notes = sarif["runs"][0]["invocations"][0]["toolExecutionNotifications"]
+        .as_array()
+        .unwrap();
+    let uris: Vec<&str> = notes
+        .iter()
+        .filter_map(|n| n["locations"][0]["physicalLocation"]["artifactLocation"]["uri"].as_str())
+        .collect();
+    assert_eq!(uris, ["inc/big.h"], "{notes:?}");
+}
+
 /// The same tree checked out in two places, each scanned from its own root,
 /// writes byte-identical SARIF, header report and -v listing: a path under
-/// the current directory is given relative to it, as result URIs are, and
-/// one outside it (a host's system header directory) as it is.
+/// the current directory is given relative to it, as text output gives
+/// finding paths, and one outside it (a host's system header directory) as
+/// it is.
 #[test]
 fn the_header_report_does_not_depend_on_where_the_tree_is_checked_out() {
     let dir = tempfile::tempdir().unwrap();
