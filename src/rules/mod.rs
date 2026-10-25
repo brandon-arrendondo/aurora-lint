@@ -152,7 +152,12 @@ pub struct RuleViolation {
     pub file_path: String,
     /// 1-indexed line the violation is reported at.
     pub line: usize,
-    /// 1-indexed column the violation is reported at.
+    /// 1-indexed column the violation is reported at, counted in bytes of
+    /// the line as the scan decoded it to UTF-8 (tree-sitter's column plus
+    /// one). On a line with non-ASCII text before the finding this is past
+    /// the character count; the SARIF export converts it to the UTF-16 code
+    /// units the run declares, and the JSON export and the terminal give it
+    /// as is.
     pub column: usize,
     /// Optional suggested fix, shown to the user alongside the message.
     pub suggestion: Option<String>,
@@ -180,6 +185,22 @@ impl Default for RuleViolation {
 }
 
 impl RuleViolation {
+    /// Fail a debug build when a rule reports a finding at line or column 0.
+    /// Both are 1-indexed, and SARIF refuses 0, so a 0 is a rule computing
+    /// its position wrong. Checked where the scan finalizes each finding,
+    /// so a rule is caught on every file a debug scan reads, not only on
+    /// its own fixtures.
+    pub(crate) fn debug_assert_located(&self) {
+        debug_assert!(
+            self.line >= 1 && self.column >= 1,
+            "{} reported {}:{}:{}; line and column are 1-indexed",
+            self.rule_id,
+            self.file_path,
+            self.line,
+            self.column
+        );
+    }
+
     /// Returns true if this violation requires manual review
     pub fn needs_manual_review(&self) -> bool {
         self.requires_manual_review.unwrap_or(false)

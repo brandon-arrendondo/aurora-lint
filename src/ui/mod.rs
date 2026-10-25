@@ -2388,6 +2388,7 @@ impl TerminalUI {
                 violation, original, source, &respelled,
             );
             violation.file_path = file_path.to_string();
+            violation.debug_assert_located();
             // Use config severity if specified, otherwise use rule's default severity
             violation.severity = rule_config
                 .severity

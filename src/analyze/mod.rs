@@ -1505,6 +1505,7 @@ fn analyze_one_file(
                 // Set file path and severity on all violations
                 for v in &mut rule_violations {
                     v.file_path = file_path.to_string();
+                    v.debug_assert_located();
                     thread_local_keyword::restore_in_finding(v, &original, &source, &respelled);
                     v.severity = rule_config
                         .severity

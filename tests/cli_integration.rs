@@ -489,6 +489,64 @@ fn every_sarif_result_keeps_to_the_schema_s_fixes_and_region_bounds() {
     }
 }
 
+/// A finding's column counts the line's UTF-8 bytes. SARIF declares
+/// `columnKind` `utf16CodeUnits` and converts to it, so a viewer lands on the
+/// construct past non-ASCII text; JSON keeps the byte column.
+#[test]
+fn sarif_gives_columns_in_utf16_code_units_and_json_in_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("u.c");
+    // 'é' is two bytes and one unit, the emoji four bytes and two units, so
+    // the second free() starts at byte column 56 and unit column 53.
+    std::fs::write(
+        &source,
+        "#include <stdlib.h>\nvoid f(void) {\n    \
+         char *p = malloc(10); /* \u{e9} */ free(p); /* \u{1F600} */ free(p);\n}\n",
+    )
+    .unwrap();
+    let report = |export: &str| {
+        let out = dir.path().join(export);
+        let (_, _, stderr) = run_aurora_lint(&[
+            source.to_str().unwrap(),
+            "-m",
+            fixtures().join("manifest_mem30.toml").to_str().unwrap(),
+            "-e",
+            out.to_str().unwrap(),
+        ]);
+        serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(&out).unwrap_or_else(|e| panic!("{e}: {stderr}")),
+        )
+        .unwrap()
+    };
+    let json = report("out.json");
+    let finding = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["rule_id"] == "MEM30-C")
+        .unwrap_or_else(|| panic!("{json}"));
+    assert_eq!(
+        (finding["line"].as_u64(), finding["column"].as_u64()),
+        (Some(3), Some(56))
+    );
+
+    let sarif = report("out.sarif");
+    let run = &sarif["runs"][0];
+    assert_eq!(run["columnKind"], "utf16CodeUnits");
+    let result = run["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["ruleId"] == "MEM30-C")
+        .unwrap_or_else(|| panic!("{sarif}"));
+    let region = &result["locations"][0]["physicalLocation"]["region"];
+    assert_eq!(
+        (region["startLine"].as_u64(), region["startColumn"].as_u64()),
+        (Some(3), Some(53)),
+        "{result}"
+    );
+}
+
 /// A header the scan cannot find is loud: one stderr line by default, every
 /// row with -v, a SARIF note that leaves the run successful, and the whole
 /// report with --report-headers. None of it changes a finding.

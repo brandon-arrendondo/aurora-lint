@@ -73,6 +73,22 @@ fn severity_to_sarif_level(severity: &Severity) -> &'static str {
     }
 }
 
+/// SARIF's `startColumn` for a finding at 1-indexed byte `column` of
+/// `line`: the run declares `columnKind` `utf16CodeUnits`, the unit SARIF
+/// assumes when none is named, and a finding's column counts the line's
+/// UTF-8 bytes as the scan decoded it. The two agree on ASCII and drift
+/// by a column or two for each non-ASCII character before the finding. A
+/// column inside a character counts from that character's start; one past
+/// the end of the line counts the bytes beyond it as single units.
+fn utf16_column(line: &str, column: usize) -> usize {
+    let bytes = column - 1;
+    let mut end = bytes.min(line.len());
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    line[..end].encode_utf16().count() + bytes.saturating_sub(line.len()) + 1
+}
+
 fn violation_to_sarif_result(
     v: &RuleViolation,
     rule_index: &BTreeMap<&str, usize>,
@@ -95,23 +111,23 @@ fn violation_to_sarif_result(
                     "index": artifact.map(|a| a.index)
                 },
                 "region": {
-                    "startLine": v.line,
-                    "startColumn": v.column
+                    "startLine": v.line
                 }
             }
         }]
     });
-    // Columns are 1-indexed, and SARIF's minimum is 1. A rule that reports
-    // column 0 has no column to give, so the region gives none rather than
-    // failing the log against the schema.
-    if v.column == 0 {
-        if let Some(region) = result["locations"][0]["physicalLocation"]["region"].as_object_mut() {
-            region.remove("startColumn");
-        }
-    }
     let snippet = artifact
         .and_then(|a| a.lines.as_ref())
         .and_then(|lines| lines.get(v.line.checked_sub(1)?));
+    // Columns are 1-indexed, and SARIF's minimum is 1. A rule that reports
+    // column 0 has no column to give, and a line the export cannot read
+    // gives no way to convert one, so the region names the line alone
+    // rather than failing the log against the schema or giving a column in
+    // a unit the run does not declare.
+    if let (Some(line), 1..) = (snippet, v.column) {
+        result["locations"][0]["physicalLocation"]["region"]["startColumn"] =
+            serde_json::json!(utf16_column(line, v.column));
+    }
     if let Some(line) = snippet {
         result["locations"][0]["physicalLocation"]["region"]["snippet"] =
             serde_json::json!({ "text": line.trim() });
@@ -344,6 +360,7 @@ pub fn export_all_violations_to_sarif(
                 }
             },
             "artifacts": artifacts_array,
+            "columnKind": "utf16CodeUnits",
             "results": results_array,
             "invocations": [invocation(incomplete, headers)],
             "properties": {
@@ -372,13 +389,21 @@ pub fn export_all_violations_to_sarif(
 
 #[cfg(test)]
 mod tests {
-    use super::{help_uri, violation_to_sarif_result};
+    use super::{help_uri, utf16_column, violation_to_sarif_result, ArtifactInfo};
     use crate::rules::RuleViolation;
     use std::collections::BTreeMap;
 
     #[test]
     fn a_region_gives_no_column_for_a_violation_at_column_zero() {
-        let region = |column| {
+        let lines = ["", "", "    x = y;"].map(String::from).to_vec();
+        let artifacts = BTreeMap::from([(
+            "a.c",
+            ArtifactInfo {
+                index: 0,
+                lines: Some(lines),
+            },
+        )]);
+        let region = |column, artifacts: &BTreeMap<&str, ArtifactInfo>| {
             let v = RuleViolation {
                 rule_id: "DCL05-C".into(),
                 file_path: "a.c".into(),
@@ -386,15 +411,37 @@ mod tests {
                 column,
                 ..Default::default()
             };
-            violation_to_sarif_result(&v, &BTreeMap::new(), &BTreeMap::new(), Default::default())
-                ["locations"][0]["physicalLocation"]["region"]
-                .clone()
+            let mut region =
+                violation_to_sarif_result(&v, &BTreeMap::new(), artifacts, Default::default())
+                    ["locations"][0]["physicalLocation"]["region"]
+                    .clone();
+            region.as_object_mut().unwrap().remove("snippet");
+            region
         };
-        assert_eq!(region(0), serde_json::json!({ "startLine": 3 }));
+        assert_eq!(region(0, &artifacts), serde_json::json!({ "startLine": 3 }));
         assert_eq!(
-            region(5),
+            region(5, &artifacts),
             serde_json::json!({ "startLine": 3, "startColumn": 5 })
         );
+        // A line the export cannot read gives no unit to convert a column to.
+        assert_eq!(
+            region(5, &BTreeMap::new()),
+            serde_json::json!({ "startLine": 3 })
+        );
+    }
+
+    #[test]
+    fn a_byte_column_is_given_in_utf16_code_units() {
+        // ASCII: the same column.
+        assert_eq!(utf16_column("int x;", 5), 5);
+        // 'é' is two bytes and one unit, so 'x' at byte column 10 is unit 9.
+        assert_eq!(utf16_column("/* é */ x", 10), 9);
+        // An emoji is four bytes and a surrogate pair.
+        assert_eq!(utf16_column("s = \"\u{1F600}\"; x", 13), 11);
+        // A column inside a character counts from its start.
+        assert_eq!(utf16_column("é", 2), 1);
+        // Past the end of the line, each byte beyond it is one unit.
+        assert_eq!(utf16_column("é;", 6), 5);
     }
 
     #[test]
