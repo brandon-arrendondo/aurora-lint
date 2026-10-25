@@ -30,5 +30,5 @@ strict = "as_written"
 pedantic = "as_written"
 differs = true
 overlap = "FIO19-C shares the POSIX binary-stream question"
-basis = "yes, at default only, while POSIX is undeclared (FIO14-C/2026-10-07/presets). Strict and pedantic coincide (P/coincide)."
+basis = "yes, at default only, while POSIX is undeclared, for the two fseek() forms (FIO14-C/2026-10-07/presets); ungetc() at file position 0 is reported under every preset (FIO14-C/2026-10-07/disposition, amended 2026-10-23). Strict and pedantic coincide (P/coincide)."
 ruling = "FIO14-C/2026-10-07/presets, P/coincide"

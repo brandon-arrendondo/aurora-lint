@@ -16,7 +16,7 @@
 //! ## Detected Violations:
 //! - fseek() with non-zero offset in text mode (without prior ftell())
 //! - fseek() with SEEK_END on binary mode files
-//! - Improper use of ungetc() based on stream type
+//! - ungetc() on a stream nothing has read or positioned since it was opened
 //!
 //! ## Compliant Patterns:
 //! - Using binary mode ("rb", "wb") for binary data
@@ -28,13 +28,24 @@
 //! its declaration (ADR-0006), to an fopen()/freopen()/fopen_s() whose mode is a string
 //! literal, and every such open of it must agree on text or binary. A stream
 //! whose mode is not known (a parameter, a member, a mode chosen at run time)
-//! is not reported, nor is anything when POSIX holds, where text and binary
-//! streams are the same.
+//! is not reported, nor is either `fseek` form when POSIX holds, where text
+//! and binary streams are the same.
+//!
+//! ## ungetc() at file position 0:
+//! Reported in every environment. ISO C leaves a binary stream's position
+//! indeterminate after it (C11 7.21.7.10p5) and a text stream's unspecified
+//! after any ungetc(); POSIX keeps the position-0 clause and applies it to
+//! every stream. The position is known to be 0 only conservatively: the
+//! write every path to the call runs last is an fopen()/freopen()/fopen_s()
+//! of the stream with a literal, non-append mode, and the stream is not used
+//! between that open and the call (nor in a loop around the call that does
+//! not also hold the open) except to test it against NULL.
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
-use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declarator};
+use crate::utility::cert_c::ast_utils::{ancestors, get_node_text, resolve_identifier_declarator};
+use crate::utility::cert_c::guard_dominance::{dominating_write, Dominating, WriteIndex};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -74,25 +85,121 @@ impl CertRule for Fio14C {
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if self.settings.borrow().posix_holds_project() {
-            return;
-        }
-        self.check_node(node, source, violations);
+        // Under POSIX 'b' has no effect, which relaxes both fseek() forms but
+        // not ungetc() at position 0.
+        let posix = self.settings.borrow().posix_holds_project();
+        self.check_node(node, source, posix, violations);
     }
 }
 
 impl Fio14C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check for fseek() calls with problematic usage
+    fn check_node(
+        &self,
+        node: &Node,
+        source: &str,
+        posix: bool,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         for call in query::find_descendants_of_kind(*node, "call_expression") {
             if let Some(function) = call.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-
-                if func_name == "fseek" {
-                    self.check_fseek_call(&call, source, violations);
+                match get_node_text(&function, source) {
+                    "fseek" if !posix => self.check_fseek_call(&call, source, violations),
+                    "ungetc" => self.check_ungetc_call(&call, source, violations),
+                    _ => {}
                 }
             }
         }
+    }
+
+    /// Check an ungetc() call on a stream still at file position 0.
+    fn check_ungetc_call(&self, call: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let Some(arguments) = call.child_by_field_name("arguments") else {
+            return;
+        };
+        let args = self.extract_arguments(&arguments, source);
+        let [pushed, stream] = args.as_slice() else {
+            return;
+        };
+        // ungetc(EOF, stream) fails and leaves the stream unchanged
+        // (C11 7.21.7.10p4).
+        if get_node_text(pushed, source).trim() == "EOF" {
+            return;
+        }
+        let stream = strip_parens(*stream);
+        if stream.kind() != "identifier" {
+            return;
+        }
+        let name = get_node_text(&stream, source);
+        let Some((decl, _)) = resolve_identifier_declarator(&stream, name, source) else {
+            return;
+        };
+        let is_stream = |n: &Node| {
+            n.kind() == "identifier"
+                && get_node_text(n, source) == name
+                && resolve_identifier_declarator(n, name, source)
+                    .is_some_and(|(d, _)| d.id() == decl.id())
+        };
+        let Some(body) = ancestors(call)
+            .find(|a| a.kind() == "function_definition")
+            .and_then(|f| f.child_by_field_name("body"))
+        else {
+            return;
+        };
+        let index = WriteIndex::new(&body, source);
+        let Some(found) = dominating_write(name, call, source, &index, |stmt| {
+            open_in_statement(stmt, source, &is_stream).map(Some)
+        }) else {
+            return;
+        };
+        let open = match found {
+            Dominating::Assignment(a) => strip_parens(a.value),
+            Dominating::Other(open) => open,
+        };
+        if !opens_at_start(&open, source) {
+            return;
+        }
+
+        // Nothing may read, write or position the stream after the open: not
+        // between it and the call, not in the call's own first argument
+        // (`ungetc(fgetc(fp), fp)`), and not anywhere in a loop around the
+        // call that does not also hold the open (its back edge).
+        let mut regions = vec![(open.end_byte(), call.start_byte()), byte_range(pushed)];
+        for a in ancestors(call).take_while(|a| a.id() != body.id()) {
+            if matches!(
+                a.kind(),
+                "for_statement" | "while_statement" | "do_statement"
+            ) && !(a.start_byte() <= open.start_byte() && open.end_byte() <= a.end_byte())
+            {
+                regions.push(byte_range(&a));
+            }
+        }
+        let moves_stream = query::find_descendants(body, |n| {
+            regions
+                .iter()
+                .any(|&(lo, hi)| lo <= n.start_byte() && n.end_byte() <= hi)
+                && is_stream(&n)
+                && !only_tests_stream(&n, source)
+        });
+        if !moves_stream.is_empty() {
+            return;
+        }
+
+        let start_point = call.start_position();
+        violations.push(RuleViolation {
+            rule_id: self.rule_id().to_string(),
+            severity: Severity::Medium,
+            message: format!(
+                "ungetc() on '{}' at file position 0: nothing has read or positioned the stream since it was opened, so neither ISO C nor POSIX says where its file position is after the call",
+                name
+            ),
+            file_path: String::new(),
+            line: start_point.row + 1,
+            column: start_point.column + 1,
+            suggestion: Some(
+                "Read from the stream before pushing a character back onto it".to_string(),
+            ),
+            ..Default::default()
+        });
     }
 
     /// Check fseek() calls for improper usage
@@ -265,6 +372,129 @@ fn stream_mode(arg: &Node, source: &str) -> Option<StreamMode> {
 
     let first = (*modes.first()?)?;
     modes.iter().all(|m| *m == Some(first)).then_some(first)
+}
+
+fn strip_parens(mut node: Node) -> Node {
+    while node.kind() == "parenthesized_expression" {
+        match node.named_child(0) {
+            Some(inner) => node = inner,
+            None => break,
+        }
+    }
+    node
+}
+
+fn byte_range(node: &Node) -> (usize, usize) {
+    (node.start_byte(), node.end_byte())
+}
+
+/// The open of the stream a statement runs on every path through it, for
+/// the forms `dominating_write` does not read as an assignment:
+/// `freopen(path, mode, fp);`, `fopen_s(&fp, path, mode);`, and an `if`
+/// whose condition opens the stream outside any `&&`, `||` or `?:` operand
+/// (`if ((fp = fopen(path, "r")) == NULL) return;`).
+fn open_in_statement<'a>(
+    stmt: &Node<'a>,
+    source: &str,
+    is_stream: &dyn Fn(&Node) -> bool,
+) -> Option<Node<'a>> {
+    let expr = match stmt.kind() {
+        "expression_statement" => stmt.named_child(0)?,
+        "if_statement" => stmt.child_by_field_name("condition")?,
+        _ => return None,
+    };
+    let mut stack = vec![expr];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "parenthesized_expression" | "condition_clause" | "unary_expression" => {
+                stack.extend(node.named_children(&mut node.walk()));
+            }
+            "binary_expression" => {
+                let op = node.child_by_field_name("operator")?;
+                if matches!(get_node_text(&op, source), "&&" | "||") {
+                    // Only the left operand runs on every path.
+                    stack.extend(node.child_by_field_name("left"));
+                } else {
+                    stack.extend(node.named_children(&mut node.walk()));
+                }
+            }
+            "assignment_expression" if stmt.kind() == "if_statement" => {
+                let (left, right) = (
+                    node.child_by_field_name("left")?,
+                    strip_parens(node.child_by_field_name("right")?),
+                );
+                if is_stream(&strip_parens(left))
+                    && matches!(callee(&right, source), Some("fopen" | "freopen"))
+                {
+                    return Some(right);
+                }
+            }
+            "call_expression" => {
+                let args = node.child_by_field_name("arguments")?;
+                let opened = match callee(&node, source)? {
+                    "freopen" => args.named_child(2),
+                    "fopen_s" => args
+                        .named_child(0)
+                        .filter(|a| {
+                            a.kind() == "pointer_expression"
+                                && a.child_by_field_name("operator")
+                                    .is_some_and(|op| get_node_text(&op, source) == "&")
+                        })
+                        .and_then(|a| a.child_by_field_name("argument")),
+                    _ => None,
+                };
+                if opened.is_some_and(|s| is_stream(&strip_parens(s))) {
+                    return Some(node);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether an open leaves its stream at file position 0 for input: its
+/// mode is a literal that reads (`r`, or any update mode) and does not
+/// append, since where an append-mode stream starts is
+/// implementation-defined (C11 7.21.3p1).
+fn opens_at_start(open: &Node, source: &str) -> bool {
+    if !matches!(callee(open, source), Some("fopen" | "freopen" | "fopen_s")) {
+        return false;
+    }
+    let Some(mode) = opener_mode_arg(open, source).filter(|m| m.kind() == "string_literal") else {
+        return false;
+    };
+    let text = get_node_text(&mode, source);
+    let Some(body) = text.strip_prefix('"').and_then(|t| t.strip_suffix('"')) else {
+        return false;
+    };
+    body.starts_with('r') || (body.contains('+') && !body.starts_with('a'))
+}
+
+/// A use of the stream that cannot move it: a test against NULL or of its
+/// truth (`fp == NULL`, `!fp`, `if (fp)`, `fp && ...`).
+fn only_tests_stream(ident: &Node, source: &str) -> bool {
+    let mut node = *ident;
+    while let Some(parent) = node.parent() {
+        match parent.kind() {
+            "parenthesized_expression" => node = parent,
+            "binary_expression" => {
+                return parent.child_by_field_name("operator").is_some_and(|op| {
+                    matches!(get_node_text(&op, source), "==" | "!=" | "&&" | "||")
+                });
+            }
+            "unary_expression" => {
+                return parent
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| get_node_text(&op, source) == "!");
+            }
+            "condition_clause" | "if_statement" | "while_statement" | "do_statement" => {
+                return true;
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 fn callee<'a>(call: &Node, source: &'a str) -> Option<&'a str> {
