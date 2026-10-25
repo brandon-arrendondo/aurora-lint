@@ -303,9 +303,10 @@ def opam_wrap(argv: list[str]) -> list[str]:
     benchmark scored a clean zero on every file instead of failing.
 
     `opam env` failing is tolerated rather than required: a Frama-C installed
-    some other way is already on PATH.
+    some other way is already on PATH. The wrapper is POSIX sh, so it works
+    where bash is not installed.
     """
-    return ["bash", "-c", 'eval "$(opam env 2>/dev/null)" 2>/dev/null; exec "$@"',
+    return ["sh", "-c", 'eval "$(opam env 2>/dev/null)" 2>/dev/null; exec "$@"',
             "_", *argv]
 
 

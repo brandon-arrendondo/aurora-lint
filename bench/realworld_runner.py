@@ -944,7 +944,8 @@ def _build_cppcheck_cmd(cfg: dict) -> list[str]:
 
 
 def _build_clang_tidy_cmd(cfg: dict) -> list[str]:
-    """Shell command string for clang-tidy (uses a find|xargs pipeline)."""
+    """Shell command for clang-tidy (a find|xargs pipeline), run by POSIX sh
+    so it works where bash is not installed."""
     path = str(cfg["path"])
     source_dirs = _expand(cfg["clang-tidy"].get("source_dirs", []), path)
     includes = _expand(cfg["clang-tidy"].get("includes", []), path)
@@ -958,7 +959,7 @@ def _build_clang_tidy_cmd(cfg: dict) -> list[str]:
 
     includes_str = " ".join(includes)
     return [
-        "bash", "-c",
+        "sh", "-c",
         f"{find_cmd} | xargs -P $(nproc) -I{{}} clang-tidy "
         f"-checks='-*,cert-*,clang-analyzer-*' {{}} "
         f"-- -std=c11 {includes_str}"

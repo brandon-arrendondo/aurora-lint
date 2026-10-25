@@ -163,6 +163,8 @@ def build(project: str, corpus_dir: Path, cache_dir: Path, env_pin: str) -> dict
     _run(["git", "-C", str(src), "config", "--global", "--add", "safe.directory", "*"])
     commit = subprocess.run(["git", "-C", str(src), "rev-parse", "HEAD"],
                             capture_output=True, text=True, check=True).stdout.strip()
+    # bash is fine here: this runs only inside the benchmark image's
+    # container, never on a host, and recipe steps may use bash syntax.
     for step in decl["build"]["steps"]:
         _run(["bash", "-e", "-c", step], cwd=src, env=env)
     db_path = Path(decl["build"]["db"].replace("$SRC", str(src)).replace("$BUILD", str(bld)))
