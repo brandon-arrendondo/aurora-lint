@@ -1061,7 +1061,7 @@
     ]
   },
   "stats": {
-    "toml_count": 303,
+    "toml_count": 302,
     "rules_with_cwe": 74,
     "unique_cwes": 79,
     "rules_with_related_cwe": 118

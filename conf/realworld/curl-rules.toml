@@ -218,9 +218,6 @@ enabled = true
 [rules.cert_c.DCL21-C]
 enabled = true
 
-[rules.cert_c.DCL22-C]
-enabled = true
-
 [rules.cert_c.DCL23-C]
 enabled = true
 

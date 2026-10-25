@@ -4,7 +4,7 @@
 [![Latest Release](https://img.shields.io/github/v/release/brandon-arrendondo/aurora-lint)](https://github.com/brandon-arrendondo/aurora-lint/releases/latest)
 [![License](https://img.shields.io/github/license/brandon-arrendondo/aurora-lint)](LICENSE)
 
-A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). aurora-lint tracks 297 CERT C rules across 17 categories (293 implemented, 282 enabled by default), plus a CWE ruleset of 4 rules for weaknesses CERT C has no identifier for, with a CI/CD-ready command-line interface and an optional interactive terminal UI.
+A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). aurora-lint tracks 296 CERT C rules across 17 categories (292 implemented, 281 enabled by default), plus a CWE ruleset of 4 rules for weaknesses CERT C has no identifier for, with a CI/CD-ready command-line interface and an optional interactive terminal UI.
 
 ## Does It Find Real Bugs?
 
@@ -122,7 +122,7 @@ encounters.
 
 ## Key Features
 
-- **293 CERT C rules** implemented (297 tracked; see [Configuration](docs/configuration.rst) for the 4 tracked but not yet implemented) across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN), 282 of them enabled by default, 10 withheld until rewritten and 1 withheld until its removal
+- **292 CERT C rules** implemented (296 tracked; see [Configuration](docs/configuration.rst) for the 4 tracked but not yet implemented) across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN), 281 of them enabled by default, 10 withheld until rewritten and 1 withheld until its removal
 - **Optional interactive terminal UI** for browsing and managing violations (build with `--features tui`)
 - **SARIF 2.1.0 export** (plus a plain JSON array); `scripts/sarif_convert.py` turns a report into CSV/XLSX
 - **CI/CD ready**: exit codes, severity thresholds, diff-only mode, SARIF output
@@ -154,6 +154,7 @@ configuration that still names one loads with a warning, and
 | Rule | Removed in | Why | Instead |
 |------|------------|-----|---------|
 | CON50-C | v0.7.0 | not a CERT C guideline (C++ id): CERT C has no CON50-C; it is CERT C++'s CON50-CPP. CON31-C reports a mutex destroyed while locked, and CON34-C an automatic mutex shared with a thread | covered by CON31-C, CON34-C |
+| DCL22-C | v0.7.0 | unenforceable: Whether an object can change asynchronously is a hardware or runtime fact the source does not mark; SIG31-C reports a signal handler's shared objects, and MSC22-C a local changed between setjmp and longjmp | - |
 | ERR06-C | v0.7.0 | unenforceable: Its checkable form reports every assert in a program that registers an exit handler, which contradicts MSC11-C, and a narrower form needs the programmer's intent | - |
 | FIO03-C | v0.7.0 | unenforceable: Whether opening a file for writing may replace an existing one is the programmer's intent, which the code does not show; the race on creating a file is FIO45-C's | - |
 | FIO50-C | v0.7.0 | not a CERT C guideline (C++ id): CERT C has no FIO50-C; it is CERT C++'s FIO50-CPP. FIO39-C reports the same alternation of input and output on one stream | covered by FIO39-C |
@@ -361,7 +362,7 @@ directories for cross-file context and never restricts what gets analyzed.
 aurora-lint /path/to/project --manifest my-rules.toml
 ```
 
-The default manifest (`rules_templates/rules-all.toml`) enables 282 of the 297 tracked rules, and the 4 CWE-ruleset rules. Of the other 15, 11 are implemented but withheld because they misfire (10 until their rewrites, 1 until its removal), and 4 are tracked but not yet implemented (2 parked on incomplete upstream CERT content) — see [Configuration](docs/configuration.rst), which also says how to run a withheld rule. See the [Developer Guide](docs/index.rst) for the manifest format.
+The default manifest (`rules_templates/rules-all.toml`) enables 281 of the 296 tracked rules, and the 4 CWE-ruleset rules. Of the other 15, 11 are implemented but withheld because they misfire (10 until their rewrites, 1 until its removal), and 4 are tracked but not yet implemented (2 parked on incomplete upstream CERT content) — see [Configuration](docs/configuration.rst), which also says how to run a withheld rule. See the [Developer Guide](docs/index.rst) for the manifest format.
 
 First run against an existing codebase surfacing more findings than your team can triage at once? `--min-severity`/`--fail-on-severity` and `--exclude-all` are the fastest levers; [Configuration's "Strict vs. Relaxed Onboarding"](docs/configuration.rst) has the full discipline for building your own scoped-down manifest, and why this project doesn't ship a one-size-fits-all "relaxed" one.
 
@@ -411,7 +412,7 @@ aurora-lint's case is breadth and reach, not beating clang-tidy at its fifteen:
 
 | | CERT C coverage | Juliet CWEs | Needs a build? |
 |---|---|---:|---|
-| **aurora-lint** | **293 rules implemented** (297 tracked), 17 categories | **75** | **No** |
+| **aurora-lint** | **292 rules implemented** (296 tracked), 17 categories | **75** | **No** |
 | clang-tidy | ~20 C `cert-*` checks (LLVM 21.1.8) | 15 | Yes |
 | cppcheck | none (open-source CERT addon removed in 2.8; CERT checks are Cppcheck Premium) | 15 | No |
 | [Infer](https://fbinfer.com/) | bug-type indexed | 10 | Yes |

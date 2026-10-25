@@ -1871,25 +1871,6 @@
       }
     ]
   },
-  "DCL22-C": {
-    "status": "checked",
-    "current_block_count": 2,
-    "any_stale": false,
-    "fixtures": [
-      {
-        "file": "src/rules/cert_c/DCL/DCL22-C/tests/fail/wiki_noncompliant_1.c",
-        "best_match": "noncompliant_1",
-        "containment": 1.0,
-        "stale": false
-      },
-      {
-        "file": "src/rules/cert_c/DCL/DCL22-C/tests/pass/wiki_compliant_1.c",
-        "best_match": "compliant_1",
-        "containment": 1.0,
-        "stale": false
-      }
-    ]
-  },
   "DCL23-C": {
     "status": "checked",
     "current_block_count": 4,

@@ -46,6 +46,12 @@ reason = "CERT C has no CON50-C; it is CERT C++'s CON50-CPP. CON31-C reports a m
 covered_by = ["CON31-C", "CON34-C"]
 
 [[removed]]
+id = "DCL22-C"
+removed_in = "0.7.0"
+disposition = "unenforceable"
+reason = "Whether an object can change asynchronously is a hardware or runtime fact the source does not mark; SIG31-C reports a signal handler's shared objects, and MSC22-C a local changed between setjmp and longjmp"
+
+[[removed]]
 id = "ERR06-C"
 removed_in = "0.7.0"
 disposition = "unenforceable"

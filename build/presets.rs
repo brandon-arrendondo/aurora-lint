@@ -133,11 +133,11 @@ pub const PENDING: &[&str] = &[];
 /// is stale.
 pub const DECLINED_BUT_STILL_SHIPPED: &[&str] = &[
     "API03-C", "API04-C", "API07-C", "API09-C", "API10-C", "ARR00-C", "CON03-C", "CON06-C",
-    "CON09-C", "DCL08-C", "DCL10-C", "DCL11-C", "DCL17-C", "DCL21-C", "DCL22-C", "ENV01-C",
-    "ERR00-C", "EXP03-C", "EXP07-C", "EXP08-C", "EXP10-C", "EXP14-C", "FIO10-C", "FIO15-C",
-    "FIO17-C", "FIO18-C", "FLP01-C", "FLP02-C", "INT00-C", "INT05-C", "INT08-C", "INT16-C",
-    "MEM00-C", "MEM07-C", "MEM10-C", "MEM11-C", "MEM12-C", "MSC07-C", "MSC15-C", "MSC23-C",
-    "POS02-C", "STR00-C", "STR01-C",
+    "CON09-C", "DCL08-C", "DCL10-C", "DCL11-C", "DCL17-C", "DCL21-C", "ENV01-C", "ERR00-C",
+    "EXP03-C", "EXP07-C", "EXP08-C", "EXP10-C", "EXP14-C", "FIO10-C", "FIO15-C", "FIO17-C",
+    "FIO18-C", "FLP01-C", "FLP02-C", "INT00-C", "INT05-C", "INT08-C", "INT16-C", "MEM00-C",
+    "MEM07-C", "MEM10-C", "MEM11-C", "MEM12-C", "MSC07-C", "MSC15-C", "MSC23-C", "POS02-C",
+    "STR00-C", "STR01-C",
 ];
 
 /// What validation needs to know about the rest of the tree.
@@ -605,7 +605,7 @@ mod tests {
         assert!(check("B-C", &bare)[0].contains("must give the reason"));
         assert!(check("B-C", off).is_empty());
         // The decided cuts that still ship are listed, and each entry is live.
-        assert_eq!(DECLINED_BUT_STILL_SHIPPED.len(), 43);
+        assert_eq!(DECLINED_BUT_STILL_SHIPPED.len(), 42);
         let rules: BTreeSet<String> = ["API03-C", "ARR00-C"].map(String::from).into();
         let options = BTreeSet::new();
         let enabled: BTreeMap<String, bool> = [

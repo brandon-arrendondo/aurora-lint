@@ -63,7 +63,6 @@
     "DCL19-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
     "DCL20-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
     "DCL21-C": {"default": "not_enforced", "strict": "not_enforced", "pedantic": "not_enforced", "differs": false},
-    "DCL22-C": {"default": "not_enforced", "strict": "not_enforced", "pedantic": "not_enforced", "differs": false},
     "DCL23-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
     "DCL30-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
     "DCL31-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},

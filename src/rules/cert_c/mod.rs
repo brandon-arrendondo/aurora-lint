@@ -184,9 +184,6 @@ pub mod dcl19_c;
 #[path = "DCL/DCL21-C/dcl21_c.rs"]
 pub mod dcl21_c;
 
-#[path = "DCL/DCL22-C/dcl22_c.rs"]
-pub mod dcl22_c;
-
 #[path = "DCL/DCL23-C/dcl23_c.rs"]
 pub mod dcl23_c;
 
@@ -938,7 +935,6 @@ impl RuleRegistry {
         registry.register(Box::new(dcl05_c::Dcl05C::new()));
         registry.register(Box::new(dcl19_c::DCL19C::new()));
         registry.register(Box::new(dcl21_c::DCL21C));
-        registry.register(Box::new(dcl22_c::Dcl22C));
         registry.register(Box::new(dcl23_c::Dcl23C));
         registry.register(Box::new(dcl30_c::Dcl30C));
         registry.register(Box::new(dcl31_c::Dcl31C::new()));
