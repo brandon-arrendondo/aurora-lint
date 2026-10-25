@@ -6,7 +6,7 @@ Manifest File
 
 The rules manifest TOML file controls which rules are active and their severity.
 The default manifest (``rules_templates/rules-all.toml``) enables |rules_enabled| of the |rules_total| tracked rules.
-Of the other |rules_disabled|, |rules_withheld| are implemented but withheld until rewritten (see `Withheld until rewritten`_ below)
+Of the other |rules_disabled|, |rules_withheld| are implemented but withheld because they misfire (see `Withheld until rewritten`_ below)
 and |rules_unimplemented| are tracked but not implemented (see `Tracked but not implemented`_ below).
 
 ::
@@ -578,7 +578,7 @@ Supported CERT C Rules
 |rules_total| rules are tracked across 17 categories (API, ARR, CON, DCL, ENV,
 ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, and WIN); |rules_implemented|
 are implemented, and |rules_enabled| of those are enabled by default (the other
-|rules_withheld| are withheld until rewritten; see `Withheld until rewritten`_
+|rules_withheld| are withheld because they misfire; see `Withheld until rewritten`_
 below). The remaining |rules_unimplemented| are tracked but not implemented;
 see `Tracked but not implemented`_ below.
 ``aurora-lint --list-rules`` lists every rule aurora-lint implements, with its
@@ -679,7 +679,8 @@ Withheld until rewritten
 
 A rule that misfires, reporting a construct that is not in the code
 (ADR-0005), and whose fix is a rewrite of its detection rather than a
-correction to it, is withheld: it still ships, with its code, but
+correction to it, is withheld until the rewrite, or until its removal when
+it is slated for one: it still ships, with its code, but
 ``enabled = false`` in the default manifest, so a scan with the default
 manifest does not run it. Unlike a removed rule, its block loads with no
 warning, and ``aurora-lint --list-rules`` lists it as ``off`` among the
@@ -702,6 +703,13 @@ Withheld in v0.7.0, until their rewrites in v0.8.0:
 - **MEM35-C** — *Allocate sufficient memory for an object*
 - **STR34-C** — *Cast characters to unsigned char before converting to larger integer sizes*
 - **WIN30-C** — *Properly pair allocation and deallocation functions*
+
+Withheld in v0.7.0, until its removal, once FIO47-C checks the argument
+types it checks:
+
+- **DCL11-C** — *Understand the type issues associated with variadic
+  functions*. Its type check guesses an argument's type from its name, so
+  it reports a mismatch for an argument whose declared type matches.
 
 Tracked but not implemented
 ----------------------------

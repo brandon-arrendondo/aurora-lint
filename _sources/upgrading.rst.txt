@@ -110,8 +110,10 @@ with its reason.
   reported. Move FIO24-C suppressions for a double ``fclose()`` to FIO46-C.
 - **Withheld.** EXP30-C, FIO01-C, FIO08-C, FIO30-C, FIO32-C, FLP32-C,
   INT15-C, MEM35-C, STR34-C and WIN30-C don't run by default until they are
-  rewritten, because they can report constructs that aren't in the code. To
-  keep running one, enable it in a manifest. Naming a withheld rule in
+  rewritten, because they can report constructs that aren't in the code.
+  DCL11-C doesn't run by default until it is removed, because its type check
+  guesses an argument's type from its name. To keep running one, enable it in
+  a manifest. Naming a withheld rule in
   ``--rules`` without enabling it prints a warning instead of giving a clean
   report.
 
