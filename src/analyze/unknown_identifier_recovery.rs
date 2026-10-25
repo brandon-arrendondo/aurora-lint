@@ -313,6 +313,12 @@ fn error_node_count(node: &Node) -> usize {
 /// which no single macro argument holds, so a real `return` statement is
 /// never mistaken for an argument. A `return` on a directive line is left
 /// alone, and so is one inside a keyword's parentheses (`if (... return`).
+///
+/// An invocation that a `;` ends is a statement, not an annotation: a
+/// macro that takes a statement as its argument and expands it or not by
+/// configuration (`FAULT_INJECT(return ERR_IO);`). It is left alone, so the
+/// blank does not leave a lone `;` in a body for a rule to read as an empty
+/// statement. An annotation is followed by what it annotates.
 fn find_keyword_argument_macro_invocations(node: &Node, source: &str) -> Vec<(usize, usize)> {
     let stranded = query::find_descendants(*node, |n| {
         matches!(n.kind(), "identifier" | "type_identifier")
@@ -328,6 +334,7 @@ fn find_keyword_argument_macro_invocations(node: &Node, source: &str) -> Vec<(us
         .iter()
         .filter(|n| !line_is_preprocessor_directive(source, n.start_byte()))
         .filter_map(|n| enclosing_invocation(bytes, n.start_byte()))
+        .filter(|&(_, end)| next_non_space(bytes, end) != Some(b';'))
         .collect();
     ranges.sort_unstable();
     ranges.dedup();
@@ -341,6 +348,14 @@ fn find_keyword_argument_macro_invocations(node: &Node, source: &str) -> Vec<(us
         }
     }
     outermost
+}
+
+/// The first byte at or after `at` that is not whitespace.
+fn next_non_space(bytes: &[u8], at: usize) -> Option<u8> {
+    bytes[at..]
+        .iter()
+        .copied()
+        .find(|b| !b.is_ascii_whitespace())
 }
 
 /// The range of `NAME(...)` around the byte at `at` in masked source: the
@@ -663,6 +678,15 @@ mod tests {
         let src = "#define RET(x) (return x)\nint h(void);\n";
         let (_, text) = recover(src);
         assert!(text.starts_with("#define RET(x) (return x)"));
+    }
+
+    #[test]
+    fn leaves_a_statement_macro_whose_argument_is_a_return_alone() {
+        let src = "int g(int x) {\n    FAULT_INJECT( return ERR_IO );\n    if (x) {\n        FAULT_INJECT(return ERR_EMPTY);\n    }\n    return x;\n}\n";
+        let (_, text) = recover(src);
+        // The invocation stays; only its unknown argument name may be blanked.
+        assert!(text.contains("FAULT_INJECT(return "));
+        assert!(text.contains("FAULT_INJECT( return "));
     }
 
     #[test]
