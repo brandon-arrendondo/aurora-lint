@@ -69,15 +69,16 @@ impl Exp35C {
         for n in query::find_descendants_of_kinds(
             *node,
             &[
-                "unary_expression",
+                "update_expression",
+                "pointer_expression",
                 "init_declarator",
                 "assignment_expression",
                 "call_expression",
             ],
         ) {
             match n.kind() {
-                "unary_expression" => {
-                    self.check_unary_expression(&n, source, env, violations);
+                "update_expression" | "pointer_expression" => {
+                    self.check_unary_expression(&n, source, env, has_c11_guard, violations);
                 }
                 "init_declarator" | "assignment_expression" => {
                     self.check_pointer_assignment(&n, source, env, violations);
@@ -127,50 +128,108 @@ impl Exp35C {
         }
     }
 
-    /// Check for unary operations on temporary array members
-    /// Pattern: ++function_call().array[0] or &function_call().array
+    /// `++f().a[0]`, `f().a[0]--` or `&f().a[0]`: an element of a
+    /// temporary's array member modified, or the address of the member or
+    /// of one of its elements taken. tree-sitter-c parses these as
+    /// `update_expression` (prefix or postfix) and `pointer_expression`.
+    ///
+    /// A modification is undefined under C99 and C11 alike. An address is
+    /// reported only where it outlives the full expression, stored by an
+    /// initializer or assignment or returned, as `check_pointer_assignment`
+    /// reports `int *p = f().a`: under C11 the temporary lives until the end
+    /// of the full expression, so `use(&f().a[0])` is not a finding there.
+    ///
+    /// The operand itself must name the member, through subscripts and
+    /// parentheses only, so `++x[f().a[0]]` (the element read as an index)
+    /// and `&g(f().a)` are not taken for a write into the temporary. Under
+    /// C99 rules a call argument holding the operand is already reported
+    /// by `check_c99_temporary_access`, and is not reported twice.
     fn check_unary_expression(
         &self,
         node: &Node,
         source: &str,
         env: &TypeEnv,
+        has_c11_guard: bool,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if let Some(operator) = node.child(0) {
-            let op_text = ast_utils::get_node_text(&operator, source);
+        let Some(operator) = node.child_by_field_name("operator") else {
+            return;
+        };
+        let op_text = ast_utils::get_node_text(&operator, source);
+        if !matches!(op_text, "++" | "--" | "&") {
+            return;
+        }
+        let Some(argument) = node.child_by_field_name("argument") else {
+            return;
+        };
+        if !self.names_temporary_array_member(&argument, source, env) {
+            return;
+        }
+        if op_text == "&" && !escapes_full_expression(node) {
+            return;
+        }
+        if !has_c11_guard && self.in_reported_call_argument(node, source, env) {
+            return;
+        }
+        let start_point = node.start_position();
+        let message = if op_text == "&" {
+            "Taking address of array member from temporary object".to_string()
+        } else {
+            format!(
+                "Modifying array element of temporary object with '{}' operator",
+                op_text
+            )
+        };
+        violations.push(RuleViolation {
+            rule_id: "EXP35-C".to_string(),
+            severity: Severity::Low,
+            message,
+            file_path: String::new(),
+            line: start_point.row + 1,
+            column: start_point.column + 1,
+            suggestion: Some(
+                "Store the returned struct/union in a local variable before modifying array members".to_string()
+            ),
+            ..Default::default()
+        });
+    }
 
-            // Check for modification operators (++, --) or address-of (&)
-            if matches!(op_text, "++" | "--" | "&") {
-                if let Some(argument) = node.child_by_field_name("argument") {
-                    // Check if modifying/taking address of a temporary's array member
-                    // Use contains_temporary_array_access to check deeply nested patterns
-                    if self.contains_temporary_array_access(&argument, source, env) {
-                        let start_point = node.start_position();
-                        let message = if op_text == "&" {
-                            "Taking address of array member from temporary object".to_string()
-                        } else {
-                            format!(
-                                "Modifying array element of temporary object with '{}' operator",
-                                op_text
-                            )
-                        };
-
-                        violations.push(RuleViolation {
-                            rule_id: "EXP35-C".to_string(),
-                            severity: Severity::Low,
-                            message,
-                            file_path: String::new(),
-                            line: start_point.row + 1,
-                            column: start_point.column + 1,
-                            suggestion: Some(
-                                "Store the returned struct/union in a local variable before modifying array members".to_string()
-                            ),
-                            ..Default::default()
-                        });
-                    }
-                }
+    /// Whether `operand`, stripped of parentheses and subscripts, is a
+    /// temporary's array member: `f().a`, `(f().a)[0]`, `f().m[1][2]`.
+    fn names_temporary_array_member(&self, operand: &Node, source: &str, env: &TypeEnv) -> bool {
+        let mut n = *operand;
+        loop {
+            if self.is_temporary_array_access(&n, source, env) {
+                return true;
+            }
+            let next = match n.kind() {
+                "parenthesized_expression" => n.named_child(0),
+                "subscript_expression" => n.child_by_field_name("argument"),
+                _ => None,
+            };
+            match next {
+                Some(next) => n = next,
+                None => return false,
             }
         }
+    }
+
+    /// Whether `node` lies in an argument of a call that
+    /// `check_c99_temporary_access` reports.
+    fn in_reported_call_argument(&self, node: &Node, source: &str, env: &TypeEnv) -> bool {
+        let mut child = *node;
+        while let Some(parent) = child.parent() {
+            if parent.kind() == "argument_list"
+                && parent
+                    .parent()
+                    .is_some_and(|call| call.kind() == "call_expression")
+                && self.contains_temporary_array_access(&child, source, env)
+            {
+                return true;
+            }
+            child = parent;
+        }
+        false
     }
 
     /// Check for pointer assignments to temporary array members
@@ -313,5 +372,31 @@ fn is_element_read(field: &Node, source: &str, env: &TypeEnv) -> bool {
             .child_by_field_name("left")
             .is_none_or(|left| left.id() != operand.id()),
         _ => true,
+    }
+}
+
+/// Whether the value of `node`, through parentheses and casts, is stored by
+/// an initializer or the right side of an assignment, or returned.
+fn escapes_full_expression(node: &Node) -> bool {
+    let mut value = *node;
+    let mut user = node.parent();
+    while let Some(p) =
+        user.filter(|p| matches!(p.kind(), "parenthesized_expression" | "cast_expression"))
+    {
+        value = p;
+        user = p.parent();
+    }
+    let Some(user) = user else {
+        return false;
+    };
+    match user.kind() {
+        "init_declarator" => user
+            .child_by_field_name("value")
+            .is_some_and(|v| v.id() == value.id()),
+        "assignment_expression" => user
+            .child_by_field_name("right")
+            .is_some_and(|r| r.id() == value.id()),
+        "return_statement" => true,
+        _ => false,
     }
 }
