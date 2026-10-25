@@ -10,9 +10,11 @@ The full report, for IDEs, CI code-scanning and anything downstream:
 
 - `tool.driver` names aurora-lint, its version and repository URL
 - `tool.driver.rules[]`: each rule's CERT description and SEI wiki `helpUri`
-- `results[]`: rule, level, message, location (with no `startColumn` when the
-  rule reports no column, converted from the finding's byte column to the
-  UTF-16 code units the run's `columnKind` declares), and the flagged source line as `region.snippet`; `properties.suggestion` when the rule has one (prose,
+- `results[]`: rule, level, message, location (`startColumn` converted from
+  the finding's byte column to the UTF-16 code units the run's `columnKind`
+  declares, and omitted when the rule reports no column or the export cannot
+  read the finding's line: an unreadable file, or the empty row after a
+  file's final newline), and the flagged source line as `region.snippet`; `properties.suggestion` when the rule has one (prose,
   not an edit, so not a SARIF `fix`, which must carry the replacements that
   apply it); `properties.requiresManualReview` when the rule could not
   decide confidently
@@ -26,8 +28,9 @@ own: nothing downstream needs the scanned tree or the binary.
 
 A top-level array of active violation objects (`tool`, `rule_id`, `severity`,
 `message`, `file`, `line`, `column`, `suggestion`, `requires_manual_review`).
-`line` and `column` are 1-indexed, and `column` counts the line's bytes as
-UTF-8, as the finding does.
+`line` and `column` are 1-indexed, and `column` counts bytes of the line as
+the scan decoded it to UTF-8, as the finding does: for a Latin-1 or UTF-16
+file that is not a byte offset in the file.
 Kept as a bare array because consumers, the benchmark runners among them,
 index it directly.
 

@@ -489,62 +489,81 @@ fn every_sarif_result_keeps_to_the_schema_s_fixes_and_region_bounds() {
     }
 }
 
-/// A finding's column counts the line's UTF-8 bytes. SARIF declares
-/// `columnKind` `utf16CodeUnits` and converts to it, so a viewer lands on the
-/// construct past non-ASCII text; JSON keeps the byte column.
+/// A finding's column counts the line's UTF-8 bytes as the scan decoded it.
+/// SARIF declares `columnKind` `utf16CodeUnits` and converts to it from the
+/// line the export decodes the same way, so a viewer lands on the construct
+/// past non-ASCII text whatever the file's encoding; JSON keeps the byte
+/// column.
 #[test]
 fn sarif_gives_columns_in_utf16_code_units_and_json_in_bytes() {
     let dir = tempfile::tempdir().unwrap();
-    let source = dir.path().join("u.c");
-    // 'é' is two bytes and one unit, the emoji four bytes and two units, so
-    // the second free() starts at byte column 56 and unit column 53.
-    std::fs::write(
-        &source,
-        "#include <stdlib.h>\nvoid f(void) {\n    \
-         char *p = malloc(10); /* \u{e9} */ free(p); /* \u{1F600} */ free(p);\n}\n",
-    )
-    .unwrap();
-    let report = |export: &str| {
-        let out = dir.path().join(export);
-        let (_, _, stderr) = run_aurora_lint(&[
-            source.to_str().unwrap(),
-            "-m",
-            fixtures().join("manifest_mem30.toml").to_str().unwrap(),
-            "-e",
-            out.to_str().unwrap(),
-        ]);
-        serde_json::from_str::<serde_json::Value>(
-            &std::fs::read_to_string(&out).unwrap_or_else(|e| panic!("{e}: {stderr}")),
+    let text = |comment: &str| {
+        format!(
+            "#include <stdlib.h>\nvoid f(void) {{\n    \
+             char *p = malloc(10); /* \u{e9} */ free(p); /* {comment} */ free(p);\n}}\n"
         )
-        .unwrap()
     };
-    let json = report("out.json");
-    let finding = json
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|v| v["rule_id"] == "MEM30-C")
-        .unwrap_or_else(|| panic!("{json}"));
-    assert_eq!(
-        (finding["line"].as_u64(), finding["column"].as_u64()),
-        (Some(3), Some(56))
-    );
+    // 'é' is two bytes and one unit, the emoji four bytes and two units, so
+    // the second free() starts at byte column 56 and unit column 53. A
+    // Latin-1 'é' is one byte in the file and two decoded, as UTF-16 text is
+    // decoded before the scan reads it, and a BOM is no column at all.
+    let utf8 = text("\u{1F600}");
+    let mut with_bom = b"\xEF\xBB\xBF".to_vec();
+    with_bom.extend(utf8.as_bytes());
+    let latin1: Vec<u8> = text("\u{e9}").chars().map(|c| c as u8).collect();
+    let mut utf16 = vec![0xFF, 0xFE];
+    utf16.extend(utf8.encode_utf16().flat_map(u16::to_le_bytes));
+    for (name, bytes, json_column, sarif_column) in [
+        ("utf8.c", utf8.into_bytes(), 56, 53),
+        ("bom.c", with_bom, 56, 53),
+        ("latin1.c", latin1, 54, 52),
+        ("utf16.c", utf16, 56, 53),
+    ] {
+        let source = dir.path().join(name);
+        std::fs::write(&source, bytes).unwrap();
+        let report = |export: &str| {
+            let out = dir.path().join(export);
+            let (_, _, stderr) = run_aurora_lint(&[
+                source.to_str().unwrap(),
+                "-m",
+                fixtures().join("manifest_mem30.toml").to_str().unwrap(),
+                "-e",
+                out.to_str().unwrap(),
+            ]);
+            serde_json::from_str::<serde_json::Value>(
+                &std::fs::read_to_string(&out).unwrap_or_else(|e| panic!("{name}: {e}: {stderr}")),
+            )
+            .unwrap()
+        };
+        let json = report("out.json");
+        let finding = json
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["rule_id"] == "MEM30-C")
+            .unwrap_or_else(|| panic!("{name}: {json}"));
+        assert_eq!(
+            (finding["line"].as_u64(), finding["column"].as_u64()),
+            (Some(3), Some(json_column)),
+            "{name}"
+        );
 
-    let sarif = report("out.sarif");
-    let run = &sarif["runs"][0];
-    assert_eq!(run["columnKind"], "utf16CodeUnits");
-    let result = run["results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|r| r["ruleId"] == "MEM30-C")
-        .unwrap_or_else(|| panic!("{sarif}"));
-    let region = &result["locations"][0]["physicalLocation"]["region"];
-    assert_eq!(
-        (region["startLine"].as_u64(), region["startColumn"].as_u64()),
-        (Some(3), Some(53)),
-        "{result}"
-    );
+        let sarif = report("out.sarif");
+        let run = &sarif["runs"][0];
+        assert_eq!(run["columnKind"], "utf16CodeUnits");
+        let result = run["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["ruleId"] == "MEM30-C")
+            .unwrap_or_else(|| panic!("{name}: {sarif}"));
+        let region = &result["locations"][0]["physicalLocation"]["region"];
+        assert_eq!(
+            (region["startLine"].as_u64(), region["startColumn"].as_u64()),
+            (Some(3), Some(sarif_column)),
+            "{name}: {result}"
+        );
+    }
 }
 
 /// A header the scan cannot find is loud: one stderr line by default, every

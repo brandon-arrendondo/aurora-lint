@@ -529,12 +529,17 @@ A result's suggestion is ``properties.suggestion`` in SARIF, as it is
 ``fixes`` entry: the format requires a fix to carry the replacements that
 apply it, and a report with one lacking them fails the SARIF 2.1.0 schema.
 A result's location gives ``startColumn`` only when the rule reports a
-column; without one, the region names the line alone. The run declares
-``columnKind`` as ``utf16CodeUnits``, the unit SARIF assumes when none is
-named, and ``startColumn`` is converted to it. The JSON export's ``column``,
-like the terminal's, counts the line's bytes as UTF-8 instead, so the two agree
-on ASCII and differ by a column or two for each non-ASCII character before the
-finding, in a comment or a string literal for instance.
+column and the export can read the finding's line to convert it; otherwise
+the region names the line alone. A file the export cannot read has no
+column, and neither does a finding on the empty row after a file's final
+newline, which no line holds. The run declares ``columnKind`` as
+``utf16CodeUnits``, the unit SARIF assumes when none is named, and
+``startColumn`` is converted to it. The JSON export's ``column``, like the
+terminal's, counts bytes of the line as the scan decoded it to UTF-8 instead:
+a Latin-1 or UTF-16 file is decoded first, so it is not a byte offset in the
+file either. The two agree on ASCII and differ by a column or two for each
+non-ASCII character before the finding, in a comment or a string literal for
+instance.
 
 A rule with no results in a SARIF report either ran and found nothing or did
 not run. Each rule the configuration disables is listed in
