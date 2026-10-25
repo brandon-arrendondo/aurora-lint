@@ -372,6 +372,15 @@ diff to the header that explains a difference in their findings:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">I</span> <span class="n">include</span><span class="o">/</span> <span class="o">-</span><span class="n">I</span> <span class="o">/</span><span class="n">usr</span><span class="o">/</span><span class="n">include</span> <span class="o">--</span><span class="n">report</span><span class="o">-</span><span class="n">headers</span> <span class="n">headers</span><span class="o">.</span><span class="n">json</span>
 </pre></div>
 </div>
+<p>In all of these, a path under the current directory (an includer, a search
+directory, an outside header, an input the scan refused) is given relative
+to it, as text output gives finding paths, so the same tree scanned from
+its root reports the same wherever it is checked out. A search directory
+spelled with <code class="docutils literal notranslate"><span class="pre">..</span></code> is resolved first. A path elsewhere, such as
+<code class="docutils literal notranslate"><span class="pre">/usr/include</span></code>, is given in full, and so is an includer reached through a
+symlink in the tree that points outside it, since includers are real paths.
+SARIF result URIs are unaffected: they keep each scanned file’s path as the
+scan was given it, so <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">&quot;$PWD/src&quot;</span></code> gives absolute URIs.</p>
 <p>Each finding that may depend on a missing header says so. A rule that reads
 facts headers supply (function declarations, macros and macro constants,
 summaries of functions a header defines, struct layouts) and reports in a
