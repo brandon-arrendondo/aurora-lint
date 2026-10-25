@@ -195,7 +195,7 @@ class FetchPublishedPagesTests(unittest.TestCase):
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def fetch(self, dest):
-        return subprocess.run(["bash", str(self.SCRIPT), str(dest)], cwd=self.clone,
+        return subprocess.run([str(self.SCRIPT), str(dest)], cwd=self.clone,
                               env=self.env, capture_output=True, text=True)
 
     def test_no_gh_pages_branch_leaves_an_empty_directory(self):

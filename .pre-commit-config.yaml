@@ -140,7 +140,7 @@ repos:
       - id: cargo-fmt
         name: cargo fmt (auto-fix)
         description: Format Rust code with rustfmt
-        entry: bash -c 'cargo fmt --all 2>&1 && echo "Formatting complete"'
+        entry: cargo fmt --all
         language: system
         pass_filenames: false
         types: [rust]
@@ -149,7 +149,7 @@ repos:
       - id: cargo-clippy
         name: cargo clippy
         description: Lint Rust code with Clippy - deny warnings (all targets including tests)
-        entry: bash -c 'cargo clippy --all-targets --all-features -- -D warnings 2>&1'
+        entry: cargo clippy --all-targets --all-features -- -D warnings
         language: system
         pass_filenames: false
         types: [rust]

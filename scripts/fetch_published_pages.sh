@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Extract the published GitHub Pages site (the gh-pages branch) into DIR, for
 # scripts/assemble_pages_site.py to build the next deploy from.
 #
@@ -7,7 +7,11 @@
 # the current site would delete every release's docs from it.
 #
 # Usage: scripts/fetch_published_pages.sh DIR
-set -euo pipefail
+#
+# POSIX sh, so it runs where bash is not installed. sh has no pipefail, so
+# the archive goes through a file rather than a pipe into tar: a failed
+# `git archive` must stop the deploy, not leave DIR half-filled.
+set -eu
 
 dir=${1:?usage: fetch_published_pages.sh DIR}
 mkdir -p "$dir"
@@ -20,7 +24,10 @@ set -e
 case $rc in
   0)
     git fetch --depth 1 origin gh-pages
-    git archive FETCH_HEAD | tar -x -C "$dir"
+    archive=$(mktemp)
+    trap 'rm -f "$archive"' EXIT
+    git archive -o "$archive" FETCH_HEAD
+    tar -x -f "$archive" -C "$dir"
     echo "fetched gh-pages $(git rev-parse --short FETCH_HEAD) into $dir"
     ;;
   2)
