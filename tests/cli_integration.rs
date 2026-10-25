@@ -449,16 +449,17 @@ fn sarif_carries_a_suggestion_as_a_property_not_a_fix() {
 }
 
 /// The parts of SARIF 2.1.0 a result's shape can break, checked on every
-/// result of several rules' fixtures, two of them rules that report no
-/// column: no `fixes` (no rule gives the edits one needs), and a region's
-/// lines and columns, which start at 1. `scripts/test_sarif_schema.py`
-/// validates against the whole schema where `jsonschema` is installed.
+/// result of several rules' fixtures: no `fixes` (no rule gives the edits
+/// one needs), and a region's line and column, which start at 1 and are
+/// always given. A region with no column, the export's answer to a column
+/// of 0, is checked in `export::sarif`'s own tests.
+/// `scripts/test_sarif_schema.py` validates against the whole schema where
+/// `jsonschema` is installed.
 #[test]
 fn every_sarif_result_keeps_to_the_schema_s_fixes_and_region_bounds() {
     let rules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/rules/cert_c");
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.sarif");
-    let mut columnless = 0;
     for tree in [
         "MSC/MSC04-C/tests",
         "DCL/DCL05-C/tests",
@@ -480,13 +481,12 @@ fn every_sarif_result_keeps_to_the_schema_s_fixes_and_region_bounds() {
             assert!(result.get("fixes").is_none(), "{tree}: {result}");
             let region = &result["locations"][0]["physicalLocation"]["region"];
             assert!(region["startLine"].as_u64() >= Some(1), "{tree}: {result}");
-            match region.get("startColumn") {
-                Some(column) => assert!(column.as_u64() >= Some(1), "{tree}: {result}"),
-                None => columnless += 1,
-            }
+            assert!(
+                region["startColumn"].as_u64() >= Some(1),
+                "{tree}: {result}"
+            );
         }
     }
-    assert!(columnless > 0, "no result without a column was checked");
 }
 
 /// A header the scan cannot find is loud: one stderr line by default, every

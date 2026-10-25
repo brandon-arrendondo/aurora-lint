@@ -643,6 +643,23 @@ fn run_fixture(
         .unwrap_or_else(|e| panic!("Failed to read {:?}: {}", test_path, e));
     let violations = fixture_findings(rule_id, relative_path, preset, overrides);
 
+    // A finding's line and column are 1-indexed (`RuleViolation`). A 0 is a
+    // rule passing tree-sitter's 0-based position through, or naming no
+    // column at all, which SARIF's region refuses.
+    for v in &violations {
+        assert!(
+            v.line >= 1 && v.column >= 1,
+            "\n[{}] reported line {} column {}; both are 1-indexed.\n  \
+             source:    {}:{}\n  message:   {}\n",
+            rule_id,
+            v.line,
+            v.column,
+            test_path.display(),
+            v.line,
+            v.message
+        );
+    }
+
     // The test summary (docs/test-summary.md) records the default preset's
     // run of each fixture; the other presets are asserted, not tabulated.
     //

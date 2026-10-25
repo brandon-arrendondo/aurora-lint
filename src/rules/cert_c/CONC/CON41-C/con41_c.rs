@@ -94,7 +94,7 @@ impl Con41C {
                             ),
                             file_path: String::new(),
                             line,
-                            column: 0,
+                            column: call.start_position().column + 1,
                             suggestion: Some(
                                 format!("Wrap {} in a while/for/do-while loop to handle spurious failures", func_name)
                             ),

@@ -273,7 +273,7 @@ impl Con32C {
 
         // If function accesses bit-fields without mutex protection, flag it
         if !bitfield_accesses.is_empty() && !has_mutex {
-            for (struct_name, member_name, line) in bitfield_accesses {
+            for (struct_name, member_name, at) in bitfield_accesses {
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: Severity::Medium,
@@ -282,8 +282,8 @@ impl Con32C {
                         func_name, struct_name, member_name
                     ),
                     file_path: String::new(),
-                    line,
-                    column: 0,
+                    line: at.row + 1,
+                    column: at.column + 1,
                     suggestion: Some(
                         "Protect bit-field accesses with mutex locks or use separate byte-sized members instead of bit-fields".to_string()
                     ),
@@ -360,7 +360,7 @@ impl Con32C {
         node: &Node,
         source: &str,
         bitfield_structs: &BTreeMap<String, HashSet<String>>,
-    ) -> Vec<(String, String, usize)> {
+    ) -> Vec<(String, String, tree_sitter::Point)> {
         let mut accesses = Vec::new();
         self.collect_bitfield_accesses(node, source, bitfield_structs, &mut accesses);
         accesses
@@ -371,7 +371,7 @@ impl Con32C {
         node: &Node,
         source: &str,
         bitfield_structs: &BTreeMap<String, HashSet<String>>,
-        accesses: &mut Vec<(String, String, usize)>,
+        accesses: &mut Vec<(String, String, tree_sitter::Point)>,
     ) {
         // Look for field_expression (e.g., flags.flag1)
         for field_expr in query::find_descendants_of_kind(*node, "field_expression") {
@@ -387,8 +387,8 @@ impl Con32C {
                         Self::owning_bitfield_struct(&object, &field_name, bitfield_structs, source)
                     {
                         // Found a bit-field access
-                        let line = field_expr.start_position().row + 1;
-                        accesses.push((struct_name.clone(), field_name.clone(), line));
+                        let at = field_expr.start_position();
+                        accesses.push((struct_name.clone(), field_name.clone(), at));
                     }
 
                     // Also check for nested access like flags.s.flag1
@@ -400,8 +400,8 @@ impl Con32C {
                             bitfield_structs,
                             source,
                         ) {
-                            let line = field_expr.start_position().row + 1;
-                            accesses.push((struct_name.clone(), field_name.clone(), line));
+                            let at = field_expr.start_position();
+                            accesses.push((struct_name.clone(), field_name.clone(), at));
                         }
                     }
                 }

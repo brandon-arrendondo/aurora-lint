@@ -138,7 +138,7 @@ fn check_typedef_declarations(
                 // `typedef struct { ... } T, *PT;` idiom, and moving it would
                 // drop every labelled instance out of the denominator.
                 line: n.start_position().row + 1,
-                column: n.start_position().column,
+                column: n.start_position().column + 1,
                 severity: Severity::Medium,
                 suggestion: Some("Use typedef of non-pointer type and declare pointers explicitly at point of use".to_string()),
                 requires_manual_review: Some(false),
@@ -211,7 +211,7 @@ fn check_const_qualified_pointer_typedef_use(
                 type_name
             ),
             line: type_node.start_position().row + 1,
-            column: type_node.start_position().column,
+            column: type_node.start_position().column + 1,
             severity: Severity::Medium,
             suggestion: Some(
                 "Declare the pointee const explicitly (`const T *`), or define a pointer-to-const typedef such as `typedef const POINT *LPCPOINT;`"
@@ -308,7 +308,7 @@ fn check_complex_function_pointers(node: &Node, source: &str, violations: &mut V
                 what
             ),
             line: n.start_position().row + 1,
-            column: n.start_position().column,
+            column: n.start_position().column + 1,
             severity: Severity::Medium,
             suggestion: Some(
                 "Typedef the function type, not the pointer (e.g. `typedef void HandlerType(int);`), \

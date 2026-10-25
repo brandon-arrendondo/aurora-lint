@@ -65,7 +65,7 @@ fn check_static_volatile(node: &Node, source: &str, violations: &mut Vec<RuleVio
                         var_name
                     ),
                     line: n.start_position().row + 1,
-                    column: n.start_position().column,
+                    column: n.start_position().column + 1,
                     severity: Severity::High,
                     suggestion: Some("Use atomic operations, mutex locks, or other synchronization primitives to protect shared data".to_string()),
                     requires_manual_review: Some(true),
@@ -89,7 +89,7 @@ fn check_double_fetch(node: &Node, source: &str, violations: &mut Vec<RuleViolat
                         file_path: "".to_string(),
                         message: "Dereferencing pointer in switch statement may create double-fetch vulnerability".to_string(),
                         line: n.start_position().row + 1,
-                        column: n.start_position().column,
+                        column: n.start_position().column + 1,
                         severity: Severity::High,
                         suggestion: Some("Store dereferenced value in a local variable or use atomic operations".to_string()),
                         requires_manual_review: Some(true),

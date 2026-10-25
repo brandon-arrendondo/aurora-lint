@@ -64,7 +64,7 @@ impl Fio13C {
 
             for op in ops {
                 match op {
-                    FileOp::Ungetc(line) => {
+                    FileOp::Ungetc(at) => {
                         if let Some(prev_line) = last_ungetc {
                             // Found successive ungetc without intervening read
                             violations.push(RuleViolation {
@@ -75,13 +75,13 @@ impl Fio13C {
                                     file_ptr, prev_line + 1
                                 ),
                                 file_path: String::new(),
-                                line: line + 1,
-                                column: 0,
+                                line: at.row + 1,
+                                column: at.column + 1,
                                 suggestion: Some("Insert a read operation (fgetc, fgets, etc.) between ungetc() calls".to_string()),
                                 ..Default::default()
                             });
                         }
-                        last_ungetc = Some(line);
+                        last_ungetc = Some(at.row);
                     }
                     FileOp::Read(_) => {
                         // Reset on read operation
@@ -107,7 +107,7 @@ impl Fio13C {
                     if let Some(args) = n.child_by_field_name("arguments") {
                         if let Some(file_arg) = self.get_nth_argument(&args, 1, source) {
                             let entry = file_operations.entry(file_arg.clone()).or_default();
-                            entry.push(FileOp::Ungetc(n.start_position().row));
+                            entry.push(FileOp::Ungetc(n.start_position()));
                         }
                     }
                 } else if self.is_read_function(&func_name) {
@@ -167,6 +167,6 @@ impl Fio13C {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 enum FileOp {
-    Ungetc(usize), // line number
-    Read(usize),   // line number
+    Ungetc(tree_sitter::Point),
+    Read(usize), // line number
 }

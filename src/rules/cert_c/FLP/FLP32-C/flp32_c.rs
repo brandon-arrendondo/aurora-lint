@@ -155,7 +155,7 @@ impl Flp32C {
                             ),
                             file_path: String::new(),
                             line,
-                            column: 0,
+                            column: node.start_position().column + 1,
                             suggestion: Some(
                                 "Check errno or use isnan()/isinf() to detect math errors"
                                     .to_string(),
