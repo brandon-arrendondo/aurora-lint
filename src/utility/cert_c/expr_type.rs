@@ -821,8 +821,8 @@ fn expr_type_uncached(node: &Node, source: &str, env: &TypeEnv) -> Option<CType>
         "field_expression" => field_type(node, source, env),
         // A call has its callee's declared return type, when the callee is
         // declared where the call can see it; a library function whose header
-        // was not expanded is unknown, apart from the `<math.h>` functions,
-        // whose type the standard fixes.
+        // was not expanded is unknown, apart from the floating-returning
+        // ones whose type the standard fixes (`library_float_return`).
         "call_expression" => {
             let callee = node.child_by_field_name("function")?;
             let callee_type = expr_type(&callee, source, env).or_else(|| {
@@ -978,19 +978,47 @@ fn binary_type(node: &Node, source: &str, env: &TypeEnv) -> Option<CType> {
     }
 }
 
-/// `<math.h>` functions whose result is a real floating type by the
-/// standard. Their header is not expanded when a file is parsed, so their
-/// declaration is usually not in reach; [`expr_type`] types a call to one by
-/// this table when nothing the file declares or defines types the callee.
-const MATH_FUNCTIONS: &[&str] = &[
-    "sqrtf", "sqrt", "powf", "pow", "sinf", "sin", "cosf", "cos", "tanf", "tan", "logf", "log",
-    "expf", "exp", "fabsf", "fabs",
+/// The C90 `<math.h>` functions, each returning `double` (C90 7.5). The
+/// same names suffixed `f` and `l` return `float` and `long double` (C11
+/// 7.12), and C90 already reserved them (7.13.4), so every edition gives
+/// them those types. Their header is not expanded when a file is parsed, so
+/// their declaration is usually not in reach; [`expr_type`] types a call to
+/// one by this table when nothing the file declares or defines types the
+/// callee.
+const C90_MATH_FUNCTIONS: &[&str] = &[
+    "acos", "asin", "atan", "atan2", "cos", "sin", "tan", "cosh", "sinh", "tanh", "exp", "frexp",
+    "ldexp", "log", "log10", "modf", "pow", "sqrt", "ceil", "fabs", "floor", "fmod",
 ];
 
-/// The standard's return type for a call to one of the `<math.h>` functions
-/// in [`MATH_FUNCTIONS`] (`float` for the `f`-suffixed ones), or `None`. The
-/// names are reserved to the library (C11 7.1.3), so the name answers only
-/// when no declaration in reach does: [`expr_type`] consults it last.
+/// The real floating type the standard library gives a call to `name`, for
+/// a name every edition reserves: the C90 `<math.h>` functions and their
+/// `f`/`l` forms ([`C90_MATH_FUNCTIONS`]), and `<stdlib.h>`'s `atof` and
+/// `strtod` with `strtof` and `strtold`, whose `str` prefix C90 reserved
+/// (7.13.7). The functions C99 added under names C90 left to programs
+/// (`round`, `cbrt`, `wcstod`, ...) are not here, since a C90 program may
+/// define its own.
+fn library_float_return(name: &str) -> Option<FloatKind> {
+    match name {
+        "atof" | "strtod" => return Some(FloatKind::Double),
+        "strtof" => return Some(FloatKind::Float),
+        "strtold" => return Some(FloatKind::LongDouble),
+        _ => {}
+    }
+    // Whole name first: `modf` is the double function, `modff` its float.
+    if C90_MATH_FUNCTIONS.contains(&name) {
+        return Some(FloatKind::Double);
+    }
+    let (base, kind) = match name.strip_suffix('f') {
+        Some(base) => (base, FloatKind::Float),
+        None => (name.strip_suffix('l')?, FloatKind::LongDouble),
+    };
+    C90_MATH_FUNCTIONS.contains(&base).then_some(kind)
+}
+
+/// The standard's return type for a call to a library function
+/// [`library_float_return`] knows, or `None`. The names are reserved to the
+/// library (C11 7.1.3), so the name answers only when no declaration in
+/// reach does: [`expr_type`] consults it last.
 fn math_call_type(node: &Node, source: &str) -> Option<CType> {
     let mut n = *node;
     while n.kind() == "parenthesized_expression" {
@@ -1003,16 +1031,7 @@ fn math_call_type(node: &Node, source: &str) -> Option<CType> {
     if callee.kind() != "identifier" {
         return None;
     }
-    let name = get_node_text(&callee, source);
-    if !MATH_FUNCTIONS.contains(&name) {
-        return None;
-    }
-    let kind = if name.ends_with('f') {
-        FloatKind::Float
-    } else {
-        FloatKind::Double
-    };
-    Some(CType::Float(kind))
+    library_float_return(get_node_text(&callee, source)).map(CType::Float)
 }
 
 /// `s.f` / `p->f`: the field's type in the struct the base names -- its
@@ -1537,6 +1556,35 @@ mod tests {
     fn plain_char_is_neither_signed_nor_unsigned() {
         let t = returned("int f(char c) { return c; }", &[]).unwrap();
         assert_eq!(t.is_unsigned(), None);
+    }
+
+    #[test]
+    fn a_library_function_every_edition_reserves_has_the_standard_s_type() {
+        use FloatKind::*;
+        for (name, kind) in [
+            ("atof", Some(Double)),
+            ("strtod", Some(Double)),
+            ("strtof", Some(Float)),
+            ("strtold", Some(LongDouble)),
+            ("floor", Some(Double)),
+            ("floorf", Some(Float)),
+            ("floorl", Some(LongDouble)),
+            ("atan2l", Some(LongDouble)),
+            // The trailing f is modf's own; modff is its float form.
+            ("modf", Some(Double)),
+            ("modff", Some(Float)),
+            ("modfl", Some(LongDouble)),
+            // Not floating, or not reserved by every edition.
+            ("ilogb", None),
+            ("lround", None),
+            ("round", None),
+            ("cbrtf", None),
+            ("wcstod", None),
+            ("f", None),
+            ("l", None),
+        ] {
+            assert_eq!(library_float_return(name), kind, "{name}");
+        }
     }
 
     #[test]
