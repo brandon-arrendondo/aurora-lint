@@ -20,6 +20,9 @@ from release notes written on the project's task records; the dated sections
 are curated by hand. See `docs/adr/0009` for what belongs here and
 `docs/adr/0007` for what may never appear here.
 
+What to check or change when moving from one release to the next (exit
+statuses, presets, renamed rules, suppressions) is in `docs/upgrading.rst`.
+
 ## [Unreleased]
 
 _No release notes recorded for this release; see the commit log._
