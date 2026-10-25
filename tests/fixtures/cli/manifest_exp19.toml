@@ -1,0 +1,8 @@
+[metadata]
+name = "CLI Integration Test - EXP19-C only"
+version = "1.0.0"
+description = "Minimal manifest for EXP19-C location tests"
+cert_version = "2016"
+
+[rules.cert_c.EXP19-C]
+enabled = true

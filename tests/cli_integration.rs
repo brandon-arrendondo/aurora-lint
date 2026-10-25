@@ -9708,3 +9708,60 @@ fn msc17_reads_the_compile_database_edition_for_a_relative_scan_path() {
     // Declared C17: no `unreachable()` in the standard, so it falls through.
     assert_eq!(msc17_findings_under_compile_db_edition("c17"), 1);
 }
+
+fn manifest_exp19() -> PathBuf {
+    fixtures().join("manifest_exp19.toml")
+}
+
+/// EXP19-C reports each unbraced arm of an if/else where its body starts:
+/// the else of an if whose own body is unbraced too, an if and an else on
+/// one line as two findings, and a null `else ;` at its `;`. The generated
+/// fixture test only sees whether the rule fires, so the locations are
+/// asserted here.
+#[test]
+fn exp19_reports_each_unbraced_arm_at_its_body() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src/rules/cert_c/EXP/EXP19-C/tests/fail/unbraced_else_after_an_unbraced_if.c");
+
+    let (code, _, _) = run_aurora_lint(&[
+        fixture.to_str().unwrap(),
+        "-m",
+        manifest_exp19().to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let mut found: Vec<(u64, u64, String)> = violations
+        .iter()
+        .filter(|v| v["rule_id"] == "EXP19-C")
+        .map(|v| {
+            let arm = v["message"].as_str().unwrap().split(' ').next().unwrap();
+            (
+                v["line"].as_u64().unwrap(),
+                v["column"].as_u64().unwrap(),
+                arm.to_string(),
+            )
+        })
+        .collect();
+    found.sort();
+    let expected: Vec<(u64, u64, String)> = [
+        (16, 9, "if"),
+        (18, 9, "else"),
+        (24, 9, "else"),
+        (27, 9, "if"),
+        (29, 9, "if"),
+        (31, 9, "else"),
+        (33, 21, "if"),
+        (33, 36, "else"),
+        (37, 12, "else"),
+    ]
+    .into_iter()
+    .map(|(l, c, a)| (l, c, a.to_string()))
+    .collect();
+    assert_eq!(found, expected);
+}

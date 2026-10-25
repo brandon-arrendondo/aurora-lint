@@ -2,10 +2,10 @@
  * Rule: EXP19-C
  * Source: custom
  * Status: FAIL - Should trigger EXP19-C violation
- * Description: Each arm of an if/else is its own body. When neither arm
- * has braces, both are reported: the if at the `if`, the else at the
- * `else`. An unbraced if does not hide the else after it, and an unbraced
- * else after a braced if is reported at the `else` line, not the `if`.
+ * Description: Each arm of an if/else is its own body, and each unbraced
+ * one is reported where that body starts. An unbraced if does not hide the
+ * else after it, an if and its else on one line are two findings, and a
+ * null body (`else ;`) is reported at its `;`.
  */
 
 int classify(int value)
@@ -29,6 +29,12 @@ int classify(int value)
         kind = 2;
     else
         kind = kind + 1;
+
+    if (value == 7) kind = 7; else kind = 8;
+
+    if (value == 9) {
+        kind = 9;
+    } else ;
 
     return kind;
 }

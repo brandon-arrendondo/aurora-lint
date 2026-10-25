@@ -303,8 +303,10 @@ impl Exp19C {
     }
 
     /// Check that each arm of an if_statement has braces around its body.
-    /// Both arms are read: an unbraced `if` does not excuse its `else`, and
-    /// the `else` is reported at its own keyword, not at the `if`.
+    /// Both arms are read, since an unbraced `if` does not excuse its
+    /// `else`. Each finding is at the body it names, so an `if` and its
+    /// `else` written on one line still get two keys (a null body,
+    /// `else ;`, is at its `;`).
     fn check_if_statement(
         &self,
         if_node: Node,
@@ -320,7 +322,7 @@ impl Exp19C {
                 && !braced_in_every_arm(if_node, consequence, source, macros)
             {
                 violations.push(self.create_violation(
-                    if_node,
+                    consequence,
                     "if",
                     "if statement body should be enclosed in braces {}",
                 ));
@@ -357,7 +359,7 @@ impl Exp19C {
                 && !braced_in_every_arm(if_node, body, source, macros)
             {
                 violations.push(self.create_violation(
-                    alternative,
+                    body,
                     "else",
                     "else statement body should be enclosed in braces {}",
                 ));
