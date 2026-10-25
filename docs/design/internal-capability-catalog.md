@@ -1583,9 +1583,13 @@ guard), `label_preproc_guard.rs` (a guard opening right after a
 goto label), `paren_preproc_guard.rs` (a guard opening inside
 an unclosed parenthesized expression, or continuing an expression statement
 across it: the code line before it ends no statement or label, and it ends
-with a binary operator or every arm begins with one, `,` excepted, so sqlite's
+with a binary operator or every arm begins with one, `,` excepted and an arm
+starting with a possibly unary `*`, `&`, `-` or `+` not counted, so sqlite's
 `flags |= A` / `#if (X&1)==1` / `| B` / `#endif` chain is not read as
-`A | (X&1)==1 | B`) and
+`A | (X&1)==1 | B`; that path is refused while a call's argument list may be
+open before the directive, read across braces and past any `if` condition or
+grouping, up to the lookback; a single arm is kept whatever its condition,
+`#if 0` included) and
 `control_header_preproc_guard.rs` (a guard closing between an
 `if`/`while`/`for` header and the body it governs, which leaves the header
 with a synthesized `(expression_statement (MISSING ";"))` consequence that
@@ -1593,8 +1597,8 @@ reads as an unbraced body). The first, second and fourth are restricted to a
 conditional with NO `#else`/`#elif`: blanking a wrapper that has alternative
 arms would splice mutually exclusive text into one statement stream.
 `paren_preproc_guard.rs` also takes a multi-arm conditional inside a
-controlling expression or grouping parenthesis, as `preproc_split_chain.rs`
-does below: when every arm is a balanced expression fragment with no
+controlling expression or grouping parenthesis, or continuing an expression
+statement, as `preproc_split_chain.rs` does below: when every arm is a balanced expression fragment with no
 directive of its own, it keeps ONE arm and blanks the others (pure-ftpd's
 `if (` + `#if`/`#else` picking one of two calls: unrepaired, with the
 project prescan, the file's root was an `ERROR` node spanning all of it and

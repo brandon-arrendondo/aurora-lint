@@ -75,8 +75,28 @@
 //! not end one (`;`, `{`, `}` or a label's `:`), and either that line ends
 //! with a binary operator or every arm's code begins with one. A `,` does not
 //! count, so an entry of an initializer list or a declaration's declarator
-//! list is not taken for an operand. Every condition below on the arms holds
-//! here too.
+//! list is not taken for an operand. Nor does an arm beginning with `*`, `&`,
+//! `-` or `+`, which can be unary and open a statement: `LOCK()` before an
+//! arm `*p = n` is a statement-like macro invocation. Every condition below
+//! on the arms holds here too.
+//!
+//! The nearest code line skips directive lines and lines holding only a
+//! comment or a string literal (so `x = "a"` / `#ifdef X` / `"b"` /
+//! `#endif` / `;` reads `=` before the arm), and stops at a blank line: a
+//! blank line inside a chain leaves the conditional after it unrepaired, as
+//! the paren scan does. The statement path is also refused whenever a call's
+//! argument list may still be open before the directive, read across braces
+//! (a compound literal ends an argument line with `{` or `}`) and past any
+//! `if` condition or grouping inside it, up to the lookback: a conditional
+//! inside a call's arguments is PRE32-C's to report, and a scan that cannot
+//! rule a call out does not blank. So the statement path also repairs a
+//! condition the paren scan misjudged as closed, as on mbedtls's
+//! `if (a` / `#if` / `&& b` / `#endif` / `) {` after a line ending `) {`.
+//!
+//! A single-arm conditional's arm is kept whatever its condition says, in
+//! the statement case as in the parenthesis case: `#if 0` code there is
+//! analysed as if compiled, the same cost of losing the branch modeling the
+//! fix accepts above.
 //!
 //! # A conditional with `#else`/`#elif` arms
 //!
@@ -295,7 +315,10 @@ fn inside_unclosed_paren(lines: &CodeLines, i: usize) -> bool {
 
 /// A binary operator a line of code ends with, or an arm's code begins with,
 /// which marks an expression continuing across a directive. `,` is left out
-/// (an initializer or declarator list), and so is `:` (a label).
+/// (an initializer or declarator list), and so is `:` (a label). An arm may
+/// not begin with `*`, `&`, `-` or `+`, which can as well be unary and open
+/// a statement of its own: `LOCK()` before an arm `*p = n` is a macro
+/// invocation and a statement, not `LOCK() * p`.
 fn joins_operands(code: &str, at_end: bool) -> bool {
     const OPERATORS: &[&str] = &[
         "||", "&&", "<<", ">>", "==", "!=", "<=", ">=", "|", "&", "^", "+", "-", "*", "/", "%",
@@ -309,10 +332,10 @@ fn joins_operands(code: &str, at_end: bool) -> bool {
             && !code.ends_with("->")
             && OPERATORS.iter().any(|op| code.ends_with(op))
     } else {
-        !code.starts_with("++")
-            && !code.starts_with("--")
-            && !code.starts_with("->")
-            && OPERATORS.iter().any(|op| code.starts_with(op))
+        OPERATORS
+            .iter()
+            .filter(|op| !matches!(**op, "*" | "&" | "-" | "+"))
+            .any(|op| code.starts_with(op))
     }
 }
 
@@ -341,6 +364,36 @@ fn continues_expression(lines: &CodeLines, i: usize, arms: &[std::ops::Range<usi
                 .find(|c| !c.is_empty())
                 .is_some_and(|first| joins_operands(first, false))
         })
+}
+
+/// Whether line `i` may sit inside a call's argument list, for a
+/// conditional the statement path would blank: some parenthesis still open
+/// before it, innermost or enclosing, follows something it would call.
+/// Unlike [`inside_unclosed_paren`], braces do not stop the scan: a compound
+/// literal or an initializer inside an argument list ends lines with `{` or
+/// `}`, and stopping there would miss the call's `(` (and with it the
+/// PRE32-C finding the call guard keeps). An `if`/`while` condition or a
+/// grouping is passed over, so the scan reaches any call around it. Only a
+/// `;` outside any parenthesis, a blank line or the start of the file ends
+/// it; a scan cut short by the lookback answers "maybe".
+fn may_be_in_call_arguments(lines: &CodeLines, i: usize) -> bool {
+    let mut depth = 0i32;
+    for k in (0..i).rev().take(MAX_STATEMENT_LOOKBACK) {
+        if lines.raw[k].trim().is_empty() {
+            return false;
+        }
+        let code = lines.code[k].as_bytes();
+        for at in (0..code.len()).rev() {
+            match code[at] {
+                b')' => depth += 1,
+                b'(' if depth > 0 => depth -= 1,
+                b'(' if precedes_call_arguments(&lines.code[..=k], k, at) => return true,
+                b';' if depth == 0 => return false,
+                _ => {}
+            }
+        }
+    }
+    i > MAX_STATEMENT_LOOKBACK
 }
 
 /// Whether the innermost parenthesis still open before line `i` opens a
@@ -464,7 +517,9 @@ pub fn blank_paren_guarded_preproc(source: &str) -> String {
             |arm: &std::ops::Range<usize>| arm.clone().any(|k| !lines.code[k].trim().is_empty());
         let own_directive =
             |arm: &std::ops::Range<usize>| arm.clone().any(|k| is_directive(lines.raw[k]));
-        if !in_paren && !continues_expression(&lines, i, &arms) {
+        if !in_paren
+            && (!continues_expression(&lines, i, &arms) || may_be_in_call_arguments(&lines, i))
+        {
             continue;
         }
         if !arms
@@ -953,6 +1008,63 @@ int f(int a, int b, int c) {
 }
 ";
         assert!(parses_clean(src));
+    }
+
+    /// A compound literal ends an argument line with `{` or `}`, and the
+    /// conditional after it is still inside the call, where PRE32-C reads
+    /// it: left alone.
+    #[test]
+    fn leaves_a_conditional_in_arguments_after_a_compound_literal_alone() {
+        let src = "\
+int f(int y) {
+    return M(y,
+              (struct s){
+                  2}.v
+#ifdef B
+              | 3
+#endif
+              );
+}
+";
+        assert_eq!(blank_paren_guarded_preproc(src), src);
+    }
+
+    /// The paren scan stops at the `) {` line above and counts its `)`, so
+    /// it misjudges this condition as closed; the statement path reads back
+    /// to the `if (` and repairs it, as no call is open.
+    #[test]
+    fn fixes_a_condition_the_paren_scan_misjudges_as_closed() {
+        let src = "\
+int f(int a, int b, int c) {
+    if (a &&
+        b) {
+        if (c
+#ifdef X
+            && a
+#endif
+            ) {
+            return 1;
+        }
+    }
+    return 0;
+}
+";
+        assert!(parses_clean(src));
+        let out = fixed(src);
+        assert!(!out.contains("#ifdef") && out.contains("&& a"));
+    }
+
+    /// An arm beginning with an operator that can be unary may be a
+    /// statement of its own: `LOCK()` here is a macro invocation, and
+    /// splicing would read `LOCK() * p = n`.
+    #[test]
+    fn leaves_an_arm_beginning_with_a_unary_operator_alone() {
+        for arm in ["*p = n", "&x", "-n", "+n"] {
+            let src = format!(
+                "void g(int *p, int n) {{\n    LOCK()\n#ifdef X\n    {arm}\n#endif\n    ;\n}}\n"
+            );
+            assert_eq!(blank_paren_guarded_preproc(&src), src, "{arm}");
+        }
     }
 
     /// `,` does not join operands here: an initializer list's guarded entry
