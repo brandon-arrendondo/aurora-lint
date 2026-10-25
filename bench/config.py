@@ -304,9 +304,11 @@ def opam_wrap(argv: list[str]) -> list[str]:
 
     `opam env` failing is tolerated rather than required: a Frama-C installed
     some other way is already on PATH. The wrapper is POSIX sh, so it works
-    where bash is not installed.
+    where bash is not installed, and asks opam for sh syntax: by default opam
+    prints the syntax of the user's $SHELL, and fish's `set -gx` would fail
+    in sh -- silently, so Frama-C would look missing.
     """
-    return ["sh", "-c", 'eval "$(opam env 2>/dev/null)" 2>/dev/null; exec "$@"',
+    return ["sh", "-c", 'eval "$(opam env --shell=sh 2>/dev/null)" 2>/dev/null; exec "$@"',
             "_", *argv]
 
 
