@@ -4381,6 +4381,41 @@ fn crossfile_registration_does_not_reach_a_static_namesake() {
     assert!(sig34_lines("other.c").is_empty());
 }
 
+fn sig31_lines(file: &str) -> Vec<u64> {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let fixture_dir = fixtures().join("crossfile_sig31");
+    let (code, _, _) = run_aurora_lint(&[
+        fixture_dir.join(file).to_str().unwrap(),
+        "-m",
+        fixtures().join("manifest_sig31.toml").to_str().unwrap(),
+        "-d",
+        fixture_dir.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    violations
+        .iter()
+        .filter(|v| v["rule_id"] == "SIG31-C")
+        .map(|v| v["line"].as_u64().unwrap())
+        .collect()
+}
+
+#[test]
+fn sig31_handler_registered_in_another_file_is_checked_where_it_is_defined() {
+    // main.c registers on_term, which handlers.c defines: its write to the
+    // non-volatile sig_atomic_t is reported, the volatile one's is not.
+    assert_eq!(sig31_lines("handlers.c"), vec![9]);
+}
+
+#[test]
+fn sig31_registration_in_another_file_does_not_reach_a_static_namesake() {
+    assert!(sig31_lines("other.c").is_empty());
+}
+
 /// SIG34-C findings in CERT's EX1 example, with or without the declared
 /// persistent-handler environment.
 fn sig34_ex1_lines(persistent: bool) -> Vec<u64> {
