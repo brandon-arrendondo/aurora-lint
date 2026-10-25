@@ -355,16 +355,22 @@ fn find_keyword_argument_macro_invocations(node: &Node, source: &str) -> Vec<(us
 }
 
 /// The invocation around the byte at `at` (see [`enclosing_invocation`]),
-/// widened to each invocation enclosing it while that one is followed by a
-/// name, as an annotation is by what it annotates. `_When_(x > 0,
-/// _Success_(return != 0)) int h(int x);` blanks all of `_When_(...)`: the
-/// inner `_Success_(...)` alone leaves `_When_(x > 0, )` to misparse as the
-/// declarator. The widening stops at a function's own parameter list,
-/// which a `;` or `{` follows, so an annotated parameter is blanked and not
-/// the prototype around it.
+/// widened to each invocation it is an argument of, while that one is
+/// followed by a name, as an annotation is by what it annotates.
+/// `_When_(x > 0, _Success_(return != 0)) int h(int x);` blanks all of
+/// `_When_(...)`: the inner `_Success_(...)` alone leaves `_When_(x > 0, )`
+/// to misparse as the declarator. An argument is followed by `,` or `)`,
+/// and an annotated parameter is followed by its type
+/// (`int fill(OUT_TO(n, return) char *buf, int n) __attribute__((nonnull));`),
+/// so the widening never takes the parameter list around it, whatever
+/// follows the list.
 fn outermost_annotation(bytes: &[u8], at: usize) -> Option<(usize, usize)> {
     let mut range = enclosing_invocation(bytes, at)?;
     while let Some(outer) = enclosing_invocation(bytes, range.0) {
+        let is_argument = matches!(next_non_space(bytes, range.1), Some(b',' | b')'));
+        if !is_argument {
+            break;
+        }
         let followed_by_name =
             next_non_space(bytes, outer.1).is_some_and(|b| b.is_ascii_alphabetic() || b == b'_');
         if !followed_by_name {
@@ -703,10 +709,13 @@ mod tests {
 
     #[test]
     fn keeps_a_prototype_whose_parameter_annotation_names_return() {
-        let src = "CHECKED\nint fill(OUT_TO(n, return) char *buf, int n);\nint other(void);\n";
-        let (_, text) = recover(src);
-        assert!(text.contains("int fill("));
-        assert!(text.contains("char *buf, int n);"));
+        for trailer in ["", " __attribute__((nonnull))", " ASM_NAME(\"fill2\")"] {
+            let src = format!("CHECKED\nint fill(OUT_TO(n, return) char *buf, int n){trailer};\n");
+            let (_, text) = recover(&src);
+            assert!(!text.contains("OUT_TO"), "{text:?}");
+            assert!(text.contains("int fill("), "{text:?}");
+            assert!(text.contains("char *buf, int n)"), "{text:?}");
+        }
     }
 
     #[test]
