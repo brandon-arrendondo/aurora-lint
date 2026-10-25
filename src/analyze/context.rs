@@ -202,6 +202,54 @@ impl IncludeReport {
         ))
     }
 
+    /// This report as it is shown: every path that lies under `dir` (the
+    /// current directory) relative to it, the way the scanned files are
+    /// spelled, and re-sorted, so the same tree checked out in two places
+    /// reports the same. A path elsewhere (a system header) is a fact about
+    /// the host and stays as it is. The scan keys its own lookups by real
+    /// path, so only output goes through here.
+    pub fn relative_to(&self, dir: &Path) -> Self {
+        // Real paths are canonical and a spelled `-I` may not be (it may
+        // pass through a symlink), so both forms of each are tried.
+        let bases: Vec<std::path::PathBuf> = std::iter::once(dir.to_path_buf())
+            .chain(dir.canonicalize().ok())
+            .collect();
+        let shown = |path: &String| -> String {
+            let real = Path::new(path).canonicalize().ok();
+            std::iter::once(Path::new(path))
+                .chain(real.as_deref())
+                .find_map(|p| bases.iter().find_map(|base| p.strip_prefix(base).ok()))
+                .map_or_else(
+                    || path.clone(),
+                    |rest| {
+                        if rest.as_os_str().is_empty() {
+                            ".".to_string()
+                        } else {
+                            rest.to_string_lossy().into_owned()
+                        }
+                    },
+                )
+        };
+        let mut unresolved: Vec<UnresolvedInclude> = self
+            .unresolved
+            .iter()
+            .map(|u| UnresolvedInclude {
+                includer: shown(&u.includer),
+                ..u.clone()
+            })
+            .collect();
+        unresolved.sort();
+        let mut outside_headers: Vec<String> = self.outside_headers.iter().map(shown).collect();
+        outside_headers.sort();
+        Self {
+            // In search order, which is meaning: never re-sorted.
+            search_paths: self.search_paths.iter().map(shown).collect(),
+            forced_includes: self.forced_includes.iter().map(shown).collect(),
+            unresolved,
+            outside_headers,
+        }
+    }
+
     /// The `--report-headers` JSON: this report, each outside header given
     /// with the SHA-256 of its bytes so "same header, different version"
     /// shows up as a diff line (unreadable now: `null`), and every input the

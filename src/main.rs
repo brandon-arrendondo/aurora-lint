@@ -1173,8 +1173,12 @@ fn run() -> Result<i32> {
     let failures = results.failures;
     let abandoned_rules = results.abandoned_rules;
     let not_converged = results.not_converged;
-    let include_report = results.include_report;
     let header_dependence = results.header_dependence;
+    let cwd = std::env::current_dir().unwrap_or_default();
+    // Paths under the current directory are shown relative to it, as the
+    // scanned files are, so a report does not depend on where the tree is
+    // checked out.
+    let include_report = results.include_report.relative_to(&cwd);
 
     // Headers the scan could not find change what rules can see, so they are
     // loud: one stderr line whenever a live #include did not resolve, every
@@ -1198,7 +1202,6 @@ fn run() -> Result<i32> {
     }
 
     // Print violations to stdout
-    let cwd = std::env::current_dir().unwrap_or_default();
     for v in &violations {
         let display_path = Path::new(&v.file_path)
             .strip_prefix(&cwd)

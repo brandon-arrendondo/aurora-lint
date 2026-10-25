@@ -576,6 +576,100 @@ fn missing_headers_are_reported_on_stderr_in_sarif_and_on_request() {
     );
 }
 
+/// The same tree checked out in two places, each scanned from its own root,
+/// writes byte-identical SARIF, header report and -v listing: a path under
+/// the current directory is given relative to it, as result URIs are, and
+/// one outside it (a host's system header directory) as it is.
+#[test]
+fn the_header_report_does_not_depend_on_where_the_tree_is_checked_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let sys = dir.path().join("sys");
+    std::fs::create_dir_all(&sys).unwrap();
+    std::fs::write(
+        sys.join("lib.h"),
+        "#include <libdep.h>\nint lib_init(void);\n",
+    )
+    .unwrap();
+    let manifest = manifest_msc04();
+    let outputs = |checkout: &Path| {
+        std::fs::create_dir_all(checkout.join("src")).unwrap();
+        std::fs::create_dir_all(checkout.join("inc")).unwrap();
+        std::fs::write(
+            checkout.join("src/main.c"),
+            "#include \"generated.h\"\n#include <local.h>\n#include <lib.h>\n\
+             int main(void) { return lib_init(); }\n",
+        )
+        .unwrap();
+        std::fs::write(checkout.join("inc/local.h"), "#include \"config.h\"\n").unwrap();
+        // One search directory spelled relative, one absolute, as a compile
+        // database spells them.
+        let inc = checkout.join("inc");
+        let output = Command::new(aurora_lint_bin())
+            .current_dir(checkout)
+            .args([
+                "src",
+                "-I",
+                "inc",
+                "-I",
+                inc.to_str().unwrap(),
+                "-I",
+                sys.to_str().unwrap(),
+                "-m",
+                manifest.to_str().unwrap(),
+                "-v",
+                "-e",
+                "out.sarif",
+                "--report-headers",
+                "headers.json",
+            ])
+            .output()
+            .expect("failed to execute aurora-lint");
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        (
+            std::fs::read_to_string(checkout.join("out.sarif")).unwrap(),
+            std::fs::read_to_string(checkout.join("headers.json")).unwrap(),
+            stderr,
+        )
+    };
+    let first = outputs(&dir.path().join("a/proj"));
+    let second = outputs(&dir.path().join("b/elsewhere/proj"));
+    assert_eq!(first.0, second.0, "SARIF");
+    assert_eq!(first.1, second.1, "header report");
+    assert_eq!(first.2, second.2, "-v listing");
+
+    let sarif: serde_json::Value = serde_json::from_str(&first.0).unwrap();
+    let headers = &sarif["runs"][0]["properties"]["aurora-lint/headers"];
+    let includers: Vec<&str> = headers["unresolved"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["includer"].as_str().unwrap())
+        .collect();
+    let sys_header = sys.join("lib.h").canonicalize().unwrap();
+    assert_eq!(
+        includers,
+        ["inc/local.h", "src/main.c", sys_header.to_str().unwrap()],
+        "{headers}"
+    );
+    assert_eq!(headers["searchPaths"][1], "inc", "{headers}");
+    let report: serde_json::Value = serde_json::from_str(&first.1).unwrap();
+    let local = report["outside_headers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["path"] == "inc/local.h")
+        .unwrap_or_else(|| panic!("{report}"));
+    assert_eq!(local["sha256"].as_str().unwrap().len(), 64);
+    assert!(
+        first
+            .2
+            .contains("unresolved #include \"generated.h\" from src/main.c:1"),
+        "{}",
+        first.2
+    );
+}
+
 /// A finding of a rule that reads header-supplied facts, in a file whose
 /// includes reach a header a project file names and the scan could not find,
 /// says it may depend on it; one whose project includes all resolved carries

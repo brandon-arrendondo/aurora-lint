@@ -291,6 +291,11 @@ diff to the header that explains a difference in their findings::
 
     aurora-lint src/ -d src/ -I include/ -I /usr/include --report-headers headers.json
 
+In all of these, a path under the current directory (an includer, a search
+directory, an outside header) is given relative to it, as finding paths are,
+so the same tree scanned from its root reports the same wherever it is
+checked out; a path elsewhere, such as ``/usr/include``, is given in full.
+
 Each finding that may depend on a missing header says so. A rule that reads
 facts headers supply (function declarations, macros and macro constants,
 summaries of functions a header defines, struct layouts) and reports in a
