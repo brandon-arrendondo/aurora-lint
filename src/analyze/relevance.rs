@@ -36,7 +36,7 @@ use walkdir::WalkDir;
 pub const CON_RULE_IDS: &[&str] = &[
     "CON01-C", "CON02-C", "CON03-C", "CON04-C", "CON05-C", "CON06-C", "CON07-C", "CON08-C",
     "CON09-C", "CON30-C", "CON31-C", "CON32-C", "CON33-C", "CON34-C", "CON35-C", "CON36-C",
-    "CON37-C", "CON38-C", "CON39-C", "CON40-C", "CON41-C", "CON43-C", "CON50-C",
+    "CON37-C", "CON38-C", "CON39-C", "CON40-C", "CON41-C", "CON43-C",
 ];
 
 /// WIN* rules: inapplicable with no Win32 API in the scanned corpus.

@@ -1220,9 +1220,6 @@
       }
     ]
   },
-  "CON50-C": {
-    "status": "no_longer_on_site"
-  },
   "DCL00-C": {
     "status": "checked",
     "current_block_count": 2,

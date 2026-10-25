@@ -2993,15 +2993,15 @@ mod tests {
         // them, so exact include-name matching must not move them.
         assert_eq!(
             AnalysisSettings::preset(Preset::Default).settings_hash(),
-            "2ffb18442685adcd5e9260fa68fc7cf0f6f161f0ccb3ade2a2c351f37029e382"
+            "7d08afdd8e5c42d8b87f1eb1a1cbbe7a5e3bf36cfc1ceb88c220cf850f5da3f7"
         );
         assert_eq!(
             AnalysisSettings::preset(Preset::Strict).settings_hash(),
-            "dcc831ea64df85460fb728e142fe9aceca3eab466c376832405170abeef1fa31"
+            "6c79791963ab823cfbbbc606382194249c654694ec9a13d6cb82887e390bf4db"
         );
         assert_eq!(
             AnalysisSettings::preset(Preset::Pedantic).settings_hash(),
-            "8b6e9f95dc621f730b61a7d5cb6b800f4243296fb5653471d0a822dcec7d1c49"
+            "a1262c04931073d14ef6d57409451242b9d19976420b073a4274c0e40ce57dd5"
         );
         assert_eq!(
             with_names(Preset::Default, Some(IncludeNames::Exact)).settings_hash(),

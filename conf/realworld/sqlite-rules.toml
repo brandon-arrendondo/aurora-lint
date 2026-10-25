@@ -187,10 +187,6 @@ enabled = true
 enabled = true
 
 
-[rules.cert_c.CON50-C]
-enabled = true
-
-
 [rules.cert_c.DCL00-C]
 enabled = true
 

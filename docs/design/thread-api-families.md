@@ -21,8 +21,8 @@ The detectors do not do this today:
   not callees.
 - **The name lists are copies.** The same 4-name lock/unlock set appears in
   CON07, CON08 and CON32. A 6-name set appears in CON01 and CON09. The
-  create/join/detach pairs appear in CON04, CON34, CON37, CON39 and CON50. The
-  sync-type lists appear in CON03, CON06, CON07 and CON50.
+  create/join/detach pairs appear in CON04, CON34, CON37 and CON39. The
+  sync-type lists appear in CON03, CON06 and CON07.
 - **The twins share no code.** CON35/POS51, CON32/POS49, CON05/POS52,
   CON31/POS48 and CON34/POS50 are each written separately. POS48 and POS49 are
   line-substring matchers.
@@ -76,7 +76,7 @@ Positions are 1-based, as in `[environment.deallocators]`.
 
 Type kinds (`mutex`, `cond`, `thread`, `tss_key`, `once_flag`) map `mtx_t`,
 `pthread_mutex_t` and so on. They replace the per-rule type-substring lists in
-CON03, CON06, CON07 and CON50, and they resolve through
+CON03, CON06 and CON07, and they resolve through
 `resolve_typedef_chain`, as CON03's `declares_lock` already does.
 
 **Atomics stay where they are.** `_Atomic` and `<stdatomic.h>` are language

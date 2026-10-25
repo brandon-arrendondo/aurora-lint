@@ -39,6 +39,13 @@
 #
 
 [[removed]]
+id = "CON50-C"
+removed_in = "0.7.0"
+disposition = "not-cert-c"
+reason = "CERT C has no CON50-C; it is CERT C++'s CON50-CPP. CON31-C reports a mutex destroyed while locked, and CON34-C an automatic mutex shared with a thread"
+covered_by = ["CON31-C", "CON34-C"]
+
+[[removed]]
 id = "ERR06-C"
 removed_in = "0.7.0"
 disposition = "unenforceable"

@@ -42,7 +42,6 @@
     "CON40-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
     "CON41-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
     "CON43-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
-    "CON50-C": {"default": "not_enforced", "strict": "not_enforced", "pedantic": "not_enforced", "differs": false},
     "DCL00-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
     "DCL01-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
     "DCL02-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},

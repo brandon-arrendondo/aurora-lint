@@ -657,6 +657,7 @@ The rules removed so far:
 
 .. REMOVED-RULES:START
 
+- **CON50-C** (removed in v0.7.0, not a CERT C guideline (C++ id)): CERT C has no CON50-C; it is CERT C++'s CON50-CPP. CON31-C reports a mutex destroyed while locked, and CON34-C an automatic mutex shared with a thread. Now covered by CON31-C, CON34-C.
 - **ERR06-C** (removed in v0.7.0, unenforceable): Its checkable form reports every assert in a program that registers an exit handler, which contradicts MSC11-C, and a narrower form needs the programmer's intent.
 - **FIO03-C** (removed in v0.7.0, unenforceable): Whether opening a file for writing may replace an existing one is the programmer's intent, which the code does not show; the race on creating a file is FIO45-C's.
 - **FIO50-C** (removed in v0.7.0, not a CERT C guideline (C++ id)): CERT C has no FIO50-C; it is CERT C++'s FIO50-CPP. FIO39-C reports the same alternation of input and output on one stream. Now covered by FIO39-C.
