@@ -164,6 +164,9 @@ impl CType {
 /// `ssize_t`. A file names these from headers the scan may not read, so no
 /// typedef table holds them; the name alone says it is a type. Only
 /// whether it is a type: [`standard_alias`] gives an integer alias's type.
+/// The set ignores the declared editions (`ssize_t` is in it whatever
+/// `posix_version` says): it suits a reading where a match only exempts,
+/// as PRE01-C's type position does.
 pub fn is_standard_typedef_name(name: &str) -> bool {
     let exact_least_or_fast = || {
         let rest = name.strip_prefix('u').unwrap_or(name);

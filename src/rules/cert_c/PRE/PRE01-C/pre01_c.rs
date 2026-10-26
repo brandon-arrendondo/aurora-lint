@@ -43,9 +43,10 @@
 //! 4. **Directly followed by an identifier, or a cast's whole type name**:
 //!    a type name (`T n`, `qual size_t n`, `(T *)0`, `(const T *)0`,
 //!    `sizeof(T **)`) or a macro every definition of which expands to string
-//!    literals cannot take parentheses. An operand followed by an operator
-//!    (`a op b`, or `x MOD 3` with `MOD` a macro for `%`) or by a keyword
-//!    (`x else`) stays reported, as does `T * x`, a declaration or a
+//!    literals cannot take parentheses, nor can one before a storage class,
+//!    an attribute or an asm label (`attr static`, `x __asm__("sym")`). An
+//!    operand followed by an operator (`a op b`, or `x MOD 3` with `MOD` a
+//!    macro for `%`) stays reported, as does `T * x`, a declaration or a
 //!    multiplication depending on the argument:
 //!    ```c
 //!    #define DECLARE(T) T count = 0      // OK
@@ -58,7 +59,7 @@ use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
 use crate::utility::cert_c::expr_type::is_standard_typedef_name;
 use crate::utility::cert_c::pp_tokens::{
-    define_at, lex_replacement_list, matching_close, LineIndex, PpKind, PpToken, KEYWORDS,
+    define_at, lex_replacement_list, matching_close, LineIndex, PpKind, PpToken,
 };
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -67,10 +68,66 @@ use std::sync::Arc;
 use tree_sitter::Node;
 
 /// Keywords that make the token before them part of a type name: the
-/// type specifiers and qualifiers (`T const`, `qual int`).
+/// type specifiers and qualifiers (`T const`, `qual int`), with GCC's
+/// alternate spellings (`T __restrict p`, `T __const n`).
 const TYPE_WORDS: &[&str] = &[
-    "void", "char", "short", "int", "long", "float", "double", "signed", "unsigned", "_Bool",
-    "_Complex", "const", "volatile", "restrict", "_Atomic", "struct", "union", "enum",
+    "void",
+    "char",
+    "short",
+    "int",
+    "long",
+    "float",
+    "double",
+    "signed",
+    "unsigned",
+    "_Bool",
+    "_Complex",
+    "const",
+    "volatile",
+    "restrict",
+    "_Atomic",
+    "struct",
+    "union",
+    "enum",
+    "__int128",
+    "__signed",
+    "__signed__",
+    "__const",
+    "__const__",
+    "__volatile",
+    "__volatile__",
+    "__restrict",
+    "__restrict__",
+];
+
+/// Keywords that make the token before them part of a declaration's
+/// specifiers or declarator: storage classes, function specifiers,
+/// alignment, attributes and asm labels (`attr static T n`,
+/// `T __attribute__((unused)) n`, `x __asm__("sym")`). Parentheses there
+/// do not compile.
+const DECLARATION_WORDS: &[&str] = &[
+    "static",
+    "extern",
+    "auto",
+    "register",
+    "typedef",
+    "inline",
+    "_Noreturn",
+    "_Thread_local",
+    "thread_local",
+    "constexpr",
+    "_Alignas",
+    "alignas",
+    "__inline",
+    "__inline__",
+    "__thread",
+    "__extension__",
+    "__attribute__",
+    "__attribute",
+    "__declspec",
+    "__asm__",
+    "__asm",
+    "asm",
 ];
 
 /// Deepest chain of macros [`Names::shape`] follows before it answers
@@ -87,7 +144,11 @@ struct Names<'a> {
     /// [`Names::shape`] per macro name, once for the file. A name being
     /// expanded is filed [`Shape::Unknown`] until it is done, so a macro
     /// that reaches itself (`#define A B` and `#define B A`) is not
-    /// expanded again: the preprocessor leaves such a name unexpanded.
+    /// expanded again: the preprocessor leaves such a name unexpanded. A
+    /// name first met inside a cycle, or at the depth cap, keeps the answer
+    /// that cut short, which may be Unknown where a fresh read would not
+    /// be. It is the same for the same file, and Unknown errs toward
+    /// exempting.
     shapes: RefCell<HashMap<String, Shape>>,
 }
 
@@ -108,11 +169,13 @@ impl Names<'_> {
         defs
     }
 
-    /// A type keyword or qualifier, a typedef the scan sees, or a typedef
-    /// name the standard library declares (`size_t`, `uint32_t`), whose
-    /// header the scan may not read.
+    /// A type keyword or qualifier, a declaration's other specifier
+    /// keywords ([`DECLARATION_WORDS`]), a typedef the scan sees, or a
+    /// typedef name the standard library declares (`size_t`, `uint32_t`),
+    /// whose header the scan may not read.
     fn is_type(&self, name: &str) -> bool {
         TYPE_WORDS.contains(&name)
+            || DECLARATION_WORDS.contains(&name)
             || self.project_typedefs.contains_key(name)
             || self.file_typedefs.contains(name)
             || is_standard_typedef_name(name)
@@ -284,12 +347,8 @@ impl Pre01C {
             let t = &tokens[p];
             t.is(")") || t.is("]") || t.is_literal() || t.kind == PpKind::Number || is_param(t)
         });
-        // A keyword (`else`) starts no operand.
         let starts_operand = |t: &PpToken| {
-            t.is("(")
-                || t.is_literal()
-                || t.kind == PpKind::Number
-                || (t.kind == PpKind::Identifier && !KEYWORDS.contains(&t.text.as_ref()))
+            t.is("(") || t.is_literal() || matches!(t.kind, PpKind::Number | PpKind::Identifier)
         };
         if ends_operand && tokens.get(k + 1).is_some_and(starts_operand) {
             return true;
@@ -297,11 +356,6 @@ impl Pre01C {
         if let Some(next) = tokens.get(k + 1).filter(|t| t.kind == PpKind::Identifier) {
             if names.is_type(&next.text) {
                 return true;
-            }
-            // Any other keyword (`x else`) follows a statement or an
-            // operand, never a type name.
-            if KEYWORDS.contains(&next.text.as_ref()) {
-                return false;
             }
             match names.shape(&next.text, 0) {
                 Shape::Strings => return true,
