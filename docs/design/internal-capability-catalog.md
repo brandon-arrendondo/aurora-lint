@@ -1587,9 +1587,9 @@ with a binary operator or every arm begins with one, `,` excepted and an arm
 starting with a possibly unary `*`, `&`, `-` or `+` not counted, so sqlite's
 `flags |= A` / `#if (X&1)==1` / `| B` / `#endif` chain is not read as
 `A | (X&1)==1 | B`; that path is refused while a call's argument list may be
-open before the directive, read across braces and past any `if` condition or
-grouping, up to the lookback; a single arm is kept whatever its condition,
-`#if 0` included) and
+open before the directive, read across braces, blank lines and any `if`
+condition or grouping, up to the lookback; a single arm is kept whatever its
+condition, `#if 0` included) and
 `control_header_preproc_guard.rs` (a guard closing between an
 `if`/`while`/`for` header and the body it governs, which leaves the header
 with a synthesized `(expression_statement (MISSING ";"))` consequence that

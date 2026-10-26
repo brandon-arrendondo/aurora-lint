@@ -86,12 +86,15 @@
 //! blank line inside a chain leaves the conditional after it unrepaired, as
 //! the paren scan does. The statement path is also refused whenever a call's
 //! argument list may still be open before the directive, read across braces
-//! (a compound literal ends an argument line with `{` or `}`) and past any
-//! `if` condition or grouping inside it, up to the lookback: a conditional
-//! inside a call's arguments is PRE32-C's to report, and a scan that cannot
-//! rule a call out does not blank. So the statement path also repairs a
-//! condition the paren scan misjudged as closed, as on mbedtls's
+//! (a compound literal ends an argument line with `{` or `}`), blank lines
+//! and any `if` condition or grouping inside it, up to the lookback: a
+//! conditional inside a call's arguments is PRE32-C's to report, and a scan
+//! that cannot rule a call out does not blank. So the statement path also
+//! repairs a condition the paren scan misjudged as closed, as on mbedtls's
 //! `if (a` / `#if` / `&& b` / `#endif` / `) {` after a line ending `) {`.
+//! This call check is stricter than the parenthesis path's own, which stops
+//! at a line ending `{` and blanks a single-arm conditional directly inside
+//! a call's arguments.
 //!
 //! A single-arm conditional's arm is kept whatever its condition says, in
 //! the statement case as in the parenthesis case: `#if 0` code there is
@@ -373,15 +376,13 @@ fn continues_expression(lines: &CodeLines, i: usize, arms: &[std::ops::Range<usi
 /// literal or an initializer inside an argument list ends lines with `{` or
 /// `}`, and stopping there would miss the call's `(` (and with it the
 /// PRE32-C finding the call guard keeps). An `if`/`while` condition or a
-/// grouping is passed over, so the scan reaches any call around it. Only a
-/// `;` outside any parenthesis, a blank line or the start of the file ends
-/// it; a scan cut short by the lookback answers "maybe".
+/// grouping is passed over, so the scan reaches any call around it. Nor
+/// does a blank line, which an argument list may hold. Only a `;` outside
+/// any parenthesis or the start of the file ends it; a scan cut short by
+/// the lookback answers "maybe".
 fn may_be_in_call_arguments(lines: &CodeLines, i: usize) -> bool {
     let mut depth = 0i32;
     for k in (0..i).rev().take(MAX_STATEMENT_LOOKBACK) {
-        if lines.raw[k].trim().is_empty() {
-            return false;
-        }
         let code = lines.code[k].as_bytes();
         for at in (0..code.len()).rev() {
             match code[at] {
@@ -426,13 +427,17 @@ fn opens_call_arguments(lines: &CodeLines, i: usize) -> bool {
 
 /// Whether the `(` at `code[k][at]` follows something it would call.
 fn precedes_call_arguments(code: &[String], k: usize, at: usize) -> bool {
-    let before = code[..k]
-        .iter()
-        .map(String::as_str)
-        .chain(std::iter::once(&code[k][..at]))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let before = before.trim_end();
+    // Only the nearest code before the `(` matters, and a name never spans
+    // lines, so read back to the first line that has any rather than
+    // joining everything before it: the guard asks this for every `(` it
+    // passes, and a join from the file's start made a large file quadratic.
+    // Comments, literals and directive lines are already blank in `code`,
+    // so the nearest non-blank line is the nearest code.
+    let before = std::iter::once(&code[k][..at])
+        .chain(code[..k].iter().rev().map(String::as_str))
+        .map(str::trim_end)
+        .find(|c| !c.is_empty())
+        .unwrap_or("");
     if before.ends_with([')', ']']) {
         return true;
     }
@@ -1027,6 +1032,101 @@ int f(int y) {
 }
 ";
         assert_eq!(blank_paren_guarded_preproc(src), src);
+    }
+
+    /// A blank line can sit inside a call's arguments, so it does not end
+    /// the scan for an open call: the conditional stays for PRE32-C.
+    #[test]
+    fn leaves_a_conditional_in_arguments_after_a_blank_line_alone() {
+        let src = "\
+int many(int, ...);
+#define M(...) many(__VA_ARGS__)
+void f(int a) {
+  (void)M(a,
+
+          a
+#if defined(_WIN32)
+          | 2
+#else
+          | 4
+#endif
+          );
+}
+";
+        assert_eq!(blank_paren_guarded_preproc(src), src);
+    }
+
+    /// A `;` inside a parenthesis, as in a statement expression among the
+    /// arguments, does not end the scan for the call around it. (The
+    /// parenthesis path stops at the line ending `;` and takes this for no
+    /// open parenthesis at all.)
+    #[test]
+    fn leaves_a_conditional_in_arguments_after_a_statement_expression_alone() {
+        let src = "\
+void f(int a) {
+  (void)M(({
+            int t = a;
+            t; })
+          + a
+#ifdef X
+          | 2
+#endif
+          );
+}
+";
+        assert_eq!(blank_paren_guarded_preproc(src), src);
+    }
+
+    /// A call's argument list longer than the lookback: the scan cannot
+    /// rule the call out, so the conditional is not blanked.
+    #[test]
+    fn leaves_a_conditional_past_the_lookback_in_arguments_alone() {
+        let src = format!(
+            "void f(int a) {{\n  (void)M(a,\n{}          a\n#ifdef X\n          | 2\n#endif\n          );\n}}\n",
+            "          a,\n".repeat(MAX_STATEMENT_LOOKBACK + 6)
+        );
+        assert_eq!(blank_paren_guarded_preproc(&src), src);
+    }
+
+    /// The pass is linear in the file: a file of two-arm conditions (each
+    /// asks whether a call's argument list is open) eight
+    /// times larger takes about eight times as long, where reading the
+    /// whole file before every parenthesis it asks about would take some
+    /// sixty-four. The fastest of three runs counts, and the bound leaves
+    /// room for a busy runner, not for growth.
+    #[test]
+    fn the_pass_scales_linearly_with_the_file() {
+        let site = "\
+int f(int a, int b) {
+    if (a
+#ifdef X
+        && b
+#else
+        && !b
+#endif
+        )
+        return 1;
+    return 0;
+}
+";
+        let fastest = |sites: usize| {
+            let src = site.repeat(sites);
+            (0..3)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    std::hint::black_box(blank_paren_guarded_preproc(&src));
+                    started.elapsed()
+                })
+                .min()
+                .unwrap()
+        };
+        let small = fastest(500);
+        let large = fastest(4000);
+        assert!(
+            large < small * 24,
+            "8x the input took {:.1}x as long ({small:?} -> {large:?})",
+            large.as_secs_f64() / small.as_secs_f64()
+        );
     }
 
     /// The paren scan stops at the `) {` line above and counts its `)`, so
