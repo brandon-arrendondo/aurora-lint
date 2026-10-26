@@ -1,5 +1,6 @@
 //! Pre-parse pass: blank a `#if`/`#ifdef`/`#ifndef` + matching `#endif` pair
-//! that opens *inside* an unclosed parenthesized expression.
+//! that opens *inside* an expression: an unclosed parenthesized one, or an
+//! expression statement that continues across the conditional.
 //!
 //! Real shape (pure-ftpd `ls.c`, `listfile`):
 //! ```c
@@ -54,6 +55,28 @@
 //!   misjudges.
 //! * The guarded lines' own parentheses must balance, so blanking the
 //!   directives cannot leave the expression unbalanced.
+//!
+//! # A conditional continuing an expression statement
+//!
+//! Real shape (sqlite `main.c`, `openDatabase`), with no parenthesis open:
+//! ```c
+//! db->flags |= SQLITE_ShortColNames
+//!              | SQLITE_EnableTrigger
+//! #if (SQLITE_DQS&1)==1
+//!              | SQLITE_DqsDML
+//! #endif
+//!              ;
+//! ```
+//! Unrepaired, the directive becomes an `ERROR` token and its condition text
+//! is parsed as operands of the chain, `... | (SQLITE_DQS&1)==1 | ...`, so a
+//! rule reading the expression (EXP00-C's precedence check) reports operators
+//! that are in no configuration's code. The same blanking applies when the
+//! conditional continues a statement: the nearest code line before it does
+//! not end one (`;`, `{`, `}` or a label's `:`), and either that line ends
+//! with a binary operator or every arm's code begins with one. A `,` does not
+//! count, so an entry of an initializer list or a declaration's declarator
+//! list is not taken for an operand. Every condition below on the arms holds
+//! here too.
 //!
 //! # A conditional with `#else`/`#elif` arms
 //!
@@ -270,6 +293,56 @@ fn inside_unclosed_paren(lines: &CodeLines, i: usize) -> bool {
     balance > 0
 }
 
+/// A binary operator a line of code ends with, or an arm's code begins with,
+/// which marks an expression continuing across a directive. `,` is left out
+/// (an initializer or declarator list), and so is `:` (a label).
+fn joins_operands(code: &str, at_end: bool) -> bool {
+    const OPERATORS: &[&str] = &[
+        "||", "&&", "<<", ">>", "==", "!=", "<=", ">=", "|", "&", "^", "+", "-", "*", "/", "%",
+        "<", ">", "=", "?",
+    ];
+    let code = code.trim();
+    if at_end {
+        // `x++`/`x--` end an operand, not with an operator.
+        !code.ends_with("++")
+            && !code.ends_with("--")
+            && !code.ends_with("->")
+            && OPERATORS.iter().any(|op| code.ends_with(op))
+    } else {
+        !code.starts_with("++")
+            && !code.starts_with("--")
+            && !code.starts_with("->")
+            && OPERATORS.iter().any(|op| code.starts_with(op))
+    }
+}
+
+/// True if the conditional opening at line `i` continues an expression
+/// statement: the nearest code line before it (directive and comment-only
+/// lines skipped, a blank line a boundary) does not end a statement or a
+/// label, and it ends with a binary operator or every arm's first code
+/// begins with one. `arms` are the line ranges of the conditional's arms.
+fn continues_expression(lines: &CodeLines, i: usize, arms: &[std::ops::Range<usize>]) -> bool {
+    let Some(prev) = (0..i)
+        .rev()
+        .take(MAX_STATEMENT_LOOKBACK)
+        .take_while(|&k| !lines.raw[k].trim().is_empty())
+        .find(|&k| !lines.code[k].trim().is_empty())
+    else {
+        return false;
+    };
+    let prev = lines.code[prev].trim_end();
+    if prev.ends_with([';', '{', '}', ':', ',']) {
+        return false;
+    }
+    joins_operands(prev, true)
+        || arms.iter().all(|arm| {
+            arm.clone()
+                .map(|k| lines.code[k].trim())
+                .find(|c| !c.is_empty())
+                .is_some_and(|first| joins_operands(first, false))
+        })
+}
+
 /// Whether the innermost parenthesis still open before line `i` opens a
 /// call's argument list: a name or a closing bracket stands before it, and
 /// the name is not a keyword that takes a parenthesized expression.
@@ -345,9 +418,10 @@ pub fn blank_paren_guarded_preproc(source: &str) -> String {
     let local = locally_defined_names(&lines.raw);
 
     for i in 0..lines.len() {
-        if !is_directive_start(lines.raw[i]) || !inside_unclosed_paren(&lines, i) {
+        if !is_directive_start(lines.raw[i]) {
             continue;
         }
+        let in_paren = inside_unclosed_paren(&lines, i);
 
         let mut depth = 1i32;
         let mut end_idx = None;
@@ -390,6 +464,9 @@ pub fn blank_paren_guarded_preproc(source: &str) -> String {
             |arm: &std::ops::Range<usize>| arm.clone().any(|k| !lines.code[k].trim().is_empty());
         let own_directive =
             |arm: &std::ops::Range<usize>| arm.clone().any(|k| is_directive(lines.raw[k]));
+        if !in_paren && !continues_expression(&lines, i, &arms) {
+            continue;
+        }
         if !arms
             .iter()
             .all(|a| is_expression_fragment(a) && balanced(a))
@@ -399,7 +476,7 @@ pub fn blank_paren_guarded_preproc(source: &str) -> String {
         let kept = if branches.is_empty() {
             0
         } else {
-            if opens_call_arguments(&lines, i)
+            if (in_paren && opens_call_arguments(&lines, i))
                 || !arms.iter().all(|a| has_code(a) && !own_directive(a))
             {
                 continue;
@@ -837,6 +914,79 @@ void f(void) {
     const char *s = \"#ifdef X\";
     /* #ifdef Y */
     foo(s);
+}
+";
+        assert_eq!(blank_paren_guarded_preproc(src), src);
+    }
+
+    #[test]
+    fn fixes_conditionals_continuing_an_operator_chain() {
+        let src = "\
+unsigned f(unsigned flags) {
+  flags |= 1
+#if (MODE&1)==1
+           | 2
+#endif
+#if LEVEL<4
+           | 4
+#endif
+           ;
+  return flags;
+}
+";
+        assert!(parses_clean(src));
+        let out = fixed(src);
+        assert!(!out.contains("#if") && !out.contains("#endif"));
+        assert!(out.contains("| 2") && out.contains("| 4"));
+    }
+
+    #[test]
+    fn fixes_a_conditional_after_a_trailing_operator() {
+        let src = "\
+int f(int a, int b, int c) {
+  int x = a +
+#ifdef X
+      b +
+#endif
+      c;
+  return x;
+}
+";
+        assert!(parses_clean(src));
+    }
+
+    /// `,` does not join operands here: an initializer list's guarded entry
+    /// stays as written.
+    #[test]
+    fn leaves_a_guarded_initializer_entry_alone() {
+        let src = "\
+static const int table[] = {
+  1,
+#ifdef X
+  2,
+#endif
+  3
+};
+";
+        assert_eq!(blank_paren_guarded_preproc(src), src);
+    }
+
+    #[test]
+    fn leaves_statement_and_label_level_guards_alone() {
+        let src = "\
+int f(int a) {
+  a = 1
+    + 2;
+#ifdef X
+  -a
+#endif
+  ;
+out:
+#ifdef Y
+  | a
+#endif
+  ;
+  return a;
 }
 ";
         assert_eq!(blank_paren_guarded_preproc(src), src);

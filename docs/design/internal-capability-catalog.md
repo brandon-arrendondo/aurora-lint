@@ -1581,7 +1581,11 @@ constructs `tree-sitter-c`'s grammar has no production for at all:
 `preproc_dangling_else.rs` (an if/else chain split across a
 guard), `label_preproc_guard.rs` (a guard opening right after a
 goto label), `paren_preproc_guard.rs` (a guard opening inside
-an unclosed parenthesized expression) and
+an unclosed parenthesized expression, or continuing an expression statement
+across it: the code line before it ends no statement or label, and it ends
+with a binary operator or every arm begins with one, `,` excepted, so sqlite's
+`flags |= A` / `#if (X&1)==1` / `| B` / `#endif` chain is not read as
+`A | (X&1)==1 | B`) and
 `control_header_preproc_guard.rs` (a guard closing between an
 `if`/`while`/`for` header and the body it governs, which leaves the header
 with a synthesized `(expression_statement (MISSING ";"))` consequence that
