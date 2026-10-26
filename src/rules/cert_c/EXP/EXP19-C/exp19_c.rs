@@ -161,13 +161,33 @@ fn is_braced(body: Node, source: &str, macros: &Macros<'_>) -> bool {
 /// one, some configuration gives the statement whatever follows the
 /// `#endif`. One unbraced arm keeps the finding (ADR-0010).
 fn braced_in_every_arm(statement: Node, body: Node, source: &str, macros: &Macros<'_>) -> bool {
+    let Some(chain) = arm_chain(statement, body) else {
+        return false;
+    };
+    let mut arm = chain;
+    loop {
+        let (held, alternative) = arm_items(arm);
+        if held.len() != 1 || !is_braced(held[0], source, macros) {
+            return false;
+        }
+        match alternative {
+            Some(next) => arm = next,
+            None => return arm.kind() == "preproc_else",
+        }
+    }
+}
+
+/// The `#if`/`#ifdef` chain that holds `statement`'s body, when `body` is
+/// the empty statement tree-sitter recovers for one (see
+/// [`braced_in_every_arm`]).
+fn arm_chain<'t>(statement: Node<'t>, body: Node<'t>) -> Option<Node<'t>> {
     let recovered = body.kind() == "expression_statement"
         && body.named_child_count() == 0
         && (0..body.child_count())
             .filter_map(|i| body.child(i))
             .all(|c| c.is_missing());
     if !recovered {
-        return false;
+        return None;
     }
     // The chain follows the outermost statement that ends where the body
     // does: `for (...) if (x)` hands the `for` the `if`, and the chain comes
@@ -188,38 +208,44 @@ fn braced_in_every_arm(statement: Node, body: Node, source: &str, macros: &Macro
             {
                 item = parent
             }
-            _ => return false,
+            _ => return None,
         }
     };
-    if !matches!(chain.kind(), "preproc_if" | "preproc_ifdef") {
-        return false;
-    }
-    let mut arm = chain;
-    loop {
-        let mut cursor = arm.walk();
-        let mut held = Vec::new();
-        let mut alternative = None;
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                match cursor.field_name() {
-                    Some("alternative") => alternative = Some(child),
-                    Some("name") | Some("condition") => {}
-                    _ if child.is_named() && child.kind() != "comment" => held.push(child),
-                    _ => {}
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
+    matches!(chain.kind(), "preproc_if" | "preproc_ifdef").then_some(chain)
+}
+
+/// What one arm of an `#if` chain holds, comments aside, and the arm after
+/// it.
+fn arm_items(arm: Node) -> (Vec<Node>, Option<Node>) {
+    let mut cursor = arm.walk();
+    let mut held = Vec::new();
+    let mut alternative = None;
+    if cursor.goto_first_child() {
+        loop {
+            let child = cursor.node();
+            match cursor.field_name() {
+                Some("alternative") => alternative = Some(child),
+                Some("name") | Some("condition") => {}
+                _ if child.is_named() && child.kind() != "comment" => held.push(child),
+                _ => {}
+            }
+            if !cursor.goto_next_sibling() {
+                break;
             }
         }
-        if held.len() != 1 || !is_braced(held[0], source, macros) {
-            return false;
-        }
-        match alternative {
-            Some(next) => arm = next,
-            None => return arm.kind() == "preproc_else",
-        }
+    }
+    (held, alternative)
+}
+
+/// Where a finding for `statement`'s unbraced `body` goes: the body itself,
+/// or, when the body comes through an `#if` chain, the first statement of
+/// the chain's first arm. The recovered empty body sits inside the
+/// directive or past the end of the statement's line, so an arm with nothing
+/// in it falls back to `keyword`.
+fn report_at<'t>(statement: Node<'t>, body: Node<'t>, keyword: Node<'t>) -> Node<'t> {
+    match arm_chain(statement, body) {
+        Some(chain) => arm_items(chain).0.first().copied().unwrap_or(keyword),
+        None => body,
     }
 }
 
@@ -322,7 +348,7 @@ impl Exp19C {
                 && !braced_in_every_arm(if_node, consequence, source, macros)
             {
                 violations.push(self.create_violation(
-                    consequence,
+                    report_at(if_node, consequence, if_node),
                     "if",
                     "if statement body should be enclosed in braces {}",
                 ));
@@ -359,7 +385,7 @@ impl Exp19C {
                 && !braced_in_every_arm(if_node, body, source, macros)
             {
                 violations.push(self.create_violation(
-                    body,
+                    report_at(if_node, body, alternative),
                     "else",
                     "else statement body should be enclosed in braces {}",
                 ));
@@ -369,7 +395,8 @@ impl Exp19C {
         violations
     }
 
-    /// Check if a for_statement has braces around its body
+    /// Check if a for_statement has braces around its body, reported at
+    /// the body like an if's arms.
     fn check_for_statement(
         &self,
         for_node: Node,
@@ -381,7 +408,7 @@ impl Exp19C {
                 && !braced_in_every_arm(for_node, body, source, macros)
             {
                 return Some(self.create_violation(
-                    for_node,
+                    report_at(for_node, body, for_node),
                     "for",
                     "for statement body should be enclosed in braces {}",
                 ));
@@ -391,7 +418,8 @@ impl Exp19C {
         None
     }
 
-    /// Check if a while_statement has braces around its body
+    /// Check if a while_statement has braces around its body, reported at
+    /// the body like an if's arms.
     fn check_while_statement(
         &self,
         while_node: Node,
@@ -406,7 +434,7 @@ impl Exp19C {
                 && !braced_in_every_arm(while_node, body, source, macros)
             {
                 return Some(self.create_violation(
-                    while_node,
+                    report_at(while_node, body, while_node),
                     "while",
                     "while statement body should be enclosed in braces {}",
                 ));

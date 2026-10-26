@@ -9713,17 +9713,14 @@ fn manifest_exp19() -> PathBuf {
     fixtures().join("manifest_exp19.toml")
 }
 
-/// EXP19-C reports each unbraced arm of an if/else where its body starts:
-/// the else of an if whose own body is unbraced too, an if and an else on
-/// one line as two findings, and a null `else ;` at its `;`. The generated
-/// fixture test only sees whether the rule fires, so the locations are
-/// asserted here.
-#[test]
-fn exp19_reports_each_unbraced_arm_at_its_body() {
+/// EXP19-C findings in one of its fail fixtures, as (line, column, keyword)
+/// sorted, the keyword read from the head of the message.
+fn exp19_findings(fixture: &str) -> Vec<(u64, u64, String)> {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src/rules/cert_c/EXP/EXP19-C/tests/fail/unbraced_else_after_an_unbraced_if.c");
+        .join("src/rules/cert_c/EXP/EXP19-C/tests/fail")
+        .join(fixture);
 
     let (code, _, _) = run_aurora_lint(&[
         fixture.to_str().unwrap(),
@@ -9740,28 +9737,59 @@ fn exp19_reports_each_unbraced_arm_at_its_body() {
         .iter()
         .filter(|v| v["rule_id"] == "EXP19-C")
         .map(|v| {
-            let arm = v["message"].as_str().unwrap().split(' ').next().unwrap();
+            let keyword = v["message"].as_str().unwrap().split(' ').next().unwrap();
             (
                 v["line"].as_u64().unwrap(),
                 v["column"].as_u64().unwrap(),
-                arm.to_string(),
+                keyword.to_string(),
             )
         })
         .collect();
     found.sort();
-    let expected: Vec<(u64, u64, String)> = [
-        (16, 9, "if"),
-        (18, 9, "else"),
-        (24, 9, "else"),
-        (27, 9, "if"),
-        (29, 9, "if"),
-        (31, 9, "else"),
-        (33, 21, "if"),
-        (33, 36, "else"),
-        (37, 12, "else"),
-    ]
-    .into_iter()
-    .map(|(l, c, a)| (l, c, a.to_string()))
-    .collect();
-    assert_eq!(found, expected);
+    found
+}
+
+fn expected_exp19(rows: &[(u64, u64, &str)]) -> Vec<(u64, u64, String)> {
+    rows.iter()
+        .map(|&(l, c, k)| (l, c, k.to_string()))
+        .collect()
+}
+
+/// EXP19-C reports each unbraced arm of an if/else where its body starts:
+/// the else of an if whose own body is unbraced too, an if and an else on
+/// one line as two findings, and a null `else ;` at its `;`. The generated
+/// fixture test only sees whether the rule fires, so the locations are
+/// asserted here.
+#[test]
+fn exp19_reports_each_unbraced_arm_at_its_body() {
+    assert_eq!(
+        exp19_findings("unbraced_else_after_an_unbraced_if.c"),
+        expected_exp19(&[
+            (16, 9, "if"),
+            (18, 9, "else"),
+            (24, 9, "else"),
+            (27, 9, "if"),
+            (29, 9, "if"),
+            (31, 9, "else"),
+            (33, 21, "if"),
+            (33, 36, "else"),
+            (37, 12, "else"),
+        ])
+    );
+}
+
+/// An unbraced for or while body is reported at the body too, and a body
+/// that comes through #if arms at the first statement of the first arm.
+#[test]
+fn exp19_reports_loop_bodies_and_preprocessor_arms_at_the_body() {
+    assert_eq!(
+        exp19_findings("unbraced_body_through_preprocessor_arms_and_loops.c"),
+        expected_exp19(&[
+            (17, 9, "for"),
+            (20, 9, "while"),
+            (22, 14, "for"),
+            (29, 9, "if"),
+            (36, 9, "while"),
+        ])
+    );
 }

@@ -143,7 +143,9 @@ A per-line suppression carries a hash of the finding's line
 (:doc:`suppression`), so a finding that now lands on a different line leaves
 its suppression unused and is reported again. In 0.7.0, PRE01-C reports each
 unparenthesized use of a macro parameter where it is written, not once per
-parameter at the ``#define``. Regenerate PRE01-C suppressions with
+parameter at the ``#define``. EXP19-C reports each unbraced ``if``,
+``else``, ``for`` and ``while`` body where the body starts, not at its
+keyword. Regenerate PRE01-C and EXP19-C suppressions with
 ``--generate-suppression``.
 
 Saved prescan caches and the settings hash
