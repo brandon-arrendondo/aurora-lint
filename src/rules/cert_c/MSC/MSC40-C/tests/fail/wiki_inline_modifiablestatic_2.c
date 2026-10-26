@@ -2,6 +2,7 @@
  * Rule: MSC40-C
  * Source: wiki
  * Status: FAIL - Should trigger MSC40-C violation
+ * Expect: count=2
  */
 
 /* file2.c */
