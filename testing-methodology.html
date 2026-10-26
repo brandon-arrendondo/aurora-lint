@@ -207,6 +207,41 @@ option overrides on top of each preset:</p>
 <p>A rule that honors an option carries at least one fixture whose outcome
 depends on it, so each setting is exercised in both directions. CI runs the
 whole suite, so both presets are covered there.</p>
+<p><strong>Where and how often</strong>: by itself, a run that expects a violation passes on
+any finding, on any line. A fail fixture can say more, so it cannot pass on
+a finding that names some other construct, or on duplicates of the one it
+should name (ADR-0005). An <code class="docutils literal notranslate"><span class="pre">Expect:</span> <span class="pre">here</span></code> comment trailing a line of code
+requires a finding on that line, and <code class="docutils literal notranslate"><span class="pre">count=N</span></code> in the header requires
+exactly N findings:</p>
+<div class="highlight-c notranslate"><div class="highlight"><pre><span></span><span class="cm">/*</span>
+<span class="cm"> * Expect: count=1</span>
+<span class="cm"> */</span>
+<span class="kt">void</span><span class="w"> </span><span class="nf">f</span><span class="p">(</span><span class="kt">size_t</span><span class="w"> </span><span class="n">n</span><span class="p">,</span><span class="w"> </span><span class="p">...)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="kt">va_list</span><span class="w"> </span><span class="n">ap</span><span class="p">;</span>
+<span class="w">  </span><span class="n">va_start</span><span class="p">(</span><span class="n">ap</span><span class="p">,</span><span class="w"> </span><span class="n">n</span><span class="p">);</span>
+<span class="w">  </span><span class="kt">unsigned</span><span class="w"> </span><span class="kt">char</span><span class="w"> </span><span class="n">c</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">va_arg</span><span class="p">(</span><span class="n">ap</span><span class="p">,</span><span class="w"> </span><span class="kt">unsigned</span><span class="w"> </span><span class="kt">char</span><span class="p">);</span><span class="w"> </span><span class="cm">/* Expect: here */</span>
+<span class="w">  </span><span class="n">va_end</span><span class="p">(</span><span class="n">ap</span><span class="p">);</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">count=N</span></code> goes on the same <code class="docutils literal notranslate"><span class="pre">Expect:</span></code> line as any per-preset entries
+(<code class="docutils literal notranslate"><span class="pre">Expect:</span> <span class="pre">default=clean</span> <span class="pre">strict=violation</span> <span class="pre">count=2</span></code>). Both forms apply to
+every run that expects a violation; a run that expects none already requires
+no finding anywhere. A fixture may mark several lines. In a macro definition,
+the marker goes before the continuation backslash. A comment that opens with
+<code class="docutils literal notranslate"><span class="pre">expect:</span></code>, in any case and spacing, is taken for a marker, and the build
+fails on:</p>
+<ul class="simple">
+<li><p>a marker spelled any other way than <code class="docutils literal notranslate"><span class="pre">/*</span> <span class="pre">Expect:</span> <span class="pre">here</span> <span class="pre">*/</span></code> or
+<code class="docutils literal notranslate"><span class="pre">//</span> <span class="pre">Expect:</span> <span class="pre">here</span></code>, or a block comment that doesn’t close on its line;</p></li>
+<li><p>a marker on a line with no code;</p></li>
+<li><p>any other word after a trailing <code class="docutils literal notranslate"><span class="pre">Expect:</span></code>;</p></li>
+<li><p>a marker or count in a fixture where no run expects a violation;</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">count=0</span></code> (say <code class="docutils literal notranslate"><span class="pre">clean</span></code>).</p></li>
+</ul>
+<p>Text inside a string or character literal is not a comment, so a marker
+there marks nothing. Each marker is read from the line it trails, so it moves
+with its code when the fixture is edited.</p>
 <p>Tests are auto-generated into Rust test functions from <code class="docutils literal notranslate"><span class="pre">.c</span></code> files — no embedded
 <code class="docutils literal notranslate"><span class="pre">#[cfg(test)]</span></code> modules in rule implementation files. Run tests with:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># All tests</span>
