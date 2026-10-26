@@ -88,7 +88,7 @@ struct FilePrescanResult {
     function_macro_names: HashSet<String>,
     static_macro_names: HashSet<String>,
     macro_operand_params: HashMap<String, crate::analyze::macro_expand::OperandParams>,
-    function_macro_arms: HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>,
+    function_macro_arms: HashMap<String, Vec<crate::analyze::macro_expand::ConditionedArm>>,
     unused_attribute_macros: HashSet<String>,
     /// Object-like macros this file defines as the GNU noreturn attribute.
     attribute_noreturn_macros: HashSet<String>,
@@ -424,10 +424,8 @@ fn process_file(
             &source,
             &mut result.macro_operand_params,
         );
-        crate::analyze::macro_expand::extend_function_macro_arms(
-            &source,
-            &mut result.function_macro_arms,
-        );
+        result.function_macro_arms =
+            crate::analyze::macro_expand::collect_conditioned_macro_arms(&root, &source);
         crate::utility::cert_c::ast_utils::collect_unused_attribute_macro_names(
             &source,
             &mut result.unused_attribute_macros,
@@ -829,7 +827,7 @@ fn prescan_file_list(
     let mut c_file_macro_arms: Vec<(
         String,
         String,
-        HashMap<String, Vec<crate::analyze::macro_expand::MacroArm>>,
+        HashMap<String, Vec<crate::analyze::macro_expand::ConditionedArm>>,
     )> = Vec::new();
     let mut unused_attribute_macros: HashSet<String> = HashSet::new();
     let mut attribute_noreturn_macros: HashSet<String> = HashSet::new();
@@ -8116,7 +8114,7 @@ pub fn resolve_includes_scoped(
                 );
                 crate::analyze::macro_expand::merge_function_macro_arms(
                     Arc::make_mut(&mut context.function_macro_arms),
-                    crate::analyze::macro_expand::collect_function_macro_arms(&hsource),
+                    crate::analyze::macro_expand::collect_conditioned_macro_arms(&root, &hsource),
                     &header_key,
                 );
                 crate::utility::cert_c::ast_utils::collect_unused_attribute_macro_names(

@@ -4,10 +4,12 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval::{merged_macro_aliases, resolve_macro_alias};
 use crate::analyze::context::{EffectView, IncludeClosure, ProjectContext, VisibleTypes};
+use crate::analyze::dead_regions::line_compiles_under;
 use crate::analyze::function_summary::extract_function_name;
 use crate::analyze::macro_expand::{
-    self, ArgEvaluation, FunctionMacro, MacroArm, Pasting, ProjectMacroArm,
+    self, ArgEvaluation, ArmSite, FunctionMacro, MacroArm, Pasting, ProjectMacroArm,
 };
+use crate::analyze::preproc_arms::PreprocArms;
 use crate::analyze::side_effects::{
     collect_direct_effects, dereferences_applied, designates_object, is_null_pointer_constant,
     is_type_name_text, is_volatile_read_in, names_a_type, typedef_is_volatile, typedef_read_in,
@@ -19,7 +21,7 @@ use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::library_effects::{library_call_effect, LibraryEffect};
 use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -145,7 +147,12 @@ impl CertRule for Pre31C {
         let project_names = Arc::clone(&self.function_macro_names.borrow());
         let macro_names = macro_expand::FunctionMacroNames::new(source, &project_names);
         let settings = Arc::clone(&self.settings.borrow());
-        let arms = macro_expand::collect_function_macro_arms(source);
+        let arm_sites =
+            macro_expand::collect_function_macro_arm_sites(&ast_utils::tree_root(node), source);
+        let arms: HashMap<String, Vec<MacroArm>> = arm_sites
+            .iter()
+            .map(|(name, arms)| (name.clone(), arms.iter().map(|(a, _)| a.clone()).collect()))
+            .collect();
         let project_arms = Arc::clone(&self.function_macro_arms.borrow());
         let aliases = merged_macro_aliases(&self.macro_aliases.borrow(), node, source);
         let types = self.types.borrow();
@@ -195,7 +202,9 @@ impl CertRule for Pre31C {
             root: ast_utils::tree_root(node),
             names: &macro_names,
             first: &function_macros,
-            arms: &arms,
+            arm_sites: &arm_sites,
+            preproc: OnceCell::new(),
+            site: Cell::new((0, 0)),
             project_arms: &project_arms,
             include_edges: &include_edges,
             file_path: file_path.as_deref(),
@@ -217,6 +226,8 @@ impl CertRule for Pre31C {
             if ast_utils::is_on_preproc_directive_line(source, call_node.start_byte()) {
                 continue;
             }
+            ctx.site
+                .set((call_node.start_position().row + 1, call_node.start_byte()));
             self.check_macro_call(&call_node, &ctx, violations);
         }
     }
@@ -242,8 +253,11 @@ fn library_unsafe_argument(name: &str) -> Option<usize> {
 /// read proves nothing, so the argument is not credited at all.
 fn pasted_call_evaluation(ctx: &Ctx, name: &str, call: &Node) -> ArgEvaluation {
     let name = ctx.resolve(name);
-    let arms = match ctx.arms.get(name).filter(|a| !a.is_empty()) {
-        Some(arms) => arms.clone(),
+    if ctx.undefined_here(name) {
+        return ArgEvaluation::Once;
+    }
+    let arms = match ctx.local_arms(name) {
+        Some(arms) => arms,
         None if library_unsafe_argument(name).is_some() => return ArgEvaluation::Unpredictable,
         None if ctx.bound_by_library_contract(name) || !ctx.names.contains(name) => {
             return ArgEvaluation::Once;
@@ -310,8 +324,15 @@ struct Ctx<'a> {
     /// One definition per name (project-wide, this file's winning).
     first: &'a HashMap<String, FunctionMacro>,
     /// This file's definitions, every preprocessor branch, variadic and
-    /// `#`/`##` arms included.
-    arms: &'a HashMap<String, Vec<MacroArm>>,
+    /// `#`/`##` arms included, with where each `#define` making one sits.
+    arm_sites: &'a HashMap<String, Vec<(MacroArm, Vec<ArmSite>)>>,
+    /// This file's `#if` chains, read the first time a name has several
+    /// definitions of its own.
+    preproc: OnceCell<PreprocArms>,
+    /// The invocation being judged: its 1-based line and byte offset. Every
+    /// macro an invocation expands, its arguments' included, is expanded
+    /// there, so each is judged by the definitions that compile with it.
+    site: Cell<(usize, usize)>,
     /// Every scanned header's definitions, the same way, with their files.
     project_arms: &'a HashMap<String, Vec<ProjectMacroArm>>,
     /// `Pre31C::include_edges`.
@@ -341,9 +362,12 @@ impl<'a> Ctx<'a> {
     /// project has when that is unknown), else the one expandable definition
     /// the project keeps. Two headers may define one name two ways; a call
     /// is compiled with the one its translation unit includes (ADR-0006).
+    /// Only the arms that can compile with the invocation being judged
+    /// count; empty when none can ([`Self::undefined_here`]) as when no body
+    /// can be read.
     fn definitions(&self, name: &str) -> Vec<MacroArm> {
-        if let Some(arms) = self.arms.get(name).filter(|arms| !arms.is_empty()) {
-            return arms.clone();
+        if let Some(arms) = self.local_arms(name) {
+            return arms;
         }
         let closure = if self
             .project_arms
@@ -359,8 +383,14 @@ impl<'a> Ctx<'a> {
         } else {
             None
         };
-        let arms = macro_expand::reachable_arms(self.project_arms, name, closure);
-        if !arms.is_empty() {
+        let line = self.site.get().0;
+        let arms = macro_expand::reachable_arms_admitted(
+            self.project_arms,
+            name,
+            closure,
+            &|conditions| line_compiles_under(self.source, line, conditions),
+        );
+        if !arms.is_empty() || self.project_arms.get(name).is_some_and(|a| !a.is_empty()) {
             return arms;
         }
         self.first
@@ -368,6 +398,55 @@ impl<'a> Ctx<'a> {
             .map(MacroArm::from)
             .into_iter()
             .collect()
+    }
+
+    /// This file's own definitions of `name` that can compile with the
+    /// invocation being judged (ADR-0010 D4): an arm goes when every
+    /// `#define` making it is in another arm of an `#if` chain than the
+    /// invocation, or under macro states the invocation's line does not
+    /// compile under (`#ifdef OMIT_GET` against a call inside `#ifndef
+    /// OMIT_GET`). Positive-only: an arm goes only on that proof. `None`
+    /// when the file defines no arm of `name`; empty when it defines some
+    /// and none can compile with the invocation.
+    fn local_arms(&self, name: &str) -> Option<Vec<MacroArm>> {
+        let sites = self.arm_sites.get(name).filter(|a| !a.is_empty())?;
+        let (line, at) = self.site.get();
+        let chains = self
+            .preproc
+            .get_or_init(|| PreprocArms::collect(&self.root));
+        Some(
+            sites
+                .iter()
+                .filter(|(_, defines)| {
+                    defines.iter().any(|d| {
+                        !chains.exclusive(d.offset, at)
+                            && line_compiles_under(self.source, line, &d.conditions)
+                    })
+                })
+                .map(|(a, _)| a.clone())
+                .collect(),
+        )
+    }
+
+    /// Whether `name` is a function-like macro somewhere in the scan, but no
+    /// definition of it can compile with the invocation being judged
+    /// ([`Self::local_arms`], `macro_expand::reachable_arms_admitted`): there
+    /// the name is a function, and a call evaluates each argument once.
+    /// sqlite's `sqlite3UpsertNew` is the null macro only under
+    /// `SQLITE_OMIT_UPSERT`, and upsert.c compiles only without it. Never
+    /// for a C library macro the standard lets evaluate an argument other
+    /// than once: its header's own definition is still in force.
+    fn undefined_here(&self, name: &str) -> bool {
+        if library_unsafe_argument(name).is_some() {
+            return false;
+        }
+        match self.local_arms(name) {
+            Some(arms) => arms.is_empty(),
+            None => {
+                self.project_arms.get(name).is_some_and(|a| !a.is_empty())
+                    && self.definitions(name).is_empty()
+            }
+        }
     }
 
     /// Whether `name` is the C library's own macro for a library function
@@ -779,7 +858,11 @@ impl Pre31C {
         };
         let spelled = get_node_text(&function_node, ctx.source);
         let macro_name = ctx.resolve(spelled);
-        let arms = ctx.arms.get(macro_name).filter(|a| !a.is_empty());
+        // No definition compiles with this invocation: here it is a call.
+        if ctx.undefined_here(macro_name) {
+            return;
+        }
+        let arms = ctx.local_arms(macro_name);
 
         // Which argument positions this macro may evaluate other than once.
         // A macro this file defines is judged by every arm it has, since any

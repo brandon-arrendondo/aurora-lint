@@ -102,7 +102,7 @@ is live.* `--report-macro-gaps` shows the engine's definition verdicts for
 every macro involved (`printf`, `assert`, `userError`, `IRQT_TO_CORE`,
 `IDX_TO_IRQT`, `VTX_TERNARY`, `SMP_COND_STATEMENT`) are identical in H and P.
 Macro arms are collected per file and never read another file's `#define`
-(`extend_function_macro_arms`, `reachable_arms`).
+(`collect_conditioned_macro_arms`, `reachable_arms`).
 
 What changes is callee knowledge. PRE31-C reports a macro argument "with
 side effect" when it calls a function the effect analysis cannot show to be

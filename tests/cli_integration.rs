@@ -5780,6 +5780,23 @@ fn pre31_header_macro_evaluating_once_in_every_arm_is_clean() {
     assert!(violations.is_empty(), "{:?}", violations);
 }
 
+/// A header arm is judged only against calls it can compile with (ADR-0010
+/// D4): `get_opt` drops its argument only where `OMIT_GET` is defined, and
+/// the call compiles only where it is not.
+#[test]
+fn pre31_header_arm_never_compiling_with_the_call_is_not_judged() {
+    let violations = pre31_crossfile_violations("arm_never_compiles_with_the_call");
+    assert!(violations.is_empty(), "{:?}", violations);
+}
+
+/// Where no definition of a header macro compiles with the call, the name is
+/// the function there and evaluates each argument once.
+#[test]
+fn pre31_header_macro_undefined_where_the_call_compiles_is_a_call() {
+    let violations = pre31_crossfile_violations("macro_undefined_where_the_call_compiles");
+    assert!(violations.is_empty(), "{:?}", violations);
+}
+
 /// A `#define` in another .c file is live only in that translation unit:
 /// `a.c`'s own `TWICE` evaluates its argument twice, but `main.c` gets
 /// `util.h`'s, which evaluates it once.

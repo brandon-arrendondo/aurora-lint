@@ -608,23 +608,101 @@ pub enum ArgEvaluation {
 /// skips them).
 pub fn collect_function_macro_arms(source: &str) -> HashMap<String, Vec<MacroArm>> {
     let mut out = HashMap::new();
-    extend_function_macro_arms(source, &mut out);
+    each_function_macro_arm(source, |name, arm, _, _| push_arm(&mut out, name, arm));
     out
 }
 
-/// Add every arm [`collect_function_macro_arms`] finds in `source` to `out`,
-/// each distinct definition of a name once: how the prescan builds
-/// `ProjectContext::function_macro_arms` across headers. An arm in a region
-/// the file itself proves dead (`#if 0`) is no build's, and is skipped.
-pub fn extend_function_macro_arms(source: &str, out: &mut HashMap<String, Vec<MacroArm>>) {
+/// Where one `#define` making an arm sits: its byte offset, and the macro
+/// states the arms enclosing it fix
+/// ([`crate::analyze::dead_regions::arm_assumptions`]; empty for a
+/// `#define` the parser did not read as one, or under no condition it can
+/// express).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArmSite {
+    /// Byte offset of the line the `#define` starts on.
+    pub offset: usize,
+    /// The macro states it is made under.
+    pub conditions: Vec<(String, bool)>,
+}
+
+/// [`collect_function_macro_arms`] with every `#define` that makes each arm,
+/// for pairing a definition with the calls it can compile with (ADR-0010
+/// D4).
+pub fn collect_function_macro_arm_sites(
+    root: &tree_sitter::Node,
+    source: &str,
+) -> HashMap<String, Vec<(MacroArm, Vec<ArmSite>)>> {
+    let conditions: HashMap<usize, Vec<(String, bool)>> =
+        lang_parsing_substrate::query::find_descendants_of_kind(*root, "preproc_function_def")
+            .into_iter()
+            .map(|d| {
+                (
+                    d.start_position().row + 1,
+                    crate::analyze::dead_regions::arm_assumptions(&d, source),
+                )
+            })
+            .collect();
+    let mut out: HashMap<String, Vec<(MacroArm, Vec<ArmSite>)>> = HashMap::new();
+    each_function_macro_arm(source, |name, arm, line, offset| {
+        let site = ArmSite {
+            offset,
+            conditions: conditions.get(&line).cloned().unwrap_or_default(),
+        };
+        let arms = out.entry(name).or_default();
+        match arms.iter_mut().find(|(a, _)| *a == arm) {
+            Some((_, sites)) => sites.push(site),
+            None => arms.push((arm, vec![site])),
+        }
+    });
+    out
+}
+
+/// One file's arms for the project-wide table, each with every distinct set
+/// of macro states a `#define` making it sits under: how the prescan builds
+/// `ProjectContext::function_macro_arms`.
+pub fn collect_conditioned_macro_arms(
+    root: &tree_sitter::Node,
+    source: &str,
+) -> HashMap<String, Vec<ConditionedArm>> {
+    collect_function_macro_arm_sites(root, source)
+        .into_iter()
+        .map(|(name, arms)| {
+            let mut out: Vec<ConditionedArm> = Vec::new();
+            for (arm, sites) in arms {
+                for site in sites {
+                    let entry = (arm.clone(), site.conditions);
+                    if !out.contains(&entry) {
+                        out.push(entry);
+                    }
+                }
+            }
+            (name, out)
+        })
+        .collect()
+}
+
+/// Whether a call compiles under one set of `(macro, defined)` states.
+pub type Admits<'a> = &'a dyn Fn(&[(String, bool)]) -> bool;
+
+/// A definition and the macro states its `#define` sits under.
+pub type ConditionedArm = (MacroArm, Vec<(String, bool)>);
+
+/// Every function-like `#define` in `source` as `(name, arm, first line,
+/// byte offset of that line)`. An arm in a region the file itself proves
+/// dead (`#if 0`) is no build's, and is skipped.
+fn each_function_macro_arm(source: &str, mut f: impl FnMut(String, MacroArm, usize, usize)) {
     let dead: Vec<(usize, usize)> = lang_parsing_substrate::dead_code_ranges(source)
         .into_iter()
         .map(|r| (r.start_line, r.end_line))
         .collect();
     let lines: Vec<&str> = source.lines().collect();
+    let starts: Vec<usize> = std::iter::once(0)
+        .chain(source.match_indices('\n').map(|(k, _)| k + 1))
+        .collect();
     let mut i = 0;
     while i < lines.len() {
         let first_line = i + 1;
+        let offset = starts.get(i).copied().unwrap_or(source.len());
         let (logical, next) = join_continuation(&lines, i);
         i = next;
         if dead
@@ -634,7 +712,7 @@ pub fn extend_function_macro_arms(source: &str, out: &mut HashMap<String, Vec<Ma
             continue;
         }
         if let Some((name, arm)) = parse_define_arm(&logical) {
-            push_arm(out, name, arm);
+            f(name, arm, first_line, offset);
         }
     }
 }
@@ -648,24 +726,36 @@ pub struct ProjectMacroArm {
     pub arm: MacroArm,
     /// Real paths of the files that define it this way.
     pub files: Vec<String>,
+    /// The macro states each `#define` making it sits under, each distinct
+    /// set once; an empty set is a definition under no condition the arm
+    /// readers can express, which compiles with every call.
+    pub conditions: Vec<Vec<(String, bool)>>,
 }
 
 /// Fold `file`'s arms into the project-wide table, keeping each distinct
-/// definition of a name once, with every file that makes it.
+/// definition of a name once, with every file that makes it and every set of
+/// macro states it is made under.
 pub fn merge_function_macro_arms(
     into: &mut HashMap<String, Vec<ProjectMacroArm>>,
-    from: HashMap<String, Vec<MacroArm>>,
+    from: HashMap<String, Vec<ConditionedArm>>,
     file: &str,
 ) {
     for (name, arms) in from {
         let entries = into.entry(name).or_default();
-        for arm in arms {
+        for (arm, condition) in arms {
             match entries.iter_mut().find(|e| e.arm == arm) {
-                Some(e) if !e.files.iter().any(|f| f == file) => e.files.push(file.to_string()),
-                Some(_) => {}
+                Some(e) => {
+                    if !e.files.iter().any(|f| f == file) {
+                        e.files.push(file.to_string());
+                    }
+                    if !e.conditions.contains(&condition) {
+                        e.conditions.push(condition);
+                    }
+                }
                 None => entries.push(ProjectMacroArm {
                     arm,
                     files: vec![file.to_string()],
+                    conditions: vec![condition],
                 }),
             }
         }
@@ -681,22 +771,41 @@ pub fn reachable_arms(
     name: &str,
     reachable: Option<&crate::analyze::context::IncludeClosure>,
 ) -> Vec<MacroArm> {
+    reachable_arms_admitted(table, name, reachable, &|_| true)
+}
+
+/// [`reachable_arms`], less the arms no `#define` of which can compile with
+/// the call: `admits` says whether the call compiles under one set of macro
+/// states an arm is made under (ADR-0010 D4, arms are alternatives; a call
+/// inside `#ifndef OMIT_GET` never meets the arm defined under `#ifdef
+/// OMIT_GET`). Positive-only: an arm goes only on proof, so one made under
+/// no condition `admits` can read stays. Empty when every arm goes: no
+/// definition of `name` is in force where the call compiles.
+pub fn reachable_arms_admitted(
+    table: &HashMap<String, Vec<ProjectMacroArm>>,
+    name: &str,
+    reachable: Option<&crate::analyze::context::IncludeClosure>,
+    admits: Admits<'_>,
+) -> Vec<MacroArm> {
     let Some(entries) = table.get(name) else {
         return Vec::new();
     };
-    let seen: Vec<MacroArm> = match reachable {
+    let mut seen: Vec<&ProjectMacroArm> = match reachable {
         Some(closure) => entries
             .iter()
             .filter(|e| e.files.iter().any(|f| closure.may_include(f)))
-            .map(|e| e.arm.clone())
             .collect(),
         None => Vec::new(),
     };
     if seen.is_empty() {
-        entries.iter().map(|e| e.arm.clone()).collect()
-    } else {
-        seen
+        seen = entries.iter().collect();
     }
+    seen.into_iter()
+        .filter(|e| {
+            e.conditions.is_empty() || e.conditions.iter().any(|c| c.is_empty() || admits(c))
+        })
+        .map(|e| e.arm.clone())
+        .collect()
 }
 
 fn push_arm(out: &mut HashMap<String, Vec<MacroArm>>, name: String, arm: MacroArm) {
@@ -3952,6 +4061,13 @@ mod tests {
     use super::*;
     use crate::analyze::context::IncludeClosure;
 
+    /// `collect_conditioned_macro_arms` over `src`, parsed.
+    fn conditioned(src: &str) -> HashMap<String, Vec<ConditionedArm>> {
+        let mut p = crate::parser::CParser::new().unwrap();
+        let (tree, src) = p.parse_source(src).unwrap();
+        collect_conditioned_macro_arms(&tree.root_node(), &src)
+    }
+
     #[test]
     fn function_macro_arms_merge_across_files_once_each() {
         let header = "#ifndef NDEBUG\n\
@@ -3963,13 +4079,22 @@ mod tests {
         let other = "#define DBG(x) record(x)\n#define DBG(y) note(y)\n\
                      #if 0\n#define DBG(z) never(z)\n#endif\n";
         let mut project = HashMap::new();
-        merge_function_macro_arms(&mut project, collect_function_macro_arms(header), "/p/a.h");
-        merge_function_macro_arms(&mut project, collect_function_macro_arms(other), "/p/b.h");
+        merge_function_macro_arms(&mut project, conditioned(header), "/p/a.h");
+        merge_function_macro_arms(&mut project, conditioned(other), "/p/b.h");
         let bodies: Vec<&str> = project["DBG"].iter().map(|a| a.arm.body.as_str()).collect();
         // An `#if 0` arm is no build's.
         assert_eq!(bodies, ["record(x)", "((void)0)", "note(y)"]);
-        // A definition two files make is one arm, made by both.
+        // A definition two files make is one arm, made by both, under each
+        // file's conditions.
         assert_eq!(project["DBG"][0].files, ["/p/a.h", "/p/b.h"]);
+        assert_eq!(
+            project["DBG"][0].conditions,
+            [vec![("NDEBUG".to_string(), false)], vec![]]
+        );
+        assert_eq!(
+            project["DBG"][1].conditions,
+            [vec![("NDEBUG".to_string(), true)]]
+        );
         assert_eq!(
             project["LOG"][0].arm.variadic,
             Some((1, "__VA_ARGS__".to_string()))
@@ -3988,16 +4113,45 @@ mod tests {
     }
 
     #[test]
+    fn an_arm_no_definition_of_which_compiles_with_the_call_is_not_reachable() {
+        let header = "#ifndef OPT_H\n#define OPT_H\n\
+                      #ifdef OMIT_GET\n#define get_opt(X) ((void*)0)\n\
+                      #else\n#define get_opt(X) get_opt_fn(X)\n#endif\n#endif\n";
+        let mut project = HashMap::new();
+        merge_function_macro_arms(&mut project, conditioned(header), "/p/opt.h");
+        // The include guard is no condition.
+        assert_eq!(
+            project["get_opt"][0].conditions,
+            [vec![("OMIT_GET".to_string(), true)]]
+        );
+        let bodies = |admits: Admits| -> Vec<String> {
+            reachable_arms_admitted(&project, "get_opt", None, admits)
+                .into_iter()
+                .map(|a| a.body)
+                .collect()
+        };
+        // A call inside `#ifndef OMIT_GET` compiles only where it is undefined.
+        let caller = "#ifndef OMIT_GET\nvoid g(int i) { get_opt(i++); }\n#endif\n";
+        let under =
+            |c: &[(String, bool)]| crate::analyze::dead_regions::line_compiles_under(caller, 2, c);
+        assert_eq!(bodies(&under), ["get_opt_fn(X)"]);
+        // A call under no condition meets both.
+        assert_eq!(bodies(&|_| true).len(), 2);
+        // Where no arm compiles with the call, no definition is in force.
+        assert!(bodies(&|_| false).is_empty());
+    }
+
+    #[test]
     fn reachable_arms_are_the_ones_the_include_closure_defines() {
         let mut project = HashMap::new();
         merge_function_macro_arms(
             &mut project,
-            collect_function_macro_arms("#define SQ(x) ((x) * (x))\n"),
+            conditioned("#define SQ(x) ((x) * (x))\n"),
             "/p/math_util.h",
         );
         merge_function_macro_arms(
             &mut project,
-            collect_function_macro_arms("#define SQ(x) square(x)\n"),
+            conditioned("#define SQ(x) square(x)\n"),
             "/p/shapes.h",
         );
         let bodies = |r: Option<&IncludeClosure>| -> Vec<String> {
