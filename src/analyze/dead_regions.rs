@@ -332,6 +332,38 @@ pub fn line_compiles_under(source: &str, line: usize, assumptions: &[(String, bo
     })
 }
 
+/// [`line_compiles_under`] for many lines of one file, the regions kept per
+/// assumption set: built once per file, so a lookup costs no hash of the
+/// source (a rule asking at every call in a large file made that quadratic).
+pub struct ConfiguredLines<'s> {
+    source: &'s str,
+    regions: std::cell::RefCell<std::collections::HashMap<Vec<(String, bool)>, DeadRegions>>,
+}
+
+impl<'s> ConfiguredLines<'s> {
+    /// The lines of `source`, no assumption set read yet.
+    pub fn of(source: &'s str) -> Self {
+        Self {
+            source,
+            regions: Default::default(),
+        }
+    }
+
+    /// Whether 1-based `line` survives preprocessing with the macros in
+    /// `assumptions` fixed.
+    pub fn compiles_under(&self, line: usize, assumptions: &[(String, bool)]) -> bool {
+        if assumptions.is_empty() {
+            return true;
+        }
+        let mut regions = self.regions.borrow_mut();
+        let dead = regions.entry(assumptions.to_vec()).or_insert_with(|| {
+            let table: PlatformAssumptions = assumptions.iter().cloned().collect();
+            DeadRegions::under(self.source, &table)
+        });
+        !dead.contains_line(line)
+    }
+}
+
 /// The `(name, defined)` terms a conditional's own condition asserts when
 /// its then-arm is taken, or `None` when it asserts something this cannot
 /// express.

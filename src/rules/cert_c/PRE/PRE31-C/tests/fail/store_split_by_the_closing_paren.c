@@ -1,6 +1,7 @@
 /*
  * Rule: PRE31-C
  * Status: FAIL - Should trigger PRE31-C violation
+ * Expect: count=1
  * Reason: the argument is `rc =`, a store that only the test build's arm
  * compiles; the release arm drops it. The call after the `)` is not part
  * of the argument, although a C parser reads `rc = work()` across it.
@@ -16,6 +17,6 @@ int work(void);
 
 void h(void) {
     int rc;
-    TESTONLY( rc = ) work();  // VIOLATION
+    TESTONLY( rc = ) work();  // Expect: here
     (void)rc;
 }

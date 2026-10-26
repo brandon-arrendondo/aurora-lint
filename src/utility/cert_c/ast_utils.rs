@@ -4222,6 +4222,21 @@ pub fn collect_defined_macro_names(source: &str, out: &mut std::collections::Has
     }
 }
 
+/// Insert the name of every `#undef NAME` in `source` into `out`: the
+/// companion of [`collect_defined_macro_names`], merged project-wide into
+/// `ProjectContext::undefined_macro_names`.
+pub fn collect_undefined_macro_names(source: &str, out: &mut std::collections::HashSet<String>) {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"(?m)^\s*#\s*undef\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap()
+    });
+    for cap in re.captures_iter(source) {
+        if let Some(name) = cap.get(1) {
+            out.insert(name.as_str().to_string());
+        }
+    }
+}
+
 /// True if `name` is a C keyword.
 ///
 /// Single source of truth for the check, shared by

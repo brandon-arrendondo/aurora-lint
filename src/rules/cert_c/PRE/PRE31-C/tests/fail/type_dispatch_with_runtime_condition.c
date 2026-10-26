@@ -17,5 +17,5 @@ static double next(void) {
 }
 
 double k(void) {
-    return POSITIVE_OR(next());  // VIOLATION
+    return POSITIVE_OR(next());  // Expect: here
 }

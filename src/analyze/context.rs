@@ -924,6 +924,13 @@ pub struct ProjectContext {
     /// different file than the struct.
     #[serde(default)]
     pub defined_macro_names: Arc<HashSet<String>>,
+    /// Names of every `#undef NAME` across all scanned files (incl.
+    /// headers). With `defined_macro_names`, the names some directive in the
+    /// scan sets: one no directive sets is a build flag, the same in every
+    /// file and on every line, which is what lets a definition's `#if`
+    /// condition be checked at a call in another file.
+    #[serde(default)]
+    pub undefined_macro_names: Arc<HashSet<String>>,
     /// Names of every function-like `#define` across all scanned files
     /// (incl. headers), in every preprocessor branch and including variadic
     /// and `#`/`##` macros: what says a call is a macro invocation, rather

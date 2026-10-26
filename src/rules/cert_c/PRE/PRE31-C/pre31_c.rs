@@ -6,7 +6,7 @@ use crate::analyze::const_eval::{merged_macro_aliases, resolve_macro_alias};
 use crate::analyze::context::{
     EffectView, IncludeClosure, ProjectContext, VisibleTypes, UNRESOLVED_INCLUDE,
 };
-use crate::analyze::dead_regions::line_compiles_under;
+use crate::analyze::dead_regions::ConfiguredLines;
 use crate::analyze::function_summary::extract_function_name;
 use crate::analyze::macro_expand::{
     self, ArgEvaluation, ArmSite, FunctionMacro, MacroArm, Pasting, ProjectMacroArm,
@@ -63,6 +63,9 @@ pub struct Pre31C {
     /// (`IncludeReport::outside_headers`): a C library header's definition
     /// of `assert` is not the project replacing it.
     outside_headers: RefCell<Arc<HashSet<String>>>,
+    /// Every name a `#define` or an `#undef` somewhere in the scan sets
+    /// (`ProjectContext::defined_macro_names`, `undefined_macro_names`).
+    set_names: RefCell<SetNames>,
     /// What calling each scanned function can change, closed over the call
     /// graph of the whole scan. `None` when no prescan context was given.
     effects: RefCell<Option<EffectView>>,
@@ -87,6 +90,7 @@ impl Pre31C {
             macro_aliases: RefCell::new(Arc::new(HashMap::new())),
             outside_macros: RefCell::new(Arc::new(HashSet::new())),
             outside_headers: RefCell::new(Arc::new(HashSet::new())),
+            set_names: RefCell::default(),
             effects: RefCell::default(),
             types: RefCell::default(),
             settings: RefCell::new(Arc::new(AnalysisSettings::default())),
@@ -128,6 +132,10 @@ impl CertRule for Pre31C {
         *self.function_macro_names.borrow_mut() = context.function_macro_names.clone();
         *self.macro_aliases.borrow_mut() = context.macro_aliases.clone();
         *self.outside_macros.borrow_mut() = context.macros_defined_outside_project.clone();
+        *self.set_names.borrow_mut() = (
+            Arc::clone(&context.defined_macro_names),
+            Arc::clone(&context.undefined_macro_names),
+        );
         *self.outside_headers.borrow_mut() = Arc::new(
             context
                 .include_report
@@ -227,6 +235,8 @@ impl CertRule for Pre31C {
             aliases: &aliases,
             outside: &self.outside_macros.borrow(),
             outside_headers: &self.outside_headers.borrow(),
+            set_names: &self.set_names.borrow(),
+            lines: ConfiguredLines::of(source),
             effects: effects.as_ref(),
             local_table: local_table.as_ref(),
             types: &types,
@@ -272,6 +282,21 @@ fn library_header(name: &str) -> &'static str {
     }
 }
 
+/// The names a `#define` and the names an `#undef` somewhere in the scan
+/// sets.
+type SetNames = (Arc<HashSet<String>>, Arc<HashSet<String>>);
+
+/// What a function-like macro name stands for at an invocation.
+enum InForce {
+    /// These definitions, each of which can compile with it.
+    Arms(Vec<MacroArm>),
+    /// The scan defines the name, but no definition can compile with it: the
+    /// name is a function there.
+    Undefined,
+    /// No definition anyone can read.
+    Unreadable,
+}
+
 /// Which definition of a C library macro is in force at an invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LibraryMacro {
@@ -294,7 +319,7 @@ fn pasted_call_evaluation(ctx: &Ctx, name: &str, call: &Node) -> ArgEvaluation {
     if ctx.undefined_here(name) {
         return ArgEvaluation::Once;
     }
-    let arms = match ctx.local_arms(name) {
+    let arms = match ctx.local_arms(name).filter(|a| !a.is_empty()) {
         Some(arms) => arms,
         None if library_unsafe_argument(name).is_some() => return ArgEvaluation::Unpredictable,
         None if ctx.bound_by_library_contract(name) || !ctx.names.contains(name) => {
@@ -385,6 +410,10 @@ struct Ctx<'a> {
     outside: &'a HashSet<String>,
     /// `Pre31C::outside_headers`.
     outside_headers: &'a HashSet<String>,
+    /// `Pre31C::set_names`.
+    set_names: &'a SetNames,
+    /// Which of this file's lines compile under a set of macro states.
+    lines: ConfiguredLines<'a>,
     /// The scan's side-effect table, as this file resolves names.
     effects: Option<&'a EffectView>,
     /// This file's own functions, closed over the scan's table.
@@ -397,57 +426,89 @@ struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
-    /// The definitions a call to `name` may expand to: every arm in this
-    /// file, else every arm of the headers this file includes (every arm the
-    /// project has when that is unknown), else the one expandable definition
-    /// the project keeps. Two headers may define one name two ways; a call
-    /// is compiled with the one its translation unit includes (ADR-0006).
-    /// Only the arms that can compile with the invocation being judged
-    /// count; empty when none can ([`Self::undefined_here`]) as when no body
-    /// can be read.
+    /// The definitions a call to `name` may expand to (see
+    /// [`Self::in_force`]); empty when none can compile with the invocation
+    /// being judged, as when no body can be read.
     fn definitions(&self, name: &str) -> Vec<MacroArm> {
-        if let Some(arms) = self.local_arms(name) {
-            return arms;
+        match self.in_force(name) {
+            InForce::Arms(arms) => arms,
+            InForce::Undefined | InForce::Unreadable => Vec::new(),
         }
-        let closure = if self
-            .project_arms
-            .get(name)
-            .is_some_and(|arms| arms.len() > 1)
-        {
-            self.include_closure
-                .get_or_init(|| {
-                    self.file_path
-                        .and_then(|path| IncludeClosure::of(self.include_edges, path))
-                })
-                .as_ref()
-        } else {
-            None
-        };
-        let line = self.site.get().0;
-        let arms = macro_expand::reachable_arms_admitted(
-            self.project_arms,
-            name,
-            closure,
-            &|conditions| line_compiles_under(self.source, line, conditions),
-        );
-        if !arms.is_empty() || self.project_arms.get(name).is_some_and(|a| !a.is_empty()) {
-            return arms;
+    }
+
+    /// What a call to `name` expands to at the invocation being judged: this
+    /// file's arms that can compile with it, else the arms of the headers
+    /// this file includes (every arm the project has when that is unknown)
+    /// that can, else the one expandable definition the project keeps. Two
+    /// headers may define one name two ways; a call is compiled with the one
+    /// its translation unit includes (ADR-0006). Where the file or the
+    /// project defines the name and no definition can compile with the
+    /// invocation, it is [`InForce::Undefined`].
+    fn in_force(&self, name: &str) -> InForce {
+        let local = self.local_arms(name);
+        if let Some(arms) = local.as_ref().filter(|a| !a.is_empty()) {
+            return InForce::Arms(arms.clone());
         }
-        self.first
-            .get(name)
-            .map(MacroArm::from)
-            .into_iter()
-            .collect()
+        if self.project_arms.get(name).is_some_and(|a| !a.is_empty()) {
+            let closure = if self.project_arms.get(name).is_some_and(|a| a.len() > 1) {
+                self.include_closure
+                    .get_or_init(|| {
+                        self.file_path
+                            .and_then(|path| IncludeClosure::of(self.include_edges, path))
+                    })
+                    .as_ref()
+            } else {
+                None
+            };
+            let line = self.site.get().0;
+            let arms = macro_expand::reachable_arms_admitted(
+                self.project_arms,
+                name,
+                closure,
+                &|conditions| self.compiles_under(line, conditions),
+            );
+            return if arms.is_empty() {
+                InForce::Undefined
+            } else {
+                InForce::Arms(arms)
+            };
+        }
+        // `first` holds this file's own definitions too, which `local`
+        // already judged.
+        if local.is_some() {
+            return InForce::Undefined;
+        }
+        match self.first.get(name) {
+            Some(m) => InForce::Arms(vec![MacroArm::from(m)]),
+            None => InForce::Unreadable,
+        }
+    }
+
+    /// Whether the invocation's `line` compiles under `conditions`, the
+    /// macro states a definition's `#define` sits under, reading only the
+    /// states that hold alike at the definition and at the call: a name
+    /// some `#define` or `#undef` in the scan sets (the definition's own
+    /// name, a header's self-guard, a guard another include defines) may
+    /// change between the two, so its term proves nothing and is dropped.
+    /// What is left are build flags, the same in every file.
+    fn compiles_under(&self, line: usize, conditions: &[(String, bool)]) -> bool {
+        let (defined, undefined) = self.set_names;
+        let flags: Vec<(String, bool)> = conditions
+            .iter()
+            .filter(|(n, _)| !defined.contains(n) && !undefined.contains(n))
+            .cloned()
+            .collect();
+        self.lines.compiles_under(line, &flags)
     }
 
     /// This file's own definitions of `name` that can compile with the
     /// invocation being judged (ADR-0010 D4): an arm goes when every
     /// `#define` making it is in another arm of an `#if` chain than the
-    /// invocation, or under macro states the invocation's line does not
+    /// invocation, or under build flags the invocation's line does not
     /// compile under (`#ifdef OMIT_GET` against a call inside `#ifndef
-    /// OMIT_GET`). Positive-only: an arm goes only on that proof. `None`
-    /// when the file defines no arm of `name`; empty when it defines some
-    /// and none can compile with the invocation.
+    /// OMIT_GET`; [`Self::compiles_under`]). Positive-only: an arm goes only
+    /// on that proof. `None` when the file defines no arm of `name`; empty
+    /// when it defines some and none can compile with the invocation.
     fn local_arms(&self, name: &str) -> Option<Vec<MacroArm>> {
         let sites = self.arm_sites.get(name).filter(|a| !a.is_empty())?;
         let (line, at) = self.site.get();
@@ -459,8 +520,7 @@ impl<'a> Ctx<'a> {
                 .iter()
                 .filter(|(_, defines)| {
                     defines.iter().any(|d| {
-                        !chains.exclusive(d.offset, at)
-                            && line_compiles_under(self.source, line, &d.conditions)
+                        !chains.exclusive(d.offset, at) && self.compiles_under(line, &d.conditions)
                     })
                 })
                 .map(|(a, _)| a.clone())
@@ -470,23 +530,14 @@ impl<'a> Ctx<'a> {
 
     /// Whether `name` is a function-like macro somewhere in the scan, but no
     /// definition of it can compile with the invocation being judged
-    /// ([`Self::local_arms`], `macro_expand::reachable_arms_admitted`): there
-    /// the name is a function, and a call evaluates each argument once.
-    /// sqlite's `sqlite3UpsertNew` is the null macro only under
-    /// `SQLITE_OMIT_UPSERT`, and upsert.c compiles only without it. Never
-    /// for a C library macro the standard lets evaluate an argument other
-    /// than once: its header's own definition is still in force.
+    /// ([`InForce::Undefined`]): there the name is a function, and a call
+    /// evaluates each argument once. sqlite's `sqlite3UpsertNew` is the null
+    /// macro only under `SQLITE_OMIT_UPSERT`, and upsert.c compiles only
+    /// without it. Never for a C library macro the standard lets evaluate an
+    /// argument other than once: its header's own definition is still in
+    /// force.
     fn undefined_here(&self, name: &str) -> bool {
-        if library_unsafe_argument(name).is_some() {
-            return false;
-        }
-        match self.local_arms(name) {
-            Some(arms) => arms.is_empty(),
-            None => {
-                self.project_arms.get(name).is_some_and(|a| !a.is_empty())
-                    && self.definitions(name).is_empty()
-            }
-        }
+        library_unsafe_argument(name).is_none() && matches!(self.in_force(name), InForce::Undefined)
     }
 
     /// Whether `name` is the C library's own macro for a library function
@@ -998,7 +1049,9 @@ impl Pre31C {
         if ctx.undefined_here(macro_name) {
             return;
         }
-        let arms = ctx.local_arms(macro_name);
+        // An empty set of this file's own arms falls through to the library
+        // reading and the project's definitions.
+        let arms = ctx.local_arms(macro_name).filter(|a| !a.is_empty());
 
         // Which argument positions this macro may evaluate other than once.
         // A macro this file defines is judged by every arm it has, since any

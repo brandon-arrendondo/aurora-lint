@@ -10,5 +10,5 @@
 #define SCALE(t, x, y) ((t)(x) * (t)(x) + (t)(y))
 
 unsigned long s(unsigned n) {
-    return SCALE(unsigned long, n++, 1);  // VIOLATION
+    return SCALE(unsigned long, n++, 1);  // Expect: here
 }

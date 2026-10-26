@@ -14,6 +14,6 @@ void *get_opt_fn(int);
 
 void g(void) {
     int i = 0;
-    get_opt(i++);  // VIOLATION
+    get_opt(i++);  // Expect: here
     (void)i;
 }

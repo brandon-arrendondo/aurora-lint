@@ -20,5 +20,5 @@ static int next(void) {
 }
 
 int k(void) {
-    return square(next());  // VIOLATION
+    return square(next());  // Expect: here
 }

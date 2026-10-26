@@ -5789,12 +5789,53 @@ fn pre31_header_arm_never_compiling_with_the_call_is_not_judged() {
     assert!(violations.is_empty(), "{:?}", violations);
 }
 
+/// The same header against a call that compiles in every build: the arm that
+/// drops its argument is one of them.
+#[test]
+fn pre31_header_arm_compiling_with_the_call_is_judged() {
+    let violations = pre31_crossfile_violations("arm_compiles_with_the_call");
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+}
+
+/// The file's own redefinition never compiles with the call, so the header's
+/// definition, still in force, is the one judged.
+#[test]
+fn pre31_header_arm_in_force_when_the_files_own_is_excluded() {
+    let violations =
+        pre31_crossfile_violations("header_arm_in_force_when_the_files_own_is_excluded");
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+}
+
+/// A header's `#ifndef TWICE` around its own `TWICE` is no build flag: the
+/// definition is in force at a call under `#if defined(TWICE)`.
+#[test]
+fn pre31_header_self_guard_is_no_build_flag() {
+    let violations = pre31_crossfile_violations("header_self_guard_is_no_build_flag");
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+}
+
+/// A guard another include defines after the definition proves nothing at
+/// the call: the definition made before it stands.
+#[test]
+fn pre31_guard_defined_by_a_later_include_is_no_build_flag() {
+    let violations = pre31_crossfile_violations("guard_defined_by_a_later_include");
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+}
+
 /// Where no definition of a header macro compiles with the call, the name is
 /// the function there and evaluates each argument once.
 #[test]
 fn pre31_header_macro_undefined_where_the_call_compiles_is_a_call() {
     let violations = pre31_crossfile_violations("macro_undefined_where_the_call_compiles");
     assert!(violations.is_empty(), "{:?}", violations);
+}
+
+/// The same header against a call compiled in every build: the null macro
+/// is in force in one of them.
+#[test]
+fn pre31_header_macro_defined_where_the_call_compiles_is_judged() {
+    let violations = pre31_crossfile_violations("macro_defined_where_the_call_compiles");
+    assert_eq!(violations.len(), 1, "{:?}", violations);
 }
 
 /// A header arm under a guard only some builds define is read, not lost as
@@ -5827,6 +5868,13 @@ fn pre31_assert_reincluded_after_the_project_header_is_the_librarys() {
 #[test]
 fn pre31_assert_fallback_under_ifndef_does_not_replace_the_librarys() {
     let violations = pre31_crossfile_violations("assert_fallback_only_where_undefined");
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+}
+
+/// The same guard with an arm evaluating its argument twice is judged.
+#[test]
+fn pre31_header_twice_arm_under_a_guard_some_builds_define_is_judged() {
+    let violations = pre31_crossfile_violations("twice_arm_under_a_guard_only_some_builds_define");
     assert_eq!(violations.len(), 1, "{:?}", violations);
 }
 

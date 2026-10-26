@@ -85,6 +85,7 @@ struct FilePrescanResult {
     packed_struct_candidates: Vec<(String, String)>,
     packed_macro_names: HashSet<String>,
     defined_macro_names: HashSet<String>,
+    undefined_macro_names: HashSet<String>,
     function_macro_names: HashSet<String>,
     static_macro_names: HashSet<String>,
     macro_operand_params: HashMap<String, crate::analyze::macro_expand::OperandParams>,
@@ -201,6 +202,7 @@ impl FilePrescanResult {
             packed_struct_candidates: Vec::new(),
             packed_macro_names: HashSet::new(),
             defined_macro_names: HashSet::new(),
+            undefined_macro_names: HashSet::new(),
             function_macro_names: HashSet::new(),
             static_macro_names: HashSet::new(),
             macro_operand_params: HashMap::new(),
@@ -411,6 +413,10 @@ fn process_file(
         crate::utility::cert_c::ast_utils::collect_defined_macro_names(
             &source,
             &mut result.defined_macro_names,
+        );
+        crate::utility::cert_c::ast_utils::collect_undefined_macro_names(
+            &source,
+            &mut result.undefined_macro_names,
         );
         crate::analyze::macro_expand::collect_function_macro_names(
             &source,
@@ -815,6 +821,7 @@ fn prescan_file_list(
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
     let mut packed_macro_names: HashSet<String> = HashSet::new();
     let mut defined_macro_names: HashSet<String> = HashSet::new();
+    let mut undefined_macro_names: HashSet<String> = HashSet::new();
     let mut function_macro_names: HashSet<String> = HashSet::new();
     let mut static_macro_names: HashSet<String> = HashSet::new();
     let mut macro_operand_params: HashMap<String, crate::analyze::macro_expand::OperandParams> =
@@ -1135,6 +1142,7 @@ fn prescan_file_list(
         packed_struct_candidates.extend(r.packed_struct_candidates);
         packed_macro_names.extend(r.packed_macro_names);
         defined_macro_names.extend(r.defined_macro_names);
+        undefined_macro_names.extend(r.undefined_macro_names);
         function_macro_names.extend(r.function_macro_names);
         static_macro_names.extend(r.static_macro_names);
         for (name, params) in r.macro_operand_params {
@@ -1700,6 +1708,7 @@ fn prescan_file_list(
         noreturn_functions: noreturn_functions.map(|names| Arc::new(names.clone())),
         abort_check_noreturn_functions: abort_check_noreturn.map(|names| Arc::new(names.clone())),
         defined_macro_names: Arc::new(defined_macro_names),
+        undefined_macro_names: Arc::new(undefined_macro_names),
         function_macro_names: Arc::new(function_macro_names),
         static_macro_names: Arc::new(static_macro_names),
         macro_operand_params: Arc::new(macro_operand_params),
@@ -8099,6 +8108,10 @@ pub fn resolve_includes_scoped(
                 crate::utility::cert_c::ast_utils::collect_defined_macro_names(
                     &hsource,
                     Arc::make_mut(&mut context.defined_macro_names),
+                );
+                crate::utility::cert_c::ast_utils::collect_undefined_macro_names(
+                    &hsource,
+                    Arc::make_mut(&mut context.undefined_macro_names),
                 );
                 crate::analyze::macro_expand::collect_function_macro_names(
                     &hsource,
