@@ -41,11 +41,12 @@
 //!    ```
 //!
 //! 4. **Directly followed by an identifier, or a cast's whole type name**:
-//!    a type name (`T n`, `(T *)0`, `(const T *)0`, `sizeof(T **)`) or a
-//!    macro every definition of which expands to string literals cannot
-//!    take parentheses. An operand followed by an operator (`a op b`, or
-//!    `x MOD 3` with `MOD` a macro for `%`) stays reported, as does `T * x`,
-//!    a declaration or a multiplication depending on the argument:
+//!    a type name (`T n`, `qual size_t n`, `(T *)0`, `(const T *)0`,
+//!    `sizeof(T **)`) or a macro every definition of which expands to string
+//!    literals cannot take parentheses. An operand followed by an operator
+//!    (`a op b`, or `x MOD 3` with `MOD` a macro for `%`) or by a keyword
+//!    (`x else`) stays reported, as does `T * x`, a declaration or a
+//!    multiplication depending on the argument:
 //!    ```c
 //!    #define DECLARE(T) T count = 0      // OK
 //!    #define NULL_OF(T) ((T *)0)         // OK
@@ -55,8 +56,9 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::check_macros::{collect_macro_definitions, MacroDefinition};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
+use crate::utility::cert_c::expr_type::is_standard_typedef_name;
 use crate::utility::cert_c::pp_tokens::{
-    define_at, lex_replacement_list, matching_close, LineIndex, PpKind, PpToken,
+    define_at, lex_replacement_list, matching_close, LineIndex, PpKind, PpToken, KEYWORDS,
 };
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -71,6 +73,10 @@ const TYPE_WORDS: &[&str] = &[
     "_Complex", "const", "volatile", "restrict", "_Atomic", "struct", "union", "enum",
 ];
 
+/// Deepest chain of macros [`Names::shape`] follows before it answers
+/// [`Shape::Unknown`], so a long chain cannot exhaust the stack.
+const MAX_MACRO_DEPTH: usize = 64;
+
 /// What the names after a parameter use may be, for one file: the macros
 /// and typedefs of the scanned files (the prescan) and of this file.
 struct Names<'a> {
@@ -78,21 +84,38 @@ struct Names<'a> {
     file_macros: &'a HashMap<String, Vec<MacroDefinition>>,
     project_typedefs: &'a HashMap<String, String>,
     file_typedefs: &'a HashSet<String>,
+    /// [`Names::shape`] per macro name, once for the file. A name being
+    /// expanded is filed [`Shape::Unknown`] until it is done, so a macro
+    /// that reaches itself (`#define A B` and `#define B A`) is not
+    /// expanded again: the preprocessor leaves such a name unexpanded.
+    shapes: RefCell<HashMap<String, Shape>>,
 }
 
 impl Names<'_> {
+    /// Every distinct definition of `name`: a file's own macros are in the
+    /// project tables too, and each definition is read once.
     fn macro_definitions(&self, name: &str) -> Vec<&MacroDefinition> {
-        [self.project_macros.get(name), self.file_macros.get(name)]
+        let mut defs: Vec<&MacroDefinition> = Vec::new();
+        for def in [self.project_macros.get(name), self.file_macros.get(name)]
             .into_iter()
             .flatten()
             .flatten()
-            .collect()
+        {
+            if !defs.contains(&def) {
+                defs.push(def);
+            }
+        }
+        defs
     }
 
+    /// A type keyword or qualifier, a typedef the scan sees, or a typedef
+    /// name the standard library declares (`size_t`, `uint32_t`), whose
+    /// header the scan may not read.
     fn is_type(&self, name: &str) -> bool {
         TYPE_WORDS.contains(&name)
             || self.project_typedefs.contains_key(name)
             || self.file_typedefs.contains(name)
+            || is_standard_typedef_name(name)
     }
 
     /// What `name` expands to, by every definition the scan sees.
@@ -102,13 +125,21 @@ impl Names<'_> {
     /// which is `fmt`). [`Shape::Other`]: some definition holds an operator,
     /// a number or anything else, as an operator macro (`#define MOD %`)
     /// does. [`Shape::Unknown`]: not a macro the scan sees, a definition the
-    /// macro tables cannot read (variadic, `##`), or nested too deep.
+    /// macro tables cannot read (variadic, `##`), one that reaches itself,
+    /// or one nested deeper than [`MAX_MACRO_DEPTH`].
     fn shape(&self, name: &str, depth: usize) -> Shape {
+        if let Some(&known) = self.shapes.borrow().get(name) {
+            return known;
+        }
         let defs = self.macro_definitions(name);
-        if defs.is_empty() || depth >= 8 {
+        if defs.is_empty() || depth >= MAX_MACRO_DEPTH {
             return Shape::Unknown;
         }
-        defs.iter()
+        self.shapes
+            .borrow_mut()
+            .insert(name.to_string(), Shape::Unknown);
+        let shape = defs
+            .iter()
             .map(|def| match def {
                 MacroDefinition::Object { body } => self.body_shape(name, body, &[], depth),
                 MacroDefinition::Function { params, body } => {
@@ -116,7 +147,9 @@ impl Names<'_> {
                 }
                 MacroDefinition::Opaque => Shape::Unknown,
             })
-            .fold(Shape::Strings, Shape::and)
+            .fold(Shape::Strings, Shape::and);
+        self.shapes.borrow_mut().insert(name.to_string(), shape);
+        shape
     }
 
     fn body_shape(&self, name: &str, body: &str, params: &[String], depth: usize) -> Shape {
@@ -240,7 +273,10 @@ impl Pre01C {
     /// and stays reported. A use between an operand and an operand is the
     /// operator itself (`op` in lua's `l_castS2U(v1) op l_castS2U(v2)`, and
     /// in `a op b`), which parentheses would break. `T * x` is a declaration
-    /// or a multiplication, and stays reported.
+    /// or a multiplication, and stays reported. So does `qual` in
+    /// `qual T name` when `T` is a name the scan cannot tell is a type: it
+    /// reads exactly as `a op b`, and the ambiguity is accepted rather than
+    /// exempting every operand before an unknown name and a parameter.
     fn is_type_position(tokens: &[PpToken], k: usize, params: &[&str], names: &Names) -> bool {
         let is_param =
             |t: &PpToken| t.kind == PpKind::Identifier && params.contains(&t.text.as_ref());
@@ -248,8 +284,12 @@ impl Pre01C {
             let t = &tokens[p];
             t.is(")") || t.is("]") || t.is_literal() || t.kind == PpKind::Number || is_param(t)
         });
+        // A keyword (`else`) starts no operand.
         let starts_operand = |t: &PpToken| {
-            t.is("(") || t.is_literal() || matches!(t.kind, PpKind::Number | PpKind::Identifier)
+            t.is("(")
+                || t.is_literal()
+                || t.kind == PpKind::Number
+                || (t.kind == PpKind::Identifier && !KEYWORDS.contains(&t.text.as_ref()))
         };
         if ends_operand && tokens.get(k + 1).is_some_and(starts_operand) {
             return true;
@@ -257,6 +297,11 @@ impl Pre01C {
         if let Some(next) = tokens.get(k + 1).filter(|t| t.kind == PpKind::Identifier) {
             if names.is_type(&next.text) {
                 return true;
+            }
+            // Any other keyword (`x else`) follows a statement or an
+            // operand, never a type name.
+            if KEYWORDS.contains(&next.text.as_ref()) {
+                return false;
             }
             match names.shape(&next.text, 0) {
                 Shape::Strings => return true,
@@ -394,6 +439,7 @@ impl CertRule for Pre01C {
             file_macros: &file_macros,
             project_typedefs: &project_typedefs,
             file_typedefs: &file_typedefs,
+            shapes: RefCell::default(),
         };
         for macro_node in macros {
             self.check_function_macro(&macro_node, source, &lines, &names, &mut violations);

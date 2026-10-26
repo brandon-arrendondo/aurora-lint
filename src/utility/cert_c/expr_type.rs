@@ -159,6 +159,65 @@ impl CType {
     }
 }
 
+/// Whether `name` is a typedef name the standard library declares
+/// (`<stddef.h>`, `<stdint.h>`, `<stdio.h>`, `<time.h>`, ...), or POSIX's
+/// `ssize_t`. A file names these from headers the scan may not read, so no
+/// typedef table holds them; the name alone says it is a type. Only
+/// whether it is a type: [`standard_alias`] gives an integer alias's type.
+pub fn is_standard_typedef_name(name: &str) -> bool {
+    let exact_least_or_fast = || {
+        let rest = name.strip_prefix('u').unwrap_or(name);
+        rest.strip_prefix("int")
+            .and_then(|r| r.strip_suffix("_t"))
+            .map(|r| {
+                r.strip_prefix("_least")
+                    .or_else(|| r.strip_prefix("_fast"))
+                    .unwrap_or(r)
+            })
+            .is_some_and(|w| !w.is_empty() && w.bytes().all(|c| c.is_ascii_digit()))
+    };
+    matches!(
+        name,
+        "size_t"
+            | "rsize_t"
+            | "ssize_t"
+            | "ptrdiff_t"
+            | "max_align_t"
+            | "wchar_t"
+            | "wint_t"
+            | "char16_t"
+            | "char32_t"
+            | "intptr_t"
+            | "uintptr_t"
+            | "intmax_t"
+            | "uintmax_t"
+            | "bool"
+            | "FILE"
+            | "fpos_t"
+            | "va_list"
+            | "jmp_buf"
+            | "sig_atomic_t"
+            | "clock_t"
+            | "time_t"
+            | "div_t"
+            | "ldiv_t"
+            | "lldiv_t"
+            | "mbstate_t"
+            | "wctrans_t"
+            | "wctype_t"
+            | "errno_t"
+            | "float_t"
+            | "double_t"
+            | "fenv_t"
+            | "fexcept_t"
+            | "thrd_t"
+            | "mtx_t"
+            | "cnd_t"
+            | "tss_t"
+            | "once_flag"
+    ) || exact_least_or_fast()
+}
+
 /// The type a standard library alias names on `model`, or `None` for a name
 /// that is not one, or one whose type the model leaves open (`wchar_t`'s sign
 /// under [`IntFacts::ISO`]). Only the aliases whose definition the data
@@ -1690,6 +1749,34 @@ mod tests {
                 None,
                 "{name}"
             );
+        }
+    }
+
+    #[test]
+    fn a_standard_library_typedef_name_is_a_type_by_its_name() {
+        for name in [
+            "size_t",
+            "ptrdiff_t",
+            "uint32_t",
+            "int8_t",
+            "uint_least16_t",
+            "int_fast64_t",
+            "uintptr_t",
+            "intmax_t",
+            "wchar_t",
+            "FILE",
+        ] {
+            assert!(is_standard_typedef_name(name), "{name}");
+        }
+        for name in [
+            "int_t",
+            "uint_t",
+            "int_leastx_t",
+            "counter_t",
+            "uint32",
+            "int",
+        ] {
+            assert!(!is_standard_typedef_name(name), "{name}");
         }
     }
 
