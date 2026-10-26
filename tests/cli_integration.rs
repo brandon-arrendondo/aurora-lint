@@ -5797,6 +5797,14 @@ fn pre31_header_macro_undefined_where_the_call_compiles_is_a_call() {
     assert!(violations.is_empty(), "{:?}", violations);
 }
 
+/// A header arm under a guard only some builds define is read, not lost as
+/// dead: `conv` evaluates its argument once wherever it is defined.
+#[test]
+fn pre31_header_arm_under_a_guard_some_builds_define_is_read() {
+    let violations = pre31_crossfile_violations("arm_under_a_guard_only_some_builds_define");
+    assert!(violations.is_empty(), "{:?}", violations);
+}
+
 /// A `#define` in another .c file is live only in that translation unit:
 /// `a.c`'s own `TWICE` evaluates its argument twice, but `main.c` gets
 /// `util.h`'s, which evaluates it once.

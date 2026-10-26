@@ -603,8 +603,8 @@ pub enum ArgEvaluation {
 }
 
 /// Every arm's definition of every function-like macro in `source`, one per
-/// preprocessor branch the file does not prove dead, variadic and `#`/`##`
-/// arms included (compare [`collect_function_macro_alternatives`], which
+/// preprocessor branch the file does not prove dead (`arm_dead_regions`),
+/// variadic and `#`/`##` arms included (compare [`collect_function_macro_alternatives`], which
 /// skips them).
 pub fn collect_function_macro_arms(source: &str) -> HashMap<String, Vec<MacroArm>> {
     let mut out = HashMap::new();
@@ -691,10 +691,7 @@ pub type ConditionedArm = (MacroArm, Vec<(String, bool)>);
 /// byte offset of that line)`. An arm in a region the file itself proves
 /// dead (`#if 0`) is no build's, and is skipped.
 fn each_function_macro_arm(source: &str, mut f: impl FnMut(String, MacroArm, usize, usize)) {
-    let dead: Vec<(usize, usize)> = lang_parsing_substrate::dead_code_ranges(source)
-        .into_iter()
-        .map(|r| (r.start_line, r.end_line))
-        .collect();
+    let dead = arm_dead_regions(source);
     let lines: Vec<&str> = source.lines().collect();
     let starts: Vec<usize> = std::iter::once(0)
         .chain(source.match_indices('\n').map(|(k, _)| k + 1))
@@ -715,6 +712,99 @@ fn each_function_macro_arm(source: &str, mut f: impl FnMut(String, MacroArm, usi
             f(name, arm, first_line, offset);
         }
     }
+}
+
+/// The line ranges no build compiles, for the arm collectors: the
+/// substrate's dead regions, less those it proves dead only because the file
+/// defines or undefines the guard name in some builds and not others. The
+/// substrate counts a `#define` made inside an unproven branch as made in
+/// every build, so after `#if defined(WIN)` / `#define USE_FN` / `#endif` it
+/// reads `#if !defined(USE_FN)` as never compiled, and an arm defined there
+/// (lua's `lua_number2strx`, outside `LUA_USE_C89`) would be lost.
+/// [`ObjectMacroTimeline::in_force`](crate::analyze::check_macros::ObjectMacroTimeline::in_force)
+/// says when the name is defined in some builds reaching the guard and left
+/// as the file found it in others; such a region stays live.
+fn arm_dead_regions(source: &str) -> Vec<(usize, usize)> {
+    use lang_parsing_substrate::DeadCodeReason;
+    let regions = lang_parsing_substrate::dead_code_ranges(source);
+    let local = |r: &&lang_parsing_substrate::DeadCodeRegion| {
+        matches!(
+            r.reason,
+            DeadCodeReason::AlwaysDefined | DeadCodeReason::NeverDefined
+        )
+    };
+    if !regions.iter().any(|r| local(&r)) {
+        return regions.iter().map(|r| (r.start_line, r.end_line)).collect();
+    }
+    let guards = conditional_guards(source);
+    let timeline = crate::analyze::check_macros::ObjectMacroTimeline::of(source);
+    regions
+        .iter()
+        .filter(|r| {
+            !local(r)
+                || !guards.get(&(r.start_line - 1)).is_some_and(|(name, at)| {
+                    let state = timeline.in_force(name, *at);
+                    !state.bodies.is_empty() && state.inherits
+                })
+        })
+        .map(|r| (r.start_line, r.end_line))
+        .collect()
+}
+
+/// For each conditional directive (keyed by its last physical line, where a
+/// branch it opens starts after), the macro its group's `#if`/`#ifdef`/
+/// `#ifndef` tests by name and that directive's first line: `X` for
+/// `#ifdef X`, `#ifndef X`, `#if defined(X)`, `#if !defined X`, and an
+/// `#else` or `#elif` of one of those. A condition naming no macro that way
+/// has no entry.
+fn conditional_guards(source: &str) -> HashMap<usize, (String, usize)> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut open: Vec<Option<(String, usize)>> = Vec::new();
+    let mut out = HashMap::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let first_line = i + 1;
+        let (logical, next) = join_continuation(&lines, i);
+        i = next;
+        let Some(directive) = logical.trim_start().strip_prefix('#') else {
+            continue;
+        };
+        let directive = directive.trim_start();
+        let word: String = directive
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        let rest = directive[word.len()..].trim();
+        let guard = match word.as_str() {
+            "ifdef" | "ifndef" => {
+                let name = identifiers_in(rest).first().map(|n| n.to_string());
+                let guard = name.map(|n| (n, first_line));
+                open.push(guard.clone());
+                guard
+            }
+            "if" => {
+                let cond = rest.trim_start_matches('!').trim_start();
+                let name = cond.strip_prefix("defined").and_then(|after| {
+                    let after = after.trim_start();
+                    let after = after.strip_prefix('(').unwrap_or(after);
+                    identifiers_in(after).first().map(|n| n.to_string())
+                });
+                let guard = name.map(|n| (n, first_line));
+                open.push(guard.clone());
+                guard
+            }
+            "else" | "elif" | "elifdef" | "elifndef" => open.last().cloned().flatten(),
+            "endif" => {
+                open.pop();
+                None
+            }
+            _ => None,
+        };
+        if let Some(guard) = guard {
+            out.insert(next, guard);
+        }
+    }
+    out
 }
 
 /// One definition in `ProjectContext::function_macro_arms`, with the files
@@ -4099,6 +4189,34 @@ mod tests {
             project["LOG"][0].arm.variadic,
             Some((1, "__VA_ARGS__".to_string()))
         );
+    }
+
+    #[test]
+    fn an_arm_under_a_guard_some_builds_define_is_kept() {
+        let bodies = |src: &str| -> Vec<String> {
+            collect_function_macro_arms(src)
+                .get("conv")
+                .map(|arms| arms.iter().map(|a| a.body.clone()).collect())
+                .unwrap_or_default()
+        };
+        // Only a WIN build defines USE_FN, so every other build compiles the
+        // arm.
+        let conditional = "#if defined(WIN)\n#define USE_FN\n#endif\n\
+                           #if !defined(USE_FN)\n#define conv(n) use_once((n))\n#endif\n";
+        assert_eq!(bodies(conditional), ["use_once((n))"]);
+        // The same under `#ifdef`, and in the `#else` of a guard.
+        let ifdef = "#ifdef WIN\n#define USE_FN 1\n#endif\n\
+                     #ifndef USE_FN\n#define conv(n) one(n)\n#endif\n";
+        assert_eq!(bodies(ifdef), ["one(n)"]);
+        let in_else = "#ifdef WIN\n#define USE_FN\n#endif\n\
+                       #ifdef USE_FN\nint f(int);\n#else\n#define conv(n) two(n)\n#endif\n";
+        assert_eq!(bodies(in_else), ["two(n)"]);
+        // Defined in every build: the arm is no build's.
+        let always = "#define USE_FN\n#if !defined(USE_FN)\n#define conv(n) dead(n)\n#endif\n";
+        assert!(bodies(always).is_empty());
+        // Never mentioned but in a comment: still dead, as the substrate reads it.
+        let commented = "/* #define USE_FN */\n#ifdef USE_FN\n#define conv(n) dead(n)\n#endif\n";
+        assert!(bodies(commented).is_empty());
     }
 
     #[test]
