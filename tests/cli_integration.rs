@@ -5871,6 +5871,14 @@ fn pre31_assert_fallback_under_ifndef_does_not_replace_the_librarys() {
     assert_eq!(violations.len(), 1, "{:?}", violations);
 }
 
+/// A header's default value (`#ifndef SQ_FAST` / `#define SQ_FAST 1`) leaves
+/// the name defined in every build, so its `#else` arm is no build's.
+#[test]
+fn pre31_header_arm_under_a_default_value_guard_is_dead() {
+    let violations = pre31_crossfile_violations("arm_under_a_default_value_guard");
+    assert!(violations.is_empty(), "{:?}", violations);
+}
+
 /// The same guard with an arm evaluating its argument twice is judged.
 #[test]
 fn pre31_header_twice_arm_under_a_guard_some_builds_define_is_judged() {
@@ -9256,6 +9264,17 @@ fn mem01_a_macro_counts_only_where_the_file_includes_it() {
     assert_eq!(mem01_macro_scope_findings("sibling_c"), 1);
 }
 
+/// A header's `#define report() ((void)0)` under `#ifndef REPORT_FN`, after
+/// the header gives `REPORT_FN` a default value, is no build's: `report()`
+/// calls the project function, which can read the dangling static.
+#[test]
+fn mem01_a_macro_under_a_default_value_guard_is_no_builds() {
+    assert_eq!(
+        mem01_macro_scope_findings("arm_under_a_default_value_guard"),
+        1
+    );
+}
+
 /// A destructor's callee is read the way it compiles, with the headers the
 /// file includes: a macro, object or union one declares can read the freed
 /// member (`free(c->ssl); h(c); free(c);`), so the call still hands the
@@ -9320,6 +9339,22 @@ fn msc37_macro_scope_findings(case: &str) -> usize {
 fn msc37_a_macro_counts_only_where_the_file_includes_it() {
     assert_eq!(msc37_macro_scope_findings("included_header"), 0);
     assert_eq!(msc37_macro_scope_findings("sibling_c"), 1);
+}
+
+/// A header's default value (`#ifndef FATAL_ABORTS` / `#define FATAL_ABORTS
+/// 1`) leaves the name defined in every build, so `FATAL` is `die` and never
+/// returns; a default with another condition leaves the `log_msg` arm, which
+/// returns, to the builds without it.
+#[test]
+fn msc37_an_arm_under_a_default_value_guard_is_dead() {
+    assert_eq!(
+        msc37_macro_scope_findings("arm_under_a_default_value_guard"),
+        0
+    );
+    assert_eq!(
+        msc37_macro_scope_findings("arm_under_a_default_with_another_condition"),
+        1
+    );
 }
 
 /// The directive in force at the call decides: a macro `#undef`ed before the

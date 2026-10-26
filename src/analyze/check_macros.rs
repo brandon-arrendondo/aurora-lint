@@ -330,6 +330,93 @@ fn only_guards(source: &str, directives: &[(usize, String)], k: usize) -> bool {
         .all(|(i, l)| (start..=end).contains(&(i + 1)) || l.trim().is_empty())
 }
 
+/// Every `#define` and `#undef` of each name in `source`, in file order: the
+/// directive's first line and whether it is a default value's `#define`, one
+/// directly in the then-arm of a group whose whole condition is `#ifndef X`
+/// or `#if !defined(X)` for the name it defines, with no conditional around
+/// that group but the file's include guard. Such a `#define` leaves the name
+/// defined in every build, whether it ran or the name was defined before: a
+/// default's absence is not a build that lacks the name. sqlite's `#if
+/// !defined(NDEBUG) && !defined(SQLITE_DEBUG)` / `# define NDEBUG 1` has
+/// another conjunct and is no default.
+pub fn default_value_defines(source: &str) -> HashMap<String, Vec<(usize, bool)>> {
+    /// One open group: whether it is the include guard, the name its whole
+    /// condition says is undefined, and whether its first arm is being read.
+    struct Group {
+        guard: bool,
+        defaults: Option<String>,
+        then_arm: bool,
+    }
+    let masked = crate::utility::cert_c::pp_tokens::mask_source(source);
+    let directives = logical_directives(&masked);
+    let mut open: Vec<Group> = Vec::new();
+    let mut out: HashMap<String, Vec<(usize, bool)>> = HashMap::new();
+    for (k, (line, d)) in directives.iter().enumerate() {
+        let keyword = directive_keyword(d);
+        match keyword.as_str() {
+            "if" | "ifdef" | "ifndef" => open.push(Group {
+                guard: open.is_empty()
+                    && opens_include_guard(&directives, k)
+                    && only_guards(&masked, &directives, k),
+                defaults: whole_ifndef(d),
+                then_arm: true,
+            }),
+            "elif" | "elifdef" | "elifndef" | "else" => {
+                if let Some(group) = open.last_mut() {
+                    group.then_arm = false;
+                }
+            }
+            "endif" => {
+                open.pop();
+            }
+            "define" | "undef" => {
+                let name: String = d[keyword.len()..]
+                    .trim_start()
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                if name.is_empty() {
+                    continue;
+                }
+                let default = keyword == "define"
+                    && open.split_last().is_some_and(|(inner, outer)| {
+                        inner.then_arm
+                            && inner.defaults.as_deref() == Some(name.as_str())
+                            && outer.iter().all(|g| g.guard)
+                    });
+                out.entry(name).or_default().push((*line, default));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `X` when the conditional `d` is exactly `ifndef X`, `if !defined(X)` or
+/// `if !defined X`, with nothing else in its condition.
+fn whole_ifndef(d: &str) -> Option<String> {
+    let rest = match directive_keyword(d).as_str() {
+        "ifndef" => d["ifndef".len()..].trim(),
+        "if" => {
+            let r = d["if".len()..]
+                .trim_start()
+                .strip_prefix('!')?
+                .trim_start()
+                .strip_prefix("defined")?
+                .trim();
+            match r.strip_prefix('(') {
+                Some(r) => r.strip_suffix(')')?.trim(),
+                None => r,
+            }
+        }
+        _ => return None,
+    };
+    let is_name = !rest.is_empty()
+        && !rest.starts_with(|c: char| c.is_ascii_digit())
+        && rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    is_name.then(|| rest.to_string())
+}
+
 /// One file's `#define`s and `#undef`s of object-like macros, in order, for
 /// asking what a name stands for at a given line.
 ///

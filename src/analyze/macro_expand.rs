@@ -723,7 +723,11 @@ fn each_function_macro_arm(source: &str, mut f: impl FnMut(String, MacroArm, usi
 /// (lua's `lua_number2strx`, outside `LUA_USE_C89`) would be lost.
 /// [`ObjectMacroTimeline::in_force`](crate::analyze::check_macros::ObjectMacroTimeline::in_force)
 /// says when the name is defined in some builds reaching the guard and left
-/// as the file found it in others; such a region stays live.
+/// as the file found it in others; such a region stays live. A default value
+/// (`#ifndef X` / `#define X 1` / `#endif`,
+/// [`default_value_defines`](crate::analyze::check_macros::default_value_defines))
+/// leaves the name defined in every build, so a region it alone decides stays
+/// dead.
 fn arm_dead_regions(source: &str) -> Vec<(usize, usize)> {
     use lang_parsing_substrate::DeadCodeReason;
     let regions = lang_parsing_substrate::dead_code_ranges(source);
@@ -738,13 +742,23 @@ fn arm_dead_regions(source: &str) -> Vec<(usize, usize)> {
     }
     let guards = conditional_guards(source);
     let timeline = crate::analyze::check_macros::ObjectMacroTimeline::of(source);
+    let defines = crate::analyze::check_macros::default_value_defines(source);
+    let defaulted = |name: &str, at: usize| {
+        let mut before = defines
+            .get(name)
+            .into_iter()
+            .flatten()
+            .take_while(|&&(line, _)| line < at)
+            .peekable();
+        before.peek().is_some() && before.all(|&(_, default)| default)
+    };
     regions
         .iter()
         .filter(|r| {
             !local(r)
                 || !guards.get(&(r.start_line - 1)).is_some_and(|(name, at)| {
                     let state = timeline.in_force(name, *at);
-                    !state.bodies.is_empty() && state.inherits
+                    !state.bodies.is_empty() && state.inherits && !defaulted(name, *at)
                 })
         })
         .map(|r| (r.start_line, r.end_line))
@@ -4217,6 +4231,52 @@ mod tests {
         // Never mentioned but in a comment: still dead, as the substrate reads it.
         let commented = "/* #define USE_FN */\n#ifdef USE_FN\n#define conv(n) dead(n)\n#endif\n";
         assert!(bodies(commented).is_empty());
+    }
+
+    #[test]
+    fn an_arm_under_a_default_value_guard_is_dropped() {
+        let bodies = |src: &str| -> Vec<String> {
+            let mut out: Vec<String> = collect_function_macro_arms(src)
+                .get("sq")
+                .map(|arms| arms.iter().map(|a| a.body.clone()).collect())
+                .unwrap_or_default();
+            out.sort();
+            out
+        };
+        let arms =
+            "#ifdef FAST\n#define sq(x) sq_fn(x)\n#else\n#define sq(x) ((x) * (x))\n#endif\n";
+        // A default value leaves FAST defined in every build.
+        for default in [
+            "#ifndef FAST\n#define FAST 1\n#endif\n",
+            "#if !defined(FAST)\n#define FAST\n#endif\n",
+            "#if ! defined FAST /* default */\n#define FAST 1\n#endif\n",
+            "#ifndef FAST\n#define FAST 1\n#endif\n#ifndef FAST\n#define FAST 2\n#endif\n",
+        ] {
+            assert_eq!(
+                bodies(&format!("{default}{arms}")),
+                ["sq_fn(x)"],
+                "{default}"
+            );
+        }
+        // The same inside the file's include guard.
+        let guarded = format!(
+            "#ifndef SQ_H\n#define SQ_H\n#ifndef FAST\n#define FAST 1\n#endif\n{arms}#endif\n"
+        );
+        assert_eq!(bodies(&guarded), ["sq_fn(x)"]);
+        // Not a default: some build still lacks FAST, so both arms stay.
+        for build_dependent in [
+            "#if !defined(FAST) && !defined(SLOW)\n#define FAST 1\n#endif\n",
+            "#ifdef WIN\n#ifndef FAST\n#define FAST 1\n#endif\n#endif\n",
+            "#ifndef FAST\n#define FAST 1\n#endif\n#ifdef WIN\n#undef FAST\n#endif\n",
+            "#ifndef FAST\nint f(int);\n#else\n#define FAST 1\n#endif\n",
+            "#ifndef FAST\n#ifdef WIN\n#define FAST 1\n#endif\n#endif\n",
+        ] {
+            assert_eq!(
+                bodies(&format!("{build_dependent}{arms}")),
+                ["((x) * (x))", "sq_fn(x)"],
+                "{build_dependent}"
+            );
+        }
     }
 
     #[test]
