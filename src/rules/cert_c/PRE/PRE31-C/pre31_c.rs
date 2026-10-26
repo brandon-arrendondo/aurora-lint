@@ -206,6 +206,7 @@ impl CertRule for Pre31C {
             local_table: local_table.as_ref(),
             types: &types,
             settings: &settings,
+            masked: OnceCell::new(),
         };
         for call_node in query::find_descendants_of_kind(*node, "call_expression") {
             // `#if defined(MBEDTLS_KEY_EXCHANGE_RSA_ENABLED)` is not a macro
@@ -329,6 +330,9 @@ struct Ctx<'a> {
     local_table: Option<&'a EffectTable>,
     types: &'a VisibleTypes,
     settings: &'a AnalysisSettings,
+    /// `source` with literals and comments blanked, made the first time an
+    /// invocation's arguments are split.
+    masked: OnceCell<String>,
 }
 
 impl<'a> Ctx<'a> {
@@ -387,6 +391,51 @@ impl<'a> Ctx<'a> {
         } else {
             resolve_macro_alias(self.aliases, name)
         }
+    }
+
+    /// The byte ranges of the arguments the invocation `call` passes, split
+    /// as the preprocessor splits them (C11 6.10.3p11) rather than as the
+    /// parser read the list as C. `None` when the list cannot be read as
+    /// text (no `(` right after the name, or none that closes).
+    fn invocation_arguments(&self, call: &Node<'a>) -> Option<Vec<std::ops::Range<usize>>> {
+        let name = call.child_by_field_name("function")?;
+        let masked = self
+            .masked
+            .get_or_init(|| crate::utility::cert_c::pp_tokens::mask_source(self.source));
+        let after = name.end_byte();
+        let open = after + (masked.get(after..)?.len() - masked[after..].trim_start().len());
+        crate::utility::cert_c::pp_tokens::invocation_arguments(masked, open)
+    }
+
+    /// The side effect of the part of `node` inside `span`, when the parser
+    /// read `node` across an argument's end (`TESTONLY( rc = ) work()` parses
+    /// as `rc = work()`): an assignment or `++`/`--` whose operator is inside
+    /// counts, and so does each child wholly inside; nothing past the end does.
+    fn effect_within(&self, node: &Node<'a>, span: &std::ops::Range<usize>) -> Effect {
+        if node.start_byte() >= span.start && node.end_byte() <= span.end {
+            return self.expression_effect(node);
+        }
+        if node.end_byte() <= span.start || node.start_byte() >= span.end {
+            return Effect::None;
+        }
+        let mut cursor = node.walk();
+        let children: Vec<Node<'a>> = node.children(&mut cursor).collect();
+        let writes = matches!(node.kind(), "assignment_expression" | "update_expression")
+            && children.iter().any(|c| {
+                !c.is_named()
+                    && c.start_byte() >= span.start
+                    && c.end_byte() <= span.end
+                    && (c.kind().ends_with('=') || matches!(c.kind(), "++" | "--"))
+            });
+        if writes {
+            return Effect::Definite;
+        }
+        children
+            .iter()
+            .filter(|c| c.is_named())
+            .map(|c| self.effect_within(c, span))
+            .max()
+            .unwrap_or(Effect::None)
     }
 
     /// Whether this report's policy counts `effect` as a side effect.
@@ -777,16 +826,34 @@ impl Pre31C {
             return;
         };
         let mut cursor = arguments.walk();
-        let args = arguments
+        let parsed: Vec<Node> = arguments
             .named_children(&mut cursor)
-            .filter(|a| a.kind() != "comment");
-        for (i, arg) in args.enumerate() {
+            .filter(|a| a.kind() != "comment")
+            .collect();
+        // What the macro receives is the preprocessor's split of the list;
+        // the parser's nodes only say what each argument's text holds.
+        let spans: Vec<std::ops::Range<usize>> = ctx
+            .invocation_arguments(node)
+            .unwrap_or_else(|| parsed.iter().map(|a| a.byte_range()).collect());
+        for (i, span) in spans.iter().enumerate() {
+            let inside: Vec<&Node> = parsed
+                .iter()
+                .filter(|a| a.start_byte() < span.end && a.end_byte() > span.start)
+                .collect();
+            let whole = match inside.as_slice() {
+                [arg] if arg.byte_range() == *span => Some(**arg),
+                _ => None,
+            };
             // `prefix ## CALL` pastes only a call's name; its argument list
             // stays, evaluated as the pasted name evaluates it.
-            let callee = arg
-                .child_by_field_name("function")
-                .filter(|f| arg.kind() == "call_expression" && f.kind() == "identifier");
-            let judge = |name: &str| pasted_call_evaluation(ctx, name, &arg);
+            let callee = whole.and_then(|arg| {
+                arg.child_by_field_name("function")
+                    .filter(|f| arg.kind() == "call_expression" && f.kind() == "identifier")
+            });
+            let judge = |name: &str| match whole {
+                Some(arg) => pasted_call_evaluation(ctx, name, &arg),
+                None => ArgEvaluation::Unpredictable,
+            };
             let pasting = match callee {
                 Some(f) => Pasting::CallKeepsArguments {
                     callee: get_node_text(&f, ctx.source),
@@ -794,7 +861,18 @@ impl Pre31C {
                 },
                 None => Pasting::ConsumesArgument,
             };
-            if !unsafe_at(i, pasting) || !ctx.reported(ctx.expression_effect(&arg)) {
+            if !unsafe_at(i, pasting) {
+                continue;
+            }
+            let effect = match whole {
+                Some(arg) => ctx.expression_effect(&arg),
+                None => inside
+                    .iter()
+                    .map(|a| ctx.effect_within(a, span))
+                    .max()
+                    .unwrap_or(Effect::None),
+            };
+            if !ctx.reported(effect) {
                 continue;
             }
             let start_point = node.start_position();
@@ -810,7 +888,7 @@ impl Pre31C {
                     "Unsafe macro '{}' called with side effect in argument {}: '{}'",
                     spelled,
                     i + 1,
-                    get_node_text(&arg, ctx.source).trim()
+                    ctx.source[span.clone()].trim()
                 ),
                 file_path: String::new(),
                 line: start_point.row + 1,

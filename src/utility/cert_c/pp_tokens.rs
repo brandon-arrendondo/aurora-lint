@@ -277,6 +277,49 @@ pub fn directive_starts(source: &str) -> Vec<usize> {
         .collect()
 }
 
+/// The arguments of the macro invocation whose `(` is at byte `open` of
+/// `masked` (a text [`mask_source`] masked), as the preprocessor splits
+/// them: at each comma not inside an inner pair of parentheses (C11
+/// 6.10.3p11). Brackets and braces do not nest here, so `M({a, b})` passes
+/// two arguments. Each range is trimmed of white space and of the comments
+/// the mask blanked; `M()` has none. `None` when `open` is not a `(` or the
+/// list never closes.
+///
+/// tree-sitter splits an argument list as C, which is not what the macro
+/// receives: `cast(unsigned long, x)` parses as three arguments, and
+/// `TESTONLY( rc = ) work()` as one assignment running past the `)`.
+pub fn invocation_arguments(masked: &str, open: usize) -> Option<Vec<std::ops::Range<usize>>> {
+    let bytes = masked.as_bytes();
+    if bytes.get(open) != Some(&b'(') {
+        return None;
+    }
+    let trimmed = |start: usize, end: usize| {
+        let piece = &masked[start..end];
+        let lead = piece.len() - piece.trim_start().len();
+        start + lead..start + piece.trim_end().len().max(lead)
+    };
+    let (mut depth, mut start, mut out) = (0usize, open + 1, Vec::new());
+    for (k, &b) in bytes.iter().enumerate().skip(open + 1) {
+        match b {
+            b'(' => depth += 1,
+            b')' if depth > 0 => depth -= 1,
+            b')' => {
+                let last = trimmed(start, k);
+                if !(out.is_empty() && last.is_empty()) {
+                    out.push(last);
+                }
+                return Some(out);
+            }
+            b',' if depth == 0 => {
+                out.push(trimmed(start, k));
+                start = k + 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Whether the white space and comments between two tokens hold a line
 /// break: a newline that is neither escaped (a line continuation) nor
 /// inside a block comment, which is one space however many lines it spans.
@@ -892,6 +935,34 @@ mod tests {
 
     fn texts<'t>(tokens: &'t [PpToken]) -> Vec<&'t str> {
         tokens.iter().map(|t| t.text.as_ref()).collect()
+    }
+
+    fn arguments(text: &str) -> Option<Vec<&str>> {
+        let masked = mask_source(text);
+        let open = text.find('(')?;
+        invocation_arguments(&masked, open)
+            .map(|ranges| ranges.into_iter().map(|r| &text[r]).collect())
+    }
+
+    #[test]
+    fn invocation_arguments_split_as_the_preprocessor_splits() {
+        assert_eq!(
+            arguments("cast(unsigned long, f(a, b))"),
+            Some(vec!["unsigned long", "f(a, b)"])
+        );
+        assert_eq!(arguments("TESTONLY( rc = ) work();"), Some(vec!["rc ="]));
+        // Only parentheses nest: a brace or bracket comma splits.
+        assert_eq!(arguments("M({a, b})"), Some(vec!["{a", "b}"]));
+        // A parenthesis or comma inside a literal or comment is not one, and
+        // a comment is no part of the argument.
+        assert_eq!(
+            arguments("M(\")\", ',' /* , ) */, x)"),
+            Some(vec!["\")\"", "','", "x"])
+        );
+        assert_eq!(arguments("M( /* none */ )"), Some(vec![]));
+        assert_eq!(arguments("M()"), Some(vec![]));
+        assert_eq!(arguments("M(a, )"), Some(vec!["a", ""]));
+        assert_eq!(arguments("M(a, (b"), None);
     }
 
     #[test]
