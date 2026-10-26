@@ -594,10 +594,11 @@ pub enum ArgEvaluation {
     /// leaves unevaluated (`sizeof`, `_Alignof`,
     /// `typeof`, a `_Generic` controlling expression).
     Never,
-    /// Exactly once, on every path through the expansion.
+    /// Exactly once, on every path through the expansion: one arm of a
+    /// `?:` whose arms each evaluate it once counts once.
     Once,
-    /// More than once, or a number of times that depends on a condition
-    /// (a `?:`/`&&`/`||` operand, an `if`/`else` branch, a loop).
+    /// More than once on some path, not at all on some path (one `?:` arm
+    /// only, right of `&&`/`||`), or under an `if`/`else` branch or a loop.
     Unpredictable,
 }
 
@@ -766,6 +767,8 @@ const UNEVALUATED_OPERATORS: &[&str] = &[
     "__typeof",
     "typeof_unqual",
     "__typeof_unqual__",
+    // GCC's operands are types (`typeof(x)` at most), never evaluated.
+    "__builtin_types_compatible_p",
 ];
 
 /// One preprocessing token of a macro body, by position in its characters.
@@ -1004,71 +1007,193 @@ fn evaluation_at_depth(
         }
     }
 
-    // Walk the tokens tracking, per bracket level, whether the current
-    // position is a conditionally evaluated operand: right of `&&`/`||`, or
-    // an arm of `?:`. A `,` or `;` at the same level starts a new operand.
-    struct Level {
-        inherited: bool,
-        conditional: bool,
-        saw_question: bool,
+    // Count the evaluations on every path through the body as a range:
+    // the arms of `?:` are alternatives, and the right operand of `&&`/`||`
+    // may not run. So `sizeof(x) == sizeof(float) ? f(x) : g(x)`, the shape
+    // of the C library's type-generic classification macros, evaluates `x`
+    // exactly once. An occurrence an `if`/`else` governs, a loop header
+    // holds, or a macro it is passed to evaluates unpredictably makes the
+    // whole count unpredictable.
+    let hazard = std::cell::Cell::new(false);
+    let occurrence = |j: usize| -> PathCount {
+        let stringized = j > 0 && tokens[j - 1].text == "#";
+        let pasted_before = tokens.get(j + 1).is_some_and(|t| t.text == "##");
+        let pasted_after = j > 0 && tokens[j - 1].text == "##";
+        let pasted_call = pasted_call_evaluation(&tokens, j, pasting);
+        let pasted = pasted_before || (pasted_after && pasted_call.is_none());
+        let through = pasted_call.or(forwarded[j]);
+        if stringized || pasted || unevaluated[j] || through == Some(ArgEvaluation::Never) {
+            return PathCount::NONE;
+        }
+        if governed[tokens[j].start] || looped[j] || through == Some(ArgEvaluation::Unpredictable) {
+            hazard.set(true);
+        }
+        PathCount::ONCE
+    };
+    let paths = PathCounter {
+        tokens: &tokens,
+        target,
+        partner: bracket_partners(&tokens),
+        occurrence: &occurrence,
+    };
+    match paths.list(0, n) {
+        PathCount { max: 0, .. } => ArgEvaluation::Never,
+        PathCount { min: 1, max: 1 } if !hazard.get() => ArgEvaluation::Once,
+        _ => ArgEvaluation::Unpredictable,
     }
-    let mut levels = vec![Level {
-        inherited: false,
-        conditional: false,
-        saw_question: false,
-    }];
-    let (mut evaluations, mut conditional) = (0usize, false);
-    for j in 0..n {
-        let nested = levels.len() > 1;
-        let top = levels
-            .last_mut()
-            .expect("the outermost level is never popped");
-        match tokens[j].text.as_str() {
-            "(" | "[" | "{" => {
-                let c = top.conditional;
-                levels.push(Level {
-                    inherited: c,
-                    conditional: c,
-                    saw_question: false,
-                });
-            }
-            ")" | "]" | "}" if nested => {
-                levels.pop();
-            }
-            "?" => {
-                top.conditional = true;
-                top.saw_question = true;
-            }
-            ":" if top.saw_question => top.conditional = true,
-            "&&" | "||" => top.conditional = true,
-            "," | ";" => {
-                top.conditional = top.inherited;
-                top.saw_question = false;
-            }
-            t if t == target => {
-                let stringized = j > 0 && tokens[j - 1].text == "#";
-                let pasted_before = tokens.get(j + 1).is_some_and(|t| t.text == "##");
-                let pasted_after = j > 0 && tokens[j - 1].text == "##";
-                let pasted_call = pasted_call_evaluation(&tokens, j, pasting);
-                let pasted = pasted_before || (pasted_after && pasted_call.is_none());
-                let through = pasted_call.or(forwarded[j]);
-                if !(stringized || pasted || unevaluated[j])
-                    && through != Some(ArgEvaluation::Never)
-                {
-                    evaluations += 1;
-                    conditional |= top.conditional
-                        || governed[tokens[j].start]
-                        || looped[j]
-                        || through == Some(ArgEvaluation::Unpredictable);
+}
+
+/// How many times the paths through some tokens evaluate an argument: at
+/// least `min`, at most `max`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PathCount {
+    min: usize,
+    max: usize,
+}
+
+impl PathCount {
+    const NONE: Self = Self { min: 0, max: 0 };
+    const ONCE: Self = Self { min: 1, max: 1 };
+
+    /// One part after the other.
+    fn then(self, next: Self) -> Self {
+        Self {
+            min: self.min.saturating_add(next.min),
+            max: self.max.saturating_add(next.max),
+        }
+    }
+
+    /// One part or the other.
+    fn either(self, other: Self) -> Self {
+        Self {
+            min: self.min.min(other.min),
+            max: self.max.max(other.max),
+        }
+    }
+
+    /// The part, or nothing.
+    fn maybe(self) -> Self {
+        Self {
+            min: 0,
+            max: self.max,
+        }
+    }
+}
+
+/// The index of the bracket matching each opening one (`tokens.len()` when
+/// it never closes), and of nothing else.
+fn bracket_partners(tokens: &[BodyToken]) -> Vec<usize> {
+    let mut partner = vec![tokens.len(); tokens.len()];
+    let mut open = Vec::new();
+    for (j, t) in tokens.iter().enumerate() {
+        match t.text.as_str() {
+            "(" | "[" | "{" => open.push(j),
+            ")" | "]" | "}" => {
+                if let Some(o) = open.pop() {
+                    partner[o] = j;
                 }
             }
             _ => {}
         }
     }
-    match (evaluations, conditional) {
-        (0, _) => ArgEvaluation::Never,
-        (1, false) => ArgEvaluation::Once,
-        _ => ArgEvaluation::Unpredictable,
+    partner
+}
+
+/// [`evaluation_at_depth`]'s count over a macro body's tokens, read as C
+/// reads an expression: comma- and semicolon-separated parts in sequence,
+/// a `?:` as its condition then one of its arms, `&&`/`||` as the left
+/// operand then perhaps the right.
+struct PathCounter<'t> {
+    tokens: &'t [BodyToken],
+    target: &'t str,
+    partner: Vec<usize>,
+    /// What one occurrence of the target contributes.
+    occurrence: &'t dyn Fn(usize) -> PathCount,
+}
+
+impl PathCounter<'_> {
+    /// The tokens `lo..hi`, split at top-level `,` and `;`.
+    fn list(&self, lo: usize, hi: usize) -> PathCount {
+        let mut total = PathCount::NONE;
+        let mut start = lo;
+        let mut j = lo;
+        while j < hi {
+            match self.tokens[j].text.as_str() {
+                "(" | "[" | "{" => j = self.partner[j],
+                "," | ";" => {
+                    total = total.then(self.operand(start, j));
+                    start = j + 1;
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        total.then(self.operand(start, hi.min(self.tokens.len())))
+    }
+
+    /// One operand, `lo..hi`, holding no top-level `,` or `;`.
+    fn operand(&self, lo: usize, hi: usize) -> PathCount {
+        let question = self.top_level(lo, hi, |t| t == "?");
+        if let Some(q) = question {
+            let mut nested = 0usize;
+            let mut colon = None;
+            let mut k = q + 1;
+            while k < hi {
+                match self.tokens[k].text.as_str() {
+                    "(" | "[" | "{" => k = self.partner[k],
+                    "?" => nested += 1,
+                    ":" if nested == 0 => {
+                        colon = Some(k);
+                        break;
+                    }
+                    ":" => nested -= 1,
+                    _ => {}
+                }
+                k += 1;
+            }
+            if let Some(c) = colon {
+                return self
+                    .operand(lo, q)
+                    .then(self.list(q + 1, c).either(self.operand(c + 1, hi)));
+            }
+        }
+        if let Some(p) = self.top_level(lo, hi, |t| t == "&&" || t == "||") {
+            return self.sequence(lo, p).then(self.operand(p + 1, hi).maybe());
+        }
+        self.sequence(lo, hi)
+    }
+
+    /// Tokens evaluated one after another, brackets read as lists.
+    fn sequence(&self, lo: usize, hi: usize) -> PathCount {
+        let mut total = PathCount::NONE;
+        let mut j = lo;
+        while j < hi {
+            let text = self.tokens[j].text.as_str();
+            if matches!(text, "(" | "[" | "{") {
+                let close = self.partner[j];
+                total = total.then(self.list(j + 1, close.min(hi)));
+                j = close;
+            } else if text == self.target {
+                total = total.then((self.occurrence)(j));
+            }
+            j += 1;
+        }
+        total
+    }
+
+    /// The first token in `lo..hi`, outside any bracket, that `is` accepts.
+    fn top_level(&self, lo: usize, hi: usize, is: impl Fn(&str) -> bool) -> Option<usize> {
+        let mut j = lo;
+        while j < hi {
+            let text = self.tokens[j].text.as_str();
+            if matches!(text, "(" | "[" | "{") {
+                j = self.partner[j];
+            } else if is(text) {
+                return Some(j);
+            }
+            j += 1;
+        }
+        None
     }
 }
 
@@ -5143,6 +5268,64 @@ mod macro_write_tests {
         assert_eq!(argument_evaluation(&stringize, 0), ArgEvaluation::Never);
         let empty = arm(&["x"], "");
         assert_eq!(argument_evaluation(&empty, 0), ArgEvaluation::Never);
+    }
+
+    #[test]
+    fn argument_evaluation_counts_each_path_through_a_conditional() {
+        // The arms of `?:` are alternatives: a type dispatch whose condition
+        // is unevaluated evaluates the argument once, however deep it nests.
+        let dispatch = arm(&["x"], "(sizeof(x) == sizeof(float) ? f4(x) : f8(x))");
+        assert_eq!(argument_evaluation(&dispatch, 0), ArgEvaluation::Once);
+        let nested = arm(
+            &["x"],
+            "(sizeof (x) == sizeof (float) ? __isnanf ((float)(x)) \
+             : sizeof (x) == sizeof (double) ? __isnan ((double)(x)) \
+             : __isnanl ((long double)(x)))",
+        );
+        assert_eq!(argument_evaluation(&nested, 0), ArgEvaluation::Once);
+        let builtin = arm(
+            &["x"],
+            "(__builtin_types_compatible_p(typeof(x), float) ? f4(x) : f8(x))",
+        );
+        assert_eq!(argument_evaluation(&builtin, 0), ArgEvaluation::Once);
+        // A then-arm nested inside another: still one of three paths.
+        let inner = arm(&["c", "x"], "((c) ? (c) > 1 ? g(x) : h(x) : k(x))");
+        assert_eq!(argument_evaluation(&inner, 1), ArgEvaluation::Once);
+        assert_eq!(argument_evaluation(&inner, 0), ArgEvaluation::Unpredictable);
+        // GNU `a ?: b` evaluates `a` once and `b` maybe.
+        let elvis = arm(&["a", "b"], "((a) ?: (b))");
+        assert_eq!(argument_evaluation(&elvis, 0), ArgEvaluation::Once);
+        assert_eq!(argument_evaluation(&elvis, 1), ArgEvaluation::Unpredictable);
+        // A runtime condition that reads the argument adds to every path.
+        let runtime = arm(&["x"], "((x) > 0 ? f(x) : g(x))");
+        assert_eq!(
+            argument_evaluation(&runtime, 0),
+            ArgEvaluation::Unpredictable
+        );
+        // Present in one arm only: some path skips it.
+        let one_arm = arm(&["x"], "(sizeof(x) > 4 ? f(x) : 0)");
+        assert_eq!(
+            argument_evaluation(&one_arm, 0),
+            ArgEvaluation::Unpredictable
+        );
+        // Twice in one arm: some path evaluates it twice.
+        let twice = arm(&["x"], "(sizeof(x) > 4 ? f(x) + f(x) : g(x))");
+        assert_eq!(argument_evaluation(&twice, 0), ArgEvaluation::Unpredictable);
+        // The right operand of `&&`/`||` may not run, in either arm.
+        let guarded = arm(&["c", "x"], "(sizeof(x) > 4 ? (c) && f(x) : g(x))");
+        assert_eq!(
+            argument_evaluation(&guarded, 1),
+            ArgEvaluation::Unpredictable
+        );
+        // A comma in an arm is a sequence inside that arm.
+        let comma = arm(&["x"], "(sizeof(x) > 4 ? (log(), f(x)) : g(x))");
+        assert_eq!(argument_evaluation(&comma, 0), ArgEvaluation::Once);
+        // An `if` governs its body whatever the `?:` count says.
+        let governed = arm(&["c", "x"], "do { if (c) f(sizeof(x) ? x : x); } while (0)");
+        assert_eq!(
+            argument_evaluation(&governed, 1),
+            ArgEvaluation::Unpredictable
+        );
     }
 
     #[test]
