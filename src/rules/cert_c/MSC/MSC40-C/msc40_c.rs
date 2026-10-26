@@ -39,15 +39,28 @@
 //! - Check if they reference static (internally-linked) identifiers
 //! - Check if they contain static variable declarations
 
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
-use crate::utility::cert_c::ast_utils::{get_node_text, get_sanitized_node_text};
+use crate::utility::cert_c::ast_utils::{
+    declares_static, get_node_text, static_macro_names_in_scope,
+};
+use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::sync::Arc;
 use tree_sitter::Node;
 
-pub struct Msc40C;
+#[derive(Default)]
+pub struct Msc40C {
+    /// Macros any scanned file defines as `static`
+    /// (`ProjectContext::static_macro_names`).
+    project_static_macros: RefCell<Arc<HashSet<String>>>,
+    /// Those plus the file being scanned's own; set per check.
+    static_macros: RefCell<HashSet<String>>,
+}
 
 impl CertRule for Msc40C {
     fn rule_id(&self) -> &'static str {
@@ -66,7 +79,13 @@ impl CertRule for Msc40C {
         Severity::Low
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project_static_macros.borrow_mut() = context.static_macro_names.clone();
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
+        *self.static_macros.borrow_mut() =
+            static_macro_names_in_scope(source, &self.project_static_macros.borrow());
         let mut violations = Vec::new();
 
         // First pass: collect static (internal linkage) identifiers at file scope
@@ -193,48 +212,21 @@ impl Msc40C {
         self.check_for_static_references(node, source, violations);
     }
 
+    /// Whether the definition `node` carries an `inline` function specifier
+    /// and is not declared `static`, read from its own specifiers. `extern`
+    /// is a storage class, not a function specifier: `extern unsigned f(void)`
+    /// is an ordinary external definition, which the constraint does not
+    /// govern, so a static object inside it is allowed. A `static` spelled
+    /// through a macro (`#define LOCAL static`) counts as `static`.
     fn is_non_static_inline_function(&self, node: &Node, source: &str) -> bool {
-        // Check for inline specifier and ensure it's not static inline.
-        // Scan only the signature (up to the body), not the whole function —
-        // this both narrows the scope structurally (a comment/string literal
-        // in the BODY can no longer be misread as an "inline"/"extern"/
-        // "static" specifier) and, as a further guard, sanitizes that
-        // signature slice so an inline comment can't spoof it either.
-        let signature_end = node
-            .child_by_field_name("body")
-            .map(|b| b.start_byte())
-            .unwrap_or_else(|| node.end_byte());
-        let sanitized_func_text = get_sanitized_node_text(node, source);
-        let rel_end = (signature_end - node.start_byte()).min(sanitized_func_text.len());
-        let func_text = &sanitized_func_text[..rel_end];
-
-        // Check for "extern inline" or just "inline" (not "static inline")
-        let has_inline = func_text.contains("inline");
-        let has_extern = func_text.contains("extern");
-
-        // If it has inline keyword
-        if has_inline {
-            // But not static inline (static inline is allowed)
-            // Check if "static" appears before "inline" in the declaration
-            if let Some(inline_pos) = func_text.find("inline") {
-                let before_inline = &func_text[..inline_pos];
-                if before_inline.contains("static") {
-                    return false; // static inline is compliant
-                }
-            }
-            return true;
-        }
-
-        // extern function definitions (without static) that have static variables
-        // are also problematic - they provide external linkage with internal state
-        if has_extern {
-            // Check if "static" appears at the beginning (static extern is unusual but check)
-            if !func_text.trim_start().starts_with("static") {
-                return true; // extern function without static qualifier
-            }
-        }
-
-        false
+        let is_inline = node.child_nodes().any(|c| {
+            c.kind() == "storage_class_specifier"
+                && matches!(
+                    get_node_text(&c, source),
+                    "inline" | "__inline" | "__inline__" | "__forceinline"
+                )
+        });
+        is_inline && !declares_static(node, source, &self.static_macros.borrow())
     }
 
     fn check_for_internal_static_declarations(

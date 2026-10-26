@@ -1,7 +1,11 @@
 /*
  * Rule: MSC40-C
  * Source: wiki
- * Status: FAIL - Should trigger MSC40-C violation
+ * Status: PASS - Should NOT trigger MSC40-C violation
+ *
+ * The external definition from CERT's two-file example, which its compliant
+ * solution keeps unchanged. `extern` is a storage class, not `inline`, so
+ * the static seeds are allowed here.
  */
 
 /* file1.c */

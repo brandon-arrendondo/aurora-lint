@@ -1089,7 +1089,7 @@ impl RuleRegistry {
         registry.register(Box::new(msc39_c::Msc39C::new()));
         registry.register(Box::new(msc32_c::Msc32C));
         registry.register(Box::new(msc33_c::Msc33C));
-        registry.register(Box::new(msc40_c::Msc40C));
+        registry.register(Box::new(msc40_c::Msc40C::default()));
         registry.register(Box::new(msc41_c::Msc41C::new()));
         registry.register(Box::new(msc00_c::Msc00C));
         registry.register(Box::new(msc01_c::Msc01C));
