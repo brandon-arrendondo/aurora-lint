@@ -304,10 +304,15 @@ database in which some unit declares nothing grants none.</p></li>
 <li><p>The data model comes from a compile database only when every unit states the
 same one. A unit that states none leaves it unknown; it is never inferred
 from the units that do.</p></li>
-<li><p>A compile database’s <code class="docutils literal notranslate"><span class="pre">c_standard</span></code> is recorded per unit. Only MSC37-C reads
-it so far (whether <code class="docutils literal notranslate"><span class="pre">unreachable</span></code> is a macro the standard defines); no other
-rule does, which is why <code class="docutils literal notranslate"><span class="pre">--pedantic</span></code> names only the missing
-<code class="docutils literal notranslate"><span class="pre">posix_version</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">c_standard</span></code> is read per unit: the configuration’s, else the compile
+database’s entry for the file. MSC37-C reads it (whether <code class="docutils literal notranslate"><span class="pre">unreachable</span></code> is
+a macro the standard defines), and so does the expression typing the
+floating-point and integer rules share: a call to a floating function C99
+added (<code class="docutils literal notranslate"><span class="pre">round</span></code>, <code class="docutils literal notranslate"><span class="pre">cbrt</span></code>, <code class="docutils literal notranslate"><span class="pre">wcstod</span></code>, …) whose header was not expanded
+has the standard’s return type only under a declared C99 or later, since
+C90 left those names to programs. An undeclared edition withholds that
+type rather than taking an exemption, which is why <code class="docutils literal notranslate"><span class="pre">--pedantic</span></code> names
+only the missing <code class="docutils literal notranslate"><span class="pre">posix_version</span></code>.</p></li>
 </ul>
 <p>The settings record where each declared fact came from (<code class="docutils literal notranslate"><span class="pre">cli</span></code>, <code class="docutils literal notranslate"><span class="pre">config</span></code> or
 <code class="docutils literal notranslate"><span class="pre">compile</span> <span class="pre">database</span></code>), and that source is part of the settings hash; a scan
