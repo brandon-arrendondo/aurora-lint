@@ -9619,3 +9619,57 @@ fn a_tree_with_uppercase_extensions_is_scanned_as_c() {
     );
     assert_eq!(upper_single, single(&lower.join("a.c")));
 }
+
+/// MSC17-C findings for `sw.c`, scanned by its relative path from its own
+/// directory, under a compile database whose one unit is compiled with
+/// `std`.
+fn msc17_findings_under_compile_db_edition(std: &str) -> usize {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().canonicalize().unwrap();
+    std::fs::write(
+        project.join("sw.c"),
+        "int classify(int op)\n{\n    int r = 0;\n    switch (op) {\n    case 1:\n        \
+         r = 10;\n        unreachable();\n    case 2:\n        r = 20;\n        break;\n    \
+         }\n    return r;\n}\n",
+    )
+    .unwrap();
+    let db = serde_json::json!([{
+        "directory": project,
+        "file": project.join("sw.c"),
+        "arguments": ["cc", format!("-std={std}"), "-c", "sw.c"],
+    }]);
+    std::fs::write(project.join("compile_commands.json"), db.to_string()).unwrap();
+    let out = project.join("out.json");
+    let output = Command::new(aurora_lint_bin())
+        .args([
+            "sw.c",
+            "--compile-commands",
+            "compile_commands.json",
+            "--rules",
+            "MSC17-C",
+            "-e",
+            out.to_str().unwrap(),
+        ])
+        .current_dir(&project)
+        .output()
+        .expect("failed to execute aurora-lint");
+    assert!(
+        out.is_file(),
+        "no report: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let findings: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    findings
+        .iter()
+        .filter(|f| f["rule_id"] == "MSC17-C")
+        .count()
+}
+
+#[test]
+fn msc17_reads_the_compile_database_edition_for_a_relative_scan_path() {
+    // Declared C23 for the unit: `unreachable()` ends the section.
+    assert_eq!(msc17_findings_under_compile_db_edition("c23"), 0);
+    // Declared C17: no `unreachable()` in the standard, so it falls through.
+    assert_eq!(msc17_findings_under_compile_db_edition("c17"), 1);
+}
