@@ -619,7 +619,17 @@ scanned tree. Both formats name aurora-lint as their producer: SARIF in
 <code class="docutils literal notranslate"><span class="pre">fixes</span></code> entry: the format requires a fix to carry the replacements that
 apply it, and a report with one lacking them fails the SARIF 2.1.0 schema.
 A result’s location gives <code class="docutils literal notranslate"><span class="pre">startColumn</span></code> only when the rule reports a
-column; without one, the region names the line alone.</p>
+column and the export can read the finding’s line to convert it; otherwise
+the region names the line alone. A file the export cannot read has no
+column, and neither does a finding on the empty row after a file’s final
+newline, which no line holds. The run declares <code class="docutils literal notranslate"><span class="pre">columnKind</span></code> as
+<code class="docutils literal notranslate"><span class="pre">utf16CodeUnits</span></code>, the unit SARIF assumes when none is named, and
+<code class="docutils literal notranslate"><span class="pre">startColumn</span></code> is converted to it. The JSON export’s <code class="docutils literal notranslate"><span class="pre">column</span></code>, like the
+terminal’s, counts bytes of the line as the scan decoded it to UTF-8 instead:
+a Latin-1 or UTF-16 file is decoded first, so it is not a byte offset in the
+file either. The two agree on ASCII and differ by a column or two for each
+non-ASCII character before the finding, in a comment or a string literal for
+instance.</p>
 <p>A rule with no results in a SARIF report either ran and found nothing or did
 not run. Each rule the configuration disables is listed in
 <code class="docutils literal notranslate"><span class="pre">tool.driver.rules</span></code> with <code class="docutils literal notranslate"><span class="pre">defaultConfiguration.enabled</span></code> set to <code class="docutils literal notranslate"><span class="pre">false</span></code>
