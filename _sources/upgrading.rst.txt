@@ -102,9 +102,11 @@ with its reason.
   under ``HKEY_LOCAL_MACHINE`` or ``HKEY_CLASSES_ROOT``. Rename these ids in
   manifests, ``--rules`` lists and suppressions, or they stop matching.
 - **Removed.** FIO50-C, FIO51-C and CON50-C (CERT C++ identifiers; FIO39-C,
-  FIO42-C, and CON31-C with CON34-C report the same constructs), and ERR06-C, FIO03-C, FLP05-C, INT14-C,
-  MSC14-C, PRE12-C, PRE13-C and STR03-C. A suppression for one of these can
-  be deleted.
+  FIO42-C, and CON31-C with CON34-C report the same constructs), DCL22-C
+  (SIG31-C reports a signal handler's non-volatile shared object, and MSC22-C
+  a local changed between ``setjmp`` and ``longjmp``), and ERR06-C, FIO03-C,
+  FLP05-C, INT14-C, MSC14-C, PRE12-C, PRE13-C and STR03-C. A suppression for
+  one of these can be deleted.
 - **Moved.** A double ``fclose()`` is reported by FIO46-C, not FIO24-C, and a
   double ``close()``, ``closesocket()`` or ``CloseHandle()`` is no longer
   reported. Move FIO24-C suppressions for a double ``fclose()`` to FIO46-C.

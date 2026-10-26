@@ -395,12 +395,6 @@ behind a departure.
      - not_enforced
      - 
      - DCL21-C/2026-09-26/disposition, DCL21-C/2026-09-26/removal
-   * - DCL22-C
-     - not_enforced
-     - not_enforced
-     - not_enforced
-     - 
-     - DCL22-C/2026-09-26/disposition, DCL22-C/2026-09-26/removal
    * - DCL23-C
      - as_written
      - as_written
