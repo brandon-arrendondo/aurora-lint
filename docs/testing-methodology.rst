@@ -81,7 +81,40 @@ option overrides on top of each preset:
      */
 
 A rule that honors an option carries at least one fixture whose outcome
-depends on it, so each setting is exercised in both directions. CI runs the
+depends on it, so each setting is exercised in both directions.
+
+**Where and how often**: by itself, a run that expects a violation passes on
+any finding, on any line. A fail fixture can say more, so it cannot pass on
+a finding that names some other construct, or on duplicates of the one it
+should name (ADR-0005). An ``Expect: here`` comment trailing a line of code
+requires a finding on that line, and ``count=N`` in the header requires
+exactly N findings:
+
+.. code-block:: c
+
+    /*
+     * Expect: count=1
+     */
+    void f(size_t n, ...) {
+      va_list ap;
+      va_start(ap, n);
+      unsigned char c = va_arg(ap, unsigned char); /* Expect: here */
+      va_end(ap);
+    }
+
+``count=N`` goes on the same ``Expect:`` line as any per-preset entries
+(``Expect: default=clean strict=violation count=2``). Both forms apply to
+every run that expects a violation; a run that expects none already requires
+no finding anywhere. A fixture may mark several lines. In a macro definition,
+the marker goes before the continuation backslash. The build fails on:
+
+- a marker on a line with no code;
+- any other word after a trailing ``Expect:``;
+- a marker or count in a fixture where no run expects a violation;
+- ``count=0`` (say ``clean``).
+
+Each marker is read from the line it trails, so it moves with its code when
+the fixture is edited. CI runs the
 whole suite, so both presets are covered there.
 
 Tests are auto-generated into Rust test functions from ``.c`` files — no embedded

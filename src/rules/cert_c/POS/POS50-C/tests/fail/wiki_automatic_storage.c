@@ -19,7 +19,7 @@ void createThread(pthread_t *tid) {
   /* Store 1 in val on the stack. */
   int val = 1;
   int result;
-  if ((result = pthread_create(tid, NULL, childThread, &val)) != 0) {
+  if ((result = pthread_create(tid, NULL, childThread, &val)) != 0) { /* Expect: here */
     /* Handle error */
   }
 }

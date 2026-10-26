@@ -629,7 +629,14 @@ fn findings_at(
 /// settings the fixture runs under; every fixture runs under `default` and
 /// `strict`, and under `pedantic` when its header names it (build.rs,
 /// `OPT_IN_PRESETS`).
+///
+/// A run that expects a violation also holds the fixture to its
+/// `expected_lines` (the lines a trailing `/* Expect: here */` marks: each
+/// must carry a finding) and its `count` (`Expect: count=N`: exactly N
+/// findings), so a fixture cannot pass on a finding that names some other
+/// construct, or on duplicates of the one it should name.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn run_fixture(
     test_name: &str,
     rule_id: &str,
@@ -637,6 +644,8 @@ fn run_fixture(
     expect: Expect,
     preset: &str,
     overrides: &str,
+    expected_lines: &[usize],
+    count: Option<usize>,
 ) {
     let test_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative_path);
     let raw = fs::read_to_string(&test_path)
@@ -698,6 +707,56 @@ fn run_fixture(
                 reproduce,
                 about
             );
+            let mut reported: Vec<_> = violations.iter().collect();
+            reported.sort_by_key(|v| (v.line, v.column));
+            let listing = reported
+                .iter()
+                .map(|v| {
+                    format!(
+                        "\n  reported:  {}:{}  {}",
+                        test_path.display(),
+                        v.line,
+                        v.message
+                    )
+                })
+                .collect::<String>();
+            // Name the preset where it decides the outcome, so a reader knows
+            // which run the marker failed.
+            let under = if per_preset_expectation(&raw) {
+                format!(" under the {preset} preset")
+            } else {
+                String::new()
+            };
+            for &line in expected_lines {
+                assert!(
+                    violations.iter().any(|v| v.line == line),
+                    "\n[{}] expected a finding on line {} (`Expect: here`){}, but none was \
+                     reported there.\n  at:        {}:{}{}\n  reproduce: {}{}\n",
+                    rule_id,
+                    line,
+                    under,
+                    test_path.display(),
+                    line,
+                    listing,
+                    reproduce,
+                    about
+                );
+            }
+            if let Some(n) = count {
+                assert!(
+                    violations.len() == n,
+                    "\n[{}] expected exactly {} finding(s) (`Expect: count={}`){}, got {}.{}\n  \
+                     reproduce: {}{}\n",
+                    rule_id,
+                    n,
+                    n,
+                    under,
+                    violations.len(),
+                    listing,
+                    reproduce,
+                    about
+                );
+            }
         }
         Expect::Clean => {
             let clean = violations.is_empty();
@@ -719,6 +778,17 @@ fn run_fixture(
             );
         }
     }
+}
+
+/// Whether the fixture's `Expect:` header names a preset, so its outcome
+/// can differ between the runs of one fixture.
+#[cfg(test)]
+fn per_preset_expectation(source: &str) -> bool {
+    source.lines().take(40).any(|line| {
+        let l = line.trim().trim_start_matches(['*', '/', ' ']).trim();
+        l.strip_prefix("Expect:")
+            .is_some_and(|rest| rest.split_whitespace().any(|p| !p.starts_with("count=")))
+    })
 }
 
 /// A fixture's `Description:` (else `Source:`) banner line, which links a

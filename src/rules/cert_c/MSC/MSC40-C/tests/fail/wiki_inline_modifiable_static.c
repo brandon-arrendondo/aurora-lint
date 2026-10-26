@@ -5,6 +5,6 @@
  */
 
 extern inline void func(void) {
-  static int I = 12;
+  static int I = 12; /* Expect: here */
   /* Perform calculations which may modify I */
 }

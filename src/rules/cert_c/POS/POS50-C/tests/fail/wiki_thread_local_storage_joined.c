@@ -24,7 +24,7 @@ void *childThread(void *val) {
 
 void createThread(pthread_t *tid) {
   val = 1;
-  int result = pthread_create(tid, NULL, childThread, &val); /* violation */
+  int result = pthread_create(tid, NULL, childThread, &val); /* violation */ /* Expect: here */
   if (result != 0) {
     /* Handle error */
   }

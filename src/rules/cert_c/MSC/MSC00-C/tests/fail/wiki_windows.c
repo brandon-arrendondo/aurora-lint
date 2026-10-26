@@ -4,9 +4,9 @@
  * Status: FAIL - Should trigger MSC00-C violation
  */
 
-#pragma warning(disable:4705) 
-#pragma warning(disable:4706) 
-#pragma warning(disable:4707) 
+#pragma warning(disable:4705) /* Expect: here */
+#pragma warning(disable:4706) /* Expect: here */
+#pragma warning(disable:4707) /* Expect: here */
 /* Unnecessarily flagged code */
 #pragma warning(default:4705) 
 #pragma warning(default:4706) 

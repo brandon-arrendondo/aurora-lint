@@ -10,5 +10,5 @@
 #define JOIN(x, y) x ## y
 
 #define static_assert(e) \
-  typedef char JOIN(assertion_failed_at_line_, __LINE__) \
+  typedef char JOIN(assertion_failed_at_line_, __LINE__) /* Expect: here */ \
     [(e) ? 1 : -1]

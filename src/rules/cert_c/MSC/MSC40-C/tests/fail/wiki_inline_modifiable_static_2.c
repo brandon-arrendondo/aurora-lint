@@ -13,8 +13,8 @@ inline unsigned int get_random(void) {
    * Constraint violation: static duration storage referenced
    * in non-static inline definition
    */
-  static unsigned int m_z = 0xdeadbeef;
-  static unsigned int m_w = 0xbaddecaf;
+  static unsigned int m_z = 0xdeadbeef; /* Expect: here */
+  static unsigned int m_w = 0xbaddecaf; /* Expect: here */
 
   /* Compute the next pseudorandom value and update the seeds */
   m_z = 36969 * (m_z & 65535) + (m_z >> 16);

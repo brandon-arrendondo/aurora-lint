@@ -972,6 +972,13 @@ fn generate_test_function(
         "Violation"
     };
     let header = fixture_header(test_path)?;
+    anyhow::ensure!(
+        (header.expected_lines.is_empty() && header.count.is_none())
+            || dir_expect == "Violation"
+            || header.expect.iter().any(|(_, e)| e == "Violation"),
+        "{:?}: `Expect: here` and `Expect: count=` describe a violation, and no run of this fixture expects one",
+        test_path
+    );
     let opted_in = OPT_IN_PRESETS
         .iter()
         .filter(|p| header.expect.iter().any(|(named, _)| named == *p));
@@ -1003,8 +1010,16 @@ fn generate_test_function(
         }
         writeln!(
             f,
-            "fn {}() {{ super::run_fixture({:?}, {:?}, {:?}, super::Expect::{}, {:?}, {:?}); }}",
-            name, name, rule_id, relative_path, expect, preset, header.settings
+            "fn {}() {{ super::run_fixture({:?}, {:?}, {:?}, super::Expect::{}, {:?}, {:?}, &{:?}, {:?}); }}",
+            name,
+            name,
+            rule_id,
+            relative_path,
+            expect,
+            preset,
+            header.settings,
+            header.expected_lines,
+            header.count
         )?;
         writeln!(f)?;
     }
@@ -1030,6 +1045,13 @@ struct FixtureHeader {
     /// `Settings: name=value, name=value` -- option overrides applied on top
     /// of each preset.
     settings: String,
+    /// The 1-indexed lines a trailing `/* Expect: here */` (or
+    /// `// Expect: here`) marks: a run that expects a violation must report
+    /// one on each.
+    expected_lines: Vec<usize>,
+    /// `Expect: count=N` -- a run that expects a violation must report
+    /// exactly N findings, not merely one.
+    count: Option<usize>,
 }
 
 /// Read a fixture's `Expect:` and `Settings:` lines from its leading comment
@@ -1041,11 +1063,17 @@ struct FixtureHeader {
 /// - a comment line carrying a directive after the first line of code is an
 ///   error (code such as `printf("Settings: ...")` is not a comment line and
 ///   is ignored).
+///
+/// The one directive allowed after the leading comment is the line marker
+/// `Expect: here`, in a comment trailing the code it marks; on a line with no
+/// code it is an error, and so is any other `Expect:` trailing code.
 fn fixture_header(path: &std::path::Path) -> Result<FixtureHeader> {
     let source = fs::read_to_string(path).with_context(|| format!("read {:?}", path))?;
     let mut header = FixtureHeader {
         expect: Vec::new(),
         settings: String::new(),
+        expected_lines: Vec::new(),
+        count: None,
     };
     let (mut saw_expect, mut saw_settings, mut in_code) = (false, false, false);
     for (lineno, line) in source.lines().enumerate() {
@@ -1053,7 +1081,24 @@ fn fixture_header(path: &std::path::Path) -> Result<FixtureHeader> {
         let is_comment_line = t.starts_with("/*") || t.starts_with('*') || t.starts_with("//");
         if !(t.is_empty() || is_comment_line) {
             in_code = true;
+            if let Some(marker) = trailing_expect(t) {
+                anyhow::ensure!(
+                    marker == "here",
+                    "{:?}:{}: only `Expect: here` may trail code, got `Expect: {}`",
+                    path,
+                    lineno + 1,
+                    marker
+                );
+                header.expected_lines.push(lineno + 1);
+            }
             continue;
+        }
+        if trailing_expect(t).is_some_and(|m| m == "here") {
+            anyhow::bail!(
+                "{:?}:{}: `Expect: here` must trail the code it marks, on the same line",
+                path,
+                lineno + 1
+            );
         }
         let l = t.trim_start_matches(['*', '/', ' ']).trim();
         let l = l.strip_suffix("*/").map_or(l, str::trim_end);
@@ -1085,6 +1130,15 @@ fn fixture_header(path: &std::path::Path) -> Result<FixtureHeader> {
                 let (preset, outcome) = pair
                     .split_once('=')
                     .with_context(|| format!("{}: bad Expect entry '{}'", at, pair))?;
+                if preset == "count" {
+                    anyhow::ensure!(header.count.is_none(), "{}: a second `count=`", at);
+                    let n: usize = outcome.parse().with_context(|| {
+                        format!("{}: Expect count must be a number, got '{}'", at, outcome)
+                    })?;
+                    anyhow::ensure!(n > 0, "{}: `count=0` is a clean fixture: say clean", at);
+                    header.count = Some(n);
+                    continue;
+                }
                 anyhow::ensure!(
                     PRESETS.contains(&preset) || OPT_IN_PRESETS.contains(&preset),
                     "{}: Expect names unknown preset '{}'",
@@ -1111,6 +1165,23 @@ fn fixture_header(path: &std::path::Path) -> Result<FixtureHeader> {
         }
     }
     Ok(header)
+}
+
+/// What follows `Expect:` in a comment trailing code on line `t`
+/// (`x = f(); /* Expect: here */`), if any. The directive is spelled exactly;
+/// a comment that merely mentions expecting something is no directive.
+fn trailing_expect(t: &str) -> Option<&str> {
+    if let Some((_, after)) = t.split_once("/* Expect:") {
+        // A block comment ends at its `*/`, so the marker may stand before a
+        // macro's continuation backslash.
+        return Some(
+            after
+                .split_once("*/")
+                .map_or(after, |(inner, _)| inner)
+                .trim(),
+        );
+    }
+    t.split_once("// Expect:").map(|(_, after)| after.trim())
 }
 
 /// Whether the rule whose manifest is `toml_path` has detection logic: a

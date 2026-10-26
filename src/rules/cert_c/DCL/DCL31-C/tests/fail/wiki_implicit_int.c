@@ -4,4 +4,4 @@
  * Status: FAIL - Should trigger DCL31-C violation
  */
 
-extern foo;
+extern foo; /* Expect: here */

@@ -22,7 +22,8 @@ def main() -> int:
             continue
         fixtures = [f for kind in ("fail", "pass", "expected_fail")
                     for f in (toml.parent / "tests" / kind).glob("*.c")]
-        if fixtures and not any(re.search(r"^\s*(?://|/?\*)\s*Expect:", f.read_text(), re.M)
+        if fixtures and not any(re.search(r"^\s*(?://|/?\*)\s*Expect:.*\b(?:default|strict|pedantic)=",
+                                          f.read_text(), re.M)
                                 for f in fixtures):
             missing.append(toml.stem)
     print("\n".join(missing))

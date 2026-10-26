@@ -17,7 +17,7 @@ void *createThread(void *childTid) {
   pthread_t *tid = (pthread_t *)childTid;
   int result;
   val = 1;
-  if ((result = pthread_create(tid, NULL, childThread, &val)) != 0) {
+  if ((result = pthread_create(tid, NULL, childThread, &val)) != 0) { /* Expect: here */
     /* Handle error */
   }
   return NULL;
