@@ -296,6 +296,40 @@ pub fn arm_assumptions(node: &Node, source: &str) -> Vec<(String, bool)> {
     out
 }
 
+/// The term [`marked_arm_assumptions`] adds for a condition nothing reads.
+/// No identifier is spelled this way, so no build flag matches it.
+pub const UNREAD_CONDITION: &str = "#unread";
+
+/// Whether some build may skip `node`: it sits in an arm of a preprocessor
+/// conditional other than a file include guard, whatever that conditional
+/// tests (`#if X > 0` and an `||` as much as `#ifdef X`).
+pub fn under_a_conditional(node: &Node, source: &str) -> bool {
+    let mut child = *node;
+    while let Some(parent) = child.parent() {
+        if matches!(parent.kind(), "preproc_ifdef" | "preproc_if")
+            && !crate::utility::cert_c::ast_utils::is_include_guard(&parent, source)
+        {
+            return true;
+        }
+        child = parent;
+    }
+    false
+}
+
+/// [`arm_assumptions`], with `(UNREAD_CONDITION, true)` in place of the empty
+/// set when `node` sits under a conditional it cannot read
+/// ([`under_a_conditional`]): empty then means only that `node` is compiled
+/// in every build, so a reader asking whether a definition is unconditional
+/// is not told so of one under `#if MY_ASSERT_LEVEL > 0`. A reader pairing
+/// definitions with calls drops the term, which fixes nothing.
+pub fn marked_arm_assumptions(node: &Node, source: &str) -> Vec<(String, bool)> {
+    let out = arm_assumptions(node, source);
+    if out.is_empty() && under_a_conditional(node, source) {
+        return vec![(UNREAD_CONDITION.to_string(), true)];
+    }
+    out
+}
+
 /// Whether 1-based `line` of `source` survives preprocessing with the macros
 /// in `assumptions` fixed. See [`arm_assumptions`].
 ///

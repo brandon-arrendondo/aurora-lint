@@ -621,7 +621,8 @@ pub fn collect_function_macro_arms(source: &str) -> HashMap<String, Vec<MacroArm
 pub struct ArmSite {
     /// Byte offset of the line the `#define` starts on.
     pub offset: usize,
-    /// The macro states it is made under.
+    /// The macro states it is made under, as
+    /// [`ProjectMacroArm::conditions`] reads them.
     pub conditions: Vec<(String, bool)>,
 }
 
@@ -638,7 +639,7 @@ pub fn collect_function_macro_arm_sites(
             .map(|d| {
                 (
                     d.start_position().row + 1,
-                    crate::analyze::dead_regions::arm_assumptions(&d, source),
+                    crate::analyze::dead_regions::marked_arm_assumptions(&d, source),
                 )
             })
             .collect();
@@ -831,8 +832,9 @@ pub struct ProjectMacroArm {
     /// Real paths of the files that define it this way.
     pub files: Vec<String>,
     /// The macro states each `#define` making it sits under, each distinct
-    /// set once; an empty set is a definition under no condition the arm
-    /// readers can express, which compiles with every call.
+    /// set once ([`marked_arm_assumptions`](crate::analyze::dead_regions::marked_arm_assumptions)):
+    /// an empty set is a definition every build makes, and one under a
+    /// condition nothing reads carries `UNREAD_CONDITION`.
     pub conditions: Vec<Vec<(String, bool)>>,
 }
 

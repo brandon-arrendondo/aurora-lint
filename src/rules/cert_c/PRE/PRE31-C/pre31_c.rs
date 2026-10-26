@@ -6,7 +6,7 @@ use crate::analyze::const_eval::{merged_macro_aliases, resolve_macro_alias};
 use crate::analyze::context::{
     EffectView, IncludeClosure, ProjectContext, VisibleTypes, UNRESOLVED_INCLUDE,
 };
-use crate::analyze::dead_regions::ConfiguredLines;
+use crate::analyze::dead_regions::{self, ConfiguredLines};
 use crate::analyze::function_summary::extract_function_name;
 use crate::analyze::macro_expand::{
     self, ArgEvaluation, ArmSite, FunctionMacro, MacroArm, Pasting, ProjectMacroArm,
@@ -490,12 +490,17 @@ impl<'a> Ctx<'a> {
     /// some `#define` or `#undef` in the scan sets (the definition's own
     /// name, a header's self-guard, a guard another include defines) may
     /// change between the two, so its term proves nothing and is dropped.
-    /// What is left are build flags, the same in every file.
+    /// What is left are build flags, the same in every file. A condition
+    /// nothing reads (`UNREAD_CONDITION`) fixes nothing either.
     fn compiles_under(&self, line: usize, conditions: &[(String, bool)]) -> bool {
         let (defined, undefined) = self.set_names;
         let flags: Vec<(String, bool)> = conditions
             .iter()
-            .filter(|(n, _)| !defined.contains(n) && !undefined.contains(n))
+            .filter(|(n, _)| {
+                n != dead_regions::UNREAD_CONDITION
+                    && !defined.contains(n)
+                    && !undefined.contains(n)
+            })
             .cloned()
             .collect();
         self.lines.compiles_under(line, &flags)
@@ -556,13 +561,17 @@ impl<'a> Ctx<'a> {
     /// Which definition of `name`, a C library macro the standard lets
     /// evaluate an argument other than once, is in force at the invocation
     /// being judged, by the file's own `#include` lines before it, in order
-    /// (ADR-0006, ADR-0010). A project header that defines `name`
-    /// unconditionally (valkey's serverassert.h does `#undef assert` and
-    /// defines its own) replaces the library's for what follows; `<assert.h>`
-    /// reached again afterwards defines `assert` anew (C11 7.2p1), while the
-    /// other library headers are included once. A header the replacing one
-    /// includes is taken to come before its definition. Without the file's
-    /// include edges, or with no replacing header, the library's.
+    /// (ADR-0006, ADR-0010), and the definitions of the replacing headers
+    /// those reach. A project header that defines `name` in every build
+    /// (valkey's serverassert.h does `#undef assert` and defines its own)
+    /// replaces the library's for what follows; `<assert.h>` reached again
+    /// afterwards defines `assert` anew (C11 7.2p1), while the other library
+    /// headers are included once. A header the replacing one includes is
+    /// taken to come before its definition. An `#include` some builds skip
+    /// (under `#ifdef USE_MYASSERT`) changes the definition only in the
+    /// builds that take it, so where it would change it, either is in force.
+    /// Without the file's include edges, or with no replacing header, the
+    /// library's.
     fn library_macro_in_force(&self, name: &str) -> (LibraryMacro, Vec<MacroArm>) {
         let replacing: Vec<&ProjectMacroArm> = self
             .project_arms
@@ -578,27 +587,45 @@ impl<'a> Ctx<'a> {
             .filter(|f| !self.outside_headers.contains(*f))
             .map(String::as_str)
             .collect();
-        let arms: Vec<MacroArm> = replacing.iter().map(|e| e.arm.clone()).collect();
         let Some(edges) = self
             .file_path
             .map(crate::analyze::compile_commands::real_path)
             .and_then(|f| self.include_edges.get(&f))
         else {
-            return (LibraryMacro::Library, arms);
+            return (LibraryMacro::Library, Vec::new());
         };
         if replacers.is_empty() {
-            return (LibraryMacro::Library, arms);
+            return (LibraryMacro::Library, Vec::new());
         }
         let header = library_header(name);
         let is_library_header = |path: &str| {
             path.strip_prefix(UNRESOLVED_INCLUDE).unwrap_or(path) == header
                 || path.ends_with(&format!("/{header}"))
         };
+        // Lines no build compiles (`#if 0`); an include there reaches nothing.
+        let skipped: Vec<(usize, usize)> = lang_parsing_substrate::dead_code_ranges(self.source)
+            .into_iter()
+            .filter(|r| {
+                matches!(
+                    r.reason,
+                    lang_parsing_substrate::DeadCodeReason::IfZero
+                        | lang_parsing_substrate::DeadCodeReason::CppOnly
+                )
+            })
+            .map(|r| (r.start_line, r.end_line))
+            .collect();
         let (line, _) = self.site.get();
         let mut state = LibraryMacro::Library;
+        // The replacing headers the includes so far reach, in the builds
+        // where one of them is in force.
+        let mut reached: HashSet<&str> = HashSet::new();
         for include in query::find_descendants_of_kind(self.root, "preproc_include") {
-            if include.start_position().row + 1 >= line {
+            let at = include.start_position().row + 1;
+            if at >= line {
                 break;
+            }
+            if skipped.iter().any(|&(s, e)| at >= s && at <= e) {
+                continue;
             }
             let Some(spelled) = include.child_by_field_name("path") else {
                 continue;
@@ -606,46 +633,60 @@ impl<'a> Ctx<'a> {
             let spelling = get_node_text(&spelled, self.source)
                 .trim_matches(|c| matches!(c, '"' | '<' | '>'))
                 .to_string();
-            if spelling.rsplit('/').next() == Some(header) && name == "assert" {
-                state = LibraryMacro::Library;
-                continue;
-            }
-            let Some(target) = edges.iter().find(|t| {
-                t.strip_prefix(UNRESOLVED_INCLUDE) == Some(spelling.as_str())
-                    || t.ends_with(&format!("/{spelling}"))
-            }) else {
-                continue;
-            };
             // What the include reaches, not looking past a replacing header.
-            let (mut reaches_project, mut reaches_library) = (false, false);
-            let mut seen: HashSet<&str> = HashSet::new();
-            let mut stack: Vec<&str> = vec![target.as_str()];
-            while let Some(f) = stack.pop() {
-                if !seen.insert(f) {
+            let (mut reaches, mut reaches_library) = (HashSet::new(), false);
+            if spelling.rsplit('/').next() == Some(header) && name == "assert" {
+                reaches_library = true;
+            } else {
+                let Some(target) = edges.iter().find(|t| {
+                    t.strip_prefix(UNRESOLVED_INCLUDE) == Some(spelling.as_str())
+                        || t.ends_with(&format!("/{spelling}"))
+                }) else {
                     continue;
+                };
+                let mut seen: HashSet<&str> = HashSet::new();
+                let mut stack: Vec<&str> = vec![target.as_str()];
+                while let Some(f) = stack.pop() {
+                    if !seen.insert(f) {
+                        continue;
+                    }
+                    if replacers.contains(f) {
+                        reaches.insert(f);
+                        continue;
+                    }
+                    if is_library_header(f) {
+                        reaches_library = true;
+                    }
+                    stack.extend(
+                        self.include_edges
+                            .get(f)
+                            .into_iter()
+                            .flatten()
+                            .map(String::as_str),
+                    );
                 }
-                if replacers.contains(f) {
-                    reaches_project = true;
-                    continue;
-                }
-                if is_library_header(f) {
-                    reaches_library = true;
-                }
-                stack.extend(
-                    self.include_edges
-                        .get(f)
-                        .into_iter()
-                        .flatten()
-                        .map(String::as_str),
-                );
             }
-            state = match (reaches_project, reaches_library && name == "assert") {
+            let after = match (!reaches.is_empty(), reaches_library && name == "assert") {
                 (true, false) => LibraryMacro::Project,
                 (true, true) => LibraryMacro::Either,
                 (false, true) => LibraryMacro::Library,
-                (false, false) => state,
+                (false, false) => continue,
             };
+            if dead_regions::under_a_conditional(&include, self.source) {
+                if after != state {
+                    state = LibraryMacro::Either;
+                }
+                reached.extend(reaches);
+            } else {
+                state = after;
+                reached = reaches;
+            }
         }
+        let arms = replacing
+            .iter()
+            .filter(|e| e.files.iter().any(|f| reached.contains(f.as_str())))
+            .map(|e| e.arm.clone())
+            .collect();
         (state, arms)
     }
 

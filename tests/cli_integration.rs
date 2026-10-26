@@ -5871,12 +5871,49 @@ fn pre31_assert_fallback_under_ifndef_does_not_replace_the_librarys() {
     assert_eq!(violations.len(), 1, "{:?}", violations);
 }
 
+/// An `#include` only some builds take (`#ifdef USE_MYASSERT`) replaces
+/// `assert` only in those builds; the others keep the library's.
+#[test]
+fn pre31_assert_header_included_in_some_builds_leaves_the_librarys() {
+    let violations = pre31_crossfile_violations("assert_header_included_in_some_builds");
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+}
+
+/// A header whose `#undef assert` and definition sit under `#if
+/// MY_ASSERT_LEVEL > 0` replaces it only in the builds that ask for it,
+/// though nothing can read that condition.
+#[test]
+fn pre31_assert_replaced_under_an_unread_condition_leaves_the_librarys() {
+    let violations = pre31_crossfile_violations("assert_replaced_only_above_a_level");
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+}
+
+/// The replacing header the file includes decides; another header's
+/// `assert`, which evaluates nothing, is not in force in this file.
+#[test]
+fn pre31_assert_judged_by_the_replacing_header_the_file_includes() {
+    let violations = pre31_crossfile_violations("assert_judged_by_the_reached_header_only");
+    assert!(violations.is_empty(), "{:?}", violations);
+}
+
 /// A header's default value (`#ifndef SQ_FAST` / `#define SQ_FAST 1`) leaves
 /// the name defined in every build, so its `#else` arm is no build's.
 #[test]
 fn pre31_header_arm_under_a_default_value_guard_is_dead() {
     let violations = pre31_crossfile_violations("arm_under_a_default_value_guard");
     assert!(violations.is_empty(), "{:?}", violations);
+}
+
+/// The argument quoted is the one the preprocessor passes, `rc =`, not the
+/// `rc = work()` a C parser reads across the closing parenthesis.
+#[test]
+fn pre31_quotes_the_argument_the_preprocessor_passes() {
+    let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/rules/cert_c/PRE/PRE31-C/tests/fail/store_split_by_the_closing_paren.c");
+    let violations = pre31_violations(file.to_str().unwrap(), &[]);
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+    let message = violations[0]["message"].as_str().unwrap();
+    assert!(message.ends_with("argument 1: 'rc ='"), "{message}");
 }
 
 /// The same guard with an arm evaluating its argument twice is judged.
