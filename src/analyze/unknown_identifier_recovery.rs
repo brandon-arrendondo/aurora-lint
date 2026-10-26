@@ -355,19 +355,23 @@ fn find_keyword_argument_macro_invocations(node: &Node, source: &str) -> Vec<(us
 }
 
 /// The invocation around the byte at `at` (see [`enclosing_invocation`]),
-/// widened to each invocation it is an argument of, while that one is
-/// followed by a name, as an annotation is by what it annotates.
+/// widened to each invocation it is a whole argument of.
 /// `_When_(x > 0, _Success_(return != 0)) int h(int x);` blanks all of
 /// `_When_(...)`: the inner `_Success_(...)` alone leaves `_When_(x > 0, )`
-/// to misparse as the declarator. An argument is followed by `,` or `)`,
-/// and an annotated parameter is followed by its type
-/// (`int fill(OUT_TO(n, return) char *buf, int n) __attribute__((nonnull));`),
-/// so the widening never takes the parameter list around it, whatever
-/// follows the list.
+/// to misparse as the declarator. A whole argument is preceded by `(` or
+/// `,` and followed by `,` or `)`. A parameter's annotation is not: one
+/// before the parameter is followed by its type (`int fill(OUT_TO(n,
+/// return) char *buf, int n) __attribute__((nonnull));`), and one after
+/// is preceded by its name (`int q(int n, char *buf OUT_TO(n, return))
+/// NOTHROW;`). So the widening never takes the parameter list around it,
+/// whatever follows the list. The widening also stops when no name follows
+/// the outer invocation; no known shape reaches that stop, and it is kept
+/// as a defensive guard.
 fn outermost_annotation(bytes: &[u8], at: usize) -> Option<(usize, usize)> {
     let mut range = enclosing_invocation(bytes, at)?;
     while let Some(outer) = enclosing_invocation(bytes, range.0) {
-        let is_argument = matches!(next_non_space(bytes, range.1), Some(b',' | b')'));
+        let is_argument = matches!(prev_non_space(bytes, range.0), Some(b'(' | b','))
+            && matches!(next_non_space(bytes, range.1), Some(b',' | b')'));
         if !is_argument {
             break;
         }
@@ -379,6 +383,15 @@ fn outermost_annotation(bytes: &[u8], at: usize) -> Option<(usize, usize)> {
         range = outer;
     }
     Some(range)
+}
+
+/// The last byte before `at` that is not whitespace.
+fn prev_non_space(bytes: &[u8], at: usize) -> Option<u8> {
+    bytes[..at]
+        .iter()
+        .rev()
+        .copied()
+        .find(|b| !b.is_ascii_whitespace())
 }
 
 /// The first byte at or after `at` that is not whitespace.
@@ -716,6 +729,14 @@ mod tests {
             assert!(text.contains("int fill("), "{text:?}");
             assert!(text.contains("char *buf, int n)"), "{text:?}");
         }
+    }
+
+    #[test]
+    fn keeps_a_prototype_whose_parameter_annotation_follows_its_name() {
+        let src = "CHECKED\nint q(int n, char *buf OUT_TO(n, return)) NOTHROW;\n";
+        let (_, text) = recover(src);
+        assert!(!text.contains("OUT_TO"), "{text:?}");
+        assert!(text.contains("int q(int n, char *buf"), "{text:?}");
     }
 
     #[test]
