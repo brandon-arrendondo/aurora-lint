@@ -3,7 +3,9 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval::{merged_macro_aliases, resolve_macro_alias};
-use crate::analyze::context::{EffectView, IncludeClosure, ProjectContext, VisibleTypes};
+use crate::analyze::context::{
+    EffectView, IncludeClosure, ProjectContext, VisibleTypes, UNRESOLVED_INCLUDE,
+};
 use crate::analyze::dead_regions::line_compiles_under;
 use crate::analyze::function_summary::extract_function_name;
 use crate::analyze::macro_expand::{
@@ -57,6 +59,10 @@ pub struct Pre31C {
     /// Names only a header outside the project defines: the C library's own
     /// macros, which C11 7.1.4 binds (`library_macros_evaluate_once`).
     outside_macros: RefCell<Arc<HashSet<String>>>,
+    /// Real paths of the headers read from outside every project root
+    /// (`IncludeReport::outside_headers`): a C library header's definition
+    /// of `assert` is not the project replacing it.
+    outside_headers: RefCell<Arc<HashSet<String>>>,
     /// What calling each scanned function can change, closed over the call
     /// graph of the whole scan. `None` when no prescan context was given.
     effects: RefCell<Option<EffectView>>,
@@ -80,6 +86,7 @@ impl Pre31C {
             function_macro_names: RefCell::new(Arc::new(HashSet::new())),
             macro_aliases: RefCell::new(Arc::new(HashMap::new())),
             outside_macros: RefCell::new(Arc::new(HashSet::new())),
+            outside_headers: RefCell::new(Arc::new(HashSet::new())),
             effects: RefCell::default(),
             types: RefCell::default(),
             settings: RefCell::new(Arc::new(AnalysisSettings::default())),
@@ -121,6 +128,14 @@ impl CertRule for Pre31C {
         *self.function_macro_names.borrow_mut() = context.function_macro_names.clone();
         *self.macro_aliases.borrow_mut() = context.macro_aliases.clone();
         *self.outside_macros.borrow_mut() = context.macros_defined_outside_project.clone();
+        *self.outside_headers.borrow_mut() = Arc::new(
+            context
+                .include_report
+                .outside_headers
+                .iter()
+                .cloned()
+                .collect(),
+        );
         *self.effects.borrow_mut() = Some(context.effects());
     }
 
@@ -211,6 +226,7 @@ impl CertRule for Pre31C {
             include_closure: OnceCell::new(),
             aliases: &aliases,
             outside: &self.outside_macros.borrow(),
+            outside_headers: &self.outside_headers.borrow(),
             effects: effects.as_ref(),
             local_table: local_table.as_ref(),
             types: &types,
@@ -244,6 +260,28 @@ fn library_unsafe_argument(name: &str) -> Option<usize> {
         "putc" | "putwc" => Some(1),
         _ => None,
     }
+}
+
+/// The C library header whose inclusion defines `name`, one of
+/// [`library_unsafe_argument`]'s.
+fn library_header(name: &str) -> &'static str {
+    match name {
+        "assert" => "assert.h",
+        "getwc" | "putwc" => "wchar.h",
+        _ => "stdio.h",
+    }
+}
+
+/// Which definition of a C library macro is in force at an invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LibraryMacro {
+    /// The library header's, as the standard specifies it.
+    Library,
+    /// A project header's, which replaced it.
+    Project,
+    /// Either: one `#include` reaches both, in an order the include graph
+    /// does not record.
+    Either,
 }
 
 /// How the call `name(...)` evaluates the arguments of `call`, when a paste
@@ -345,6 +383,8 @@ struct Ctx<'a> {
     aliases: &'a HashMap<String, String>,
     /// `Pre31C::outside_macros`.
     outside: &'a HashSet<String>,
+    /// `Pre31C::outside_headers`.
+    outside_headers: &'a HashSet<String>,
     /// The scan's side-effect table, as this file resolves names.
     effects: Option<&'a EffectView>,
     /// This file's own functions, closed over the scan's table.
@@ -460,6 +500,102 @@ impl<'a> Ctx<'a> {
             && std_functions::is_iso_c_function(name)
             && library_unsafe_argument(name).is_none()
             && self.settings.flag("library_macros_evaluate_once")
+    }
+
+    /// Which definition of `name`, a C library macro the standard lets
+    /// evaluate an argument other than once, is in force at the invocation
+    /// being judged, by the file's own `#include` lines before it, in order
+    /// (ADR-0006, ADR-0010). A project header that defines `name`
+    /// unconditionally (valkey's serverassert.h does `#undef assert` and
+    /// defines its own) replaces the library's for what follows; `<assert.h>`
+    /// reached again afterwards defines `assert` anew (C11 7.2p1), while the
+    /// other library headers are included once. A header the replacing one
+    /// includes is taken to come before its definition. Without the file's
+    /// include edges, or with no replacing header, the library's.
+    fn library_macro_in_force(&self, name: &str) -> (LibraryMacro, Vec<MacroArm>) {
+        let replacing: Vec<&ProjectMacroArm> = self
+            .project_arms
+            .get(name)
+            .into_iter()
+            .flatten()
+            .filter(|e| e.conditions.iter().any(Vec::is_empty))
+            .filter(|e| e.files.iter().any(|f| !self.outside_headers.contains(f)))
+            .collect();
+        let replacers: HashSet<&str> = replacing
+            .iter()
+            .flat_map(|e| e.files.iter())
+            .filter(|f| !self.outside_headers.contains(*f))
+            .map(String::as_str)
+            .collect();
+        let arms: Vec<MacroArm> = replacing.iter().map(|e| e.arm.clone()).collect();
+        let Some(edges) = self
+            .file_path
+            .map(crate::analyze::compile_commands::real_path)
+            .and_then(|f| self.include_edges.get(&f))
+        else {
+            return (LibraryMacro::Library, arms);
+        };
+        if replacers.is_empty() {
+            return (LibraryMacro::Library, arms);
+        }
+        let header = library_header(name);
+        let is_library_header = |path: &str| {
+            path.strip_prefix(UNRESOLVED_INCLUDE).unwrap_or(path) == header
+                || path.ends_with(&format!("/{header}"))
+        };
+        let (line, _) = self.site.get();
+        let mut state = LibraryMacro::Library;
+        for include in query::find_descendants_of_kind(self.root, "preproc_include") {
+            if include.start_position().row + 1 >= line {
+                break;
+            }
+            let Some(spelled) = include.child_by_field_name("path") else {
+                continue;
+            };
+            let spelling = get_node_text(&spelled, self.source)
+                .trim_matches(|c| matches!(c, '"' | '<' | '>'))
+                .to_string();
+            if spelling.rsplit('/').next() == Some(header) && name == "assert" {
+                state = LibraryMacro::Library;
+                continue;
+            }
+            let Some(target) = edges.iter().find(|t| {
+                t.strip_prefix(UNRESOLVED_INCLUDE) == Some(spelling.as_str())
+                    || t.ends_with(&format!("/{spelling}"))
+            }) else {
+                continue;
+            };
+            // What the include reaches, not looking past a replacing header.
+            let (mut reaches_project, mut reaches_library) = (false, false);
+            let mut seen: HashSet<&str> = HashSet::new();
+            let mut stack: Vec<&str> = vec![target.as_str()];
+            while let Some(f) = stack.pop() {
+                if !seen.insert(f) {
+                    continue;
+                }
+                if replacers.contains(f) {
+                    reaches_project = true;
+                    continue;
+                }
+                if is_library_header(f) {
+                    reaches_library = true;
+                }
+                stack.extend(
+                    self.include_edges
+                        .get(f)
+                        .into_iter()
+                        .flatten()
+                        .map(String::as_str),
+                );
+            }
+            state = match (reaches_project, reaches_library && name == "assert") {
+                (true, false) => LibraryMacro::Project,
+                (true, true) => LibraryMacro::Either,
+                (false, true) => LibraryMacro::Library,
+                (false, false) => state,
+            };
+        }
+        (state, arms)
     }
 
     /// The name a call's callee spelling denotes: a function-like macro's own
@@ -888,7 +1024,16 @@ impl Pre31C {
             let arms = arms.clone();
             Box::new(move |i, p| arms.iter().any(|a| !evaluates_once(a, i, p)))
         } else if let Some(k) = library_unsafe_argument(macro_name) {
-            Box::new(move |i, _| i == k)
+            // The definition in force here, not the name (ADR-0006).
+            match ctx.library_macro_in_force(macro_name) {
+                (LibraryMacro::Library, _) => Box::new(move |i, _| i == k),
+                (LibraryMacro::Project, arms) => {
+                    Box::new(move |i, p| arms.iter().any(|a| !evaluates_once(a, i, p)))
+                }
+                (LibraryMacro::Either, arms) => {
+                    Box::new(move |i, p| i == k || arms.iter().any(|a| !evaluates_once(a, i, p)))
+                }
+            }
         } else if ctx.bound_by_library_contract(macro_name) {
             // The implementation's macro for a library function: whatever
             // its body looks like, C11 7.1.4 has it evaluate each argument

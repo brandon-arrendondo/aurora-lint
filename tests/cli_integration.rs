@@ -5805,6 +5805,31 @@ fn pre31_header_arm_under_a_guard_some_builds_define_is_read() {
     assert!(violations.is_empty(), "{:?}", violations);
 }
 
+/// A project header that replaces `assert` with one evaluating its
+/// condition in every build is the definition in force after it is
+/// included.
+#[test]
+fn pre31_assert_replaced_by_a_project_header_is_judged_by_it() {
+    let violations = pre31_crossfile_violations("assert_replaced_by_project_header");
+    assert!(violations.is_empty(), "{:?}", violations);
+}
+
+/// `<assert.h>` included again after the replacing header defines `assert`
+/// anew (C11 7.2p1), so the library's NDEBUG reading is back.
+#[test]
+fn pre31_assert_reincluded_after_the_project_header_is_the_librarys() {
+    let violations = pre31_crossfile_violations("assert_reincluded_after_project_header");
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+}
+
+/// A fallback defined only under `#ifndef assert` replaces nothing where
+/// `<assert.h>` came first.
+#[test]
+fn pre31_assert_fallback_under_ifndef_does_not_replace_the_librarys() {
+    let violations = pre31_crossfile_violations("assert_fallback_only_where_undefined");
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+}
+
 /// A `#define` in another .c file is live only in that translation unit:
 /// `a.c`'s own `TWICE` evaluates its argument twice, but `main.c` gets
 /// `util.h`'s, which evaluates it once.
