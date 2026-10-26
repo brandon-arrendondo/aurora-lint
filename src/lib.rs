@@ -31,6 +31,11 @@ pub mod rules;
 /// table, and resolving a configuration into concrete values.
 pub mod settings;
 
+/// The fixture header grammar, shared with `build.rs`.
+#[cfg(test)]
+#[path = "../build/fixture_header.rs"]
+#[allow(dead_code)]
+mod fixture_header;
 /// The `[presets]` schema and its validation, shared with `build.rs`.
 #[cfg(test)]
 #[path = "../build/presets.rs"]

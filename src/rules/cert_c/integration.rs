@@ -530,6 +530,21 @@ enum Expect {
     Clean,
 }
 
+/// Where and how often a fixture's header says the rule must report, read
+/// by build.rs (`build/fixture_header.rs`) and checked by a run that expects
+/// a violation.
+#[cfg(test)]
+struct Marks {
+    /// The lines a trailing `/* Expect: here */` marks: each must carry a
+    /// finding.
+    lines: &'static [usize],
+    /// `Expect: count=N`: exactly N findings.
+    count: Option<usize>,
+    /// Whether the header's `Expect:` names a preset, so the outcome can
+    /// differ between the runs of one fixture and a failure names its preset.
+    preset_decides: bool,
+}
+
 /// One rule's findings on one fixture, through the pipeline a real scan
 /// runs (see [`run_fixture`]). Every call builds a fresh registry, so the
 /// rule's own collections, and the prescan's, are new: each `HashMap` takes
@@ -630,13 +645,10 @@ fn findings_at(
 /// `strict`, and under `pedantic` when its header names it (build.rs,
 /// `OPT_IN_PRESETS`).
 ///
-/// A run that expects a violation also holds the fixture to its
-/// `expected_lines` (the lines a trailing `/* Expect: here */` marks: each
-/// must carry a finding) and its `count` (`Expect: count=N`: exactly N
-/// findings), so a fixture cannot pass on a finding that names some other
-/// construct, or on duplicates of the one it should name.
+/// A run that expects a violation also holds the fixture to its `marks`,
+/// so a fixture cannot pass on a finding that names some other construct,
+/// or on duplicates of the one it should name.
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
 fn run_fixture(
     test_name: &str,
     rule_id: &str,
@@ -644,8 +656,7 @@ fn run_fixture(
     expect: Expect,
     preset: &str,
     overrides: &str,
-    expected_lines: &[usize],
-    count: Option<usize>,
+    marks: Marks,
 ) {
     let test_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative_path);
     let raw = fs::read_to_string(&test_path)
@@ -695,8 +706,17 @@ fn run_fixture(
     match expect {
         Expect::Violation => {
             let detected = !violations.is_empty();
+            let unmarked = marks
+                .lines
+                .iter()
+                .find(|&&line| !violations.iter().any(|v| v.line == line));
+            let miscounted = marks.count.filter(|&n| n != violations.len());
             if preset == "default" {
-                record_test_result(test_name, detected, true);
+                record_test_result(
+                    test_name,
+                    detected && unmarked.is_none() && miscounted.is_none(),
+                    true,
+                );
             }
             assert!(
                 detected,
@@ -722,14 +742,13 @@ fn run_fixture(
                 .collect::<String>();
             // Name the preset where it decides the outcome, so a reader knows
             // which run the marker failed.
-            let under = if per_preset_expectation(&raw) {
+            let under = if marks.preset_decides {
                 format!(" under the {preset} preset")
             } else {
                 String::new()
             };
-            for &line in expected_lines {
-                assert!(
-                    violations.iter().any(|v| v.line == line),
+            if let Some(&line) = unmarked {
+                panic!(
                     "\n[{}] expected a finding on line {} (`Expect: here`){}, but none was \
                      reported there.\n  at:        {}:{}{}\n  reproduce: {}{}\n",
                     rule_id,
@@ -742,9 +761,8 @@ fn run_fixture(
                     about
                 );
             }
-            if let Some(n) = count {
-                assert!(
-                    violations.len() == n,
+            if let Some(n) = miscounted {
+                panic!(
                     "\n[{}] expected exactly {} finding(s) (`Expect: count={}`){}, got {}.{}\n  \
                      reproduce: {}{}\n",
                     rule_id,
@@ -778,17 +796,6 @@ fn run_fixture(
             );
         }
     }
-}
-
-/// Whether the fixture's `Expect:` header names a preset, so its outcome
-/// can differ between the runs of one fixture.
-#[cfg(test)]
-fn per_preset_expectation(source: &str) -> bool {
-    source.lines().take(40).any(|line| {
-        let l = line.trim().trim_start_matches(['*', '/', ' ']).trim();
-        l.strip_prefix("Expect:")
-            .is_some_and(|rest| rest.split_whitespace().any(|p| !p.starts_with("count=")))
-    })
 }
 
 /// A fixture's `Description:` (else `Source:`) banner line, which links a
