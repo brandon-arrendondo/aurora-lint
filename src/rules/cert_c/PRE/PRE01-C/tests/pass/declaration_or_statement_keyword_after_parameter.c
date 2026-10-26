@@ -11,7 +11,8 @@
  *   `vis extern`, `ret _Noreturn`, `T _Alignas(8)`, `x __asm__("sym")`);
  * - as the body of a do/while, or the first statement of an if/else,
  *   whose argument is a statement (`do body while (0)`, `if (1) stmt else`);
- * - as the operator before `sizeof` or `_Alignof`, which start operands.
+ * - as the operator before `sizeof` or `_Alignof`, which start operands,
+ *   also when a parameter follows `sizeof` (`1 op sizeof x`).
  */
 
 #define UNUSED_LOCAL(T) T __attribute__((unused)) unused_local = 0
@@ -24,4 +25,5 @@
 #define ONCE(body) do body while (0)
 #define EITHER(stmt) if (1) stmt else ;
 #define PLUS_SIZE(op) (1 op sizeof(int))
+#define PLUS_SIZE_OF(op, x) (1 op sizeof x)
 #define PLUS_ALIGN(op) (2 op _Alignof(int))

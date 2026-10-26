@@ -323,9 +323,12 @@ impl Pre01C {
     }
 
     /// Whether the use at `k` sits where parentheses may not compile: in a
-    /// type name, or before a macro that expands to string literals. That is
-    /// a use directly followed by an identifier that is a type keyword or a
-    /// typedef (`qual int`, `T const`), by a macro every definition of which
+    /// declaration's type name or specifiers, or before a macro that expands
+    /// to string literals. That is a use directly followed by an identifier
+    /// that is a type keyword or a typedef (`qual int`, `T const`,
+    /// `x size_t`), by a storage class, function specifier, attribute or asm
+    /// label ([`DECLARATION_WORDS`]: `attr static`, `x __asm__("sym")`), by
+    /// a macro every definition of which
     /// expands to string literals (`fmt PRIu64`), or by a declarator (`T n`,
     /// `type name = 0`); or the whole of a cast's type name up to its pointer
     /// declarators, qualifiers included (`(T *)0`, `(const T *)0`,
