@@ -48,10 +48,11 @@ pub struct FixtureHeader {
 ///
 /// The one directive allowed after the leading comment is the line marker
 /// `Expect: here`, in a comment trailing the code it marks. Any comment
-/// that opens with `expect:`, in any case and spacing, is taken for a
-/// marker, so a near-miss fails the build instead of marking nothing: the
-/// marker must be spelled `/* Expect: here */` or `// Expect: here`, close
-/// on the line it marks, and stand on a line with code.
+/// that opens with the word `expect`, in any case and spacing (see
+/// [`expect_value`]), is taken for a marker, so a near-miss fails the build
+/// instead of marking nothing: the marker must be spelled
+/// `/* Expect: here */` or `// Expect: here`, close on the line it marks,
+/// stand on a line with code, and be the line's only marker.
 pub fn fixture_header(path: &std::path::Path) -> Result<FixtureHeader> {
     let source = fs::read_to_string(path).with_context(|| format!("read {:?}", path))?;
     fixture_header_of(&source)
@@ -68,32 +69,51 @@ pub fn fixture_header_of(source: &str) -> Result<FixtureHeader> {
         count: None,
     };
     let (mut saw_expect, mut saw_settings, mut in_code) = (false, false, false);
-    let mut in_block = false;
+    let mut carry = Carry::Code;
     for (lineno, line) in source.lines().enumerate() {
         let at = format!("line {}", lineno + 1);
-        let parts = split_fixture_line(line, &mut in_block);
-        let markers = parts.comments.iter().filter(|c| opens_with_expect(c.text));
+        let continues_line_comment = carry == Carry::LineComment;
+        let parts = split_fixture_line(line, &mut carry);
+        if continues_line_comment {
+            // The whole line is the `//` comment's text, so what reads as a
+            // marker on it is comment text too, and marks nothing.
+            let looks_marked = split_fixture_line(line, &mut Carry::Code)
+                .comments
+                .iter()
+                .any(|c| expect_value(c.text).is_some());
+            anyhow::ensure!(
+                !looks_marked,
+                "{}: the line before ends its `//` comment with a backslash, which continues the comment onto this line, so its marker is comment text",
+                at
+            );
+        }
+        let mut markers = parts
+            .comments
+            .iter()
+            .filter_map(|c| expect_value(c.text).map(|value| (c, value)));
         if parts.has_code {
             in_code = true;
-            for comment in markers {
+            if let Some((comment, _)) = markers.next() {
                 check_marker(comment).with_context(|| at.clone())?;
+                anyhow::ensure!(
+                    markers.next().is_none(),
+                    "{}: a second marker on one line; one `Expect: here` marks it",
+                    at
+                );
                 header.expected_lines.push(lineno + 1);
             }
             continue;
         }
-        for comment in markers {
-            let value = comment
-                .text
-                .trim_start_matches(|c: char| c == '*' || c.is_whitespace());
+        for (_, value) in markers {
             anyhow::ensure!(
-                !value[EXPECT.len()..].trim().eq_ignore_ascii_case("here"),
+                !value.trim().eq_ignore_ascii_case("here"),
                 "{}: `Expect: here` must trail the code it marks, in a comment that opens and closes on that line",
                 at
             );
         }
         let l = line
             .trim()
-            .trim_start_matches(|c: char| c == '*' || c == '/' || c.is_whitespace());
+            .trim_start_matches(|c: char| c == '*' || c == '/' || c == '!' || c.is_whitespace());
         let l = l.strip_suffix("*/").map_or(l, str::trim_end);
         let directive = ["Expect:", "Settings:"].into_iter().find(|d| {
             l.get(..d.len())
@@ -159,7 +179,18 @@ pub fn fixture_header_of(source: &str) -> Result<FixtureHeader> {
     Ok(header)
 }
 
-const EXPECT: &str = "expect:";
+/// What an unfinished line carries onto the next one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Carry {
+    /// Nothing: the next line starts in code.
+    Code,
+    /// A block comment that has not closed.
+    Block,
+    /// A string or character literal (its quote) continued with a backslash.
+    Literal(u8),
+    /// A `//` comment continued with a backslash.
+    LineComment,
+}
 
 /// One line of a fixture, split into code and comments.
 struct FixtureLine<'a> {
@@ -172,26 +203,66 @@ struct FixtureLine<'a> {
 
 /// One comment, or the part of a block comment, on a fixture line.
 struct FixtureComment<'a> {
-    /// `/*` or `//`, or `None` for a block comment opened on an earlier line.
+    /// `/*` or `//`, or `None` for a comment continued from an earlier line.
     opener: Option<&'static str>,
     /// The text between the opener (or the line's start) and the closer (or
     /// the line's end).
     text: &'a str,
-    /// Whether the comment ends on this line (a `//` comment always does).
+    /// Whether the comment ends on this line (a `//` comment does unless a
+    /// backslash continues it).
     closed: bool,
 }
 
-/// Split `line` into code and comments; `in_block` says whether the line
-/// starts inside a block comment, and is left saying whether it ends in one.
-fn split_fixture_line<'a>(line: &'a str, in_block: &mut bool) -> FixtureLine<'a> {
+/// Split `line` into code and comments; `carry` says what the line starts
+/// inside, and is left saying what the next line starts inside.
+///
+/// A literal's quote is matched on its line, or on a later one when a
+/// backslash continues the literal. A quote with no match is a lone
+/// character, as in `#error don't`, and scanning goes on after it; a `'`
+/// inside a number is a C23 digit separator (`1'000`).
+fn split_fixture_line<'a>(line: &'a str, carry: &mut Carry) -> FixtureLine<'a> {
     let b = line.as_bytes();
+    let continued = b.last() == Some(&b'\\');
     let mut parts = FixtureLine {
         has_code: false,
         comments: Vec::new(),
     };
     let (mut i, mut start, mut opener) = (0, 0, None);
+    match *carry {
+        Carry::LineComment => {
+            parts.comments.push(FixtureComment {
+                opener: None,
+                text: line,
+                closed: !continued,
+            });
+            *carry = if continued {
+                Carry::LineComment
+            } else {
+                Carry::Code
+            };
+            return parts;
+        }
+        Carry::Literal(quote) => {
+            *carry = Carry::Code;
+            match literal_end(b, 0, quote) {
+                Some(end) => {
+                    parts.has_code = true;
+                    i = end;
+                }
+                None if continued => {
+                    *carry = Carry::Literal(quote);
+                    parts.has_code = true;
+                    return parts;
+                }
+                // The literal ended unclosed on the line before; read this
+                // line as code.
+                None => {}
+            }
+        }
+        Carry::Block | Carry::Code => {}
+    }
     loop {
-        if *in_block {
+        if *carry == Carry::Block {
             let Some(end) = line[i..].find("*/") else {
                 parts.comments.push(FixtureComment {
                     opener,
@@ -206,15 +277,16 @@ fn split_fixture_line<'a>(line: &'a str, in_block: &mut bool) -> FixtureLine<'a>
                 closed: true,
             });
             i += end + 2;
-            *in_block = false;
+            *carry = Carry::Code;
             continue;
         }
         let Some(&c) = b.get(i) else {
             return parts;
         };
+        let after_word = i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
         match (c, b.get(i + 1)) {
             (b'/', Some(b'*')) => {
-                *in_block = true;
+                *carry = Carry::Block;
                 opener = Some("/*");
                 i += 2;
                 start = i;
@@ -223,17 +295,27 @@ fn split_fixture_line<'a>(line: &'a str, in_block: &mut bool) -> FixtureLine<'a>
                 parts.comments.push(FixtureComment {
                     opener: Some("//"),
                     text: &line[i + 2..],
-                    closed: true,
+                    closed: !continued,
                 });
+                if continued {
+                    *carry = Carry::LineComment;
+                }
                 return parts;
             }
             (b'"' | b'\'', _) => {
                 parts.has_code = true;
-                i += 1;
-                while i < b.len() && b[i] != c {
-                    i += if b[i] == b'\\' { 2 } else { 1 };
+                match literal_end(b, i + 1, c) {
+                    Some(end) => i = end,
+                    None if continued => {
+                        *carry = Carry::Literal(c);
+                        return parts;
+                    }
+                    None => i += 1,
                 }
-                i = (i + 1).min(b.len());
+            }
+            (b'0'..=b'9', _) if !after_word => {
+                parts.has_code = true;
+                i = number_end(b, i);
             }
             _ => {
                 parts.has_code |= !c.is_ascii_whitespace();
@@ -243,15 +325,58 @@ fn split_fixture_line<'a>(line: &'a str, in_block: &mut bool) -> FixtureLine<'a>
     }
 }
 
-/// Whether a comment opens with `expect:`, in any case, after any
-/// whitespace (and, in a block comment, any `*`).
-fn opens_with_expect(text: &str) -> bool {
-    text.trim_start_matches(|c: char| c == '*' || c.is_whitespace())
-        .get(..EXPECT.len())
-        .is_some_and(|head| head.eq_ignore_ascii_case(EXPECT))
+/// Where a literal whose body starts at `from` ends: just past its closing
+/// `quote`, or `None` when the line ends first.
+fn literal_end(b: &[u8], from: usize, quote: u8) -> Option<usize> {
+    let mut i = from;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 2,
+            c if c == quote => return Some(i + 1),
+            _ => i += 1,
+        }
+    }
+    None
 }
 
-/// Check a comment that opens with `expect:` and trails code: it must be
+/// Where the number starting at `from` ends: its digits, letters, `.`, an
+/// exponent's sign, and C23 digit separators, a `'` between two of them.
+fn number_end(b: &[u8], from: usize) -> usize {
+    let mut i = from + 1;
+    while let Some(&c) = b.get(i) {
+        let joined = match c {
+            b'\'' => b.get(i + 1).is_some_and(u8::is_ascii_alphanumeric),
+            b'+' | b'-' => matches!(b[i - 1], b'e' | b'E' | b'p' | b'P'),
+            _ => c.is_ascii_alphanumeric() || c == b'_' || c == b'.',
+        };
+        if !joined {
+            break;
+        }
+        i += 1;
+    }
+    i
+}
+
+/// What follows `expect` when a comment opens with it, in any case, after
+/// any whitespace and any `*`, `/` or `!` (so `/// Expect:` and
+/// `/*!Expect:` are caught): the comment is taken for a marker when
+/// `expect` stands alone or is followed by a space or a colon. The value is
+/// what follows that space and colon.
+fn expect_value(text: &str) -> Option<&str> {
+    let t =
+        text.trim_start_matches(|c: char| c == '*' || c == '/' || c == '!' || c.is_whitespace());
+    let rest = t
+        .get(.."expect".len())
+        .filter(|head| head.eq_ignore_ascii_case("expect"))
+        .map(|_| &t["expect".len()..])?;
+    if !(rest.is_empty() || rest.starts_with(|c: char| c == ':' || c.is_whitespace())) {
+        return None;
+    }
+    let rest = rest.trim_start();
+    Some(rest.strip_prefix(':').unwrap_or(rest))
+}
+
+/// Check a comment that opens with `expect` and trails code: it must be
 /// the line marker, spelled exactly and closed on this line.
 fn check_marker(comment: &FixtureComment) -> Result<()> {
     let spelled = match comment.opener {
@@ -378,5 +503,70 @@ mod tests {
         assert!(fixture_header_of("/* Expect: count=0 */\n").is_err());
         assert!(fixture_header_of("/* Expect: count=two */\n").is_err());
         assert!(fixture_header_of("/* Expect: count=1 count=2 */\n").is_err());
+    }
+
+    #[test]
+    fn other_openers_and_spellings_fail_the_build() {
+        for body in [
+            "int x; /// Expect: here\n",
+            "int x; //! Expect: here\n",
+            "int x; /*!Expect: here */\n",
+            "int x; /* Expect : here */\n",
+            "int x; /* Expect here */\n",
+            "int x; /* expect */\n",
+        ] {
+            assert!(
+                error(body).contains("write the line marker as"),
+                "{body:?}: {}",
+                error(body)
+            );
+        }
+        // A word that only starts with `expect` is no marker.
+        assert!(marked_lines("int x; /* expected to overflow */\n").is_empty());
+    }
+
+    #[test]
+    fn a_stray_quote_does_not_hide_a_marker() {
+        assert_eq!(marked_lines("int n = 1'000; /* Expect: here */\n"), [4]);
+        assert_eq!(
+            marked_lines("int h = 0x7f'ff'ff; /* Expect: here */\n"),
+            [4]
+        );
+        assert_eq!(
+            marked_lines("#error don't /* Expect: here */\nint x;\n"),
+            [4]
+        );
+        // A character literal still hides an opener inside it.
+        assert!(marked_lines("char c = '/'; int y = c / 2;\n").is_empty());
+    }
+
+    #[test]
+    fn a_continued_string_is_code_on_its_next_line() {
+        assert_eq!(
+            marked_lines("char *s = \"/* not \\\n a comment */\"; /* Expect: here */\n"),
+            [5]
+        );
+        // The string ends on the next line, so `/*` after it opens a comment.
+        assert_eq!(
+            marked_lines("char *s = \"a\\\nb\"; int y; // Expect: here\n"),
+            [5]
+        );
+    }
+
+    #[test]
+    fn a_continued_line_comment_holds_no_marker() {
+        let e = error("int x; // see below \\\nint y; /* Expect: here */\n");
+        assert!(e.contains("continues the comment"), "{e}");
+        // The line after the continuation is code again.
+        assert_eq!(
+            marked_lines("int x; // a \\\n b\nint y; /* Expect: here */\n"),
+            [6]
+        );
+    }
+
+    #[test]
+    fn one_marker_per_line() {
+        let e = error("int x; /* Expect: here */ // Expect: here\n");
+        assert!(e.contains("a second marker"), "{e}");
     }
 }

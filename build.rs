@@ -998,8 +998,7 @@ fn generate_test_function(
     anyhow::ensure!(
         (header.expected_lines.is_empty() && header.count.is_none())
             || runs.iter().any(|(_, e)| *e == "Violation"),
-        "{:?}: `Expect: here` and `Expect: count=` describe a violation, and no run of this fixture expects one",
-        test_path
+        "`Expect: here` and `Expect: count=` describe a violation, and no run of this fixture expects one"
     );
     for (preset, expect) in runs {
         // The default preset keeps the bare name, so a fixture's identity in
