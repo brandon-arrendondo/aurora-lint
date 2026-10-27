@@ -5904,6 +5904,24 @@ fn pre31_assert_header_in_the_other_arm_from_the_call_leaves_the_librarys() {
     assert_eq!(violations.len(), 1, "{:?}", violations);
 }
 
+/// A header's `#undef assert` that every build compiles, then one
+/// definition in each arm of an `#if` nothing reads, replaces the library's
+/// in every build; each arm evaluates the condition once.
+#[test]
+fn pre31_assert_undefined_then_defined_in_each_arm_replaces_the_librarys() {
+    let violations =
+        pre31_crossfile_violations("assert_replaced_in_each_arm_of_an_unread_condition");
+    assert!(violations.is_empty(), "{:?}", violations);
+}
+
+/// The same replacement is judged by each of its arms: one evaluating the
+/// condition twice is reported.
+#[test]
+fn pre31_assert_undefined_then_defined_in_each_arm_is_judged_by_each() {
+    let violations = pre31_crossfile_violations("assert_replaced_in_each_arm_one_evaluating_twice");
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+}
+
 /// A header whose `#undef assert` and definition sit under `#if
 /// MY_ASSERT_LEVEL > 0` replaces it only in the builds that ask for it,
 /// though nothing can read that condition.

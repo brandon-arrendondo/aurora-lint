@@ -624,6 +624,9 @@ pub struct ArmSite {
     /// The macro states it is made under, as
     /// [`ProjectMacroArm::conditions`] reads them.
     pub conditions: Vec<(String, bool)>,
+    /// Whether an `#undef` of its name that every build of the file
+    /// compiles comes before it ([`ProjectMacroArm::replacing`]).
+    pub after_undef: bool,
 }
 
 /// [`collect_function_macro_arms`] with every `#define` that makes each arm,
@@ -643,11 +646,31 @@ pub fn collect_function_macro_arm_sites(
                 )
             })
             .collect();
+    // Where each name is first `#undef`ed under no conditional but the
+    // include guard.
+    let mut undone: HashMap<String, usize> = HashMap::new();
+    for call in lang_parsing_substrate::query::find_descendants_of_kind(*root, "preproc_call") {
+        let directive = call.child_by_field_name("directive").map(|d| {
+            crate::utility::cert_c::ast_utils::get_node_text(&d, source)
+                .replace(char::is_whitespace, "")
+        });
+        let argument = call.child_by_field_name("argument").map(|a| {
+            crate::utility::cert_c::ast_utils::get_node_text(&a, source)
+                .trim()
+                .to_string()
+        });
+        if let (Some("#undef"), Some(name)) = (directive.as_deref(), argument) {
+            if !crate::analyze::dead_regions::under_a_conditional(&call, source) {
+                undone.entry(name).or_insert(call.start_byte());
+            }
+        }
+    }
     let mut out: HashMap<String, Vec<(MacroArm, Vec<ArmSite>)>> = HashMap::new();
     each_function_macro_arm(source, |name, arm, line, offset| {
         let site = ArmSite {
             offset,
             conditions: conditions.get(&line).cloned().unwrap_or_default(),
+            after_undef: undone.get(&name).is_some_and(|&u| u < offset),
         };
         let arms = out.entry(name).or_default();
         match arms.iter_mut().find(|(a, _)| *a == arm) {
@@ -671,7 +694,7 @@ pub fn collect_conditioned_macro_arms(
             let mut out: Vec<ConditionedArm> = Vec::new();
             for (arm, sites) in arms {
                 for site in sites {
-                    let entry = (arm.clone(), site.conditions);
+                    let entry = (arm.clone(), site.conditions, site.after_undef);
                     if !out.contains(&entry) {
                         out.push(entry);
                     }
@@ -685,8 +708,10 @@ pub fn collect_conditioned_macro_arms(
 /// Whether a call compiles under one set of `(macro, defined)` states.
 pub type Admits<'a> = &'a dyn Fn(&[(String, bool)]) -> bool;
 
-/// A definition and the macro states its `#define` sits under.
-pub type ConditionedArm = (MacroArm, Vec<(String, bool)>);
+/// A definition, the macro states its `#define` sits under, and whether an
+/// unconditional `#undef` of its name comes before it in the file
+/// ([`ArmSite::after_undef`]).
+pub type ConditionedArm = (MacroArm, Vec<(String, bool)>, bool);
 
 /// Every function-like `#define` in `source` as `(name, arm, first line,
 /// byte offset of that line)`. An arm in a region the file itself proves
@@ -844,6 +869,12 @@ pub struct ProjectMacroArm {
     /// an empty set is a definition every build makes, and one under a
     /// condition nothing reads carries `UNREAD_CONDITION`.
     pub conditions: Vec<Vec<(String, bool)>>,
+    /// Real paths of the files that make it after an `#undef` of its name
+    /// every build of theirs compiles: past such a file no definition made
+    /// before it is in force, whatever conditions its own `#define`s sit
+    /// under (`#undef assert`, then one definition in each arm of an `#if`).
+    #[serde(default)]
+    pub replacing: Vec<String>,
 }
 
 /// Fold `file`'s arms into the project-wide table, keeping each distinct
@@ -856,21 +887,27 @@ pub fn merge_function_macro_arms(
 ) {
     for (name, arms) in from {
         let entries = into.entry(name).or_default();
-        for (arm, condition) in arms {
-            match entries.iter_mut().find(|e| e.arm == arm) {
-                Some(e) => {
-                    if !e.files.iter().any(|f| f == file) {
-                        e.files.push(file.to_string());
-                    }
-                    if !e.conditions.contains(&condition) {
-                        e.conditions.push(condition);
-                    }
+        for (arm, condition, after_undef) in arms {
+            let e = match entries.iter_mut().position(|e| e.arm == arm) {
+                Some(k) => &mut entries[k],
+                None => {
+                    entries.push(ProjectMacroArm {
+                        arm,
+                        files: Vec::new(),
+                        conditions: Vec::new(),
+                        replacing: Vec::new(),
+                    });
+                    entries.last_mut().unwrap()
                 }
-                None => entries.push(ProjectMacroArm {
-                    arm,
-                    files: vec![file.to_string()],
-                    conditions: vec![condition],
-                }),
+            };
+            if !e.files.iter().any(|f| f == file) {
+                e.files.push(file.to_string());
+            }
+            if !e.conditions.contains(&condition) {
+                e.conditions.push(condition);
+            }
+            if after_undef && !e.replacing.iter().any(|f| f == file) {
+                e.replacing.push(file.to_string());
             }
         }
     }
@@ -4180,6 +4217,31 @@ mod tests {
         let mut p = crate::parser::CParser::new().unwrap();
         let (tree, src) = p.parse_source(src).unwrap();
         collect_conditioned_macro_arms(&tree.root_node(), &src)
+    }
+
+    #[test]
+    fn a_definition_after_an_unconditional_undef_is_replacing() {
+        let header = "#ifndef H\n#define H\n\
+                      #define EARLY(e) first(e)\n\
+                      #ifdef WIN\n#undef LATE\n#endif\n\
+                      #undef assert\n#undef EARLY\n\
+                      #if LEVEL > 0\n#define assert(e) check(e)\n\
+                      #else\n#define assert(e) ((void)(e))\n#endif\n\
+                      #define LATE(e) late(e)\n#endif\n";
+        let mut project = HashMap::new();
+        merge_function_macro_arms(&mut project, conditioned(header), "/p/a.h");
+        let replacing = |name: &str| -> Vec<bool> {
+            project[name]
+                .iter()
+                .map(|a| a.replacing == ["/p/a.h"])
+                .collect()
+        };
+        // Both arms follow `#undef assert`, which every build compiles.
+        assert_eq!(replacing("assert"), [true, true]);
+        // Made before its `#undef`.
+        assert_eq!(replacing("EARLY"), [false]);
+        // Its `#undef` is one only `WIN` builds compile.
+        assert_eq!(replacing("LATE"), [false]);
     }
 
     #[test]

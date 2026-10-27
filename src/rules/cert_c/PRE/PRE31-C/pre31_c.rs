@@ -572,8 +572,10 @@ impl<'a> Ctx<'a> {
     /// being judged, by the file's own `#include` lines before it, in order
     /// (ADR-0006, ADR-0010), and the definitions of the replacing headers
     /// those reach. A project header that defines `name` in every build
-    /// (valkey's serverassert.h does `#undef assert` and defines its own)
-    /// replaces the library's for what follows; `<assert.h>` reached again
+    /// (valkey's serverassert.h does `#undef assert` and defines its own),
+    /// or defines it after an `#undef` every build compiles (one definition
+    /// in each arm of an `#if` nothing reads), replaces the library's for
+    /// what follows; `<assert.h>` reached again
     /// afterwards defines `assert` anew (C11 7.2p1), while the other library
     /// headers are included once. A header the replacing one includes is
     /// taken to come before its definition. An `#include` some builds skip
@@ -588,12 +590,18 @@ impl<'a> Ctx<'a> {
             .get(name)
             .into_iter()
             .flatten()
-            .filter(|e| e.conditions.iter().any(Vec::is_empty))
+            .filter(|e| e.conditions.iter().any(Vec::is_empty) || !e.replacing.is_empty())
             .filter(|e| e.files.iter().any(|f| !self.outside_headers.contains(f)))
             .collect();
         let replacers: HashSet<&str> = replacing
             .iter()
-            .flat_map(|e| e.files.iter())
+            .flat_map(|e| {
+                if e.conditions.iter().any(Vec::is_empty) {
+                    e.files.iter()
+                } else {
+                    e.replacing.iter()
+                }
+            })
             .filter(|f| !self.outside_headers.contains(*f))
             .map(String::as_str)
             .collect();
