@@ -1703,6 +1703,7 @@ fn prescan_file_list(
         function_pointer_typedef_names: Arc::new(function_pointer_typedef_names),
         function_typedef_names: Arc::new(function_typedef_names),
         pointer_typedef_names: Arc::new(pointer_typedef_names),
+        header_typedef_names: Arc::new(HashSet::new()),
         packed_structs: Arc::new(packed_structs),
         signal_handlers_registered_elsewhere: Arc::new(signal_handlers_registered_elsewhere),
         noreturn_functions: noreturn_functions.map(|names| Arc::new(names.clone())),
@@ -8088,6 +8089,24 @@ pub fn resolve_includes_scoped(
                     ),
                 );
 
+                let dead = lang_parsing_substrate::dead_code_ranges(&hsource);
+                for definition in
+                    lang_parsing_substrate::query::find_descendants_of_kind(root, "type_definition")
+                {
+                    let line = definition.start_position().row + 1;
+                    if dead
+                        .iter()
+                        .any(|r| line >= r.start_line && line <= r.end_line)
+                    {
+                        continue;
+                    }
+                    Arc::make_mut(&mut context.header_typedef_names).extend(
+                        crate::utility::cert_c::declarator_utils::typedef_names_in(
+                            &definition,
+                            &hsource,
+                        ),
+                    );
+                }
                 // Collect struct field types from resolved headers
                 collect_struct_tables(
                     &root,

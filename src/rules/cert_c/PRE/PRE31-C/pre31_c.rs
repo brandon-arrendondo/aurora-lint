@@ -61,6 +61,9 @@ pub struct Pre31C {
     /// (`ProjectContext::macro_definitions`): an object-like macro whose
     /// body is a type (`#define u32 unsigned int`) makes `(u32) (x)` a cast.
     macro_definitions: RefCell<Arc<HashMap<String, Vec<MacroDefinition>>>>,
+    /// Names a typedef declares in a header the scan resolves, one outside
+    /// the project included (`ProjectContext::header_typedef_names`).
+    header_typedef_names: RefCell<Arc<HashSet<String>>>,
     /// Names only a header outside the project defines: the C library's own
     /// macros, which C11 7.1.4 binds (`library_macros_evaluate_once`).
     outside_macros: RefCell<Arc<HashSet<String>>>,
@@ -94,6 +97,7 @@ impl Pre31C {
             function_macro_names: RefCell::new(Arc::new(HashSet::new())),
             macro_aliases: RefCell::new(Arc::new(HashMap::new())),
             macro_definitions: RefCell::new(Arc::new(HashMap::new())),
+            header_typedef_names: RefCell::new(Arc::new(HashSet::new())),
             outside_macros: RefCell::new(Arc::new(HashSet::new())),
             outside_headers: RefCell::new(Arc::new(HashSet::new())),
             set_names: RefCell::default(),
@@ -138,6 +142,7 @@ impl CertRule for Pre31C {
         *self.function_macro_names.borrow_mut() = context.function_macro_names.clone();
         *self.macro_aliases.borrow_mut() = context.macro_aliases.clone();
         *self.macro_definitions.borrow_mut() = context.macro_definitions.clone();
+        *self.header_typedef_names.borrow_mut() = context.header_typedef_names.clone();
         *self.outside_macros.borrow_mut() = context.macros_defined_outside_project.clone();
         *self.set_names.borrow_mut() = (
             Arc::clone(&context.defined_macro_names),
@@ -242,6 +247,7 @@ impl CertRule for Pre31C {
             aliases: &aliases,
             definitions: &self.macro_definitions.borrow(),
             own_definitions: OnceCell::new(),
+            header_typedefs: &self.header_typedef_names.borrow(),
             outside: &self.outside_macros.borrow(),
             outside_headers: &self.outside_headers.borrow(),
             set_names: &self.set_names.borrow(),
@@ -420,6 +426,8 @@ struct Ctx<'a> {
     /// This file's own `#define`s, read the first time a parenthesized
     /// callee may be a type.
     own_definitions: OnceCell<HashMap<String, Vec<MacroDefinition>>>,
+    /// `Pre31C::header_typedef_names`.
+    header_typedefs: &'a HashSet<String>,
     /// `Pre31C::outside_macros`.
     outside: &'a HashSet<String>,
     /// `Pre31C::outside_headers`.
@@ -867,8 +875,8 @@ impl<'a> Ctx<'a> {
         self.function_call_effect(name, arguments)
     }
 
-    /// Whether `name` names a type by what declares it: a typedef this file
-    /// or the scan declares, or an object-like macro every definition of
+    /// Whether `name` names a type by what declares it: a typedef this file,
+    /// the scan or a header it resolves declares, or an object-like macro every definition of
     /// which is type keywords (`#define u32 unsigned int`) or a typedef's
     /// name (`#define U32 u32`), this file's definitions over the scan's.
     /// A macro that names a type in one build and a function in another is
@@ -876,8 +884,11 @@ impl<'a> Ctx<'a> {
     fn names_a_declared_type(&self, name: &str) -> bool {
         let no_typedefs = HashMap::new();
         let typedefs = self.effects.map_or(&no_typedefs, |v| &*v.names.typedefs);
-        let is_typedef =
-            |n: &str| self.types.typedef_types.contains_key(n) || typedefs.contains_key(n);
+        let is_typedef = |n: &str| {
+            self.types.typedef_types.contains_key(n)
+                || typedefs.contains_key(n)
+                || self.header_typedefs.contains(n)
+        };
         let resolved = resolve_macro_alias(self.aliases, name);
         if is_typedef(name) || is_typedef(resolved) || is_type_name_text(resolved) {
             return true;

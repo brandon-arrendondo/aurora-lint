@@ -1195,6 +1195,15 @@ pub struct ProjectContext {
     /// is about is in a .c file that only names the alias.
     #[serde(default)]
     pub pointer_typedef_names: Arc<HashSet<String>>,
+    /// Every name a `typedef` declares in a header the scan resolves
+    /// (`resolve_includes`), one outside the project included (a generated
+    /// `sqlite3.h` reached through `-I`), in any arm the header does not
+    /// prove dead: whether a name is a type at all, which tells a cast of a
+    /// parenthesized operand, `(sqlite3_int64)(p - q)`, from a call.
+    /// `typedef_types` holds the scanned files' typedefs and what they
+    /// resolve to; this holds only names.
+    #[serde(default)]
+    pub header_typedef_names: Arc<HashSet<String>>,
     /// `file -> the names that file defines `static` while some other
     /// scanned file does too`: the files whose view of
     /// `function_summaries` is not the shared one.

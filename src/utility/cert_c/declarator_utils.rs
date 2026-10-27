@@ -299,6 +299,15 @@ pub fn pointer_typedef_names_in(type_definition: &Node, source: &str) -> Vec<Str
         .collect()
 }
 
+/// Every name a `type_definition` declares, whatever its shape:
+/// `typedef struct tagPOINT { ... } POINT, *LPPOINT;` yields both.
+pub fn typedef_names_in(type_definition: &Node, source: &str) -> Vec<String> {
+    typedef_declarators(type_definition)
+        .into_iter()
+        .filter_map(|d| TypedefShape::of(&d, source).name)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

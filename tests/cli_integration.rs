@@ -5983,6 +5983,30 @@ fn pre31_parenthesized_cast_to_a_header_macro_type_is_no_call() {
     assert!(strict.is_empty(), "{:?}", strict);
 }
 
+/// A typedef in a header outside the project, reached header to header
+/// through `-I` and chosen by an `#ifdef`/`#elif`/`#else` chain, still names
+/// a type: `(wide64)(p - start)` in `assert` is a cast, under the strict
+/// policy too.
+#[test]
+fn pre31_cast_to_an_outside_header_typedef_is_no_call() {
+    let project = fixtures().join("pre31_outside_header_typedef");
+    let proj = project.join("proj");
+    let gen = project.join("gen");
+    let file = proj.join("main.c");
+    let strict = pre31_violations(
+        file.to_str().unwrap(),
+        &[
+            "-d",
+            proj.to_str().unwrap(),
+            "-I",
+            gen.to_str().unwrap(),
+            "--profile",
+            "strict",
+        ],
+    );
+    assert!(strict.is_empty(), "{:?}", strict);
+}
+
 /// A function named `step_t`, declared in a header and defined in another
 /// file, is the function the scan defines: it writes, so `(step_t)(1)`
 /// under TWICE is reported under the default policy.
