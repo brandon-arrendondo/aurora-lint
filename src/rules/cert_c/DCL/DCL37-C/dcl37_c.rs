@@ -13,6 +13,11 @@
 //!   inside `extern "C" { ... }` are at file scope.
 //! - Reserved standard library names (errno, SIZE_MAX, etc.)
 //!
+//! Every declarator of a declaration is checked, through any pointer, array,
+//! function or parenthesized declarator around its name (`int _a, *_b;`,
+//! `int (*_fp)(void);`). An array's size is not a declared name, so
+//! `char buf[_SIZE];` declares only `buf`.
+//!
 //! A typedef name and an enumeration constant are ordinary identifiers, so
 //! each is checked as a variable is, at file scope or in a block. A tag is
 //! reserved at file scope as an ordinary identifier is, and is checked where
@@ -326,25 +331,12 @@ impl Dcl37C {
             let at_file_scope = !block_scope.contains(&n.id());
             match n.kind() {
                 "declaration" => {
-                    let mut check = |declarator: &Node| {
+                    for declarator in declarators(&n) {
                         if at_file_scope {
-                            self.check_file_scope_declarator(declarator, source, violations);
+                            self.check_file_scope_declarator(&declarator, source, violations);
                         } else {
-                            self.check_declarator(declarator, source, violations);
+                            self.check_declarator(&declarator, source, violations);
                         }
-                    };
-                    // Check all init_declarators in this declaration
-                    let mut cursor = n.walk();
-                    for child in n.children(&mut cursor) {
-                        if child.kind() == "init_declarator" {
-                            if let Some(declarator) = child.child_by_field_name("declarator") {
-                                check(&declarator);
-                            }
-                        }
-                    }
-                    // Also check direct declarator field if present
-                    if let Some(declarator) = n.child_by_field_name("declarator") {
-                        check(&declarator);
                     }
                 }
                 "preproc_def" | "preproc_function_def" => {
@@ -428,14 +420,6 @@ impl Dcl37C {
         }
     }
 
-    /// Check declarations for reserved identifiers
-    #[allow(dead_code)]
-    fn check_declaration(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if let Some(declarator) = node.child_by_field_name("declarator") {
-            self.check_declarator(&declarator, source, violations);
-        }
-    }
-
     /// Check function declarators for reserved function names
     fn check_function_declarator(
         &self,
@@ -479,15 +463,11 @@ impl Dcl37C {
                     });
                 }
             }
-            "function_declarator" => {
-                // For function declarators, check the declarator field
-                if let Some(declarator) = node.child_by_field_name("declarator") {
-                    self.check_function_declarator(&declarator, source, violations);
-                }
-            }
-            "pointer_declarator" => {
-                // Recurse into pointer declarators
-                if let Some(declarator) = node.child_by_field_name("declarator") {
+            "function_declarator"
+            | "pointer_declarator"
+            | "parenthesized_declarator"
+            | "attributed_declarator" => {
+                if let Some(declarator) = inner_declarator(node) {
                     self.check_function_declarator(&declarator, source, violations);
                 }
             }
@@ -502,79 +482,26 @@ impl Dcl37C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        match node.kind() {
-            "identifier" => {
-                let name = get_node_text(node, source);
-                // At file scope, any identifier starting with underscore is
-                // reserved. A name reserved for any use is reported once,
-                // below, as that.
-                if self.has_file_scope_reserved_prefix(&name) && !self.is_reserved_identifier(&name)
-                {
-                    violations.push(RuleViolation {
-                        rule_id: "DCL37-C".to_string(),
-                        severity: Severity::Low,
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
-                        message: format!(
-                            "File-scope identifier '{}' should not start with underscore",
-                            name
-                        ),
-                        file_path: String::new(),
-                        suggestion: Some(
-                            "Remove the leading underscore or rename the identifier".to_string(),
-                        ),
-                        requires_manual_review: Some(false),
-                    });
-                }
-                // Also check general reserved patterns
-                if self.is_reserved_identifier(&name) {
-                    violations.push(RuleViolation {
-                        rule_id: "DCL37-C".to_string(),
-                        severity: Severity::Low,
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
-                        message: format!("Reserved identifier '{}' should not be used", name),
-                        file_path: String::new(),
-                        suggestion: Some("Use a non-reserved identifier".to_string()),
-                        requires_manual_review: Some(false),
-                    });
-                }
+        if let Some(node) = declared_name(*node) {
+            let name = get_node_text(&node, source);
+            // At file scope, any identifier starting with underscore is
+            // reserved. A name reserved for any use is reported once, as
+            // that.
+            if self.is_reserved_identifier(&name) {
+                violations.push(reserved_identifier(&node, &name));
+            } else if self.has_file_scope_reserved_prefix(&name) {
+                violations.push(file_scope_identifier(&node, &name));
             }
-            "pointer_declarator" | "array_declarator" | "function_declarator" => {
-                // Recurse into nested declarators
-                for child in node.named_children(&mut node.walk()) {
-                    self.check_file_scope_declarator(&child, source, violations);
-                }
-            }
-            _ => {}
         }
     }
 
-    /// Recursively check declarator nodes for identifiers
+    /// Check a block-scope or parameter declarator for a reserved identifier
     fn check_declarator(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        match node.kind() {
-            "identifier" => {
-                let name = get_node_text(node, source);
-                if self.is_reserved_identifier(&name) {
-                    violations.push(RuleViolation {
-                        rule_id: "DCL37-C".to_string(),
-                        severity: Severity::Low,
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
-                        message: format!("Reserved identifier '{}' should not be used", name),
-                        file_path: String::new(),
-                        suggestion: Some("Use a non-reserved identifier".to_string()),
-                        requires_manual_review: Some(false),
-                    });
-                }
+        if let Some(node) = declared_name(*node) {
+            let name = get_node_text(&node, source);
+            if self.is_reserved_identifier(&name) {
+                violations.push(reserved_identifier(&node, &name));
             }
-            "pointer_declarator" | "array_declarator" | "function_declarator" => {
-                // Recurse into nested declarators
-                for child in node.named_children(&mut node.walk()) {
-                    self.check_declarator(&child, source, violations);
-                }
-            }
-            _ => {}
         }
     }
 
