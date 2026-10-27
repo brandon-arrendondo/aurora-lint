@@ -13,7 +13,8 @@
 //!   inside `extern "C" { ... }` are at file scope.
 //! - Reserved standard library names (errno, SIZE_MAX, etc.), where the file
 //!   includes a header that defines the name (C 7.1.3), directly or through
-//!   the headers it includes; `errno` everywhere
+//!   the headers it includes, by an `#include` not in another arm of the
+//!   declaration's `#if` chain; `errno` everywhere
 //!
 //! Every declarator of a declaration is checked, through any pointer, array,
 //! function or parenthesized declarator around its name (`int _a, *_b;`,
@@ -53,6 +54,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::{IncludeClosure, ProjectContext};
+use crate::analyze::preproc_arms::PreprocArms;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{descendants_of_kinds_with, get_node_text};
 use lang_parsing_substrate::query;
@@ -291,31 +293,21 @@ const NULL_HEADERS: &[&str] = &[
 /// 7.8p1).
 const IMPLIED_HEADERS: &[(&str, &str)] = &[("inttypes.h", "stdint.h")];
 
-/// The standard headers [`RESERVED_NAMES`] names that the file includes:
-/// with an `#include` line of its own, or through a header its include
-/// closure reaches, by the spelling of an include that resolved to no file
-/// or the name of one that did.
-fn included_headers(source: &str, closure: Option<&IncludeClosure>) -> HashSet<&'static str> {
-    static INCLUDE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let include = INCLUDE
-        .get_or_init(|| regex::Regex::new(r#"(?m)^\s*#\s*include\s*[<"]([^>"]+)[>"]"#).unwrap());
-    let own: HashSet<&str> = include
-        .captures_iter(source)
-        .filter_map(|c| c.get(1).map(|m| m.as_str().trim()))
-        .collect();
-    let reached = |header: &str| {
-        closure.is_some_and(|c| {
-            c.unresolved.contains(header)
-                || c.files
-                    .iter()
-                    .any(|f| f.strip_suffix(header).is_some_and(|dir| dir.ends_with('/')))
-        })
-    };
+/// The standard headers [`RESERVED_NAMES`] names that `closure` reaches, by
+/// the spelling of an include that resolved to no file or the name of one
+/// that did, with the headers they are defined to include.
+fn headers_reached(closure: &IncludeClosure) -> HashSet<&'static str> {
     let mut headers: HashSet<&'static str> = RESERVED_NAMES
         .iter()
         .flat_map(|(_, headers)| headers.iter().copied())
         .chain(IMPLIED_HEADERS.iter().map(|(header, _)| *header))
-        .filter(|header| own.contains(header) || reached(header))
+        .filter(|header| {
+            closure.unresolved.contains(*header)
+                || closure
+                    .files
+                    .iter()
+                    .any(|f| f.strip_suffix(header).is_some_and(|dir| dir.ends_with('/')))
+        })
         .collect();
     for (header, implied) in IMPLIED_HEADERS {
         if headers.contains(header) {
@@ -323,6 +315,77 @@ fn included_headers(source: &str, closure: Option<&IncludeClosure>) -> HashSet<&
         }
     }
     headers
+}
+
+/// The standard headers a file includes, and where. A header counts for a
+/// declaration unless the only `#include` lines bringing it in sit in
+/// another arm of an `#if` chain than the declaration: raylib's
+/// `typedef enum bool { false, true } bool;` is the `#elif` of an
+/// `#include <stdbool.h>`, so no build has both.
+#[derive(Debug, Default)]
+struct IncludedHeaders {
+    /// What the build's forced includes bring in, everywhere.
+    everywhere: HashSet<&'static str>,
+    /// Each `#include` line's byte offset, and what it brings in: the header
+    /// it names, and every header that one includes when it resolved to a
+    /// file.
+    lines: Vec<(usize, HashSet<&'static str>)>,
+    arms: Option<PreprocArms>,
+}
+
+impl IncludedHeaders {
+    fn of(root: &Node, source: &str, edges: &HashMap<String, Vec<String>>, path: &Path) -> Self {
+        static INCLUDE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let include = INCLUDE.get_or_init(|| {
+            regex::Regex::new(r#"(?m)^[ \t]*#[ \t]*include[ \t]*[<"]([^>"]+)[>"]"#).unwrap()
+        });
+        let targets = edges
+            .get(&crate::analyze::compile_commands::real_path(path))
+            .cloned()
+            .unwrap_or_default();
+        let lines: Vec<(usize, HashSet<&'static str>)> = include
+            .captures_iter(source)
+            .filter_map(|c| {
+                let spelling = c.get(1)?.as_str().trim();
+                let mut closure = IncludeClosure::default();
+                closure.unresolved.insert(spelling.to_string());
+                // The file the line resolved to, and what it includes.
+                for target in targets.iter().filter(|t| {
+                    t.strip_suffix(spelling)
+                        .is_some_and(|dir| dir.ends_with('/'))
+                }) {
+                    if let Some(reached) = IncludeClosure::of(edges, Path::new(target)) {
+                        closure.files.extend(reached.files);
+                        closure.unresolved.extend(reached.unresolved);
+                    }
+                    closure.files.insert(target.clone());
+                }
+                Some((c.get(0)?.start(), headers_reached(&closure)))
+            })
+            .filter(|(_, headers)| !headers.is_empty())
+            .collect();
+        let arms = (!lines.is_empty()).then(|| PreprocArms::collect(root));
+        let everywhere = IncludeClosure::of_forced_includes(&[edges])
+            .map(|forced| headers_reached(&forced))
+            .unwrap_or_default();
+        IncludedHeaders {
+            everywhere,
+            lines,
+            arms,
+        }
+    }
+
+    /// Whether a declaration at byte offset `at` sees `header` included.
+    fn includes(&self, header: &str, at: usize) -> bool {
+        self.everywhere.contains(header)
+            || self.lines.iter().any(|(offset, headers)| {
+                headers.contains(header)
+                    && !self
+                        .arms
+                        .as_ref()
+                        .is_some_and(|arms| arms.exclusive(*offset, at))
+            })
+    }
 }
 
 // Standard library function names with external linkage
@@ -336,8 +399,8 @@ const RESERVED_FUNCTIONS: &[&str] = &[
 pub struct Dcl37C {
     include_edges: RefCell<Arc<HashMap<String, Vec<String>>>>,
     file_path: RefCell<String>,
-    /// The scanned file's [`included_headers`].
-    included: RefCell<HashSet<&'static str>>,
+    /// The standard headers the scanned file includes.
+    included: RefCell<IncludedHeaders>,
 }
 
 impl Dcl37C {
@@ -346,14 +409,16 @@ impl Dcl37C {
     }
 
     /// Check if an identifier is a reserved identifier per C standard: one
-    /// reserved for any use, or a library name where the file includes a
-    /// header of it.
-    fn is_reserved_identifier(&self, name: &str) -> bool {
+    /// reserved for any use, or a library name where the declaration at
+    /// byte offset `at` sees a header of it included.
+    fn is_reserved_identifier(&self, name: &str, at: usize) -> bool {
         is_reserved_for_any_use(name)
             || RESERVED_NAMES.iter().any(|(listed, headers)| {
                 *listed == name
                     && (headers.is_empty()
-                        || headers.iter().any(|h| self.included.borrow().contains(h)))
+                        || headers
+                            .iter()
+                            .any(|h| self.included.borrow().includes(h, at)))
             })
     }
 
@@ -492,7 +557,7 @@ impl Dcl37C {
     ) {
         let name = get_node_text(node, source);
         let reserved = if ordinary {
-            self.is_reserved_identifier(&name)
+            self.is_reserved_identifier(&name, node.start_byte())
         } else {
             is_reserved_for_any_use(&name)
         };
@@ -533,7 +598,7 @@ impl Dcl37C {
                     });
                 }
                 // Also check general reserved identifier patterns
-                if self.is_reserved_identifier(&name) {
+                if self.is_reserved_identifier(&name, node.start_byte()) {
                     violations.push(RuleViolation {
                         rule_id: "DCL37-C".to_string(),
                         severity: Severity::Low,
@@ -575,7 +640,7 @@ impl Dcl37C {
             // At file scope, any identifier starting with underscore is
             // reserved. A name reserved for any use is reported once, as
             // that.
-            if self.is_reserved_identifier(&name) {
+            if self.is_reserved_identifier(&name, node.start_byte()) {
                 violations.push(reserved_identifier(&node, &name));
             } else if self.has_file_scope_reserved_prefix(&name) {
                 violations.push(file_scope_identifier(&node, &name));
@@ -587,7 +652,7 @@ impl Dcl37C {
     fn check_declarator(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         if let Some(node) = declared_name(*node) {
             let name = get_node_text(&node, source);
-            if self.is_reserved_identifier(&name) {
+            if self.is_reserved_identifier(&name, node.start_byte()) {
                 violations.push(reserved_identifier(&node, &name));
             }
         }
@@ -638,7 +703,7 @@ impl Dcl37C {
         if let Some(name_node) = node.child_by_field_name("name") {
             let name = get_node_text(&name_node, source);
             let exempt = node.kind() == "preproc_def" && is_feature_test_macro(&name);
-            if self.is_reserved_identifier(&name) && !exempt {
+            if self.is_reserved_identifier(&name, name_node.start_byte()) && !exempt {
                 violations.push(RuleViolation {
                     rule_id: "DCL37-C".to_string(),
                     severity: Severity::Low,
@@ -675,11 +740,12 @@ impl CertRule for Dcl37C {
     }
 
     fn scan(&self, root_node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        let closure = IncludeClosure::of(
+        *self.included.borrow_mut() = IncludedHeaders::of(
+            root_node,
+            source,
             &self.include_edges.borrow(),
             Path::new(&*self.file_path.borrow()),
         );
-        *self.included.borrow_mut() = included_headers(source, closure.as_ref());
         self.check_node(root_node, source, violations);
     }
 
