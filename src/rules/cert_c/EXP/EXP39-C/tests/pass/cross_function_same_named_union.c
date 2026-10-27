@@ -4,12 +4,10 @@
  * Status: PASS - Should NOT trigger EXP39-C violation
  *
  * Two different functions each declare their own local `union event`
- * variable named `event`. Each function only accesses a single member of
- * its own union, so there is no type punning within either function.
- * A prior bug aggregated union_member_accesses by variable name across the
- * whole translation unit, so accessing different members of two distinct,
- * same-named local unions in different functions looked like punning
- * within a single object. That must not fire here.
+ * variable named `event` and access its members. Reading or writing a
+ * union member is an access through that member's own type, so neither
+ * function accesses an object through an incompatible type, and a local
+ * in one function says nothing about a same-named local in another.
  */
 
 union event {
