@@ -237,11 +237,11 @@ needed to contribute: branch, commit, and open a PR as normal, same as any
 other project.
 
 **No task ids in anything public**: docs, ADRs, README, CHANGELOG, source
-comments, test fixtures, the paper. Cloners and contributors can't open the
-task database, so a number there points at nothing; say what changed and why
-in the text itself. Commit messages may keep a project-qualified id
-(`aurora_lint 1234`) for the maintainer's own tracing. Batch directory names
-in the public adjudication dataset are dataset identifiers and may be cited.
+comments, test fixtures, the paper, and commit messages. Cloners and
+contributors can't open the task database, which is never checked in, so a
+number there points at nothing; say what changed and why in the text itself.
+Batch directory names in the public adjudication dataset are dataset
+identifiers and may be cited.
 
 **Task titles are internal and never published.** `CHANGELOG.md`'s
 `[Unreleased]` block and the release notes are generated from the task DB,
