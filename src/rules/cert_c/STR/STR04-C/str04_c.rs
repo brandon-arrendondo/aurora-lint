@@ -4,7 +4,7 @@
 use crate::manifest::Severity;
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declarator};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -73,26 +73,21 @@ impl STR04C {
                 let mut arg_cursor = child.walk();
                 for arg in child.children(&mut arg_cursor) {
                     if arg.kind() == "identifier" {
-                        // Look up the variable's declaration type
-                        if let Some(var_type) = self.find_variable_type(&arg, source) {
-                            if var_type.contains("signed char")
-                                || var_type.contains("unsigned char")
-                            {
-                                let start = arg.start_position();
-                                violations.push(RuleViolation {
-                                    rule_id: self.rule_id().to_string(),
-                                    file_path: String::new(),
-                                    message: format!(
-                                        "Passing '{}' to string function '{}'. Use plain 'char' for basic character set strings.",
-                                        var_type, function_name
-                                    ),
-                                    line: start.row + 1,
-                                    column: start.column + 1,
-                                    severity: self.severity(),
-                                    suggestion: Some("Change variable type to plain 'char' instead of signed/unsigned char".to_string()),
-                                    requires_manual_review: Some(false),
-                                });
-                            }
+                        if let Some(var_type) = self.char_string_type(&arg, source) {
+                            let start = arg.start_position();
+                            violations.push(RuleViolation {
+                                rule_id: self.rule_id().to_string(),
+                                file_path: String::new(),
+                                message: format!(
+                                    "Passing '{}' to string function '{}'. Use plain 'char' for basic character set strings.",
+                                    var_type, function_name
+                                ),
+                                line: start.row + 1,
+                                column: start.column + 1,
+                                severity: self.severity(),
+                                suggestion: Some("Change variable type to plain 'char' instead of signed/unsigned char".to_string()),
+                                requires_manual_review: Some(false),
+                            });
                         }
                     }
                 }
@@ -124,70 +119,39 @@ impl STR04C {
         )
     }
 
-    fn find_variable_type(&self, identifier_node: &Node, source: &str) -> Option<String> {
-        let var_name = get_node_text(identifier_node, source);
-
-        // Walk up to translation_unit
-        let mut current = identifier_node.parent();
-        while let Some(parent) = current {
-            if parent.kind() == "translation_unit" {
-                // Search for declaration of this variable
-                let mut cursor = parent.walk();
-                for child in parent.children(&mut cursor) {
-                    if child.kind() == "declaration" {
-                        if let Some(var_type) =
-                            self.extract_var_type_if_matches(&child, var_name, source)
-                        {
-                            return Some(var_type);
-                        }
-                    }
-                }
-                break;
-            }
-            current = parent.parent();
+    /// The character type of a `signed char` or `unsigned char` string the
+    /// argument `ident` names: its declaration, resolved by scope, declares
+    /// it an array of or a pointer to one of them. A plain `unsigned char`
+    /// value (`strchr`'s `int` argument) is not a string, nor is an array of
+    /// pointers.
+    fn char_string_type(&self, ident: &Node, source: &str) -> Option<String> {
+        let name = get_node_text(ident, source);
+        let (decl, declarator) = resolve_identifier_declarator(ident, name, source)?;
+        let base = get_node_text(&decl.child_by_field_name("type")?, source)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if base != "signed char" && base != "unsigned char" {
+            return None;
         }
-
-        None
-    }
-
-    fn extract_var_type_if_matches(
-        &self,
-        decl_node: &Node,
-        target_name: &str,
-        source: &str,
-    ) -> Option<String> {
-        let mut cursor = decl_node.walk();
-        let mut type_text = String::new();
-        let mut found_name = false;
-
-        for child in decl_node.children(&mut cursor) {
-            match child.kind() {
-                "type_qualifier" | "primitive_type" | "sized_type_specifier" => {
-                    let text = get_node_text(&child, source);
-                    type_text.push_str(text);
-                    type_text.push(' ');
-                }
-                "init_declarator" | "array_declarator"
-                    // Check if this declarator contains our target variable
-                    if self.contains_identifier(&child, target_name, source) => {
-                        found_name = true;
-                    }
-                _ => {}
+        let mut levels = 0;
+        let mut d = declarator;
+        loop {
+            match d.kind() {
+                "pointer_declarator" | "array_declarator" => levels += 1,
+                "parenthesized_declarator" => {}
+                "function_declarator" => return None,
+                _ => break,
+            }
+            match d
+                .child_by_field_name("declarator")
+                .or_else(|| d.named_child(0))
+            {
+                Some(inner) if inner.id() != d.id() => d = inner,
+                _ => break,
             }
         }
-
-        if found_name && !type_text.is_empty() {
-            return Some(type_text.trim().to_string());
-        }
-
-        None
-    }
-
-    fn contains_identifier(&self, node: &Node, target: &str, source: &str) -> bool {
-        query::find_first_descendant(*node, |n| {
-            n.kind() == "identifier" && get_node_text(&n, source) == target
-        })
-        .is_some()
+        (levels == 1).then_some(base)
     }
 
     fn check_string_declaration(&self, node: &Node, source: &str) -> Option<RuleViolation> {
