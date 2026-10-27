@@ -356,6 +356,15 @@ fn pasted_call_evaluation(ctx: &Ctx, name: &str, call: &Node) -> ArgEvaluation {
     }
 }
 
+/// The identifier `callee` is when it is `(name)`, one identifier in
+/// parentheses.
+fn parenthesized_name<'t>(callee: &Node<'t>) -> Option<Node<'t>> {
+    if callee.kind() != "parenthesized_expression" || callee.named_child_count() != 1 {
+        return None;
+    }
+    callee.named_child(0).filter(|n| n.kind() == "identifier")
+}
+
 /// How an argument's evaluation can change program state, from least to
 /// most certain. The rule reports [`Effect::Definite`] under every policy,
 /// and [`Effect::Unknown`] (an unproven call) only when
@@ -792,9 +801,25 @@ impl<'a> Ctx<'a> {
                     Some(f) if f.kind() == "identifier" => {
                         self.call_effect(get_node_text(&f, self.source), arguments.as_ref(), 0)
                     }
-                    // Through a pointer or a member: nothing names the body,
-                    // and the callee expression may itself have effects.
-                    Some(f) => self.expression_effect(&f).max(Effect::Unknown),
+                    // `(name)(x)`: the parser reads a cast of a parenthesized
+                    // operand, `(u32) (a + b)`, as a call through `(u32)`.
+                    // A type there casts and calls nothing; any other name
+                    // is the call it spells, `(getc)(fp)` the function that
+                    // the parentheses keep a macro from expanding. Through a
+                    // pointer or a member: nothing names the body, and the
+                    // callee expression may itself have effects.
+                    Some(f) => match parenthesized_name(&f) {
+                        Some(inner) if designates_object(&inner, self.source) => Effect::Unknown,
+                        Some(inner) => {
+                            let name = get_node_text(&inner, self.source);
+                            if self.names_a_type_here(name) {
+                                Effect::None
+                            } else {
+                                self.call_effect(name, arguments.as_ref(), 0)
+                            }
+                        }
+                        None => self.expression_effect(&f).max(Effect::Unknown),
+                    },
                     None => Effect::Unknown,
                 };
                 let args = arguments.map_or(Effect::None, |a| self.children_effect(&a));
@@ -802,6 +827,17 @@ impl<'a> Ctx<'a> {
             }
             _ => self.children_effect(node),
         }
+    }
+
+    /// Whether `name`, not bound to an object here, names a type: a C type
+    /// keyword, a typedef this file or the scan knows, an ISO C/POSIX `_t`
+    /// name, or an object-like macro whose alias chain ends in one.
+    fn names_a_type_here(&self, name: &str) -> bool {
+        let no_typedefs = HashMap::new();
+        let typedefs = self.effects.map_or(&no_typedefs, |v| &*v.names.typedefs);
+        self.types.typedef_types.contains_key(name)
+            || names_a_type(name, typedefs)
+            || is_type_name_text(resolve_macro_alias(self.aliases, name))
     }
 
     /// Whether an identifier reads an object whose typedef is volatile
