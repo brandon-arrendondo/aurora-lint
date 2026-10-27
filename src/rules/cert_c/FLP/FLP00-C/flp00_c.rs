@@ -14,10 +14,14 @@
 //! its spelling. A comparison with an exact zero (`x == 0.0`, `d != 0`) is a
 //! common, legitimate test: the default policy does not report it, by the
 //! option `flp00_exact_zero_comparison_exempt`; the strict policy reports it
-//! as any other comparison (ADR-0015 Decision 7). An object-like macro is an
-//! exact zero when every definition in force where it is used, the file's own
-//! and those of the headers it can include, is one (`#define ZERO 0.0`,
-//! `#define ZERO ((double)0)`).
+//! as any other comparison (ADR-0015 Decision 7). A zero cast to an
+//! arithmetic type (`(double)0`) is an exact zero. So is an object-like macro
+//! that is one in every build reaching the comparison (`#define ZERO 0.0`,
+//! `#define ZERO ((double)0)`): every definition in force there, the file's
+//! own and those of the headers it includes before it, is one, and none of
+//! those builds leaves the name to a definition the scan cannot read (a
+//! `#ifndef` default a `-D` may replace). A name bound to a variable or a
+//! parameter is no macro, whatever a header defines.
 //!
 //! ## Examples:
 //!
@@ -54,16 +58,18 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::check_macros::{MacroDefinition, ObjectMacroTimeline};
-use crate::analyze::context::{IncludeClosure, ProjectContext, VisibleTypes};
+use crate::analyze::compile_commands::real_path;
+use crate::analyze::context::{ProjectContext, VisibleTypes};
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declarator};
 use crate::utility::cert_c::expr_type::{self, TypeEnv};
 use crate::utility::cert_c::pp_tokens::{lex_replacement_list, PpKind, PpToken};
 use lang_parsing_substrate::query;
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use tree_sitter::Node;
 
@@ -87,31 +93,68 @@ pub struct Flp00C {
 const MAX_MACRO_DEPTH: usize = 4;
 
 /// The object-like macros a comparison can name, as written: the file's own
-/// definitions in force on a line, and what the headers it can include leave
-/// in force, read once and only for a name some header defines.
+/// definitions in force on a line, and what the headers it includes before
+/// that line leave in force, read only for a name some header defines.
 struct ZeroMacros<'a> {
     own: OnceCell<ObjectMacroTimeline>,
-    headers: OnceCell<HashMap<String, Vec<String>>>,
+    headers: OnceCell<Vec<Reached>>,
+    timelines: RefCell<HashMap<String, Rc<ObjectMacroTimeline>>>,
     source: &'a str,
     project: Option<&'a ProjectContext>,
     file_path: Option<&'a std::path::Path>,
 }
 
+/// A header the file reaches through its live `#include` lines.
+struct Reached {
+    /// Its real path.
+    file: String,
+    /// How many of the file's own `#include` lines it takes to reach it
+    /// (0 for a forced include), and to reach it through no conditional
+    /// `#include` at all.
+    first: usize,
+    first_unconditional: Option<usize>,
+}
+
 impl ZeroMacros<'_> {
-    /// Every replacement list `name` may have on `line`, as written; empty
-    /// when it is no object-like macro the scan can see.
-    fn definitions(&self, name: &str, line: usize) -> Vec<String> {
-        let in_force = self
-            .own
+    fn own(&self) -> &ObjectMacroTimeline {
+        self.own
             .get_or_init(|| ObjectMacroTimeline::of(self.source))
-            .in_force(name, line);
-        let mut raw = in_force.raw;
-        if in_force.inherits && self.header_defines(name) {
-            if let Some(inherited) = self.headers.get_or_init(|| self.reachable()).get(name) {
-                raw.extend(inherited.iter().cloned());
-            }
+    }
+
+    /// Every replacement list `name` may have on `line`, as written. `None`
+    /// when some build may reach the line with a definition the scan cannot
+    /// read: none of the file's own directives apply there, and no header
+    /// included before the line in every build defines the name, so it is a
+    /// command-line macro, a header's unknown one, or no macro at all.
+    fn definitions(&self, name: &str, line: usize) -> Option<Vec<String>> {
+        let in_force = self.own().in_force(name, line);
+        if !in_force.inherits {
+            return Some(in_force.raw);
         }
-        raw
+        if !self.header_defines(name) {
+            return None;
+        }
+        let includes_before = self.own().includes().partition_point(|i| i.line < line);
+        let mut raw = in_force.raw;
+        let mut covered = false;
+        for header in self.headers.get_or_init(|| self.reachable()) {
+            if header.first > includes_before {
+                continue;
+            }
+            let Some(timeline) = self.timeline(&header.file) else {
+                continue;
+            };
+            let left = timeline.in_force(name, usize::MAX);
+            covered |= header
+                .first_unconditional
+                .is_some_and(|n| n <= includes_before)
+                && !left.inherits
+                && !left.raw.is_empty();
+            raw.extend(left.raw);
+        }
+        raw.sort();
+        raw.dedup();
+        covered.then_some(raw)
     }
 
     /// Whether some project header defines `name` as an object-like macro.
@@ -124,43 +167,133 @@ impl ZeroMacros<'_> {
         })
     }
 
-    /// What each object-like macro stands for, as written, at the end of the
-    /// headers this file can include (its include closure as the prescan
-    /// resolved it), the file itself excluded. With no file path nothing says
-    /// which headers it sees, so none are read.
-    fn reachable(&self) -> HashMap<String, Vec<String>> {
-        let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    /// The timeline of the header at real path `file`, read once.
+    fn timeline(&self, file: &str) -> Option<Rc<ObjectMacroTimeline>> {
+        if let Some(timeline) = self.timelines.borrow().get(file) {
+            return Some(timeline.clone());
+        }
+        let text = std::fs::read_to_string(file).ok()?;
+        let timeline = Rc::new(ObjectMacroTimeline::of(&text));
+        self.timelines
+            .borrow_mut()
+            .insert(file.to_string(), timeline.clone());
+        Some(timeline)
+    }
+
+    /// The headers this file reaches through the prescan's include graph,
+    /// following only the `#include` lines each file does not prove dead,
+    /// and how many of the file's own lines it takes to reach each. With no
+    /// file path nothing says which headers it sees, so none are read.
+    fn reachable(&self) -> Vec<Reached> {
         let (Some(project), Some(path)) = (self.project, self.file_path) else {
-            return out;
+            return Vec::new();
         };
-        let closure = IncludeClosure::of(&project.include_edges, path).unwrap_or_default();
-        let own = std::fs::canonicalize(path)
-            .ok()
-            .map(|p| p.to_string_lossy().into_owned());
-        let mut files: Vec<&String> = closure
-            .files
+        let layers = [
+            project.include_edges.as_ref(),
+            project.include_edges_beyond_search_path.as_ref(),
+        ];
+        let own = real_path(path);
+        let mut found: HashMap<String, Reached> = HashMap::new();
+        // The build's forced includes come before the file's first line.
+        let forced: Vec<String> = layers
             .iter()
-            .filter(|f| Some(*f) != own.as_ref())
+            .filter_map(|edges| edges.get(""))
+            .flatten()
+            .cloned()
             .collect();
-        files.sort();
-        for file in files {
-            let Ok(text) = std::fs::read_to_string(file) else {
+        self.walk(&layers, &own, forced, 0, true, &mut found);
+        for (n, include) in self.own().includes().iter().enumerate() {
+            let targets = targets_of(&layers, &own, &include.spelling);
+            self.walk(
+                &layers,
+                &own,
+                targets,
+                n + 1,
+                !include.conditional,
+                &mut found,
+            );
+        }
+        let mut reached: Vec<Reached> = found.into_values().collect();
+        reached.sort_by(|a, b| a.file.cmp(&b.file));
+        reached
+    }
+
+    /// Records `start` and what each includes, through the live `#include`
+    /// lines, as reached by the file's first `first` lines; `unconditional`
+    /// when no `#include` on the way sits in a conditional arm.
+    fn walk(
+        &self,
+        layers: &[&HashMap<String, Vec<String>>],
+        own: &str,
+        start: Vec<String>,
+        first: usize,
+        unconditional: bool,
+        found: &mut HashMap<String, Reached>,
+    ) {
+        let mut stack: Vec<(String, bool)> =
+            start.into_iter().map(|f| (f, unconditional)).collect();
+        while let Some((file, unconditional)) = stack.pop() {
+            if file == own {
+                continue;
+            }
+            // A header is walked again only when this reach is its first
+            // unconditional one, so each is walked at most twice.
+            let improved = match found.get_mut(&file) {
+                None => {
+                    found.insert(
+                        file.clone(),
+                        Reached {
+                            file: file.clone(),
+                            first,
+                            first_unconditional: unconditional.then_some(first),
+                        },
+                    );
+                    true
+                }
+                Some(entry) if unconditional && entry.first_unconditional.is_none() => {
+                    entry.first_unconditional = Some(first);
+                    true
+                }
+                Some(_) => false,
+            };
+            if !improved {
+                continue;
+            }
+            let Some(timeline) = self.timeline(&file) else {
                 continue;
             };
-            let timeline = ObjectMacroTimeline::of(&text);
-            for name in timeline.names() {
-                let raw = timeline.in_force(name, usize::MAX).raw;
-                if !raw.is_empty() {
-                    out.entry(name.clone()).or_default().extend(raw);
+            for include in timeline.includes() {
+                for next in targets_of(layers, &file, &include.spelling) {
+                    stack.push((next, unconditional && !include.conditional));
                 }
             }
         }
-        for list in out.values_mut() {
-            list.sort();
-            list.dedup();
-        }
-        out
     }
+}
+
+/// The headers the include graph resolves `file`'s `#include` of `spelling`
+/// to: its edges whose real path ends with the spelling, `.` and `..`
+/// segments dropped.
+fn targets_of(layers: &[&HashMap<String, Vec<String>>], file: &str, spelling: &str) -> Vec<String> {
+    let spelling = spelling
+        .split(['/', '\\'])
+        .filter(|segment| !matches!(*segment, "" | "." | ".."))
+        .collect::<Vec<_>>()
+        .join("/");
+    if spelling.is_empty() {
+        return Vec::new();
+    }
+    layers
+        .iter()
+        .filter_map(|edges| edges.get(file))
+        .flatten()
+        .filter(|target| {
+            target
+                .strip_suffix(spelling.as_str())
+                .is_some_and(|dir| dir.ends_with('/'))
+        })
+        .cloned()
+        .collect()
 }
 
 impl CertRule for Flp00C {
@@ -206,6 +339,7 @@ impl CertRule for Flp00C {
         let macros = ZeroMacros {
             own: OnceCell::new(),
             headers: OnceCell::new(),
+            timelines: RefCell::new(HashMap::new()),
             source,
             project: project.as_ref(),
             file_path: file_path.as_deref(),
@@ -287,8 +421,9 @@ impl Flp00C {
 
 /// Whether `node` is a constant whose value is exactly zero: a floating or
 /// integer literal (`0.0`, `0.f`, `.0`, `0e5`, `0`, `0x0`) or the null
-/// character constant (`'\0'`), parenthesized or signed (`-0.0`), or an
-/// object-like macro every definition in force of which is one.
+/// character constant (`'\0'`), parenthesized, signed (`-0.0`) or cast to
+/// an arithmetic type (`(double)0`), or an object-like macro that is one in
+/// every build ([`macro_is_zero`]).
 fn is_exact_zero(node: &Node, source: &str, macros: &ZeroMacros) -> bool {
     match node.kind() {
         "parenthesized_expression" => node
@@ -303,25 +438,58 @@ fn is_exact_zero(node: &Node, source: &str, macros: &ZeroMacros) -> bool {
                     .child_by_field_name("argument")
                     .is_some_and(|n| is_exact_zero(&n, source, macros))
         }
+        "cast_expression" => {
+            node.child_by_field_name("type")
+                .is_some_and(|t| is_arithmetic_type(&t, source))
+                && node
+                    .child_by_field_name("value")
+                    .is_some_and(|n| is_exact_zero(&n, source, macros))
+        }
         "number_literal" => literal_is_zero(get_node_text(node, source)),
         "char_literal" => char_literal_is_zero(get_node_text(node, source)),
-        "identifier" => macro_is_zero(
-            get_node_text(node, source),
-            node.start_position().row + 1,
-            macros,
-            0,
-        ),
+        "identifier" => {
+            let name = get_node_text(node, source);
+            // A name bound to a variable, a parameter or an enumerator is no
+            // macro where it is used, whatever a header defines.
+            resolve_identifier_declarator(node, name, source).is_none()
+                && macro_is_zero(name, node.start_position().row + 1, macros, 0)
+        }
         _ => false,
     }
 }
 
+/// Whether a cast's type names an arithmetic type by its keywords alone
+/// (`double`, `unsigned long`): no pointer, no tag and no typedef, whose
+/// meaning the cast's text does not say.
+fn is_arithmetic_type(type_descriptor: &Node, source: &str) -> bool {
+    type_descriptor.child_by_field_name("declarator").is_none()
+        && type_descriptor
+            .child_by_field_name("type")
+            .is_some_and(|t| matches!(t.kind(), "primitive_type" | "sized_type_specifier"))
+        && get_node_text(type_descriptor, source)
+            .split_whitespace()
+            .all(|word| ARITHMETIC_KEYWORDS.contains(&word) || QUALIFIERS.contains(&word))
+}
+
+/// The keywords of an arithmetic type specifier (C11 6.7.2).
+const ARITHMETIC_KEYWORDS: &[&str] = &[
+    "char", "short", "int", "long", "float", "double", "signed", "unsigned", "_Bool", "bool",
+    "_Complex",
+];
+
+/// The type qualifiers a cast may carry.
+const QUALIFIERS: &[&str] = &["const", "volatile"];
+
 /// Whether the object-like macro `name` is an exact zero on `line` in every
-/// build: it has a definition there, and each is a zero.
+/// build: every build has a definition the scan can read there
+/// ([`ZeroMacros::definitions`]), and each is a zero.
 fn macro_is_zero(name: &str, line: usize, macros: &ZeroMacros, depth: usize) -> bool {
     if depth >= MAX_MACRO_DEPTH {
         return false;
     }
-    let definitions = macros.definitions(name, line);
+    let Some(definitions) = macros.definitions(name, line) else {
+        return false;
+    };
     !definitions.is_empty()
         && definitions.iter().all(|body| {
             let tokens = lex_replacement_list(body, false);
@@ -330,8 +498,8 @@ fn macro_is_zero(name: &str, line: usize, macros: &ZeroMacros, depth: usize) -> 
 }
 
 /// Whether a replacement list is a zero constant: a zero literal, the null
-/// character, or a zero macro, under parentheses, a cast (`(double)0`) and a
-/// sign.
+/// character, or a zero macro, under parentheses, a cast to an arithmetic
+/// type (`(double)0`) and a sign.
 fn tokens_are_zero(tokens: &[PpToken], line: usize, macros: &ZeroMacros, depth: usize) -> bool {
     match tokens {
         [] => false,
@@ -353,9 +521,13 @@ fn tokens_are_zero(tokens: &[PpToken], line: usize, macros: &ZeroMacros, depth: 
             if rest.is_empty() {
                 tokens_are_zero(inner, line, macros, depth)
             } else {
-                // A cast names a type: identifiers and keywords only.
-                !inner.is_empty()
-                    && inner.iter().all(|t| t.kind == PpKind::Identifier)
+                // A cast to an arithmetic type, named by its keywords.
+                inner
+                    .iter()
+                    .any(|t| ARITHMETIC_KEYWORDS.contains(&&*t.text))
+                    && inner.iter().all(|t| {
+                        ARITHMETIC_KEYWORDS.contains(&&*t.text) || QUALIFIERS.contains(&&*t.text)
+                    })
                     && tokens_are_zero(rest, line, macros, depth)
             }
         }

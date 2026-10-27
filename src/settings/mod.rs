@@ -741,8 +741,9 @@ pub static OPTIONS: &[OptionSpec] = &[
         },
         oracle_tag: "exact-zero-comparison",
         summary: "FLP00-C: a floating-point == or != with an exact zero as one operand (0.0, \
-                  0.0f, -0.0, 0, or an object-like macro every definition of which in force \
-                  there is one) is not reported: zero is exactly representable, and a test \
+                  0.0f, -0.0, 0, the null character, a cast of one to an arithmetic type, or an \
+                  object-like macro that is one in every build that reaches the comparison) \
+                  is not reported: zero is exactly representable, and a test \
                   against it is a common, legitimate idiom. Off, it is reported like any \
                   other floating-point comparison.",
         basis: "FLP00-C/2026-10-07/zero: Polyspace exempts a comparison with zero unless \

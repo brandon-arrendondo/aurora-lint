@@ -479,15 +479,33 @@ fn whole_ifndef(d: &str) -> Option<String> {
 /// stack with one head per directive, so a lookup is a binary search for the
 /// line and a walk of the alternatives in force there.
 ///
-/// **Limitation:** where `#include` lines fall is not read. An included
-/// header's definitions are taken as standing before the file's first
-/// directive, so a header included after the file's own `#define` is read
-/// as if the file's definition replaced it.
+/// **Limitation:** [`ObjectMacroTimeline::in_force`] does not read where
+/// `#include` lines fall. An included header's definitions are taken as
+/// standing before the file's first directive, so a header included after
+/// the file's own `#define` is read as if the file's definition replaced it.
+/// [`ObjectMacroTimeline::includes`] gives the lines, for a reader that
+/// needs them.
 #[derive(Debug, Default)]
 pub struct ObjectMacroTimeline {
     names: HashMap<String, NameTimeline>,
     /// Every directive's first physical line, in file order.
     directive_lines: Vec<usize>,
+    /// Every `#include` with a literal spelling outside a region the file
+    /// proves dead, in file order.
+    includes: Vec<IncludeLine>,
+}
+
+/// One `#include` the file does not prove dead, as
+/// [`ObjectMacroTimeline::of`] reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncludeLine {
+    /// Its first physical line, from 1.
+    pub line: usize,
+    /// The header as spelled, between its quotes or angle brackets.
+    pub spelling: String,
+    /// Whether it sits in a conditional arm (an include guard does not
+    /// count), so some build may skip it.
+    pub conditional: bool,
 }
 
 /// One directive of a name, as [`ObjectMacroTimeline::of`] reads it.
@@ -628,7 +646,8 @@ pub struct InForce {
     /// The same replacement lists as written, each once, sorted: `bodies`
     /// blanks a character constant to `0` and a string literal to `""`, so a
     /// reader of a literal's value reads these. One the directive parser
-    /// cannot split is empty.
+    /// cannot split is empty. A trailing comment is kept; the lexer
+    /// (`lex_replacement_list`) drops it.
     pub raw: Vec<String>,
     /// Whether some build reaches the line with none of this file's
     /// directives of the name applying, so a definition from before the file
@@ -684,6 +703,7 @@ impl ObjectMacroTimeline {
         let mut open: Vec<OpenGroup> = Vec::new();
         let mut next_arm = 0;
         let mut steps: HashMap<String, Vec<(usize, MacroStep)>> = HashMap::new();
+        let mut includes = Vec::new();
         let arms_of = |open: &[OpenGroup]| -> Vec<usize> {
             open.iter().filter(|g| !g.guard).map(|g| g.arm).collect()
         };
@@ -749,6 +769,24 @@ impl ObjectMacroTimeline {
                         None => continue,
                     }
                 }
+                "include" => {
+                    let spelling = d["include".len()..].trim_start();
+                    let close = match spelling.chars().next() {
+                        Some('"') => '"',
+                        Some('<') => '>',
+                        _ => continue,
+                    };
+                    if let Some(end) = spelling[1..].find(close) {
+                        if !is_dead(*line) {
+                            includes.push(IncludeLine {
+                                line: *line,
+                                spelling: spelling[1..1 + end].to_string(),
+                                conditional: !arms_of(&open).is_empty(),
+                            });
+                        }
+                    }
+                    continue;
+                }
                 "undef" => {
                     let name: String = d["undef".len()..]
                         .trim_start()
@@ -783,7 +821,14 @@ impl ObjectMacroTimeline {
                 .map(|(name, steps)| (name, NameTimeline::build(steps)))
                 .collect(),
             directive_lines: directives.iter().map(|(line, _)| *line).collect(),
+            includes,
         }
+    }
+
+    /// The file's `#include` lines with a literal spelling, in file order,
+    /// those in a region it proves dead left out.
+    pub fn includes(&self) -> &[IncludeLine] {
+        &self.includes
     }
 
     /// How many of the file's directives come before `line`. Every name's
@@ -1518,6 +1563,27 @@ mod tests {
     fn a_nested_group_that_covers_its_arm_counts_for_the_arm() {
         let src = "#ifdef DEBUG\n#define CHECK(x) check(x)\n#else\n#ifdef FAST\n#define CHECK(x) fast(x)\n#else\n#define CHECK(x) ((void)(x))\n#endif\n#endif\n";
         assert!(collect_conditional_macro_names(src).is_empty());
+    }
+
+    #[test]
+    fn the_timeline_lists_live_includes_and_whether_a_build_may_skip_them() {
+        let src = "#ifndef H_H\n#define H_H\n#include \"always.h\"\n#ifdef Q\n#include <sometimes.h>\n#endif\n#if 0\n#include \"never.h\"\n#endif\n#include DEFS_H\n#endif\n";
+        let includes = ObjectMacroTimeline::of(src).includes().to_vec();
+        assert_eq!(
+            includes,
+            vec![
+                IncludeLine {
+                    line: 3,
+                    spelling: "always.h".into(),
+                    conditional: false,
+                },
+                IncludeLine {
+                    line: 5,
+                    spelling: "sometimes.h".into(),
+                    conditional: true,
+                },
+            ]
+        );
     }
 
     #[test]

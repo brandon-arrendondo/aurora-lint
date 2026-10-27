@@ -10218,3 +10218,86 @@ fn dcl37_library_name_reserved_through_a_relative_include() {
         dcl37_crossfile_violations("library_name_through_relative_include", "unrelated.c");
     assert!(unrelated.is_empty(), "{unrelated:?}");
 }
+
+// ─── FLP00-C's exact-zero macros from headers ────────────────────────────────
+
+#[test]
+fn flp00_takes_a_header_macro_for_zero_only_where_every_build_includes_it_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let files: &[(&str, &str)] = &[
+        ("zero.h", "#define ZERO 0.0\n#define AZ 0.0\n"),
+        ("cond.h", "#ifdef Q\n#define CONDDEF 0.0\n#endif\n"),
+        ("indirect.h", "#if 0\n#include \"zero.h\"\n#endif\n"),
+        (
+            "guarded.h",
+            "#ifndef GUARDED_H\n#define GUARDED_H\n#include \"zero.h\"\n#endif\n",
+        ),
+        (
+            "uses.c",
+            "#include \"guarded.h\"\n\
+             #include \"cond.h\"\n\
+             int a(double x) { return x == ZERO; }\n\
+             int b(double x) { return x == CONDDEF; }\n\
+             int c(double x, double AZ) { return x == AZ; }\n",
+        ),
+        (
+            "dead.c",
+            "#if 0\n#include \"zero.h\"\n#endif\n\
+             static double ZERO = 1e-9;\n\
+             int d(double x) { return x == ZERO; }\n",
+        ),
+        (
+            "late.c",
+            "int e(double x, double ZERO) { return x == ZERO; }\n\
+             #include \"zero.h\"\n\
+             int f(double x) { return x == ZERO; }\n",
+        ),
+        (
+            "transitive.c",
+            "#include \"indirect.h\"\n\
+             #ifdef Q\n#include \"zero.h\"\n#endif\n\
+             int g(double x) { return x == AZ; }\n",
+        ),
+    ];
+    for (name, text) in files {
+        std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    let out = dir.path().join("out.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        dir.path().to_str().unwrap(),
+        "--rules",
+        "FLP00-C",
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let mut found: Vec<(String, u64)> = violations
+        .iter()
+        .map(|v| {
+            let file = v["file"].as_str().unwrap();
+            let name = std::path::Path::new(file).file_name().unwrap();
+            (
+                name.to_string_lossy().into_owned(),
+                v["line"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    found.sort();
+    // A header's zero counts through an include guard, and only after the
+    // #include. A name bound to a variable or parameter is no macro, a
+    // header included in a dead arm or only in some builds proves nothing,
+    // and neither does a definition only some builds of the header make.
+    let expected: Vec<(String, u64)> = [
+        ("dead.c", 5),
+        ("late.c", 1),
+        ("transitive.c", 5),
+        ("uses.c", 4),
+        ("uses.c", 5),
+    ]
+    .iter()
+    .map(|(f, l)| (f.to_string(), *l))
+    .collect();
+    assert_eq!(found, expected);
+}
