@@ -2,6 +2,7 @@
  * Rule: SIG02-C
  * Source: synthetic
  * Status: FAIL - Should trigger SIG02-C violation
+ * Expect: count=3
  *
  * The program sends itself signals that usually report an abnormal event.
  * CERT names no set of signals that carry normal functionality, so a send
@@ -13,15 +14,15 @@
 
 void stop_self(void)
 {
-    raise(SIGTERM);
+    raise(SIGTERM); /* Expect: here */
 }
 
 void abort_self(void)
 {
-    raise(SIGABRT);
+    raise(SIGABRT); /* Expect: here */
 }
 
 void interrupt_own_process(void)
 {
-    kill(getpid(), SIGINT);
+    kill(getpid(), SIGINT); /* Expect: here */
 }

@@ -80,20 +80,22 @@ impl Sig02C {
             && thread_api::library_call(&arg, source, project) == Some("getpid")
     }
 
-    /// The severity and message for `call` when it sends a signal to the
-    /// program's own process or thread, else `None`.
+    /// The message and suggestion for `call` when it sends a signal to the
+    /// program's own process or thread, else `None`. Whether the send carries
+    /// normal functionality is the reviewer's call, so the message names the
+    /// send and the recommendation, not an intent the tool cannot know.
     fn own_process_send(
         &self,
         call: &Node,
         source: &str,
         project: Option<&ProjectFunctions>,
-    ) -> Option<(Severity, &'static str)> {
+    ) -> Option<(&'static str, &'static str)> {
         let callee = call.child_by_field_name("function")?;
         // The name first, since resolving the callee reads the whole file.
-        let (name, signal_index, severity, message) = match get_node_text(&callee, source) {
-            "raise" => ("raise", 0, Severity::Medium, "Use of raise() to send the program a signal for normal control flow instead of reporting an abnormal event."),
-            "kill" => ("kill", 1, self.severity(), "Use of kill() to send the program's own process a signal for normal functionality instead of reporting an abnormal event."),
-            "pthread_kill" => ("pthread_kill", 1, Severity::Medium, "Use of pthread_kill() to send a thread of this program a signal for normal inter-thread communication instead of reporting an abnormal event."),
+        let (name, signal_index, message, suggestion) = match get_node_text(&callee, source) {
+            "raise" => ("raise", 0, "raise() sends the program's own process a signal; signals should report abnormal events, not carry normal functionality (SIG02-C). Review whether this one does.", "If this signal carries ordinary work, use a function call and its return value instead. If it reports an abnormal event, such as a failed assertion or a fatal error, it is the use SIG02-C allows."),
+            "kill" => ("kill", 1, "kill(getpid(), ...) sends the program's own process a signal; signals should report abnormal events, not carry normal functionality (SIG02-C). Review whether this one does.", "If this signal carries ordinary work, use a function call within the process, or a pipe or message queue between processes, instead. If it reports an abnormal event, such as re-raising a fatal signal, it is the use SIG02-C allows."),
+            "pthread_kill" => ("pthread_kill", 1, "pthread_kill() sends a thread of the program's own process a signal; signals should report abnormal events, not carry normal functionality (SIG02-C). Review whether this one does.", "If this signal carries work between threads, use a condition variable or a message queue instead. If it reports an abnormal event, it is the use SIG02-C allows."),
             _ => return None,
         };
         if thread_api::library_call(call, source, project) != Some(name) {
@@ -105,27 +107,26 @@ impl Sig02C {
         if name == "kill" && !Self::is_own_pid(args.named_child(0)?, source, project) {
             return None;
         }
-        Some((severity, message))
+        Some((message, suggestion))
     }
 
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         let project = self.project.borrow();
         for call in query::find_descendants_of_kind(*node, "call_expression") {
-            let Some((severity, message)) = self.own_process_send(&call, source, project.as_ref())
+            let Some((message, suggestion)) =
+                self.own_process_send(&call, source, project.as_ref())
             else {
                 continue;
             };
             violations.push(RuleViolation {
                 rule_id: self.rule_id().to_string(),
-                severity,
+                // CERT's rating for SIG02-C, the same for each of the three sends.
+                severity: self.severity(),
                 message: message.to_string(),
                 file_path: String::new(),
                 line: call.start_position().row + 1,
                 column: call.start_position().column + 1,
-                suggestion: Some(
-                    "Avoid using signals for normal program flow. Use function calls and return values within a thread, and condition variables, message queues or pipes between threads and processes."
-                        .to_string(),
-                ),
+                suggestion: Some(suggestion.to_string()),
                 ..Default::default()
             });
         }
