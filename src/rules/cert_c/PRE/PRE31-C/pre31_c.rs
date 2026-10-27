@@ -61,9 +61,9 @@ pub struct Pre31C {
     /// (`ProjectContext::macro_definitions`): an object-like macro whose
     /// body is a type (`#define u32 unsigned int`) makes `(u32) (x)` a cast.
     macro_definitions: RefCell<Arc<HashMap<String, Vec<MacroDefinition>>>>,
-    /// Names a typedef declares in a header the scan resolves, one outside
-    /// the project included (`ProjectContext::header_typedef_names`).
-    header_typedef_names: RefCell<Arc<HashSet<String>>>,
+    /// The names a typedef declares in each header
+    /// (`ProjectContext::header_typedef_names`).
+    header_typedef_names: RefCell<Arc<HashMap<String, HashSet<String>>>>,
     /// Names only a header outside the project defines: the C library's own
     /// macros, which C11 7.1.4 binds (`library_macros_evaluate_once`).
     outside_macros: RefCell<Arc<HashSet<String>>>,
@@ -97,7 +97,7 @@ impl Pre31C {
             function_macro_names: RefCell::new(Arc::new(HashSet::new())),
             macro_aliases: RefCell::new(Arc::new(HashMap::new())),
             macro_definitions: RefCell::new(Arc::new(HashMap::new())),
-            header_typedef_names: RefCell::new(Arc::new(HashSet::new())),
+            header_typedef_names: RefCell::new(Arc::new(HashMap::new())),
             outside_macros: RefCell::new(Arc::new(HashSet::new())),
             outside_headers: RefCell::new(Arc::new(HashSet::new())),
             set_names: RefCell::default(),
@@ -427,7 +427,7 @@ struct Ctx<'a> {
     /// callee may be a type.
     own_definitions: OnceCell<HashMap<String, Vec<MacroDefinition>>>,
     /// `Pre31C::header_typedef_names`.
-    header_typedefs: &'a HashSet<String>,
+    header_typedefs: &'a HashMap<String, HashSet<String>>,
     /// `Pre31C::outside_macros`.
     outside: &'a HashSet<String>,
     /// `Pre31C::outside_headers`.
@@ -466,6 +466,32 @@ impl<'a> Ctx<'a> {
     /// its translation unit includes (ADR-0006). Where the file or the
     /// project defines the name and no definition can compile with the
     /// invocation, it is [`InForce::Undefined`].
+    /// This file's include closure, walked once.
+    fn include_closure(&self) -> Option<&IncludeClosure> {
+        self.include_closure
+            .get_or_init(|| {
+                self.file_path
+                    .and_then(|path| IncludeClosure::of(self.include_edges, path))
+            })
+            .as_ref()
+    }
+
+    /// Whether a typedef in a header this file can include declares `name`
+    /// (ADR-0006: a header another file includes declares nothing here).
+    /// A computed `#include` may name any header.
+    fn header_typedef_reaches(&self, name: &str) -> bool {
+        let declares = |file: &String| {
+            self.header_typedefs
+                .get(file)
+                .is_some_and(|names| names.contains(name))
+        };
+        match self.include_closure() {
+            Some(closure) if !closure.any => closure.files.iter().any(declares),
+            Some(_) => self.header_typedefs.keys().any(declares),
+            None => false,
+        }
+    }
+
     fn in_force(&self, name: &str) -> InForce {
         let local = self.local_arms(name);
         if let Some(arms) = local.as_ref().filter(|a| !a.is_empty()) {
@@ -473,12 +499,7 @@ impl<'a> Ctx<'a> {
         }
         if self.project_arms.get(name).is_some_and(|a| !a.is_empty()) {
             let closure = if self.project_arms.get(name).is_some_and(|a| a.len() > 1) {
-                self.include_closure
-                    .get_or_init(|| {
-                        self.file_path
-                            .and_then(|path| IncludeClosure::of(self.include_edges, path))
-                    })
-                    .as_ref()
+                self.include_closure()
             } else {
                 None
             };
@@ -875,8 +896,8 @@ impl<'a> Ctx<'a> {
         self.function_call_effect(name, arguments)
     }
 
-    /// Whether `name` names a type by what declares it: a typedef this file,
-    /// the scan or a header it resolves declares, or an object-like macro every definition of
+    /// Whether `name` names a type by what declares it: a typedef this file
+    /// or the scan declares, or one in a header this file includes, or an object-like macro every definition of
     /// which is type keywords (`#define u32 unsigned int`) or a typedef's
     /// name (`#define U32 u32`), this file's definitions over the scan's.
     /// A macro that names a type in one build and a function in another is
@@ -887,7 +908,7 @@ impl<'a> Ctx<'a> {
         let is_typedef = |n: &str| {
             self.types.typedef_types.contains_key(n)
                 || typedefs.contains_key(n)
-                || self.header_typedefs.contains(n)
+                || self.header_typedef_reaches(n)
         };
         let resolved = resolve_macro_alias(self.aliases, name);
         if is_typedef(name) || is_typedef(resolved) || is_type_name_text(resolved) {
@@ -1065,7 +1086,7 @@ impl<'a> Ctx<'a> {
         // A type "called" in a macro body is a cast (`(T)(x)`).
         let no_typedefs = HashMap::new();
         let typedefs = self.effects.map_or(&no_typedefs, |v| &*v.names.typedefs);
-        if names_a_type(name, typedefs) {
+        if names_a_type(name, |n| typedefs.contains_key(n)) {
             return Effect::None;
         }
         self.library_effect(name)

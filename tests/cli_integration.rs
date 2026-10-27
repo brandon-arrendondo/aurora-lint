@@ -6007,6 +6007,58 @@ fn pre31_cast_to_an_outside_header_typedef_is_no_call() {
     assert!(strict.is_empty(), "{:?}", strict);
 }
 
+/// A typedef in a header another file includes declares nothing in this
+/// one: `main.c` includes only a header declaring the function `wide64`,
+/// so `(wide64) (1)` under TWICE calls it, and the strict policy reports it.
+#[test]
+fn pre31_outside_header_typedef_another_file_includes_is_no_type_here() {
+    let project = fixtures().join("pre31_outside_header_typedef_in_another_file");
+    let proj = project.join("proj");
+    let gen = project.join("gen");
+    let file = proj.join("main.c");
+    let strict = pre31_violations(
+        file.to_str().unwrap(),
+        &[
+            "-d",
+            proj.to_str().unwrap(),
+            "-I",
+            gen.to_str().unwrap(),
+            "--profile",
+            "strict",
+        ],
+    );
+    assert_eq!(strict.len(), 1, "{:?}", strict);
+}
+
+/// PRE31-C findings for a cross-file case under the strict policy.
+fn pre31_crossfile_strict_violations(case: &str) -> Vec<serde_json::Value> {
+    let project = fixtures().join("crossfile_pre31").join(case);
+    let project = project.to_str().unwrap();
+    pre31_violations(
+        &format!("{project}/main.c"),
+        &["-d", project, "--profile", "strict"],
+    )
+}
+
+/// A typedef in another .c file is no type in this one: `(step) (v)` calls
+/// a function nothing proves pure, so the strict policy reports
+/// `TWICE(wrap(1))`.
+#[test]
+fn pre31_parenthesized_name_another_c_file_typedefs_is_a_call() {
+    let violations =
+        pre31_crossfile_strict_violations("parenthesized_name_another_c_file_typedefs");
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+}
+
+/// The same typedef in a header the file includes makes `(step) (v)` a
+/// cast, so `wrap` is pure and nothing is reported under the strict policy.
+#[test]
+fn pre31_parenthesized_cast_to_an_included_header_typedef_is_pure() {
+    let violations =
+        pre31_crossfile_strict_violations("parenthesized_cast_to_an_included_header_typedef");
+    assert!(violations.is_empty(), "{:?}", violations);
+}
+
 /// A function named `step_t`, declared in a header and defined in another
 /// file, is the function the scan defines: it writes, so `(step_t)(1)`
 /// under TWICE is reported under the default policy.

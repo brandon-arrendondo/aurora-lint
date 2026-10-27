@@ -70,6 +70,8 @@ struct FilePrescanResult {
     struct_field_shapes: HashMap<String, HashMap<String, String>>,
     struct_typedef_aliases: HashMap<String, String>,
     typedef_types: HashMap<String, String>,
+    /// Every name a `typedef` here declares (`typedef_names_declared`).
+    typedef_names: HashSet<String>,
     function_pointer_typedef_names: HashSet<String>,
     function_typedef_names: HashSet<String>,
     pointer_typedef_names: HashSet<String>,
@@ -191,6 +193,7 @@ impl FilePrescanResult {
             struct_field_shapes: HashMap::new(),
             struct_typedef_aliases: HashMap::new(),
             typedef_types: HashMap::new(),
+            typedef_names: HashSet::new(),
             function_pointer_typedef_names: HashSet::new(),
             function_typedef_names: HashSet::new(),
             pointer_typedef_names: HashSet::new(),
@@ -367,6 +370,8 @@ fn process_file(
         );
         collect_struct_typedef_aliases(&root, &source, &mut result.struct_typedef_aliases);
         collect_typedef_aliases(&root, &source, &mut result.typedef_types);
+        result.typedef_names =
+            crate::utility::cert_c::declarator_utils::typedef_names_declared(&root, &source);
         collect_function_pointer_typedef_names(
             &root,
             &source,
@@ -808,6 +813,8 @@ fn prescan_file_list(
     let mut struct_field_shapes: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut struct_typedef_aliases: HashMap<String, String> = HashMap::new();
     let mut typedef_types: HashMap<String, String> = HashMap::new();
+    let mut header_typedef_names: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut any_header_typedef_names: HashSet<String> = HashSet::new();
     let mut function_pointer_typedef_names: HashSet<String> = HashSet::new();
     let mut function_typedef_names: HashSet<String> = HashSet::new();
     let mut pointer_typedef_names: HashSet<String> = HashSet::new();
@@ -1102,6 +1109,21 @@ fn prescan_file_list(
         struct_field_shapes.extend(r.struct_field_shapes);
         struct_typedef_aliases.extend(r.struct_typedef_aliases);
         typedef_types.extend(r.typedef_types);
+        // A typedef in a .c file is visible only in that translation unit.
+        if !r.typedef_names.is_empty()
+            && !r
+                .source_path
+                .as_ref()
+                .is_some_and(crate::files::is_c_translation_unit)
+        {
+            any_header_typedef_names.extend(r.typedef_names.iter().cloned());
+            header_typedef_names
+                .entry(crate::analyze::compile_commands::real_path(Path::new(
+                    &r.display_path,
+                )))
+                .or_default()
+                .extend(r.typedef_names);
+        }
         function_pointer_typedef_names.extend(r.function_pointer_typedef_names);
         function_typedef_names.extend(r.function_typedef_names);
         pointer_typedef_names.extend(r.pointer_typedef_names);
@@ -1703,7 +1725,8 @@ fn prescan_file_list(
         function_pointer_typedef_names: Arc::new(function_pointer_typedef_names),
         function_typedef_names: Arc::new(function_typedef_names),
         pointer_typedef_names: Arc::new(pointer_typedef_names),
-        header_typedef_names: Arc::new(HashSet::new()),
+        header_typedef_names: Arc::new(header_typedef_names),
+        any_header_typedef_names: Arc::new(any_header_typedef_names),
         packed_structs: Arc::new(packed_structs),
         signal_handlers_registered_elsewhere: Arc::new(signal_handlers_registered_elsewhere),
         noreturn_functions: noreturn_functions.map(|names| Arc::new(names.clone())),
@@ -8089,23 +8112,16 @@ pub fn resolve_includes_scoped(
                     ),
                 );
 
-                let dead = lang_parsing_substrate::dead_code_ranges(&hsource);
-                for definition in
-                    lang_parsing_substrate::query::find_descendants_of_kind(root, "type_definition")
-                {
-                    let line = definition.start_position().row + 1;
-                    if dead
-                        .iter()
-                        .any(|r| line >= r.start_line && line <= r.end_line)
-                    {
-                        continue;
-                    }
-                    Arc::make_mut(&mut context.header_typedef_names).extend(
-                        crate::utility::cert_c::declarator_utils::typedef_names_in(
-                            &definition,
-                            &hsource,
-                        ),
-                    );
+                let names = crate::utility::cert_c::declarator_utils::typedef_names_declared(
+                    &root, &hsource,
+                );
+                if !names.is_empty() {
+                    Arc::make_mut(&mut context.any_header_typedef_names)
+                        .extend(names.iter().cloned());
+                    Arc::make_mut(&mut context.header_typedef_names)
+                        .entry(header_key.clone())
+                        .or_default()
+                        .extend(names);
                 }
                 // Collect struct field types from resolved headers
                 collect_struct_tables(

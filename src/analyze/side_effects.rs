@@ -91,6 +91,36 @@ pub struct CallSite {
     /// [`ArgRoot::Other`].
     #[serde(default)]
     pub arg_objects: Vec<ArgRoot>,
+    /// What the file making the call declares the callee's name to be.
+    #[serde(default)]
+    pub callee_declaration: CalleeDeclaration,
+}
+
+/// What a callee's name is declared as in the file that calls it
+/// (ADR-0006): which tells `(name)(x)` calling a function from a cast.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub enum CalleeDeclaration {
+    /// Not read: a callee a macro body names.
+    #[default]
+    Unread,
+    /// A function: never a type, whatever another file declares.
+    Function,
+    /// A typedef this file declares: the call is a cast.
+    Typedef,
+    /// Nothing in the file: a type only through a header it includes.
+    Undeclared,
 }
 
 /// One step of a member-access chain, from its root identifier outwards.
@@ -173,6 +203,8 @@ impl DirectEffects {
 /// declaration binding the name -- from one pass.
 pub struct FileScope<'t> {
     globals: HashMap<String, Node<'t>>,
+    /// Every name a typedef in the file declares.
+    typedefs: std::collections::HashSet<String>,
     /// The file's tree indexed once, for every function's resolutions and
     /// climbs: a parent is a lookup rather than a descent from the root.
     index: std::rc::Rc<ast_utils::ScopeIndex<'t>>,
@@ -197,8 +229,14 @@ impl<'t> FileScope<'t> {
             .flat_map(|d| declared_in(&d, source))
             .collect()
         });
+        let typedefs = if source.contains("typedef") {
+            crate::utility::cert_c::declarator_utils::typedef_names_declared(root, source)
+        } else {
+            Default::default()
+        };
         FileScope {
             globals,
+            typedefs,
             index: std::rc::Rc::new(ast_utils::ScopeIndex::new(*root)),
             volatile_names,
         }
@@ -721,11 +759,16 @@ impl<'t> Collector<'_, 't> {
         } else {
             Vec::new()
         };
+        let callee_declaration = match named {
+            Some(f) if callee.is_some() => self.callee_declaration(&f),
+            _ => CalleeDeclaration::Unread,
+        };
         self.out.calls.insert(CallSite {
             callee,
             args,
             arg_functions,
             arg_objects,
+            callee_declaration,
         });
     }
 
@@ -911,6 +954,22 @@ impl<'t> Collector<'_, 't> {
             .iter()
             .position(|p| p == name)
             .map_or(Loc::Unknown, Loc::ParamPointee)
+    }
+
+    /// What this file declares a callee identifier that names no object to be.
+    fn callee_declaration(&self, ident: &Node<'t>) -> CalleeDeclaration {
+        let name = get_node_text(ident, self.source);
+        match self.binding(ident) {
+            Some(IdentifierBinding::Local(decl) | IdentifierBinding::Global(decl))
+                if ast_utils::declaration_declarator_for(&decl, name, self.source)
+                    .is_some_and(|d| declares_function(&d)) =>
+            {
+                CalleeDeclaration::Function
+            }
+            Some(_) => CalleeDeclaration::Unread,
+            None if self.scope.typedefs.contains(name) => CalleeDeclaration::Typedef,
+            None => CalleeDeclaration::Undeclared,
+        }
     }
 
     /// Whether a callee identifier is declared as an object -- a parameter,
@@ -1442,12 +1501,14 @@ pub const PURE_BUILTINS: &[&str] = &[
 /// Callees that change nothing the program goes on with: an assertion
 /// evaluates its condition (judged where it is written) or aborts.
 /// Whether `name` names a type rather than a function: a type name
-/// [`is_type_name_text`] recognises, a typedef the scan knows, or an ISO
-/// C/POSIX `_t` name (POSIX reserves the suffix for types). A "call" of one
-/// in a macro body is a cast (`#define CAST(T, x) (T)(x)`), which evaluates
-/// nothing.
-pub fn names_a_type(name: &str, typedefs: &HashMap<String, String>) -> bool {
-    is_type_name_text(name) || typedefs.contains_key(name) || name.ends_with("_t")
+/// [`is_type_name_text`] recognises, one the standard library declares
+/// ([`is_standard_typedef_name`]), or a typedef `typedef` answers for. A
+/// "call" of one is a cast (`(u32)(x)`, or `#define CAST(T, x) (T)(x)`),
+/// which evaluates nothing.
+pub fn names_a_type(name: &str, typedef: impl Fn(&str) -> bool) -> bool {
+    is_type_name_text(name)
+        || crate::utility::cert_c::expr_type::is_standard_typedef_name(name)
+        || typedef(name)
 }
 
 /// Whether a macro argument's text is a type name by its spelling alone:
@@ -1624,6 +1685,9 @@ pub struct ProjectNames {
     pub macros: std::sync::Arc<std::collections::HashSet<String>>,
     /// Typedef names (a macro argument may name a type).
     pub typedefs: std::sync::Arc<HashMap<String, String>>,
+    /// Every name a typedef in a header declares
+    /// (`ProjectContext::any_header_typedef_names`).
+    pub header_typedefs: std::sync::Arc<std::collections::HashSet<String>>,
     /// Every struct or union member name (a macro argument may name one).
     pub members: std::sync::Arc<std::collections::HashSet<String>>,
     /// Typedef names whose definition carries `volatile`
@@ -2227,7 +2291,26 @@ impl Resolver<'_, '_> {
             self.absorb(&closed, args);
             return;
         }
-        if names_a_type(resolved, &inputs.names.typedefs) {
+        // The calling file's declaration of the name decides (ADR-0006): a
+        // function there is no type whatever another file declares, and an
+        // undeclared name is one only through a header. A macro alias, or a
+        // callee a macro body names, falls back to the scan's typedefs.
+        let declaration = if resolved == name {
+            call.callee_declaration
+        } else {
+            CalleeDeclaration::Unread
+        };
+        let is_type = match declaration {
+            CalleeDeclaration::Function => false,
+            CalleeDeclaration::Typedef => true,
+            CalleeDeclaration::Undeclared => {
+                names_a_type(resolved, |n| inputs.names.header_typedefs.contains(n))
+            }
+            CalleeDeclaration::Unread => {
+                names_a_type(resolved, |n| inputs.names.typedefs.contains_key(n))
+            }
+        };
+        if is_type {
             return;
         }
         use crate::utility::cert_c::library_effects::{library_call_effect, LibraryEffect};
