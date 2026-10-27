@@ -496,9 +496,11 @@ enum MacroStep {
     /// A `#define` (`body` is its object-like replacement list, `None` when
     /// it is not object-like) or an `#undef` (`None`), in the conditional
     /// arms `arms`, outermost first, each a number unique within the file
-    /// and increasing in file order.
+    /// and increasing in file order. `raw` is the replacement list as
+    /// written, with its literals.
     Set {
         body: Option<String>,
+        raw: String,
         arms: Vec<usize>,
     },
     /// The `#endif` of a group with an `#else` that every arm replaces the
@@ -512,6 +514,8 @@ enum MacroStep {
 struct Alternative {
     /// The replacement list; `None` for the definition from before the file.
     body: Option<String>,
+    /// The replacement list as written.
+    raw: String,
     /// The conditional arms it sits in.
     arms: Vec<usize>,
     /// The alternative below it.
@@ -535,6 +539,7 @@ impl NameTimeline {
         let mut timeline = NameTimeline {
             alternatives: vec![Alternative {
                 body: None,
+                raw: String::new(),
                 arms: Vec::new(),
                 below: None,
             }],
@@ -547,7 +552,7 @@ impl NameTimeline {
                 // A directive replaces what the builds reaching it saw since
                 // its innermost arm opened, which is the top of the stack:
                 // each alternative is popped at most once along the file.
-                MacroStep::Set { body, arms } => {
+                MacroStep::Set { body, raw, arms } => {
                     let mut top = head;
                     while let Some(i) =
                         top.filter(|&i| timeline.alternatives[i].arms.starts_with(&arms))
@@ -558,7 +563,7 @@ impl NameTimeline {
                     // builds that take it, and an undefined name stands for
                     // nothing.
                     match body {
-                        Some(body) => timeline.push(body.into(), arms, top),
+                        Some(body) => timeline.push(body.into(), raw, arms, top),
                         None => top,
                     }
                 }
@@ -581,11 +586,12 @@ impl NameTimeline {
                         top = timeline.alternatives[i].below;
                     }
                     for i in kept.into_iter().rev() {
-                        let (body, arms) = (
+                        let (body, raw, arms) = (
                             timeline.alternatives[i].body.clone(),
+                            timeline.alternatives[i].raw.clone(),
                             timeline.alternatives[i].arms.clone(),
                         );
-                        top = timeline.push(body, arms, top);
+                        top = timeline.push(body, raw, arms, top);
                     }
                     top
                 }
@@ -599,10 +605,16 @@ impl NameTimeline {
     fn push(
         &mut self,
         body: Option<String>,
+        raw: String,
         arms: Vec<usize>,
         below: Option<usize>,
     ) -> Option<usize> {
-        self.alternatives.push(Alternative { body, arms, below });
+        self.alternatives.push(Alternative {
+            body,
+            raw,
+            arms,
+            below,
+        });
         Some(self.alternatives.len() - 1)
     }
 }
@@ -613,6 +625,11 @@ pub struct InForce {
     /// Every object-like replacement list the name may have, each once,
     /// sorted.
     pub bodies: Vec<String>,
+    /// The same replacement lists as written, each once, sorted: `bodies`
+    /// blanks a character constant to `0` and a string literal to `""`, so a
+    /// reader of a literal's value reads these. One the directive parser
+    /// cannot split is empty.
+    pub raw: Vec<String>,
     /// Whether some build reaches the line with none of this file's
     /// directives of the name applying, so a definition from before the file
     /// (an included header's) still stands there.
@@ -671,7 +688,7 @@ impl ObjectMacroTimeline {
             open.iter().filter(|g| !g.guard).map(|g| g.arm).collect()
         };
         for (k, (line, d)) in directives.iter().enumerate() {
-            let (name, body) = match directive_keyword(d).as_str() {
+            let (name, body, raw) = match directive_keyword(d).as_str() {
                 "if" | "ifdef" | "ifndef" => {
                     let guard = open.is_empty()
                         && opens_include_guard(&directives, k)
@@ -721,11 +738,17 @@ impl ObjectMacroTimeline {
                     }
                     continue;
                 }
-                "define" => match parse_define(&format!("#{d}")) {
-                    Some((name, MacroDefinition::Object { body })) => (name, Some(body)),
-                    Some((name, _)) => (name, None),
-                    None => continue,
-                },
+                "define" => {
+                    let text = format!("#{d}");
+                    let raw = crate::utility::cert_c::pp_tokens::parse_define_directive(&text)
+                        .map(|def| def.body.trim().to_string())
+                        .unwrap_or_default();
+                    match parse_define(&text) {
+                        Some((name, MacroDefinition::Object { body })) => (name, Some(body), raw),
+                        Some((name, _)) => (name, None, String::new()),
+                        None => continue,
+                    }
+                }
                 "undef" => {
                     let name: String = d["undef".len()..]
                         .trim_start()
@@ -735,7 +758,7 @@ impl ObjectMacroTimeline {
                     if name.is_empty() {
                         continue;
                     }
-                    (name, None)
+                    (name, None, String::new())
                 }
                 _ => continue,
             };
@@ -749,6 +772,7 @@ impl ObjectMacroTimeline {
                 *line,
                 MacroStep::Set {
                     body,
+                    raw,
                     arms: arms_of(&open),
                 },
             ));
@@ -787,6 +811,7 @@ impl ObjectMacroTimeline {
         let Some(timeline) = self.names.get(name) else {
             return InForce {
                 bodies: Vec::new(),
+                raw: Vec::new(),
                 inherits: true,
             };
         };
@@ -798,17 +823,27 @@ impl ObjectMacroTimeline {
         };
         let mut inherits = false;
         let mut bodies = Vec::new();
+        let mut raw = Vec::new();
         while let Some(i) = top {
             let alternative = &timeline.alternatives[i];
             match &alternative.body {
-                Some(body) => bodies.push(body.clone()),
+                Some(body) => {
+                    bodies.push(body.clone());
+                    raw.push(alternative.raw.clone());
+                }
                 None => inherits = true,
             }
             top = alternative.below;
         }
         bodies.sort();
         bodies.dedup();
-        InForce { bodies, inherits }
+        raw.sort();
+        raw.dedup();
+        InForce {
+            bodies,
+            raw,
+            inherits,
+        }
     }
 }
 
