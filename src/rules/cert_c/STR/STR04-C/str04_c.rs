@@ -102,6 +102,8 @@ impl STR04C {
         violations
     }
 
+    /// The narrow string functions. The `mem*` functions take bytes, not
+    /// strings, so an `unsigned char` buffer passed to one is not reported.
     fn is_string_function(&self, name: &str) -> bool {
         matches!(
             name,
@@ -119,11 +121,6 @@ impl STR04C {
                 | "strspn"
                 | "strcspn"
                 | "strpbrk"
-                | "memcpy"
-                | "memmove"
-                | "memcmp"
-                | "memset"
-                | "memchr"
         )
     }
 
