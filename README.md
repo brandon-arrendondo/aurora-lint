@@ -362,7 +362,7 @@ directories for cross-file context and never restricts what gets analyzed.
 aurora-lint /path/to/project --manifest my-rules.toml
 ```
 
-The default manifest (`rules_templates/rules-all.toml`) enables 280 of the 296 tracked rules, and the 4 CWE-ruleset rules. Of the other 16, 12 are implemented but withheld because they misfire (10 until their rewrites, 1 until its removal, 1 until its ruled form is implemented), and 4 are tracked but not yet implemented (2 parked on incomplete upstream CERT content) — see [Configuration](docs/configuration.rst), which also says how to run a withheld rule. See the [Developer Guide](docs/index.rst) for the manifest format.
+The default manifest (`rules_templates/rules-all.toml`) enables 280 of the 296 tracked rules, and the 4 CWE-ruleset rules. Of the other 16, 12 are implemented but withheld (10 misfire until their rewrites, 1 until its removal, 1 has no detector until its ruled form is implemented), and 4 are tracked but not yet implemented (2 parked on incomplete upstream CERT content) — see [Configuration](docs/configuration.rst), which also says how to run a withheld rule. See the [Developer Guide](docs/index.rst) for the manifest format.
 
 First run against an existing codebase surfacing more findings than your team can triage at once? `--min-severity`/`--fail-on-severity` and `--exclude-all` are the fastest levers; [Configuration's "Strict vs. Relaxed Onboarding"](docs/configuration.rst) has the full discipline for building your own scoped-down manifest, and why this project doesn't ship a one-size-fits-all "relaxed" one.
 

@@ -1013,7 +1013,7 @@ fn run() -> Result<i32> {
                 let family = manifest.rules.family_of(id).unwrap_or("cert_c");
                 eprintln!(
                     "Warning: --rules names {id}, which this configuration disables, so it \
-                     does not run: {}. To run it, set `enabled = true` in its \
+                     does not run: {}. To enable it, set `enabled = true` in its \
                      [rules.{family}.{id}] block in a manifest passed with --manifest \
                      (--write-config writes this configuration out to start from).",
                     rule.reason_text()

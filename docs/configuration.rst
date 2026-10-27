@@ -722,7 +722,9 @@ Withheld in v0.7.0, until its caller-side form is implemented:
 - **MSC39-C** — *Do not call va_arg() on a va_list that has an
   indeterminate value*. It reported a function that takes a ``va_list`` by
   value and calls ``va_arg()`` on it, which is permitted; the violation is
-  the caller's later use of its own list, which it does not detect yet.
+  the caller's later use of its own list other than ``va_end()``, which it
+  does not detect yet. Unlike the rules above, it has no detector until
+  then, so enabling it reports nothing.
 
 Tracked but not implemented
 ----------------------------

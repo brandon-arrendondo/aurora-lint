@@ -7791,7 +7791,7 @@
     "any_stale": false,
     "fixtures": [
       {
-        "file": "src/rules/cert_c/MSC/MSC39-C/tests/fail/wiki_noncompliant_1.c",
+        "file": "src/rules/cert_c/MSC/MSC39-C/tests/expected_fail/wiki_noncompliant_1.c",
         "best_match": "noncompliant_1",
         "containment": 1.0,
         "stale": false
