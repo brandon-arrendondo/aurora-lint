@@ -179,12 +179,18 @@ contract model. (ADR-0015)
   is a violation only where the file includes a header that defines it,
   directly or through its own includes; `<inttypes.h>` includes `<stdint.h>`,
   and `errno` counts everywhere. That holds for a macro name as for a
-  declaration (C 7.1.3p1: "for use as a macro name and as an identifier with
-  file scope ... if any of its associated headers is included"). An `#include`
-  in another arm of the declaration's `#if` chain, under `#if 0` or in a
-  `__cplusplus` arm does not count, since no build has both (ADR-0010 decision
-  4): `#if C99` / `#include <stdbool.h>` / `#else` / `typedef enum bool {
-  false, true } bool;` is not a violation. `#undef` of a name reserved for any
+  declaration. C 7.1.3p1 reserves a library macro name (`bool`, `NULL`,
+  `EOF`, `SIZE_MAX`) "for use as specified if any of its associated headers
+  is included", and a library file-scope identifier (`FILE`) "for use as a
+  macro name and as an identifier with file scope ... if any of its
+  associated headers is included". An `#include` counts only where a build
+  compiles it with the declaration. One in another arm of the declaration's
+  `#if` chain does not, since no build has both (ADR-0010 decision 4):
+  `#if C99` / `#include <stdbool.h>` / `#else` / `typedef enum bool { false,
+  true } bool;` is not a violation. Nor does one no C build compiles: under
+  `#if 0`, in a `__cplusplus` arm, or in an `#ifdef` arm the file's own
+  `#define` or `#undef` rules out (decision 2). One under a platform macro
+  (`#ifdef _WIN32`) counts, whatever platform the scan assumes. `#undef` of a name reserved for any
   use is a violation (C 7.1.3), a listed feature-test macro included; `#undef
   NULL` (C 7.1.4) and `#undef _x` are not.
 

@@ -54,7 +54,6 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::{IncludeClosure, ProjectContext};
-use crate::analyze::dead_regions::DeadRegions;
 use crate::analyze::preproc_arms::PreprocArms;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{descendants_of_kinds_with, get_node_text};
@@ -347,7 +346,9 @@ fn headers_reached(closure: &IncludeClosure) -> HashSet<&'static str> {
 /// another arm of an `#if` chain than the declaration: raylib's
 /// `typedef enum bool { false, true } bool;` is the `#elif` of an
 /// `#include <stdbool.h>`, so no build has both (ADR-0010 decision 4). An
-/// `#include` in `#if 0` or a `__cplusplus` arm counts nowhere.
+/// `#include` in `#if 0`, a `__cplusplus` arm, or an `#ifdef` arm the
+/// file's own `#define`/`#undef` rule out counts nowhere; one under a
+/// platform macro such as `_WIN32` counts.
 /// **Limitation:** arms are told apart within one chain only, so an
 /// `#include` under `#if C99` and a declaration under a separate
 /// `#if !C99` still count together, which errs toward reporting.
@@ -367,13 +368,24 @@ impl IncludedHeaders {
         let file = crate::analyze::compile_commands::real_path(path);
         let targets = edges.get(&file).cloned().unwrap_or_default();
         let dir = file.rsplit_once('/').map_or("", |(dir, _)| dir);
-        // Only an `#include` some build compiles counts: one in `#if 0` or
-        // a `__cplusplus` arm never is, and one in a comment is no node.
-        let dead = DeadRegions::of(source);
+        // Only an `#include` some build compiles counts: one in `#if 0`, a
+        // `__cplusplus` arm or an arm the file's own `#define`s rule out
+        // never is, and one in a comment is no node. The platform profile
+        // does not decide it (ADR-0010 D3): an include under `#ifdef _WIN32`
+        // counts.
+        let dead: Vec<(usize, usize)> = lang_parsing_substrate::dead_code_ranges(source)
+            .into_iter()
+            .map(|r| (r.start_line, r.end_line))
+            .collect();
         let lines: Vec<(usize, HashSet<&'static str>)> =
             query::find_descendants_of_kinds(*root, &["preproc_include"])
                 .into_iter()
-                .filter(|include| !dead.contains_node(include))
+                .filter(|include| {
+                    let line = include.start_position().row + 1;
+                    !dead
+                        .iter()
+                        .any(|&(start, end)| (start..=end).contains(&line))
+                })
                 .filter_map(|include| {
                     let path = include.child_by_field_name("path")?;
                     let text = get_node_text(&path, source);
