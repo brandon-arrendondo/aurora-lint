@@ -114,8 +114,10 @@ with its reason.
   INT15-C, MEM35-C, STR34-C and WIN30-C don't run by default until they are
   rewritten, because they can report constructs that aren't in the code.
   DCL11-C doesn't run by default until it is removed, because its type check
-  guesses an argument's type from its name. To keep running one, enable it in
-  a manifest. Naming a withheld rule in
+  guesses an argument's type from its name. MSC39-C doesn't run by default
+  until it detects the caller's use of a ``va_list`` after passing it by
+  value; it reported the callee that receives the list, which is permitted.
+  To keep running one, enable it in a manifest. Naming a withheld rule in
   ``--rules`` without enabling it prints a warning instead of giving a clean
   report.
 

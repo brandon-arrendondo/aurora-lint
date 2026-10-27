@@ -864,7 +864,7 @@ enabled = true
 
 
 [rules.cert_c.MSC39-C]
-enabled = true
+enabled = false  # category 2 (dead config): no detector for the ruled form yet -- the by-value callee form was dropped by its ruling and the caller-side form (a use other than va_end after a by-value pass) is not implemented; records a decision, suppresses nothing
 
 
 [rules.cert_c.MSC40-C]

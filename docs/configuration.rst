@@ -717,6 +717,13 @@ types it checks:
   functions*. Its type check guesses an argument's type from its name, so
   it reports a mismatch for an argument whose declared type matches.
 
+Withheld in v0.7.0, until its caller-side form is implemented:
+
+- **MSC39-C** — *Do not call va_arg() on a va_list that has an
+  indeterminate value*. It reported a function that takes a ``va_list`` by
+  value and calls ``va_arg()`` on it, which is permitted; the violation is
+  the caller's later use of its own list, which it does not detect yet.
+
 Tracked but not implemented
 ----------------------------
 

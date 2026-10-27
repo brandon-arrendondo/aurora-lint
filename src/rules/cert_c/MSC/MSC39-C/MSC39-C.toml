@@ -30,7 +30,9 @@ cert_version = "2016 Edition (Wiki)"
 last_modified = "Aug 31, 2025"
 
 [rules.cert_c.MSC39-C]
-enabled = true
+# withheld until its caller-side form is implemented
+enabled = false
+disabled_reason = "withheld until its caller-side form is implemented: the by-value callee form was dropped by its ruling, and the rule has no other detector"
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MSC39-C.+Do+not+call+va_arg%28%29+on+a+va_list+that+has+an+indeterminate+value"
