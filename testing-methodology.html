@@ -883,8 +883,6 @@ traverse tree-sitter’s function parameter hierarchy. Also,
 <code class="docutils literal notranslate"><span class="pre">N</span> <span class="pre">&lt;=</span> <span class="pre">var</span></code> (only <code class="docutils literal notranslate"><span class="pre">var</span> <span class="pre">&gt;=</span> <span class="pre">N</span></code>).</p></li>
 <li><p><strong>POS50-C</strong>: <code class="docutils literal notranslate"><span class="pre">is_declared_in_function()</span></code> doesn’t distinguish <code class="docutils literal notranslate"><span class="pre">static</span></code> from
 automatic storage. Static locals passed to <code class="docutils literal notranslate"><span class="pre">pthread_create()</span></code> produce FPs.</p></li>
-<li><p><strong>FLP00-C</strong>: Only detects float equality in <code class="docutils literal notranslate"><span class="pre">if</span></code>-conditions, not in return
-statements or assignments.</p></li>
 <li><p><strong>EXP40-C</strong>: <code class="docutils literal notranslate"><span class="pre">is_const_qualified()</span></code> returns false for identifiers — cannot
 determine if a variable was declared <code class="docutils literal notranslate"><span class="pre">const</span></code> without a symbol table.</p></li>
 </ul>

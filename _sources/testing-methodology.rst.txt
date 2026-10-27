@@ -723,9 +723,6 @@ implementation cannot detect them correctly.
 - **POS50-C**: ``is_declared_in_function()`` doesn't distinguish ``static`` from
   automatic storage. Static locals passed to ``pthread_create()`` produce FPs.
 
-- **FLP00-C**: Only detects float equality in ``if``-conditions, not in return
-  statements or assignments.
-
 - **EXP40-C**: ``is_const_qualified()`` returns false for identifiers — cannot
   determine if a variable was declared ``const`` without a symbol table.
 
