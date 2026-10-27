@@ -385,6 +385,11 @@ pub fn default_value_defines(source: &str) -> HashMap<String, Vec<(usize, NameDi
             "elif" | "elifdef" | "elifndef" | "else" => {
                 if let Some(group) = open.last_mut() {
                     group.then_arm = false;
+                    // An `#elif` arm is not constant, and neither is an `#else`
+                    // after one: an earlier `#elif` may have been taken.
+                    if keyword != "else" {
+                        group.constant = None;
+                    }
                 }
             }
             "endif" => {
