@@ -41,6 +41,11 @@
 //! aurora-lint's reading of the standards, recorded as a decision; CERT has
 //! left the question open.
 //!
+//! Removing a macro definition of a name reserved for any use with `#undef`
+//! is undefined (C 7.1.3), so `#undef _X` and `#undef __x` are reported, and
+//! so is `#undef` of a listed feature-test macro: its exemption covers
+//! defining it. `#undef NULL`, which C 7.1.4 allows, is not reported.
+//!
 //! CERT C reference:
 //! <https://wiki.sei.cmu.edu/confluence/display/c/DCL37-C.+Do+not+declare+or+define+a+reserved+identifier>
 
@@ -345,6 +350,9 @@ impl Dcl37C {
                 "preproc_def" | "preproc_function_def" => {
                     self.check_preproc_def(&n, source, violations);
                 }
+                "preproc_call" => {
+                    self.check_undef(&n, source, violations);
+                }
                 "function_definition" => {
                     if let Some(declarator) = n.child_by_field_name("declarator") {
                         // Function definitions: check against reserved function names and patterns
@@ -515,6 +523,43 @@ impl Dcl37C {
             if self.is_reserved_identifier(&name) {
                 violations.push(reserved_identifier(&node, &name));
             }
+        }
+    }
+
+    /// Report `#undef` of a name reserved for any use: removing a macro
+    /// definition of one is undefined (C 7.1.3). A listed feature-test
+    /// macro is not exempt; its exemption covers defining it. An `#undef`
+    /// of a library macro such as `NULL` or `errno` is not reported here.
+    fn check_undef(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let is_undef = node.child_by_field_name("directive").is_some_and(|d| {
+            let text = get_node_text(&d, source);
+            text.trim_start_matches('#').trim() == "undef"
+        });
+        let Some(argument) = node.child_by_field_name("argument").filter(|_| is_undef) else {
+            return;
+        };
+        let text = get_node_text(&argument, source);
+        let Some(name) = text.split_whitespace().next() else {
+            return;
+        };
+        if is_reserved_for_any_use(name) {
+            let offset = text.find(name).unwrap_or(0);
+            let start = argument.start_position();
+            violations.push(RuleViolation {
+                rule_id: "DCL37-C".to_string(),
+                severity: Severity::Low,
+                line: start.row + 1,
+                column: start.column + offset + 1,
+                message: format!(
+                    "Reserved identifier '{}' should not be removed with #undef",
+                    name
+                ),
+                file_path: String::new(),
+                suggestion: Some(
+                    "Do not #undef a reserved macro; use a non-reserved macro name".to_string(),
+                ),
+                requires_manual_review: Some(false),
+            });
         }
     }
 
