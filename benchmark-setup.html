@@ -456,13 +456,36 @@ checkouts could hand one checkout another’s binary. A separate volume per
 checkout prevents that. The cost is that the first run from a new checkout
 path is a cold release build (a few minutes), and each throwaway A/B
 worktree gets a fresh volume holding a full release target (most of a
-gigabyte). Volumes are never removed for you. Those of deleted worktrees,
-and the older per-pin-only <code class="docutils literal notranslate"><span class="pre">aurora-bench-target-&lt;pin&gt;</span></code> volumes, are left
-behind; list and remove them once no run is using them:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>podman<span class="w"> </span>volume<span class="w"> </span>ls<span class="w"> </span>--filter<span class="w"> </span><span class="nv">name</span><span class="o">=</span>aurora-bench-target-
-podman<span class="w"> </span>volume<span class="w"> </span>rm<span class="w"> </span>aurora-bench-target-&lt;pin&gt;-&lt;checkout&gt;
+gigabyte). Deleting a worktree does not delete its volume, and rebuilding
+the image leaves the old layers behind as dangling images, so storage
+grows with every A/B until it is pruned:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>container-prune<span class="w">          </span><span class="c1"># list what would go</span>
+python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>container-prune<span class="w"> </span>--yes<span class="w">    </span><span class="c1"># remove it</span>
 </pre></div>
 </div>
+<p>A volume is removed only when its checkout hash matches none of this
+repository’s live checkouts (the checkout itself and its <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">worktree</span>
+<span class="pre">list</span></code>), hashed as <code class="docutils literal notranslate"><span class="pre">container-run</span></code> names it, plus the older per-pin-only
+<code class="docutils literal notranslate"><span class="pre">aurora-bench-target-&lt;pin&gt;</span></code> volumes, which nothing uses any more. A worktree
+whose path is missing counts as deleted unless it is locked (<code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">worktree</span>
+<span class="pre">lock</span></code>), which is how to keep the volume of a worktree on a disk that is not
+mounted.</p>
+<p><strong>Every other clone counts as deleted.</strong> Name each clone whose volumes should
+stay with <code class="docutils literal notranslate"><span class="pre">--keep</span> <span class="pre">DIR</span></code> (repeatable); its worktrees are kept with it. A
+<code class="docutils literal notranslate"><span class="pre">--keep</span></code> path that is not a git checkout stops the prune rather than keeping
+nothing.</p>
+<p>The images listed and removed are every dangling image of this user, not
+only those an <code class="docutils literal notranslate"><span class="pre">aurora-bench</span></code> build left behind, since podman records
+nothing that tells them apart. Each is removed by its id, without <code class="docutils literal notranslate"><span class="pre">-f</span></code>, so
+an image a container was made from is kept. Tagged images and the
+<code class="docutils literal notranslate"><span class="pre">aurora-bench-cargo-registry</span></code> volume are never touched.</p>
+<p>The prune refuses while a benchmark container (a <code class="docutils literal notranslate"><span class="pre">container-run</span></code> or
+<code class="docutils literal notranslate"><span class="pre">container-build-db</span></code>) or any container mounting a target volume is
+running, and podman itself refuses a volume some container still uses. It
+exits 0 when everything listed was removed (or, without <code class="docutils literal notranslate"><span class="pre">--yes</span></code>, listed),
+1 when podman kept something, which it names, and 2 when it refused: podman
+or <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">worktree</span> <span class="pre">list</span></code> could not list what it needs, a <code class="docutils literal notranslate"><span class="pre">--keep</span></code> path is
+no checkout, or a container is running.</p>
 <p>The build also records the checkout’s commit in the binary’s <code class="docutils literal notranslate"><span class="pre">--version</span></code>,
 and before scanning <code class="docutils literal notranslate"><span class="pre">container-run</span></code> checks it (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench.container</span>
 <span class="pre">check-binary</span></code>). If the binary does not report exactly the commit the run
