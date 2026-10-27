@@ -113,6 +113,14 @@ Policy options
    - Oracle tag: ``noreturn-attribute``
    - Basis: CERT MSC37-C-EX2 exempts a path that calls a function marked _Noreturn; GCC and Clang give the GNU attribute the same meaning, and kernels and runtimes use it where C11 is unavailable. It is a promise the compiler does not check, so no stricter policy accepts it.
 
+``flp00_exact_zero_comparison_exempt``
+   FLP00-C: a floating-point == or != with an exact zero as one operand (0.0, 0.0f, -0.0, 0) is not reported: zero is exactly representable, and a test against it is a common, legitimate idiom. Off, it is reported like any other floating-point comparison.
+
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
+   - Scope: FLP00-C
+   - Oracle tag: ``exact-zero-comparison``
+   - Basis: FLP00-C/2026-10-07/zero: Polyspace exempts a comparison with zero unless asked not to, as does PVS-Studio, and CERT's own compliant code tests a float against 0.0f.
+
 ``flp36_constant_assert_is_guard``
    FLP36-C: an assert whose condition compares constants the file can see, among them a standard integer limit or floating-point precision (LONG_MAX, DBL_MANT_DIG and the like), checks the platform, so it counts as a precision check even though NDEBUG can strip it.
 

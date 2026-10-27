@@ -486,6 +486,7 @@ const HASHED_ONLY_WHEN_OVERRIDDEN: &[&str] = &[
     "pos34_exit_path_exempt",
     "msc37_attribute_noreturn",
     "flp36_constant_assert_is_guard",
+    "flp00_exact_zero_comparison_exempt",
     "pre31_listed_library_calls_pure",
     "signal_handlers_persistent",
 ];
@@ -728,6 +729,24 @@ pub static OPTIONS: &[OptionSpec] = &[
                 GCC and Clang give the GNU attribute the same meaning, and kernels and \
                 runtimes use it where C11 is unavailable. It is a promise the compiler \
                 does not check, so no stricter policy accepts it.",
+    },
+    OptionSpec {
+        name: "flp00_exact_zero_comparison_exempt",
+        axis: Axis::Policy,
+        scope: Scope::RuleSpecific("FLP00-C"),
+        source: Source::Policy {
+            default: true,
+            strict: false,
+            pedantic: false,
+        },
+        oracle_tag: "exact-zero-comparison",
+        summary: "FLP00-C: a floating-point == or != with an exact zero as one operand (0.0, \
+                  0.0f, -0.0, 0) is not reported: zero is exactly representable, and a test \
+                  against it is a common, legitimate idiom. Off, it is reported like any \
+                  other floating-point comparison.",
+        basis: "FLP00-C/2026-10-07/zero: Polyspace exempts a comparison with zero unless \
+                asked not to, as does PVS-Studio, and CERT's own compliant code tests a \
+                float against 0.0f.",
     },
     OptionSpec {
         name: "flp36_constant_assert_is_guard",
