@@ -5,6 +5,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::check_macros::{self, MacroDefinition};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::control_header_preproc_guard::strip_comments;
+use crate::analyze::init_state;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::preproc_directive_start;
 use lang_parsing_substrate::query;
@@ -66,14 +67,19 @@ type Definitions = HashMap<String, Vec<MacroDefinition>>;
 
 /// Every definition of every macro name, and the names some configuration
 /// defines differently or not at all: the prescan's tables, and this file's.
-struct Macros<'a> {
+/// With them, the arms this file proves are never compiled (`#if 0`), which
+/// are no configuration (ADR-0010), and what each `#if` arm already read
+/// outward leads to (see [`after_enclosing_chain`]).
+struct Macros<'a, 't> {
     project_defs: &'a Definitions,
     project_conditional: &'a HashSet<String>,
     file_defs: Definitions,
     file_conditional: HashSet<String>,
+    dead_lines: Vec<(usize, usize)>,
+    past_arms: RefCell<HashMap<usize, Option<Site<'t>>>>,
 }
 
-impl Macros<'_> {
+impl Macros<'_, '_> {
     fn expands_to_block(&self, name: &str) -> bool {
         check_macros::expands_to_block_everywhere(
             &[self.project_defs, &self.file_defs],
@@ -114,7 +120,7 @@ impl Default for Exp19C {
 /// body unbraced, and so does one only some build defines: sqlite's `memcpy`
 /// is a block under `SQLITE_INLINE_MEMCPY` and the library call everywhere
 /// else.
-fn is_braced(body: Node, source: &str, macros: &Macros<'_>) -> bool {
+fn is_braced(body: Node, source: &str, macros: &Macros<'_, '_>) -> bool {
     if body.kind() == "compound_statement" {
         return true;
     }
@@ -140,27 +146,6 @@ fn is_braced(body: Node, source: &str, macros: &Macros<'_>) -> bool {
         .is_some_and(|name| macros.expands_to_block(name))
 }
 
-/// When `body` is the empty statement tree-sitter recovers for a control
-/// statement whose real body comes through the `#if` chain that follows it:
-///
-/// ```c
-/// if (x)
-/// #ifdef A
-///     { a(); }
-/// #else
-///     { b(); }
-/// #endif
-/// ```
-///
-/// `preproc_if` is a block item, not a statement, so the chain parses as the
-/// statement's next SIBLING and the statement gets a zero-width
-/// `(expression_statement (MISSING ";"))` body. Every configuration picks one
-/// arm, and the first statement in it is the body; an arm with none, or a
-/// chain with no `#else`, gives some configuration whatever follows the
-/// `#endif`. So the chain and what follows it are read as
-/// [`first_statement`] reads them: braced when every configuration's body
-/// is, nested chains included, and one unbraced arm keeps the finding
-/// (ADR-0010).
 /// The `#if`/`#ifdef` chain that holds `statement`'s body, when `body` is
 /// the empty statement tree-sitter recovers for one (see [`Site`]).
 fn arm_chain<'t>(statement: Node<'t>, body: Node<'t>) -> Option<Node<'t>> {
@@ -220,7 +205,28 @@ fn arm_items(arm: Node) -> (Vec<Node>, Option<Node>) {
     (held, alternative)
 }
 
-/// What a run of block items gives a body that comes through `#if` arms.
+/// What a run of block items gives a control statement whose real body
+/// comes through the `#if` chain that follows it:
+///
+/// ```c
+/// if (x)
+/// #ifdef A
+///     { a(); }
+/// #else
+///     { b(); }
+/// #endif
+/// ```
+///
+/// `preproc_if` is a block item, not a statement, so the chain parses as the
+/// statement's next SIBLING and the statement gets a zero-width
+/// `(expression_statement (MISSING ";"))` body. Every configuration picks one
+/// arm, and the first statement in it is the body; an arm with none, or a
+/// chain with no `#else`, gives some configuration whatever follows the
+/// `#endif`. So the chain and what follows it are read as
+/// [`first_statement`] reads them: braced when every configuration's body
+/// is, nested chains included, and one unbraced arm keeps the finding
+/// (ADR-0010).
+#[derive(Clone, Copy)]
 enum Site<'t> {
     /// An unbraced statement: the body in some configuration.
     Unbraced(Node<'t>),
@@ -236,11 +242,12 @@ enum Site<'t> {
 fn first_statement<'t>(
     items: impl Iterator<Item = Node<'t>>,
     source: &str,
-    macros: &Macros<'_>,
+    macros: &Macros<'_, '_>,
 ) -> Site<'t> {
     for item in items {
         match item.kind() {
             "comment" => {}
+            _ if init_state::starts_in_dead_lines(&item, &macros.dead_lines) => {}
             "preproc_if" | "preproc_ifdef" => match chain_site(item, source, macros) {
                 Site::Nothing => {}
                 site => return site,
@@ -255,15 +262,22 @@ fn first_statement<'t>(
 
 /// The first unbraced statement any arm of `chain` holds. Braced when
 /// every arm, `#else` included, holds a braced one first; otherwise nothing,
-/// and the body follows the `#endif`.
-fn chain_site<'t>(chain: Node<'t>, source: &str, macros: &Macros<'_>) -> Site<'t> {
+/// and the body follows the `#endif`. An arm the file proves dead is no
+/// configuration, so it neither names the body nor leaves it to what
+/// follows: `#if 0` / `a();` / `#else` / `b();` is reported at `b()`.
+fn chain_site<'t>(chain: Node<'t>, source: &str, macros: &Macros<'_, '_>) -> Site<'t> {
     let mut every_arm_braced = true;
     let mut arm = chain;
     loop {
         let (held, alternative) = arm_items(arm);
+        let dead = !held.is_empty()
+            && held
+                .iter()
+                .all(|n| init_state::starts_in_dead_lines(n, &macros.dead_lines));
         match first_statement(held.into_iter(), source, macros) {
             Site::Unbraced(statement) => return Site::Unbraced(statement),
             Site::Braced => {}
+            Site::Nothing if dead => {}
             Site::Nothing => every_arm_braced = false,
         }
         match alternative {
@@ -283,29 +297,48 @@ fn chain_site<'t>(chain: Node<'t>, source: &str, macros: &Macros<'_>) -> Site<'t
 /// braced in every configuration. A body that comes through an `#if` chain
 /// is read with the chain (see [`Site`]) and reported at the first unbraced
 /// statement it can be, never a directive. So is the zero-width body of an
-/// `if` split across arms, and the body an `if` takes from across an
-/// `#else` (see [`crosses_an_arm`]), both read after the chain's `#endif`.
-/// A body with no statement to name falls back to `keyword`.
+/// `if` split across arms, read after the chain's `#endif`. An `if` that
+/// takes the next arm's `if` from across an `#else` (see
+/// [`crosses_an_arm`]) has that `if`'s body in every configuration, so it
+/// leaves the finding to that `if`, judged on its own; a `for` or `while`
+/// follows it there. That is read before anything past an `#endif`: a
+/// damaged parse can leave no `#endif` to read past, or swallow the real
+/// body into the crossed `if`. A body with no statement to name falls back
+/// to `keyword`.
 fn judge<'t>(
-    statement: Node<'t>,
-    body: Node<'t>,
-    keyword: Node<'t>,
+    mut statement: Node<'t>,
+    mut body: Node<'t>,
+    mut keyword: Node<'t>,
     source: &str,
-    macros: &Macros<'_>,
+    macros: &Macros<'_, 't>,
 ) -> Option<Node<'t>> {
-    if is_braced(body, source, macros) {
-        return None;
-    }
-    let site = if let Some(chain) = arm_chain(statement, body) {
-        first_statement(
-            std::iter::successors(Some(chain), |n| n.next_named_sibling()),
-            source,
-            macros,
-        )
-    } else if body.start_byte() == body.end_byte() || crosses_an_arm(body, source) {
-        after_enclosing_chain(statement, source, macros).unwrap_or(Site::Nothing)
-    } else {
-        return Some(body);
+    let from_an_if = statement.kind() == "if_statement";
+    let site = loop {
+        if is_braced(body, source, macros) {
+            return None;
+        }
+        if let Some(chain) = arm_chain(statement, body) {
+            break first_statement(
+                std::iter::successors(Some(chain), |n| n.next_named_sibling()),
+                source,
+                macros,
+            );
+        }
+        let zero_width = body.start_byte() == body.end_byte();
+        let crosses = !zero_width && crosses_an_arm(body, source);
+        if !zero_width && !crosses {
+            return Some(body);
+        }
+        if crosses && body.kind() == "if_statement" {
+            if from_an_if {
+                return None;
+            }
+            if let Some(inner) = body.child_by_field_name("consequence") {
+                (statement, body, keyword) = (body, inner, body);
+                continue;
+            }
+        }
+        break after_enclosing_chain(statement, source, macros).unwrap_or(Site::Nothing);
     };
     match site {
         Site::Unbraced(statement) => Some(statement),
@@ -354,11 +387,13 @@ fn crosses_an_arm(body: Node, source: &str) -> bool {
 /// ```
 ///
 /// Each arm's `if` gets a zero-width body, or the next arm's `if`, and the
-/// `return` after the chain is the body in every configuration.
+/// `return` after the chain is the body in every configuration. A chain
+/// that ends its own arm of an enclosing chain with nothing after it hands
+/// the body on to what follows the enclosing `#endif`, and so on outward.
 fn after_enclosing_chain<'t>(
     statement: Node<'t>,
     source: &str,
-    macros: &Macros<'_>,
+    macros: &Macros<'_, 't>,
 ) -> Option<Site<'t>> {
     let mut item = statement;
     let mut arm = loop {
@@ -381,17 +416,56 @@ fn after_enclosing_chain<'t>(
     }) {
         return None;
     }
-    while matches!(
-        arm.kind(),
-        "preproc_else" | "preproc_elif" | "preproc_elifdef"
-    ) {
-        arm = arm.parent()?;
+    // Every `if` of a ladder of split ifs reads the same arms outward, so
+    // what each arm leads to is kept for the next.
+    let mut walked = Vec::new();
+    let site = loop {
+        let known = macros.past_arms.borrow().get(&arm.id()).copied();
+        if let Some(site) = known {
+            break site;
+        }
+        walked.push(arm.id());
+        if matches!(
+            arm.kind(),
+            "preproc_else" | "preproc_elif" | "preproc_elifdef"
+        ) {
+            match arm.parent() {
+                Some(chain) => {
+                    arm = chain;
+                    continue;
+                }
+                None => break None,
+            }
+        }
+        if !matches!(arm.kind(), "preproc_if" | "preproc_ifdef") {
+            break None;
+        }
+        let following = std::iter::successors(arm.next_named_sibling(), |n| n.next_named_sibling());
+        match first_statement(following, source, macros) {
+            Site::Nothing => {}
+            site => break Some(site),
+        }
+        match arm.parent() {
+            Some(outer)
+                if matches!(
+                    outer.kind(),
+                    "preproc_if"
+                        | "preproc_ifdef"
+                        | "preproc_else"
+                        | "preproc_elif"
+                        | "preproc_elifdef"
+                ) =>
+            {
+                arm = outer
+            }
+            _ => break Some(Site::Nothing),
+        }
+    };
+    let mut past_arms = macros.past_arms.borrow_mut();
+    for id in walked {
+        past_arms.insert(id, site);
     }
-    if !matches!(arm.kind(), "preproc_if" | "preproc_ifdef") {
-        return None;
-    }
-    let following = std::iter::successors(arm.next_named_sibling(), |n| n.next_named_sibling());
-    Some(first_statement(following, source, macros))
+    site
 }
 
 /// The `do` keyword and the block items between it and `while_node`, when
@@ -478,6 +552,8 @@ impl CertRule for Exp19C {
             project_conditional: &project.1,
             file_defs: check_macros::collect_macro_definitions(source),
             file_conditional: check_macros::collect_conditional_macro_names(source),
+            dead_lines: init_state::file_proven_dead_lines(source),
+            past_arms: RefCell::default(),
         };
 
         // Recursively check for control flow statements without braces
@@ -494,10 +570,26 @@ impl CertRule for Exp19C {
 
 impl Exp19C {
     /// Recursively check nodes for control flow statements without compound statement bodies
-    fn check_node(&self, node: Node, source: &str, macros: &Macros<'_>) -> Vec<RuleViolation> {
+    fn check_node<'t>(
+        &self,
+        node: Node<'t>,
+        source: &str,
+        macros: &Macros<'_, 't>,
+    ) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
         for n in query::find_descendants(node, |_| true) {
+            // A statement the file proves is never compiled has no body in
+            // any configuration. Suppression drops a finding on a dead
+            // line, but the site of a dead `if` can be live code past the
+            // dead arm's `#endif`, which is no statement's body.
+            let control = matches!(
+                n.kind(),
+                "if_statement" | "for_statement" | "while_statement" | "do_statement"
+            );
+            if control && init_state::starts_in_dead_lines(&n, &macros.dead_lines) {
+                continue;
+            }
             // Check if this is a control flow statement that needs braces
             match n.kind() {
                 "if_statement" => {
@@ -530,11 +622,11 @@ impl Exp19C {
     /// `else`. Each finding is at the body it names, so an `if` and its
     /// `else` written on one line still get two keys (a null body,
     /// `else ;`, is at its `;`).
-    fn check_if_statement(
+    fn check_if_statement<'t>(
         &self,
-        if_node: Node,
+        if_node: Node<'t>,
         source: &str,
-        macros: &Macros,
+        macros: &Macros<'_, 't>,
     ) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
@@ -590,11 +682,11 @@ impl Exp19C {
 
     /// Check if a for_statement has braces around its body, reported at
     /// the body like an if's arms.
-    fn check_for_statement(
+    fn check_for_statement<'t>(
         &self,
-        for_node: Node,
+        for_node: Node<'t>,
         source: &str,
-        macros: &Macros,
+        macros: &Macros<'_, 't>,
     ) -> Option<RuleViolation> {
         if let Some(body) = for_node.child_by_field_name("body") {
             if let Some(site) = judge(for_node, body, for_node, source, macros) {
@@ -611,11 +703,11 @@ impl Exp19C {
 
     /// Check if a while_statement has braces around its body, reported at
     /// the body like an if's arms.
-    fn check_while_statement(
+    fn check_while_statement<'t>(
         &self,
-        while_node: Node,
+        while_node: Node<'t>,
         source: &str,
-        macros: &Macros,
+        macros: &Macros<'_, 't>,
     ) -> Option<RuleViolation> {
         if closes_macro_do_block(while_node, source) {
             return None;
@@ -648,7 +740,7 @@ impl Exp19C {
         &self,
         do_node: Node,
         source: &str,
-        macros: &Macros,
+        macros: &Macros<'_, '_>,
     ) -> Option<RuleViolation> {
         if let Some(body) = do_node.child_by_field_name("body") {
             if !is_braced(body, source, macros) {

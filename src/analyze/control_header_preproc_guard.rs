@@ -57,6 +57,16 @@
 //! `hardware.h`). Blanking those guards would be pure noise. A `while` whose
 //! preceding token is `}` is therefore rejected.
 //!
+//! **The guard of a block the file proves is never compiled** (`#if 0`, see
+//! `lang_parsing_substrate::dead_code_ranges`). There the header exists in
+//! no configuration, so blanking the guard would make the statement after
+//! the `#endif` the body of an `if` no build has, and every rule would read
+//! dead code as live. Leaving the header in place is no better: two such
+//! blocks in one function make tree-sitter's recovery fold the whole body
+//! into one `ERROR`, inside which each header takes the live block as its
+//! body again. So the header line(s) are blanked instead and the `#if 0` /
+//! `#endif` pair is kept, which leaves an empty dead block and a clean parse.
+//!
 //! **A backslash-continued macro body.** `#define CHECK(x) \` followed by
 //! `if (x)` puts a header at the end of the block without putting a
 //! statement there; the header belongs to the macro's replacement list, not
@@ -194,6 +204,10 @@ pub fn blank_control_header_guarded_preproc(source: &str) -> String {
     }
 
     let mut out = source.as_bytes().to_vec();
+    let dead: Vec<(usize, usize)> = lang_parsing_substrate::dead_code_ranges(source)
+        .into_iter()
+        .map(|r| (r.start_line, r.end_line))
+        .collect();
 
     let mut i = 0usize;
     while i < lines.len() {
@@ -230,6 +244,8 @@ pub fn blank_control_header_guarded_preproc(source: &str) -> String {
 
         // An `#else`/`#elif` arm means the two arms are alternatives; blanking
         // the wrapper would splice both into one statement stream.
+        // The line after the directive is 1-based `i + 2`.
+        let in_dead = dead.iter().any(|&(s, e)| (s..=e).contains(&(i + 2)));
         if !has_branch {
             let last = (i + 1..end_idx)
                 .rev()
@@ -237,14 +253,25 @@ pub fn blank_control_header_guarded_preproc(source: &str) -> String {
 
             if let Some(last) = last {
                 if !continues_a_directive(&lines, last) {
-                    let content = (i + 1..=last)
-                        .filter(|&k| !is_directive(lines[k]))
-                        .map(|k| lines[k])
-                        .collect::<Vec<_>>()
-                        .join("\n");
+                    let content = joined_code(&lines, i + 1, last);
                     if ends_with_control_header(&content) {
-                        blank_line(&mut out, line_starts[i], lines[i].len());
-                        blank_line(&mut out, line_starts[end_idx], lines[end_idx].len());
+                        if in_dead {
+                            // The header exists in no build: blank it and
+                            // keep the guard, so nothing becomes its body.
+                            let first = (i + 1..=last)
+                                .rev()
+                                .find(|&k| {
+                                    !is_directive(lines[k])
+                                        && ends_with_control_header(&joined_code(&lines, k, last))
+                                })
+                                .unwrap_or(i + 1);
+                            for k in (first..=last).filter(|&k| !is_directive(lines[k])) {
+                                blank_line(&mut out, line_starts[k], lines[k].len());
+                            }
+                        } else {
+                            blank_line(&mut out, line_starts[i], lines[i].len());
+                            blank_line(&mut out, line_starts[end_idx], lines[end_idx].len());
+                        }
                     }
                 }
             }
@@ -256,6 +283,15 @@ pub fn blank_control_header_guarded_preproc(source: &str) -> String {
     }
 
     String::from_utf8(out).unwrap_or_else(|_| source.to_string())
+}
+
+/// The non-directive lines `from..=to`, joined.
+fn joined_code(lines: &[&str], from: usize, to: usize) -> String {
+    (from..=to)
+        .filter(|&k| !is_directive(lines[k]))
+        .map(|k| lines[k])
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Replace every non-newline byte of `line` (located at `line_start` in
@@ -463,6 +499,71 @@ int g(void)
 }
 ";
         assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn blanks_only_the_header_in_a_dead_block() {
+        // No build has the `if`, so `b++;` is not its body.
+        let src = "\
+int f(int a, int b)
+{
+#if 0
+  if (a)
+#endif
+  b++;
+  return b;
+}
+";
+        let want = src.replace("  if (a)", &" ".repeat(8));
+        assert_eq!(blank_control_header_guarded_preproc(src), want);
+        assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn blanks_a_multi_line_dead_header_and_nothing_before_it() {
+        let src = "\
+int f(int a, int b)
+{
+#if 0
+  a++;
+  while( a
+      && b )
+#endif
+  { b++; }
+  return b;
+}
+";
+        let want = src
+            .replace("  while( a\n", "          \n")
+            .replace("      && b )\n", "            \n");
+        assert_eq!(blank_control_header_guarded_preproc(src), want);
+        assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn two_dead_headers_in_one_function_parse_clean() {
+        // Unblanked, recovery turns this whole body into one ERROR and
+        // loses the `return`.
+        let src = "\
+int a(void);
+int b(void);
+int f(int p)
+{
+#if 0
+  if (p)
+#endif
+  { a(); }
+#if 0
+  while (p)
+#endif
+  { b(); }
+  return 0;
+}
+";
+        assert!(parses_clean(src));
+        let fixed = blank_control_header_guarded_preproc(src);
+        assert_eq!(fixed.matches("#if 0").count(), 2);
+        assert_eq!(fixed.matches("#endif").count(), 2);
     }
 
     #[test]
