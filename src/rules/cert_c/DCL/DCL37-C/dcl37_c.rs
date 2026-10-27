@@ -7,16 +7,118 @@
 //! that are reserved by the C standard, including:
 //! - Names starting with underscore followed by uppercase letter (_M, _A, etc.)
 //! - Names starting with double underscore (__, ___foo, etc.)
+//! - Names starting with an underscore, declared at file scope (C 7.1.3: a
+//!   block-scope `_x` is not reserved)
 //! - Reserved standard library names (errno, SIZE_MAX, etc.)
+//!
+//! Defining a feature-test macro is not reported. These names are reserved,
+//! but a governing standard or the implementation's documentation tells the
+//! program to define them to request features, so a program that does is
+//! doing what that source asks. The exemption is the closed, cited list in
+//! [`FEATURE_TEST_MACROS`], never a pattern, and it covers only defining
+//! one with `#define`: `_MY_SOURCE` is still reported, as is an include
+//! guard such as `_FOO_H`. It applies under every preset. This is
+//! aurora-lint's reading of the standards, recorded as a decision; CERT has
+//! left the question open.
 //!
 //! CERT C reference:
 //! <https://wiki.sei.cmu.edu/confluence/display/c/DCL37-C.+Do+not+declare+or+define+a+reserved+identifier>
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, top_level_items};
 use lang_parsing_substrate::query;
+use std::collections::HashSet;
 use tree_sitter::Node;
+
+/// The feature-test macros a program may define, each with the source that
+/// tells it to. A closed list: a name not on it is reported, however much
+/// it looks like one, and adding a name needs its source here.
+/// `__STRICT_ANSI__` is left out on purpose: the compiler defines it (under
+/// `-ansi` or `-std=c99`), not the program, so a program defining it is
+/// reported.
+pub const FEATURE_TEST_MACROS: &[(&str, &str)] = &[
+    ("__STDC_WANT_LIB_EXT1__", "C23 (N3220) K.3.1.1"),
+    ("__STDC_WANT_IEC_60559_EXT__", "C23 (N3220) 7.12"),
+    ("__STDC_WANT_IEC_60559_TYPES_EXT__", "C23 (N3220) H.3"),
+    ("_POSIX_C_SOURCE", "POSIX.1-2024 XSH 2.2.1.1"),
+    ("_XOPEN_SOURCE", "POSIX.1-2024 XSH 2.2.1.2"),
+    (
+        "_POSIX_SOURCE",
+        "POSIX.1-2024 XSH 2.2.1 (the POSIX.1-1990 macro, superseded by _POSIX_C_SOURCE)",
+    ),
+    (
+        "_ISOC99_SOURCE",
+        "glibc, feature_test_macros(7), man-pages 6.19",
+    ),
+    (
+        "_ISOC11_SOURCE",
+        "glibc, feature_test_macros(7), man-pages 6.19",
+    ),
+    (
+        "_ISOC23_SOURCE",
+        "glibc, feature_test_macros(7), man-pages 6.19",
+    ),
+    (
+        "_ISOC2X_SOURCE",
+        "glibc, feature_test_macros(7), man-pages 6.19",
+    ),
+    (
+        "_LARGEFILE_SOURCE",
+        "glibc, feature_test_macros(7), man-pages 6.19",
+    ),
+    (
+        "_LARGEFILE64_SOURCE",
+        "glibc, feature_test_macros(7), man-pages 6.19",
+    ),
+    (
+        "_FILE_OFFSET_BITS",
+        "glibc, feature_test_macros(7), man-pages 6.19",
+    ),
+    (
+        "_TIME_BITS",
+        "glibc, feature_test_macros(7), man-pages 6.19",
+    ),
+    (
+        "_BSD_SOURCE",
+        "glibc, feature_test_macros(7), man-pages 6.19",
+    ),
+    (
+        "_SVID_SOURCE",
+        "glibc, feature_test_macros(7), man-pages 6.19",
+    ),
+    (
+        "_DEFAULT_SOURCE",
+        "glibc, feature_test_macros(7), man-pages 6.19",
+    ),
+    (
+        "_ATFILE_SOURCE",
+        "glibc, feature_test_macros(7), man-pages 6.19",
+    ),
+    (
+        "_GNU_SOURCE",
+        "glibc, feature_test_macros(7), man-pages 6.19",
+    ),
+    (
+        "_REENTRANT",
+        "glibc, feature_test_macros(7), man-pages 6.19",
+    ),
+    (
+        "_THREAD_SAFE",
+        "glibc, feature_test_macros(7), man-pages 6.19",
+    ),
+    (
+        "_FORTIFY_SOURCE",
+        "glibc, feature_test_macros(7), man-pages 6.19",
+    ),
+];
+
+/// Whether `name` is on [`FEATURE_TEST_MACROS`].
+fn is_feature_test_macro(name: &str) -> bool {
+    FEATURE_TEST_MACROS
+        .iter()
+        .any(|(listed, _)| *listed == name)
+}
 
 const RESERVED_NAMES: &[&str] = &[
     "errno",
@@ -94,21 +196,35 @@ impl Dcl37C {
 
     /// Check declarations for reserved identifiers
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        // Only a file-scope declaration reserves every leading-underscore
+        // name; at block scope, `_x` is not reserved (C 7.1.3).
+        let file_scope: HashSet<usize> = top_level_items(*node)
+            .filter(|item| item.kind() == "declaration")
+            .map(|item| item.id())
+            .collect();
         for n in query::find_descendants(*node, |_| true) {
             match n.kind() {
                 "declaration" => {
+                    let at_file_scope = file_scope.contains(&n.id());
+                    let mut check = |declarator: &Node| {
+                        if at_file_scope {
+                            self.check_file_scope_declarator(declarator, source, violations);
+                        } else {
+                            self.check_declarator(declarator, source, violations);
+                        }
+                    };
                     // Check all init_declarators in this declaration
                     let mut cursor = n.walk();
                     for child in n.children(&mut cursor) {
                         if child.kind() == "init_declarator" {
                             if let Some(declarator) = child.child_by_field_name("declarator") {
-                                self.check_file_scope_declarator(&declarator, source, violations);
+                                check(&declarator);
                             }
                         }
                     }
                     // Also check direct declarator field if present
                     if let Some(declarator) = n.child_by_field_name("declarator") {
-                        self.check_file_scope_declarator(&declarator, source, violations);
+                        check(&declarator);
                     }
                 }
                 "preproc_def" | "preproc_function_def" => {
@@ -277,11 +393,13 @@ impl Dcl37C {
         }
     }
 
-    /// Check macro definitions for reserved identifiers
+    /// Check macro definitions for reserved identifiers. Defining a listed
+    /// feature-test macro is what its source asks of the program, so it is
+    /// not reported ([`FEATURE_TEST_MACROS`]).
     fn check_preproc_def(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         if let Some(name_node) = node.child_by_field_name("name") {
             let name = get_node_text(&name_node, source);
-            if self.is_reserved_identifier(&name) {
+            if self.is_reserved_identifier(&name) && !is_feature_test_macro(&name) {
                 violations.push(RuleViolation {
                     rule_id: "DCL37-C".to_string(),
                     severity: Severity::Medium,

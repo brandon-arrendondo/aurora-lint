@@ -152,6 +152,18 @@ contract model. (ADR-0015)
 - **C15. An initialized object declared only inside such a macro's argument**
   (a test-only wrapper, say) counts the same way. The initialization is a store
   that exists only where the macro expands. (ADR-0001, ADR-0010)
+- **C16. DCL37-C: defining a listed feature-test macro is not a violation.**
+  These names are reserved, but the standard or implementation that documents
+  each one tells the program to define it to request features: the three C23
+  `__STDC_WANT_*` macros (N3220 K.3.1.1, 7.12, H.3), POSIX's
+  `_POSIX_C_SOURCE`, `_XOPEN_SOURCE` and `_POSIX_SOURCE` (XSH 2.2.1), and the
+  glibc macros feature_test_macros(7) documents. The list is closed and kept
+  with its citations in DCL37-C's source. A name not on it is a violation,
+  however it is spelled (`_MY_SOURCE`, or `__STRICT_ANSI__`, which the
+  compiler defines), and so is a reserved include guard (`_FOO_H`). The
+  exemption covers only defining a listed name, never an `#undef` of one. A block-scope `_x` is not reserved; a block-scope
+  `_X` is (C 7.1.3). This reads the standards, so the oracle and the tool
+  agree; it is not a tool-only relaxation.
 
 ## D. Where a finding lives (ADR-0012)
 
