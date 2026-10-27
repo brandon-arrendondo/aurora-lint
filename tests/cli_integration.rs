@@ -5879,6 +5879,31 @@ fn pre31_assert_header_included_in_some_builds_leaves_the_librarys() {
     assert_eq!(violations.len(), 1, "{:?}", violations);
 }
 
+/// An `#include` inside the same `#ifdef` as the call is taken by every
+/// build that compiles the call, so the project's `assert` replaces the
+/// library's there.
+#[test]
+fn pre31_assert_header_included_with_the_call_replaces_the_librarys() {
+    let violations = pre31_crossfile_violations("assert_header_included_with_the_call");
+    assert!(violations.is_empty(), "{:?}", violations);
+}
+
+/// A whole file wrapped in `#ifdef CONFIG_FEATURE` puts its includes and
+/// its calls in the same builds.
+#[test]
+fn pre31_assert_file_wrapped_in_a_feature_ifdef_replaces_the_librarys() {
+    let violations = pre31_crossfile_violations("assert_file_wrapped_in_a_feature_ifdef");
+    assert!(violations.is_empty(), "{:?}", violations);
+}
+
+/// An `#include` in the other arm of the conditional holding the call is
+/// still one only some builds take.
+#[test]
+fn pre31_assert_header_in_the_other_arm_from_the_call_leaves_the_librarys() {
+    let violations = pre31_crossfile_violations("assert_header_and_call_in_different_arms");
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+}
+
 /// A header whose `#undef assert` and definition sit under `#if
 /// MY_ASSERT_LEVEL > 0` replaces it only in the builds that ask for it,
 /// though nothing can read that condition.

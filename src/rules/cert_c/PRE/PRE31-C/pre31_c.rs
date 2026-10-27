@@ -578,8 +578,9 @@ impl<'a> Ctx<'a> {
     /// headers are included once. A header the replacing one includes is
     /// taken to come before its definition. An `#include` some builds skip
     /// (under `#ifdef USE_MYASSERT`) changes the definition only in the
-    /// builds that take it, so where it would change it, either is in force.
-    /// Without the file's include edges, or with no replacing header, the
+    /// builds that take it, so where it would change it, either is in force;
+    /// a conditional holding the invocation in the same arm skips no build
+    /// of it. Without the file's include edges, or with no replacing header, the
     /// library's.
     fn library_macro_in_force(&self, name: &str) -> (LibraryMacro, Vec<MacroArm>) {
         let replacing: Vec<&ProjectMacroArm> = self
@@ -623,7 +624,7 @@ impl<'a> Ctx<'a> {
             })
             .map(|r| (r.start_line, r.end_line))
             .collect();
-        let (line, _) = self.site.get();
+        let (line, invocation) = self.site.get();
         let mut state = LibraryMacro::Library;
         // The replacing headers the includes so far reach, in the builds
         // where one of them is in force.
@@ -681,7 +682,8 @@ impl<'a> Ctx<'a> {
                 (false, true) => LibraryMacro::Library,
                 (false, false) => continue,
             };
-            if dead_regions::under_a_conditional(&include, self.source) {
+            if dead_regions::under_a_conditional_apart_from(&include, self.source, Some(invocation))
+            {
                 if after != state {
                     state = LibraryMacro::Either;
                 }

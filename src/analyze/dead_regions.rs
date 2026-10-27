@@ -304,10 +304,38 @@ pub const UNREAD_CONDITION: &str = "#unread";
 /// conditional other than a file include guard, whatever that conditional
 /// tests (`#if X > 0` and an `||` as much as `#ifdef X`).
 pub fn under_a_conditional(node: &Node, source: &str) -> bool {
+    under_a_conditional_apart_from(node, source, None)
+}
+
+/// [`under_a_conditional`], not counting a conditional that holds the byte
+/// at `with` in the same arm as `node`: every build compiling that byte
+/// compiles `node` too, so such a conditional cannot split those builds (an
+/// `#include` and the call after it, both inside `#ifdef USE_MYASSERT`, or a
+/// whole file wrapped in `#ifdef CONFIG_FEATURE`).
+pub fn under_a_conditional_apart_from(node: &Node, source: &str, with: Option<usize>) -> bool {
+    // The arm of `conditional` holding `byte`: the conditional itself for
+    // its first group, else the `#elif`/`#else` alternative whose own group
+    // holds it.
+    let arm_holding = |conditional: Node, byte: usize| {
+        if byte < conditional.start_byte() || byte >= conditional.end_byte() {
+            return None;
+        }
+        let mut arm = conditional;
+        while let Some(alternative) = arm
+            .child_by_field_name("alternative")
+            .filter(|a| a.start_byte() <= byte && byte < a.end_byte())
+        {
+            arm = alternative;
+        }
+        Some(arm.id())
+    };
     let mut child = *node;
     while let Some(parent) = child.parent() {
         if matches!(parent.kind(), "preproc_ifdef" | "preproc_if")
             && !crate::utility::cert_c::ast_utils::is_include_guard(&parent, source)
+            && with.is_none_or(|with| {
+                arm_holding(parent, with) != arm_holding(parent, node.start_byte())
+            })
         {
             return true;
         }
