@@ -5,7 +5,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::check_macros::{self, MacroDefinition};
 use crate::analyze::const_eval::{merged_macro_aliases, resolve_macro_alias};
 use crate::analyze::context::{
-    EffectView, IncludeClosure, ProjectContext, VisibleTypes, UNRESOLVED_INCLUDE,
+    typedef_visible, EffectView, IncludeClosure, ProjectContext, VisibleTypes, UNRESOLVED_INCLUDE,
 };
 use crate::analyze::dead_regions::{self, ConfiguredLines};
 use crate::analyze::function_summary::extract_function_name;
@@ -61,9 +61,9 @@ pub struct Pre31C {
     /// (`ProjectContext::macro_definitions`): an object-like macro whose
     /// body is a type (`#define u32 unsigned int`) makes `(u32) (x)` a cast.
     macro_definitions: RefCell<Arc<HashMap<String, Vec<MacroDefinition>>>>,
-    /// The names a typedef declares in each header
-    /// (`ProjectContext::header_typedef_names`).
-    header_typedef_names: RefCell<Arc<HashMap<String, HashSet<String>>>>,
+    /// The names a file-scope typedef declares in each file
+    /// (`ProjectContext::typedef_names_by_file`).
+    typedef_names_by_file: RefCell<Arc<HashMap<String, HashSet<String>>>>,
     /// Names only a header outside the project defines: the C library's own
     /// macros, which C11 7.1.4 binds (`library_macros_evaluate_once`).
     outside_macros: RefCell<Arc<HashSet<String>>>,
@@ -97,7 +97,7 @@ impl Pre31C {
             function_macro_names: RefCell::new(Arc::new(HashSet::new())),
             macro_aliases: RefCell::new(Arc::new(HashMap::new())),
             macro_definitions: RefCell::new(Arc::new(HashMap::new())),
-            header_typedef_names: RefCell::new(Arc::new(HashMap::new())),
+            typedef_names_by_file: RefCell::new(Arc::new(HashMap::new())),
             outside_macros: RefCell::new(Arc::new(HashSet::new())),
             outside_headers: RefCell::new(Arc::new(HashSet::new())),
             set_names: RefCell::default(),
@@ -142,7 +142,7 @@ impl CertRule for Pre31C {
         *self.function_macro_names.borrow_mut() = context.function_macro_names.clone();
         *self.macro_aliases.borrow_mut() = context.macro_aliases.clone();
         *self.macro_definitions.borrow_mut() = context.macro_definitions.clone();
-        *self.header_typedef_names.borrow_mut() = context.header_typedef_names.clone();
+        *self.typedef_names_by_file.borrow_mut() = context.typedef_names_by_file.clone();
         *self.outside_macros.borrow_mut() = context.macros_defined_outside_project.clone();
         *self.set_names.borrow_mut() = (
             Arc::clone(&context.defined_macro_names),
@@ -199,14 +199,18 @@ impl CertRule for Pre31C {
         // the worse of the two answers.
         let effects = self.effects.borrow().clone();
         let file_scope = FileScope::of(node, source);
+        let real = self
+            .file_path
+            .borrow()
+            .as_deref()
+            .map(crate::analyze::compile_commands::real_path);
         let mut direct: HashMap<String, crate::analyze::side_effects::DirectEffects> =
             HashMap::new();
         for f in query::find_descendants_of_kind(*node, "function_definition") {
             if let Some(name) = extract_function_name(&f, source) {
-                direct
-                    .entry(name)
-                    .or_default()
-                    .merge(collect_direct_effects(&f, source, &arms, &file_scope));
+                let mut effects = collect_direct_effects(&f, source, &arms, &file_scope);
+                effects.files.extend(real.clone());
+                direct.entry(name).or_default().merge(effects);
             }
         }
         let include_edges = self.include_edges.borrow();
@@ -247,7 +251,7 @@ impl CertRule for Pre31C {
             aliases: &aliases,
             definitions: &self.macro_definitions.borrow(),
             own_definitions: OnceCell::new(),
-            header_typedefs: &self.header_typedef_names.borrow(),
+            typedefs_by_file: &self.typedef_names_by_file.borrow(),
             outside: &self.outside_macros.borrow(),
             outside_headers: &self.outside_headers.borrow(),
             set_names: &self.set_names.borrow(),
@@ -426,8 +430,8 @@ struct Ctx<'a> {
     /// This file's own `#define`s, read the first time a parenthesized
     /// callee may be a type.
     own_definitions: OnceCell<HashMap<String, Vec<MacroDefinition>>>,
-    /// `Pre31C::header_typedef_names`.
-    header_typedefs: &'a HashMap<String, HashSet<String>>,
+    /// `Pre31C::typedef_names_by_file`.
+    typedefs_by_file: &'a HashMap<String, HashSet<String>>,
     /// `Pre31C::outside_macros`.
     outside: &'a HashSet<String>,
     /// `Pre31C::outside_headers`.
@@ -476,20 +480,15 @@ impl<'a> Ctx<'a> {
             .as_ref()
     }
 
-    /// Whether a typedef in a header this file can include declares `name`
-    /// (ADR-0006: a header another file includes declares nothing here).
-    /// A computed `#include` may name any header.
+    /// Whether a file-scope typedef this file or a header it can include
+    /// declares `name` (ADR-0006: a header another file includes declares
+    /// nothing here), by [`typedef_visible`].
     fn header_typedef_reaches(&self, name: &str) -> bool {
-        let declares = |file: &String| {
-            self.header_typedefs
-                .get(file)
-                .is_some_and(|names| names.contains(name))
+        let Some(path) = self.file_path else {
+            return false;
         };
-        match self.include_closure() {
-            Some(closure) if !closure.any => closure.files.iter().any(declares),
-            Some(_) => self.header_typedefs.keys().any(declares),
-            None => false,
-        }
+        let file = crate::analyze::compile_commands::real_path(path);
+        typedef_visible(self.typedefs_by_file, &file, self.include_closure(), name)
     }
 
     fn in_force(&self, name: &str) -> InForce {

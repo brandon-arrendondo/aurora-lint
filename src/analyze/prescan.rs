@@ -355,6 +355,10 @@ fn process_file(
             &file_string_macros,
             &result.function_macros,
         );
+        let real = crate::analyze::compile_commands::real_path(file_path);
+        for summary in result.function_summaries.values_mut() {
+            summary.effects.files.insert(real.clone());
+        }
 
         collect_call_graph(&root, &source, &mut result.call_graph);
         collect_ambiguous_call_targets(&root, &source, &mut result.ambiguous_call_targets);
@@ -813,7 +817,7 @@ fn prescan_file_list(
     let mut struct_field_shapes: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut struct_typedef_aliases: HashMap<String, String> = HashMap::new();
     let mut typedef_types: HashMap<String, String> = HashMap::new();
-    let mut header_typedef_names: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut typedef_names_by_file: HashMap<String, HashSet<String>> = HashMap::new();
     let mut any_header_typedef_names: HashSet<String> = HashSet::new();
     let mut function_pointer_typedef_names: HashSet<String> = HashSet::new();
     let mut function_typedef_names: HashSet<String> = HashSet::new();
@@ -1109,15 +1113,17 @@ fn prescan_file_list(
         struct_field_shapes.extend(r.struct_field_shapes);
         struct_typedef_aliases.extend(r.struct_typedef_aliases);
         typedef_types.extend(r.typedef_types);
-        // A typedef in a .c file is visible only in that translation unit.
-        if !r.typedef_names.is_empty()
-            && !r
+        // A typedef in a .c file is visible only in that translation unit
+        // (and one that #includes the file), which its closure decides.
+        if !r.typedef_names.is_empty() {
+            if !r
                 .source_path
                 .as_ref()
                 .is_some_and(crate::files::is_c_translation_unit)
-        {
-            any_header_typedef_names.extend(r.typedef_names.iter().cloned());
-            header_typedef_names
+            {
+                any_header_typedef_names.extend(r.typedef_names.iter().cloned());
+            }
+            typedef_names_by_file
                 .entry(crate::analyze::compile_commands::real_path(Path::new(
                     &r.display_path,
                 )))
@@ -1725,7 +1731,7 @@ fn prescan_file_list(
         function_pointer_typedef_names: Arc::new(function_pointer_typedef_names),
         function_typedef_names: Arc::new(function_typedef_names),
         pointer_typedef_names: Arc::new(pointer_typedef_names),
-        header_typedef_names: Arc::new(header_typedef_names),
+        typedef_names_by_file: Arc::new(typedef_names_by_file),
         any_header_typedef_names: Arc::new(any_header_typedef_names),
         packed_structs: Arc::new(packed_structs),
         signal_handlers_registered_elsewhere: Arc::new(signal_handlers_registered_elsewhere),
@@ -8118,7 +8124,7 @@ pub fn resolve_includes_scoped(
                 if !names.is_empty() {
                     Arc::make_mut(&mut context.any_header_typedef_names)
                         .extend(names.iter().cloned());
-                    Arc::make_mut(&mut context.header_typedef_names)
+                    Arc::make_mut(&mut context.typedef_names_by_file)
                         .entry(header_key.clone())
                         .or_default()
                         .extend(names);

@@ -308,11 +308,27 @@ pub fn typedef_names_in(type_definition: &Node, source: &str) -> Vec<String> {
         .collect()
 }
 
-/// Every name a `typedef` in `root` declares, outside the regions
-/// `dead_code_ranges` proves no build compiles.
+/// Every name a file-scope `typedef` in `root` declares, outside the
+/// regions `dead_code_ranges` proves no build compiles. A typedef in a
+/// function body is that block's alone, so the walk does not enter one.
 pub fn typedef_names_declared(root: &Node, source: &str) -> std::collections::HashSet<String> {
+    let mut definitions = Vec::new();
+    let mut stack = vec![*root];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "type_definition" => definitions.push(node),
+            "function_definition" | "compound_statement" => {}
+            _ => {
+                let mut cursor = node.walk();
+                stack.extend(node.named_children(&mut cursor));
+            }
+        }
+    }
+    if definitions.is_empty() {
+        return Default::default();
+    }
     let dead = lang_parsing_substrate::dead_code_ranges(source);
-    lang_parsing_substrate::query::find_descendants_of_kind(*root, "type_definition")
+    definitions
         .into_iter()
         .filter(|d| {
             let line = d.start_position().row + 1;

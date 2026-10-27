@@ -16,6 +16,7 @@
 //! and a prescan cache must stay valid under every setting. How a consumer
 //! treats a call nothing proves either way is its own policy.
 
+use crate::analyze::context::{typedef_visible, IncludeClosure};
 use crate::analyze::macro_expand::{self, MacroArm};
 use crate::utility::cert_c::ast_utils::{self, get_node_text, IdentifierBinding};
 use crate::utility::cert_c::declarator_utils::declares_function;
@@ -175,6 +176,11 @@ pub struct DirectEffects {
     /// knows project-wide and a body usually does not.
     #[serde(default)]
     pub typedef_reads: BTreeSet<String>,
+    /// The real paths of the files defining the body: what decides which
+    /// typedefs a callee it does not declare can name ([`typedef_visible`]).
+    /// Empty when unknown.
+    #[serde(default)]
+    pub files: BTreeSet<String>,
 }
 
 impl DirectEffects {
@@ -189,6 +195,7 @@ impl DirectEffects {
         self.opaque |= other.opaque;
         self.free_names.extend(other.free_names);
         self.typedef_reads.extend(other.typedef_reads);
+        self.files.extend(other.files);
     }
 }
 
@@ -400,6 +407,16 @@ pub fn collect_direct_effects(
         params: crate::analyze::function_summary::collect_param_names(func, source),
         declared: declared_names(func, source),
         typed: typedef_declarations(func, source),
+        block_typedefs: lang_parsing_substrate::query::find_descendants_of_kind(
+            *func,
+            "type_definition",
+        )
+        .into_iter()
+        .map(|d| {
+            let names = crate::utility::cert_c::declarator_utils::typedef_names_in(&d, source);
+            (d, names)
+        })
+        .collect(),
         arms,
         scope,
         declarations: ast_utils::ScopeDeclarations::over(scope.index.clone()),
@@ -564,6 +581,9 @@ struct Collector<'s, 't> {
     /// Each block's declarations, read once for every identifier
     /// [`Collector::bound`] resolves in this function.
     declarations: ast_utils::ScopeDeclarations<'t>,
+    /// The typedefs the function's body declares, each with the names it
+    /// declares: a block's own, which only that block sees.
+    block_typedefs: Vec<(Node<'t>, Vec<String>)>,
     out: DirectEffects,
 }
 
@@ -956,10 +976,41 @@ impl<'t> Collector<'_, 't> {
             .map_or(Loc::Unknown, Loc::ParamPointee)
     }
 
+    /// Where a typedef of `name` in an enclosing block of the body that
+    /// precedes `ident` starts, the innermost such: one in another block,
+    /// another function's included, is not in scope there (ADR-0006).
+    fn block_typedef_in_scope(&self, ident: &Node<'t>, name: &str) -> Option<usize> {
+        let at = ident.start_byte();
+        self.block_typedefs
+            .iter()
+            .filter(|(d, names)| {
+                d.end_byte() <= at
+                    && d.parent()
+                        .is_some_and(|block| block.start_byte() <= at && at < block.end_byte())
+                    && names.iter().any(|n| n == name)
+            })
+            .map(|(d, _)| d.start_byte())
+            .max()
+    }
+
     /// What this file declares a callee identifier that names no object to be.
     fn callee_declaration(&self, ident: &Node<'t>) -> CalleeDeclaration {
         let name = get_node_text(ident, self.source);
+        // A block's typedef shadows a file-scope declaration, and an earlier
+        // block's local one; the innermost declaration in scope decides.
+        let block = self.block_typedef_in_scope(ident, name);
         match self.binding(ident) {
+            Some(IdentifierBinding::Local(decl))
+                if block.is_some_and(|b| b > decl.start_byte()) =>
+            {
+                CalleeDeclaration::Typedef
+            }
+            Some(IdentifierBinding::Global(_)) if block.is_some() => CalleeDeclaration::Typedef,
+            Some(IdentifierBinding::Local(decl) | IdentifierBinding::Global(decl))
+                if decl.kind() == "type_definition" =>
+            {
+                CalleeDeclaration::Typedef
+            }
             Some(IdentifierBinding::Local(decl) | IdentifierBinding::Global(decl))
                 if ast_utils::declaration_declarator_for(&decl, name, self.source)
                     .is_some_and(|d| declares_function(&d)) =>
@@ -967,6 +1018,7 @@ impl<'t> Collector<'_, 't> {
                 CalleeDeclaration::Function
             }
             Some(_) => CalleeDeclaration::Unread,
+            None if block.is_some() => CalleeDeclaration::Typedef,
             None if self.scope.typedefs.contains(name) => CalleeDeclaration::Typedef,
             None => CalleeDeclaration::Undeclared,
         }
@@ -982,8 +1034,9 @@ impl<'t> Collector<'_, 't> {
         match self.binding(ident) {
             Some(IdentifierBinding::Parameter(_)) => true,
             Some(IdentifierBinding::Local(decl) | IdentifierBinding::Global(decl)) => {
-                ast_utils::declaration_declarator_for(&decl, name, self.source)
-                    .is_some_and(|d| !declares_function(&d))
+                decl.kind() != "type_definition"
+                    && ast_utils::declaration_declarator_for(&decl, name, self.source)
+                        .is_some_and(|d| !declares_function(&d))
             }
             None => false,
         }
@@ -1072,11 +1125,22 @@ impl<'t> Collector<'_, 't> {
         if self.declared.contains(name) || self.scope.globals.contains_key(name) {
             return false;
         }
-        let is_callee = ident.parent().is_some_and(|p| {
-            p.kind() == "call_expression"
-                && p.child_by_field_name("function")
-                    .is_some_and(|f| f.id() == ident.id())
-        });
+        // `call` judges the callee, `(name)` included.
+        let callee_of = |n: Node<'t>| {
+            n.parent().is_some_and(|p| {
+                p.kind() == "call_expression"
+                    && p.child_by_field_name("function")
+                        .is_some_and(|f| f.id() == n.id())
+            })
+        };
+        let is_callee = callee_of(*ident)
+            || ident
+                .parent()
+                .filter(|p| p.kind() == "parenthesized_expression")
+                .is_some_and(|p| {
+                    ast_utils::parenthesized_identifier(&p).is_some_and(|i| i.id() == ident.id())
+                        && callee_of(p)
+                });
         !is_callee
     }
 
@@ -1686,8 +1750,13 @@ pub struct ProjectNames {
     /// Typedef names (a macro argument may name a type).
     pub typedefs: std::sync::Arc<HashMap<String, String>>,
     /// Every name a typedef in a header declares
-    /// (`ProjectContext::any_header_typedef_names`).
+    /// (`ProjectContext::any_header_typedef_names`): the answer for a body
+    /// whose file is unknown.
     pub header_typedefs: std::sync::Arc<std::collections::HashSet<String>>,
+    /// `ProjectContext::typedef_names_by_file`.
+    pub typedefs_by_file: std::sync::Arc<HashMap<String, std::collections::HashSet<String>>>,
+    /// `ProjectContext::include_edges`, for a body's include closure.
+    pub include_edges: std::sync::Arc<HashMap<String, Vec<String>>>,
     /// Every struct or union member name (a macro argument may name one).
     pub members: std::sync::Arc<std::collections::HashSet<String>>,
     /// Typedef names whose definition carries `volatile`
@@ -1760,6 +1829,7 @@ impl EffectTable {
             .map(|(i, (k, _))| (k.as_str(), i))
             .collect();
 
+        let closures = std::cell::RefCell::new(HashMap::new());
         // Each function's own facts, and its edges to other functions.
         let mut local: Vec<ClosedEffects> = Vec::with_capacity(functions.len());
         let mut edges: Vec<Vec<(usize, Vec<ArgRoot>)>> = Vec::with_capacity(functions.len());
@@ -1783,6 +1853,8 @@ impl EffectTable {
                 base,
                 own: &mut own,
                 out: &mut out,
+                files: &direct.files,
+                closures: &closures,
             };
             for call in &direct.calls {
                 match &call.callee {
@@ -1970,6 +2042,8 @@ pub fn name_effects(
     let index = HashMap::new();
     let mut own = ClosedEffects::default();
     let mut out = Vec::new();
+    let files = BTreeSet::new();
+    let closures = std::cell::RefCell::new(HashMap::new());
     let mut resolver = Resolver {
         lenient: !unknown_is_opaque,
         inputs,
@@ -1977,6 +2051,8 @@ pub fn name_effects(
         base,
         own: &mut own,
         out: &mut out,
+        files: &files,
+        closures: &closures,
     };
     resolver.free_name(name, 0);
     own.writes_any |= !own.writes.is_empty() || own.frame_write;
@@ -2041,9 +2117,30 @@ struct Resolver<'r, 'i> {
     base: &'r dyn Fn(&str) -> Option<ClosedEffects>,
     own: &'r mut ClosedEffects,
     out: &'r mut Vec<(usize, Vec<ArgRoot>)>,
+    /// [`DirectEffects::files`] of the body being resolved.
+    files: &'r BTreeSet<String>,
+    /// Each file's include closure, walked once per table.
+    closures: &'r std::cell::RefCell<HashMap<String, Option<IncludeClosure>>>,
 }
 
 impl Resolver<'_, '_> {
+    /// Whether a typedef the body's translation unit can see declares
+    /// `name`: one every file defining the body sees ([`typedef_visible`]),
+    /// else, the file unknown, one in any header.
+    fn typedef_seen(&self, name: &str) -> bool {
+        let names = self.inputs.names;
+        if self.files.is_empty() {
+            return names.header_typedefs.contains(name);
+        }
+        let mut closures = self.closures.borrow_mut();
+        self.files.iter().all(|file| {
+            let closure = closures.entry(file.clone()).or_insert_with(|| {
+                IncludeClosure::of(&names.include_edges, std::path::Path::new(file))
+            });
+            typedef_visible(&names.typedefs_by_file, file, closure.as_ref(), name)
+        })
+    }
+
     /// Something could not be read: a name nothing declares, or a macro with
     /// no body the table can reason about. Unknown for a body; nothing for a
     /// rule's own argument identifier.
@@ -2292,22 +2389,20 @@ impl Resolver<'_, '_> {
             return;
         }
         // The calling file's declaration of the name decides (ADR-0006): a
-        // function there is no type whatever another file declares, and an
-        // undeclared name is one only through a header. A macro alias, or a
-        // callee a macro body names, falls back to the scan's typedefs.
+        // function there is no type whatever another file declares, and any
+        // other name is one only by a typedef the file's translation unit
+        // sees. A macro alias's target, and a callee a macro body names, are
+        // judged the same way.
         let declaration = if resolved == name {
             call.callee_declaration
         } else {
-            CalleeDeclaration::Unread
+            CalleeDeclaration::Undeclared
         };
         let is_type = match declaration {
             CalleeDeclaration::Function => false,
             CalleeDeclaration::Typedef => true,
-            CalleeDeclaration::Undeclared => {
-                names_a_type(resolved, |n| inputs.names.header_typedefs.contains(n))
-            }
-            CalleeDeclaration::Unread => {
-                names_a_type(resolved, |n| inputs.names.typedefs.contains_key(n))
+            CalleeDeclaration::Undeclared | CalleeDeclaration::Unread => {
+                names_a_type(resolved, |n| self.typedef_seen(n))
             }
         };
         if is_type {
@@ -2833,6 +2928,26 @@ mod tests {
         assert_eq!(proof("next"), Proof::Impure);
         // An object in parentheses is still a call through a pointer.
         assert_eq!(proof("call"), Proof::Unproven);
+    }
+
+    #[test]
+    fn a_parenthesized_callee_is_a_type_only_where_its_typedef_is_in_scope() {
+        let code = "int step(int);\n\
+            int other(void) { typedef int step; step q = 0; return q; }\n\
+            int outside(int v) { return (step) (v); }\n\
+            int inside(int v) { typedef int step; return (step) (v); }\n";
+        let ctx = scanned(&[("scope.c", code)], "typedef-scope");
+        let proof = |name: &str| ctx.effects().get(name).unwrap().proof(true);
+        // Another function's block typedef is not in scope: the prototype is.
+        assert_eq!(proof("outside"), Proof::Unproven);
+        // The calling block's own typedef makes the call a cast.
+        assert_eq!(proof("inside"), Proof::Pure);
+        let code = "int inside(int v) { typedef int step; return (step) (v); }\n";
+        let ctx = scanned(&[("block.c", code)], "block-typedef");
+        assert_eq!(
+            ctx.effects().get("inside").unwrap().proof(true),
+            Proof::Pure
+        );
     }
 
     #[test]

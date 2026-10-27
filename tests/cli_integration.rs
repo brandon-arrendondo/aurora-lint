@@ -6030,6 +6030,58 @@ fn pre31_outside_header_typedef_another_file_includes_is_no_type_here() {
     assert_eq!(strict.len(), 1, "{:?}", strict);
 }
 
+/// The same inside a function the argument calls: `called.c` includes only
+/// the header declaring `wide64`, so `(wide64) (v)` in `wrap` calls it and
+/// the strict policy reports `TWICE(wrap(1))`.
+#[test]
+fn pre31_outside_header_typedef_another_file_includes_is_no_type_in_a_callee() {
+    let project = fixtures().join("pre31_outside_header_typedef_in_another_file");
+    let proj = project.join("proj");
+    let gen = project.join("gen");
+    let file = proj.join("called.c");
+    let strict = pre31_violations(
+        file.to_str().unwrap(),
+        &[
+            "-d",
+            proj.to_str().unwrap(),
+            "-I",
+            gen.to_str().unwrap(),
+            "--profile",
+            "strict",
+        ],
+    );
+    assert_eq!(strict.len(), 1, "{:?}", strict);
+}
+
+/// A typedef in a header only another file includes is no type here:
+/// `(step) (v)` calls the function the included header declares, which
+/// nothing proves pure, so the strict policy reports `TWICE(wrap(1))`.
+#[test]
+fn pre31_parenthesized_name_a_header_another_file_includes_typedefs_is_a_call() {
+    let violations = pre31_crossfile_strict_violations(
+        "parenthesized_name_a_header_another_file_includes_typedefs",
+    );
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+}
+
+/// An alias is judged by its target's declaration: `STEP` names the
+/// function `step`, which another .c file's typedef does not make a type.
+#[test]
+fn pre31_parenthesized_alias_another_c_file_typedefs_is_a_call() {
+    let violations =
+        pre31_crossfile_strict_violations("parenthesized_alias_another_c_file_typedefs");
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+}
+
+/// The alias's target typedef in a header the file includes makes
+/// `(STEP) (v)` a cast, so nothing is reported under the strict policy.
+#[test]
+fn pre31_parenthesized_alias_to_an_included_header_typedef_is_pure() {
+    let violations =
+        pre31_crossfile_strict_violations("parenthesized_alias_to_an_included_header_typedef");
+    assert!(violations.is_empty(), "{:?}", violations);
+}
+
 /// PRE31-C findings for a cross-file case under the strict policy.
 fn pre31_crossfile_strict_violations(case: &str) -> Vec<serde_json::Value> {
     let project = fixtures().join("crossfile_pre31").join(case);

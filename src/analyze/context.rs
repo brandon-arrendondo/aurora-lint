@@ -566,6 +566,26 @@ pub struct IncludeClosure {
     pub any: bool,
 }
 
+/// Whether a typedef the translation unit of `file` (a real path) can see
+/// declares `name`, by `by_file` ([`ProjectContext::typedef_names_by_file`])
+/// and the file's `closure`: a typedef in a file the closure holds, the file
+/// itself included. Without a closure (the graph has no edge out of the
+/// file) only the file's own count. A computed `#include` may name any
+/// header, so then any file's typedef counts: a known over-credit.
+pub fn typedef_visible(
+    by_file: &HashMap<String, HashSet<String>>,
+    file: &str,
+    closure: Option<&IncludeClosure>,
+    name: &str,
+) -> bool {
+    let declares = |f: &str| by_file.get(f).is_some_and(|names| names.contains(name));
+    match closure {
+        Some(c) if c.any => by_file.values().any(|names| names.contains(name)),
+        Some(c) => c.files.iter().any(|f| declares(f)),
+        None => declares(file),
+    }
+}
+
 impl IncludeClosure {
     /// What the scan of the file at `path` may include: [`IncludeClosure::of`]
     /// the include graph. Unknown is empty.
@@ -1195,18 +1215,20 @@ pub struct ProjectContext {
     /// is about is in a .c file that only names the alias.
     #[serde(default)]
     pub pointer_typedef_names: Arc<HashSet<String>>,
-    /// `header real path -> every name a typedef there declares`, for each
-    /// scanned header and each header the scan resolves (`resolve_includes`),
-    /// one outside the project included (a generated `sqlite3.h` reached
-    /// through `-I`), in any arm the header does not prove dead: whether a
-    /// name is a type where a file's `IncludeClosure` reaches it, which tells
-    /// a cast of a parenthesized operand, `(sqlite3_int64)(p - q)`, from a
-    /// call. A `.c` file's typedefs reach no other file and are not here.
+    /// `real path -> every name a file-scope typedef there declares`, for
+    /// each scanned file and each header the scan resolves
+    /// (`resolve_includes`), one outside the project included (a generated
+    /// `sqlite3.h` reached through `-I`), in any arm the file does not prove
+    /// dead: whether a name is a type where a file's `IncludeClosure`
+    /// reaches it ([`typedef_visible`]), which tells a cast of a
+    /// parenthesized operand, `(sqlite3_int64)(p - q)`, from a call. A `.c`
+    /// file's typedefs reach only a file whose closure holds it.
     /// `typedef_types` holds the scanned files' typedefs and what they
     /// resolve to; this holds only names.
     #[serde(default)]
-    pub header_typedef_names: Arc<HashMap<String, HashSet<String>>>,
-    /// Every name in `header_typedef_names`, whichever header declares it.
+    pub typedef_names_by_file: Arc<HashMap<String, HashSet<String>>>,
+    /// Every name in `typedef_names_by_file` some header declares, whichever
+    /// header: the answer when the calling file is unknown.
     #[serde(default)]
     pub any_header_typedef_names: Arc<HashSet<String>>,
     /// `file -> the names that file defines `static` while some other
@@ -1328,6 +1350,8 @@ impl ProjectContext {
                 macros: Arc::clone(&self.defined_macro_names),
                 typedefs: Arc::clone(&self.typedef_types),
                 header_typedefs: Arc::clone(&self.any_header_typedef_names),
+                typedefs_by_file: Arc::clone(&self.typedef_names_by_file),
+                include_edges: Arc::clone(&self.include_edges),
                 members,
                 volatile_typedefs: Arc::clone(&self.volatile_typedefs),
                 complete: true,
@@ -1611,7 +1635,7 @@ pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
 /// to a serialized field of [`ProjectContext`] (or of a type it holds), or to
 /// what such a field means: the cache header carries it, so an old cache is
 /// refused instead of misread.
-const PRESCAN_CACHE_FORMAT: u32 = 63;
+const PRESCAN_CACHE_FORMAT: u32 = 64;
 
 /// The header a prescan cache file starts with: a magic, the layout version
 /// and the aurora-lint version that wrote it.
