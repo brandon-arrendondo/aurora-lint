@@ -13,6 +13,9 @@
 //!   inside `extern "C" { ... }` are at file scope.
 //! - Reserved standard library names (errno, SIZE_MAX, etc.)
 //!
+//! A typedef name and an enumeration constant are ordinary identifiers, so
+//! each is checked as a variable is, at file scope or in a block.
+//!
 //! Defining a feature-test macro is not reported. These names are reserved,
 //! but a governing standard or the implementation's documentation tells the
 //! program to define them to request features, so a program that does is
@@ -117,6 +120,93 @@ pub const FEATURE_TEST_MACROS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Whether `name` is reserved for any use (C 7.1.3): it begins with two
+/// underscores, or with an underscore and an uppercase letter.
+fn is_reserved_for_any_use(name: &str) -> bool {
+    name.starts_with("__")
+        || name
+            .strip_prefix('_')
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(char::is_uppercase)
+}
+
+/// Every declarator of `node` (a declaration, typedef or member
+/// declaration), with each `init_declarator`'s initializer left behind.
+fn declarators<'a>(node: &Node<'a>) -> Vec<Node<'a>> {
+    let mut cursor = node.walk();
+    node.children_by_field_name("declarator", &mut cursor)
+        .map(|d| {
+            if d.kind() == "init_declarator" {
+                d.child_by_field_name("declarator").unwrap_or(d)
+            } else {
+                d
+            }
+        })
+        .collect()
+}
+
+/// The declarator a pointer, array, function, parenthesized or attributed
+/// declarator wraps. An array's size and a function's parameters are not
+/// part of it.
+fn inner_declarator<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+    match node.kind() {
+        "parenthesized_declarator" | "attributed_declarator" => {
+            let mut cursor = node.walk();
+            let inner = node
+                .named_children(&mut cursor)
+                .find(|c| c.kind() != "attribute_declaration" && c.kind() != "ms_call_modifier");
+            inner
+        }
+        _ => node.child_by_field_name("declarator"),
+    }
+}
+
+/// The name `declarator` declares, found through any pointer, array,
+/// function or parenthesized declarators around it.
+fn declared_name(declarator: Node) -> Option<Node> {
+    let mut node = declarator;
+    loop {
+        match node.kind() {
+            "identifier" | "type_identifier" | "field_identifier" => return Some(node),
+            "pointer_declarator"
+            | "array_declarator"
+            | "function_declarator"
+            | "parenthesized_declarator"
+            | "attributed_declarator" => node = inner_declarator(&node)?,
+            _ => return None,
+        }
+    }
+}
+
+fn reserved_identifier(node: &Node, name: &str) -> RuleViolation {
+    RuleViolation {
+        rule_id: "DCL37-C".to_string(),
+        severity: Severity::Low,
+        line: node.start_position().row + 1,
+        column: node.start_position().column + 1,
+        message: format!("Reserved identifier '{}' should not be used", name),
+        file_path: String::new(),
+        suggestion: Some("Use a non-reserved identifier".to_string()),
+        requires_manual_review: Some(false),
+    }
+}
+
+fn file_scope_identifier(node: &Node, name: &str) -> RuleViolation {
+    RuleViolation {
+        rule_id: "DCL37-C".to_string(),
+        severity: Severity::Low,
+        line: node.start_position().row + 1,
+        column: node.start_position().column + 1,
+        message: format!(
+            "File-scope identifier '{}' should not start with underscore",
+            name
+        ),
+        file_path: String::new(),
+        suggestion: Some("Remove the leading underscore or rename the identifier".to_string()),
+        requires_manual_review: Some(false),
+    }
+}
+
 /// Whether `name` is on [`FEATURE_TEST_MACROS`].
 fn is_feature_test_macro(name: &str) -> bool {
     FEATURE_TEST_MACROS
@@ -169,23 +259,7 @@ impl Dcl37C {
 
     /// Check if an identifier is a reserved identifier per C standard
     fn is_reserved_identifier(&self, name: &str) -> bool {
-        // Check for leading underscore patterns
-        if name.starts_with("__") {
-            // Double underscore is reserved
-            return true;
-        }
-
-        if name.starts_with('_') && name.len() > 1 {
-            // Single underscore followed by uppercase letter is reserved
-            if let Some(second_char) = name.chars().nth(1) {
-                if second_char.is_uppercase() {
-                    return true;
-                }
-            }
-        }
-
-        // Check for reserved standard library names
-        RESERVED_NAMES.contains(&name)
+        is_reserved_for_any_use(name) || RESERVED_NAMES.contains(&name)
     }
 
     /// Check if a name is a reserved function name
@@ -206,8 +280,11 @@ impl Dcl37C {
         // body, a `for` header, a parameter list or a K&R parameter
         // declaration. Everywhere else (`#if` arms, `extern "C" { ... }`,
         // a parser `ERROR`) it is at file scope.
-        let block_scope: HashSet<usize> =
-            descendants_of_kinds_with(*node, &["declaration"], false, |inside, parent| {
+        let block_scope: HashSet<usize> = descendants_of_kinds_with(
+            *node,
+            &["declaration", "type_definition", "enumerator"],
+            false,
+            |inside, parent| {
                 *inside
                     || matches!(
                         parent.kind(),
@@ -216,15 +293,16 @@ impl Dcl37C {
                             | "parameter_list"
                             | "function_definition"
                     )
-            })
-            .into_iter()
-            .filter(|(_, inside)| *inside)
-            .map(|(decl, _)| decl.id())
-            .collect();
+            },
+        )
+        .into_iter()
+        .filter(|(_, inside)| *inside)
+        .map(|(decl, _)| decl.id())
+        .collect();
         for n in query::find_descendants(*node, |_| true) {
+            let at_file_scope = !block_scope.contains(&n.id());
             match n.kind() {
                 "declaration" => {
-                    let at_file_scope = !block_scope.contains(&n.id());
                     let mut check = |declarator: &Node| {
                         if at_file_scope {
                             self.check_file_scope_declarator(declarator, source, violations);
@@ -260,8 +338,41 @@ impl Dcl37C {
                         self.check_declarator(&declarator, source, violations);
                     }
                 }
+                // A typedef name and an enumeration constant are ordinary
+                // identifiers; C 7.1.3 reserves a leading-underscore one at
+                // file scope.
+                "type_definition" => {
+                    for declarator in declarators(&n) {
+                        if let Some(name) = declared_name(declarator) {
+                            self.check_name(&name, source, at_file_scope, violations);
+                        }
+                    }
+                }
+                "enumerator" => {
+                    if let Some(name) = n.child_by_field_name("name") {
+                        self.check_name(&name, source, at_file_scope, violations);
+                    }
+                }
                 _ => {}
             }
+        }
+    }
+
+    /// Report a declared typedef name or enumeration constant that is
+    /// reserved: for any use (`_X`, `__x`) or as a library name, or, where
+    /// `file_scope` holds, any leading-underscore name.
+    fn check_name(
+        &self,
+        node: &Node,
+        source: &str,
+        file_scope: bool,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let name = get_node_text(node, source);
+        if self.is_reserved_identifier(&name) {
+            violations.push(reserved_identifier(node, &name));
+        } else if file_scope && self.has_file_scope_reserved_prefix(&name) {
+            violations.push(file_scope_identifier(node, &name));
         }
     }
 
