@@ -9392,6 +9392,12 @@ fn msc37_an_arm_under_a_default_value_guard_is_dead() {
         msc37_macro_scope_findings("arm_under_a_default_with_another_condition"),
         1
     );
+    // A platform's own `#define` before the default leaves it defined in
+    // every build all the same.
+    assert_eq!(
+        msc37_macro_scope_findings("default_value_after_a_platform_define"),
+        0
+    );
 }
 
 /// The directive in force at the call decides: a macro `#undef`ed before the

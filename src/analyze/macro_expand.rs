@@ -727,7 +727,8 @@ fn each_function_macro_arm(source: &str, mut f: impl FnMut(String, MacroArm, usi
 /// as the file found it in others; such a region stays live. A default value
 /// (`#ifndef X` / `#define X 1` / `#endif`,
 /// [`default_value_defines`](crate::analyze::check_macros::default_value_defines))
-/// leaves the name defined in every build, so a region it alone decides stays
+/// leaves the name defined in every build after it, whatever defined it
+/// before, unless an `#undef` follows; a region its guard decides there stays
 /// dead.
 fn arm_dead_regions(source: &str) -> Vec<(usize, usize)> {
     use lang_parsing_substrate::DeadCodeReason;
@@ -744,14 +745,21 @@ fn arm_dead_regions(source: &str) -> Vec<(usize, usize)> {
     let guards = conditional_guards(source);
     let timeline = crate::analyze::check_macros::ObjectMacroTimeline::of(source);
     let defines = crate::analyze::check_macros::default_value_defines(source);
+    // Defined in every build at `at`: a default value before it, and no
+    // `#undef` of the name between the last such default and `at`.
     let defaulted = |name: &str, at: usize| {
-        let mut before = defines
+        use crate::analyze::check_macros::NameDirective;
+        let before: Vec<NameDirective> = defines
             .get(name)
             .into_iter()
             .flatten()
             .take_while(|&&(line, _)| line < at)
-            .peekable();
-        before.peek().is_some() && before.all(|&(_, default)| default)
+            .map(|&(_, d)| d)
+            .collect();
+        before
+            .iter()
+            .rposition(|d| *d == NameDirective::Default)
+            .is_some_and(|k| !before[k + 1..].contains(&NameDirective::Undef))
     };
     regions
         .iter()
@@ -4253,6 +4261,8 @@ mod tests {
             "#if !defined(FAST)\n#define FAST\n#endif\n",
             "#if ! defined FAST /* default */\n#define FAST 1\n#endif\n",
             "#ifndef FAST\n#define FAST 1\n#endif\n#ifndef FAST\n#define FAST 2\n#endif\n",
+            "#ifdef WIN\n#define FAST 1\n#endif\n#ifndef FAST\n#define FAST 1\n#endif\n",
+            "#define FAST 2\n#ifndef FAST\n#define FAST 1\n#endif\n",
         ] {
             assert_eq!(
                 bodies(&format!("{default}{arms}")),

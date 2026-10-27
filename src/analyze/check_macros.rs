@@ -330,16 +330,29 @@ fn only_guards(source: &str, directives: &[(usize, String)], k: usize) -> bool {
         .all(|(i, l)| (start..=end).contains(&(i + 1)) || l.trim().is_empty())
 }
 
+/// One `#define` or `#undef` of a name, as [`default_value_defines`] reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameDirective {
+    /// A default value's `#define`: directly in the then-arm of a group whose
+    /// whole condition is `#ifndef X` or `#if !defined(X)` for the name it
+    /// defines, with no conditional around that group but the file's include
+    /// guard.
+    Default,
+    /// Any other `#define`.
+    Define,
+    /// An `#undef`.
+    Undef,
+}
+
 /// Every `#define` and `#undef` of each name in `source`, in file order: the
-/// directive's first line and whether it is a default value's `#define`, one
-/// directly in the then-arm of a group whose whole condition is `#ifndef X`
-/// or `#if !defined(X)` for the name it defines, with no conditional around
-/// that group but the file's include guard. Such a `#define` leaves the name
-/// defined in every build, whether it ran or the name was defined before: a
-/// default's absence is not a build that lacks the name. sqlite's `#if
+/// directive's first line and which kind it is. A default value
+/// ([`NameDirective::Default`]) leaves the name defined in every build after
+/// it, whether it ran or the name was defined before (a platform's own
+/// `#define` included): a default's absence is not a build that lacks the
+/// name. Only an `#undef` after it can change that. sqlite's `#if
 /// !defined(NDEBUG) && !defined(SQLITE_DEBUG)` / `# define NDEBUG 1` has
 /// another conjunct and is no default.
-pub fn default_value_defines(source: &str) -> HashMap<String, Vec<(usize, bool)>> {
+pub fn default_value_defines(source: &str) -> HashMap<String, Vec<(usize, NameDirective)>> {
     /// One open group: whether it is the include guard, the name its whole
     /// condition says is undefined, and whether its first arm is being read.
     struct Group {
@@ -350,7 +363,7 @@ pub fn default_value_defines(source: &str) -> HashMap<String, Vec<(usize, bool)>
     let masked = crate::utility::cert_c::pp_tokens::mask_source(source);
     let directives = logical_directives(&masked);
     let mut open: Vec<Group> = Vec::new();
-    let mut out: HashMap<String, Vec<(usize, bool)>> = HashMap::new();
+    let mut out: HashMap<String, Vec<(usize, NameDirective)>> = HashMap::new();
     for (k, (line, d)) in directives.iter().enumerate() {
         let keyword = directive_keyword(d);
         match keyword.as_str() {
@@ -378,13 +391,17 @@ pub fn default_value_defines(source: &str) -> HashMap<String, Vec<(usize, bool)>
                 if name.is_empty() {
                     continue;
                 }
-                let default = keyword == "define"
-                    && open.split_last().is_some_and(|(inner, outer)| {
-                        inner.then_arm
-                            && inner.defaults.as_deref() == Some(name.as_str())
-                            && outer.iter().all(|g| g.guard)
-                    });
-                out.entry(name).or_default().push((*line, default));
+                let default = open.split_last().is_some_and(|(inner, outer)| {
+                    inner.then_arm
+                        && inner.defaults.as_deref() == Some(name.as_str())
+                        && outer.iter().all(|g| g.guard)
+                });
+                let directive = match (keyword.as_str(), default) {
+                    ("undef", _) => NameDirective::Undef,
+                    (_, true) => NameDirective::Default,
+                    (_, false) => NameDirective::Define,
+                };
+                out.entry(name).or_default().push((*line, directive));
             }
             _ => {}
         }
