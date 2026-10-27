@@ -10276,8 +10276,27 @@ fn flp00_takes_a_header_macro_for_zero_only_where_every_build_includes_it_first(
             "#include \"zero.h\"\n#define RHDR \"rz.h\"\n#include RHDR\n\
              int j(double x) { return x == ZERO; }\n",
         ),
+        ("sub/config.h", "#define CZ 0.0\n"),
+        (
+            "unresolved.c",
+            "#include \"config.h\"\n#if 0\n#include \"sub/config.h\"\n#endif\n\
+             int k(double x) { return x == CZ; }\n",
+        ),
+        ("inc/ez.h", "#define EZ 0.0\n"),
+        (
+            "angle.c",
+            "#include <ez.h>\n#ifdef FOO\n#include \"inc/ez.h\"\n#endif\n\
+             int l(double x) { return x == EZ; }\n",
+        ),
+        ("fz.h", "#define FZ 0.0\n"),
+        (
+            "beside.c",
+            "#include <fz.h>\n#if 0\n#include \"fz.h\"\n#endif\n\
+             int m(double x) { return x == FZ; }\n",
+        ),
     ];
     std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::create_dir(dir.path().join("inc")).unwrap();
     for (name, text) in files {
         std::fs::write(dir.path().join(name), text).unwrap();
     }
@@ -10309,15 +10328,20 @@ fn flp00_takes_a_header_macro_for_zero_only_where_every_build_includes_it_first(
     // header included in a dead arm or only in some builds proves nothing,
     // and neither does a definition only some builds of the header make:
     // under #ifdef, or a header that is nothing but an #ifndef default. A
-    // dead-arm #include whose path ends like a live one's is still dead,
-    // and past a computed #include any name may have been redefined.
+    // dead-arm #include whose path ends like a live one's is still dead, a
+    // header is the include line's that names it, not a live line's that
+    // resolved to nothing, and past a computed #include any name may have
+    // been redefined.
     let expected: Vec<(String, u64)> = [
+        ("angle.c", 5),
+        ("beside.c", 5),
         ("computed.c", 4),
         ("dead.c", 5),
         ("default.c", 2),
         ("late.c", 1),
         ("suffix.c", 5),
         ("transitive.c", 5),
+        ("unresolved.c", 5),
         ("uses.c", 4),
         ("uses.c", 5),
     ]

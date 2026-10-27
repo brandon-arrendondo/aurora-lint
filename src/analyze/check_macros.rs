@@ -498,6 +498,8 @@ pub struct ObjectMacroTimeline {
     includes: Vec<IncludeLine>,
     /// The name of the include guard enclosing the file, if any.
     guard: Option<String>,
+    /// The literal `#include` lines in regions the file proves dead.
+    dead_includes: Vec<IncludeLine>,
 }
 
 /// One `#include` the file does not prove dead, as
@@ -717,6 +719,7 @@ impl ObjectMacroTimeline {
         let mut steps: HashMap<String, Vec<(usize, MacroStep)>> = HashMap::new();
         let mut includes = Vec::new();
         let mut guard_name = None;
+        let mut dead_includes = Vec::new();
         let arms_of = |open: &[OpenGroup]| -> Vec<usize> {
             open.iter().filter(|g| !g.guard).map(|g| g.arm).collect()
         };
@@ -786,9 +789,6 @@ impl ObjectMacroTimeline {
                     }
                 }
                 "include" => {
-                    if is_dead(*line) {
-                        continue;
-                    }
                     let spelling = d["include".len()..].trim();
                     let close = match spelling.chars().next() {
                         Some('"') => Some('"'),
@@ -796,7 +796,16 @@ impl ObjectMacroTimeline {
                         _ => None,
                     };
                     let literal = close.and_then(|c| spelling[1..].find(c).map(|end| (c, end)));
-                    includes.push(IncludeLine {
+                    let dead = is_dead(*line);
+                    if dead && literal.is_none() {
+                        continue;
+                    }
+                    let into = if dead {
+                        &mut dead_includes
+                    } else {
+                        &mut includes
+                    };
+                    into.push(IncludeLine {
                         line: *line,
                         spelling: match literal {
                             Some((_, end)) => spelling[1..1 + end].to_string(),
@@ -844,7 +853,15 @@ impl ObjectMacroTimeline {
             directive_lines: directives.iter().map(|(line, _)| *line).collect(),
             includes,
             guard: guard_name,
+            dead_includes,
         }
+    }
+
+    /// The file's literal `#include` lines in regions it proves dead: a
+    /// reader matching a header to the line that included it by its path
+    /// tells these apart from the live ones.
+    pub fn dead_includes(&self) -> &[IncludeLine] {
+        &self.dead_includes
     }
 
     /// The name of the include guard enclosing the whole file (`#ifndef X` /
@@ -1600,6 +1617,12 @@ mod tests {
         let src = "#ifndef H_H\n#define H_H\n#include \"always.h\"\n#ifdef Q\n#include <sometimes.h>\n#endif\n#if 0\n#include \"never.h\"\n#endif\n#include DEFS_H\n#endif\n";
         let timeline = ObjectMacroTimeline::of(src);
         assert_eq!(timeline.include_guard(), Some("H_H"));
+        let dead: Vec<&str> = timeline
+            .dead_includes()
+            .iter()
+            .map(|i| i.spelling.as_str())
+            .collect();
+        assert_eq!(dead, ["never.h"]);
         let includes = timeline.includes().to_vec();
         assert_eq!(
             includes,

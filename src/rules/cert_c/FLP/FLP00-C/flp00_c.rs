@@ -239,7 +239,7 @@ impl ZeroMacros<'_> {
                 found: &mut found,
                 computed: &mut computed,
             };
-            let start = targets_of(&layers, &own, include)
+            let start = targets_of(&layers, &own, self.own(), include)
                 .into_iter()
                 .map(|(f, sure)| (f, sure && !include.conditional))
                 .collect();
@@ -297,7 +297,7 @@ impl ZeroMacros<'_> {
                     computed.get_or_insert(first);
                     continue;
                 }
-                for (next, sure) in targets_of(layers, &file, include) {
+                for (next, sure) in targets_of(layers, &file, &timeline, include) {
                     stack.push((next, unconditional && sure && !include.conditional));
                 }
             }
@@ -317,12 +317,15 @@ struct Walk<'a, 'b> {
 /// with whether it is the one: a `"quoted"` spelling found beside `file` is,
 /// as the preprocessor looks there first. Otherwise the edges whose real
 /// path ends with the spelling (`.` and `..` segments dropped) are
-/// candidates, and only a lone one is sure. The edges also hold `file`'s
-/// `#include` lines in dead arms, so a suffix that several match proves
-/// nothing.
+/// candidates, and only a lone one is sure. The edges hold every `#include`
+/// line of `file`, those in dead arms too, and an include that resolved to
+/// no file has none: an edge that another of `file`'s lines spells more
+/// fully (`sub/x.h` for `x.h`), or finds beside `file`, is that line's, not
+/// this one's.
 fn targets_of(
     layers: &[&HashMap<String, Vec<String>>],
     file: &str,
+    timeline: &ObjectMacroTimeline,
     include: &IncludeLine,
 ) -> Vec<(String, bool)> {
     let edges: Vec<&String> = layers
@@ -330,36 +333,60 @@ fn targets_of(
         .filter_map(|edges| edges.get(file))
         .flatten()
         .collect();
-    if include.quoted {
-        if let Some(dir) = std::path::Path::new(file).parent() {
-            let beside = real_path(&dir.join(&include.spelling));
-            if edges.iter().any(|e| **e == beside) {
-                return vec![(beside, true)];
-            }
-        }
+    let dir = std::path::Path::new(file).parent();
+    let beside = |line: &IncludeLine| {
+        dir.filter(|_| line.quoted)
+            .map(|dir| real_path(&dir.join(&line.spelling)))
+            .filter(|path| edges.contains(&path))
+    };
+    if let Some(path) = beside(include) {
+        return vec![(path, true)];
     }
-    let spelling = include
-        .spelling
-        .split(['/', '\\'])
-        .filter(|segment| !matches!(*segment, "" | "." | ".."))
-        .collect::<Vec<_>>()
-        .join("/");
+    let spelling = normalized_spelling(&include.spelling);
     if spelling.is_empty() {
         return Vec::new();
     }
+    let others: Vec<&IncludeLine> = timeline
+        .includes()
+        .iter()
+        .chain(timeline.dead_includes())
+        .filter(|other| !other.computed && other.line != include.line)
+        .collect();
+    let longer: Vec<String> = others
+        .iter()
+        .map(|other| normalized_spelling(&other.spelling))
+        .filter(|other| other.len() > spelling.len())
+        .collect();
+    let found_beside: Vec<String> = others.iter().filter_map(|other| beside(other)).collect();
     let mut matches: Vec<String> = edges
-        .into_iter()
-        .filter(|target| {
-            target
-                .strip_suffix(spelling.as_str())
-                .is_some_and(|dir| dir.ends_with('/'))
-        })
-        .cloned()
+        .iter()
+        .filter(|target| ends_with_path(target, &spelling))
+        .filter(|target| !longer.iter().any(|other| ends_with_path(target, other)))
+        .filter(|target| !found_beside.contains(target))
+        .map(|target| (*target).clone())
         .collect();
     matches.sort();
     matches.dedup();
     let sure = matches.len() == 1;
     matches.into_iter().map(|m| (m, sure)).collect()
+}
+
+/// An include's spelling as a `/`-separated path, `.` and `..` segments
+/// dropped.
+fn normalized_spelling(spelling: &str) -> String {
+    spelling
+        .split(['/', '\\'])
+        .filter(|segment| !matches!(*segment, "" | "." | ".."))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Whether the real path `target` ends with the path `spelling`, at a
+/// directory boundary.
+fn ends_with_path(target: &str, spelling: &str) -> bool {
+    target
+        .strip_suffix(spelling)
+        .is_some_and(|dir| dir.ends_with('/'))
 }
 
 impl CertRule for Flp00C {
