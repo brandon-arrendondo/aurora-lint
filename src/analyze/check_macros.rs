@@ -336,11 +336,12 @@ pub enum NameDirective {
     /// A default value's `#define`: directly in the then-arm of a group whose
     /// whole condition is `#ifndef X` or `#if !defined(X)` for the name it
     /// defines, with no conditional around that group but the file's include
-    /// guard.
+    /// guard and arms every build compiles (the `#else` of `#if 0`).
     Default,
     /// Any other `#define`.
     Define,
-    /// An `#undef`.
+    /// An `#undef`, unless the very next directive defines the name again:
+    /// that pair leaves it defined (`#undef FAST` / `#define FAST 2`).
     Undef,
 }
 
@@ -354,11 +355,13 @@ pub enum NameDirective {
 /// another conjunct and is no default.
 pub fn default_value_defines(source: &str) -> HashMap<String, Vec<(usize, NameDirective)>> {
     /// One open group: whether it is the include guard, the name its whole
-    /// condition says is undefined, and whether its first arm is being read.
+    /// condition says is undefined, whether its first arm is being read, and
+    /// its condition's value when that is the constant `0` or `1`.
     struct Group {
         guard: bool,
         defaults: Option<String>,
         then_arm: bool,
+        constant: Option<bool>,
     }
     let masked = crate::utility::cert_c::pp_tokens::mask_source(source);
     let directives = logical_directives(&masked);
@@ -373,6 +376,11 @@ pub fn default_value_defines(source: &str) -> HashMap<String, Vec<(usize, NameDi
                     && only_guards(&masked, &directives, k),
                 defaults: whole_ifndef(d),
                 then_arm: true,
+                constant: match (keyword.as_str(), d[keyword.len()..].trim()) {
+                    ("if", "0") => Some(false),
+                    ("if", "1") => Some(true),
+                    _ => None,
+                },
             }),
             "elif" | "elifdef" | "elifndef" | "else" => {
                 if let Some(group) = open.last_mut() {
@@ -394,8 +402,22 @@ pub fn default_value_defines(source: &str) -> HashMap<String, Vec<(usize, NameDi
                 let default = open.split_last().is_some_and(|(inner, outer)| {
                     inner.then_arm
                         && inner.defaults.as_deref() == Some(name.as_str())
-                        && outer.iter().all(|g| g.guard)
+                        && outer
+                            .iter()
+                            .all(|g| g.guard || g.constant == Some(g.then_arm))
                 });
+                let redefined = directives.get(k + 1).is_some_and(|(_, next)| {
+                    directive_keyword(next) == "define"
+                        && next["define".len()..]
+                            .trim_start()
+                            .strip_prefix(name.as_str())
+                            .is_some_and(|r| {
+                                !r.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                            })
+                });
+                if keyword == "undef" && redefined {
+                    continue;
+                }
                 let directive = match (keyword.as_str(), default) {
                     ("undef", _) => NameDirective::Undef,
                     (_, true) => NameDirective::Default,

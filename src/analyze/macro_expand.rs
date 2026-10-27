@@ -4325,6 +4325,10 @@ mod tests {
             "#ifndef FAST\n#define FAST 1\n#endif\n#ifndef FAST\n#define FAST 2\n#endif\n",
             "#ifdef WIN\n#define FAST 1\n#endif\n#ifndef FAST\n#define FAST 1\n#endif\n",
             "#define FAST 2\n#ifndef FAST\n#define FAST 1\n#endif\n",
+            // In the `#else` of `#if 0`, which every build compiles.
+            "#if 0\n#define OLD 1\n#else\n#ifndef FAST\n#define FAST 1\n#endif\n#endif\n",
+            // Undefined only to be defined again.
+            "#ifndef FAST\n#define FAST 1\n#endif\n#ifdef WIN\n#undef FAST\n#define FAST 2\n#endif\n",
         ] {
             assert_eq!(
                 bodies(&format!("{default}{arms}")),
@@ -4344,6 +4348,9 @@ mod tests {
             "#ifndef FAST\n#define FAST 1\n#endif\n#ifdef WIN\n#undef FAST\n#endif\n",
             "#ifndef FAST\nint f(int);\n#else\n#define FAST 1\n#endif\n",
             "#ifndef FAST\n#ifdef WIN\n#define FAST 1\n#endif\n#endif\n",
+            "#if 1\n#else\n#ifndef FAST\n#define FAST 1\n#endif\n#endif\n",
+            "#ifndef FAST\n#define FAST 1\n#endif\n#ifdef WIN\n#undef FAST\n\
+             #ifdef WIN_FAST\n#define FAST 2\n#endif\n#endif\n",
         ] {
             assert_eq!(
                 bodies(&format!("{build_dependent}{arms}")),
