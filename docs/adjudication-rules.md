@@ -166,8 +166,7 @@ contract model. (ADR-0015)
   a reserved include guard (`_FOO_H`). Scope is C 7.1.3's: a block-scope
   `_x` is not reserved, including a block-scope `extern int _x;`, while a
   block-scope `_X` is, and a declaration inside `extern "C" { ... }` is at
-  file scope. This reads the standards, so the oracle and the tool agree; it
-  is not a tool-only relaxation.
+  file scope. This reads the standards; it is not a tool-only relaxation.
 
 ## D. Where a finding lives (ADR-0012)
 
