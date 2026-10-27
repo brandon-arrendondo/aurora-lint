@@ -229,18 +229,22 @@ exactly N findings:</p>
 every run that expects a violation; a run that expects none already requires
 no finding anywhere. A fixture may mark several lines. In a macro definition,
 the marker goes before the continuation backslash. A comment that opens with
-<code class="docutils literal notranslate"><span class="pre">expect:</span></code>, in any case and spacing, is taken for a marker, and the build
-fails on:</p>
+the word <code class="docutils literal notranslate"><span class="pre">expect</span></code>, in any case and spacing and after any <code class="docutils literal notranslate"><span class="pre">*</span></code>, <code class="docutils literal notranslate"><span class="pre">/</span></code> or
+<code class="docutils literal notranslate"><span class="pre">!</span></code>, is taken for a marker, and the build fails on:</p>
 <ul class="simple">
 <li><p>a marker spelled any other way than <code class="docutils literal notranslate"><span class="pre">/*</span> <span class="pre">Expect:</span> <span class="pre">here</span> <span class="pre">*/</span></code> or
 <code class="docutils literal notranslate"><span class="pre">//</span> <span class="pre">Expect:</span> <span class="pre">here</span></code>, or a block comment that doesn’t close on its line;</p></li>
-<li><p>a marker on a line with no code;</p></li>
+<li><p>a second marker on one line;</p></li>
+<li><p>a marker on a line with no code, or on a line that a <code class="docutils literal notranslate"><span class="pre">//</span></code> comment ending
+in a backslash continues onto;</p></li>
 <li><p>any other word after a trailing <code class="docutils literal notranslate"><span class="pre">Expect:</span></code>;</p></li>
 <li><p>a marker or count in a fixture where no run expects a violation;</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">count=0</span></code> (say <code class="docutils literal notranslate"><span class="pre">clean</span></code>).</p></li>
 </ul>
-<p>Text inside a string or character literal is not a comment, so a marker
-there marks nothing. Each marker is read from the line it trails, so it moves
+<p>Text inside a string or character literal, including a string continued
+onto the next line with a backslash, is not a comment, so a marker there
+marks nothing. A <code class="docutils literal notranslate"><span class="pre">'</span></code> in a number (<code class="docutils literal notranslate"><span class="pre">1'000</span></code>) or with no closing quote
+(<code class="docutils literal notranslate"><span class="pre">#error</span> <span class="pre">don't</span></code>) starts no literal. Each marker is read from the line it trails, so it moves
 with its code when the fixture is edited.</p>
 <p>Tests are auto-generated into Rust test functions from <code class="docutils literal notranslate"><span class="pre">.c</span></code> files — no embedded
 <code class="docutils literal notranslate"><span class="pre">#[cfg(test)]</span></code> modules in rule implementation files. Run tests with:</p>

@@ -108,18 +108,22 @@ exactly N findings:
 every run that expects a violation; a run that expects none already requires
 no finding anywhere. A fixture may mark several lines. In a macro definition,
 the marker goes before the continuation backslash. A comment that opens with
-``expect:``, in any case and spacing, is taken for a marker, and the build
-fails on:
+the word ``expect``, in any case and spacing and after any ``*``, ``/`` or
+``!``, is taken for a marker, and the build fails on:
 
 - a marker spelled any other way than ``/* Expect: here */`` or
   ``// Expect: here``, or a block comment that doesn't close on its line;
-- a marker on a line with no code;
+- a second marker on one line;
+- a marker on a line with no code, or on a line that a ``//`` comment ending
+  in a backslash continues onto;
 - any other word after a trailing ``Expect:``;
 - a marker or count in a fixture where no run expects a violation;
 - ``count=0`` (say ``clean``).
 
-Text inside a string or character literal is not a comment, so a marker
-there marks nothing. Each marker is read from the line it trails, so it moves
+Text inside a string or character literal, including a string continued
+onto the next line with a backslash, is not a comment, so a marker there
+marks nothing. A ``'`` in a number (``1'000``) or with no closing quote
+(``#error don't``) starts no literal. Each marker is read from the line it trails, so it moves
 with its code when the fixture is edited.
 
 Tests are auto-generated into Rust test functions from ``.c`` files — no embedded
