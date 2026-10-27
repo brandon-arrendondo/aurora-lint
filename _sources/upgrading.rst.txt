@@ -164,10 +164,10 @@ else changed. A trend or baseline keyed on the hash starts again from 0.7.0.
 Severities
 ~~~~~~~~~~
 
-Five rules now report at the severity CERT gives them, which can move a
+Six rules now report at the severity CERT gives them, which can move a
 finding across a ``--fail-on-severity`` threshold: MSC37-C is High (was
 Medium), FIO21-C is Medium (was High), INT33-C and STR30-C are Low (were
-High), and FIO14-C is Low (was Medium).
+High), and DCL37-C and FIO14-C are Low (were Medium).
 
 ``--diff``
 ~~~~~~~~~~
