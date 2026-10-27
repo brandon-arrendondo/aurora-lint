@@ -14,7 +14,10 @@
 //! - Reserved standard library names (errno, SIZE_MAX, etc.)
 //!
 //! A typedef name and an enumeration constant are ordinary identifiers, so
-//! each is checked as a variable is, at file scope or in a block.
+//! each is checked as a variable is, at file scope or in a block. A tag is
+//! reserved at file scope as an ordinary identifier is, and is checked where
+//! it is declared: a specifier with a body, or one standing alone
+//! (`struct _tag;`). `struct _stat st;` only names a tag declared elsewhere.
 //!
 //! Defining a feature-test macro is not reported. These names are reserved,
 //! but a governing standard or the implementation's documentation tells the
@@ -178,6 +181,16 @@ fn declared_name(declarator: Node) -> Option<Node> {
     }
 }
 
+/// The tag a struct, union or enum specifier declares: one with a body, or
+/// one that is the whole declaration (`struct _tag;`). `struct _stat st;`
+/// only refers to a tag declared elsewhere, so it declares none here.
+fn declared_tag<'a>(specifier: &Node<'a>) -> Option<Node<'a>> {
+    let name = specifier.child_by_field_name("name")?;
+    let defines = specifier.child_by_field_name("body").is_some();
+    let stands_alone = specifier.next_sibling().is_some_and(|s| s.kind() == ";");
+    (defines || stands_alone).then_some(name)
+}
+
 fn reserved_identifier(node: &Node, name: &str) -> RuleViolation {
     RuleViolation {
         rule_id: "DCL37-C".to_string(),
@@ -282,7 +295,14 @@ impl Dcl37C {
         // a parser `ERROR`) it is at file scope.
         let block_scope: HashSet<usize> = descendants_of_kinds_with(
             *node,
-            &["declaration", "type_definition", "enumerator"],
+            &[
+                "declaration",
+                "type_definition",
+                "struct_specifier",
+                "union_specifier",
+                "enum_specifier",
+                "enumerator",
+            ],
             false,
             |inside, parent| {
                 *inside
@@ -339,18 +359,23 @@ impl Dcl37C {
                     }
                 }
                 // A typedef name and an enumeration constant are ordinary
-                // identifiers; C 7.1.3 reserves a leading-underscore one at
-                // file scope.
+                // identifiers, and a tag is in the tag name space; C 7.1.3
+                // reserves a leading-underscore name in both at file scope.
                 "type_definition" => {
                     for declarator in declarators(&n) {
                         if let Some(name) = declared_name(declarator) {
-                            self.check_name(&name, source, at_file_scope, violations);
+                            self.check_name(&name, source, at_file_scope, true, violations);
                         }
                     }
                 }
                 "enumerator" => {
                     if let Some(name) = n.child_by_field_name("name") {
-                        self.check_name(&name, source, at_file_scope, violations);
+                        self.check_name(&name, source, at_file_scope, true, violations);
+                    }
+                }
+                "struct_specifier" | "union_specifier" | "enum_specifier" => {
+                    if let Some(name) = declared_tag(&n) {
+                        self.check_name(&name, source, at_file_scope, false, violations);
                     }
                 }
                 _ => {}
@@ -358,18 +383,26 @@ impl Dcl37C {
         }
     }
 
-    /// Report a declared typedef name or enumeration constant that is
-    /// reserved: for any use (`_X`, `__x`) or as a library name, or, where
-    /// `file_scope` holds, any leading-underscore name.
+    /// Report a declared typedef name, tag or enumeration constant that is
+    /// reserved: for any use (`_X`, `__x`), or, where `file_scope` holds, any
+    /// leading-underscore name. An `ordinary` identifier (a typedef name or
+    /// enumeration constant, as against a tag) is also checked against the
+    /// library names a variable is.
     fn check_name(
         &self,
         node: &Node,
         source: &str,
         file_scope: bool,
+        ordinary: bool,
         violations: &mut Vec<RuleViolation>,
     ) {
         let name = get_node_text(node, source);
-        if self.is_reserved_identifier(&name) {
+        let reserved = if ordinary {
+            self.is_reserved_identifier(&name)
+        } else {
+            is_reserved_for_any_use(&name)
+        };
+        if reserved {
             violations.push(reserved_identifier(node, &name));
         } else if file_scope && self.has_file_scope_reserved_prefix(&name) {
             violations.push(file_scope_identifier(node, &name));
