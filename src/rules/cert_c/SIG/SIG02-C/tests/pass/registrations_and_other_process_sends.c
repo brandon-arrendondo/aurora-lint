@@ -6,8 +6,8 @@
  * Shapes that once read as signals used for normal functionality and are
  * not a send to the program itself: ignoring SIGPIPE (no handler is
  * installed), SIGIOT (not SIGIO), a kill() to a child process, restoring a
- * saved disposition, a handler named myoob, a signal no ordinary work
- * carries, and a kill() through a function pointer parameter.
+ * saved disposition, a handler named myoob, and a kill() through a function
+ * pointer parameter.
  */
 #include <signal.h>
 #include <sys/types.h>
@@ -27,7 +27,6 @@ void setup(pid_t child)
     signal(SIGURG, myoob);
     kill(child, SIGUSR1);
     sigaction(SIGALRM, &saved, NULL);
-    raise(SIGTERM);
 }
 
 int send_through(int (*kill)(pid_t, int))

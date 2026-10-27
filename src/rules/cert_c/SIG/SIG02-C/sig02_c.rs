@@ -7,9 +7,9 @@
 //! reports the one form its noncompliant example shows: the program sending
 //! a signal to itself. That is `raise()`, `pthread_kill()` (a thread of this
 //! process), or `kill()` aimed at `getpid()`, each resolved to the library
-//! function rather than matched by spelling (ADR-0006), with a signal argument
-//! that is one of the signals commonly used to carry ordinary work (SIGUSR1,
-//! SIGALRM, SIGPIPE, ...) as a whole token. Registering a handler is not a
+//! function rather than matched by spelling (ADR-0006), whatever the signal:
+//! CERT names no set of signals that carry normal functionality, so the rule
+//! does not choose sends by the signal's name. Registering a handler is not a
 //! send: `signal(SIGPIPE, SIG_IGN)` installs none, and whether a registered
 //! handler carries normal functionality is a design judgment. Unsafe calls
 //! inside a handler belong to SIG30-C and SIG31-C.
@@ -52,20 +52,6 @@ pub struct Sig02C {
     project: RefCell<Option<ProjectFunctions>>,
 }
 
-/// Signals commonly used to carry ordinary work rather than report an
-/// abnormal event.
-const NORMAL_USE_SIGNALS: &[&str] = &[
-    "SIGUSR1",
-    "SIGUSR2",
-    "SIGALRM", // Timer/scheduling
-    "SIGPIPE", // Connection handling
-    "SIGURG",  // Out-of-band data
-    "SIGVTALRM",
-    "SIGPROF",
-    "SIGIO",
-    "SIGPOLL",
-];
-
 /// `expr` with any enclosing parentheses removed.
 fn strip_parens<'a>(expr: Node<'a>) -> Node<'a> {
     let mut expr = expr;
@@ -83,13 +69,6 @@ impl Sig02C {
         Self::default()
     }
 
-    /// True when `arg` is, as a whole token, one of [`NORMAL_USE_SIGNALS`]:
-    /// `SIGIOT` is not `SIGIO`.
-    fn is_normal_use_signal(arg: Node, source: &str) -> bool {
-        let arg = strip_parens(arg);
-        arg.kind() == "identifier" && NORMAL_USE_SIGNALS.contains(&get_node_text(&arg, source))
-    }
-
     /// True when `arg` is a call of the library's `getpid()`: the process
     /// a `kill()` aimed at it signals is the caller's own.
     fn is_own_pid(arg: Node, source: &str, project: Option<&ProjectFunctions>) -> bool {
@@ -101,8 +80,8 @@ impl Sig02C {
             && thread_api::library_call(&arg, source, project) == Some("getpid")
     }
 
-    /// The severity and message for `call` when it is a send of a
-    /// normal-use signal to the program's own process or thread, else `None`.
+    /// The severity and message for `call` when it sends a signal to the
+    /// program's own process or thread, else `None`.
     fn own_process_send(
         &self,
         call: &Node,
@@ -121,9 +100,8 @@ impl Sig02C {
             return None;
         }
         let args = call.child_by_field_name("arguments")?;
-        if !Self::is_normal_use_signal(args.named_child(signal_index)?, source) {
-            return None;
-        }
+        // A send names its signal; a call without one is not a send.
+        args.named_child(signal_index)?;
         if name == "kill" && !Self::is_own_pid(args.named_child(0)?, source, project) {
             return None;
         }
