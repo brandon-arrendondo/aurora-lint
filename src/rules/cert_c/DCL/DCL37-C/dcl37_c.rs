@@ -16,7 +16,9 @@
 //! Every declarator of a declaration is checked, through any pointer, array,
 //! function or parenthesized declarator around its name (`int _a, *_b;`,
 //! `int (*_fp)(void);`). An array's size is not a declared name, so
-//! `char buf[_SIZE];` declares only `buf`.
+//! `char buf[_SIZE];` declares only `buf`. A function defined at file scope
+//! is checked as a file-scope declaration is, so `static int _helper(void)`
+//! is reported.
 //!
 //! A typedef name and an enumeration constant are ordinary identifiers, so
 //! each is checked as a variable is, at file scope or in a block. A tag is
@@ -305,6 +307,7 @@ impl Dcl37C {
             *node,
             &[
                 "declaration",
+                "function_definition",
                 "type_definition",
                 "struct_specifier",
                 "union_specifier",
@@ -345,7 +348,12 @@ impl Dcl37C {
                 "function_definition" => {
                     if let Some(declarator) = n.child_by_field_name("declarator") {
                         // Function definitions: check against reserved function names and patterns
-                        self.check_function_declarator(&declarator, source, violations);
+                        self.check_function_declarator(
+                            &declarator,
+                            source,
+                            at_file_scope,
+                            violations,
+                        );
                     }
                 }
                 "parameter_declaration" => {
@@ -420,11 +428,14 @@ impl Dcl37C {
         }
     }
 
-    /// Check function declarators for reserved function names
+    /// Check function declarators for reserved function names. A function
+    /// defined at file scope, as every standard C function is, also has the
+    /// leading-underscore names reserved there.
     fn check_function_declarator(
         &self,
         node: &Node,
         source: &str,
+        file_scope: bool,
         violations: &mut Vec<RuleViolation>,
     ) {
         match node.kind() {
@@ -461,6 +472,8 @@ impl Dcl37C {
                         suggestion: Some("Use a non-reserved function name".to_string()),
                         requires_manual_review: Some(false),
                     });
+                } else if file_scope && self.has_file_scope_reserved_prefix(&name) {
+                    violations.push(file_scope_identifier(node, &name));
                 }
             }
             "function_declarator"
@@ -468,7 +481,7 @@ impl Dcl37C {
             | "parenthesized_declarator"
             | "attributed_declarator" => {
                 if let Some(declarator) = inner_declarator(node) {
-                    self.check_function_declarator(&declarator, source, violations);
+                    self.check_function_declarator(&declarator, source, file_scope, violations);
                 }
             }
             _ => {}
