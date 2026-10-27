@@ -47,7 +47,7 @@ use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use tree_sitter::Node;
 
 pub struct Exp39C;
@@ -80,63 +80,29 @@ impl CertRule for Exp39C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Collect file-scope declarations first (variables/unions declared
-        // outside any function body). These are genuinely shared across
-        // every function that references them, so it is correct to merge
-        // their accesses into a single bucket.
+        // Collect file-scope declarations first (variables declared outside
+        // any function body). These are genuinely shared across every
+        // function that references them.
         let mut global_var_types = HashMap::new();
-        let mut global_struct_field_ptrs = HashSet::new();
-        let mut global_union_vars = HashSet::new();
-        self.collect_top_level_declarations(
-            node,
-            source,
-            &mut global_var_types,
-            &mut global_struct_field_ptrs,
-            &mut global_union_vars,
-        );
+        self.collect_top_level_declarations(node, source, &mut global_var_types);
 
-        // Each function gets its own scope: a local variable/union declared
-        // inside one function is a *different* object than a same-named
-        // local declared inside another function, so per-function state
-        // (var_types, struct_field_ptrs, union_vars, and critically
-        // union_member_accesses) must never be shared across functions.
-        // Mirrors the per-function reset pattern used by FIO42-C's
-        // FileResourceTracker.
+        // Each function gets its own scope: a local variable declared inside
+        // one function is a *different* object than a same-named local
+        // declared inside another function, so per-function types must never
+        // be shared across functions. Mirrors the per-function reset pattern
+        // used by FIO42-C's FileResourceTracker.
         let functions = query::find_descendants_of_kind(*node, "function_definition");
 
         if functions.is_empty() {
             // No functions at all (e.g. a header-only or declarations-only
             // snippet) - fall back to treating the whole translation unit as
             // a single scope, matching pre-fix behavior for this edge case.
-            self.check_scope(
-                node,
-                source,
-                &global_var_types,
-                &global_struct_field_ptrs,
-                &global_union_vars,
-                &mut violations,
-            );
+            self.check_node(node, source, &mut violations, &global_var_types);
         } else {
             for func in functions {
                 let mut var_types = global_var_types.clone();
-                let mut struct_field_ptrs = global_struct_field_ptrs.clone();
-                let mut union_vars = global_union_vars.clone();
-                self.collect_var_types(
-                    &func,
-                    source,
-                    &mut var_types,
-                    &mut struct_field_ptrs,
-                    &mut union_vars,
-                );
-
-                self.check_scope(
-                    &func,
-                    source,
-                    &var_types,
-                    &struct_field_ptrs,
-                    &union_vars,
-                    &mut violations,
-                );
+                self.collect_var_types(&func, source, &mut var_types);
+                self.check_node(&func, source, &mut violations, &var_types);
             }
         }
 
@@ -145,7 +111,7 @@ impl CertRule for Exp39C {
 }
 
 impl Exp39C {
-    /// Collect variable/union declarations that are direct children of the
+    /// Collect variable declarations that are direct children of the
     /// translation unit (i.e. file scope, not inside any function body).
     /// These are shared across every function, unlike function-local
     /// declarations which must stay scoped per-function (see `check`).
@@ -154,50 +120,12 @@ impl Exp39C {
         node: &Node,
         source: &str,
         var_types: &mut HashMap<String, VarTypeInfo>,
-        struct_field_ptrs: &mut HashSet<String>,
-        union_vars: &mut HashSet<String>,
     ) {
         for child in node.child_nodes() {
             if child.kind() == "declaration" {
                 self.process_declaration(&child, source, var_types);
-                self.check_union_declaration(&child, source, union_vars);
-                for grandchild in child.child_nodes() {
-                    if grandchild.kind() == "init_declarator" {
-                        self.check_struct_field_ptr_init(&grandchild, source, struct_field_ptrs);
-                    }
-                }
             }
         }
-    }
-
-    /// Run the field-expression / cast / realloc checks over a single scope
-    /// (either one function's body or, as a fallback, the whole
-    /// translation unit when there are no functions) and immediately run
-    /// the union type-punning post-pass against a union_member_accesses map
-    /// that is fresh to this scope. Keeping the tracking map scope-local is
-    /// what prevents two different functions' same-named union locals from
-    /// being aggregated into a single (spurious) type-punning finding.
-    fn check_scope(
-        &self,
-        scope_node: &Node,
-        source: &str,
-        var_types: &HashMap<String, VarTypeInfo>,
-        struct_field_ptrs: &HashSet<String>,
-        union_vars: &HashSet<String>,
-        violations: &mut Vec<RuleViolation>,
-    ) {
-        let mut union_member_accesses: HashMap<String, Vec<(String, usize, usize, bool)>> =
-            HashMap::new();
-        self.check_node(
-            scope_node,
-            source,
-            violations,
-            var_types,
-            struct_field_ptrs,
-            union_vars,
-            &mut union_member_accesses,
-        );
-        self.check_union_type_punning(union_vars, &union_member_accesses, violations);
     }
 
     /// Collect variable type information from declarations
@@ -206,43 +134,22 @@ impl Exp39C {
         node: &Node,
         source: &str,
         var_types: &mut HashMap<String, VarTypeInfo>,
-        struct_field_ptrs: &mut HashSet<String>,
-        union_vars: &mut HashSet<String>,
     ) {
         // Function parameters are declared types too (e.g. `const void
         // *srcPtr`), but they live in a `parameter_declaration` inside the
         // function's `function_declarator`, not in a `declaration` node
-        // scanned below. Without this, any cast of an unmatched parameter
-        // identifier fell through to `infer_type_from_name`'s naming-based
-        // guess and could silently default to "int".
+        // scanned below. Without this, a cast of a parameter identifier
+        // would have no type and go unanalyzed.
         self.collect_parameter_types(node, source, var_types);
 
-        for descendant in query::find_descendants_of_kinds(
-            *node,
-            &["declaration", "assignment_expression", "init_declarator"],
-        ) {
-            match descendant.kind() {
-                "declaration" => {
-                    self.process_declaration(&descendant, source, var_types);
-                    self.check_union_declaration(&descendant, source, union_vars);
-                }
-                // Track struct field pointer assignments: ptr = &struct.field
-                "assignment_expression" => {
-                    self.check_struct_field_ptr_assignment(&descendant, source, struct_field_ptrs);
-                }
-                // Track struct field pointer initializations: type *ptr = &struct.field
-                "init_declarator" => {
-                    self.check_struct_field_ptr_init(&descendant, source, struct_field_ptrs);
-                }
-                _ => {}
-            }
+        for descendant in query::find_descendants_of_kind(*node, "declaration") {
+            self.process_declaration(&descendant, source, var_types);
         }
     }
 
     /// Collect declared types for a function's parameters (e.g. `void
     /// f(const void *srcPtr, unsigned short *dst)`), so casts of a
-    /// parameter identifier resolve to its real declared type instead of
-    /// falling through to the naming-based `infer_type_from_name` heuristic.
+    /// parameter identifier resolve to its real declared type.
     fn collect_parameter_types(
         &self,
         func_node: &Node,
@@ -461,9 +368,6 @@ impl Exp39C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         var_types: &HashMap<String, VarTypeInfo>,
-        struct_field_ptrs: &HashSet<String>,
-        union_vars: &HashSet<String>,
-        union_member_accesses: &mut HashMap<String, Vec<(String, usize, usize, bool)>>,
     ) {
         for descendant in query::find_descendants_of_kinds(
             *node,
@@ -471,19 +375,12 @@ impl Exp39C {
                 "cast_expression",
                 "assignment_expression",
                 "init_declarator",
-                "field_expression",
             ],
         ) {
             match descendant.kind() {
                 // Look for cast_expression nodes
                 "cast_expression" => {
                     self.check_cast_expression(&descendant, source, violations, var_types);
-                    self.check_struct_field_ptr_arithmetic(
-                        &descendant,
-                        source,
-                        struct_field_ptrs,
-                        violations,
-                    );
                 }
                 // Check for realloc with struct type casting
                 "assignment_expression" => {
@@ -492,15 +389,6 @@ impl Exp39C {
                 // Also check pointer_declarator assignments with incompatible array types
                 "init_declarator" => {
                     self.check_init_declarator(&descendant, source, violations, var_types);
-                }
-                // Track union member accesses for CWE-188 type punning detection
-                "field_expression" => {
-                    self.track_union_member_access(
-                        &descendant,
-                        source,
-                        union_vars,
-                        union_member_accesses,
-                    );
                 }
                 _ => {}
             }
@@ -775,28 +663,14 @@ impl Exp39C {
                 // Address-of operator: &variable
                 if let Some(argument) = node.child_by_field_name("argument") {
                     let arg_text = get_node_text(&argument, source).trim().to_string();
-                    // Check if we have type info for this variable
-                    if let Some(var_info) = var_types.get(&arg_text) {
-                        return Some(var_info.base_type.clone());
-                    }
-                    // This is simplified - in reality we'd need type information
-                    // For now, check common patterns
-                    if arg_text.contains("float") {
-                        return Some("float".to_string());
-                    } else if arg_text.contains("double") {
-                        return Some("double".to_string());
-                    }
-                    // Try to infer from the variable name (heuristic)
-                    return self.infer_type_from_name(&arg_text);
+                    // A type comes from a declaration, never from the name:
+                    // an undeclared operand is unknown.
+                    return var_types.get(&arg_text).map(|v| v.base_type.clone());
                 }
             }
             "identifier" => {
                 let name = get_node_text(node, source).trim().to_string();
-                // Check if we have type info for this variable
-                if let Some(var_info) = var_types.get(&name) {
-                    return Some(var_info.base_type.clone());
-                }
-                return self.infer_type_from_name(&name);
+                return var_types.get(&name).map(|v| v.base_type.clone());
             }
             "cast_expression" => {
                 // Nested cast - get the target type of the inner cast
@@ -808,35 +682,6 @@ impl Exp39C {
             _ => {}
         }
         None
-    }
-
-    fn infer_type_from_name(&self, name: &str) -> Option<String> {
-        // Heuristic: try to infer type from variable naming conventions.
-        // This only runs once `var_types` (which now includes function
-        // parameters, see `collect_parameter_types`) has already failed to
-        // resolve the identifier. Falling back to a concrete guess (e.g.
-        // defaulting unmatched names to "int") fabricates a type the source
-        // never declared and manufactures false-confidence violations
-        // (an earlier fix: raylib's `GetPixelColor` parameter went unmatched and
-        // was silently treated as `int`, producing 31/31 FPs). When no
-        // naming convention matches, return `None` (unknown type) so the
-        // caller treats the cast as unanalyzable rather than firing on a
-        // fabricated type.
-        let lower_name = name.to_lowercase();
-
-        if lower_name.starts_with('f') || lower_name.contains("float") {
-            Some("float".to_string())
-        } else if lower_name.starts_with("db") || lower_name.contains("double") {
-            Some("double".to_string())
-        } else if lower_name.starts_with("ch") || lower_name.contains("char") {
-            Some("char".to_string())
-        } else if lower_name.starts_with("sh") || lower_name.contains("short") {
-            Some("short".to_string())
-        } else if lower_name.starts_with('l') && lower_name.contains("long") {
-            Some("long".to_string())
-        } else {
-            None
-        }
     }
 
     fn are_incompatible_pointer_types(&self, target_type: &str, source_type: &str) -> bool {
@@ -958,296 +803,5 @@ impl Exp39C {
             ),
             ..Default::default()
         });
-    }
-
-    // ── CWE-188: Struct memory layout assumption detection ──────────────────
-
-    /// Check if a declaration is a union type and track the variable name
-    fn check_union_declaration(&self, node: &Node, source: &str, union_vars: &mut HashSet<String>) {
-        let mut has_union = false;
-        for child in node.child_nodes() {
-            if child.kind() == "union_specifier" {
-                has_union = true;
-                break;
-            }
-        }
-        if !has_union {
-            return;
-        }
-        // Extract variable name from direct children (not from union body)
-        for child in node.child_nodes() {
-            match child.kind() {
-                "identifier" => {
-                    let name = get_node_text(&child, source).trim().to_string();
-                    union_vars.insert(name);
-                }
-                "init_declarator" | "pointer_declarator" => {
-                    if let Some(name) = self.find_var_name(&child, source) {
-                        union_vars.insert(name);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// Check if an assignment stores &struct.field into a variable
-    fn check_struct_field_ptr_assignment(
-        &self,
-        node: &Node,
-        source: &str,
-        struct_field_ptrs: &mut HashSet<String>,
-    ) {
-        if let Some(left) = node.child_by_field_name("left") {
-            if left.kind() == "identifier" {
-                if let Some(right) = node.child_by_field_name("right") {
-                    if self.is_address_of_struct_field(&right, source) {
-                        let var_name = get_node_text(&left, source).trim().to_string();
-                        struct_field_ptrs.insert(var_name);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Check if an init_declarator initializes with &struct.field
-    fn check_struct_field_ptr_init(
-        &self,
-        node: &Node,
-        source: &str,
-        struct_field_ptrs: &mut HashSet<String>,
-    ) {
-        if let Some(value) = node.child_by_field_name("value") {
-            if self.is_address_of_struct_field(&value, source) {
-                if let Some(var_name) = self.find_var_name(node, source) {
-                    struct_field_ptrs.insert(var_name);
-                }
-            }
-        }
-    }
-
-    /// Check if a node is &struct_var.field (address-of a struct field)
-    fn is_address_of_struct_field(&self, node: &Node, source: &str) -> bool {
-        if node.kind() != "pointer_expression" {
-            return false;
-        }
-        let text = get_node_text(node, source).trim();
-        if !text.starts_with('&') {
-            return false;
-        }
-        if let Some(arg) = node.child_by_field_name("argument") {
-            return arg.kind() == "field_expression";
-        }
-        false
-    }
-
-    /// Detect cast expressions involving struct field pointer arithmetic (CWE-188 modify_local)
-    /// Pattern: *(int*)(charPtr + sizeof(int)) where charPtr = &struct.field
-    fn check_struct_field_ptr_arithmetic(
-        &self,
-        cast_node: &Node,
-        source: &str,
-        struct_field_ptrs: &HashSet<String>,
-        violations: &mut Vec<RuleViolation>,
-    ) {
-        if struct_field_ptrs.is_empty() {
-            return;
-        }
-        // Must be a pointer cast
-        if let Some(type_node) = cast_node.child_by_field_name("type") {
-            let target_type = get_node_text(&type_node, source);
-            if !target_type.contains('*') {
-                return;
-            }
-        } else {
-            return;
-        }
-        // Check if value involves pointer arithmetic with a struct field pointer
-        if let Some(value) = cast_node.child_by_field_name("value") {
-            if self.contains_struct_field_ptr_arithmetic(&value, source, struct_field_ptrs) {
-                let start = cast_node.start_position();
-                let text = get_node_text(cast_node, source).trim().to_string();
-                violations.push(RuleViolation {
-                    rule_id: self.rule_id().to_string(),
-                    severity: Severity::Medium,
-                    message: format!(
-                        "Pointer arithmetic on struct field address with type cast assumes specific memory layout: {}",
-                        crate::utility::cert_c::text_bounds::preview(&text, 60)
-                    ),
-                    file_path: String::new(),
-                    line: start.row + 1,
-                    column: start.column + 1,
-                    suggestion: Some(
-                        "Access struct fields by name instead of using pointer arithmetic with assumed offsets. Struct layout may include padding.".to_string()
-                    ),
-                    ..Default::default()
-                });
-            }
-        }
-    }
-
-    /// Check if an expression contains pointer arithmetic with a struct field pointer
-    fn contains_struct_field_ptr_arithmetic(
-        &self,
-        node: &Node,
-        source: &str,
-        struct_field_ptrs: &HashSet<String>,
-    ) -> bool {
-        match node.kind() {
-            "binary_expression" => {
-                // Check if either operand is a struct field pointer
-                for field in &["left", "right"] {
-                    if let Some(operand) = node.child_by_field_name(field) {
-                        if operand.kind() == "identifier" {
-                            let name = get_node_text(&operand, source).trim().to_string();
-                            if struct_field_ptrs.contains(&name) {
-                                return true;
-                            }
-                        }
-                    }
-                }
-                false
-            }
-            "parenthesized_expression" => {
-                for child in node.child_nodes() {
-                    if child.kind() != "(" && child.kind() != ")" {
-                        return self.contains_struct_field_ptr_arithmetic(
-                            &child,
-                            source,
-                            struct_field_ptrs,
-                        );
-                    }
-                }
-                false
-            }
-            _ => false,
-        }
-    }
-
-    /// Track union member accesses for type punning detection
-    fn track_union_member_access(
-        &self,
-        node: &Node,
-        source: &str,
-        union_vars: &HashSet<String>,
-        union_member_accesses: &mut HashMap<String, Vec<(String, usize, usize, bool)>>,
-    ) {
-        if union_vars.is_empty() {
-            return;
-        }
-        // Only process outermost field_expression in a chain
-        // Skip if parent is also a field_expression and we're its argument
-        if let Some(parent) = node.parent() {
-            if parent.kind() == "field_expression" {
-                if let Some(parent_arg) = parent.child_by_field_name("argument") {
-                    if parent_arg.id() == node.id() {
-                        return;
-                    }
-                }
-            }
-        }
-
-        // Check if this is a "deep" access (u.struct_member.field — 3+ levels)
-        // This indicates sub-field access into a struct union member, which is
-        // layout-dependent (byte-order, alignment)
-        let is_deep = node
-            .child_by_field_name("argument")
-            .map(|arg| arg.kind() == "field_expression")
-            .unwrap_or(false);
-
-        let (root, member) = self.get_field_access_root_and_member(node, source);
-        if let (Some(root_name), Some(member_name)) = (root, member) {
-            if union_vars.contains(&root_name) {
-                union_member_accesses.entry(root_name).or_default().push((
-                    member_name,
-                    node.start_position().row + 1,
-                    node.start_position().column + 1,
-                    is_deep,
-                ));
-            }
-        }
-    }
-
-    /// Walk a field_expression chain to find root variable and first member name
-    /// For u.a → (u, a); for u.a.b.c → (u, a)
-    fn get_field_access_root_and_member(
-        &self,
-        node: &Node,
-        source: &str,
-    ) -> (Option<String>, Option<String>) {
-        let mut current = *node;
-        loop {
-            if current.kind() != "field_expression" {
-                break;
-            }
-            if let Some(arg) = current.child_by_field_name("argument") {
-                if arg.kind() == "field_expression" {
-                    current = arg;
-                } else {
-                    // arg is the root (identifier)
-                    let root = get_node_text(&arg, source).trim().to_string();
-                    let member = current
-                        .child_by_field_name("field")
-                        .map(|f| get_node_text(&f, source).trim().to_string());
-                    return (Some(root), member);
-                }
-            } else {
-                break;
-            }
-        }
-        (None, None)
-    }
-
-    /// Post-pass: flag union variables with layout-dependent type punning
-    /// Only flags when: (1) multiple different members accessed AND (2) at least one
-    /// access is "deep" (u.struct_member.field), indicating byte-order/alignment dependency
-    fn check_union_type_punning(
-        &self,
-        union_vars: &HashSet<String>,
-        union_member_accesses: &HashMap<String, Vec<(String, usize, usize, bool)>>,
-        violations: &mut Vec<RuleViolation>,
-    ) {
-        for (var_name, accesses) in union_member_accesses {
-            if !union_vars.contains(var_name) {
-                continue;
-            }
-            let unique_members: HashSet<&str> =
-                accesses.iter().map(|(m, _, _, _)| m.as_str()).collect();
-            if unique_members.len() < 2 {
-                continue;
-            }
-            let has_deep = accesses.iter().any(|(_, _, _, deep)| *deep);
-            if !has_deep {
-                continue;
-            }
-            // Flag the deep accesses (sub-field access into struct union member)
-            let mut seen_members: HashSet<&str> = HashSet::new();
-            let mut first_member: Option<&str> = None;
-            for (member, line, col, is_deep) in accesses {
-                if first_member.is_none() {
-                    first_member = Some(member);
-                    seen_members.insert(member);
-                } else if let Some(first) = first_member {
-                    if !seen_members.contains(member.as_str()) && *is_deep {
-                        violations.push(RuleViolation {
-                            rule_id: self.rule_id().to_string(),
-                            severity: Severity::Medium,
-                            message: format!(
-                                "Accessing union '{}' member '{}' after writing to '{}' relies on data memory layout (byte-order, alignment, packing)",
-                                var_name, member, first
-                            ),
-                        file_path: String::new(),
-                        line: *line,
-                        column: *col,
-                        suggestion: Some(
-                            "Avoid relying on byte-order or alignment of union fields. Use type-appropriate bitwise operations instead of union type punning.".to_string()
-                        ),
-                            ..Default::default()
-                        });
-                        seen_members.insert(member);
-                    }
-                }
-            }
-        }
     }
 }
