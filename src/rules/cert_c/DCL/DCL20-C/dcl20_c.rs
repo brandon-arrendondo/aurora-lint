@@ -87,11 +87,13 @@ impl Dcl20C {
         source: &'a str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Look for function_declarator in the declaration
-        for child in decl.child_nodes() {
-            if child.kind() == "function_declarator" || child.kind() == "init_declarator" {
-                self.check_function_declarator(&child, source, violations);
-            }
+        // Every declarator of the declaration, whatever wraps its function
+        // declarator: `char *f();` is a pointer_declarator, `char *(*fp)();`
+        // a pointer_declarator around a parenthesized one, and `int x = 0` an
+        // init_declarator. The type specifiers are not declarators.
+        let mut cursor = decl.walk();
+        for child in decl.children_by_field_name("declarator", &mut cursor) {
+            self.check_function_declarator(&child, source, violations);
         }
     }
 
