@@ -188,11 +188,13 @@ contract model. (ADR-0015)
   `#if` chain does not, since no build has both (ADR-0010 decision 4):
   `#if C99` / `#include <stdbool.h>` / `#else` / `typedef enum bool { false,
   true } bool;` is not a violation. Nor does one no C build compiles: under
-  `#if 0`, in a `__cplusplus` arm, or in an `#ifdef` arm the file's own
-  `#define` or `#undef` rules out (decision 2). One under a platform macro
-  (`#ifdef _WIN32`) counts, whatever platform the scan assumes. `#undef` of a name reserved for any
-  use is a violation (C 7.1.3), a listed feature-test macro included; `#undef
-  NULL` (C 7.1.4) and `#undef _x` are not.
+  `#if 0`, in a `__cplusplus` arm, or in an `#ifdef`, `#ifndef` or
+  `#if [!]defined(X)` arm the file's own `#define` or `#undef` rules out
+  (decision 2). One under a platform macro (`#ifdef _WIN32`) counts in every
+  configuration; whether that platform is in a corpus's primary
+  configuration is a scope question (decisions 6 and 7). `#undef` of a name
+  reserved for any use is a violation (C 7.1.3), a listed feature-test macro
+  included; `#undef NULL` (C 7.1.4) and `#undef _x` are not.
 
 ## D. Where a finding lives (ADR-0012)
 
