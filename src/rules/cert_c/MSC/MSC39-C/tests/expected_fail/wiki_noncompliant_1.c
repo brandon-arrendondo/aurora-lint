@@ -1,7 +1,11 @@
 /*
  * Rule: MSC39-C
  * Source: wiki
- * Status: FAIL - Should trigger MSC39-C violation
+ * Status: EXPECTED_FAIL - the caller's use after a by-value pass, not detected yet
+ *
+ * The violation is `va_arg(ap, double)` in print_reciprocals after `ap` was
+ * passed by value to contains_zero, which calls va_arg on it. The old
+ * report at contains_zero's parameter named the permitted half.
  */
 
 #include <stdarg.h>
