@@ -70,7 +70,8 @@ struct FilePrescanResult {
     struct_field_shapes: HashMap<String, HashMap<String, String>>,
     struct_typedef_aliases: HashMap<String, String>,
     typedef_types: HashMap<String, String>,
-    /// Every name a `typedef` here declares (`typedef_names_declared`).
+    /// Every name a file-scope `typedef` here declares
+    /// (`typedef_names_declared`).
     typedef_names: HashSet<String>,
     function_pointer_typedef_names: HashSet<String>,
     function_typedef_names: HashSet<String>,

@@ -16,7 +16,7 @@
 //! and a prescan cache must stay valid under every setting. How a consumer
 //! treats a call nothing proves either way is its own policy.
 
-use crate::analyze::context::{typedef_visible, IncludeClosure};
+use crate::analyze::context::{typedef_names_visible, IncludeClosure};
 use crate::analyze::macro_expand::{self, MacroArm};
 use crate::utility::cert_c::ast_utils::{self, get_node_text, IdentifierBinding};
 use crate::utility::cert_c::declarator_utils::declares_function;
@@ -177,7 +177,7 @@ pub struct DirectEffects {
     #[serde(default)]
     pub typedef_reads: BTreeSet<String>,
     /// The real paths of the files defining the body: what decides which
-    /// typedefs a callee it does not declare can name ([`typedef_visible`]).
+    /// typedefs a callee it does not declare can name ([`typedef_visible`](crate::analyze::context::typedef_visible)).
     /// Empty when unknown.
     #[serde(default)]
     pub files: BTreeSet<String>,
@@ -210,7 +210,7 @@ impl DirectEffects {
 /// declaration binding the name -- from one pass.
 pub struct FileScope<'t> {
     globals: HashMap<String, Node<'t>>,
-    /// Every name a typedef in the file declares.
+    /// Every name a file-scope typedef in the file declares.
     typedefs: std::collections::HashSet<String>,
     /// The file's tree indexed once, for every function's resolutions and
     /// climbs: a parent is a lookup rather than a descent from the root.
@@ -1829,7 +1829,7 @@ impl EffectTable {
             .map(|(i, (k, _))| (k.as_str(), i))
             .collect();
 
-        let closures = std::cell::RefCell::new(HashMap::new());
+        let visible = std::cell::RefCell::new(VisibleTypedefs::default());
         // Each function's own facts, and its edges to other functions.
         let mut local: Vec<ClosedEffects> = Vec::with_capacity(functions.len());
         let mut edges: Vec<Vec<(usize, Vec<ArgRoot>)>> = Vec::with_capacity(functions.len());
@@ -1854,7 +1854,7 @@ impl EffectTable {
                 own: &mut own,
                 out: &mut out,
                 files: &direct.files,
-                closures: &closures,
+                visible: &visible,
             };
             for call in &direct.calls {
                 match &call.callee {
@@ -2043,7 +2043,7 @@ pub fn name_effects(
     let mut own = ClosedEffects::default();
     let mut out = Vec::new();
     let files = BTreeSet::new();
-    let closures = std::cell::RefCell::new(HashMap::new());
+    let visible = std::cell::RefCell::new(VisibleTypedefs::default());
     let mut resolver = Resolver {
         lenient: !unknown_is_opaque,
         inputs,
@@ -2052,7 +2052,7 @@ pub fn name_effects(
         own: &mut own,
         out: &mut out,
         files: &files,
-        closures: &closures,
+        visible: &visible,
     };
     resolver.free_name(name, 0);
     own.writes_any |= !own.writes.is_empty() || own.frame_write;
@@ -2119,25 +2119,52 @@ struct Resolver<'r, 'i> {
     out: &'r mut Vec<(usize, Vec<ArgRoot>)>,
     /// [`DirectEffects::files`] of the body being resolved.
     files: &'r BTreeSet<String>,
-    /// Each file's include closure, walked once per table.
-    closures: &'r std::cell::RefCell<HashMap<String, Option<IncludeClosure>>>,
+    /// Each file's visible typedef names, gathered once per table.
+    visible: &'r std::cell::RefCell<VisibleTypedefs>,
+}
+
+/// The typedef names each file's translation unit sees
+/// ([`typedef_names_visible`]), so a call to a library function costs one
+/// lookup per defining file rather than a walk of its include closure.
+#[derive(Default)]
+struct VisibleTypedefs {
+    by_file: HashMap<String, std::rc::Rc<std::collections::HashSet<String>>>,
+    /// Every file's typedef names: what a closure with a computed include
+    /// sees, shared by every such file.
+    all: Option<std::rc::Rc<std::collections::HashSet<String>>>,
 }
 
 impl Resolver<'_, '_> {
     /// Whether a typedef the body's translation unit can see declares
-    /// `name`: one every file defining the body sees ([`typedef_visible`]),
+    /// `name`: one every file defining the body sees ([`typedef_visible`](crate::analyze::context::typedef_visible)),
     /// else, the file unknown, one in any header.
     fn typedef_seen(&self, name: &str) -> bool {
         let names = self.inputs.names;
         if self.files.is_empty() {
             return names.header_typedefs.contains(name);
         }
-        let mut closures = self.closures.borrow_mut();
+        let mut visible = self.visible.borrow_mut();
+        let visible = &mut *visible;
         self.files.iter().all(|file| {
-            let closure = closures.entry(file.clone()).or_insert_with(|| {
-                IncludeClosure::of(&names.include_edges, std::path::Path::new(file))
+            let seen = visible.by_file.entry(file.clone()).or_insert_with(|| {
+                let closure = IncludeClosure::of(&names.include_edges, std::path::Path::new(file));
+                match closure {
+                    Some(c) if c.any => visible
+                        .all
+                        .get_or_insert_with(|| {
+                            std::rc::Rc::new(
+                                names.typedefs_by_file.values().flatten().cloned().collect(),
+                            )
+                        })
+                        .clone(),
+                    c => std::rc::Rc::new(typedef_names_visible(
+                        &names.typedefs_by_file,
+                        file,
+                        c.as_ref(),
+                    )),
+                }
             });
-            typedef_visible(&names.typedefs_by_file, file, closure.as_ref(), name)
+            seen.contains(name)
         })
     }
 

@@ -586,6 +586,26 @@ pub fn typedef_visible(
     }
 }
 
+/// The names [`typedef_visible`] credits for `file` and `closure`, gathered
+/// once so each is a lookup. A closure with `any` is read as one without:
+/// the caller answers it with every file's names.
+pub fn typedef_names_visible(
+    by_file: &HashMap<String, HashSet<String>>,
+    file: &str,
+    closure: Option<&IncludeClosure>,
+) -> HashSet<String> {
+    let files: Vec<&str> = match closure {
+        Some(c) => c.files.iter().map(String::as_str).collect(),
+        None => vec![file],
+    };
+    files
+        .into_iter()
+        .filter_map(|f| by_file.get(f))
+        .flatten()
+        .cloned()
+        .collect()
+}
+
 impl IncludeClosure {
     /// What the scan of the file at `path` may include: [`IncludeClosure::of`]
     /// the include graph. Unknown is empty.
