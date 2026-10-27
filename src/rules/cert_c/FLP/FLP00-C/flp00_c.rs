@@ -57,7 +57,7 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
-use crate::analyze::check_macros::{MacroDefinition, ObjectMacroTimeline};
+use crate::analyze::check_macros::{IncludeLine, MacroDefinition, ObjectMacroTimeline};
 use crate::analyze::compile_commands::real_path;
 use crate::analyze::context::{ProjectContext, VisibleTypes};
 use crate::manifest::Severity;
@@ -97,11 +97,21 @@ const MAX_MACRO_DEPTH: usize = 4;
 /// that line leave in force, read only for a name some header defines.
 struct ZeroMacros<'a> {
     own: OnceCell<ObjectMacroTimeline>,
-    headers: OnceCell<Vec<Reached>>,
+    headers: OnceCell<Headers>,
     timelines: RefCell<HashMap<String, Rc<ObjectMacroTimeline>>>,
     source: &'a str,
     project: Option<&'a ProjectContext>,
     file_path: Option<&'a std::path::Path>,
+}
+
+/// What the file reaches through its live `#include` lines.
+#[derive(Default)]
+struct Headers {
+    reached: Vec<Reached>,
+    /// How many of the file's own `#include` lines it takes to reach a
+    /// computed `#include MACRO`, whose header nothing here reads: past it,
+    /// any name may have been redefined.
+    computed: Option<usize>,
 }
 
 /// A header the file reaches through its live `#include` lines.
@@ -135,9 +145,13 @@ impl ZeroMacros<'_> {
             return None;
         }
         let includes_before = self.own().includes().partition_point(|i| i.line < line);
+        let headers = self.headers.get_or_init(|| self.reachable());
+        if headers.computed.is_some_and(|n| n <= includes_before) {
+            return None;
+        }
         let mut raw = in_force.raw;
         let mut covered = false;
-        for header in self.headers.get_or_init(|| self.reachable()) {
+        for header in &headers.reached {
             if header.first > includes_before {
                 continue;
             }
@@ -145,11 +159,15 @@ impl ZeroMacros<'_> {
                 continue;
             };
             let left = timeline.in_force(name, usize::MAX);
+            // A header that is nothing but `#ifndef TOL` / `#define TOL 0.0`
+            // / `#endif` reads as guarded by TOL; a `-DTOL=1e-6` build skips
+            // its definition, so it proves nothing about TOL.
             covered |= header
                 .first_unconditional
                 .is_some_and(|n| n <= includes_before)
                 && !left.inherits
-                && !left.raw.is_empty();
+                && !left.raw.is_empty()
+                && timeline.include_guard() != Some(name);
             raw.extend(left.raw);
         }
         raw.sort();
@@ -184,9 +202,9 @@ impl ZeroMacros<'_> {
     /// following only the `#include` lines each file does not prove dead,
     /// and how many of the file's own lines it takes to reach each. With no
     /// file path nothing says which headers it sees, so none are read.
-    fn reachable(&self) -> Vec<Reached> {
+    fn reachable(&self) -> Headers {
         let (Some(project), Some(path)) = (self.project, self.file_path) else {
-            return Vec::new();
+            return Headers::default();
         };
         let layers = [
             project.include_edges.as_ref(),
@@ -194,6 +212,7 @@ impl ZeroMacros<'_> {
         ];
         let own = real_path(path);
         let mut found: HashMap<String, Reached> = HashMap::new();
+        let mut computed = None;
         // The build's forced includes come before the file's first line.
         let forced: Vec<String> = layers
             .iter()
@@ -201,39 +220,50 @@ impl ZeroMacros<'_> {
             .flatten()
             .cloned()
             .collect();
-        self.walk(&layers, &own, forced, 0, true, &mut found);
+        let mut walk = Walk {
+            layers: &layers,
+            own: &own,
+            found: &mut found,
+            computed: &mut computed,
+        };
+        let forced = forced.into_iter().map(|f| (f, true)).collect();
+        self.walk(&mut walk, forced, 0);
         for (n, include) in self.own().includes().iter().enumerate() {
-            let targets = targets_of(&layers, &own, &include.spelling);
-            self.walk(
-                &layers,
-                &own,
-                targets,
-                n + 1,
-                !include.conditional,
-                &mut found,
-            );
+            if include.computed {
+                computed.get_or_insert(n + 1);
+                continue;
+            }
+            let mut walk = Walk {
+                layers: &layers,
+                own: &own,
+                found: &mut found,
+                computed: &mut computed,
+            };
+            let start = targets_of(&layers, &own, include)
+                .into_iter()
+                .map(|(f, sure)| (f, sure && !include.conditional))
+                .collect();
+            self.walk(&mut walk, start, n + 1);
         }
         let mut reached: Vec<Reached> = found.into_values().collect();
         reached.sort_by(|a, b| a.file.cmp(&b.file));
-        reached
+        Headers { reached, computed }
     }
 
-    /// Records `start` and what each includes, through the live `#include`
-    /// lines, as reached by the file's first `first` lines; `unconditional`
-    /// when no `#include` on the way sits in a conditional arm.
-    fn walk(
-        &self,
-        layers: &[&HashMap<String, Vec<String>>],
-        own: &str,
-        start: Vec<String>,
-        first: usize,
-        unconditional: bool,
-        found: &mut HashMap<String, Reached>,
-    ) {
-        let mut stack: Vec<(String, bool)> =
-            start.into_iter().map(|f| (f, unconditional)).collect();
+    /// Records each header of `start` and what it includes, through the
+    /// live `#include` lines, as reached by the file's first `first` lines.
+    /// Each comes with whether every build reaches it: no `#include` on the
+    /// way sits in a conditional arm, and each named exactly this header.
+    fn walk(&self, walk: &mut Walk, start: Vec<(String, bool)>, first: usize) {
+        let Walk {
+            layers,
+            own,
+            found,
+            computed,
+        } = walk;
+        let mut stack = start;
         while let Some((file, unconditional)) = stack.pop() {
-            if file == own {
+            if file == *own {
                 continue;
             }
             // A header is walked again only when this reach is its first
@@ -263,19 +293,53 @@ impl ZeroMacros<'_> {
                 continue;
             };
             for include in timeline.includes() {
-                for next in targets_of(layers, &file, &include.spelling) {
-                    stack.push((next, unconditional && !include.conditional));
+                if include.computed {
+                    computed.get_or_insert(first);
+                    continue;
+                }
+                for (next, sure) in targets_of(layers, &file, include) {
+                    stack.push((next, unconditional && sure && !include.conditional));
                 }
             }
         }
     }
 }
 
-/// The headers the include graph resolves `file`'s `#include` of `spelling`
-/// to: its edges whose real path ends with the spelling, `.` and `..`
-/// segments dropped.
-fn targets_of(layers: &[&HashMap<String, Vec<String>>], file: &str, spelling: &str) -> Vec<String> {
-    let spelling = spelling
+/// What one [`ZeroMacros::walk`] reads and fills.
+struct Walk<'a, 'b> {
+    layers: &'a [&'a HashMap<String, Vec<String>>],
+    own: &'a str,
+    found: &'b mut HashMap<String, Reached>,
+    computed: &'b mut Option<usize>,
+}
+
+/// The headers the include graph may resolve `file`'s `include` to, each
+/// with whether it is the one: a `"quoted"` spelling found beside `file` is,
+/// as the preprocessor looks there first. Otherwise the edges whose real
+/// path ends with the spelling (`.` and `..` segments dropped) are
+/// candidates, and only a lone one is sure. The edges also hold `file`'s
+/// `#include` lines in dead arms, so a suffix that several match proves
+/// nothing.
+fn targets_of(
+    layers: &[&HashMap<String, Vec<String>>],
+    file: &str,
+    include: &IncludeLine,
+) -> Vec<(String, bool)> {
+    let edges: Vec<&String> = layers
+        .iter()
+        .filter_map(|edges| edges.get(file))
+        .flatten()
+        .collect();
+    if include.quoted {
+        if let Some(dir) = std::path::Path::new(file).parent() {
+            let beside = real_path(&dir.join(&include.spelling));
+            if edges.iter().any(|e| **e == beside) {
+                return vec![(beside, true)];
+            }
+        }
+    }
+    let spelling = include
+        .spelling
         .split(['/', '\\'])
         .filter(|segment| !matches!(*segment, "" | "." | ".."))
         .collect::<Vec<_>>()
@@ -283,17 +347,19 @@ fn targets_of(layers: &[&HashMap<String, Vec<String>>], file: &str, spelling: &s
     if spelling.is_empty() {
         return Vec::new();
     }
-    layers
-        .iter()
-        .filter_map(|edges| edges.get(file))
-        .flatten()
+    let mut matches: Vec<String> = edges
+        .into_iter()
         .filter(|target| {
             target
                 .strip_suffix(spelling.as_str())
                 .is_some_and(|dir| dir.ends_with('/'))
         })
         .cloned()
-        .collect()
+        .collect();
+    matches.sort();
+    matches.dedup();
+    let sure = matches.len() == 1;
+    matches.into_iter().map(|m| (m, sure)).collect()
 }
 
 impl CertRule for Flp00C {
@@ -473,8 +539,7 @@ fn is_arithmetic_type(type_descriptor: &Node, source: &str) -> bool {
 
 /// The keywords of an arithmetic type specifier (C11 6.7.2).
 const ARITHMETIC_KEYWORDS: &[&str] = &[
-    "char", "short", "int", "long", "float", "double", "signed", "unsigned", "_Bool", "bool",
-    "_Complex",
+    "char", "short", "int", "long", "float", "double", "signed", "unsigned", "bool", "_Complex",
 ];
 
 /// The type qualifiers a cast may carry.

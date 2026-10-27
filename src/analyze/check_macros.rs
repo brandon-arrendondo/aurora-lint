@@ -269,17 +269,20 @@ fn directive_keyword(d: &str) -> String {
 /// `#ifndef X` / `#if !defined(X)` whose next directive is `#define X`.
 /// Only a conditional at file level can be one; the caller checks that.
 fn opens_include_guard(directives: &[(usize, String)], k: usize) -> bool {
+    include_guard_name(directives, k).is_some()
+}
+
+/// The name the conditional `directives[k]` tests and the next directive
+/// defines, when it opens an include guard ([`opens_include_guard`]).
+fn include_guard_name(directives: &[(usize, String)], k: usize) -> Option<String> {
     let d = directives[k].1.as_str();
     let rest = if let Some(r) = d.strip_prefix("ifndef") {
         r
     } else {
-        let Some(r) = d
+        let r = d
             .strip_prefix("if")
             .and_then(|r| r.trim_start().strip_prefix('!'))
-            .and_then(|r| r.trim_start().strip_prefix("defined"))
-        else {
-            return false;
-        };
+            .and_then(|r| r.trim_start().strip_prefix("defined"))?;
         let r = r.trim_start();
         r.strip_prefix('(').unwrap_or(r)
     };
@@ -288,13 +291,13 @@ fn opens_include_guard(directives: &[(usize, String)], k: usize) -> bool {
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
         .collect();
-    !guard.is_empty()
-        && directives.get(k + 1).is_some_and(|(_, next)| {
-            next.strip_prefix("define")
-                .map(str::trim_start)
-                .and_then(|n| n.strip_prefix(guard.as_str()))
-                .is_some_and(|r| !r.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
-        })
+    let defined = directives.get(k + 1).is_some_and(|(_, next)| {
+        next.strip_prefix("define")
+            .map(str::trim_start)
+            .and_then(|n| n.strip_prefix(guard.as_str()))
+            .is_some_and(|r| !r.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+    });
+    (!guard.is_empty() && defined).then_some(guard)
 }
 
 /// Whether the include guard `directives[k]` opens ([`opens_include_guard`])
@@ -490,9 +493,11 @@ pub struct ObjectMacroTimeline {
     names: HashMap<String, NameTimeline>,
     /// Every directive's first physical line, in file order.
     directive_lines: Vec<usize>,
-    /// Every `#include` with a literal spelling outside a region the file
-    /// proves dead, in file order.
+    /// Every `#include` outside a region the file proves dead, in file
+    /// order.
     includes: Vec<IncludeLine>,
+    /// The name of the include guard enclosing the file, if any.
+    guard: Option<String>,
 }
 
 /// One `#include` the file does not prove dead, as
@@ -501,8 +506,15 @@ pub struct ObjectMacroTimeline {
 pub struct IncludeLine {
     /// Its first physical line, from 1.
     pub line: usize,
-    /// The header as spelled, between its quotes or angle brackets.
+    /// The header as spelled, between its quotes or angle brackets; for a
+    /// computed `#include MACRO`, the directive's text after `include`.
     pub spelling: String,
+    /// Whether it is spelled `"quoted"`, so it is looked for beside the
+    /// including file first.
+    pub quoted: bool,
+    /// Whether it is a computed `#include MACRO`, whose header the timeline
+    /// does not know.
+    pub computed: bool,
     /// Whether it sits in a conditional arm (an include guard does not
     /// count), so some build may skip it.
     pub conditional: bool,
@@ -704,6 +716,7 @@ impl ObjectMacroTimeline {
         let mut next_arm = 0;
         let mut steps: HashMap<String, Vec<(usize, MacroStep)>> = HashMap::new();
         let mut includes = Vec::new();
+        let mut guard_name = None;
         let arms_of = |open: &[OpenGroup]| -> Vec<usize> {
             open.iter().filter(|g| !g.guard).map(|g| g.arm).collect()
         };
@@ -713,6 +726,9 @@ impl ObjectMacroTimeline {
                     let guard = open.is_empty()
                         && opens_include_guard(&directives, k)
                         && only_guards(source, &directives, k);
+                    if guard {
+                        guard_name = include_guard_name(&directives, k);
+                    }
                     next_arm += 1;
                     open.push(OpenGroup {
                         guard,
@@ -770,21 +786,26 @@ impl ObjectMacroTimeline {
                     }
                 }
                 "include" => {
-                    let spelling = d["include".len()..].trim_start();
-                    let close = match spelling.chars().next() {
-                        Some('"') => '"',
-                        Some('<') => '>',
-                        _ => continue,
-                    };
-                    if let Some(end) = spelling[1..].find(close) {
-                        if !is_dead(*line) {
-                            includes.push(IncludeLine {
-                                line: *line,
-                                spelling: spelling[1..1 + end].to_string(),
-                                conditional: !arms_of(&open).is_empty(),
-                            });
-                        }
+                    if is_dead(*line) {
+                        continue;
                     }
+                    let spelling = d["include".len()..].trim();
+                    let close = match spelling.chars().next() {
+                        Some('"') => Some('"'),
+                        Some('<') => Some('>'),
+                        _ => None,
+                    };
+                    let literal = close.and_then(|c| spelling[1..].find(c).map(|end| (c, end)));
+                    includes.push(IncludeLine {
+                        line: *line,
+                        spelling: match literal {
+                            Some((_, end)) => spelling[1..1 + end].to_string(),
+                            None => spelling.to_string(),
+                        },
+                        quoted: matches!(literal, Some(('"', _))),
+                        computed: literal.is_none(),
+                        conditional: !arms_of(&open).is_empty(),
+                    });
                     continue;
                 }
                 "undef" => {
@@ -822,11 +843,20 @@ impl ObjectMacroTimeline {
                 .collect(),
             directive_lines: directives.iter().map(|(line, _)| *line).collect(),
             includes,
+            guard: guard_name,
         }
     }
 
-    /// The file's `#include` lines with a literal spelling, in file order,
-    /// those in a region it proves dead left out.
+    /// The name of the include guard enclosing the whole file (`#ifndef X` /
+    /// `#define X` ... `#endif`). A file that is nothing but `#ifndef X` /
+    /// `#define X 0.0` / `#endif` reads as guarded by `X`, though a build
+    /// that defines `X` beforehand skips its definition.
+    pub fn include_guard(&self) -> Option<&str> {
+        self.guard.as_deref()
+    }
+
+    /// The file's `#include` lines, in file order, those in a region it
+    /// proves dead left out.
     pub fn includes(&self) -> &[IncludeLine] {
         &self.includes
     }
@@ -1568,19 +1598,32 @@ mod tests {
     #[test]
     fn the_timeline_lists_live_includes_and_whether_a_build_may_skip_them() {
         let src = "#ifndef H_H\n#define H_H\n#include \"always.h\"\n#ifdef Q\n#include <sometimes.h>\n#endif\n#if 0\n#include \"never.h\"\n#endif\n#include DEFS_H\n#endif\n";
-        let includes = ObjectMacroTimeline::of(src).includes().to_vec();
+        let timeline = ObjectMacroTimeline::of(src);
+        assert_eq!(timeline.include_guard(), Some("H_H"));
+        let includes = timeline.includes().to_vec();
         assert_eq!(
             includes,
             vec![
                 IncludeLine {
                     line: 3,
                     spelling: "always.h".into(),
+                    quoted: true,
+                    computed: false,
                     conditional: false,
                 },
                 IncludeLine {
                     line: 5,
                     spelling: "sometimes.h".into(),
+                    quoted: false,
+                    computed: false,
                     conditional: true,
+                },
+                IncludeLine {
+                    line: 10,
+                    spelling: "DEFS_H".into(),
+                    quoted: false,
+                    computed: true,
+                    conditional: false,
                 },
             ]
         );

@@ -10258,7 +10258,26 @@ fn flp00_takes_a_header_macro_for_zero_only_where_every_build_includes_it_first(
              #ifdef Q\n#include \"zero.h\"\n#endif\n\
              int g(double x) { return x == AZ; }\n",
         ),
+        ("tol.h", "#ifndef TOL\n#define TOL 0.0\n#endif\n"),
+        (
+            "default.c",
+            "#include \"tol.h\"\nint h(double x) { return x == TOL; }\n",
+        ),
+        ("sz.h", "#ifdef FOO\n#define SZ 0.0\n#endif\n"),
+        ("sub/sz.h", "#define SZ 0.0\n"),
+        (
+            "suffix.c",
+            "#include \"sz.h\"\n#if 0\n#include \"sub/sz.h\"\n#endif\n\
+             int i(double x) { return x == SZ; }\n",
+        ),
+        ("rz.h", "#undef ZERO\n#define ZERO 1.0\n"),
+        (
+            "computed.c",
+            "#include \"zero.h\"\n#define RHDR \"rz.h\"\n#include RHDR\n\
+             int j(double x) { return x == ZERO; }\n",
+        ),
     ];
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
     for (name, text) in files {
         std::fs::write(dir.path().join(name), text).unwrap();
     }
@@ -10288,10 +10307,16 @@ fn flp00_takes_a_header_macro_for_zero_only_where_every_build_includes_it_first(
     // A header's zero counts through an include guard, and only after the
     // #include. A name bound to a variable or parameter is no macro, a
     // header included in a dead arm or only in some builds proves nothing,
-    // and neither does a definition only some builds of the header make.
+    // and neither does a definition only some builds of the header make:
+    // under #ifdef, or a header that is nothing but an #ifndef default. A
+    // dead-arm #include whose path ends like a live one's is still dead,
+    // and past a computed #include any name may have been redefined.
     let expected: Vec<(String, u64)> = [
+        ("computed.c", 4),
         ("dead.c", 5),
+        ("default.c", 2),
         ("late.c", 1),
+        ("suffix.c", 5),
         ("transitive.c", 5),
         ("uses.c", 4),
         ("uses.c", 5),
