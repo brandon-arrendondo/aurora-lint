@@ -367,12 +367,29 @@ grows with every A/B until it is pruned:
 A volume is removed only when its checkout hash matches none of this
 repository's live checkouts (the checkout itself and its ``git worktree
 list``), hashed as ``container-run`` names it, plus the older per-pin-only
-``aurora-bench-target-<pin>`` volumes, which nothing uses any more. Name any
-other clone whose volumes should stay with ``--keep DIR`` (repeatable).
-Dangling images go through ``podman image prune -f``. Tagged images and the
-``aurora-bench-cargo-registry`` volume are never touched. The prune refuses
-while a benchmark container (a ``container-run`` or ``container-build-db``)
-is running, and podman itself refuses a volume some container still uses.
+``aurora-bench-target-<pin>`` volumes, which nothing uses any more. A worktree
+whose path is missing counts as deleted unless it is locked (``git worktree
+lock``), which is how to keep the volume of a worktree on a disk that is not
+mounted.
+
+**Every other clone counts as deleted.** Name each clone whose volumes should
+stay with ``--keep DIR`` (repeatable); its worktrees are kept with it. A
+``--keep`` path that is not a git checkout stops the prune rather than keeping
+nothing.
+
+The images listed and removed are every dangling image of this user, not
+only those an ``aurora-bench`` build left behind, since podman records
+nothing that tells them apart. Each is removed by its id, without ``-f``, so
+an image a container was made from is kept. Tagged images and the
+``aurora-bench-cargo-registry`` volume are never touched.
+
+The prune refuses while a benchmark container (a ``container-run`` or
+``container-build-db``) or any container mounting a target volume is
+running, and podman itself refuses a volume some container still uses. It
+exits 0 when everything listed was removed (or, without ``--yes``, listed),
+1 when podman kept something, which it names, and 2 when it refused: podman
+or ``git worktree list`` could not list what it needs, a ``--keep`` path is
+no checkout, or a container is running.
 
 The build also records the checkout's commit in the binary's ``--version``,
 and before scanning ``container-run`` checks it (``python -m bench.container

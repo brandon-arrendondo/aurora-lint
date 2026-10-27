@@ -1407,10 +1407,12 @@ def main():
 
     p_cpr = sub.add_parser(
         "container-prune",
-        help="List (or with --yes remove) target volumes of deleted checkouts and dangling images")
+        help="List (or with --yes remove) target volumes of deleted checkouts and all of "
+             "this user's dangling images; exit 0 done, 1 something kept, 2 refused")
     p_cpr.add_argument("--yes", action="store_true", help="remove them (default: only list)")
     p_cpr.add_argument("--keep", action="append", default=[], metavar="DIR",
-                       help="another live checkout whose volumes stay (a second clone); repeatable")
+                       help="another clone whose volumes, and its worktrees', stay; repeatable. "
+                            "Every clone not named here counts as deleted")
     p_cpr.add_argument("--runtime", default="podman")
     p_cpr.set_defaults(func=cmd_container_prune)
 
