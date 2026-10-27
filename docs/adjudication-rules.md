@@ -167,6 +167,20 @@ contract model. (ADR-0015)
   `_x` is not reserved, including a block-scope `extern int _x;`, while a
   block-scope `_X` is, and a declaration inside `extern "C" { ... }` is at
   file scope. This reads the standards; it is not a tool-only relaxation.
+- **C17. DCL37-C: which declarations and names count.** Every name a
+  declaration declares counts: each declarator of a declaration (`int _a,
+  _B;`), a parenthesized one (`int (*_fp)(void);`), a function defined at
+  file scope, a typedef name, an enumeration constant, and a tag where it is
+  declared, with a body or standing alone (`struct _x;`), not where a
+  specifier only names it (`struct _x *p;`). An array's size declares
+  nothing. A member or label `_m` is not a violation, since those name
+  spaces are not the ordinary or tag ones C 7.1.3 reserves at file scope;
+  `_M` and `__m` are. A library name (`bool`, `true`, `NULL`, `SIZE_MAX`, the
+  `<limits.h>` limits) is a violation only where the file includes a header
+  that defines it, directly or through its own includes; `<inttypes.h>`
+  includes `<stdint.h>`, and `errno` counts everywhere. `#undef` of a name
+  reserved for any use is a violation (C 7.1.3), a listed feature-test macro
+  included; `#undef NULL` (C 7.1.4) and `#undef _x` are not.
 
 ## D. Where a finding lives (ADR-0012)
 
