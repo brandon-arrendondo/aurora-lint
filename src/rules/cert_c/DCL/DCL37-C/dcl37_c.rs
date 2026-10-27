@@ -11,7 +11,9 @@
 //!   block-scope `_x` is not reserved, and neither is a block-scope
 //!   `extern int _x;`, whose identifier has block scope too). Declarations
 //!   inside `extern "C" { ... }` are at file scope.
-//! - Reserved standard library names (errno, SIZE_MAX, etc.)
+//! - Reserved standard library names (errno, SIZE_MAX, etc.), where the file
+//!   includes a header that defines the name (C 7.1.3), directly or through
+//!   the headers it includes; `errno` everywhere
 //!
 //! Every declarator of a declaration is checked, through any pointer, array,
 //! function or parenthesized declarator around its name (`int _a, *_b;`,
@@ -50,10 +52,14 @@
 //! <https://wiki.sei.cmu.edu/confluence/display/c/DCL37-C.+Do+not+declare+or+define+a+reserved+identifier>
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::{IncludeClosure, ProjectContext};
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{descendants_of_kinds_with, get_node_text};
 use lang_parsing_substrate::query;
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// The feature-test macros a program may define, each with the source that
@@ -242,33 +248,82 @@ fn is_feature_test_macro(name: &str) -> bool {
         .any(|(listed, _)| *listed == name)
 }
 
-const RESERVED_NAMES: &[&str] = &[
-    "errno",
-    "SIZE_MAX",
-    "INT_MAX",
-    "INT_MIN",
-    "UINT_MAX",
-    "LONG_MAX",
-    "LONG_MIN",
-    "ULONG_MAX",
-    "CHAR_MAX",
-    "CHAR_MIN",
-    "SHRT_MAX",
-    "SHRT_MIN",
-    "USHRT_MAX",
-    "LLONG_MAX",
-    "LLONG_MIN",
-    "ULLONG_MAX",
-    "NULL",
-    "true",
-    "false",
-    "bool",
-    "stdin",
-    "stdout",
-    "stderr",
-    "FILE",
-    "EOF",
+/// Library names a program may not declare, each with the standard headers
+/// that declare or define it. C 7.1.3 reserves such a name only where the
+/// file includes one of those headers; `errno`, which it reserves for
+/// external linkage always, has none and is reserved everywhere.
+const RESERVED_NAMES: &[(&str, &[&str])] = &[
+    ("errno", &[]),
+    ("SIZE_MAX", &["stdint.h"]),
+    ("INT_MAX", &["limits.h"]),
+    ("INT_MIN", &["limits.h"]),
+    ("UINT_MAX", &["limits.h"]),
+    ("LONG_MAX", &["limits.h"]),
+    ("LONG_MIN", &["limits.h"]),
+    ("ULONG_MAX", &["limits.h"]),
+    ("CHAR_MAX", &["limits.h"]),
+    ("CHAR_MIN", &["limits.h"]),
+    ("SHRT_MAX", &["limits.h"]),
+    ("SHRT_MIN", &["limits.h"]),
+    ("USHRT_MAX", &["limits.h"]),
+    ("LLONG_MAX", &["limits.h"]),
+    ("LLONG_MIN", &["limits.h"]),
+    ("ULLONG_MAX", &["limits.h"]),
+    ("NULL", NULL_HEADERS),
+    ("true", &["stdbool.h"]),
+    ("false", &["stdbool.h"]),
+    ("bool", &["stdbool.h"]),
+    ("stdin", &["stdio.h"]),
+    ("stdout", &["stdio.h"]),
+    ("stderr", &["stdio.h"]),
+    ("FILE", &["stdio.h"]),
+    ("EOF", &["stdio.h"]),
 ];
+
+/// The headers that define `NULL` (C11 7.11, 7.19, 7.21.1, 7.22, 7.24.1,
+/// 7.27.1, 7.29.1).
+const NULL_HEADERS: &[&str] = &[
+    "locale.h", "stddef.h", "stdio.h", "stdlib.h", "string.h", "time.h", "wchar.h",
+];
+
+/// Headers a standard header is defined to include, so that including the
+/// first includes the second: `<inttypes.h>` includes `<stdint.h>` (C11
+/// 7.8p1).
+const IMPLIED_HEADERS: &[(&str, &str)] = &[("inttypes.h", "stdint.h")];
+
+/// The standard headers [`RESERVED_NAMES`] names that the file includes:
+/// with an `#include` line of its own, or through a header its include
+/// closure reaches, by the spelling of an include that resolved to no file
+/// or the name of one that did.
+fn included_headers(source: &str, closure: Option<&IncludeClosure>) -> HashSet<&'static str> {
+    static INCLUDE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let include = INCLUDE
+        .get_or_init(|| regex::Regex::new(r#"(?m)^\s*#\s*include\s*[<"]([^>"]+)[>"]"#).unwrap());
+    let own: HashSet<&str> = include
+        .captures_iter(source)
+        .filter_map(|c| c.get(1).map(|m| m.as_str().trim()))
+        .collect();
+    let reached = |header: &str| {
+        closure.is_some_and(|c| {
+            c.unresolved.contains(header)
+                || c.files
+                    .iter()
+                    .any(|f| f.strip_suffix(header).is_some_and(|dir| dir.ends_with('/')))
+        })
+    };
+    let mut headers: HashSet<&'static str> = RESERVED_NAMES
+        .iter()
+        .flat_map(|(_, headers)| headers.iter().copied())
+        .chain(IMPLIED_HEADERS.iter().map(|(header, _)| *header))
+        .filter(|header| own.contains(header) || reached(header))
+        .collect();
+    for (header, implied) in IMPLIED_HEADERS {
+        if headers.contains(header) {
+            headers.insert(implied);
+        }
+    }
+    headers
+}
 
 // Standard library function names with external linkage
 const RESERVED_FUNCTIONS: &[&str] = &[
@@ -277,17 +332,29 @@ const RESERVED_FUNCTIONS: &[&str] = &[
     "exit", "abort",
 ];
 
-#[derive(Debug)]
-pub struct Dcl37C;
+#[derive(Debug, Default)]
+pub struct Dcl37C {
+    include_edges: RefCell<Arc<HashMap<String, Vec<String>>>>,
+    file_path: RefCell<String>,
+    /// The scanned file's [`included_headers`].
+    included: RefCell<HashSet<&'static str>>,
+}
 
 impl Dcl37C {
     pub fn new() -> Self {
-        Dcl37C
+        Self::default()
     }
 
-    /// Check if an identifier is a reserved identifier per C standard
+    /// Check if an identifier is a reserved identifier per C standard: one
+    /// reserved for any use, or a library name where the file includes a
+    /// header of it.
     fn is_reserved_identifier(&self, name: &str) -> bool {
-        is_reserved_for_any_use(name) || RESERVED_NAMES.contains(&name)
+        is_reserved_for_any_use(name)
+            || RESERVED_NAMES.iter().any(|(listed, headers)| {
+                *listed == name
+                    && (headers.is_empty()
+                        || headers.iter().any(|h| self.included.borrow().contains(h)))
+            })
     }
 
     /// Check if a name is a reserved function name
@@ -590,12 +657,6 @@ impl Dcl37C {
     }
 }
 
-impl Default for Dcl37C {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl CertRule for Dcl37C {
     fn rule_id(&self) -> &'static str {
         "DCL37-C"
@@ -614,6 +675,19 @@ impl CertRule for Dcl37C {
     }
 
     fn scan(&self, root_node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let closure = IncludeClosure::of(
+            &self.include_edges.borrow(),
+            Path::new(&*self.file_path.borrow()),
+        );
+        *self.included.borrow_mut() = included_headers(source, closure.as_ref());
         self.check_node(root_node, source, violations);
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.include_edges.borrow_mut() = Arc::clone(&context.include_edges);
+    }
+
+    fn set_file_path(&self, path: &Path) {
+        *self.file_path.borrow_mut() = path.to_string_lossy().into_owned();
     }
 }
