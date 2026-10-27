@@ -32,7 +32,6 @@ impl Exp37C {
         // Every form is reported at the call. Old-style declarations are
         // DCL20-C's construct, and a variadic prototype violates nothing.
         for n in query::find_descendants_of_kind(*node, "call_expression") {
-            // Check for log2() with complex numbers (not creal)
             let text = n.utf8_text(source.as_bytes()).unwrap_or("");
 
             // log2() doesn't support complex numbers directly

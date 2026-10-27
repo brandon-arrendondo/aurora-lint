@@ -581,7 +581,7 @@ giving the reason below.
 - **EXP10-C**, covered by EXP30-C: EXP30-C's written scope includes conflicting side effects in indeterminately sequenced calls; removal waits on EXP30-C reporting them in operator operands and initializer lists.
 - **EXP14-C**, deprecated by CERT (successor INT02-C): CERT deprecated it in favor of INT02-C; removal waits on INT02-C reporting the promoted-narrow bitwise case.
 - **EXP16-C, dropped form** (`a == b;` as a statement): MSC12-C's construct, not a function-pointer comparison.
-- **EXP37-C, dropped forms** (old-style declarations and variadic prototypes reported at the declaration): the first is DCL20-C's construct; the second is not a violation of EXP37-C, whose violation is at the call.
+- **EXP37-C, dropped forms** (old-style declarations, variadic prototypes, and a `(*fp)()` declaration matched by name, all reported at the declaration): the first is DCL20-C's construct; the second is not a violation of EXP37-C, whose violation is at the call; the third matched a name, not a type (ADR-0006), and is a declaration, not a call.
 - **FIO05-C, owner form**: fails the criterion. Its violation depends on a program-specific requirement that the process's user owns the file, and no syntax marks which opens carry it. The reopen form ships.
 - **FIO10-C**: fails the criterion. Whether a `rename()` violates depends on intent and target platform, and CERT's POSIX compliant solution is the same call as its noncompliant example.
 - **FIO15-C**: unenforceable. Whether a directory is secure is a property of the running system, and the only syntactic remnant, a file created under `/tmp`, is FIO21-C's construct.
