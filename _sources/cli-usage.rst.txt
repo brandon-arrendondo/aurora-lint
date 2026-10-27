@@ -617,7 +617,7 @@ manifest that enables it; see "Withheld until rewritten" in
 leaves the exit status as it is and warns on stderr, with the block's
 ``disabled_reason``, so an empty report is not read as a clean one::
 
-    Warning: --rules names EXP30-C, which this configuration disables, so it does not run: withheld until its rewrite in v0.8.0: ... To run it, set `enabled = true` in its [rules.cert_c.EXP30-C] block in a manifest passed with --manifest (--write-config writes this configuration out to start from).
+    Warning: --rules names EXP30-C, which this configuration disables, so it does not run: withheld until its rewrite in v0.8.0: ... To enable it, set `enabled = true` in its [rules.cert_c.EXP30-C] block in a manifest passed with --manifest (--write-config writes this configuration out to start from).
 
 Naming a rule the policy in force declines warns the same way, with the
 decline's reason and the policies that run it. Enabling the rule's block
