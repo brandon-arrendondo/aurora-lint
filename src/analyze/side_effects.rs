@@ -627,12 +627,22 @@ impl<'t> Collector<'_, 't> {
 
     fn call(&mut self, node: &Node<'t>) {
         let function = node.child_by_field_name("function");
-        let callee = match function {
-            Some(f) if f.kind() == "identifier" && !self.names_an_object(&f) => {
+        // `(name)(x)` names its callee as plainly: the function, or a
+        // typedef when it is a cast of a parenthesized operand (`(u32) (a +
+        // b)`), which the callee's resolution reads as calling nothing.
+        let named = function.and_then(|f| match f.kind() {
+            "identifier" => Some(f),
+            _ => ast_utils::parenthesized_identifier(&f),
+        });
+        let callee = match named {
+            Some(f) if !self.names_an_object(&f) => {
                 Some(get_node_text(&f, self.source).to_string())
             }
             _ => None,
         };
+        // The parentheses keep a function-like macro of the name from
+        // expanding (C11 7.1.4p1).
+        let expands = function.is_some_and(|f| f.kind() == "identifier");
         let arg_nodes: Vec<Node<'t>> = node
             .child_by_field_name("arguments")
             .map(|a| {
@@ -644,7 +654,7 @@ impl<'t> Collector<'_, 't> {
             .unwrap_or_default();
         let (args, arg_functions): (Vec<ArgRoot>, Vec<Option<String>>) =
             arg_nodes.iter().map(|c| self.arg_root(c)).unzip();
-        if let Some(name) = &callee {
+        if let Some(name) = callee.as_ref().filter(|_| expands) {
             if let Some(arms) = self.arms.get(name).filter(|a| !a.is_empty()) {
                 for arm in arms {
                     let body = macro_expand::macro_body_calls(arm);
@@ -2720,6 +2730,26 @@ mod tests {
         // The pointer itself is not volatile, nor is a plain member.
         assert_eq!(proof("rd3"), Proof::Pure);
         assert_eq!(proof("rd4"), Proof::Pure);
+    }
+
+    #[test]
+    fn a_parenthesized_callee_is_the_function_or_a_cast() {
+        let code = "typedef unsigned int u32;\n\
+            int g;\n\
+            int (*hook)(int);\n\
+            int bump(int by) { g += by; return g; }\n\
+            #define bump(by) (by)\n\
+            u32 add(u32 a, u32 b) { return (u32) (a + b); }\n\
+            int next(void) { return (bump) (1); }\n\
+            int call(int v) { return (hook) (v); }\n";
+        let ctx = scanned(&[("paren.c", code)], "parenthesized-callee");
+        let proof = |name: &str| ctx.effects().get(name).unwrap().proof(true);
+        // A typedef in parentheses is a cast, which calls nothing.
+        assert_eq!(proof("add"), Proof::Pure);
+        // The function, not the macro the parentheses keep from expanding.
+        assert_eq!(proof("next"), Proof::Impure);
+        // An object in parentheses is still a call through a pointer.
+        assert_eq!(proof("call"), Proof::Unproven);
     }
 
     #[test]

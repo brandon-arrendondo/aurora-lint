@@ -356,15 +356,6 @@ fn pasted_call_evaluation(ctx: &Ctx, name: &str, call: &Node) -> ArgEvaluation {
     }
 }
 
-/// The identifier `callee` is when it is `(name)`, one identifier in
-/// parentheses.
-fn parenthesized_name<'t>(callee: &Node<'t>) -> Option<Node<'t>> {
-    if callee.kind() != "parenthesized_expression" || callee.named_child_count() != 1 {
-        return None;
-    }
-    callee.named_child(0).filter(|n| n.kind() == "identifier")
-}
-
 /// How an argument's evaluation can change program state, from least to
 /// most certain. The rule reports [`Effect::Definite`] under every policy,
 /// and [`Effect::Unknown`] (an unproven call) only when
@@ -818,7 +809,7 @@ impl<'a> Ctx<'a> {
                     // the parentheses keep a macro from expanding. Through a
                     // pointer or a member: nothing names the body, and the
                     // callee expression may itself have effects.
-                    Some(f) => match parenthesized_name(&f) {
+                    Some(f) => match ast_utils::parenthesized_identifier(&f) {
                         Some(inner) => self.parenthesized_callee_effect(&inner, arguments.as_ref()),
                         None => self.expression_effect(&f).max(Effect::Unknown),
                     },

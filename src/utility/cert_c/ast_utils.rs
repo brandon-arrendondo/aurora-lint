@@ -4222,6 +4222,17 @@ pub fn collect_defined_macro_names(source: &str, out: &mut std::collections::Has
     }
 }
 
+/// The identifier `callee` is when it is `(name)`, one identifier in
+/// parentheses: a call `(name)(x)` reaches the function, never a
+/// function-like macro of the name (C11 7.1.4p1), and a C parser reads a
+/// cast of a parenthesized operand, `(u32) (a + b)`, the same way.
+pub fn parenthesized_identifier<'t>(callee: &Node<'t>) -> Option<Node<'t>> {
+    if callee.kind() != "parenthesized_expression" || callee.named_child_count() != 1 {
+        return None;
+    }
+    callee.named_child(0).filter(|n| n.kind() == "identifier")
+}
+
 /// Insert the name of every `#undef NAME` in `source` into `out`: the
 /// companion of [`collect_defined_macro_names`], merged project-wide into
 /// `ProjectContext::undefined_macro_names`.
