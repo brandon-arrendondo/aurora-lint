@@ -158,12 +158,16 @@ contract model. (ADR-0015)
   `__STDC_WANT_*` macros (N3220 K.3.1.1, 7.12, H.3), POSIX's
   `_POSIX_C_SOURCE`, `_XOPEN_SOURCE` and `_POSIX_SOURCE` (XSH 2.2.1), and the
   glibc macros feature_test_macros(7) documents. The list is closed and kept
-  with its citations in DCL37-C's source. A name not on it is a violation,
-  however it is spelled (`_MY_SOURCE`, or `__STRICT_ANSI__`, which the
-  compiler defines), and so is a reserved include guard (`_FOO_H`). The
-  exemption covers only defining a listed name, never an `#undef` of one. A block-scope `_x` is not reserved; a block-scope
-  `_X` is (C 7.1.3). This reads the standards, so the oracle and the tool
-  agree; it is not a tool-only relaxation.
+  with its citations in DCL37-C's source. The exemption covers defining a
+  listed name as an object-like macro with any value; the value is not
+  checked. A function-like definition of a listed name, an `#undef` of one,
+  and a name not on the list are violations, however the name is spelled
+  (`_MY_SOURCE`, or `__STRICT_ANSI__`, which the compiler defines), and so is
+  a reserved include guard (`_FOO_H`). Scope is C 7.1.3's: a block-scope
+  `_x` is not reserved, including a block-scope `extern int _x;`, while a
+  block-scope `_X` is, and a declaration inside `extern "C" { ... }` is at
+  file scope. This reads the standards, so the oracle and the tool agree; it
+  is not a tool-only relaxation.
 
 ## D. Where a finding lives (ADR-0012)
 

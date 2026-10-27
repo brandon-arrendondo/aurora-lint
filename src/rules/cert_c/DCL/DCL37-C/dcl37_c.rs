@@ -8,16 +8,20 @@
 //! - Names starting with underscore followed by uppercase letter (_M, _A, etc.)
 //! - Names starting with double underscore (__, ___foo, etc.)
 //! - Names starting with an underscore, declared at file scope (C 7.1.3: a
-//!   block-scope `_x` is not reserved)
+//!   block-scope `_x` is not reserved, and neither is a block-scope
+//!   `extern int _x;`, whose identifier has block scope too). Declarations
+//!   inside `extern "C" { ... }` are at file scope.
 //! - Reserved standard library names (errno, SIZE_MAX, etc.)
 //!
 //! Defining a feature-test macro is not reported. These names are reserved,
 //! but a governing standard or the implementation's documentation tells the
 //! program to define them to request features, so a program that does is
 //! doing what that source asks. The exemption is the closed, cited list in
-//! [`FEATURE_TEST_MACROS`], never a pattern, and it covers only defining
-//! one with `#define`: `_MY_SOURCE` is still reported, as is an include
-//! guard such as `_FOO_H`. It applies under every preset. This is
+//! [`FEATURE_TEST_MACROS`], never a pattern, and it covers only defining a
+//! listed name as an object-like macro, with any value; the value is not
+//! checked. A function-like `#define _GNU_SOURCE() 1` is not the form any
+//! source documents, so it is reported, and so are `_MY_SOURCE` and an
+//! include guard such as `_FOO_H`. It applies under every preset. This is
 //! aurora-lint's reading of the standards, recorded as a decision; CERT has
 //! left the question open.
 //!
@@ -26,7 +30,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::{get_node_text, top_level_items};
+use crate::utility::cert_c::ast_utils::{descendants_of_kinds_with, get_node_text};
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -197,15 +201,30 @@ impl Dcl37C {
     /// Check declarations for reserved identifiers
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Only a file-scope declaration reserves every leading-underscore
-        // name; at block scope, `_x` is not reserved (C 7.1.3).
-        let file_scope: HashSet<usize> = top_level_items(*node)
-            .filter(|item| item.kind() == "declaration")
-            .map(|item| item.id())
+        // name; at block scope, `_x` is not reserved (C 7.1.3). A
+        // declaration is at block scope when it lies in a function: in its
+        // body, a `for` header, a parameter list or a K&R parameter
+        // declaration. Everywhere else (`#if` arms, `extern "C" { ... }`,
+        // a parser `ERROR`) it is at file scope.
+        let block_scope: HashSet<usize> =
+            descendants_of_kinds_with(*node, &["declaration"], false, |inside, parent| {
+                *inside
+                    || matches!(
+                        parent.kind(),
+                        "compound_statement"
+                            | "for_statement"
+                            | "parameter_list"
+                            | "function_definition"
+                    )
+            })
+            .into_iter()
+            .filter(|(_, inside)| *inside)
+            .map(|(decl, _)| decl.id())
             .collect();
         for n in query::find_descendants(*node, |_| true) {
             match n.kind() {
                 "declaration" => {
-                    let at_file_scope = file_scope.contains(&n.id());
+                    let at_file_scope = !block_scope.contains(&n.id());
                     let mut check = |declarator: &Node| {
                         if at_file_scope {
                             self.check_file_scope_declarator(declarator, source, violations);
@@ -268,7 +287,7 @@ impl Dcl37C {
                 if self.is_reserved_function(&name) {
                     violations.push(RuleViolation {
                         rule_id: "DCL37-C".to_string(),
-                        severity: Severity::Medium,
+                        severity: Severity::Low,
                         line: node.start_position().row + 1,
                         column: node.start_position().column + 1,
                         message: format!(
@@ -284,7 +303,7 @@ impl Dcl37C {
                 if self.is_reserved_identifier(&name) {
                     violations.push(RuleViolation {
                         rule_id: "DCL37-C".to_string(),
-                        severity: Severity::Medium,
+                        severity: Severity::Low,
                         line: node.start_position().row + 1,
                         column: node.start_position().column + 1,
                         message: format!(
@@ -323,11 +342,14 @@ impl Dcl37C {
         match node.kind() {
             "identifier" => {
                 let name = get_node_text(node, source);
-                // At file scope, any identifier starting with underscore is reserved
-                if self.has_file_scope_reserved_prefix(&name) {
+                // At file scope, any identifier starting with underscore is
+                // reserved. A name reserved for any use is reported once,
+                // below, as that.
+                if self.has_file_scope_reserved_prefix(&name) && !self.is_reserved_identifier(&name)
+                {
                     violations.push(RuleViolation {
                         rule_id: "DCL37-C".to_string(),
-                        severity: Severity::Medium,
+                        severity: Severity::Low,
                         line: node.start_position().row + 1,
                         column: node.start_position().column + 1,
                         message: format!(
@@ -345,7 +367,7 @@ impl Dcl37C {
                 if self.is_reserved_identifier(&name) {
                     violations.push(RuleViolation {
                         rule_id: "DCL37-C".to_string(),
-                        severity: Severity::Medium,
+                        severity: Severity::Low,
                         line: node.start_position().row + 1,
                         column: node.start_position().column + 1,
                         message: format!("Reserved identifier '{}' should not be used", name),
@@ -373,7 +395,7 @@ impl Dcl37C {
                 if self.is_reserved_identifier(&name) {
                     violations.push(RuleViolation {
                         rule_id: "DCL37-C".to_string(),
-                        severity: Severity::Medium,
+                        severity: Severity::Low,
                         line: node.start_position().row + 1,
                         column: node.start_position().column + 1,
                         message: format!("Reserved identifier '{}' should not be used", name),
@@ -394,15 +416,17 @@ impl Dcl37C {
     }
 
     /// Check macro definitions for reserved identifiers. Defining a listed
-    /// feature-test macro is what its source asks of the program, so it is
-    /// not reported ([`FEATURE_TEST_MACROS`]).
+    /// feature-test macro as an object-like macro is what its source asks
+    /// of the program, so it is not reported, whatever its value
+    /// ([`FEATURE_TEST_MACROS`]).
     fn check_preproc_def(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         if let Some(name_node) = node.child_by_field_name("name") {
             let name = get_node_text(&name_node, source);
-            if self.is_reserved_identifier(&name) && !is_feature_test_macro(&name) {
+            let exempt = node.kind() == "preproc_def" && is_feature_test_macro(&name);
+            if self.is_reserved_identifier(&name) && !exempt {
                 violations.push(RuleViolation {
                     rule_id: "DCL37-C".to_string(),
-                    severity: Severity::Medium,
+                    severity: Severity::Low,
                     line: name_node.start_position().row + 1,
                     column: name_node.start_position().column + 1,
                     message: format!(
@@ -434,7 +458,7 @@ impl CertRule for Dcl37C {
     }
 
     fn severity(&self) -> Severity {
-        Severity::Medium
+        Severity::Low
     }
 
     fn cert_id(&self) -> &'static str {
