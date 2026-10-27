@@ -5972,6 +5972,17 @@ fn pre31_parenthesized_header_pointer_named_like_a_type_is_a_call() {
     assert_eq!(strict.len(), 1, "{:?}", strict);
 }
 
+/// A header's `#define u32 unsigned int` makes `(u32) (a + b)` a cast of a
+/// parenthesized operand, under the strict policy too.
+#[test]
+fn pre31_parenthesized_cast_to_a_header_macro_type_is_no_call() {
+    let project = fixtures().join("crossfile_pre31/parenthesized_cast_to_a_header_macro_type");
+    let project = project.to_str().unwrap();
+    let file = format!("{project}/main.c");
+    let strict = pre31_violations(&file, &["-d", project, "--profile", "strict"]);
+    assert!(strict.is_empty(), "{:?}", strict);
+}
+
 /// A function named `step_t`, declared in a header and defined in another
 /// file, is the function the scan defines: it writes, so `(step_t)(1)`
 /// under TWICE is reported under the default policy.

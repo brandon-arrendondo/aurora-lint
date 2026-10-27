@@ -2,6 +2,7 @@
 // Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::check_macros::{self, MacroDefinition};
 use crate::analyze::const_eval::{merged_macro_aliases, resolve_macro_alias};
 use crate::analyze::context::{
     EffectView, IncludeClosure, ProjectContext, VisibleTypes, UNRESOLVED_INCLUDE,
@@ -56,6 +57,10 @@ pub struct Pre31C {
     function_macro_names: RefCell<Arc<HashSet<String>>>,
     /// Object-like aliases across the scanned files (`#define ASSERT assert`).
     macro_aliases: RefCell<Arc<HashMap<String, String>>>,
+    /// Every `#define` across the scanned files
+    /// (`ProjectContext::macro_definitions`): an object-like macro whose
+    /// body is a type (`#define u32 unsigned int`) makes `(u32) (x)` a cast.
+    macro_definitions: RefCell<Arc<HashMap<String, Vec<MacroDefinition>>>>,
     /// Names only a header outside the project defines: the C library's own
     /// macros, which C11 7.1.4 binds (`library_macros_evaluate_once`).
     outside_macros: RefCell<Arc<HashSet<String>>>,
@@ -88,6 +93,7 @@ impl Pre31C {
             file_path: RefCell::new(None),
             function_macro_names: RefCell::new(Arc::new(HashSet::new())),
             macro_aliases: RefCell::new(Arc::new(HashMap::new())),
+            macro_definitions: RefCell::new(Arc::new(HashMap::new())),
             outside_macros: RefCell::new(Arc::new(HashSet::new())),
             outside_headers: RefCell::new(Arc::new(HashSet::new())),
             set_names: RefCell::default(),
@@ -131,6 +137,7 @@ impl CertRule for Pre31C {
         *self.include_edges.borrow_mut() = context.include_edges.clone();
         *self.function_macro_names.borrow_mut() = context.function_macro_names.clone();
         *self.macro_aliases.borrow_mut() = context.macro_aliases.clone();
+        *self.macro_definitions.borrow_mut() = context.macro_definitions.clone();
         *self.outside_macros.borrow_mut() = context.macros_defined_outside_project.clone();
         *self.set_names.borrow_mut() = (
             Arc::clone(&context.defined_macro_names),
@@ -233,6 +240,8 @@ impl CertRule for Pre31C {
             file_path: file_path.as_deref(),
             include_closure: OnceCell::new(),
             aliases: &aliases,
+            definitions: &self.macro_definitions.borrow(),
+            own_definitions: OnceCell::new(),
             outside: &self.outside_macros.borrow(),
             outside_headers: &self.outside_headers.borrow(),
             set_names: &self.set_names.borrow(),
@@ -406,6 +415,11 @@ struct Ctx<'a> {
     /// than one project definition to choose between.
     include_closure: OnceCell<Option<IncludeClosure>>,
     aliases: &'a HashMap<String, String>,
+    /// `Pre31C::macro_definitions`.
+    definitions: &'a HashMap<String, Vec<MacroDefinition>>,
+    /// This file's own `#define`s, read the first time a parenthesized
+    /// callee may be a type.
+    own_definitions: OnceCell<HashMap<String, Vec<MacroDefinition>>>,
     /// `Pre31C::outside_macros`.
     outside: &'a HashSet<String>,
     /// `Pre31C::outside_headers`.
@@ -830,9 +844,9 @@ impl<'a> Ctx<'a> {
     /// function (the parentheses keep a function-like macro of the name from
     /// expanding, C11 7.1.4p1, so `(getc)(fp)` calls getc); a typedef this
     /// file or the scan declares, a type keyword, or an object-like macro
-    /// naming one is a cast and calls nothing. A name ending in `_t` that
-    /// nothing declares is not taken for a type here: the call stays as
-    /// unknown as any other.
+    /// naming one is a cast and calls nothing ([`Self::names_a_declared_type`]).
+    /// A name ending in `_t` that nothing declares is not taken for a type
+    /// here: the call stays as unknown as any other.
     fn parenthesized_callee_effect(
         &self,
         inner: &Node<'a>,
@@ -847,15 +861,40 @@ impl<'a> Ctx<'a> {
         if declared_function || self.function_effect(name, arguments).is_some() {
             return self.function_call_effect(name, arguments);
         }
-        let no_typedefs = HashMap::new();
-        let typedefs = self.effects.map_or(&no_typedefs, |v| &*v.names.typedefs);
-        if self.types.typedef_types.contains_key(name)
-            || typedefs.contains_key(name)
-            || is_type_name_text(resolve_macro_alias(self.aliases, name))
-        {
+        if self.names_a_declared_type(name) {
             return Effect::None;
         }
         self.function_call_effect(name, arguments)
+    }
+
+    /// Whether `name` names a type by what declares it: a typedef this file
+    /// or the scan declares, or an object-like macro every definition of
+    /// which is type keywords (`#define u32 unsigned int`) or a typedef's
+    /// name (`#define U32 u32`), this file's definitions over the scan's.
+    /// A macro that names a type in one build and a function in another is
+    /// not one.
+    fn names_a_declared_type(&self, name: &str) -> bool {
+        let no_typedefs = HashMap::new();
+        let typedefs = self.effects.map_or(&no_typedefs, |v| &*v.names.typedefs);
+        let is_typedef =
+            |n: &str| self.types.typedef_types.contains_key(n) || typedefs.contains_key(n);
+        let resolved = resolve_macro_alias(self.aliases, name);
+        if is_typedef(name) || is_typedef(resolved) || is_type_name_text(resolved) {
+            return true;
+        }
+        let own = self
+            .own_definitions
+            .get_or_init(|| check_macros::collect_macro_definitions(self.source));
+        let Some(defs) = own.get(name).or_else(|| self.definitions.get(name)) else {
+            return false;
+        };
+        !defs.is_empty()
+            && defs.iter().all(|d| match d {
+                MacroDefinition::Object { body } => {
+                    is_type_name_text(body) || is_typedef(body.trim())
+                }
+                _ => false,
+            })
     }
 
     /// [`Self::call_effect`] for a call that reaches the function itself,
@@ -868,6 +907,9 @@ impl<'a> Ctx<'a> {
         } else {
             resolve_macro_alias(self.aliases, name)
         };
+        if PURE_BUILTINS.contains(&name) {
+            return Effect::None;
+        }
         self.function_effect(name, arguments)
             .unwrap_or_else(|| self.library_effect(name))
     }
