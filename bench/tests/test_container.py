@@ -94,6 +94,114 @@ class TestTargetPerCheckout(unittest.TestCase):
                             container.target_volume("cd" * 32, "/repo"))
 
 
+class TestPrune(unittest.TestCase):
+    """container-prune removes only what no run can use again: target volumes
+    of checkouts that are gone, old per-pin-only volumes and dangling images.
+    podman is mocked; nothing here needs a container runtime."""
+
+    PIN = "ab" * 32
+
+    def _podman(self, volumes, ps="", dangling="", fail=()):
+        """A stand-in for subprocess.run answering the podman calls prune
+        makes, recording each; `fail` names subcommands that exit 1."""
+        calls = []
+
+        def run(cmd, **_):
+            calls.append(cmd)
+            sub = cmd[1]
+            out = {"ps": ps, "volume": "\n".join(volumes) if cmd[2] == "ls" else "",
+                   "images": dangling}.get(sub, "")
+            return mock.Mock(returncode=1 if sub in fail else 0, stdout=out, stderr="")
+        return run, calls
+
+    def _prune(self, run, checkouts, **kw):
+        with mock.patch("shutil.which", return_value="/usr/bin/podman"), \
+             mock.patch.object(container, "live_checkouts", return_value=checkouts), \
+             mock.patch.object(container.subprocess, "run", side_effect=run), \
+             mock.patch("builtins.print") as out:
+            rc = container.prune(**kw)
+        return rc, " ".join(str(c) for c in out.call_args_list)
+
+    def test_only_volumes_of_gone_checkouts_and_old_names_are_orphans(self):
+        with tempfile.TemporaryDirectory() as live:
+            mine = container.target_volume(self.PIN, live)
+            gone = container.target_volume(self.PIN, "/no/such/worktree")
+            other_pin = container.target_volume("cd" * 32, live)
+            old = "aurora-bench-target-" + "1" * 12
+            vols = [mine, gone, other_pin, old, container.CARGO_REGISTRY_VOLUME,
+                    "aurora-bench-target-notahash", "someone-elses-volume"]
+            self.assertEqual(container.orphaned_target_volumes(vols, [Path(live).resolve()]),
+                             sorted([gone, old]))
+
+    def test_a_dry_run_lists_and_removes_nothing(self):
+        gone = container.target_volume(self.PIN, "/no/such/worktree")
+        run, calls = self._podman([gone], dangling="d1\nd2\n")
+        rc, out = self._prune(run, [])
+        self.assertEqual(rc, 0)
+        self.assertIn(gone, out)
+        self.assertIn("dangling images: 2", out)
+        self.assertFalse([c for c in calls if c[1:3] in (["volume", "rm"], ["image", "prune"])])
+
+    def test_yes_removes_orphans_without_force_and_prunes_dangling_images(self):
+        with tempfile.TemporaryDirectory() as live:
+            mine = container.target_volume(self.PIN, live)
+            gone = container.target_volume(self.PIN, "/no/such/worktree")
+            run, calls = self._podman([mine, gone, container.CARGO_REGISTRY_VOLUME], dangling="d1")
+            rc, _ = self._prune(run, [Path(live).resolve()], yes=True)
+        self.assertEqual(rc, 0)
+        removed = [c for c in calls if c[1:3] == ["volume", "rm"]]
+        self.assertEqual(removed, [["podman", "volume", "rm", gone]])
+        self.assertIn(["podman", "image", "prune", "-f"], calls)
+
+    def test_keep_spares_another_clones_volumes(self):
+        clone = container.target_volume(self.PIN, "/elsewhere/clone")
+        run, calls = self._podman([clone])
+        rc, _ = self._prune(run, [], yes=True, keep=["/elsewhere/clone"])
+        self.assertEqual(rc, 0)
+        self.assertFalse([c for c in calls if c[1:3] == ["volume", "rm"]])
+
+    def test_a_running_benchmark_container_refuses_the_prune(self):
+        gone = container.target_volume(self.PIN, "/no/such/worktree")
+        run, calls = self._podman([gone], ps="jovial\tlocalhost/aurora-bench:dev\n")
+        rc, out = self._prune(run, [], yes=True)
+        self.assertEqual(rc, 2)
+        self.assertIn("refusing to prune", out)
+        self.assertFalse([c for c in calls if c[1] in ("volume", "image", "images")])
+
+    def test_a_compile_database_build_also_refuses_the_prune(self):
+        run, _ = self._podman([], ps="aurora-bench-build-curl-42\tsome/tools:x\n")
+        rc, _ = self._prune(run, [], yes=True)
+        self.assertEqual(rc, 2)
+
+    def test_an_unlistable_runtime_refuses_rather_than_guessing(self):
+        run, _ = self._podman([], fail=("ps",))
+        rc, out = self._prune(run, [], yes=True)
+        self.assertEqual(rc, 2)
+        self.assertIn("refusing to prune", out)
+
+    def test_a_volume_podman_refuses_to_remove_is_reported_and_kept(self):
+        gone = container.target_volume(self.PIN, "/no/such/worktree")
+
+        def run(cmd, **_):
+            if cmd[1:3] == ["volume", "rm"]:
+                return mock.Mock(returncode=1, stdout="", stderr="volume is being used")
+            return mock.Mock(returncode=0, stdout=gone if cmd[1:3] == ["volume", "ls"] else "",
+                             stderr="")
+        rc, out = self._prune(run, [], yes=True)
+        self.assertEqual(rc, 1)
+        self.assertIn(f"kept {gone}", out)
+
+    def test_live_checkouts_reads_git_worktrees_that_still_exist(self):
+        with tempfile.TemporaryDirectory() as main, tempfile.TemporaryDirectory() as wt:
+            porcelain = (f"worktree {main}\nHEAD {'a' * 40}\nbranch refs/heads/main\n\n"
+                         f"worktree {wt}\nHEAD {'b' * 40}\ndetached\n\n"
+                         f"worktree /no/such/worktree\nHEAD {'c' * 40}\nprunable\n")
+            with mock.patch.object(container.subprocess, "run",
+                                   return_value=mock.Mock(returncode=0, stdout=porcelain)):
+                got = container.live_checkouts(main)
+            self.assertEqual(got, sorted({Path(main).resolve(), Path(wt).resolve()}))
+
+
 class TestCheckBinary(unittest.TestCase):
     """The scan refuses a binary that does not report the commit it measures."""
 

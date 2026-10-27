@@ -355,14 +355,24 @@ checkouts could hand one checkout another's binary. A separate volume per
 checkout prevents that. The cost is that the first run from a new checkout
 path is a cold release build (a few minutes), and each throwaway A/B
 worktree gets a fresh volume holding a full release target (most of a
-gigabyte). Volumes are never removed for you. Those of deleted worktrees,
-and the older per-pin-only ``aurora-bench-target-<pin>`` volumes, are left
-behind; list and remove them once no run is using them:
+gigabyte). Deleting a worktree does not delete its volume, and rebuilding
+the image leaves the old layers behind as dangling images, so storage
+grows with every A/B until it is pruned:
 
 .. code-block:: bash
 
-    podman volume ls --filter name=aurora-bench-target-
-    podman volume rm aurora-bench-target-<pin>-<checkout>
+    python -m bench container-prune          # list what would go
+    python -m bench container-prune --yes    # remove it
+
+A volume is removed only when its checkout hash matches none of this
+repository's live checkouts (the checkout itself and its ``git worktree
+list``), hashed as ``container-run`` names it, plus the older per-pin-only
+``aurora-bench-target-<pin>`` volumes, which nothing uses any more. Name any
+other clone whose volumes should stay with ``--keep DIR`` (repeatable).
+Dangling images go through ``podman image prune -f``. Tagged images and the
+``aurora-bench-cargo-registry`` volume are never touched. The prune refuses
+while a benchmark container (a ``container-run`` or ``container-build-db``)
+is running, and podman itself refuses a volume some container still uses.
 
 The build also records the checkout's commit in the binary's ``--version``,
 and before scanning ``container-run`` checks it (``python -m bench.container

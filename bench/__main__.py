@@ -96,6 +96,11 @@ def cmd_container_run(args):
                                    args.runtime))
 
 
+def cmd_container_prune(args):
+    from bench import container
+    raise SystemExit(container.prune(args.yes, args.runtime, keep=args.keep))
+
+
 def cmd_realworld_run(args):
     from bench.realworld_runner import CODEBASES, VALID_TOOLS, run_and_ingest
     _allow_dirty(args)
@@ -1399,6 +1404,15 @@ def main():
     p_cdb.add_argument("--timeout", type=int, default=None,
                        help="seconds before a build is stopped and fails (default $AURORA_BENCH_BUILD_TIMEOUT or 1800)")
     p_cdb.set_defaults(func=cmd_container_build_db)
+
+    p_cpr = sub.add_parser(
+        "container-prune",
+        help="List (or with --yes remove) target volumes of deleted checkouts and dangling images")
+    p_cpr.add_argument("--yes", action="store_true", help="remove them (default: only list)")
+    p_cpr.add_argument("--keep", action="append", default=[], metavar="DIR",
+                       help="another live checkout whose volumes stay (a second clone); repeatable")
+    p_cpr.add_argument("--runtime", default="podman")
+    p_cpr.set_defaults(func=cmd_container_prune)
 
     # competitor-export
     p_ce = sub.add_parser(

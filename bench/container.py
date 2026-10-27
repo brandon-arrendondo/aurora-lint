@@ -22,6 +22,10 @@ e.g.
 (no subcommand means realworld-run). The Juliet tree is mounted read-only
 too, when this machine has it.
 
+Deleting a checkout leaves its target volume behind, and rebuilding the
+image leaves dangling images; `python -m bench container-prune [--yes]`
+lists or removes both (prune).
+
 Every scan run this way records the environment manifest's pin in its
 sidecar (bench/environment.py), next to the dependency set's.
 """
@@ -399,6 +403,109 @@ def build_db(project: str, image: str = DEFAULT_IMAGE,
             shutil.rmtree(old, ignore_errors=True)
         print(f"rebuilt: {cache} ({reason})")
         return 0
+
+
+TARGET_VOLUME_PREFIX = "aurora-bench-target-"
+CARGO_REGISTRY_VOLUME = "aurora-bench-cargo-registry"
+# aurora-bench-target-<pin12>-<checkout12>, and the older per-pin-only
+# aurora-bench-target-<pin12> from before the volume was keyed on the checkout.
+_TARGET_VOLUME = re.compile(rf"^{TARGET_VOLUME_PREFIX}([0-9a-f]{{12}})(?:-([0-9a-f]{{12}}))?$")
+
+
+def live_checkouts(project_dir=None) -> list[Path]:
+    """Every checkout of this repository that still exists: `project_dir`
+    and its git worktrees, as `git worktree list` names them."""
+    project_dir = Path(project_dir) if project_dir else PROJECT_DIR
+    out = subprocess.run(["git", "-C", str(project_dir), "worktree", "list", "--porcelain"],
+                         capture_output=True, text=True)
+    paths = [Path(project_dir)]
+    if out.returncode == 0:
+        paths += [Path(line[len("worktree "):]) for line in out.stdout.splitlines()
+                  if line.startswith("worktree ")]
+    return sorted({p.resolve() for p in paths if p.is_dir()})
+
+
+def orphaned_target_volumes(volumes: list[str], checkouts: list[Path]) -> list[str]:
+    """The target volumes in `volumes` no run can use again: one keyed on a
+    checkout path none of `checkouts` has (hashed as target_volume() does),
+    or an old per-pin-only one. Every other volume is kept, the cargo
+    registry among them."""
+    live = {target_volume("0" * 12, c).rsplit("-", 1)[1] for c in checkouts}
+    orphans = []
+    for v in volumes:
+        m = _TARGET_VOLUME.match(v)
+        if m and (m.group(2) is None or m.group(2) not in live):
+            orphans.append(v)
+    return sorted(orphans)
+
+
+def _active_bench_containers(runtime: str) -> list[str] | None:
+    """The running containers a container-run or container-build-db started
+    (run from an aurora-bench image, or named as a build), or None when the
+    runtime cannot list them."""
+    out = subprocess.run([runtime, "ps", "--format", "{{.Names}}\t{{.Image}}"],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        return None
+    active = []
+    for line in out.stdout.splitlines():
+        name, _, image = line.partition("\t")
+        if "aurora-bench" in image or name.startswith("aurora-bench-build-"):
+            active.append(f"{name} ({image})")
+    return active
+
+
+def prune(yes: bool = False, runtime: str = "podman", project_dir=None,
+          keep: list | None = None) -> int:
+    """List, or with `yes` remove, the podman storage container-run leaves
+    behind: the target volumes of checkouts that no longer exist
+    (orphaned_target_volumes; `keep` names other live checkouts, such as a
+    second clone, whose volumes stay) and dangling images. Tagged images and
+    the cargo registry are never touched. Refuses while a benchmark
+    container is running, since its volume may belong to a checkout this
+    cannot see."""
+    if shutil.which(runtime) is None:
+        print(f"container-prune: '{runtime}' is not installed")
+        return 2
+    active = _active_bench_containers(runtime)
+    if active is None:
+        print(f"container-prune: '{runtime} ps' failed, so whether a run is active is unknown; "
+              "refusing to prune")
+        return 2
+    if active:
+        print("container-prune: a benchmark container is running; refusing to prune:"
+              + "".join(f"\n  {a}" for a in active))
+        return 2
+    vols = subprocess.run([runtime, "volume", "ls", "--format", "{{.Name}}"],
+                          capture_output=True, text=True)
+    imgs = subprocess.run([runtime, "images", "--filter", "dangling=true", "--format", "{{.ID}}"],
+                          capture_output=True, text=True)
+    if vols.returncode != 0 or imgs.returncode != 0:
+        print(f"container-prune: could not list {runtime}'s volumes or images")
+        return 2
+    checkouts = live_checkouts(project_dir) + [Path(k).resolve() for k in keep or []]
+    orphans = orphaned_target_volumes(vols.stdout.split(), checkouts)
+    dangling = sorted(set(imgs.stdout.split()))
+    print(f"live checkouts ({len(checkouts)}):" + "".join(f"\n  {c}" for c in checkouts))
+    print(f"orphaned target volumes ({len(orphans)}):" + "".join(f"\n  {v}" for v in orphans))
+    print(f"dangling images: {len(dangling)}")
+    if not yes:
+        if orphans or dangling:
+            print("dry run: nothing removed; pass --yes to remove these")
+        return 0
+    rc = 0
+    for v in orphans:
+        # Without -f, so a volume some container still uses is refused, not removed.
+        r = subprocess.run([runtime, "volume", "rm", v], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"container-prune: kept {v}: {r.stderr.strip()}")
+            rc = 1
+    if dangling and subprocess.run([runtime, "image", "prune", "-f"],
+                                   capture_output=True, text=True).returncode != 0:
+        print(f"container-prune: '{runtime} image prune -f' failed")
+        rc = 1
+    print("removed" if rc == 0 else "removed, with the exceptions above")
+    return rc
 
 
 if __name__ == "__main__":
