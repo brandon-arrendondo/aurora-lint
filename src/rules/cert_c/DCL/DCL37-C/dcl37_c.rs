@@ -54,6 +54,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::{IncludeClosure, ProjectContext};
+use crate::analyze::dead_regions::DeadRegions;
 use crate::analyze::preproc_arms::PreprocArms;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{descendants_of_kinds_with, get_node_text};
@@ -253,7 +254,8 @@ fn is_feature_test_macro(name: &str) -> bool {
 /// Library names a program may not declare, each with the standard headers
 /// that declare or define it. C 7.1.3 reserves such a name only where the
 /// file includes one of those headers; `errno`, which it reserves for
-/// external linkage always, has none and is reserved everywhere.
+/// external linkage always and whose definition by a program C 7.5p2 makes
+/// undefined, has none and is reserved everywhere.
 const RESERVED_NAMES: &[(&str, &[&str])] = &[
     ("errno", &[]),
     ("SIZE_MAX", &["stdint.h"]),
@@ -293,6 +295,29 @@ const NULL_HEADERS: &[&str] = &[
 /// 7.8p1).
 const IMPLIED_HEADERS: &[(&str, &str)] = &[("inttypes.h", "stdint.h")];
 
+/// `path` with its `.` segments dropped and each `..` removing the segment
+/// before it, `/`-separated; with `relative`, a `..` with nothing before it
+/// is dropped too, leaving the part of the path it names below its
+/// includer, as [`IncludeClosure`] keeps an unresolved spelling.
+fn normalized(path: &str, relative: bool) -> String {
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in path.split(['/', '\\']) {
+        match segment {
+            "." => {}
+            "" if !segments.is_empty() => {}
+            ".." => {
+                if segments.last().is_some_and(|s| !s.is_empty() && *s != "..") {
+                    segments.pop();
+                } else if !relative {
+                    segments.push(segment);
+                }
+            }
+            _ => segments.push(segment),
+        }
+    }
+    segments.join("/")
+}
+
 /// The standard headers [`RESERVED_NAMES`] names that `closure` reaches, by
 /// the spelling of an include that resolved to no file or the name of one
 /// that did, with the headers they are defined to include.
@@ -321,7 +346,11 @@ fn headers_reached(closure: &IncludeClosure) -> HashSet<&'static str> {
 /// declaration unless the only `#include` lines bringing it in sit in
 /// another arm of an `#if` chain than the declaration: raylib's
 /// `typedef enum bool { false, true } bool;` is the `#elif` of an
-/// `#include <stdbool.h>`, so no build has both.
+/// `#include <stdbool.h>`, so no build has both (ADR-0010 decision 4). An
+/// `#include` in `#if 0` or a `__cplusplus` arm counts nowhere.
+/// **Limitation:** arms are told apart within one chain only, so an
+/// `#include` under `#if C99` and a declaration under a separate
+/// `#if !C99` still count together, which errs toward reporting.
 #[derive(Debug, Default)]
 struct IncludedHeaders {
     /// What the build's forced includes bring in, everywhere.
@@ -335,35 +364,43 @@ struct IncludedHeaders {
 
 impl IncludedHeaders {
     fn of(root: &Node, source: &str, edges: &HashMap<String, Vec<String>>, path: &Path) -> Self {
-        static INCLUDE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-        let include = INCLUDE.get_or_init(|| {
-            regex::Regex::new(r#"(?m)^[ \t]*#[ \t]*include[ \t]*[<"]([^>"]+)[>"]"#).unwrap()
-        });
-        let targets = edges
-            .get(&crate::analyze::compile_commands::real_path(path))
-            .cloned()
-            .unwrap_or_default();
-        let lines: Vec<(usize, HashSet<&'static str>)> = include
-            .captures_iter(source)
-            .filter_map(|c| {
-                let spelling = c.get(1)?.as_str().trim();
-                let mut closure = IncludeClosure::default();
-                closure.unresolved.insert(spelling.to_string());
-                // The file the line resolved to, and what it includes.
-                for target in targets.iter().filter(|t| {
-                    t.strip_suffix(spelling)
-                        .is_some_and(|dir| dir.ends_with('/'))
-                }) {
-                    if let Some(reached) = IncludeClosure::of(edges, Path::new(target)) {
-                        closure.files.extend(reached.files);
-                        closure.unresolved.extend(reached.unresolved);
+        let file = crate::analyze::compile_commands::real_path(path);
+        let targets = edges.get(&file).cloned().unwrap_or_default();
+        let dir = file.rsplit_once('/').map_or("", |(dir, _)| dir);
+        // Only an `#include` some build compiles counts: one in `#if 0` or
+        // a `__cplusplus` arm never is, and one in a comment is no node.
+        let dead = DeadRegions::of(source);
+        let lines: Vec<(usize, HashSet<&'static str>)> =
+            query::find_descendants_of_kinds(*root, &["preproc_include"])
+                .into_iter()
+                .filter(|include| !dead.contains_node(include))
+                .filter_map(|include| {
+                    let path = include.child_by_field_name("path")?;
+                    let text = get_node_text(&path, source);
+                    let spelling = text.trim().trim_matches(['<', '>', '"']).trim();
+                    let mut closure = IncludeClosure::default();
+                    closure.unresolved.insert(normalized(spelling, true));
+                    // The file the line resolved to, and what it includes:
+                    // the one beside the includer when a quoted spelling
+                    // names it, else those ending in the spelling.
+                    let beside = normalized(&format!("{dir}/{spelling}"), false);
+                    let tail = format!("/{}", normalized(spelling, true));
+                    let resolved: Vec<&String> = if targets.contains(&beside) {
+                        vec![&beside]
+                    } else {
+                        targets.iter().filter(|t| t.ends_with(&tail)).collect()
+                    };
+                    for target in resolved {
+                        if let Some(reached) = IncludeClosure::of(edges, Path::new(target)) {
+                            closure.files.extend(reached.files);
+                            closure.unresolved.extend(reached.unresolved);
+                        }
+                        closure.files.insert(target.clone());
                     }
-                    closure.files.insert(target.clone());
-                }
-                Some((c.get(0)?.start(), headers_reached(&closure)))
-            })
-            .filter(|(_, headers)| !headers.is_empty())
-            .collect();
+                    Some((include.start_byte(), headers_reached(&closure)))
+                })
+                .filter(|(_, headers)| !headers.is_empty())
+                .collect();
         let arms = (!lines.is_empty()).then(|| PreprocArms::collect(root));
         let everywhere = IncludeClosure::of_forced_includes(&[edges])
             .map(|forced| headers_reached(&forced))

@@ -10174,3 +10174,47 @@ fn exp19_reports_loop_bodies_and_preprocessor_arms_at_the_body() {
         ])
     );
 }
+
+/// DCL37-C findings for one file of the `crossfile_dcl37` project `case`,
+/// scanned with the project as its directory.
+fn dcl37_crossfile_violations(case: &str, file: &str) -> Vec<serde_json::Value> {
+    let project = fixtures().join("crossfile_dcl37").join(case);
+    let src = project.join(file);
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        src.to_str().unwrap(),
+        "-d",
+        project.to_str().unwrap(),
+        "--rules",
+        "DCL37-C",
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap()
+}
+
+/// A library name is reserved where a header the file includes brings in
+/// the standard header that defines it, however the include spells the
+/// path to that header: `"../inc/compat.h"` and `"./inc/compat.h"` both
+/// reach `<stdbool.h>`, so `false` and `true` are reported, and a header
+/// that does not include it leaves them alone.
+#[test]
+fn dcl37_library_name_reserved_through_a_relative_include() {
+    for file in ["sub/parent.c", "here.c"] {
+        let violations = dcl37_crossfile_violations("library_name_through_relative_include", file);
+        let names: Vec<&str> = violations
+            .iter()
+            .map(|v| v["message"].as_str().unwrap())
+            .collect();
+        assert_eq!(violations.len(), 2, "{file}: {names:?}");
+        assert!(
+            names[0].contains("'false'") && names[1].contains("'true'"),
+            "{file}: {names:?}"
+        );
+    }
+    let unrelated =
+        dcl37_crossfile_violations("library_name_through_relative_include", "unrelated.c");
+    assert!(unrelated.is_empty(), "{unrelated:?}");
+}
