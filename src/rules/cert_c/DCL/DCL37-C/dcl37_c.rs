@@ -18,6 +18,9 @@
 //! reserved at file scope as an ordinary identifier is, and is checked where
 //! it is declared: a specifier with a body, or one standing alone
 //! (`struct _tag;`). `struct _stat st;` only names a tag declared elsewhere.
+//! Members and labels each have a name space of their own, which the
+//! file-scope reservation does not reach, so only `_X` and `__x` are reported
+//! there.
 //!
 //! Defining a feature-test macro is not reported. These names are reserved,
 //! but a governing standard or the implementation's documentation tells the
@@ -378,16 +381,32 @@ impl Dcl37C {
                         self.check_name(&name, source, at_file_scope, false, violations);
                     }
                 }
+                // Members and labels each have a name space of their own,
+                // which the file-scope reservation does not reach, so only
+                // a name reserved for any use is reported there.
+                "field_declaration" => {
+                    for declarator in declarators(&n) {
+                        if let Some(name) = declared_name(declarator) {
+                            self.check_name(&name, source, false, false, violations);
+                        }
+                    }
+                }
+                "labeled_statement" => {
+                    if let Some(label) = n.child_by_field_name("label") {
+                        self.check_name(&label, source, false, false, violations);
+                    }
+                }
                 _ => {}
             }
         }
     }
 
-    /// Report a declared typedef name, tag or enumeration constant that is
-    /// reserved: for any use (`_X`, `__x`), or, where `file_scope` holds, any
-    /// leading-underscore name. An `ordinary` identifier (a typedef name or
-    /// enumeration constant, as against a tag) is also checked against the
-    /// library names a variable is.
+    /// Report a declared typedef name, tag, enumeration constant, member or
+    /// label that is reserved: for any use (`_X`, `__x`), or, where
+    /// `file_scope` holds, any leading-underscore name. An `ordinary`
+    /// identifier (a typedef name or enumeration constant, as against a tag,
+    /// member or label) is also checked against the library names a
+    /// variable is.
     fn check_name(
         &self,
         node: &Node,
