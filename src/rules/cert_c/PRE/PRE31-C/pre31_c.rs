@@ -809,15 +809,7 @@ impl<'a> Ctx<'a> {
                     // pointer or a member: nothing names the body, and the
                     // callee expression may itself have effects.
                     Some(f) => match parenthesized_name(&f) {
-                        Some(inner) if designates_object(&inner, self.source) => Effect::Unknown,
-                        Some(inner) => {
-                            let name = get_node_text(&inner, self.source);
-                            if self.names_a_type_here(name) {
-                                Effect::None
-                            } else {
-                                self.call_effect(name, arguments.as_ref(), 0)
-                            }
-                        }
+                        Some(inner) => self.parenthesized_callee_effect(&inner, arguments.as_ref()),
                         None => self.expression_effect(&f).max(Effect::Unknown),
                     },
                     None => Effect::Unknown,
@@ -829,15 +821,54 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// Whether `name`, not bound to an object here, names a type: a C type
-    /// keyword, a typedef this file or the scan knows, an ISO C/POSIX `_t`
-    /// name, or an object-like macro whose alias chain ends in one.
-    fn names_a_type_here(&self, name: &str) -> bool {
+    /// What `(name)(...)` can change, `inner` the identifier in the
+    /// parentheses: the parser reads a cast of a parenthesized operand,
+    /// `(u32) (a + b)`, as a call through `(u32)`. Resolved by declaration,
+    /// in this order (ADR-0006): a name bound to an object is a call through
+    /// a pointer; a function this file declares or the scan defines is that
+    /// function (the parentheses keep a function-like macro of the name from
+    /// expanding, C11 7.1.4p1, so `(getc)(fp)` calls getc); a typedef this
+    /// file or the scan declares, a type keyword, or an object-like macro
+    /// naming one is a cast and calls nothing. A name ending in `_t` that
+    /// nothing declares is not taken for a type here: the call stays as
+    /// unknown as any other.
+    fn parenthesized_callee_effect(
+        &self,
+        inner: &Node<'a>,
+        arguments: Option<&Node<'a>>,
+    ) -> Effect {
+        if designates_object(inner, self.source) {
+            return Effect::Unknown;
+        }
+        let name = get_node_text(inner, self.source);
+        let declared_function =
+            ast_utils::resolve_identifier_binding(inner, name, self.source).is_some();
+        if declared_function || self.function_effect(name, arguments).is_some() {
+            return self.function_call_effect(name, arguments);
+        }
         let no_typedefs = HashMap::new();
         let typedefs = self.effects.map_or(&no_typedefs, |v| &*v.names.typedefs);
-        self.types.typedef_types.contains_key(name)
-            || names_a_type(name, typedefs)
+        if self.types.typedef_types.contains_key(name)
+            || typedefs.contains_key(name)
             || is_type_name_text(resolve_macro_alias(self.aliases, name))
+        {
+            return Effect::None;
+        }
+        self.function_call_effect(name, arguments)
+    }
+
+    /// [`Self::call_effect`] for a call that reaches the function itself,
+    /// never a function-like macro of its name: the scanned function's
+    /// effect, else the library contract, else unknown. An object-like
+    /// macro still renames the callee.
+    fn function_call_effect(&self, name: &str, arguments: Option<&Node<'a>>) -> Effect {
+        let name = if self.names.contains(name) {
+            name
+        } else {
+            resolve_macro_alias(self.aliases, name)
+        };
+        self.function_effect(name, arguments)
+            .unwrap_or_else(|| self.library_effect(name))
     }
 
     /// Whether an identifier reads an object whose typedef is volatile
@@ -983,6 +1014,13 @@ impl<'a> Ctx<'a> {
         if names_a_type(name, typedefs) {
             return Effect::None;
         }
+        self.library_effect(name)
+    }
+
+    /// What a call to `name`, which the scan does not define, can change:
+    /// the C library's contract for it where the policy reads one, else
+    /// unknown.
+    fn library_effect(&self, name: &str) -> Effect {
         // A POSIX-only function's contract holds only where POSIX does.
         let stdlib_contract = self.settings.flag("stdlib_call_effects")
             && (!crate::utility::cert_c::std_functions::is_posix_only_function(name)

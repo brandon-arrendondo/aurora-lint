@@ -5916,6 +5916,29 @@ fn pre31_quotes_the_argument_the_preprocessor_passes() {
     assert!(message.ends_with("argument 1: 'rc ='"), "{message}");
 }
 
+/// A name ending in `_t` that a header declares as a function pointer is
+/// an object, not a type: `(handler_t)(1)` calls through it, an unproven
+/// call the strict policy reports.
+#[test]
+fn pre31_parenthesized_header_pointer_named_like_a_type_is_a_call() {
+    let project = fixtures().join("crossfile_pre31/parenthesized_header_pointer_named_like_a_type");
+    let project = project.to_str().unwrap();
+    let file = format!("{project}/main.c");
+    assert!(pre31_violations(&file, &["-d", project]).is_empty());
+    let strict = pre31_violations(&file, &["-d", project, "--profile", "strict"]);
+    assert_eq!(strict.len(), 1, "{:?}", strict);
+}
+
+/// A function named `step_t`, declared in a header and defined in another
+/// file, is the function the scan defines: it writes, so `(step_t)(1)`
+/// under TWICE is reported under the default policy.
+#[test]
+fn pre31_parenthesized_function_named_like_a_type_is_the_scanned_function() {
+    let violations =
+        pre31_crossfile_violations("parenthesized_function_named_like_a_type_defined_elsewhere");
+    assert_eq!(violations.len(), 1, "{:?}", violations);
+}
+
 /// The same guard with an arm evaluating its argument twice is judged.
 #[test]
 fn pre31_header_twice_arm_under_a_guard_some_builds_define_is_judged() {
