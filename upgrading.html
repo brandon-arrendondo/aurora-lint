@@ -233,7 +233,9 @@ lists the callees that would change a finding.</p>
 (<a class="reference internal" href="suppression.html"><span class="doc">Suppression System</span></a>), so a finding that now lands on a different line leaves
 its suppression unused and is reported again. In 0.7.0, PRE01-C reports each
 unparenthesized use of a macro parameter where it is written, not once per
-parameter at the <code class="docutils literal notranslate"><span class="pre">#define</span></code>. Regenerate PRE01-C suppressions with
+parameter at the <code class="docutils literal notranslate"><span class="pre">#define</span></code>. EXP19-C reports each unbraced <code class="docutils literal notranslate"><span class="pre">if</span></code>,
+<code class="docutils literal notranslate"><span class="pre">else</span></code>, <code class="docutils literal notranslate"><span class="pre">for</span></code> and <code class="docutils literal notranslate"><span class="pre">while</span></code> body where the body starts, not at its
+keyword. Regenerate PRE01-C and EXP19-C suppressions with
 <code class="docutils literal notranslate"><span class="pre">--generate-suppression</span></code>.</p>
 </section>
 <section id="saved-prescan-caches-and-the-settings-hash">
