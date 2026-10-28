@@ -209,7 +209,7 @@ a rule outright.</p></li>
 <li><p>Basis: CERT MSC37-C-EX2 exempts a path that calls a function marked _Noreturn; GCC and Clang give the GNU attribute the same meaning, and kernels and runtimes use it where C11 is unavailable. It is a promise the compiler does not check, so no stricter policy accepts it.</p></li>
 </ul>
 </dd>
-<dt><code class="docutils literal notranslate"><span class="pre">flp00_exact_zero_comparison_exempt</span></code></dt><dd><p>FLP00-C: a floating-point == or != with an exact zero as one operand (0.0, 0.0f, -0.0, 0) is not reported: zero is exactly representable, and a test against it is a common, legitimate idiom. Off, it is reported like any other floating-point comparison.</p>
+<dt><code class="docutils literal notranslate"><span class="pre">flp00_exact_zero_comparison_exempt</span></code></dt><dd><p>FLP00-C: a floating-point == or != with an exact zero as one operand (0.0, 0.0f, -0.0, 0, the null character, a cast of one to an arithmetic type, or an object-like macro that is one in every build that reaches the comparison) is not reported: zero is exactly representable, and a test against it is a common, legitimate idiom. Off, it is reported like any other floating-point comparison.</p>
 <ul class="simple">
 <li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code>; pedantic preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
 <li><p>Scope: FLP00-C</p></li>
