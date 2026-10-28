@@ -43,9 +43,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 /// Type qualifiers we substitute a matching macro alias with. Only keywords
-/// tree-sitter-c parses as `type_qualifier`; storage-class specifiers
-/// (`static`, `inline`) and attribute prefixes (`__attribute__`) are a
-/// different parser hazard and not covered here.
+/// tree-sitter-c parses as `type_qualifier`. A storage-class macro
+/// (`#define STATIC static`) is respelled by the pass before this one,
+/// [`crate::analyze::storage_class_macro`], which requires every definition
+/// to agree; attribute prefixes (`__attribute__`) are a different parser
+/// hazard and not covered here.
 const QUALIFIER_KEYWORDS: &[&str] = &["const", "volatile", "restrict", "_Atomic"];
 
 fn define_line_re() -> &'static Regex {

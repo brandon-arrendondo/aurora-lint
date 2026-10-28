@@ -92,6 +92,19 @@ impl CParser {
         // `thread_local`, which the grammar does know. Length-preserving.
         let source = crate::analyze::thread_local_keyword::spell_thread_local(&source);
 
+        // A storage-class macro (`#define STATIC static`) reads as a type
+        // name, which strands the real type in an ERROR node and turns
+        // `STATIC struct { ... } s;` into a function definition. Spell it as
+        // its keyword where every definition the file can see agrees. Runs
+        // before the empty-macro pass, which takes a macro empty in some
+        // configuration. Length-preserving.
+        let source = crate::analyze::storage_class_macro::spell_storage_class_macros(
+            &source,
+            Some(std::path::Path::new(file_path)),
+            &self.repair_macros.storage_class_macros,
+            &self.repair_macros.include_edges,
+        );
+
         // An earlier fix: blank empty WINAPI/RLAPI-style export-specifier macros
         // before parsing -- tree-sitter-c's grammar can't parse a bare
         // identifier immediately before a declaration's type, and the
@@ -180,6 +193,12 @@ impl CParser {
         let source = crate::analyze::embedded_js_blank::blank_embedded_js(source);
         let source = crate::analyze::has_include_angle::quote_has_include_headers(&source);
         let source = crate::analyze::thread_local_keyword::spell_thread_local(&source);
+        let source = crate::analyze::storage_class_macro::spell_storage_class_macros(
+            &source,
+            None,
+            &self.repair_macros.storage_class_macros,
+            &self.repair_macros.include_edges,
+        );
         let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(&source);
         let source = crate::analyze::preproc_dangling_else::blank_dangling_else_preproc(&source);
         let source = crate::analyze::label_preproc_guard::blank_label_guarded_preproc(&source);

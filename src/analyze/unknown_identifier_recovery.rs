@@ -55,7 +55,8 @@
 //! on raylib's rlgl.h.
 
 use lang_parsing_substrate::query;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::{Node, Parser, Tree};
 
 use crate::analyze::context::ProjectContext;
@@ -76,6 +77,13 @@ pub struct RepairMacros {
     /// the author's "may go unused" statement before any rule can read it,
     /// so these leave [`UNUSED_ATTRIBUTE_MARKER`] behind instead.
     pub unused_attribute_macros: HashSet<String>,
+    /// Object-like macros some project file defines as a storage class,
+    /// with the files defining each
+    /// ([`ProjectContext::storage_class_macros`]).
+    pub storage_class_macros: Arc<crate::analyze::storage_class_macro::StorageClassTable>,
+    /// The include graph ([`ProjectContext::include_edges`]) that says which
+    /// of those files a file can see.
+    pub include_edges: Arc<HashMap<String, Vec<String>>>,
 }
 
 impl RepairMacros {
@@ -85,6 +93,8 @@ impl RepairMacros {
         Self {
             object_macros: HashSet::clone(&context.defined_macro_names),
             unused_attribute_macros: HashSet::clone(&context.unused_attribute_macros),
+            storage_class_macros: Arc::clone(&context.storage_class_macros),
+            include_edges: Arc::clone(&context.include_edges),
         }
     }
 }
@@ -659,6 +669,8 @@ mod tests {
         RepairMacros {
             object_macros: object.iter().map(|s| (*s).to_string()).collect(),
             unused_attribute_macros: unused_attr.iter().map(|s| (*s).to_string()).collect(),
+            storage_class_macros: Arc::default(),
+            include_edges: Arc::default(),
         }
     }
 

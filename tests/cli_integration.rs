@@ -4295,6 +4295,111 @@ fn crossfile_header_declared_suppresses_dcl15c() {
     );
 }
 
+/// A storage-class macro is read as its keyword only by the files that can
+/// see its definition: a header's `#define STATIC static` repairs its
+/// includer, an unrelated test stub's empty `#define STATIC` does not veto
+/// it, and another file's `#define PRIVATE static` leaves a local named
+/// `PRIVATE` alone in a file that never includes it. A header's `#ifndef`
+/// default and a file's own empty redefinition keep the name as written.
+#[test]
+fn a_storage_class_macro_is_read_only_where_its_definition_is_visible() {
+    let dir = tempfile::tempdir().unwrap();
+    let proj = dir.path().join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("util.h"),
+        "#ifndef UTIL_H\n#define UTIL_H\n#define STATIC static\ntypedef int myint;\n#endif\n",
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("a.c"),
+        "#include \"util.h\"\nSTATIC myint helper(void) { return 1; }\n\
+         STATIC struct { int a; } s_state;\n\
+         int a_api(void) { return helper() + s_state.a; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("stub.c"),
+        "#define STATIC\nSTATIC int stub(void) { return 0; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("mod.c"),
+        "#define PRIVATE static\nPRIVATE int counter;\nint mod_api(void) { return counter; }\n",
+    )
+    .unwrap();
+    // other.c has an include graph that reaches neither mod.c nor stub.c.
+    std::fs::write(proj.join("types.h"), "typedef int count_t;\n").unwrap();
+    std::fs::write(
+        proj.join("other.c"),
+        "#include \"types.h\"\nint scale(int v) {\n    int PRIVATE = v * 2;\n\
+         return PRIVATE + 1;\n}\nint bump(void) {\n    int PRIVATE;\n    return 0;\n}\n",
+    )
+    .unwrap();
+    // A header's `#ifndef` default and a file's own empty redefinition are
+    // configurations in which the name is not `static`.
+    std::fs::write(
+        proj.join("defaults.h"),
+        "#ifndef PRIV_FN\n#define PRIV_FN static\n#endif\n",
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("b.c"),
+        "#include \"defaults.h\"\ntypedef int bint;\nPRIV_FN bint b_fn(void) { return 0; }\n\
+         int b_api(void) { return b_fn(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("c.c"),
+        "#include \"util.h\"\n#undef STATIC\n#define STATIC\n\
+         STATIC myint c_fn(void) { return 0; }\nint c_api(void) { return c_fn(); }\n",
+    )
+    .unwrap();
+    let json = dir.path().join("out.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        proj.to_str().unwrap(),
+        "-d",
+        proj.to_str().unwrap(),
+        "--rules",
+        "DCL00-C,DCL15-C,DCL19-C,MSC13-C,MSC37-C",
+        "-e",
+        json.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+    let found: Vec<(String, u64, String)> = rows
+        .iter()
+        .map(|r| {
+            let file = r["file"].as_str().unwrap_or("");
+            let name = file.rsplit('/').next().unwrap_or(file).to_string();
+            (
+                name,
+                r["line"].as_u64().unwrap_or(0),
+                r["rule_id"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    let has = |file: &str, line: u64, rule: &str| {
+        found
+            .iter()
+            .any(|(f, l, r)| f == file && *l == line && r == rule)
+    };
+    for (line, rule) in [
+        (2, "DCL15-C"),
+        (2, "DCL19-C"),
+        (3, "MSC13-C"),
+        (3, "MSC37-C"),
+    ] {
+        assert!(!has("a.c", line, rule), "a.c:{line} {rule}: {found:?}");
+    }
+    assert!(has("stub.c", 2, "DCL15-C"), "{found:?}");
+    assert!(has("b.c", 3, "DCL15-C"), "{found:?}");
+    assert!(has("c.c", 4, "DCL15-C"), "{found:?}");
+    assert!(has("other.c", 3, "DCL00-C"), "{found:?}");
+    assert!(has("other.c", 7, "MSC13-C"), "{found:?}");
+}
+
 fn manifest_sig01() -> PathBuf {
     fixtures().join("manifest_sig01.toml")
 }

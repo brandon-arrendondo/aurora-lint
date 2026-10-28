@@ -54,6 +54,10 @@ struct FilePrescanResult {
     /// Names this file `#define`s inside a live conditional arm (see
     /// `ProjectContext::conditional_macro_names`).
     conditional_macro_names: HashSet<String>,
+    /// This file's verdict on each name it `#define`s, for
+    /// `ProjectContext::storage_class_macros`
+    /// (`storage_class_macro::file_storage_classes`).
+    storage_classes: HashMap<String, Option<&'static str>>,
     /// See `ProjectContext::config_dependent_constants`.
     config_dependent_constants: HashSet<String>,
     /// Function-like `#define`s in this file the collector skipped or had
@@ -186,6 +190,7 @@ impl FilePrescanResult {
             function_macros: HashMap::new(),
             macro_definitions: HashMap::new(),
             conditional_macro_names: HashSet::new(),
+            storage_classes: HashMap::new(),
             config_dependent_constants: HashSet::new(),
             macro_definition_audit: Default::default(),
             restrict_params: HashMap::new(),
@@ -341,6 +346,11 @@ fn process_file(
         result.macro_definitions = crate::analyze::check_macros::collect_macro_definitions(&source);
         result.conditional_macro_names =
             crate::analyze::check_macros::collect_conditional_macro_names(&source);
+        result.storage_classes = crate::analyze::storage_class_macro::file_storage_classes(
+            &source,
+            &result.macro_definitions,
+            &result.conditional_macro_names,
+        );
         result.config_dependent_constants =
             const_eval::config_dependent_constant_names(&root, &source);
         result.macro_definition_audit =
@@ -836,6 +846,7 @@ fn prescan_file_list(
     let mut undefined_macro_names: HashSet<String> = HashSet::new();
     let mut function_macro_names: HashSet<String> = HashSet::new();
     let mut static_macro_names: HashSet<String> = HashSet::new();
+    let mut storage_class_macros = crate::analyze::storage_class_macro::StorageClassTable::new();
     let mut macro_operand_params: HashMap<String, crate::analyze::macro_expand::OperandParams> =
         HashMap::new();
     let mut function_macro_arms: HashMap<
@@ -1101,6 +1112,11 @@ fn prescan_file_list(
             }
         }
         macro_gaps.extend(r.macro_definition_audit.gaps);
+        crate::analyze::storage_class_macro::fold_file_storage_classes(
+            &mut storage_class_macros,
+            &crate::analyze::compile_commands::real_path(Path::new(&r.display_path)),
+            r.storage_classes,
+        );
         crate::analyze::check_macros::merge_macro_definitions(
             &mut macro_definitions,
             r.macro_definitions,
@@ -1679,6 +1695,7 @@ fn prescan_file_list(
         &keyword_noreturn_macros,
     );
 
+    crate::analyze::storage_class_macro::retain_storage_classes(&mut storage_class_macros);
     let abort_check_macros = abort_check_noreturn.map(|names| {
         Arc::new(crate::analyze::check_macros::abort_check_macros(
             &macro_definitions,
@@ -1742,6 +1759,7 @@ fn prescan_file_list(
         undefined_macro_names: Arc::new(undefined_macro_names),
         function_macro_names: Arc::new(function_macro_names),
         static_macro_names: Arc::new(static_macro_names),
+        storage_class_macros: Arc::new(storage_class_macros),
         macro_operand_params: Arc::new(macro_operand_params),
         function_macro_arms: Arc::new(function_macro_arms),
         include_edges: Arc::new(HashMap::new()),
@@ -7688,6 +7706,18 @@ fn harvest_header_macros(
     }
     context.macro_gaps.extend(header_audit.gaps);
     let header_definitions = crate::analyze::check_macros::collect_macro_definitions(hsource);
+    let header_conditional = crate::analyze::check_macros::collect_conditional_macro_names(hsource);
+    let storage_classes = Arc::make_mut(&mut context.storage_class_macros);
+    crate::analyze::storage_class_macro::fold_file_storage_classes(
+        storage_classes,
+        &crate::analyze::compile_commands::real_path(Path::new(header_path)),
+        crate::analyze::storage_class_macro::file_storage_classes(
+            hsource,
+            &header_definitions,
+            &header_conditional,
+        ),
+    );
+    crate::analyze::storage_class_macro::retain_storage_classes(storage_classes);
     origins.record(
         outside_project,
         &crate::analyze::compile_commands::real_path(Path::new(header_path)),
@@ -7697,8 +7727,7 @@ fn harvest_header_macros(
         Arc::make_mut(&mut context.macro_definitions),
         header_definitions,
     );
-    Arc::make_mut(&mut context.conditional_macro_names)
-        .extend(crate::analyze::check_macros::collect_conditional_macro_names(hsource));
+    Arc::make_mut(&mut context.conditional_macro_names).extend(header_conditional);
     Arc::make_mut(&mut context.config_dependent_constants)
         .extend(const_eval::config_dependent_constant_names(root, hsource));
 }

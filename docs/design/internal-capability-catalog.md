@@ -225,6 +225,25 @@ unrelated content later in the file.
 **Wiring pattern:** Called once on raw source text *before* parsing (see
 `src/parser/mod.rs`), not from within a rule.
 
+### `src/analyze/storage_class_macro.rs`
+**Problem solved:** pre-parse pass for an object-like macro that expands to
+a storage-class specifier (`#define STATIC static`). tree-sitter-c reads it
+as a type name: before a typedef name the real type lands in an `ERROR`
+node and the definition reads as external (`STATIC myint f(void)`), and
+`STATIC struct { ... } s;` reads as a function definition whose body is the
+member list.
+
+| Function | Signature | Description |
+|---|---|---|
+| `spell_storage_class_macros` | `(source: &str, path: Option<&Path>, table: &StorageClassTable, include_edges) -> Cow<str>` | Respells every use of such a name as its keyword padded with spaces (length-preserving), outside comments, literals and directives, when every definition the file can see agrees: every one this file writes in an arm it does not prove dead (`check_macros::collect_macro_definitions`), and every one in `table` (`ProjectContext::storage_class_macros`, via `RepairMacros`) from a file its include closure (`IncludeClosure::of` over `include_edges`) may reach. A definition in a file it cannot include neither respells nor vetoes; with no closure only the file's own definitions count. A macro empty or different in some configuration, only a default a build may override (`#ifndef STATIC`), or `#undef`'d by the file or a file it reaches, is kept, so the empty-macro pass after it reads that configuration's external linkage. A name shorter than its keyword is not respelled. |
+| `storage_class_of` | `(definitions: &[MacroDefinition]) -> Option<Option<&'static str>>` | `Some(Some(kw))` when every definition is storage class `kw`, `Some(None)` when some is a storage class and another is not, `None` when none is. |
+| `file_storage_classes` / `fold_file_storage_classes` / `retain_storage_classes` | `(source, definitions, conditional) -> HashMap<String, Option<&'static str>>`, ... | One file's verdict per name (`None` for a name it defines otherwise, only in some configurations, or `#undef`s), folded into the prescan's per-file `StorageClassTable`. |
+| `names_tested_undefined` | `(source: &str) -> HashSet<String>` | Every name an `#ifndef NAME` or `!defined(NAME)` directive tests, text-level: the `#ifndef STATIC` / `#define STATIC static` default has an include guard's shape, which `collect_conditional_macro_names` skips. |
+
+**Wiring pattern:** Called once on raw source text *before* parsing, after
+`thread_local_keyword` and before `empty_macro_blank` (see
+`src/parser/mod.rs`).
+
 ### `src/analyze/unknown_identifier_recovery.rs`
 **Problem solved:** a follow-up to the pass above for the case where the offending
 unknown identifier's `#define` lives in an *external* header not included
@@ -1561,7 +1580,9 @@ loop that returns abandons the non-null proof rather than guessing.
 
 Already covered above under Macro detection: `embedded_js_blank.rs`
 (emscripten `EM_ASM`/`EM_JS` JavaScript bodies), `empty_macro_blank.rs`
-(local `#define`-to-nothing) and `unknown_identifier_recovery.rs`
+(local `#define`-to-nothing), `storage_class_macro.rs` (`#define STATIC
+static`, respelled where every definition the file can see agrees) and
+`unknown_identifier_recovery.rs`
 (parser-ERROR-signal-driven, for unresolvable external-header
 identifiers). `has_include_angle.rs` rewrites `__has_include(<hdr.h>)` (and
 `__has_include_next`) on `#if`/`#elif` lines to the quoted spelling:

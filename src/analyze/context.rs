@@ -984,6 +984,13 @@ pub struct ProjectContext {
     /// [`crate::utility::cert_c::ast_utils::collect_static_macro_names`].
     #[serde(default)]
     pub static_macro_names: Arc<HashSet<String>>,
+    /// Every object-like macro some scanned file or header defines as one
+    /// storage-class specifier (`#define STATIC static`), with each way any
+    /// file defines it and the files that do, so a file's include closure
+    /// picks the definitions it can see. See
+    /// [`crate::analyze::storage_class_macro`].
+    #[serde(default)]
+    pub storage_class_macros: Arc<crate::analyze::storage_class_macro::StorageClassTable>,
     /// For every function-like `#define` that applies `#` or `##` to a
     /// parameter, which parameters those are, across all scanned files
     /// (incl. headers), all branches. See
@@ -1655,7 +1662,7 @@ pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
 /// to a serialized field of [`ProjectContext`] (or of a type it holds), or to
 /// what such a field means: the cache header carries it, so an old cache is
 /// refused instead of misread.
-const PRESCAN_CACHE_FORMAT: u32 = 64;
+const PRESCAN_CACHE_FORMAT: u32 = 65;
 
 /// The header a prescan cache file starts with: a magic, the layout version
 /// and the aurora-lint version that wrote it.
