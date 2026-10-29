@@ -64,13 +64,21 @@
 //! dead code as live. Leaving the header in place is no better: two such
 //! blocks in one function make tree-sitter's recovery fold the whole body
 //! into one `ERROR`, inside which each header takes the live block as its
-//! body again. So the header line(s) are blanked instead and the `#if 0` /
-//! `#endif` pair is kept, which leaves an empty dead block and a clean parse.
+//! body again. So the header is blanked instead and the `#if 0` / `#endif`
+//! pair is kept, which leaves a dead block with no header and a clean parse.
+//! Blanking starts at the header's keyword, not its line: code before it on
+//! that line (`} else if (z)`) may close what the block opened earlier. It
+//! takes in a preceding `else` and every header the last one is the body of
+//! (`if (a)` / `if (b)`), since neither has a body left once it is gone. A
+//! block whose own braces do not pair up is left as it is: blanking part of
+//! it can only hand one of its braces a partner in live code.
 //!
 //! **A backslash-continued macro body.** `#define CHECK(x) \` followed by
 //! `if (x)` puts a header at the end of the block without putting a
 //! statement there; the header belongs to the macro's replacement list, not
 //! to the surrounding code.
+
+use crate::analyze::init_state;
 
 /// The directive keyword on `line`, if it is one -- `"ifndef"` for both
 /// `#ifndef X` and `# ifndef X`. The space after `#` is not cosmetic:
@@ -134,10 +142,42 @@ pub(crate) fn strip_comments(s: &str) -> String {
 /// Whether `content` ends with a control-flow header whose body must follow
 /// it. See the module docs for the two shapes deliberately excluded.
 pub(crate) fn ends_with_control_header(content: &str) -> bool {
-    let stripped = strip_comments(content);
-    let t = stripped.trim_end();
+    control_header_start(&strip_comments(content)).is_some()
+}
+
+/// `s` with every comment replaced by spaces, newlines kept, so a byte
+/// offset into the result is one into `s`.
+fn blank_comments(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = b.to_vec();
+    let mut i = 0usize;
+    while i < b.len() {
+        let end = if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+            s[i + 2..].find("*/").map_or(b.len(), |j| i + 2 + j + 2)
+        } else if b[i] == b'/' && b.get(i + 1) == Some(&b'/') {
+            s[i..].find('\n').map_or(b.len(), |j| i + j)
+        } else {
+            i += 1;
+            continue;
+        };
+        for c in &mut out[i..end] {
+            if *c != b'\n' {
+                *c = b' ';
+            }
+        }
+        i = end;
+    }
+    // Only whole comments were replaced, and each starts and ends on an
+    // ASCII byte.
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+/// Where the control-flow header that comment-free `text` ends with starts:
+/// the byte offset of its `if`/`while`/`for` keyword.
+fn control_header_start(text: &str) -> Option<usize> {
+    let t = text.trim_end();
     if !t.ends_with(')') {
-        return false;
+        return None;
     }
 
     // Walk back to the `(` that opens the trailing group.
@@ -159,9 +199,7 @@ pub(crate) fn ends_with_control_header(content: &str) -> bool {
             _ => {}
         }
     }
-    let Some(open) = open else {
-        return false;
-    };
+    let open = open?;
 
     let head = t[..open].trim_end();
     let kw_start = head
@@ -170,11 +208,101 @@ pub(crate) fn ends_with_control_header(content: &str) -> bool {
         .find(|(_, c)| !(c.is_alphanumeric() || *c == '_'))
         .map_or(0, |(p, c)| p + c.len_utf8());
 
-    match &head[kw_start..] {
+    let is_header = match &head[kw_start..] {
         "if" | "for" => true,
         // `} while (0)` closes a do-while; it governs nothing that follows.
         "while" => !head[..kw_start].trim_end().ends_with('}'),
         _ => false,
+    };
+    is_header.then_some(kw_start)
+}
+
+/// Where the code a dead block's trailing header governs nothing with
+/// starts in comment-free `text`: the header's keyword, moved back over any
+/// header it is itself the body of (`if (a)` / `if (b)`), then over an
+/// `else` the first header continues.
+fn dead_header_start(text: &str) -> Option<usize> {
+    let mut start = control_header_start(text)?;
+    while let Some(outer) = control_header_start(&text[..start]) {
+        start = outer;
+    }
+    let before = text[..start].trim_end();
+    if let Some(rest) = before.strip_suffix("else") {
+        if !rest.ends_with(|c: char| c.is_alphanumeric() || c == '_') {
+            start = rest.len();
+        }
+    }
+    Some(start)
+}
+
+/// Whether the `{` and `}` in comment-free `text`, outside string and
+/// character literals, pair up.
+fn braces_balance(text: &str) -> bool {
+    let mut depth = 0i32;
+    let mut quote = None;
+    let mut escaped = false;
+    for c in text.chars() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == q || c == '\n' {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => quote = Some(c),
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    depth == 0
+}
+
+/// Blank the header a dead block ends with, lines `from..=last` holding its
+/// code: from the header's start on its first line, every code line after
+/// it whole. Code before the header on that first line stays, since it may
+/// close what an earlier line of the block opened. A block whose own braces
+/// do not pair up is left alone: blanking part of it can only move a live
+/// brace's partner.
+fn blank_dead_header(
+    out: &mut [u8],
+    lines: &[&str],
+    line_starts: &[usize],
+    from: usize,
+    last: usize,
+) {
+    let mut joined = String::new();
+    let mut at = Vec::new();
+    for k in (from..=last).filter(|&k| !is_directive(lines[k])) {
+        if !joined.is_empty() {
+            joined.push('\n');
+        }
+        at.push((k, joined.len()));
+        joined.push_str(lines[k]);
+    }
+    let text = blank_comments(&joined);
+    if !braces_balance(&text) {
+        return;
+    }
+    let Some(start) = dead_header_start(&text) else {
+        return;
+    };
+    let Some(&(first, off)) = at.iter().rev().find(|&&(_, off)| off <= start) else {
+        return;
+    };
+    let col = start - off;
+    blank_line(out, line_starts[first] + col, lines[first].len() - col);
+    for &(k, _) in at.iter().filter(|&&(k, _)| k > first) {
+        blank_line(out, line_starts[k], lines[k].len());
     }
 }
 
@@ -204,10 +332,7 @@ pub fn blank_control_header_guarded_preproc(source: &str) -> String {
     }
 
     let mut out = source.as_bytes().to_vec();
-    let dead: Vec<(usize, usize)> = lang_parsing_substrate::dead_code_ranges(source)
-        .into_iter()
-        .map(|r| (r.start_line, r.end_line))
-        .collect();
+    let dead = init_state::file_proven_dead_lines(source);
 
     let mut i = 0usize;
     while i < lines.len() {
@@ -258,16 +383,7 @@ pub fn blank_control_header_guarded_preproc(source: &str) -> String {
                         if in_dead {
                             // The header exists in no build: blank it and
                             // keep the guard, so nothing becomes its body.
-                            let first = (i + 1..=last)
-                                .rev()
-                                .find(|&k| {
-                                    !is_directive(lines[k])
-                                        && ends_with_control_header(&joined_code(&lines, k, last))
-                                })
-                                .unwrap_or(i + 1);
-                            for k in (first..=last).filter(|&k| !is_directive(lines[k])) {
-                                blank_line(&mut out, line_starts[k], lines[k].len());
-                            }
+                            blank_dead_header(&mut out, &lines, &line_starts, i + 1, last);
                         } else {
                             blank_line(&mut out, line_starts[i], lines[i].len());
                             blank_line(&mut out, line_starts[end_idx], lines[end_idx].len());
@@ -564,6 +680,94 @@ int f(int p)
         let fixed = blank_control_header_guarded_preproc(src);
         assert_eq!(fixed.matches("#if 0").count(), 2);
         assert_eq!(fixed.matches("#endif").count(), 2);
+    }
+
+    #[test]
+    fn keeps_what_a_dead_else_if_closes() {
+        // Blanking the whole last line would drop the `}` that closes the
+        // `{` two lines up, and the live block would close the function.
+        let src = "\
+int f(int x, int z, int n)
+{
+#if 0
+  if (x) {
+    n = 0;
+  } else if (z)
+#endif
+  {
+    n++;
+  }
+  return n;
+}
+";
+        let want = src.replace("  } else if (z)\n", "  }            \n");
+        assert_eq!(blank_control_header_guarded_preproc(src), want);
+        assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn keeps_code_before_a_dead_header_on_its_line() {
+        let src = "\
+int g(int, int);
+int f(int a, int b)
+{
+#if 0
+  g(a,
+    b); if (a)
+#endif
+  { b++; }
+  return b;
+}
+";
+        let want = src.replace("    b); if (a)\n", "    b);       \n");
+        assert_eq!(blank_control_header_guarded_preproc(src), want);
+        assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn blanks_every_dead_header_the_last_one_is_the_body_of() {
+        let src = "\
+int f(int a, int b)
+{
+#if 0
+  if (a)
+    if (b)
+#endif
+  b++;
+#if 0
+  for (;;) /* spin */
+  while (a)
+#endif
+  { a++; }
+  return b;
+}
+";
+        let want = src
+            .replace("  if (a)\n    if (b)\n", "        \n          \n")
+            .replace(
+                "  for (;;) /* spin */\n  while (a)\n",
+                &format!("{}\n{}\n", " ".repeat(21), " ".repeat(11)),
+            );
+        assert_eq!(blank_control_header_guarded_preproc(src), want);
+        assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn leaves_a_dead_block_with_unpaired_braces_alone() {
+        let src = "\
+void a(void);
+void f(int x)
+{
+    if (x) {
+#if 0
+        }
+        if (x)
+#endif
+        a();
+    }
+}
+";
+        assert!(unchanged(src));
     }
 
     #[test]
