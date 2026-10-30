@@ -218,6 +218,16 @@ keyword. FIO40-C reports a read of a buffer after a failed ``fgets()`` or
 ``fgetws()`` at the call, not at the read. Regenerate PRE01-C, EXP19-C and
 FIO40-C suppressions with ``--generate-suppression``.
 
+0.6.0 matched a suppression against a line's text after the parser's repairs,
+so on a line where an empty object-like macro (an export macro that expands
+to nothing, for example) or ``_Thread_local`` was blanked, the hash that
+``--generate-suppression`` printed did not match and only a hash of the
+blanked text did. 0.7.0 matches the line as written. A suppression whose hash
+was taken over the blanked text no longer matches, and its finding is
+reported again. Regenerate it with ``--generate-suppression``. 0.7.0 doesn't
+report a suppression that matches nothing, so the finding coming back is the
+only sign.
+
 Saved prescan caches and the settings hash
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
