@@ -653,6 +653,10 @@ scan leaves out. It adds to the command line’s <code class="docutils literal n
 <span class="n">prescan_exclude</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;port/win32/**&quot;</span><span class="p">]</span><span class="w">             </span><span class="c1"># reported, not read</span>
 </pre></div>
 </div>
+<p>A pattern’s file extension matches in any case, as file discovery does, so
+<code class="docutils literal notranslate"><span class="pre">gen/*.c</span></code> also leaves out <code class="docutils literal notranslate"><span class="pre">gen/A.C</span></code>. The rest of the path stays
+case-sensitive: <code class="docutils literal notranslate"><span class="pre">vendor/**</span></code> does not match <code class="docutils literal notranslate"><span class="pre">Vendor/x.c</span></code>. The same holds for
+the command line’s globs and <code class="docutils literal notranslate"><span class="pre">toolchain.toml</span></code>’s <code class="docutils literal notranslate"><span class="pre">[ignore].paths</span></code>.</p>
 <p><code class="docutils literal notranslate"><span class="pre">exclude_all</span></code> and <code class="docutils literal notranslate"><span class="pre">prescan_exclude</span></code> change what the cross-file facts can hold,
 so they enter the settings hash (only when non-empty) and a SARIF export’s
 recorded settings.</p>

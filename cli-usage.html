@@ -543,7 +543,9 @@ reported in them, but they are still read for cross-file facts, as they always
 were). A pattern like <code class="docutils literal notranslate"><span class="pre">tests/**</span></code>
 matches anywhere a <code class="docutils literal notranslate"><span class="pre">tests</span></code> directory sits at that depth; use a leading
 <code class="docutils literal notranslate"><span class="pre">**/</span></code> (e.g. <code class="docutils literal notranslate"><span class="pre">**/ltests.c</span></code>) to match a filename regardless of its
-directory.</p>
+directory. A pattern’s file extension matches in any case, as file discovery
+does (<code class="docutils literal notranslate"><span class="pre">*.c</span></code> also matches <code class="docutils literal notranslate"><span class="pre">A.C</span></code>); directory names and the rest of the file
+name are case-sensitive.</p>
 <p>Two options leave a file out of only one half:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">--report-exclude</span></code> reports nothing in matching files but still reads them

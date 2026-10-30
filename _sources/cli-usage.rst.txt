@@ -456,7 +456,9 @@ reported in them, but they are still read for cross-file facts, as they always
 were). A pattern like ``tests/**``
 matches anywhere a ``tests`` directory sits at that depth; use a leading
 ``**/`` (e.g. ``**/ltests.c``) to match a filename regardless of its
-directory.
+directory. A pattern's file extension matches in any case, as file discovery
+does (``*.c`` also matches ``A.C``); directory names and the rest of the file
+name are case-sensitive.
 
 Two options leave a file out of only one half:
 

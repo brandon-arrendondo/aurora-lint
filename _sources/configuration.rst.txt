@@ -569,6 +569,11 @@ scan leaves out. It adds to the command line's ``--exclude-all``,
     report_exclude = ["vendor/**"]                  # no findings, still read
     prescan_exclude = ["port/win32/**"]             # reported, not read
 
+A pattern's file extension matches in any case, as file discovery does, so
+``gen/*.c`` also leaves out ``gen/A.C``. The rest of the path stays
+case-sensitive: ``vendor/**`` does not match ``Vendor/x.c``. The same holds for
+the command line's globs and ``toolchain.toml``'s ``[ignore].paths``.
+
 ``exclude_all`` and ``prescan_exclude`` change what the cross-file facts can hold,
 so they enter the settings hash (only when non-empty) and a SARIF export's
 recorded settings.
