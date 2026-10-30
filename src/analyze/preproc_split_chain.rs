@@ -107,6 +107,7 @@ use crate::analyze::control_header_preproc_guard::{
 };
 use crate::analyze::preproc_arm_choice::{compiled_arm, directive_extent, locally_defined_names};
 use crate::analyze::preproc_dangling_else::is_bare_else_line;
+use crate::utility::cert_c::text_bounds;
 
 /// How an arm's last real content line leaves the arm.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -203,13 +204,7 @@ fn shared_brace_follows(lines: &[&str], from: usize) -> bool {
 /// `else` from the brace block after the `#endif`, per the module docs above.
 /// Length-preserving.
 pub fn blank_split_chain_preproc(source: &str) -> String {
-    let lines: Vec<&str> = source.lines().collect();
-    let mut line_starts = Vec::with_capacity(lines.len());
-    let mut offset = 0usize;
-    for line in &lines {
-        line_starts.push(offset);
-        offset += line.len() + 1; // '\n' (a CRLF's '\r' is left as-is by blank_line)
-    }
+    let (lines, line_starts) = text_bounds::lines_with_starts(source);
 
     let mut out = source.as_bytes().to_vec();
     let local = locally_defined_names(&lines);
@@ -696,5 +691,32 @@ int g(int a)
 }
 ";
         assert_eq!(blank_split_chain_preproc(src).len(), src.len());
+    }
+
+    #[test]
+    fn a_crlf_file_is_blanked_at_the_bytes_of_its_lf_copy() {
+        let src = "\
+int f(int x);
+int g(int monitor, int count)
+{
+#if defined(USING_VERSION_SDL3)
+    if (f(monitor) != 0)
+#else
+    if ((monitor >= 0) && (monitor < count))
+#endif
+    {
+        return 1;
+    }
+    return 0;
+}
+";
+        let lf = blank_split_chain_preproc(src);
+        assert_ne!(lf, src, "the LF copy must trigger the pass");
+        let crlf = src.replace('\n', "\r\n");
+        assert_eq!(blank_split_chain_preproc(&crlf), lf.replace('\n', "\r\n"));
+        // A lone '\r' ends no line: one long line, left as it was or blanked
+        // in place, never a panic.
+        let cr = src.replace('\n', "\r");
+        assert_eq!(blank_split_chain_preproc(&cr).len(), cr.len());
     }
 }

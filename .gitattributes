@@ -1,0 +1,2 @@
+# Fixtures named crlf_*.c test Windows line endings: never convert them.
+crlf_*.c -text

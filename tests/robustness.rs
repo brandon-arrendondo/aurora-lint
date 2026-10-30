@@ -220,6 +220,63 @@ extern char rec_table[];
 #endif /* REC_H */
 "#;
 
+/// One function for each preprocessor repair pass to rewrite before the
+/// parse: a guard after a label, a dangling `else` arm, a guard inside a
+/// parenthesized condition, a dead block holding an `if` header, and an
+/// `#if`/`#else` chain whose arms each open the same brace. The passes edit
+/// by byte offset, so this is the text whose line endings matter.
+const PREPROC_REPAIRS: &str = r#"#include <string.h>
+void label_guard(void *p) {
+    goto out;
+out:
+#ifdef X
+    p = 0;
+#endif
+    return;
+}
+int dangling_else(int fmt) {
+    int channels = 0;
+    if (fmt == 0) { }
+#if HAVE_PNG
+    else if (fmt == 1) { channels = 1; }
+#endif
+    else { channels = 3; }
+    return channels;
+}
+int paren_guard(int a, int b) {
+    if (a
+#ifdef X
+        && b
+#endif
+        ) {
+        return 1;
+    }
+    return 0;
+}
+int dead_header(char *d, const char *s, int x, int z, int n) {
+#if 0
+  if (x) {
+    n = 0;
+  } else if (z)
+#endif
+  {
+    memcpy(d, s, n);
+  }
+  return n;
+}
+int split_chain(int m, int count) {
+#if defined(V3)
+    if (m != 0)
+#else
+    if ((m >= 0) && (m < count))
+#endif
+    {
+        return 1;
+    }
+    return 0;
+}
+"#;
+
 /// Stray characters a mistyped or mis-terminated file can put anywhere:
 /// two- and three-byte UTF-8, a four-byte emoji, a combining mark, bidi and
 /// zero-width controls, a BOM mid-file, CJK.
@@ -336,6 +393,11 @@ fn table_cases(rng: &mut Rng) -> Vec<Case> {
     add("bom_only", "\u{feff}".into());
     add("crlf", b.replace('\n', "\r\n").into());
     add("lone_cr", b.replace('\n', "\r").into());
+    add("repairs_crlf", PREPROC_REPAIRS.replace('\n', "\r\n").into());
+    add(
+        "repairs_lone_cr",
+        PREPROC_REPAIRS.replace('\n', "\r").into(),
+    );
     add(
         "mixed_line_endings",
         b.split('\n')

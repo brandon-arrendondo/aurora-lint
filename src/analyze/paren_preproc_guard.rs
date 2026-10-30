@@ -143,6 +143,7 @@
 //! root's `ERROR` children misses this shape: the root is the `ERROR`.)
 
 use crate::analyze::preproc_arm_choice::{compiled_arm, directive_extent, locally_defined_names};
+use crate::utility::cert_c::text_bounds;
 
 /// How far back the paren scan will look for the start of the statement
 /// containing a directive. Bounded so a pathological file cannot make this
@@ -184,6 +185,8 @@ fn is_directive(line: &str) -> bool {
 /// `;` or `}` counted below is always real code.
 struct CodeLines<'a> {
     raw: Vec<&'a str>,
+    /// The byte offset in the source where `raw[i]` starts.
+    starts: Vec<usize>,
     /// `raw[i]` with comments, string and character literals replaced by
     /// spaces. Preprocessor directive lines (including `\`-continuations)
     /// are blank here: their parentheses are the directive's own.
@@ -192,7 +195,7 @@ struct CodeLines<'a> {
 
 impl<'a> CodeLines<'a> {
     fn new(source: &'a str) -> Self {
-        let raw: Vec<&str> = source.lines().collect();
+        let (raw, starts) = text_bounds::lines_with_starts(source);
         let mut code = Vec::with_capacity(raw.len());
         let mut in_block_comment = false;
         let mut in_directive = false;
@@ -210,7 +213,7 @@ impl<'a> CodeLines<'a> {
                 stripped
             });
         }
-        Self { raw, code }
+        Self { raw, starts, code }
     }
 
     fn len(&self) -> usize {
@@ -465,12 +468,7 @@ fn precedes_call_arguments(code: &[String], k: usize, at: usize) -> bool {
 /// expression, per the module docs above. Length-preserving.
 pub fn blank_paren_guarded_preproc(source: &str) -> String {
     let lines = CodeLines::new(source);
-    let mut line_starts = Vec::with_capacity(lines.len());
-    let mut offset = 0usize;
-    for line in &lines.raw {
-        line_starts.push(offset);
-        offset += line.len() + 1; // '\n' (a CRLF's '\r' is left as-is below)
-    }
+    let line_starts = &lines.starts;
 
     let mut out = source.as_bytes().to_vec();
     let local = locally_defined_names(&lines.raw);
@@ -1202,5 +1200,29 @@ out:
 }
 ";
         assert_eq!(blank_paren_guarded_preproc(src), src);
+    }
+
+    #[test]
+    fn a_crlf_file_is_blanked_at_the_bytes_of_its_lf_copy() {
+        let src = "\
+int f(int a, int b) {
+    if (a
+#ifdef X
+        && b
+#endif
+        ) {
+        return 1;
+    }
+    return 0;
+}
+";
+        let lf = blank_paren_guarded_preproc(src);
+        assert_ne!(lf, src, "the LF copy must trigger the pass");
+        let crlf = src.replace('\n', "\r\n");
+        assert_eq!(blank_paren_guarded_preproc(&crlf), lf.replace('\n', "\r\n"));
+        // A lone '\r' ends no line: one long line, left as it was or blanked
+        // in place, never a panic.
+        let cr = src.replace('\n', "\r");
+        assert_eq!(blank_paren_guarded_preproc(&cr).len(), cr.len());
     }
 }

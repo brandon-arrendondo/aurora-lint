@@ -79,6 +79,7 @@
 //! to the surrounding code.
 
 use crate::analyze::init_state;
+use crate::utility::cert_c::text_bounds;
 
 /// The directive keyword on `line`, if it is one -- `"ifndef"` for both
 /// `#ifndef X` and `# ifndef X`. The space after `#` is not cosmetic:
@@ -323,13 +324,7 @@ fn continues_a_directive(lines: &[&str], idx: usize) -> bool {
 /// Blank the preprocessor directive lines that separate a control-flow header
 /// from its body, per the module docs above. Length-preserving.
 pub fn blank_control_header_guarded_preproc(source: &str) -> String {
-    let lines: Vec<&str> = source.lines().collect();
-    let mut line_starts = Vec::with_capacity(lines.len());
-    let mut offset = 0usize;
-    for line in &lines {
-        line_starts.push(offset);
-        offset += line.len() + 1; // '\n' (a CRLF's '\r' is left as-is by blank_line)
-    }
+    let (lines, line_starts) = text_bounds::lines_with_starts(source);
 
     let mut out = source.as_bytes().to_vec();
     let dead = init_state::file_proven_dead_lines(source);
@@ -784,5 +779,35 @@ int g(void)
 }
 ";
         assert_eq!(blank_control_header_guarded_preproc(src).len(), src.len());
+    }
+
+    #[test]
+    fn a_crlf_file_is_blanked_at_the_bytes_of_its_lf_copy() {
+        let src = "\
+#include <string.h>
+int f(char *d, const char *s, int x, int z, int n)
+{
+#if 0
+  if (x) {
+    n = 0;
+  } else if (z)
+#endif
+  {
+    memcpy(d, s, n);
+  }
+  return n;
+}
+";
+        let lf = blank_control_header_guarded_preproc(src);
+        assert_ne!(lf, src, "the LF copy must trigger the pass");
+        let crlf = src.replace('\n', "\r\n");
+        assert_eq!(
+            blank_control_header_guarded_preproc(&crlf),
+            lf.replace('\n', "\r\n")
+        );
+        // A lone '\r' ends no line: one long line, left as it was or blanked
+        // in place, never a panic.
+        let cr = src.replace('\n', "\r");
+        assert_eq!(blank_control_header_guarded_preproc(&cr).len(), cr.len());
     }
 }

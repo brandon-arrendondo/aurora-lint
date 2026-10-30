@@ -106,6 +106,8 @@
 //! it, and branching inside an already-ambiguous fragment is harder to
 //! reason about safely).
 
+use crate::utility::cert_c::text_bounds;
+
 fn strip_trailing_line_comment(s: &str) -> &str {
     match s.find("//") {
         Some(idx) => s[..idx].trim_end(),
@@ -433,13 +435,7 @@ fn blank_brace_else_chains(lines: &[&str], line_starts: &[usize], out: &mut [u8]
 /// Blank the preprocessor directive lines wrapping a dangling `else`
 /// fragment, per the module docs above. Length-preserving.
 pub fn blank_dangling_else_preproc(source: &str) -> String {
-    let lines: Vec<&str> = source.lines().collect();
-    let mut line_starts = Vec::with_capacity(lines.len());
-    let mut offset = 0usize;
-    for line in &lines {
-        line_starts.push(offset);
-        offset += line.len() + 1; // '\n' (or a trailing CRLF's '\r' left as-is by blank_line)
-    }
+    let (lines, line_starts) = text_bounds::lines_with_starts(source);
 
     let mut out = source.as_bytes().to_vec();
 
@@ -989,5 +985,28 @@ int f(int detail) {
 }
 ";
         assert_eq!(blank_dangling_else_preproc(src), src);
+    }
+
+    #[test]
+    fn a_crlf_file_is_blanked_at_the_bytes_of_its_lf_copy() {
+        let src = "\
+int f(int fmt) {
+    int channels = 0;
+    if (false) { }
+#if SUPPORT_FILEFORMAT_PNG
+    else if (fmt == 1) { channels = 1; }
+#endif
+    else { channels = 3; }
+    return channels;
+}
+";
+        let lf = blank_dangling_else_preproc(src);
+        assert_ne!(lf, src, "the LF copy must trigger the pass");
+        let crlf = src.replace('\n', "\r\n");
+        assert_eq!(blank_dangling_else_preproc(&crlf), lf.replace('\n', "\r\n"));
+        // A lone '\r' ends no line: one long line, left as it was or blanked
+        // in place, never a panic.
+        let cr = src.replace('\n', "\r");
+        assert_eq!(blank_dangling_else_preproc(&cr).len(), cr.len());
     }
 }

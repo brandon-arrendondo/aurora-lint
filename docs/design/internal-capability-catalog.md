@@ -1898,6 +1898,7 @@ search for a closing delimiter starts after the opening one
 | `preview` | `(s: &str, max_bytes: usize) -> String` | `s` cut on a boundary with `...` appended when something was cut, for a message. |
 | `next_boundary` | `(s: &str, index: usize) -> usize` | The first character boundary at or after `index`: advance a byte cursor without landing inside a character. |
 | `slice` | `(s: &str, start: usize, end: usize) -> Option<&str>` | `s[start..end]`, or `None` for a reversed, out-of-range or character-splitting range. |
+| `lines_with_starts` | `(source: &str) -> (Vec<&str>, Vec<usize>)` | The lines `str::lines` yields, with the byte offset where each starts. **Use it for any pass that edits source by line offset; never `offset += line.len() + 1`.** `str::lines` drops a CRLF ending's `'\r'`, so that sum falls one byte short per line and an edit on line k lands k bytes early. A line's text excludes its `'\r'`, so blanking `starts[k]..starts[k] + lines[k].len()` keeps the ending. Used by all five preprocessor repair passes. |
 
 For byte-level scanning that never needs a `&str` slice, compare bytes
 (`s.as_bytes()[i..].starts_with(b"/*")`), which cannot panic on a boundary.

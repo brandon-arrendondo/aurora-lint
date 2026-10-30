@@ -87,6 +87,7 @@
 //! backslash continuations and a comment it opens are blanked with it.
 
 use crate::analyze::preproc_dangling_else::blank_directive;
+use crate::utility::cert_c::text_bounds;
 
 fn is_directive_start(trimmed: &str) -> bool {
     trimmed.starts_with("#if") // covers #if, #ifdef, #ifndef (all start "#if")
@@ -238,13 +239,7 @@ fn directive_groups(lines: &[&str]) -> Vec<Group> {
 /// last line before the `#endif` is one, per the module docs above.
 /// Length-preserving.
 pub fn blank_label_guarded_preproc(source: &str) -> String {
-    let lines: Vec<&str> = source.lines().collect();
-    let mut line_starts = Vec::with_capacity(lines.len());
-    let mut offset = 0usize;
-    for line in &lines {
-        line_starts.push(offset);
-        offset += line.len() + 1; // '\n' (or a trailing CRLF's '\r' left as-is by blank_line)
-    }
+    let (lines, line_starts) = text_bounds::lines_with_starts(source);
 
     let mut out = source.as_bytes().to_vec();
 
@@ -691,5 +686,27 @@ out:
         assert!(!fixed.contains("defined(B)"));
         assert!(!fixed.contains("*/"));
         assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn a_crlf_file_is_blanked_at_the_bytes_of_its_lf_copy() {
+        let src = "\
+void f(void) {
+    goto out;
+out:
+#ifdef X
+    os_free(rfds);
+#endif
+    return;
+}
+";
+        let lf = blank_label_guarded_preproc(src);
+        assert_ne!(lf, src, "the LF copy must trigger the pass");
+        let crlf = src.replace('\n', "\r\n");
+        assert_eq!(blank_label_guarded_preproc(&crlf), lf.replace('\n', "\r\n"));
+        // A lone '\r' ends no line: one long line, left as it was or blanked
+        // in place, never a panic.
+        let cr = src.replace('\n', "\r");
+        assert_eq!(blank_label_guarded_preproc(&cr).len(), cr.len());
     }
 }
