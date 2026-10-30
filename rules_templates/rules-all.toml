@@ -431,9 +431,9 @@ enabled = true
 
 
 [rules.cert_c.EXP30-C]
-# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+# withheld until rewrite: misfires, see ADR-0005
 enabled = false
-disabled_reason = "withheld until its rewrite in v0.8.0: it misfires, reporting a construct that is not in the code (ADR-0005)"
+disabled_reason = "withheld until its rewrite: it misfires, reporting a construct that is not in the code (ADR-0005)"
 
 
 [rules.cert_c.EXP32-C]
@@ -493,9 +493,9 @@ enabled = true
 
 
 [rules.cert_c.FIO01-C]
-# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+# withheld until rewrite: misfires, see ADR-0005
 enabled = false
-disabled_reason = "withheld until its rewrite in v0.8.0: it misfires, reporting a construct that is not in the code (ADR-0005)"
+disabled_reason = "withheld until its rewrite: it misfires, reporting a construct that is not in the code (ADR-0005)"
 
 
 [rules.cert_c.FIO02-C]
@@ -511,9 +511,9 @@ enabled = true
 
 
 [rules.cert_c.FIO08-C]
-# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+# withheld until rewrite: misfires, see ADR-0005
 enabled = false
-disabled_reason = "withheld until its rewrite in v0.8.0: it misfires, reporting a construct that is not in the code (ADR-0005)"
+disabled_reason = "withheld until its rewrite: it misfires, reporting a construct that is not in the code (ADR-0005)"
 
 
 [rules.cert_c.FIO09-C]
@@ -573,15 +573,15 @@ enabled = true
 
 
 [rules.cert_c.FIO30-C]
-# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+# withheld until rewrite: misfires, see ADR-0005
 enabled = false
-disabled_reason = "withheld until its rewrite in v0.8.0: it misfires, reporting a construct that is not in the code (ADR-0005)"
+disabled_reason = "withheld until its rewrite: it misfires, reporting a construct that is not in the code (ADR-0005)"
 
 
 [rules.cert_c.FIO32-C]
-# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+# withheld until rewrite: misfires, see ADR-0005
 enabled = false
-disabled_reason = "withheld until its rewrite in v0.8.0: it misfires, reporting a construct that is not in the code (ADR-0005)"
+disabled_reason = "withheld until its rewrite: it misfires, reporting a construct that is not in the code (ADR-0005)"
 
 
 [rules.cert_c.FIO34-C]
@@ -661,9 +661,9 @@ enabled = true
 
 
 [rules.cert_c.FLP32-C]
-# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+# withheld until rewrite: misfires, see ADR-0005
 enabled = false
-disabled_reason = "withheld until its rewrite in v0.8.0: it misfires, reporting a construct that is not in the code (ADR-0005)"
+disabled_reason = "withheld until its rewrite: it misfires, reporting a construct that is not in the code (ADR-0005)"
 
 
 [rules.cert_c.FLP34-C]
@@ -727,9 +727,9 @@ enabled = true
 
 
 [rules.cert_c.INT15-C]
-# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+# withheld until rewrite: misfires, see ADR-0005
 enabled = false
-disabled_reason = "withheld until its rewrite in v0.8.0: it misfires, reporting a construct that is not in the code (ADR-0005)"
+disabled_reason = "withheld until its rewrite: it misfires, reporting a construct that is not in the code (ADR-0005)"
 
 
 [rules.cert_c.INT16-C]
@@ -833,9 +833,9 @@ enabled = true
 
 
 [rules.cert_c.MEM35-C]
-# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+# withheld until rewrite: misfires, see ADR-0005
 enabled = false
-disabled_reason = "withheld until its rewrite in v0.8.0: it misfires, reporting a construct that is not in the code (ADR-0005)"
+disabled_reason = "withheld until its rewrite: it misfires, reporting a construct that is not in the code (ADR-0005)"
 
 
 [rules.cert_c.MEM36-C]
@@ -1173,9 +1173,9 @@ enabled = true
 
 
 [rules.cert_c.STR34-C]
-# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+# withheld until rewrite: misfires, see ADR-0005
 enabled = false
-disabled_reason = "withheld until its rewrite in v0.8.0: it misfires, reporting a construct that is not in the code (ADR-0005)"
+disabled_reason = "withheld until its rewrite: it misfires, reporting a construct that is not in the code (ADR-0005)"
 
 
 [rules.cert_c.STR37-C]
@@ -1207,9 +1207,9 @@ enabled = true
 
 
 [rules.cert_c.WIN30-C]
-# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+# withheld until rewrite: misfires, see ADR-0005
 enabled = false
-disabled_reason = "withheld until its rewrite in v0.8.0: it misfires, reporting a construct that is not in the code (ADR-0005)"
+disabled_reason = "withheld until its rewrite: it misfires, reporting a construct that is not in the code (ADR-0005)"
 
 
 [rules.cwe.CWE-272]

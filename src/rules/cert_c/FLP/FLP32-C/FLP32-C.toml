@@ -23,9 +23,9 @@ cert_version = "2016 Edition (Wiki)"
 last_modified = "Aug 06, 2025"
 
 [rules.cert_c.FLP32-C]
-# withheld until rewrite (v0.8.0): misfires, see ADR-0005
+# withheld until rewrite: misfires, see ADR-0005
 enabled = false
-disabled_reason = "withheld until its rewrite in v0.8.0: it misfires, reporting a construct that is not in the code (ADR-0005)"
+disabled_reason = "withheld until its rewrite: it misfires, reporting a construct that is not in the code (ADR-0005)"
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FLP32-C.+Prevent+or+detect+domain+and+range+errors+in+math+functions"

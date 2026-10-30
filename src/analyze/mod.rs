@@ -1234,8 +1234,10 @@ fn collect_c_files(
     }
 
     // LPT scheduling: sort files by size descending so largest files are dispatched first.
-    // Combined with par_bridge() demand-driven dispatch, this implements Graham's LPT
-    // algorithm (1969) for makespan minimization — (4/3 - 1/3m) approximation ratio.
+    // Combined with par_bridge() demand-driven dispatch, this follows Graham's LPT
+    // heuristic (1969) for makespan minimization. File size is only a proxy for a file's
+    // processing time, so LPT's (4/3 - 1/3m) bound does not carry over; what holds is list
+    // scheduling's 2 - 1/m, which any dispatch order achieves.
     c_files
         .sort_by_cached_key(|f| std::cmp::Reverse(fs::metadata(f).map(|m| m.len()).unwrap_or(0)));
 

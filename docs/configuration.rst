@@ -697,7 +697,7 @@ one. To run one anyway, copy ``rules_templates/rules-all.toml``,
 set ``enabled = true`` in the rule's block, and pass the copy with
 ``--manifest``.
 
-Withheld in v0.7.0, until their rewrites in v0.8.0:
+Withheld in v0.7.0, until they are rewritten:
 
 - **EXP30-C** — *Do not depend on the order of evaluation for side effects*
 - **FIO01-C** — *Be careful using functions that use file names for identification*

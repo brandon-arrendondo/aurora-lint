@@ -785,8 +785,10 @@ pub static OPTIONS: &[OptionSpec] = &[
                   needs at least one call site and no use of the function's address anywhere \
                   in the scanned files, and main stays open. A proof that accepts a caller \
                   only because its body reads no untrusted input, whatever value it passes \
-                  (ENV03-C, ENV33-C, STR02-C, INT30-C, INT31-C and INT32-C), still holds \
-                  for static functions only. And a non-static, non-const global \
+                  (ENV03-C, ENV33-C and STR02-C), still holds for static functions only, \
+                  as does the INT30-C to INT32-C test of whether a parameter can receive \
+                  untrusted or full-range input (the value range every caller passes does \
+                  count for them). And a non-static, non-const global \
                   that no scanned file writes, and a non-static function that only returns \
                   a literal, are constants EXP33-C may fold to prune a branch. Undeclared, \
                   another translation unit may call the function, write the global or \
