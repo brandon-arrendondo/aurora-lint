@@ -1262,14 +1262,17 @@ fn build_path_ignore(
 }
 
 /// The ignore matcher for `patterns`, skipping (with a warning) any that is
-/// not a valid glob.
+/// not a valid glob. A pattern's file extension matches in any case, as
+/// discovery already does, so `*.c` also ignores `A.C`; directory names and
+/// the rest of the file name stay case-sensitive.
 fn path_ignore(patterns: Vec<String>) -> Result<lang_parsing_substrate::PathIgnore> {
     // Validate patterns individually so one bad glob doesn't discard every
     // other ignore pattern (toolchain.toml's included).
     let valid: Vec<String> = patterns
         .into_iter()
         .filter(|p| {
-            let ok = lang_parsing_substrate::PathIgnore::new([p.as_str()]).is_ok();
+            let ok = lang_parsing_substrate::PathIgnore::with_extension_case_folded([p.as_str()])
+                .is_ok();
             if !ok {
                 eprintln!("Warning: invalid ignore glob '{}'", p);
             }
@@ -1277,7 +1280,7 @@ fn path_ignore(patterns: Vec<String>) -> Result<lang_parsing_substrate::PathIgno
         })
         .collect();
 
-    lang_parsing_substrate::PathIgnore::new(&valid)
+    lang_parsing_substrate::PathIgnore::with_extension_case_folded(&valid)
         .map_err(|e| anyhow::anyhow!("Invalid ignore glob pattern: {e}"))
 }
 
@@ -2285,6 +2288,25 @@ mod tests {
                 .unwrap();
         assert!(ignore.is_ignored(std::path::Path::new("vendor/lib.c")));
         assert!(!ignore.is_ignored(std::path::Path::new("src/main.c")));
+    }
+
+    #[test]
+    fn build_path_ignore_matches_a_pattern_extension_in_any_case() {
+        // Discovery takes `A.C` for C, so a `*.c` ignore must leave it out
+        // too; the directory part of a pattern stays case-sensitive.
+        let dir = tempfile::tempdir().unwrap();
+        let project_source = ProjectSource::open(dir.path().to_str().unwrap()).unwrap();
+        let ignore = build_path_ignore(
+            &project_source,
+            &["gen/*.c".to_string(), "vendor/**".to_string()],
+        )
+        .unwrap();
+        for path in ["gen/a.c", "gen/A.C", "gen/b.C"] {
+            assert!(ignore.is_ignored(std::path::Path::new(path)), "{path}");
+        }
+        for path in ["gen/a.h", "Gen/a.c", "Vendor/v.c"] {
+            assert!(!ignore.is_ignored(std::path::Path::new(path)), "{path}");
+        }
     }
 
     // -- collect_function_cfgs --

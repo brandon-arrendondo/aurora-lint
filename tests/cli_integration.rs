@@ -10043,11 +10043,11 @@ fn cwe272_cyclic_and_fanned_out_macros_finish_quickly() {
 }
 
 /// Scan `dir` as a whole project and return each finding as
-/// `(rule, lowercased file name, line)`, with the prescan's stderr line
+/// `(rule, lowercased file name, line)`, with the prescan's progress line
 /// naming how many function definitions it found.
 fn project_findings(dir: &Path) -> (Vec<(String, String, u64)>, String) {
     let out = dir.with_extension("json");
-    let (code, _, stderr) = run_aurora_lint(&[
+    let (code, stdout, stderr) = run_aurora_lint(&[
         dir.to_str().unwrap(),
         "-d",
         dir.to_str().unwrap(),
@@ -10067,9 +10067,10 @@ fn project_findings(dir: &Path) -> (Vec<(String, String, u64)>, String) {
         })
         .collect();
     found.sort();
-    let prescan = stderr
+    let prescan = stdout
         .lines()
-        .find(|l| l.contains("function definitions"))
+        .chain(stderr.lines())
+        .find(|l| l.starts_with("Pre-scan complete:"))
         .unwrap_or_default()
         .to_string();
     (found, prescan)
@@ -10139,6 +10140,83 @@ fn a_tree_with_uppercase_extensions_is_scanned_as_c() {
         "A.C was not read as C"
     );
     assert_eq!(upper_single, single(&lower.join("a.c")));
+}
+
+#[test]
+fn an_ignore_glob_matches_a_file_extension_in_any_case() {
+    // Discovery takes `A.C` for C, so `--exclude-all 'gen/*.c'` leaves it
+    // out as it does `b.c`; a directory name stays case-sensitive.
+    let dir = tempfile::tempdir().unwrap();
+    let body = "int z(int a) { if (a) { return 1; } }\n";
+    for sub in ["gen", "Vendor"] {
+        std::fs::create_dir(dir.path().join(sub)).unwrap();
+    }
+    for file in ["gen/A.C", "gen/b.c", "gen/c.C", "Vendor/v.c"] {
+        std::fs::write(dir.path().join(file), body).unwrap();
+    }
+    let out = dir.path().join("out.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        dir.path().to_str().unwrap(),
+        "--exclude-all",
+        "gen/*.c",
+        "--exclude-all",
+        "vendor/**",
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let mut files: Vec<String> = violations
+        .iter()
+        .map(|v| {
+            let file = Path::new(v["file"].as_str().unwrap());
+            let parent = file.parent().unwrap().file_name().unwrap();
+            format!(
+                "{}/{}",
+                parent.to_string_lossy(),
+                file.file_name().unwrap().to_string_lossy()
+            )
+        })
+        .collect();
+    files.dedup();
+    assert_eq!(files, ["Vendor/v.c"]);
+}
+
+#[test]
+fn a_c_header_naming_a_parameter_new_or_delete_is_scanned() {
+    // `new` and `delete` are ordinary C names (the Linux list helpers take
+    // `struct list_head *new`), and `a & b;` is a C expression statement.
+    // A header written that way is C, so its functions are pre-scanned and
+    // the header rule runs on it; a header whose content is C++ is not.
+    let dir = tempfile::tempdir().unwrap();
+    let list = "#define LIST_X 1\n\
+                struct node { struct node *next; };\n\
+                static inline void list_add(struct node *new, struct node *head)\n\
+                {\n  new->next = head;\n}\n\
+                static inline void list_put(int *delete) { *delete = 0; }\n\
+                static inline void mask(int a, int b) { a & b; }\n";
+    std::fs::write(dir.path().join("list.h"), list).unwrap();
+    let cpp = "namespace n {\nclass K {\npublic:\n  int v;\n};\n}\n";
+    std::fs::write(dir.path().join("k.h"), cpp).unwrap();
+    std::fs::write(
+        dir.path().join("main.c"),
+        "#include \"list.h\"\nint main(void) { return LIST_X; }\n",
+    )
+    .unwrap();
+
+    let (found, prescan) = project_findings(dir.path());
+    assert_eq!(
+        prescan, "Pre-scan complete: found 4 function definitions",
+        "{found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|(r, f, _)| r == "PRE06-C" && f == "list.h"),
+        "{found:?}"
+    );
+    assert!(found.iter().all(|(_, f, _)| f != "k.h"), "{found:?}");
 }
 
 /// MSC17-C findings for `sw.c`, scanned by its relative path from its own
