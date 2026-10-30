@@ -62,6 +62,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#suppressions-that-move">Suppressions that move</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#saved-prescan-caches-and-the-settings-hash">Saved prescan caches and the settings hash</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#severities">Severities</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#sarif-output">SARIF output</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#diff"><code class="docutils literal notranslate"><span class="pre">--diff</span></code></a></li>
 </ul>
 </li>
@@ -112,7 +113,8 @@
 <p>This page lists what a project scanning with one release has to check or
 change to move to the next. The <a class="reference external" href="https://github.com/brandon-arrendondo/aurora-lint/blob/main/CHANGELOG.md">changelog</a>
 lists every change; this page covers only the ones that can change a CI
-result, a configuration file or a suppression.</p>
+result, a configuration file, a suppression or a tool that reads the SARIF
+export.</p>
 <section id="from-0-6-0-to-0-7-0">
 <h2>From 0.6.0 to 0.7.0<a class="headerlink" href="#from-0-6-0-to-0-7-0" title="Link to this heading"></a></h2>
 <section id="configuration-files-and-command-lines">
@@ -123,8 +125,22 @@ warnings for removed rules described below.</p>
 <p>The reverse doesn’t hold. 0.6.0 refuses a manifest with a key it doesn’t
 know, so a manifest that uses anything new in 0.7.0 stops loading under
 0.6.0: <code class="docutils literal notranslate"><span class="pre">profile</span> <span class="pre">=</span> <span class="pre">&quot;pedantic&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">c_standard</span></code>, <code class="docutils literal notranslate"><span class="pre">posix_version</span></code>,
-<code class="docutils literal notranslate"><span class="pre">libc_version</span></code>, <code class="docutils literal notranslate"><span class="pre">libc</span> <span class="pre">=</span> <span class="pre">&quot;newlib-nano&quot;</span></code> or <code class="docutils literal notranslate"><span class="pre">[environment.threads]</span></code>. If
-several machines or pipelines share one
+<code class="docutils literal notranslate"><span class="pre">libc_version</span></code>, <code class="docutils literal notranslate"><span class="pre">libc</span> <span class="pre">=</span> <span class="pre">&quot;newlib-nano&quot;</span></code> or <code class="docutils literal notranslate"><span class="pre">[environment.threads]</span></code>. It
+also refuses an option name it doesn’t know, in <code class="docutils literal notranslate"><span class="pre">[policy.overrides]</span></code>,
+<code class="docutils literal notranslate"><span class="pre">[environment.overrides]</span></code> or <code class="docutils literal notranslate"><span class="pre">--set</span></code>, and these options are new in 0.7.0:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">env33_locally_constructed_command_allowed</span></code> and <code class="docutils literal notranslate"><span class="pre">env33_exec_spawn_exempt</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">fio21_tmpfile_exempt_under_posix</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">flp00_exact_zero_comparison_exempt</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">flp36_constant_assert_is_guard</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">msc37_attribute_noreturn</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">pos34_main_frame_exempt</span></code> and <code class="docutils literal notranslate"><span class="pre">pos34_exit_path_exempt</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">pre31_listed_library_calls_pure</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">signal_handlers_persistent</span></code></p></li>
+</ul>
+<p>0.6.0 ignores, rather than refuses, a <code class="docutils literal notranslate"><span class="pre">[rules.cwe.&lt;ID&gt;]</span></code> block and a
+<code class="docutils literal notranslate"><span class="pre">disabled_reason</span></code> key, so under 0.6.0 the CWE rules don’t run and a disabled
+rule gives no reason. If several machines or pipelines share one
 manifest, move them to 0.7.0 together, or pin the version in CI.</p>
 </section>
 <section id="exit-status-3">
@@ -164,6 +180,31 @@ edition:</p>
 <span class="n">posix_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;2008&quot;</span>
 </pre></div>
 </div>
+<p>0.7.0 also adds named policy options for relaxations of the default preset,
+each off under strict and pedantic (<a class="reference internal" href="options.html"><span class="doc">Policy and Environment Options</span></a> lists them). Two of them
+replace an exemption 0.6.0 applied under every preset, so a strict scan now
+reports:</p>
+<ul class="simple">
+<li><p>every <code class="docutils literal notranslate"><span class="pre">system()</span></code> or <code class="docutils literal notranslate"><span class="pre">popen()</span></code> call with a command, including one built
+inside the function from literals (ENV33-C,
+<code class="docutils literal notranslate"><span class="pre">env33_locally_constructed_command_allowed</span></code>);</p></li>
+<li><p>a floating-point comparison with an exact zero, such as <code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">==</span> <span class="pre">0.0</span></code>
+(FLP00-C, <code class="docutils literal notranslate"><span class="pre">flp00_exact_zero_comparison_exempt</span></code>).</p></li>
+</ul>
+<p>To keep 0.6.0’s reading in a strict scan, set the option:</p>
+<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="k">[policy.overrides]</span>
+<span class="n">flp00_exact_zero_comparison_exempt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</pre></div>
+</div>
+<p>or pass <code class="docutils literal notranslate"><span class="pre">--set</span> <span class="pre">flp00_exact_zero_comparison_exempt=true</span></code>. The others relax
+only the default preset, and a strict scan reports these constructs as 0.6.0
+did: <code class="docutils literal notranslate"><span class="pre">putenv()</span></code> of an array in <code class="docutils literal notranslate"><span class="pre">main</span></code>’s frame or before the process exits
+(POS34-C, <code class="docutils literal notranslate"><span class="pre">pos34_main_frame_exempt</span></code> and <code class="docutils literal notranslate"><span class="pre">pos34_exit_path_exempt</span></code>),
+<code class="docutils literal notranslate"><span class="pre">tmpfile()</span></code> where POSIX holds (FIO21-C,
+<code class="docutils literal notranslate"><span class="pre">fio21_tmpfile_exempt_under_posix</span></code>), a function ending in a call to one with
+the GNU <code class="docutils literal notranslate"><span class="pre">noreturn</span></code> attribute (MSC37-C, <code class="docutils literal notranslate"><span class="pre">msc37_attribute_noreturn</span></code>), and a
+call to <code class="docutils literal notranslate"><span class="pre">strlen</span></code>, <code class="docutils literal notranslate"><span class="pre">memcmp</span></code> or a similar library function in a macro
+argument (PRE31-C, <code class="docutils literal notranslate"><span class="pre">pre31_listed_library_calls_pure</span></code>).</p>
 <p>See <em>Policy and Environment Settings</em> in <a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a>.</p>
 </section>
 <section id="the-data-model-under-the-default-preset">
@@ -229,6 +270,25 @@ findings:</p>
 </div>
 <p>0.6.0 made the same change for deallocators; <code class="docutils literal notranslate"><span class="pre">--report-deallocator-candidates</span></code>
 lists the callees that would change a finding.</p>
+<p>SIG34-C applies its exception for a handler that changes its own signal
+(CERT’s SIG34-C-EX1, for implementations with persistent signal handlers)
+only when the project declares that <code class="docutils literal notranslate"><span class="pre">signal()</span></code> handlers stay installed. In
+0.6.0, a <code class="docutils literal notranslate"><span class="pre">signal()</span></code> call under an <code class="docutils literal notranslate"><span class="pre">#if</span></code> was enough. Declare it to keep
+those handlers unreported:</p>
+<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="k">[environment.overrides]</span>
+<span class="n">signal_handlers_persistent</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</pre></div>
+</div>
+<p>EXP34-C now reports a dereference that comes before a later NULL test in a
+function the scan can’t see every caller of (one with external linkage, or a
+<code class="docutils literal notranslate"><span class="pre">static</span></code> one whose address escapes), even when every call site in the
+scanned files passes a valid pointer. If the scanned files are the whole
+program, nothing outside them linking against it or loading into it, declare
+that, and the exemption returns for functions whose address doesn’t escape:</p>
+<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="k">[environment.overrides]</span>
+<span class="n">closed_program</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</pre></div>
+</div>
 </section>
 <section id="suppressions-that-move">
 <h3>Suppressions that move<a class="headerlink" href="#suppressions-that-move" title="Link to this heading"></a></h3>
@@ -238,8 +298,18 @@ its suppression unused and is reported again. In 0.7.0, PRE01-C reports each
 unparenthesized use of a macro parameter where it is written, not once per
 parameter at the <code class="docutils literal notranslate"><span class="pre">#define</span></code>. EXP19-C reports each unbraced <code class="docutils literal notranslate"><span class="pre">if</span></code>,
 <code class="docutils literal notranslate"><span class="pre">else</span></code>, <code class="docutils literal notranslate"><span class="pre">for</span></code> and <code class="docutils literal notranslate"><span class="pre">while</span></code> body where the body starts, not at its
-keyword. Regenerate PRE01-C and EXP19-C suppressions with
-<code class="docutils literal notranslate"><span class="pre">--generate-suppression</span></code>.</p>
+keyword. FIO40-C reports a read of a buffer after a failed <code class="docutils literal notranslate"><span class="pre">fgets()</span></code> or
+<code class="docutils literal notranslate"><span class="pre">fgetws()</span></code> at the call, not at the read. Regenerate PRE01-C, EXP19-C and
+FIO40-C suppressions with <code class="docutils literal notranslate"><span class="pre">--generate-suppression</span></code>.</p>
+<p>0.6.0 matched a suppression against a line’s text after the parser’s repairs,
+so on a line where an empty object-like macro (an export macro that expands
+to nothing, for example) or <code class="docutils literal notranslate"><span class="pre">_Thread_local</span></code> was blanked, the hash that
+<code class="docutils literal notranslate"><span class="pre">--generate-suppression</span></code> printed did not match and only a hash of the
+blanked text did. 0.7.0 matches the line as written. A suppression whose hash
+was taken over the blanked text no longer matches, and its finding is
+reported again. Regenerate it with <code class="docutils literal notranslate"><span class="pre">--generate-suppression</span></code>. 0.7.0 doesn’t
+report a suppression that matches nothing, so the finding coming back is the
+only sign.</p>
 </section>
 <section id="saved-prescan-caches-and-the-settings-hash">
 <h3>Saved prescan caches and the settings hash<a class="headerlink" href="#saved-prescan-caches-and-the-settings-hash" title="Link to this heading"></a></h3>
@@ -251,10 +321,31 @@ else changed. A trend or baseline keyed on the hash starts again from 0.7.0.</p>
 </section>
 <section id="severities">
 <h3>Severities<a class="headerlink" href="#severities" title="Link to this heading"></a></h3>
-<p>Six rules now report at the severity CERT gives them, which can move a
+<p>Seven rules now report at the severity CERT gives them, which can move a
 finding across a <code class="docutils literal notranslate"><span class="pre">--fail-on-severity</span></code> threshold: MSC37-C is High (was
-Medium), FIO21-C is Medium (was High), INT33-C and STR30-C are Low (were
-High), and DCL37-C and FIO14-C are Low (were Medium).</p>
+Medium), SIG02-C is High for <code class="docutils literal notranslate"><span class="pre">raise()</span></code> (was Medium), FIO21-C is Medium (was
+High), INT33-C and STR30-C are Low (were High), and DCL37-C and FIO14-C are
+Low (were Medium).</p>
+</section>
+<section id="sarif-output">
+<h3>SARIF output<a class="headerlink" href="#sarif-output" title="Link to this heading"></a></h3>
+<p>A tool that reads the SARIF export itself, rather than only uploading it,
+should check three changes:</p>
+<ul class="simple">
+<li><p>A finding’s suggestion is in <code class="docutils literal notranslate"><span class="pre">properties.suggestion</span></code>. 0.6.0 put it in
+<code class="docutils literal notranslate"><span class="pre">fixes[].description.text</span></code>, which SARIF 2.1.0 allows only in a fix that
+carries edits.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">startColumn</span></code> counts UTF-16 code units, and the run declares
+<code class="docutils literal notranslate"><span class="pre">columnKind</span></code> as <code class="docutils literal notranslate"><span class="pre">utf16CodeUnits</span></code>. On a line with non-ASCII text before
+the finding, the column is smaller than 0.6.0’s byte column. JSON and text
+output still give a UTF-8 byte column.</p></li>
+<li><p>DCL05-C, CON43-C, CON32-C, FIO13-C, CON41-C and FLP32-C give the column of
+the construct a finding names: DCL05-C and CON43-C gave one column too few,
+and the other four gave 0. A location with no known column has no
+<code class="docutils literal notranslate"><span class="pre">startColumn</span></code>, where 0.6.0 gave 0.</p></li>
+</ul>
+<p>A code-scanning service that matches alerts across uploads by location may
+close some alerts and open them again once, at the upgrade.</p>
 </section>
 <section id="diff">
 <h3><code class="docutils literal notranslate"><span class="pre">--diff</span></code><a class="headerlink" href="#diff" title="Link to this heading"></a></h3>

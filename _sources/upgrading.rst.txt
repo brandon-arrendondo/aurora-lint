@@ -5,7 +5,8 @@ This page lists what a project scanning with one release has to check or
 change to move to the next. The `changelog
 <https://github.com/brandon-arrendondo/aurora-lint/blob/main/CHANGELOG.md>`_
 lists every change; this page covers only the ones that can change a CI
-result, a configuration file or a suppression.
+result, a configuration file, a suppression or a tool that reads the SARIF
+export.
 
 From 0.6.0 to 0.7.0
 -------------------
@@ -20,8 +21,22 @@ warnings for removed rules described below.
 The reverse doesn't hold. 0.6.0 refuses a manifest with a key it doesn't
 know, so a manifest that uses anything new in 0.7.0 stops loading under
 0.6.0: ``profile = "pedantic"``, ``c_standard``, ``posix_version``,
-``libc_version``, ``libc = "newlib-nano"`` or ``[environment.threads]``. If
-several machines or pipelines share one
+``libc_version``, ``libc = "newlib-nano"`` or ``[environment.threads]``. It
+also refuses an option name it doesn't know, in ``[policy.overrides]``,
+``[environment.overrides]`` or ``--set``, and these options are new in 0.7.0:
+
+- ``env33_locally_constructed_command_allowed`` and ``env33_exec_spawn_exempt``
+- ``fio21_tmpfile_exempt_under_posix``
+- ``flp00_exact_zero_comparison_exempt``
+- ``flp36_constant_assert_is_guard``
+- ``msc37_attribute_noreturn``
+- ``pos34_main_frame_exempt`` and ``pos34_exit_path_exempt``
+- ``pre31_listed_library_calls_pure``
+- ``signal_handlers_persistent``
+
+0.6.0 ignores, rather than refuses, a ``[rules.cwe.<ID>]`` block and a
+``disabled_reason`` key, so under 0.6.0 the CWE rules don't run and a disabled
+rule gives no reason. If several machines or pipelines share one
 manifest, move them to 0.7.0 together, or pin the version in CI.
 
 Exit status 3
@@ -66,6 +81,34 @@ edition:
 
     [environment]
     posix_version = "2008"
+
+0.7.0 also adds named policy options for relaxations of the default preset,
+each off under strict and pedantic (:doc:`options` lists them). Two of them
+replace an exemption 0.6.0 applied under every preset, so a strict scan now
+reports:
+
+- every ``system()`` or ``popen()`` call with a command, including one built
+  inside the function from literals (ENV33-C,
+  ``env33_locally_constructed_command_allowed``);
+- a floating-point comparison with an exact zero, such as ``x == 0.0``
+  (FLP00-C, ``flp00_exact_zero_comparison_exempt``).
+
+To keep 0.6.0's reading in a strict scan, set the option:
+
+.. code-block:: toml
+
+    [policy.overrides]
+    flp00_exact_zero_comparison_exempt = true
+
+or pass ``--set flp00_exact_zero_comparison_exempt=true``. The others relax
+only the default preset, and a strict scan reports these constructs as 0.6.0
+did: ``putenv()`` of an array in ``main``'s frame or before the process exits
+(POS34-C, ``pos34_main_frame_exempt`` and ``pos34_exit_path_exempt``),
+``tmpfile()`` where POSIX holds (FIO21-C,
+``fio21_tmpfile_exempt_under_posix``), a function ending in a call to one with
+the GNU ``noreturn`` attribute (MSC37-C, ``msc37_attribute_noreturn``), and a
+call to ``strlen``, ``memcmp`` or a similar library function in a macro
+argument (PRE31-C, ``pre31_listed_library_calls_pure``).
 
 See *Policy and Environment Settings* in :doc:`configuration`.
 
@@ -139,6 +182,29 @@ findings:
 0.6.0 made the same change for deallocators; ``--report-deallocator-candidates``
 lists the callees that would change a finding.
 
+SIG34-C applies its exception for a handler that changes its own signal
+(CERT's SIG34-C-EX1, for implementations with persistent signal handlers)
+only when the project declares that ``signal()`` handlers stay installed. In
+0.6.0, a ``signal()`` call under an ``#if`` was enough. Declare it to keep
+those handlers unreported:
+
+.. code-block:: toml
+
+    [environment.overrides]
+    signal_handlers_persistent = true
+
+EXP34-C now reports a dereference that comes before a later NULL test in a
+function the scan can't see every caller of (one with external linkage, or a
+``static`` one whose address escapes), even when every call site in the
+scanned files passes a valid pointer. If the scanned files are the whole
+program, nothing outside them linking against it or loading into it, declare
+that, and the exemption returns for functions whose address doesn't escape:
+
+.. code-block:: toml
+
+    [environment.overrides]
+    closed_program = true
+
 Suppressions that move
 ~~~~~~~~~~~~~~~~~~~~~~
 
@@ -148,8 +214,19 @@ its suppression unused and is reported again. In 0.7.0, PRE01-C reports each
 unparenthesized use of a macro parameter where it is written, not once per
 parameter at the ``#define``. EXP19-C reports each unbraced ``if``,
 ``else``, ``for`` and ``while`` body where the body starts, not at its
-keyword. Regenerate PRE01-C and EXP19-C suppressions with
-``--generate-suppression``.
+keyword. FIO40-C reports a read of a buffer after a failed ``fgets()`` or
+``fgetws()`` at the call, not at the read. Regenerate PRE01-C, EXP19-C and
+FIO40-C suppressions with ``--generate-suppression``.
+
+0.6.0 matched a suppression against a line's text after the parser's repairs,
+so on a line where an empty object-like macro (an export macro that expands
+to nothing, for example) or ``_Thread_local`` was blanked, the hash that
+``--generate-suppression`` printed did not match and only a hash of the
+blanked text did. 0.7.0 matches the line as written. A suppression whose hash
+was taken over the blanked text no longer matches, and its finding is
+reported again. Regenerate it with ``--generate-suppression``. 0.7.0 doesn't
+report a suppression that matches nothing, so the finding coming back is the
+only sign.
 
 Saved prescan caches and the settings hash
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -164,10 +241,32 @@ else changed. A trend or baseline keyed on the hash starts again from 0.7.0.
 Severities
 ~~~~~~~~~~
 
-Six rules now report at the severity CERT gives them, which can move a
+Seven rules now report at the severity CERT gives them, which can move a
 finding across a ``--fail-on-severity`` threshold: MSC37-C is High (was
-Medium), FIO21-C is Medium (was High), INT33-C and STR30-C are Low (were
-High), and DCL37-C and FIO14-C are Low (were Medium).
+Medium), SIG02-C is High for ``raise()`` (was Medium), FIO21-C is Medium (was
+High), INT33-C and STR30-C are Low (were High), and DCL37-C and FIO14-C are
+Low (were Medium).
+
+SARIF output
+~~~~~~~~~~~~
+
+A tool that reads the SARIF export itself, rather than only uploading it,
+should check three changes:
+
+- A finding's suggestion is in ``properties.suggestion``. 0.6.0 put it in
+  ``fixes[].description.text``, which SARIF 2.1.0 allows only in a fix that
+  carries edits.
+- ``startColumn`` counts UTF-16 code units, and the run declares
+  ``columnKind`` as ``utf16CodeUnits``. On a line with non-ASCII text before
+  the finding, the column is smaller than 0.6.0's byte column. JSON and text
+  output still give a UTF-8 byte column.
+- DCL05-C, CON43-C, CON32-C, FIO13-C, CON41-C and FLP32-C give the column of
+  the construct a finding names: DCL05-C and CON43-C gave one column too few,
+  and the other four gave 0. A location with no known column has no
+  ``startColumn``, where 0.6.0 gave 0.
+
+A code-scanning service that matches alerts across uploads by location may
+close some alerts and open them again once, at the upgrade.
 
 ``--diff``
 ~~~~~~~~~~
