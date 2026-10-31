@@ -23,6 +23,7 @@ rust-version = "1.95"
 include = [
     "src/**",
     "build.rs",
+    "build/**",
     "Cargo.toml",
     "README.md",
     "CONTRIBUTORS.md",
@@ -35,6 +36,9 @@ include = [
     # the GitHub release assets -- so the man page has to ship here or the
     # resulting .deb/.rpm installs /usr/bin/aurora-lint with no man page.
     "docs/aurora-lint.1",
+    # build.rs regenerates this page on every build and writes it only on
+    # change; shipping it keeps a build from the tarball from adding it.
+    "docs/rule-presets.rst",
     "rules_templates/**",
     "tests/**",
     # Cargo auto-includes README/LICENSE files found anywhere in the tree even
