@@ -860,6 +860,33 @@ critics:
    record, as Maxeiner credits reasoned decisions with keeping
    decision-makers to approved grounds (p. 31). A reviewer's call on one
    finding is doctrinal.
+8. **Where the presets agree, and what a ruling is.** Hart: general rules,
+   "however smoothly they work over the great mass of ordinary cases, will,
+   at some point where their application is in question, prove
+   indeterminate; they will have what has been termed an *open texture*",
+   and "Canons of 'interpretation' cannot eliminate, though they can
+   diminish, these uncertainties" (*The Concept of Law*, Oxford, 1961,
+   ch. VII, pp. 123-124). Every preset agrees in a rule's plain cases. The
+   presets differ, and a ruling is needed, only at the open edge. Dworkin,
+   Hart's leading critic, supplies the other half ("The Model of Rules",
+   *University of Chicago Law Review* 35:14, 1967). Rules apply "in an
+   all-or-nothing fashion", and "In theory, at least, the exceptions could
+   all be listed, and the more of them that are, the more complete is the
+   statement of the rule" (p. 25). Principles instead have "the dimension
+   of weight or importance" (p. 27), and words like "reasonable" make a rule
+   "more like a principle" (p. 28). A checker must treat a rule as a rule in
+   Dworkin's sense, with its cases enumerated, and ruling 1 below is that
+   enumeration growing. Where a rule turns on a word like "reasonable",
+   enumeration is a recorded choice, and `--pedantic` declines where no
+   closed form exists. Dworkin also separates discretion in a weak sense
+   (the standards "cannot be applied mechanically but demand the use of
+   judgment"; or the decision is final) from a strong sense (the official
+   is "simply not bound" by the authority's standards) (pp. 32-33). The
+   maintainer's rulings are discretion only in the weak senses: final for
+   the project and needing judgment, but bound by the rule's text and their
+   recorded basis. Hart's own phrase fits the second sense: a scorer's
+   rulings "are, though final, not infallible" (p. 140), which is why a
+   ruling can be re-judged.
 
 ### Ruled (2026-10-31, Brandon)
 
@@ -899,14 +926,6 @@ critics:
 4. **Rule records name the deciding canon.** Each ruling records the canon
    or named option that decided it and those that pointed the other way
    (point 6).
-
-### Not cited yet
-
-H. L. A. Hart's account of open texture (*The Concept of Law*, 1961,
-ch. VII) fits the axis closely: the plain cases where every preset agrees,
-and the borderline where a recorded choice is needed. It is held back until
-his critics, starting with Dworkin's "The Model of Rules" (1967), have been
-read, so that it is paired as the textualist sources are.
 
 ### Consequences
 
