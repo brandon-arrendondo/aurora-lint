@@ -258,7 +258,9 @@ not a flag.
    Pedantic may decline a rule rather than run a weaker
    form of it.
 4. **A list in a rule's text is authoritative as written,** even when the
-   text calls it open ("such as", "for example"). `--strict` may extend it
+   text calls it open ("such as", "for example"). (Restated 2026-10-31 for
+   lists that call themselves open; see that amendment, ruling 1.)
+   `--strict` may extend it
    only with other authoritative material that bounds it better (for
    example, POSIX's list of async-signal-safe functions read with a CERT
    rule that names some of them). Which way a preset moves depends on what
@@ -705,11 +707,12 @@ pedantic preset in `src/settings/mod.rs`.
 
 ## Amendment (2026-10-31): the interpretive basis of the presets
 
-**Status:** proposed. It changes no behavior, fixture, or oracle label. It
-gives the reading axis of the 2026-10-22 amendment its basis in the
-literature on reading legal texts. It also corrects the 2026-10-07
-Rationale bullet on lists, which described the canons from a secondary
-source. Four points are left for Brandon's ruling at the end.
+**Status:** the rationale is proposed; the four points at the end are
+ruled (Brandon, 2026-10-31) and not yet implemented. It gives the reading
+axis of the 2026-10-22 amendment its basis in the literature on reading
+legal texts. It also corrects the 2026-10-07 Rationale bullet on lists,
+which described the canons from a secondary source. The first ruling
+restates Decision 4 of the 2026-10-07 amendment.
 
 ### Context
 
@@ -741,11 +744,16 @@ critics:
    textualist's touchstone) does not limit one to the hyperliteral meaning
    of each word in the text", and "Strict constructionism, as opposed to
    fair-reading textualism, is not a doctrine to be taken seriously"
-   (§ 62, p. 356). For them fair meaning already includes the implications
-   a competent reader draws, among them the absurdity doctrine (§ 37). So
-   "the rule as written" (Decision 1 of the 2026-10-07 amendment) means the
-   text as a competent reader of C and of the standard reads it, and the
-   preset's name refers to its position on the axis, not to the doctrine.
+   (§ 62, p. 356). So "the rule as written" (Decision 1 of the 2026-10-07
+   amendment) means the text as a competent reader of C and of the standard
+   reads it, with what it fairly implies, and the preset's name refers to
+   its position on the axis, not to the doctrine. One part of the book's
+   fair meaning stays out of `--strict`: the absurdity doctrine (§ 37),
+   which the book counts in (p. 356). Relief for a result no reasonable C
+   developer would call a violation is `--default`'s (ruling 2 below). The
+   book does the same in its own vehicles-in-the-park analysis, as Garner
+   describes it: the text bars the ambulance, and other doctrines relieve
+   it (*The New Republic*, September 10, 2012).
    Maxeiner distinguishes the book's "basic" textualism (the words are
    paramount, read fairly, plain meaning followed unless absurd) from its
    "pure" textualism, which excludes purposive argument even when the text
@@ -798,14 +806,14 @@ critics:
    drafters: they treat a list of exemptions as exhaustive, and write
    "including" when they mean examples (p. 572). So the canons and drafting
    practice agree that a list which calls itself open is open, and that its
-   general term governs. Decision 4's reading of such a list as closed is
-   supported by no canon. It is a deliberate choice, and its basis is the
-   one the 2026-10-07 bullet gives: how far a general term reaches is a
-   judgment a checker cannot make reproducibly, and a closed list is one it
-   can. The critics weaken the canons Decision 4 departs from. Eskridge
+   general term governs. As first written, Decision 4 read such a list as
+   closed at the items it names, which no canon supports. Ruling 1 below
+   keeps the general term as the reading and makes the closed list the
+   checker's current enumeration of it. That keeps both the fair meaning
+   and the reproducibility the 2026-10-07 bullet asked for. The critics
+   are a caution on the enumeration, not a reason to drop it: Eskridge
    finds negative implication "highly manipulable in practice", and
-   *ejusdem generis* likewise (n. 258). But they do not supply the
-   departure's basis either; reproducibility does.
+   *ejusdem generis* likewise (n. 258).
 5. **Reading CERT with ISO C and POSIX.** The related-statutes canon reads
    texts on the same subject together (*in pari materia*, § 39). Its basis
    is not that the drafters knew the related texts. It rests on two
@@ -821,8 +829,7 @@ critics:
    that a later text does not change a provision that "has already been
    given an authoritative judicial interpretation". Its counterpart here
    would be: a new edition of a related standard does not silently reopen a
-   settled ruling. A change comes as a new, dated ruling (item 3 of For
-   Brandon's ruling).
+   settled ruling (ruling 3 below).
 6. **The presets are a declared choice among canons.** The canons cut
    across one another. The book says so: "No canon of interpretation is
    absolute. Each may be overcome by the strength of differing principles
@@ -854,32 +861,44 @@ critics:
    decision-makers to approved grounds (p. 31). A reviewer's call on one
    finding is doctrinal.
 
-### For Brandon's ruling
+### Ruled (2026-10-31, Brandon)
 
-1. **An open list of what is forbidden.** By point 4, the fair meaning of a
-   forbidden list that calls itself open is its general term, which yields
-   more findings than the listed items alone. Decision 4 of the 2026-10-07
-   amendment holds `--strict` to the listed items. Its last sentence places
-   the closed reading of a forbidden list "on the relaxed side". Should
-   `--strict` read such a list by its general term, with the closed list as
-   a `--default` option? Or should it keep the closed list for
-   reproducibility, with the fair-meaning reading recorded as a known
-   departure?
-2. **Absurd results under `--strict`.** By point 1, fair meaning includes
-   the absurdity doctrine. Where the text read literally would flag code no
-   reasonable reader calls a violation, does `--strict` already exclude it,
-   so that `--default` equals `--strict` there? Or does `--strict` report it
-   and leave the exemption to a named `--default` option? The book's own
-   vehicles-in-the-park analysis, as Garner describes it, takes the second
-   course: the text bars the ambulance, and other doctrines relieve it.
-   Posner calls that course inconsistent and Garner calls it nuance (*The
-   New Republic*, September 10, 2012). The choice decides which preset
-   carries such rulings.
-3. **Settled rulings and new editions.** Adopt point 5's counterpart: a new
-   edition of the C standard, POSIX or a ruleset does not reopen a settled
-   ruling except by a new, dated ruling.
-4. **Recording the deciding canon.** Adopt point 6's first practice as a
-   field in rule records.
+1. **A list that calls itself open is read by its general term, and the
+   checker enforces an enumeration of it that grows.** A checker needs a
+   closed list to be deterministic, so `--strict` enforces a closed list.
+   That list starts with the items the rule names and gains items that the
+   general term covers as rulings recognise them, including items CERT's
+   list does not name. Brandon: "if a sign says 'no animals allowed (e.g.
+   dogs, cats, etc)' and on our reading we realize we need to detect birds
+   and on further reading that means chickens too, and cows as well,
+   earlier code adjudicated on dogs and cats missed the others." So
+   `--strict`'s results drift as the enumeration grows. Each addition is a
+   dated ruling. A run is reproduced at its pins (ADR-0018): the
+   aurora-lint commit fixes the enumeration it enforced, and each oracle
+   label records the rulings version it was judged under (ADR-0018's
+   2026-10-09 amendment, Decision 4). The oracle labels the general term,
+   so an item the enumeration does not yet hold is scored as a missed
+   finding, not dropped from the count. This restates Decision 4 of the
+   2026-10-07 amendment for lists that call themselves open. A list the
+   text gives as complete stays as written. Extension by other
+   authoritative material (POSIX's async-signal-safe list) stays as it was.
+2. **`--strict` does not apply the absurdity doctrine.** It reports what
+   the text, fairly read, forbids, including results no reasonable C
+   developer would call a violation. Relief for those is `--default`'s, as
+   named options (Decision 7): it "allows for what a reasonable C developer
+   would expect" (Brandon).
+3. **A settled ruling is reopened only when the rule's text changes.** That
+   is, when the rule's pinned text moves (ADR-0018's 2026-10-09 amendment,
+   Decision 5), not when a related standard gets a new edition. A changed
+   text is re-judged by a new, dated ruling. Which CERT C text this project
+   holds itself to is the rule-text pin, per rule, at a merged commit of
+   CERT's own repository. That matters all the more because this project
+   contributes changes to that text, and a pin never anticipates an
+   unmerged proposal, this project's own included (same amendment, Decision
+   7).
+4. **Rule records name the deciding canon.** Each ruling records the canon
+   or named option that decided it and those that pointed the other way
+   (point 6).
 
 ### Not cited yet
 
@@ -896,4 +915,8 @@ read, so that it is paired as the textualist sources are.
   generis* does not.
 - Documentation that glosses `--strict` says "the rule's fair meaning" or
   "the rule as written". It does not say "strict construction".
-- No rule record changes until the points above are ruled.
+- Ruling 1 changes how lists that call themselves open are implemented and
+  labelled: each one's enumeration and its additions become rulings, and
+  rule records say which enumeration a release enforces.
+- Ruling 4 adds a field to rule records.
+- Neither is implemented yet.
