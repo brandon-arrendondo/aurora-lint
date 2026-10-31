@@ -325,6 +325,8 @@ not a flag.
   Service report R45153, 2023. Judging likeness is a judgment a checker
   cannot make mechanically or reproducibly, so `--strict` treats the list
   as authoritative and leaves extension to authoritative material.
+  The 2026-10-31 amendment below corrects this bullet's account of
+  *ejusdem generis* and restates its basis from the primary source.
 
 ### Points this amendment does not settle
 
@@ -700,3 +702,198 @@ pedantic preset in `src/settings/mod.rs`.
 - Rule records and documentation describe a preset by the reading it
   targets, and describe a detector's precision or recall against that
   target. They do not call a preset sound or unsound.
+
+## Amendment (2026-10-31): the interpretive basis of the presets
+
+**Status:** proposed. It changes no behavior, fixture, or oracle label. It
+gives the reading axis of the 2026-10-22 amendment its basis in the
+literature on reading legal texts. It also corrects the 2026-10-07
+Rationale bullet on lists, which described the canons from a secondary
+source. Four points are left for Brandon's ruling at the end.
+
+### Context
+
+The 2026-10-22 amendment settled that a preset chooses a reading of the
+rule, and that soundness describes the report. It did not say what kind of
+reading each preset is, or why a reading is legitimate. Interpreting legal
+texts has a long literature on exactly this, with names for the positions
+and arguments for and against each. The sources are cited here for those
+terms and their stated basis only, not for any position on law or politics.
+The main textualist source is Scalia and Garner, *Reading Law: The
+Interpretation of Legal Texts* (Thomson/West, 2012). It is an advocate's
+book: its authors call it "unapologetically normative" (p. 9, as quoted in
+the reviews below). Each point that relies on it is paired with its
+critics:
+- Eskridge, "The New Textualism and Normative Canons", *Columbia Law Review*
+  113:531 (2013);
+- Posner, "The Incoherence of Antonin Scalia", *The New Republic*, 2012;
+- Maxeiner, "Scalia & Garner's Reading Law: A Civil Law for the Age of
+  Statutes?", *Journal of Civil Law Studies* 6(1):1 (2013);
+- the 2014 micro-symposium on the book in *Green Bag 2d* 18:105 and the
+  *Journal of Law* 4:265.
+
+### Rationale
+
+1. **`--strict` is the rule's fair meaning, not strict construction.**
+   Scalia and Garner define textualism as reading that "begins and ends
+   with what the text says and fairly implies" (p. 16). They reject strict
+   construction outright: "Adhering to the *fair meaning* of the text (the
+   textualist's touchstone) does not limit one to the hyperliteral meaning
+   of each word in the text", and "Strict constructionism, as opposed to
+   fair-reading textualism, is not a doctrine to be taken seriously"
+   (§ 62, p. 356). For them fair meaning already includes the implications
+   a competent reader draws, among them the absurdity doctrine (§ 37). So
+   "the rule as written" (Decision 1 of the 2026-10-07 amendment) means the
+   text as a competent reader of C and of the standard reads it, and the
+   preset's name refers to its position on the axis, not to the doctrine.
+   Maxeiner distinguishes the book's "basic" textualism (the words are
+   paramount, read fairly, plain meaning followed unless absurd) from its
+   "pure" textualism, which excludes purposive argument even when the text
+   is ambiguous (pp. 13-14). `--strict` is the basic kind. Where a rule's
+   text is ambiguous, `--strict` takes the reading a recorded ruling
+   settles; it does not treat its silence as an answer.
+2. **The text bounds the reading, and pedantic crosses that bound openly.**
+   Maxeiner's account of modern civil-law method: "Textualism defines the
+   outer limits of decisions. Nontextualism determines how those rules are
+   applied within the limits set" (p. 23). Eskridge, from the purposivist
+   side, finds the same common ground: interpretation should advance a
+   statute's purposes "so long as such interpretations do not impose on
+   words a meaning they will not bear" (p. 532). `--default`'s narrowings
+   stay inside that bound. `--pedantic`'s closed-form readings go past it
+   on purpose, and that is the reason pedantic is opt-in, labelled as a
+   reading beyond the text, scored as a difference from the oracle
+   (Decision 5 of the 2026-10-07 amendment), and declines a rule rather
+   than invent a reading where none is closed.
+3. **A narrowing rests on the rule's evident purpose, not a broad one.**
+   Scalia and Garner's chief objection to purposivism is that a provision's
+   purpose "can be placed on a ladder of abstraction" (p. 18), and choosing
+   the rung lets the reader change the text. They allow purpose "in its
+   concrete manifestations as deduced from close reading of the text"
+   (p. 20). A `--default` narrowing justified by what the rule's own text
+   shows it is for is a fair reading. One justified by "security" or
+   "safety" in general is a climb up the ladder, and has to stand as a
+   named relaxation (Decision 7) on its own merits. The same pages warn
+   that "no statute, and no private instrument for that matter, pursues its
+   'broad purpose' at all costs" (p. 21): many rules are prophylactic, as a
+   stop sign binds at 3 a.m. with no traffic about. That a finding is
+   harmless at one site is therefore not, by itself, a ground for a
+   narrowing.
+4. **Lists: what the canons say, and how Decision 4 departs from them.**
+   The book confines the three list canons as follows. This corrects the
+   2026-10-07 bullet.
+   - Negative implication (*expressio unius*) "properly applies only when
+     the *unius* ... can reasonably be thought to be an expression of *all*
+     that shares in the grant or prohibition involved" (§ 10, p. 107);
+     "The more specific the enumeration, the greater the force of the
+     canon" (p. 108).
+   - "The verb *to include* introduces examples, not an exhaustive list"
+     (§ 15, p. 132).
+   - *Ejusdem generis* is "properly limited to its traditional application:
+     a series of specifics followed by a general" (§ 32, p. 205). It does
+     not extend a "such as" list to like items, as the 2026-10-07 bullet
+     said. A general term followed by examples is read at its broadest
+     (p. 205).
+
+   On the drafting side, Eskridge reports a survey of congressional
+   drafters: they treat a list of exemptions as exhaustive, and write
+   "including" when they mean examples (p. 572). So the canons and drafting
+   practice agree that a list which calls itself open is open, and that its
+   general term governs. Decision 4's reading of such a list as closed is
+   supported by no canon. It is a deliberate choice, and its basis is the
+   one the 2026-10-07 bullet gives: how far a general term reaches is a
+   judgment a checker cannot make reproducibly, and a closed list is one it
+   can. The critics weaken the canons Decision 4 departs from. Eskridge
+   finds negative implication "highly manipulable in practice", and
+   *ejusdem generis* likewise (n. 258). But they do not supply the
+   departure's basis either; reproducibility does.
+5. **Reading CERT with ISO C and POSIX.** The related-statutes canon reads
+   texts on the same subject together (*in pari materia*, § 39). Its basis
+   is not that the drafters knew the related texts. It rests on two
+   principles: "(1) that the body of the law should make sense, and (2)
+   that it is the responsibility of the courts, within the permissible
+   meanings of the text, to make it so" (p. 252). That is the basis for
+   reading a CERT rule with the C standard and POSIX where the rule does not
+   cite them. Applying the canon across standards bodies is this project's
+   extension, not the book's. Posner reads the same basis as judges who
+   "clean up after the legislators" (2012). The answer available to a
+   checker is that the combined reading is a recorded ruling, with its
+   sources, and is revised by a new ruling. The canon's own limit (p. 255) is
+   that a later text does not change a provision that "has already been
+   given an authoritative judicial interpretation". Its counterpart here
+   would be: a new edition of a related standard does not silently reopen a
+   settled ruling. A change comes as a new, dated ruling (item 3 of For
+   Brandon's ruling).
+6. **The presets are a declared choice among canons.** The canons cut
+   across one another. The book says so: "No canon of interpretation is
+   absolute. Each may be overcome by the strength of differing principles
+   that point in other directions" (§ 3, p. 59). It grants that textualism,
+   "with its cross-cutting canons and competing principles, does not always
+   provide a clear answer" (p. 22). Eskridge finds a dozen or more approved
+   canons applicable to any hard case, "leaving considerable room for
+   judicial cherry-picking" (p. 531); Posner says their variety gives "all
+   the room needed to generate the outcome" a reader wants (2012). Hirsch,
+   assessing Posner's charges at Garner's request, grants this much: using
+   a canon for choosing among canons "enables you to treat that metacanon
+   as the one controlling canon" (*Journal of Law* 4:278, 2014). The presets
+   are such a metacanon, and this ADR declares them as one rather than
+   claiming the canons decide. Three practices follow:
+   - each ruling names the canon or option that decided it, and those that
+     pointed the other way;
+   - every per-preset difference is challenged, and coincidence is a normal
+     outcome (Decision 2 of the 2026-10-22 amendment);
+   - a ruling names only canons that predate it and are generally accepted.
+     Smith: an interpretive rule "must be known and generally accepted to
+     attain the rank of canon" (*Journal of Law* 4:270, 2014).
+7. **Rulings are authoritative; a verdict on one finding is not.** Maxeiner,
+   after Portalis, distinguishes doctrinal interpretation, which decides
+   whether a case falls within a text and binds nothing later, from
+   authoritative interpretation, which "settles issues and creates rules"
+   (pp. 25-26). A recorded ruling binds every later run, so it is
+   authoritative in this sense. That is why it carries its reasons on the
+   record, as Maxeiner credits reasoned decisions with keeping
+   decision-makers to approved grounds (p. 31). A reviewer's call on one
+   finding is doctrinal.
+
+### For Brandon's ruling
+
+1. **An open list of what is forbidden.** By point 4, the fair meaning of a
+   forbidden list that calls itself open is its general term, which yields
+   more findings than the listed items alone. Decision 4 of the 2026-10-07
+   amendment holds `--strict` to the listed items. Its last sentence places
+   the closed reading of a forbidden list "on the relaxed side". Should
+   `--strict` read such a list by its general term, with the closed list as
+   a `--default` option? Or should it keep the closed list for
+   reproducibility, with the fair-meaning reading recorded as a known
+   departure?
+2. **Absurd results under `--strict`.** By point 1, fair meaning includes
+   the absurdity doctrine. Where the text read literally would flag code no
+   reasonable reader calls a violation, does `--strict` already exclude it,
+   so that `--default` equals `--strict` there? Or does `--strict` report it
+   and leave the exemption to a named `--default` option? The book's own
+   vehicles-in-the-park analysis, as Garner describes it, takes the second
+   course: the text bars the ambulance, and other doctrines relieve it.
+   Posner calls that course inconsistent and Garner calls it nuance (*The
+   New Republic*, September 10, 2012). The choice decides which preset
+   carries such rulings.
+3. **Settled rulings and new editions.** Adopt point 5's counterpart: a new
+   edition of the C standard, POSIX or a ruleset does not reopen a settled
+   ruling except by a new, dated ruling.
+4. **Recording the deciding canon.** Adopt point 6's first practice as a
+   field in rule records.
+
+### Not cited yet
+
+H. L. A. Hart's account of open texture (*The Concept of Law*, 1961,
+ch. VII) fits the axis closely: the plain cases where every preset agrees,
+and the borderline where a recorded choice is needed. It is held back until
+his critics, starting with Dworkin's "The Model of Rules" (1967), have been
+read, so that it is paired as the textualist sources are.
+
+### Consequences
+
+- The 2026-10-07 Rationale bullet on lists is read through point 4 of this
+  amendment. Its basis (reproducibility) stands; its account of *ejusdem
+  generis* does not.
+- Documentation that glosses `--strict` says "the rule's fair meaning" or
+  "the rule as written". It does not say "strict construction".
+- No rule record changes until the points above are ruled.
