@@ -1,0 +1,416 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Contributing &mdash; aurora-lint  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Licensing and content provenance" href="licensing.html" />
+    <link rel="prev" title="Future Rulesets Beyond CERT C" href="future-rulesets.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            aurora-lint
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="options.html">Policy and Environment Options</a></li>
+<li class="toctree-l1"><a class="reference internal" href="rule-presets.html">Rule readings by preset</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="error-handling.html">Error Handling and Exit Codes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="upgrading.html">Upgrading</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tool-comparison.html">Comparison To Other Tools</a></li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks</a></li>
+<li class="toctree-l1"><a class="reference internal" href="reproducing-published-numbers.html">Reproducing the Published Numbers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="measurement-notes.html">Measurement Notes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Contributing</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#adding-a-new-cert-c-rule">Adding a New CERT C Rule</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#removing-a-rule">Removing a Rule</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#moving-a-check-to-the-cwe-ruleset">Moving a Check to the CWE Ruleset</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#build-requirements">Build Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#which-tests-a-change-needs">Which Tests a Change Needs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#invoke-tasks">Invoke Tasks</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#publishing-a-release-s-documentation">Publishing a Release’s Documentation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#development-node-setup">Development Node Setup</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="licensing.html">Licensing and content provenance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">aurora-lint</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Contributing</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/contributing.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="contributing">
+<h1>Contributing<a class="headerlink" href="#contributing" title="Link to this heading"></a></h1>
+<section id="adding-a-new-cert-c-rule">
+<h2>Adding a New CERT C Rule<a class="headerlink" href="#adding-a-new-cert-c-rule" title="Link to this heading"></a></h2>
+<p>The full checklist, and the policy a new rule must follow, are in the
+“Build &amp; Test” and “Rule Implementation” sections of
+the <a class="reference external" href="https://github.com/brandon-arrendondo/aurora-lint/blob/main/CLAUDE.md">technical guide</a>.
+In short:</p>
+<ol class="arabic">
+<li><p>Create <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/CATEGORY/RULE-ID/</span></code> with the implementation
+(<code class="docutils literal notranslate"><span class="pre">rule_id_c.rs</span></code>) and the rule’s <code class="docutils literal notranslate"><span class="pre">RULE-ID.toml</span></code>. Copy a small existing
+rule as the template: <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/MSC/MSC33-C/</span></code> implements the
+<code class="docutils literal notranslate"><span class="pre">CertRule</span></code> trait (<code class="docutils literal notranslate"><span class="pre">src/rules/mod.rs</span></code>) in one short file. The build
+merges each <code class="docutils literal notranslate"><span class="pre">RULE-ID.toml</span></code> into <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code>, so
+do not edit that file by hand.</p></li>
+<li><p>Register the rule in <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/mod.rs</span></code>.</p></li>
+<li><p>Add test cases as <code class="docutils literal notranslate"><span class="pre">.c</span></code> files in <code class="docutils literal notranslate"><span class="pre">tests/fail/</span></code> and <code class="docutils literal notranslate"><span class="pre">tests/pass/</span></code>
+(and <code class="docutils literal notranslate"><span class="pre">tests/expected_fail/</span></code> for a known miss) beside the rule. The
+build generates a test from each file; do not add inline tests.</p></li>
+<li><p>Add a block for the rule to every <code class="docutils literal notranslate"><span class="pre">conf/realworld/*-rules.toml</span></code>. The
+<code class="docutils literal notranslate"><span class="pre">check-realworld-manifests</span></code> hook refuses a commit without one.</p></li>
+<li><p>Build and run the rule’s tests. The filter is the rule id in lower case,
+with <code class="docutils literal notranslate"><span class="pre">_</span></code> for <code class="docutils literal notranslate"><span class="pre">-</span></code> (here for MSC33-C):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">cargo</span> <span class="n">build</span>
+<span class="n">cargo</span> <span class="n">test</span> <span class="o">--</span><span class="n">lib</span> <span class="o">--</span> <span class="n">msc33_c</span>
+<span class="n">cargo</span> <span class="n">fmt</span>
+</pre></div>
+</div>
+</li>
+</ol>
+</section>
+<section id="removing-a-rule">
+<h2>Removing a Rule<a class="headerlink" href="#removing-a-rule" title="Link to this heading"></a></h2>
+<p>A rule is removed only on its row in <code class="docutils literal notranslate"><span class="pre">docs/design/rule-disposition.md</span></code>
+(ADR-0013): a not-shipped disposition, ruled. Each removal is its own change
+(Decision 5), and “not shipped” means gone from the tool, not disabled
+(Decision 4). In that one change:</p>
+<ol class="arabic">
+<li><p>Check that the covering rule already reports the construct (Decision 5):
+run it on the removed rule’s <code class="docutils literal notranslate"><span class="pre">fail</span></code> fixtures and CERT’s noncompliant
+examples. If it doesn’t, the removal waits for that coverage to land.</p></li>
+<li><p>Delete the rule directory <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/CATEGORY/RULE-ID/</span></code> (the
+implementation, its <code class="docutils literal notranslate"><span class="pre">.toml</span></code> and its <code class="docutils literal notranslate"><span class="pre">tests/</span></code> fixtures) and its
+registration in <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/mod.rs</span></code>.</p></li>
+<li><p>Delete its block from every <code class="docutils literal notranslate"><span class="pre">conf/realworld/*-rules.toml</span></code>. The build
+regenerates <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code> without it.</p></li>
+<li><p>Add a <code class="docutils literal notranslate"><span class="pre">[[removed]]</span></code> entry to <code class="docutils literal notranslate"><span class="pre">rules_templates/removed-rules.toml</span></code>, in
+id order (the loader refuses an unsorted table, so parallel removals don’t
+all conflict at the end of the file). <code class="docutils literal notranslate"><span class="pre">removed_in</span></code> is the release the
+removal ships in, set up front; <code class="docutils literal notranslate"><span class="pre">disposition</span></code>, <code class="docutils literal notranslate"><span class="pre">covered_by</span></code> and (for
+a check moved to the CWE ruleset) <code class="docutils literal notranslate"><span class="pre">moved_to</span></code> must agree with the rule’s
+disposition row, and every <code class="docutils literal notranslate"><span class="pre">covered_by</span></code> rule must still ship (a test
+checks it against the registry).</p></li>
+<li><p>Regenerate what is derived from the rule set:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">python3</span> <span class="n">scripts</span><span class="o">/</span><span class="n">generate_rule_cwe_map</span><span class="o">.</span><span class="n">py</span>   <span class="c1"># data/rule_cwe_map.json</span>
+<span class="n">python3</span> <span class="n">scripts</span><span class="o">/</span><span class="n">render_removed_rules</span><span class="o">.</span><span class="n">py</span>    <span class="c1"># README.md and docs/configuration.rst</span>
+</pre></div>
+</div>
+<p>Delete the rule’s key from <code class="docutils literal notranslate"><span class="pre">data/wiki_fixture_staleness.json</span></code> (its
+fixtures are gone; don’t rerun that audit, which fetches CERT’s wiki),
+and fix every rule count the <code class="docutils literal notranslate"><span class="pre">check-project-facts</span></code> hook reports as
+stale (README.md and docs/ claim the shipped and enabled totals).</p>
+</li>
+<li><p>Record the removal in the rule’s row in
+<code class="docutils literal notranslate"><span class="pre">docs/design/rule-disposition.md</span></code>: note it, with the release, in the
+<em>Reason / notes</em> column. Leave the <em>Disposition</em> column as the
+not-shipped disposition the removal rests on; the <code class="docutils literal notranslate"><span class="pre">check-removed-rules</span></code>
+hook requires it to start with that label (and to name every
+<code class="docutils literal notranslate"><span class="pre">covered_by</span></code> rule, and the <code class="docutils literal notranslate"><span class="pre">moved_to</span></code> CWE). Also update any design doc or ADR that
+cites the rule as live (for example <code class="docutils literal notranslate"><span class="pre">docs/design/cross-rule-overlap.md</span></code>).</p></li>
+<li><p>Say in the change’s description what users lose and which rules report
+the construct instead. The maintainer records it as the release note,
+under <code class="docutils literal notranslate"><span class="pre">category:</span> <span class="pre">removed</span></code> (ADR-0009).</p></li>
+<li><p>Build and run the full test suite. The pre-commit hooks check that every
+real-world manifest still decides every rule (<code class="docutils literal notranslate"><span class="pre">check-realworld-manifests</span></code>),
+that the not-shipped list is current and agrees with the disposition
+table (<code class="docutils literal notranslate"><span class="pre">check-removed-rules</span></code>), and that the rule counts hold
+(<code class="docutils literal notranslate"><span class="pre">check-project-facts</span></code>).</p></li>
+</ol>
+</section>
+<section id="moving-a-check-to-the-cwe-ruleset">
+<h2>Moving a Check to the CWE Ruleset<a class="headerlink" href="#moving-a-check-to-the-cwe-ruleset" title="Link to this heading"></a></h2>
+<p>A rule whose disposition is <em>moved to CWE ruleset</em> keeps its check and
+changes its id: it is shipped from <code class="docutils literal notranslate"><span class="pre">src/rules/cwe/</span></code> as <code class="docutils literal notranslate"><span class="pre">CWE-&lt;n&gt;</span></code>, enabled
+by default as before, and the CERT id is recorded as removed. The removal
+steps above apply, with these differences:</p>
+<ol class="arabic simple">
+<li><p>There is no covering rule to check: the moved rule reports the construct
+itself.</p></li>
+<li><p>Move the rule directory with <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">mv</span></code> to <code class="docutils literal notranslate"><span class="pre">src/rules/cwe/CWE-&lt;n&gt;/</span></code>
+(flat: no category level), renaming the <code class="docutils literal notranslate"><span class="pre">.rs</span></code> file and the <code class="docutils literal notranslate"><span class="pre">.toml</span></code> to
+match, rather than deleting it. Change the rule id, the struct name and
+the <code class="docutils literal notranslate"><span class="pre">[rules.cert_c.&lt;ID&gt;]</span></code> table to <code class="docutils literal notranslate"><span class="pre">[rules.cwe.CWE-&lt;n&gt;]</span></code>, set the
+<code class="docutils literal notranslate"><span class="pre">[metadata]</span></code> <code class="docutils literal notranslate"><span class="pre">type</span></code> to <code class="docutils literal notranslate"><span class="pre">weakness</span></code>, and change each fixture’s
+<code class="docutils literal notranslate"><span class="pre">Rule:</span></code> header. Move the registration from <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/mod.rs</span></code>
+to <code class="docutils literal notranslate"><span class="pre">src/rules/cwe/mod.rs</span></code> and the <code class="docutils literal notranslate"><span class="pre">register</span></code> call beside the other
+CWE rules. Keep <code class="docutils literal notranslate"><span class="pre">[references]</span> <span class="pre">cwe</span></code> as it was: it names the Juliet
+directories the check is scored on, which the move does not change.</p></li>
+<li><p>In every <code class="docutils literal notranslate"><span class="pre">conf/realworld/*-rules.toml</span></code>, move the rule’s block to the CWE
+ruleset section at the end of the file as <code class="docutils literal notranslate"><span class="pre">[rules.cwe.CWE-&lt;n&gt;]</span></code>,
+keeping that codebase’s decision and its comment. Coverage on the
+real-world suite must not change. <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code> is
+regenerated by the build.</p></li>
+<li><p>The <code class="docutils literal notranslate"><span class="pre">[[removed]]</span></code> entry takes <code class="docutils literal notranslate"><span class="pre">disposition</span> <span class="pre">=</span> <span class="pre">&quot;moved-to-cwe&quot;</span></code> and
+<code class="docutils literal notranslate"><span class="pre">moved_to</span> <span class="pre">=</span> <span class="pre">&quot;CWE-&lt;n&gt;&quot;</span></code>, which must be a rule the tool ships, and no
+<code class="docutils literal notranslate"><span class="pre">covered_by</span></code>.</p></li>
+<li><p>A suppression comment or <code class="docutils literal notranslate"><span class="pre">--rules</span></code> naming the old id still parses, with
+a warning, but no longer matches. The release note says so: it is a
+<code class="docutils literal notranslate"><span class="pre">removed</span></code> note for the CERT id and an <code class="docutils literal notranslate"><span class="pre">added</span></code> note for the CWE id.</p></li>
+<li><p>Ground-truth labels are keyed on the rule id, so the old id’s labels
+stop matching anything. Count them per id and re-key them through
+<code class="docutils literal notranslate"><span class="pre">benchmark_adjudication</span></code> (ADR-0007), rather than letting them drop out
+of the oracle silently.</p></li>
+<li><p>Check with a before/after scan of the real-world corpora: the findings
+must be the same in everything except the rule id.</p></li>
+</ol>
+</section>
+<section id="build-requirements">
+<h2>Build Requirements<a class="headerlink" href="#build-requirements" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><strong>Rust</strong>: 1.95 or later (stable toolchain; <code class="docutils literal notranslate"><span class="pre">rust-version</span></code> in Cargo.toml)</p></li>
+<li><p><strong>C toolchain</strong>: a C compiler and linker for dependencies with native code
+(e.g. <code class="docutils literal notranslate"><span class="pre">libgit2-sys</span></code>); <code class="docutils literal notranslate"><span class="pre">build-essential</span></code> on Debian/Ubuntu</p></li>
+<li><p><strong>Platform</strong>: Linux, macOS, Windows (cross-platform via crossterm)</p></li>
+<li><p><strong>Dependencies</strong>: See <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code> for the full list</p></li>
+<li><p><strong>No unsafe code</strong>: the library and the binary deny it
+(<code class="docutils literal notranslate"><span class="pre">#![deny(unsafe_code)]</span></code>). The one exception is <code class="docutils literal notranslate"><span class="pre">ast_utils::tree_root</span></code>,
+which asks tree-sitter for a node’s root in constant time; its doc comment
+says why.</p></li>
+</ul>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">cargo</span> <span class="n">build</span>             <span class="c1"># Debug build</span>
+<span class="n">cargo</span> <span class="n">build</span> <span class="o">--</span><span class="n">release</span>   <span class="c1"># Release build (optimized)</span>
+<span class="n">cargo</span> <span class="n">test</span>              <span class="c1"># Run all tests</span>
+<span class="n">cargo</span> <span class="n">fmt</span>               <span class="c1"># Format code</span>
+</pre></div>
+</div>
+</section>
+<section id="which-tests-a-change-needs">
+<h2>Which Tests a Change Needs<a class="headerlink" href="#which-tests-a-change-needs" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">scripts/landing_check.py</span></code> reads a diff and prints the suites that change
+needs; <code class="docutils literal notranslate"><span class="pre">--run</span></code> runs them. It diffs <code class="docutils literal notranslate"><span class="pre">HEAD</span></code> against its merge base with
+<code class="docutils literal notranslate"><span class="pre">main</span></code> unless given <code class="docutils literal notranslate"><span class="pre">--base</span></code>/<code class="docutils literal notranslate"><span class="pre">--head</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scripts</span><span class="o">/</span><span class="n">landing_check</span><span class="o">.</span><span class="n">py</span>          <span class="c1"># class, per-file reasons, commands</span>
+<span class="n">scripts</span><span class="o">/</span><span class="n">landing_check</span><span class="o">.</span><span class="n">py</span> <span class="o">--</span><span class="n">run</span>
+</pre></div>
+</div>
+<p>A change that touches only prose needs no Rust build (Sphinx <code class="docutils literal notranslate"><span class="pre">-W</span></code> runs when
+<code class="docutils literal notranslate"><span class="pre">docs/</span></code> changed). A change to Python under <code class="docutils literal notranslate"><span class="pre">bench/</span></code> or <code class="docutils literal notranslate"><span class="pre">scripts/</span></code> runs
+those unit tests. A <code class="docutils literal notranslate"><span class="pre">.rs</span></code> change that is comments only runs the build,
+doctests and clippy. A rule manifest change that touches only its text
+fields (title, description, wiki link) runs everything except the
+generated fixture tests. Anything else, including anything the script
+cannot classify, runs the full suite. The script’s docstring lists the
+exact rules, such as why a prose file that a test reads counts as code.
+The git hooks run on every commit regardless.</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">--run</span></code> passes, it prints a <code class="docutils literal notranslate"><span class="pre">verified:</span></code> line naming the git tree
+it tested (<code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">rev-parse</span> <span class="pre">HEAD^{tree}</span></code>), the class, the host and the
+<code class="docutils literal notranslate"><span class="pre">rustc</span></code> version. The tree hash identifies content, whichever commit
+carries it. Only a <code class="docutils literal notranslate"><span class="pre">class</span> <span class="pre">full</span></code> line vouches for a tree on its own: a tree
+with the same hash, under the same <code class="docutils literal notranslate"><span class="pre">rustc</span></code>, has already passed the whole
+suite. A lesser class ran less, so its line holds only together with a
+passing run on the base it was classified against. Uncommitted or untracked
+files (an unadded fixture changes the generated tests) mark the line as
+verifying nothing.</p>
+<p>The timings the script was tuned against are for a 4-core, 7 GB machine
+building with <code class="docutils literal notranslate"><span class="pre">-j2</span></code>, and CI also runs everything again with
+<code class="docutils literal notranslate"><span class="pre">--features</span> <span class="pre">tui</span></code>.</p>
+<p>CI uses the same script: on a pull request that touches only prose or
+Python outside the crate, the Rust jobs are skipped. The classifier that
+grades a pull request is the base commit’s copy, and a pull request that
+changes the classifier or <code class="docutils literal notranslate"><span class="pre">.github/</span></code> runs everything. A push to <code class="docutils literal notranslate"><span class="pre">main</span></code>
+always runs everything. One check rides on the skipped <code class="docutils literal notranslate"><span class="pre">test</span></code> job:
+<code class="docutils literal notranslate"><span class="pre">check_project_facts.py</span> <span class="pre">--generated</span></code>, which checks the test summary that
+<code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">test</span></code> writes. A Python-only pull request therefore reaches it only
+on the push to <code class="docutils literal notranslate"><span class="pre">main</span></code>.</p>
+</section>
+<section id="invoke-tasks">
+<h2>Invoke Tasks<a class="headerlink" href="#invoke-tasks" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">tasks.py</span></code> holds a few developer tasks, run with
+<a class="reference external" href="https://www.pyinvoke.org/">invoke</a> (<code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">invoke</span></code>):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">invoke</span> <span class="n">check</span>            <span class="c1"># Run pre-commit hooks on all files</span>
+<span class="n">invoke</span> <span class="n">build</span>            <span class="c1"># Build (add --release for release mode)</span>
+<span class="n">invoke</span> <span class="n">test</span>             <span class="c1"># Run all tests</span>
+<span class="n">invoke</span> <span class="n">bump</span><span class="o">-</span><span class="n">version</span>     <span class="c1"># Bump version across all files (reads Cargo.toml)</span>
+<span class="n">invoke</span> <span class="n">lint</span><span class="o">-</span><span class="n">docs</span>        <span class="c1"># Advisory prose lint of README.md, docs/*.rst, man page</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">invoke</span> <span class="pre">lint-docs</span></code> runs <a class="reference external" href="https://vale.sh">Vale</a> with the Aurora house
+style (American spelling, settled terms such as “pre-scan”, no contractions,
+and a flag on patterns typical of machine-written prose). The style is a
+Vale package in a sibling <code class="docutils literal notranslate"><span class="pre">../style_package</span></code> checkout, named in
+<code class="docutils literal notranslate"><span class="pre">.vale.ini</span></code>; the task builds its zip there when missing and reruns
+<code class="docutils literal notranslate"><span class="pre">vale</span> <span class="pre">sync</span></code> when <code class="docutils literal notranslate"><span class="pre">.vale.ini</span></code> or the zip changes. A checkout without
+<code class="docutils literal notranslate"><span class="pre">../style_package</span></code> cannot run it, and nothing else depends on it.</p>
+<p>By default it lints the user-facing docs: <code class="docutils literal notranslate"><span class="pre">README.md</span></code>, this guide
+(<code class="docutils literal notranslate"><span class="pre">docs/*.rst</span></code>) and the man page, which pandoc first converts to Markdown
+under <code class="docutils literal notranslate"><span class="pre">target/vale/</span></code> (findings name that file). Pass <code class="docutils literal notranslate"><span class="pre">--path</span></code> for any
+other tracked <code class="docutils literal notranslate"><span class="pre">.md</span></code> or <code class="docutils literal notranslate"><span class="pre">.rst</span></code> file or directory, such as the internal
+design docs, and <code class="docutils literal notranslate"><span class="pre">--level</span> <span class="pre">suggestion</span></code> to see suggestion-level rules too:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">invoke</span> <span class="n">lint</span><span class="o">-</span><span class="n">docs</span> <span class="o">--</span><span class="n">path</span> <span class="n">docs</span><span class="o">/</span><span class="n">cli</span><span class="o">-</span><span class="n">usage</span><span class="o">.</span><span class="n">rst</span>
+<span class="n">invoke</span> <span class="n">lint</span><span class="o">-</span><span class="n">docs</span> <span class="o">--</span><span class="n">path</span> <span class="n">docs</span><span class="o">/</span><span class="n">design</span>
+</pre></div>
+</div>
+<p>The lint is advisory: findings never fail the task, and it is not part of
+pre-commit or CI. Reading <code class="docutils literal notranslate"><span class="pre">.rst</span></code> needs docutils’ <code class="docutils literal notranslate"><span class="pre">rst2html</span></code> on
+<code class="docutils literal notranslate"><span class="pre">PATH</span></code>; the development venv below has it (Sphinx depends on docutils).
+Without it the task skips <code class="docutils literal notranslate"><span class="pre">.rst</span></code> files and says so. Rule changes belong in
+<code class="docutils literal notranslate"><span class="pre">style_package</span></code>, not in a local override here.</p>
+</section>
+<section id="publishing-a-release-s-documentation">
+<h2>Publishing a Release’s Documentation<a class="headerlink" href="#publishing-a-release-s-documentation" title="Link to this heading"></a></h2>
+<p>Pushing a <code class="docutils literal notranslate"><span class="pre">v*</span></code> tag runs <code class="docutils literal notranslate"><span class="pre">.github/workflows/release.yml</span></code>, whose <code class="docutils literal notranslate"><span class="pre">docs</span></code>
+job publishes that commit’s rendered documentation under <code class="docutils literal notranslate"><span class="pre">/&lt;tag&gt;/</span></code> on the
+GitHub Pages site. The directory is never replaced: a later deploy of the
+same tag is refused, and every deploy from main copies each release
+directory forward unchanged. After tagging a release:</p>
+<ol class="arabic simple">
+<li><p>Confirm <code class="docutils literal notranslate"><span class="pre">https://brandon-arrendondo.github.io/aurora-lint/&lt;tag&gt;/index.html</span></code>
+is live and listed on <code class="docutils literal notranslate"><span class="pre">versions.html</span></code>. The tag’s docs job waits in the
+same queue as main’s, and a newer push to main can cancel it while it
+waits. If it did, re-run that job from the tag’s release run. Main’s docs
+job also warns about any release whose directory is missing.</p></li>
+<li><p>Never re-run a docs job from a run made before per-tag publishing
+existed, and never push to the <code class="docutils literal notranslate"><span class="pre">gh-pages</span></code> branch by hand. Either one
+publishes a site without the release directories. If that happens,
+restore them from an earlier <code class="docutils literal notranslate"><span class="pre">gh-pages</span></code> commit.</p></li>
+</ol>
+</section>
+<section id="development-node-setup">
+<h2>Development Node Setup<a class="headerlink" href="#development-node-setup" title="Link to this heading"></a></h2>
+<p>To provision a fresh Ubuntu 24.04 node for working on aurora-lint (as opposed
+to just running benchmarks – see <a class="reference external" href="benchmark-setup.html">Benchmark Setup</a>
+for that), install Ansible first (<code class="docutils literal notranslate"><span class="pre">sudo</span> <span class="pre">apt</span> <span class="pre">install</span> <span class="pre">-y</span> <span class="pre">ansible</span></code> or
+<code class="docutils literal notranslate"><span class="pre">pipx</span> <span class="pre">install</span> <span class="pre">ansible-core</span></code> – a playbook can’t provision the tool it
+runs under), then run:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ansible-playbook<span class="w"> </span>playbooks/setup-dev-environment.yml<span class="w"> </span>-i<span class="w"> </span><span class="s2">&quot;localhost,&quot;</span><span class="w"> </span>-c<span class="w"> </span><span class="nb">local</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--ask-become-pass
+</pre></div>
+</div>
+<p>This installs the Rust toolchain (rustup, picking up the channel and
+components pinned in <code class="docutils literal notranslate"><span class="pre">rust-toolchain.toml</span></code>), the native build dependencies
+<code class="docutils literal notranslate"><span class="pre">git2</span></code>’s vendored libgit2 build needs (a C toolchain, cmake, pkg-config),
+and – into a venv at <code class="docutils literal notranslate"><span class="pre">~/.venvs/aurora-lint-dev</span></code> by default – the Sphinx + LaTeX
+toolchain this guide itself is built with, <code class="docutils literal notranslate"><span class="pre">invoke</span></code> (for the
+<code class="docutils literal notranslate"><span class="pre">invoke</span> <span class="pre">bump-version</span></code> workflow), <code class="docutils literal notranslate"><span class="pre">pre-commit</span></code> (installed as this
+checkout’s git hook – see the Git Commit Rules in AGENTS.md), and
+<code class="docutils literal notranslate"><span class="pre">clew-trace</span></code> (the package behind the <code class="docutils literal notranslate"><span class="pre">clew-mcp</span></code> command <code class="docutils literal notranslate"><span class="pre">.mcp.json</span></code>
+points at – see CLAUDE.md’s “Code Navigation (clew)” for registering the
+MCP server itself with <code class="docutils literal notranslate"><span class="pre">clew</span> <span class="pre">init</span></code>, a separate, per-machine step this
+playbook does not run for you). Point the venv at an existing/shared one
+instead with <code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">dev_venv=&lt;path&gt;</span></code>, e.g. <code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">dev_venv=~/venvs/shared</span></code>.</p>
+<p>It also installs and schedules a disk-guard cron (<code class="docutils literal notranslate"><span class="pre">cargo-sweep</span></code> +
+<code class="docutils literal notranslate"><span class="pre">scripts/cargo-target-gc.sh</span></code>, hourly) that caps <code class="docutils literal notranslate"><span class="pre">target/</span></code>
+growth – skip it on a node with plenty of headroom with
+<code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">install_disk_guard=false</span></code>. The script runs on macOS too (no
+<code class="docutils literal notranslate"><span class="pre">flock</span></code> there; it skips that one check), so a Mac node can take the same
+<code class="docutils literal notranslate"><span class="pre">crontab</span></code> line by hand, listing each worktree it builds in. This exists because two otherwise
+identically-provisioned dev nodes were found to have diverged on exactly
+this (2026-08-31): one had the cron, one didn’t, and the one without it had
+an unbounded <code class="docutils literal notranslate"><span class="pre">target/</span></code> and a manually-patched <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code> disabling
+dependency debug info as an ad hoc workaround.</p>
+<p>It does not install comparison tools – cppcheck and clang-tidy (apt
+packages, see <a class="reference external" href="benchmark-setup.html">Benchmark Setup</a>) or Infer/Frama-C
+(<code class="docutils literal notranslate"><span class="pre">playbooks/install-static-analyzers.yml</span></code>) – clone the real-world
+benchmark checkouts or the Juliet test suite (also <a class="reference external" href="benchmark-setup.html">Benchmark Setup</a> – a node that only needs the benchmark code as
+reference, not to run benchmarks, can skip both and just copy an existing
+node’s <code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT</span></code> directory over), or install editor/terminal
+conveniences (vim, htop, tmux). A node doing rule-development work that
+compares aurora-lint’s output against these tools’ still needs
+<code class="docutils literal notranslate"><span class="pre">install-static-analyzers.yml</span></code> run separately – none of that is a
+dependency of building or testing aurora-lint <em>itself</em>, which is this playbook’s
+only scope.</p>
+<p>Nor does it fetch the reference shadow set (the never-labeled codebases a
+change can be A/B’d over; see <a class="reference external" href="benchmark-setup.html">Benchmark Setup</a>)
+unless asked: it downloads third-party code that only that A/B uses. Opt in
+once with <code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">install_shadow_corpus=true</span></code> (and <code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">shadow_tier=all</span></code> for
+every tier), or run <code class="docutils literal notranslate"><span class="pre">playbooks/setup-shadow-corpus.yml</span></code> on its own.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="future-rulesets.html" class="btn btn-neutral float-left" title="Future Rulesets Beyond CERT C" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="licensing.html" class="btn btn-neutral float-right" title="Licensing and content provenance" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025-2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

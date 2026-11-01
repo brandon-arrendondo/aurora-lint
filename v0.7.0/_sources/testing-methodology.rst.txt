@@ -1,0 +1,871 @@
+Testing Methodology
+===================
+
+aurora-lint employs a three-tier testing strategy: unit tests for individual rule logic,
+the NIST Juliet Test Suite for precision/recall measurement, and real-world
+open-source codebases for scalability and noise validation.
+
+Benchmark Strategy
+------------------
+
+aurora-lint is benchmarked on two axes:
+
+1. **Juliet Test Suite** (NIST) — 54,484 C (``.c``) test files across 118 CWE
+   directories, with ground truth (OMITBAD/OMITGOOD sections). Measures TP
+   rate, FP rate, and per-CWE coverage.
+
+2. **Real-World Open-Source Projects** — the codebases pinned in
+   ``data/benchmark_repos.json`` (README.md's Benchmark Highlights table names
+   the current set), analyzed by aurora-lint and, for comparison, by cppcheck
+   and clang-tidy. The tools' own output carries no ground truth — it measures
+   violation counts, rule distribution, and cross-tool agreement; a separate
+   adjudicated ground-truth oracle covers precision/recall (see below).
+
+**Why both**:
+
+- **Juliet** provides precision metrics (TP/FP) but is synthetic single-file code
+- **Real-world** tests scalability, noise levels, and cross-file analysis on production code
+- Rule improvements are validated on Juliet for TP/FP impact, then verified on
+  real-world for noise reduction
+
+**Benchmark cadence**:
+
+- **After every significant rule change**: Juliet benchmark (``python -m bench juliet``;
+  a dated run time is in :doc:`reproducing-published-numbers`)
+- **After version milestones**: Full real-world benchmark (``python -m bench
+  realworld-run``, every pinned codebase; ``--tool`` adds cppcheck/clang-tidy)
+- **cppcheck/clang-tidy results are stable** across aurora-lint changes — run once and cache
+
+Unit Tests
+----------
+
+Each CERT C rule has dedicated test cases written as C source files organized
+under ``src/rules/cert_c/<CATEGORY>/<RULE-ID>/tests/``:
+
+::
+
+    src/rules/cert_c/SIG/SIG01-C/tests/
+      fail/                          # C files that SHOULD trigger violations
+        testcases_signal_restart_assumption.c
+        testcases_concurrent_signals.c
+        ...
+      pass/                          # C files that should NOT trigger violations
+        testcases_proper_signal_handling.c
+        ...
+
+**Coverage**: every rule with fixtures has three tiers — ``fail/``
+(must-detect), ``pass/`` (must-not-detect) and ``expected_fail/`` (known
+limitations). Each fixture generates one Rust test per preset (see below);
+all pass, and the ``expected_fail`` tier plus fixtures for rules that are
+tracked but not implemented are ``#[ignore]``\ d. The counts change with
+nearly every rule fix, so they are not typed here:
+``python3 scripts/fixture_provenance.py`` prints them per tier for the
+checkout you have.
+
+**Settings**: every policy and environment option (:doc:`options`) is
+validated like rule behavior. Every fixture runs under both the ``default``
+and the ``strict`` preset; the ``strict`` run's test name ends in
+``__strict``, and ``docs/test-summary.md`` tabulates the ``default`` run.
+A fixture runs under the ``pedantic`` preset only when its ``Expect:`` line
+names ``pedantic``, since the preset matrix covers only the rules whose
+verdict a preset changes; that run's name ends in ``__pedantic``.
+The directory's expectation holds under both presets unless the fixture's
+leading comment overrides it per preset, and a ``Settings:`` line applies
+option overrides on top of each preset:
+
+.. code-block:: c
+
+    /*
+     * Expect: default=clean strict=violation
+     * Settings: free_null_is_noop=false
+     */
+
+A rule that honors an option carries at least one fixture whose outcome
+depends on it, so each setting is exercised in both directions. CI runs the
+whole suite, so both presets are covered there.
+
+**Where and how often**: by itself, a run that expects a violation passes on
+any finding, on any line. A fail fixture can say more, so it cannot pass on
+a finding that names some other construct, or on duplicates of the one it
+should name (ADR-0005). An ``Expect: here`` comment trailing a line of code
+requires a finding on that line, and ``count=N`` in the header requires
+exactly N findings:
+
+.. code-block:: c
+
+    /*
+     * Expect: count=1
+     */
+    void f(size_t n, ...) {
+      va_list ap;
+      va_start(ap, n);
+      unsigned char c = va_arg(ap, unsigned char); /* Expect: here */
+      va_end(ap);
+    }
+
+``count=N`` goes on the same ``Expect:`` line as any per-preset entries
+(``Expect: default=clean strict=violation count=2``). Both forms apply to
+every run that expects a violation; a run that expects none already requires
+no finding anywhere. A fixture may mark several lines. In a macro definition,
+the marker goes before the continuation backslash. A comment that opens with
+the word ``expect``, in any case and spacing and after any ``*``, ``/`` or
+``!``, is taken for a marker, and the build fails on:
+
+- a marker spelled any other way than ``/* Expect: here */`` or
+  ``// Expect: here``, or a block comment that doesn't close on its line;
+- a second marker on one line;
+- a marker on a line with no code, or on a line that a ``//`` comment ending
+  in a backslash continues onto;
+- any other word after a trailing ``Expect:``;
+- a marker or count in a fixture where no run expects a violation;
+- ``count=0`` (say ``clean``).
+
+Text inside a string or character literal, including a string continued
+onto the next line with a backslash, is not a comment, so a marker there
+marks nothing. A ``'`` in a number (``1'000``) or with no closing quote
+(``#error don't``) starts no literal. Each marker is read from the line it trails, so it moves
+with its code when the fixture is edited.
+
+Tests are auto-generated into Rust test functions from ``.c`` files — no embedded
+``#[cfg(test)]`` modules in rule implementation files. Run tests with:
+
+::
+
+    # All tests
+    cargo test
+
+    # Tests for a specific rule
+    cargo test --lib -- generated_tests::test_sig01_c_
+
+    # Tests for a category
+    cargo test --lib -- generated_tests::test_mem
+
+The Benchmark Harness (Python)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``bench/`` has its own tests, under ``bench/tests/``, run with the standard
+library's ``unittest``:
+
+::
+
+    # All bench tests
+    python3 -m unittest discover -s . -t .
+
+    # One module
+    python3 -m unittest bench.tests.test_project_relpath -v
+
+    # Strict: fail on a leaked file handle (what CI runs)
+    python3 -W error::ResourceWarning -m unittest discover -s . -t .
+
+**No test dependency, deliberately.** Every module under ``bench/`` imports
+only the standard library, so the benchmark harness runs on a bare Python.
+Adding ``pytest`` would make it the repo's first Python dependency and put
+``pip install`` in front of running the tests, which is the same fresh-clone
+promise ``bench/`` exists to keep. The cost is ``unittest``'s ergonomics: no
+bare ``assert`` and no ``parametrize`` decorator, so table-driven cases use a
+``CASES`` list with ``subTest``.
+
+What is covered is the subset a stranger needs in order to trust
+``python -m bench`` against their own codebase — the pure, silent-by-
+construction pieces where running the tool proves nothing:
+
+- ``BenchDB.project_relpath`` — absolute scan path to the portable form
+  ``ground_truth`` is keyed on. Its defect was invisible to every metric,
+  because findings and labels normalize through the same function.
+- ``corpus.in_scope`` and its glob translation — ``*`` must not cross ``/``
+  and ``**`` must. This predicate has a second copy in ``benchmarking_db``
+  that the two must agree on, and the shared one had a real denominator bug
+  from inheriting ``fnmatch``.
+- ``render_docs.replace_between`` — the marker-bounded rewrite that edits
+  ``README.md`` in place. The boundary is the contract.
+- ``ingest_realworld_run``'s project scoping — that a run records only the
+  projects its invocation scanned, and not a leftover export from an earlier
+  one at the same commit.
+
+``benchmarking_db`` has a much larger suite over some of the same shapes. It
+is the right model but is not importable from here and must not become a
+dependency.
+
+Test cases are derived from patterns documented in the
+`SEI CERT C Coding Standard <https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard>`_
+(formerly hosted on a Confluence wiki at wiki.sei.cmu.edu; the standard
+migrated to a static site in 2026 -- ``scripts/scrape_cert_wiki.py`` reads
+its page-data JSON API directly rather than scraping rendered HTML).
+Each rule's page provides:
+
+- **Non-compliant code examples**: patterns that violate the rule
+- **Compliant solutions**: corrected versions of the same patterns
+- **Risk assessment**: severity, likelihood, and remediation cost
+
+Test cases map these directly:
+
+- ``fail/`` cases encode non-compliant patterns (expected violations)
+- ``pass/`` cases encode compliant solutions (expected clean)
+
+Fixture Provenance
+~~~~~~~~~~~~~~~~~~
+
+Not every fixture carries the same evidentiary weight, and a raw pass/fail
+count hides the difference. Each fixture declares its origin on a ``Source:``
+line in its header comment, and ``python3 scripts/fixture_provenance.py``
+tabulates the declarations by tier (``fail/``, ``pass/``,
+``expected_fail/``) into three columns — wiki-derived, locally authored and
+undeclared — and names how many rules have no wiki-derived fixture at all.
+Run it rather than trusting a copy of its output: the split moves every time
+a fixture lands.
+
+**Wiki-derived** fixtures come from the CERT C standard's own compliant and
+non-compliant code examples. They are third-party evidence: SEI wrote them
+against the rule text with no knowledge of aurora-lint, so a rule agreeing with them
+is a conformance result rather than a self-consistency check. Almost every
+rule with fixtures has at least one; the few without are regression-tested
+only.
+
+**Locally authored** fixtures were written in this repo, almost all of them
+to pin a specific defect found in real code or to lock in a false-positive
+fix. They are regression evidence and nothing more — we chose both the input
+and the expected answer, so they cannot corroborate that aurora-lint reads the
+standard correctly.
+
+**Undeclared** fixtures simply predate the header convention. Every one
+inspected is locally authored (the ``BRULE-*`` JPL rules, which have no CERT
+wiki page at all, and several ``WIN*`` rules), but they are counted
+separately rather than assumed.
+
+Regenerate with ``python3 scripts/fixture_provenance.py --containment``.
+
+.. warning::
+
+   The split above is what each fixture *declares*. A wiki example lightly
+   edited to compile is still wiki-derived; one rewritten until it matched
+   what the checker happens to look for is not, and no header can tell those
+   apart. ``scripts/audit_wiki_fixture_staleness.py`` is the independent
+   check: it re-fetches each rule's current page and measures what fraction
+   of a wiki code block's lines still appear in the fixture claiming to
+   derive from it, and ``scripts/fixture_provenance.py --containment``
+   reports the distribution from its last run
+   (``data/wiki_fixture_staleness.json``). The large majority reproduce the
+   current wiki block line-for-line, so the tier is overwhelmingly genuine
+   extraction, not paraphrase. The low-containment remainder — substantially
+   edited, mostly rewritten, or with no overlap against the current page —
+   are the ones where only a human can say whether the fixture drifted, the
+   wiki page changed under it, or it was never a faithful extraction.
+
+What the Fixture Corpus Does and Does Not Measure
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The corpus is a **conformance and regression gate, not a benchmark.** It is
+never reported alongside Juliet or the real-world oracle: those measure
+precision against labels aurora-lint did not choose, while most of this corpus is
+labeled by the same people who wrote the analyzer.
+
+Scoring the corpus settles how much drift that gate has actually absorbed.
+``cargo test`` runs on every push (``.github/workflows/ci.yml``), so a rule
+change that breaks any fixture — its own or another rule's — cannot merge:
+**no rule fails its own fixtures**, and that is a property of
+the gate, not evidence about the rules.
+
+**Every fixture is tested under the context the analyzer really builds.**
+Each test calls ``rule.check()`` directly, but first it builds that call's
+context the way a scan does: ``prescan::prescan_single_file`` (the file-list
+prescan behind ``-d``, applied to that fixture alone), then
+``analyze::build_file_analysis`` for CFGs and value ranges, which is the call
+``analyze_one_file`` makes. Neither is a test-only reimplementation; both are
+the scan's own code.
+
+This was not always so. The context used to be opt-in behind a
+``// sqc-test: prescan`` marker that 86 fixtures carried, and every
+other fixture was checked with no project context, no CFGs and no value
+ranges at all — an analysis strictly weaker than any invocation of the
+shipped tool, so a green result under it said nothing about what a real scan
+does. Removing the gate cost 62 fixtures their green, each one confirmed
+against the release binary, which agreed with the context-built result every
+time: the harness was right and the old pass was the artifact.
+
+Those 62 are now in ``expected_fail/``, and each header records which
+limitation it sits behind. 56 were a single cause — the provenance gate
+INT30-C, INT31-C and INT32-C share returned "risky" whenever
+``function_summaries`` was empty, so those fixtures were reported without the
+provenance analysis ever running. That fail-open is gone and the gate runs in
+every configuration; of the 56, 46 are the gate treating a function parameter
+as bounded local state and 10 are a definite overflow no value-based channel
+currently proves. Of the remaining six, one (MEM31-C's
+``safe_wrapper_functions``) was a real false positive and is fixed rather than
+reclassified: the rule now understands a free through a ``void **`` wrapper's
+pointee. Five are genuine false negatives that the weaker analysis papered
+over — ARR30-C ×2 and INT33-C, where the out-of-bounds index or zero divisor
+is a property of a loop rather than of the expression, and EXP33-C and
+MEM30-C, where a callee's summary reports a conditional write or a
+conditional free with no MAY/MUST distinction to say so.
+
+Restoring detection for any of these groups changes what a shipped rule
+reports, so each is tracked as its own benchmarked work rather than folded
+into a harness change.
+
+One consequence worth knowing about: with real value ranges in play, a
+fixture that nests 2,000 ``if`` statements (MEM30-C's stack-safety case)
+recurses deep enough to overflow a default test thread in an unoptimized
+build. ``.cargo/config.toml`` raises ``RUST_MIN_STACK`` repo-wide so the
+fixture keeps testing the depth it was written for.
+
+A separate and earlier claim on this page — that scanning the corpus with
+the shipped binary finds 17 violations on 11 must-not-detect fixtures — was
+an artifact of invoking ``aurora-lint`` with no ``-d``. A scan with no ``-d`` builds
+no context for its own target: a single-file target sees sibling ``.h``
+declarations only, a directory target sees nothing. Pass ``-d``, even a
+directory holding just that one fixture, and all 17 go to zero. Every
+benchmark invocation passes ``-d``, so no reported number was affected; the
+exposure is a first-touch ``aurora-lint foo.c`` run, tracked separately.
+
+One limit of the harness does remain, and the green result does not cover it.
+
+**Cross-rule interference is untested.** A fixture is only ever checked
+against its owning rule, so a ``pass/`` fixture for one rule is never
+evidence about any other. Running the full rule set over the ``pass/`` tier
+produced thousands of findings from other rules, on most of the fixtures,
+when last measured, concentrated in broad recommendations (EXP12-C, DCL15-C,
+ERR33-C). **That volume is not a false-positive count**: a fixture written to be compliant
+with EXP34-C has no obligation to be clean under DCL15-C, and most of these
+are legitimate. It is reported only to show the tier's blind spot has real
+volume behind it.
+
+Scoring the ``pass/`` tier with the full rule set also surfaced a
+performance defect the per-rule harness cannot see, since a fixture is only
+ever run against its owning rule. MEM30-C's own 2,000-level ``pass/``
+fixture finishes its MEM30-C unit test in milliseconds, but CON40-C,
+EXP33-C and MSC13-C each cost cubic time in its block-nesting depth, and a
+parallel full-rule-set scan of the directory holding it aborted outright on
+a worker thread's stack. The cause of the cubic term is that
+``Node::parent()`` recovers a parent by descending from the tree root, so an
+ancestor query per node costs O(depth²); the three rules now prune, carry a
+scope chain, or precompute byte ranges instead, and worker threads get an
+explicit stack. That file went from 120 s+, 120 s+ and 93 s to 40 ms, 1.8 s
+and 1.2 s, and the directory scan completes. Roughly twenty other rules
+still sit in the 0.3–3 s band on it for the same reason, which is tracked
+separately.
+
+NIST Juliet Test Suite Benchmarking
+-----------------------------------
+
+The `NIST Juliet Test Suite v1.3
+<https://samate.nist.gov/SARD/test-suites/112>`_ is a collection of C and C++
+test files covering 118 CWE categories — 54,484 of them C (``.c``), the only
+ones aurora-lint scans — each containing known-bad (``OMITGOOD``) and
+known-good (``OMITBAD``) code sections. This provides ground truth for measuring
+true positive and false positive rates.
+
+How Juliet Benchmarking Works
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+1. **CWE-matched manifests**: For each CWE, a TOML manifest enables only the
+   CERT C rules that map to that CWE (e.g., CWE-476 enables EXP34-C). This
+   eliminates noise from unrelated rules.
+
+2. **Per-CWE analysis**: aurora-lint scans each CWE's test cases with its matched manifest.
+   Violations in ``bad`` functions are true positives; violations in ``good``
+   functions are false positives.
+
+3. **Parallel execution**: CWEs are processed in parallel via Python's
+   ``ProcessPoolExecutor``.
+
+4. **Results stored in SQLite**: All results go to ``data/benchmarks.db`` with
+   per-CWE metrics, per-rule breakdowns, and cross-version comparison support.
+
+Running the benchmark:
+
+::
+
+    # Via CLI
+    python -m bench juliet          # Fast mode (CWE-matched rules only)
+    python -m bench juliet --full   # Full suite (all rules on all CWEs)
+
+    # Query results
+    python -m bench runs            # List all benchmark runs
+    python -m bench status RUN_ID   # Check a running benchmark
+    python -m bench compare v1 v2   # Compare two runs
+
+Results at v0.4.116 (historical)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This is a dated snapshot, not the current figure. Current Juliet figures are in README.md's Benchmark
+Highlights table, and :doc:`reproducing-published-numbers` names the run and
+commit each published figure comes from. The fast-mode scanned set has grown
+since this snapshot, so its CWE counts are not comparable with today's.
+
+===============================  ==========
+Metric                           Value
+===============================  ==========
+**CWEs Scanned**                 74
+**True Positives**               21,770
+**False Positives**              4,220
+**TP Rate (Precision)**          83.8%
+**Per-file Detection Rate**      38.2%
+**100% Precision CWEs**          48
+**FP Reduction from Baseline**   -99.5%
+===============================  ==========
+
+At v0.4.116, aurora-lint had 100% precision (zero false positives) on 48 CWEs including:
+
+- CWE-78 (OS command injection)
+- CWE-190 (Integer overflow)
+- CWE-481 (Assigning instead of comparing)
+- CWE-467 (sizeof on pointer type)
+- CWE-252 (Unchecked return value)
+- CWE-338 (Weak PRNG)
+- CWE-590 (Free memory not on heap)
+- CWE-761 (Free not at start of buffer)
+- CWE-690 (NULL dereference from return)
+- CWE-789 (Uncontrolled memory allocation)
+
+High-precision (>80% TP rate) on several additional CWEs including CWE-191
+(98.5%), CWE-127 (81.5%), and CWE-675 (93.0%).
+
+See :doc:`juliet-history` for per-CWE tier breakdowns, or query
+``data/benchmarks.db``/``sqc_bench`` Postgres (``get_cwe_detail``) for the
+full current per-CWE data.
+
+FP Reduction History
+~~~~~~~~~~~~~~~~~~~~
+
+The round-by-round false-positive reduction history, from the baseline to
+v0.4.116 and beyond, is in :doc:`juliet-history`.
+
+Real-World Code Analysis
+------------------------
+
+aurora-lint is benchmarked on the real-world open-source C codebases pinned in
+``data/benchmark_repos.json``, alongside cppcheck and clang-tidy. The table
+below is a historical snapshot from when the corpus was seven codebases (run
+#118); the corpus has grown since, and README.md's Benchmark Highlights table
+names the current set and its figures:
+
+===========  =========  =============  ============  ============  ============
+Project      C Files    LOC            aurora-lint   cppcheck      clang-tidy
+===========  =========  =============  ============  ============  ============
+libcrc       9          1,034          391           40            2
+lua          33         31,637         3,068         49            107
+raylib       17         56,107         5,213         1,060         469
+mosquitto    120        39,368         11,225        277           44
+curl         222        186,220        16,085        556           116
+sqlite       125        218,733        31,319        503           137
+hostap       430        589,724        37,432        1,761         1,710
+**Total**    **956**    **1,122,823**  **104,733**   **4,246**     **2,585**
+===========  =========  =============  ============  ============  ============
+
+*Data from aurora-lint v0.4.120, cppcheck 2.10, clang-tidy 21.1.6 (run #118).*
+
+**Why aurora-lint reports more violations**: aurora-lint tracks |rules_total| CERT C rules, |rules_enabled| enabled by default (both
+advisory and mandatory) while cppcheck and clang-tidy implement ~20 checks each.
+The difference reflects rule coverage breadth, not false positive rate.
+
+**Measured precision/recall**: 6.2% precision / 91.7% recall against the
+adjudicated ground-truth oracle, measured on the maintainers' run #118 —
+the empirical floor across those 7 projects at the time, not a raw violation-count
+comparison, from a run superseded many times since. Current figures are in
+README.md's Benchmark Highlights table; the full version history and
+per-rule breakdowns live in ``sqc_bench`` Postgres, queryable via
+``benchmarking_db``'s MCP servers or, on the benchmark host, its CLI (see
+that repo's README) -- not in a hand-maintained file here
+(``REALWORLD_RESULTS.md``, which carried this role until it was retired
+2026-09-03). Oracle methodology, including the DCL31-C worked example of
+why a per-rule 0.0% can be a corpus artifact rather than a rule defect, is
+in `Rule-suite coverage`_ below.
+
+Known Per-Rule Corpus Caveats
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**sqlite / DCL41-C.** Every historical DCL41-C label on sqlite sat in
+``ext/fts5/fts5_tcl.c`` (Tcl test-binding glue, not shipped library code) and
+all were adjudicated false positive: sqc's pre-fix switch-statement scan
+didn't expand the file's ``CASE(i,str)`` macro, so it never saw the real
+``case`` label hidden inside and misread every invocation as a declaration
+before the first visible case. The parser bug itself was
+fixed in ``fea7a1a1`` — confirmed there to take that file's DCL41-C findings
+from 21 to 0 — so a current scan produces none of these findings at all,
+right or wrong; the only live question is what a *pre-fix* published DCL41-C
+figure for sqlite means. Since the file is test-only glue and every label on
+it was a parser artifact rather than a real declaration-placement violation,
+excluding it (as sqlite's corpus scope does — see ``benchmarking_db``'s
+``docs/corpus-scope.md``) discards zero true-positive evidence: sqlite's
+DCL41-C denominator is properly reported as N/A ("no in-scope labels"), not
+0%, for any run predating the fix.
+
+This is the general shape to watch for: a per-rule 0% (or N/A) on one corpus
+can be an artifact of one file, one macro, or one parser gap rather than a
+statement about the rule's real-world precision — check the file-level
+adjudication reasons in ``ground_truth`` before citing a rule's corpus figure
+as representative.
+
+Cross-Tool Comparison Methodology
+----------------------------------
+
+Apples-to-Apples Concerns
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+1. **Rule coverage**: cppcheck/clang-tidy implement ~20 checks each vs. aurora-lint's
+   |rules_enabled| enabled rules. Raw violation counts are not directly comparable.
+
+2. **Translation unit scope**: Use consistent scope (cross-file ``-d`` flag or
+   single-file) when comparing.
+
+3. **Preprocessor handling**: cppcheck evaluates all ``#ifdef`` configs;
+   clang-tidy sees one; aurora-lint analyzes all visible branches. For Juliet, compile
+   with ``-DOMITBAD``/``-DOMITGOOD`` when needed.
+
+4. **Standard library awareness**: cppcheck/clang-tidy have built-in stdlib
+   knowledge. aurora-lint uses ``std_functions.rs`` database.
+
+5. **Severity mapping**: cppcheck ``error/warning/style``, clang-tidy
+   ``error/warning``, aurora-lint ``Low/Medium/High/Critical``. Map conservatively.
+
+Recommended Comparison Workflow
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+1. Pick a representative codebase or CWE subset
+2. Run all tools with consistent flags
+3. Normalize to ``(file, line, rule/check-id)`` tuples
+4. Classify as TP/FP using Juliet ground truth
+5. Compute precision, recall, F1 per tool
+6. Restrict to overlapping rules for fair comparison
+
+Published CERT-C Results
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+We did not find any published CERT-C violation rates per KLOC on production
+open-source code. Valid comparison strategies:
+
+1. aurora-lint vs. cppcheck vs. clang-tidy on same codebase (done for the
+   cppcheck/clang-tidy baseline corpora; see :doc:`tool-comparison`)
+2. aurora-lint on JasPer with reference to David Svoboda, *SCALe Analysis of
+   JasPer Codebase* (SEI, April 2015), a CERT C audit of JasPer and the only
+   published audit of a named codebase against CERT C that we found
+3. aurora-lint TP rate vs. TrustInSoft's synthetic CERT-C benchmark as upper bound
+
+For academic context on tool effectiveness, FP rates, and the Juliet benchmark
+methodology, see :doc:`bibliography`.
+
+Test Infrastructure Details
+---------------------------
+
+Build-Time Test Generation
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+1. **Test files**: ``.c`` files in ``src/rules/cert_c/CATEGORY/RULE-ID/tests/{fail,pass,expected_fail}/``
+2. **Build-time generation**: ``build.rs`` walks the test directories and generates
+   Rust test functions in ``$OUT_DIR/integration_tests.rs``
+3. **Test harness**: ``src/rules/cert_c/integration.rs`` includes the generated
+   tests, records results, and produces ``docs/test-summary.md``
+4. **Test logic**:
+
+   - ``fail/`` tests: parse the C file, run the rule, assert violations > 0
+   - ``pass/`` tests: parse the C file, run the rule, assert violations == 0
+   - ``expected_fail/`` tests: assert like ``fail/`` tests
+
+5. **Ignored tests**: if ``RULE-ID.toml`` has ``enabled = false`` (the rule
+   is not implemented), its tests are generated with ``#[ignore]``, and so
+   is every ``expected_fail/`` test
+
+Test File Naming Conventions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+=================  ==================  ====================================
+Prefix             Origin              Description
+=================  ==================  ====================================
+``wiki_*``         CERT wiki examples  Directly from CERT C Coding Standard
+``testcases_*``    AI-generated        Broader pattern coverage
+Other              Mixed               Mostly regression fixtures named for
+                                       the defect they pin
+=================  ==================  ====================================
+
+The filename prefix is a naming habit, not the provenance record: the
+``Source:`` header line is, and ``scripts/fixture_provenance.py`` reads that
+(see Fixture Provenance above).
+
+Test Distribution by Rule Size
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Fixture counts per rule are uneven. Most wiki-sourced rules carry a handful
+of fixtures, one or two per compliant and non-compliant example on the
+rule's page; the rules with the largest suites (MEM31-C, ARR30-C, MEM30-C,
+EXP33-C and the like) carry around a hundred or more, nearly all of them
+locally authored regression fixtures pinning defects found in real code.
+For the per-rule counts in the current checkout::
+
+    ls src/rules/cert_c/*/*/tests/*/*.c | awk -F/ '{print $5}' | sort | uniq -c | sort -rn
+
+``python3 scripts/fixture_provenance.py --by-rule --json`` gives each rule's
+wiki / local / undeclared split, and without ``--json`` lists the rules with
+no wiki-derived fixture at all.
+
+Malformed and Non-Compiling Input
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+aurora-lint analyses code that does not have to compile, so a missing quote
+or ``*/`` can move string and comment text, UTF-8 included, into positions no
+valid C produces. ``tests/robustness.rs`` scans generated malformed input
+with the real binary and every rule enabled, and fails on any crash,
+step-limit or time-limit failure, and on any exit but 0 or 1 (or 3, when the
+only thing incomplete is a file the input guard was meant to refuse):
+
+- **A fixed table**: unterminated strings, character literals and comments;
+  unbalanced brackets; truncation mid-token, mid-directive and inside a
+  UTF-8 sequence; BOM, CRLF, lone CR and mixed line endings; NUL bytes and
+  invalid UTF-8; very long lines and identifiers; damaged preprocessor
+  directives; stray UTF-8 (combining marks, emoji, bidi and zero-width
+  controls) in identifier, operator, macro-argument, directive, string and
+  comment positions; paths with spaces and non-ASCII names; binary blobs
+  named ``.c``, which must be refused with a reason.
+- **Seeded mutants** of the rules' own fixtures: a quote, ``*/`` or bracket
+  deleted, UTF-8 spliced at a character offset, a cut at a byte offset.
+  ``AURORA_LINT_ROBUSTNESS_SEED`` and ``AURORA_LINT_ROBUSTNESS_MUTANTS``
+  choose the seed and how many; a failure prints both, and keeps every
+  failing input with the recipe that built it under
+  ``target/robustness-failures/``.
+- **Every rule fixture under every rule**, in one scan: a rule's own fixture
+  tests run that rule alone, so they never show one rule crashing on another
+  rule's fixtures, nor what only a many-file scan reaches.
+- **Long chains**: a 1000-term ``1 + 1 + ...``, a 1000-branch ``else if``
+  ladder and a chain of identifiers. A rule that evaluates a whole subtree,
+  or climbs to an ancestor, once per operator is cubic in the length of such
+  a chain, and the 1000-term expression once ran past the watchdog.
+- **Deep nesting**: braces, parentheses, operator chains and ``else if``
+  ladders from a thousand to a million deep. A thousand is analysed, and so
+  is each shape just under ``--max-nesting-depth``, by every rule within its
+  time limit; past the limit the file must be refused with its depth, since
+  a stack overflow in a recursive walk aborts the whole process. The operator
+  chain just under the limit is a file-scope initializer: the same chain in a
+  function body is still superlinear under several rules and is not yet a
+  case.
+
+The first two run in every ``cargo test``. The third, ten minutes or more
+in a debug build, and the fourth and fifth run in CI's release robustness
+job, with a larger mutant pass. Only that run scans the fixtures written for
+each fixed crash under every rule, so it, not the default ``cargo test``, is
+what catches those crashes coming back. A sixth, ignored test generates
+inputs too large for CI (a file over the size limit, 200 MiB of random
+bytes, a 16 MiB line, macro chains up to a million definitions long); run it
+by hand with ``cargo test --release --test robustness -- --ignored
+--show-output`` (without ``--show-output`` a passing test prints nothing).
+Every rule walks the whole of a file, so a scan of one file is linear in its
+size and an 8 MiB file takes minutes. Each large case is therefore given time in
+proportion to its size, with a margin over the slowest machine measured,
+and prints its time and peak memory. What would make a large file slow
+beyond that is a step that grows faster than the file, and the size series
+catch it: CI times generated inputs at four sizes, each under the rule that
+exercises it, and both shapes of the large cases under every rule from
+64 KiB to 512 KiB, and fails a series whose time against size has a
+log-log slope above 1.3. The same every-rule series from 256 KiB to 2 MiB
+runs by hand with the large cases.
+``AURORA_LINT_ROBUSTNESS_BIN`` points the suite at another build, such as a
+Windows ``aurora-lint.exe`` run through WSL on cases written under
+``/mnt/c``.
+
+These sets raise confidence and catch regressions. They cannot show that no
+input crashes or hangs a scan; what slips through is contained and reported
+as an incomplete scan (see :doc:`error-handling`).
+
+What Tests Do NOT Cover
+~~~~~~~~~~~~~~~~~~~~~~~
+
+- **Resolution across files**: every fixture is a single file, and its test
+  builds prescan context, CFGs and value ranges from that file alone (see
+  "Every fixture is tested under the context the analyzer really builds"
+  above), so a callee, macro or type defined in *another* file is never
+  exercised by the fixture corpus
+- **CLI flags and suppression files** are not covered by the fixture corpus;
+  ``tests/cli_integration.rs`` tests them, with its suppression fixtures
+  under ``tests/fixtures/cli/``
+
+Coverage Gate
+~~~~~~~~~~~~~
+
+Line coverage is enforced at **75%** in GitHub Actions CI
+(``scripts/coverage-gate.sh 75``; it is not a pre-commit hook, so run it by
+hand before a tag push). The script:
+
+- Runs tests via ``cargo llvm-cov``
+- Produces ``lcov.info`` (publishable as CI artifact)
+- Excludes from threshold: ``ui/`` (GUI), ``main.rs`` (CLI entry),
+  ``integration.rs`` (test harness), ``progress.rs`` (terminal I/O),
+  ``export/`` (JSON/SARIF output), ``files/`` (git/directory I/O),
+  ``manifest/`` (TOML config loading)
+- Fails with clear output showing current coverage and largest uncovered files
+
+Embedded Rust Unit Tests
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Analysis modules under ``src/analyze/`` carry ``#[cfg(test)]`` unit tests;
+rule implementation files carry none (their tests are the fixtures).
+
+Known Rule Implementation Gaps
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The following rule-level analysis limitations were discovered during test coverage
+work. These are cases where valid C patterns should pass/fail but the rule
+implementation cannot detect them correctly.
+
+- **INT00-C**: ``find_type_in_source()`` only matches ``TYPE VAR;`` or
+  ``TYPE VAR,``, not ``TYPE VAR = expr;``. Variables with initializers get type
+  "unknown", so format specifier checks cannot validate ``%ld`` with
+  ``long x = 42;``.
+
+- **INT08-C**: Positive-only. A violation is reported only where ``const_eval``
+  can bound every operand and prove the promoted result leaves ``int``; an
+  operand it cannot resolve (a struct field, a subscript, a call result) yields
+  no finding rather than an unproven one. Genuine narrow-type overflow behind
+  an unresolvable operand is therefore missed.
+
+- **INT34-C**: ``is_likely_unsigned()`` parameter declaration check doesn't
+  traverse tree-sitter's function parameter hierarchy. Also,
+  ``checks_shift_bounds()`` doesn't handle reversed comparison form
+  ``N <= var`` (only ``var >= N``).
+
+- **POS50-C**: ``is_declared_in_function()`` doesn't distinguish ``static`` from
+  automatic storage. Static locals passed to ``pthread_create()`` produce FPs.
+
+- **EXP40-C**: ``is_const_qualified()`` returns false for identifiers — cannot
+  determine if a variable was declared ``const`` without a symbol table.
+
+
+Benchmark Caveats And Rule-Suite Coverage
+-----------------------------------------
+
+Moved out of ``README.md`` (2026-09-03), which should say how well aurora-lint works
+rather than how the measurement is constructed. These are the caveats a
+maintainer or a reviewer needs; see :doc:`tool-comparison` for how aurora-lint scores
+against other analysers.
+
+Numbers below are **not** auto-refreshed with README's highlights table, and
+that is deliberate: a caveat whose job is to say what a figure does not cover
+can do that without restating the figure. An earlier version of these notes
+carried the run's version, its unlabeled percentage and the recall figure, and
+when the table was refreshed onto the canonical basis those three did not move
+with it — the table said 93.9% recall and 89.8% coverage while the prose eight
+lines below still said 93.7% and 11.8%. Treat any number here as illustrative
+of a *gap*, and ``python -m bench compare`` or ``sqc_bench`` Postgres as the
+current measurement.
+
+Published figures are pinned to the last validly-adjudicated run. Rule-logic
+commits landed since that run are not reflected, and a current figure requires
+delta-adjudicating the newer unlabeled findings first — the protocol for that
+lives in the repository's agent instructions, not here, because it is a
+maintainer workflow rather than a user-facing one.
+
+Juliet TP rate is not the ceiling signal — the flaw-hit rate is
+---------------------------------------------------------------
+
+**Juliet TP Rate** above is the share of aurora-lint's Juliet findings that are true
+positives. It says how clean the output is, not how much of the suite's
+planted defect set aurora-lint actually locates. That second question is the
+**flaw-hit rate** — the fraction of Juliet's known flaw lines aurora-lint lands a
+finding on — and it moves independently: as of v0.4.321 it was 12.9%
+(17,100 of 132,406 flaw lines), essentially flat for weeks while the TP
+rate above was moving. Quoting only the TP rate overstates the tool; this
+paragraph is not auto-refreshed with the table above (deliberately, per the
+lesson in the note above this section — see ``python -m bench compare`` or
+``sqc_bench`` Postgres for the current figure), so treat the number here as
+illustrative of the *gap*, not as a current measurement.
+
+Per-file detection rate (in the table above) sits between the two: aurora-lint
+flags something in over a third of flawed files, but lands on the specific
+planted flaw line in roughly an eighth of cases. When judging headroom, the
+flaw-hit rate is the honest signal to watch for movement, not the TP rate.
+
+Juliet also exercises only part of the rule suite — in the run #226
+measurement below, 127 rules had any Juliet true positive. See "Rule-suite coverage"
+below for what that leaves unmeasured, and
+:doc:`juliet-history` for the full
+round-by-round version history behind the table above.
+
+Rule-suite coverage
+-------------------
+
+Precision and recall above are aggregates over the rules that actually fire
+on the benchmark corpora. They say nothing about the rest of the suite, and
+the rest of the suite is substantial (historical: run #226, 2026-09-02, nine
+projects; not refreshed, and only the *Implemented* row is today's count):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 62 38
+
+   * -
+     - Rules
+   * - Implemented
+     - |rules_total| (|rules_enabled| enabled by default)
+   * - Have true-positive evidence somewhere
+     - **186** — 127 from Juliet, 144 from real-world TP/FN labels
+   * - **No true-positive evidence anywhere**
+     - **125 (40%)**
+   * - · fire on the corpus, but have only ever produced FPs
+     - 65
+   * - · never fire on that run's nine projects at all
+     - 60
+
+A rule in that last group has never been shown to detect anything real —
+but that is usually a statement about the corpora, not about the rule. The
+nine projects of that run are mature, warning-clean C, which is the opposite
+population from aurora-lint's nominal use case (newer, in-progress, possibly
+non-compiling code wired into CI/CD early — aurora-lint needs no build system, which
+is the whole point). A rule whose defect cannot survive review in released
+software is structurally incapable of scoring a true positive there. The 60
+never-firing rules include ``WIN02-C`` and ``WIN30-C`` — Windows rules against
+Linux-only corpora, categorically inapplicable rather than broken (rule
+applicability is the user's lever, by design: manifest scoping and
+suppression exist so the user decides which rules apply to their code,
+rather than detection logic silently deciding for them).
+
+**Worked example of why a per-rule 0.0% is sometimes a corpus artifact, not
+a rule defect** : in a historical run, ``DCL31-C`` had hundreds of labeled
+findings and no TP — 0.0% precision. That figure measures aurora-lint's header
+reachability, not the rule's quality. ``mosquitto`` alone went from over a
+thousand ``DCL31-C`` findings with no ``-I`` to none with ``-I /usr/include``. The rule guards a genuine defect —
+under C89 an implicit declaration makes the compiler assume ``int f()``, so
+the return type is misread, no argument checking happens, and a returned
+pointer is truncated on LP64; C99 removed implicit declarations and C23
+makes them an error — on code this corpus does not contain. Quoting that
+number as a rule-quality measure is a category error.
+
+Do not read "header reachability" as "one more ``-I`` away", though. Bucketing
+that rule's labeled false positives by root cause found the ``mosquitto`` case
+to be the easy end of the range, not the typical one. The bulk of what
+survives is ``raylib``'s platform backends, which include their own headers
+correctly and need an SDK the benchmark node does not have and in the Win32
+case cannot have; adding ``-I /usr/include`` moves them barely at all. The
+rest is a short tail of genuine analyzer defects, each filed as its own task
+— JavaScript inside ``EM_ASM``/``EM_JS`` macro bodies parsed as C, a ``.c``
+file ``#include``\ d by another ``.c`` file not inheriting the includer's
+declarations, glibc prototypes guarded by ``__USE_POSIX`` and friends, and
+three declarator shapes we fail to read. So the figure is uninformative about
+the rule for two different reasons at once, and only the second is ours to
+fix.
+
+The material to close this gap already exists in the repo: the **must-detect**
+fixtures (``src/rules/cert_c/*/*/tests/fail/*.c``) and **must-not-detect**
+fixtures (``src/rules/cert_c/*/*/tests/pass/*.c``), labeled by construction and
+covering nearly every rule with detection logic.
+``scripts/fixture_provenance.py`` reports the current corpus split by tier and
+how many rules carry a fixture, so the counts are not transcribed here (they
+move with every added fixture). 121 of the 125
+unvalidated rules already have a must-detect fixture — only ``FLP01-C``,
+``MSC18-C``, ``MSC25-C`` and ``ENV04-C`` have none, and a fail fixture
+cannot pass for any of the four, for one of two reasons. ``MSC18-C``,
+``MSC25-C`` and ``ENV04-C`` have no detection logic at all — no ``.rs``
+file exists; see the "Tracked but not implemented" section of
+:doc:`configuration` for why they are unimplemented. ``FLP01-C`` does have
+one (``flp01_c.rs``), but CERT itself marks the rule "unenforceable"
+through automated analysis, and the implementation is a deliberate
+conservative stub whose ``check()`` unconditionally returns no violations
+— so it is not merely missing a fixture, it has nothing a fixture could
+trigger. A fixture is not the missing piece for any of the four.
+Today those fixtures run only as pass/fail unit tests and feed no measured
+metric, so a rule can be fully exercised by tests and still read as having
+no detection evidence.
+
+Note what that does *not* license. The corpus is a conformance and
+regression gate and is never reported alongside Juliet or the real-world
+oracle — see `What the Fixture Corpus Does and Does Not Measure`_ for the
+scoring result and for the two blind spots (harness context divergence and
+cross-rule interference) that the green suite does not cover. Only the
+wiki-derived tier is third-party evidence, and `Fixture Provenance`_ gives
+that split.
