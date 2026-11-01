@@ -93,7 +93,8 @@ environment that trusts only a declared library: small targets often link a
 reduced one, so a full ISO C library is not assumed. With no ``libc``
 declared, a pedantic scan trusts no library contract and says so on stderr,
 naming the key to declare and the enabled rules a project could disable
-instead (``--check-config`` warns the same way).
+instead (``--check-config`` warns the same way), and its SARIF settings
+record ``libc_declared: false``.
 
 The presets also differ on the data model (the integer widths, below) when
 none is declared. The default preset, the relaxed one, assumes the common
@@ -588,12 +589,36 @@ Supported CERT C Rules
 |rules_total| rules are tracked across 17 categories (API, ARR, CON, DCL, ENV,
 ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, and WIN); |rules_implemented|
 are implemented, and |rules_enabled| of those are enabled by default (the other
-|rules_withheld| are withheld because they misfire; see `Withheld until rewritten`_
-below). The remaining |rules_unimplemented| are tracked but not implemented;
-see `Tracked but not implemented`_ below.
+|rules_withheld| are withheld, most of them because they misfire; see `Withheld
+until rewritten`_ below for each one's reason). The remaining
+|rules_unimplemented| are tracked but not implemented; see `Tracked but not
+implemented`_ below.
 ``aurora-lint --list-rules`` lists every rule aurora-lint implements, with its
 default setting and severity (``--list-rules json`` for tooling). The rule
 source files are in ``src/rules/cert_c/``.
+
+CWE ruleset
+~~~~~~~~~~~
+
+A weakness that CERT C has no identifier for is checked by the CWE ruleset
+and reported under the weakness's own CWE id: ``CWE-327`` (a weak cipher
+such as DES, 3DES, RC2, RC4 or RC5 selected through Windows CryptoAPI or
+OpenSSL), ``CWE-272`` (a registry write under ``HKEY_LOCAL_MACHINE`` or
+``HKEY_CLASSES_ROOT``, which needs administrator rights), ``CWE-428`` (an
+unquoted ``CreateProcess*`` command path containing a space) and ``CWE-666``
+(socket calls out of order on one socket). These checks shipped under
+CERT-shaped ids before v0.7.0; `Removed rules`_ below maps each old id to its
+CWE.
+
+The default manifest enables them. A manifest configures one in a
+``[rules.cwe.<ID>]`` table, which takes the same keys as a CERT C rule's
+``[rules.cert_c.<ID>]`` table:
+
+.. code-block:: toml
+
+    [rules.cwe.CWE-428]
+    enabled = false
+    disabled_reason = "no Win32 process creation in this tree"
 
 .. _relaxed-onboarding:
 
@@ -659,6 +684,8 @@ removed from the tool, not disabled. A configuration written for an older
 release may still have a ``[rules.cert_c.<ID>]`` block for it. That
 configuration still loads: aurora-lint prints one warning naming the release
 that removed the rule, why, and which rules cover it, and ignores the block.
+The same warning is given, once per rule, when a ``--rules`` list or a
+suppression (in ``suppress.toml`` or an inline comment) names a removed rule.
 ``aurora-lint --list-rules`` lists every shipped rule, then every removed
 rule with its reason (``--list-rules json`` for tooling). The list is kept in
 ``rules_templates/removed-rules.toml``.

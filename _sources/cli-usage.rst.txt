@@ -645,6 +645,8 @@ repository; any other ``PATH``, or one outside a repository, exits with code
     # Also the C files changed since the merge base with origin/main
     aurora-lint /path/to/repo --diff-base origin/main
 
+``PATH`` must be the root of a git repository; any other path, including a
+directory outside every repository, is refused with exit status ``2``.
 ``--diff`` is for a working tree. A CI checkout has no uncommitted changes, so
 a pull-request job uses ``--diff-base`` with the target branch, which implies
 ``--diff``. The checkout needs that branch and the history back to the merge

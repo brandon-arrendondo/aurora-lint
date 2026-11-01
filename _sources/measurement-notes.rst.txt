@@ -3,8 +3,8 @@ Measurement Notes
 
 What a reader needs to compare figures across releases: why the v0.5.0
 baseline is a trend break rather than a gain, how the ERR33-C labels moved
-between oracle snapshots, what changed in how v0.6.0 is measured, and how the
-precision intervals are computed. The paper states the finding and cites this page at a pinned
+between oracle snapshots, what changed in how v0.6.0 and v0.7.0 are measured,
+and how the precision intervals are computed. The paper states the finding and cites this page at a pinned
 version for the detail.
 
 .. contents::
@@ -223,10 +223,16 @@ Juliet
   issue. The Juliet runs declare ``closed_program``, but in this release that
   option applies only to EXP33-C (:doc:`options`). Juliet's false positives
   rise accordingly. After v0.6.0 the declaration also closes caller sets for
-  the proofs about the value a caller passes, which clears part of them. The
-  checks that accept a caller because its body reads no untrusted input
-  (ENV03-C, ENV33-C, STR02-C and INT30-C to INT32-C) still credit only
-  ``static`` functions, so their share remains. On real-world code the same change is the intended reading,
+  the proofs about the value a caller passes, which clears part of them: a
+  value range, a buffer size or a non-null pointer every caller passes now
+  proves the parameter of a non-static function too, and INT30-C to INT32-C
+  count the value range every caller passes. ENV03-C, ENV33-C and STR02-C,
+  which accept a caller because its body reads no untrusted input, still
+  credit only ``static`` functions. So does the INT30-C to INT32-C test of
+  whether a parameter can receive untrusted or full-range input, which in
+  v0.7.0 judges each caller by what it passes at that position rather than by
+  whether any caller reads input. That share of the false positives remains.
+  On real-world code the same change is the intended reading,
   because exported and library functions do have callers the scan cannot see.
 
 Real-world
@@ -250,6 +256,66 @@ Real-world
 
 What changed in how v0.7.0 is measured
 ---------------------------------------
+
+The changes below alter *how* a figure is measured, so compare a v0.7.0
+figure with a v0.6.0 one only after accounting for them. The counts in this
+section come from the release's default-profile citation runs and v0.6.0's,
+scored on the same labels and the same corpus scope. Every codebase is
+pinned to the same commit in both.
+
+Real-world
+~~~~~~~~~~
+
+- **The scan runs in the pinned benchmark environment.** v0.7.0's runs of
+  record scan inside the declared container image, each codebase against its
+  own pinned header set (*The Benchmark Environment* in
+  :doc:`benchmark-setup`; ``docs/adr/0018``), and each run records that
+  environment and header tree. v0.6.0's ran natively on the benchmark node,
+  against its installed headers, and record neither. Findings that hinge on a
+  header move with that change: Ventoy, for one, is now scanned against a
+  Win32 header set.
+- **The manifests declare the target.** Every real-world manifest
+  (``conf/realworld/``) now declares ``libc`` and ``posix_version``, and
+  every one but Ventoy's also ``c_standard`` and ``char_signed``. Ventoy
+  declares ``posix_version = "none"``, since it is a Win32 program. In
+  v0.6.0 none of the four was declared, so these runs read under each
+  preset's assumption instead.
+- **Strict-profile runs of record.** v0.7.0 is the first release whose
+  citation runs include the strict profile, for both Juliet and real-world.
+  v0.6.0's are default-profile only, so a strict figure has no v0.6.0
+  counterpart to compare with.
+
+Juliet
+~~~~~~
+
+- **The dependency set is on the include path.** Juliet scans now pass
+  Juliet's pinned dependency set as ``-I`` and record it in the run's
+  environment. Juliet's settings also declare ``libc``, ``c_standard``,
+  ``posix_version`` and ``char_signed``. v0.6.0's Juliet runs did neither.
+
+The oracle
+~~~~~~~~~~
+
+- **Removed and withheld rules count as misses.** The oracle covers every
+  CERT C guideline, so a rule removed or withheld in this release leaves its
+  labeled findings in the oracle, where no finding of the rule can match
+  them. On the default citation runs, the four removed rules with labeled
+  true positives (PRE12-C, INT14-C, STR03-C and FIO03-C) account for 364
+  labeled true-positive keys that v0.6.0 found and v0.7.0 does not. The
+  withheld rules and the checks moved to the CWE ruleset account for none.
+- **Moved reports fall off their labels.** A label is keyed on the line of
+  the finding. EXP19-C now reports an unbraced body where the body starts,
+  not at its keyword, and PRE01-C reports at each use of a macro parameter,
+  not at the ``#define``, so the same detections land on new, unlabeled
+  lines. Of the 34,938 labeled true-positive keys v0.6.0 found and v0.7.0
+  does not, 32,004 have a finding of the same rule one to three lines below,
+  on a line no label covers: 31,956 for EXP19-C, 47 for PRE01-C and 1 for
+  DCL37-C. Until those lines are labeled, these count as misses, and the
+  findings that replace them as unlabeled. In the other direction, v0.7.0
+  finds 254 labeled true-positive keys that v0.6.0 did not.
+
+Settings
+~~~~~~~~
 
 One change moves every run's identity at once, so it is a trend break in the
 run ids even where the findings do not move.

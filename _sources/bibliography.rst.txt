@@ -219,7 +219,7 @@ Standards & Specifications
 
 | https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard
 
-|rules_total| rules across 17 categories. The rule set implemented by aurora-lint.
+The rule set aurora-lint tracks: |rules_total| rules across 17 categories, |rules_implemented| of them implemented.
 
 ----
 

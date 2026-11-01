@@ -76,7 +76,7 @@ Coverage Is The Difference
    * - aurora-lint
      - **75**
      - 9 projects
-     - |rules_total| CERT C rules across 17 categories
+     - |rules_implemented| CERT C rules implemented (|rules_total| tracked) across 17 categories
    * - clang-tidy
      - 15
      - 8 projects

@@ -54,7 +54,10 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#scope">Scope</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#supported-cert-c-rules">Supported CERT C Rules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#supported-cert-c-rules">Supported CERT C Rules</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#cwe-ruleset">CWE ruleset</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#strict-vs-relaxed-onboarding">Strict vs. Relaxed Onboarding</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#removed-rules">Removed rules</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#withheld-until-rewritten">Withheld until rewritten</a></li>
@@ -195,7 +198,8 @@ environment that trusts only a declared library: small targets often link a
 reduced one, so a full ISO C library is not assumed. With no <code class="docutils literal notranslate"><span class="pre">libc</span></code>
 declared, a pedantic scan trusts no library contract and says so on stderr,
 naming the key to declare and the enabled rules a project could disable
-instead (<code class="docutils literal notranslate"><span class="pre">--check-config</span></code> warns the same way).</p>
+instead (<code class="docutils literal notranslate"><span class="pre">--check-config</span></code> warns the same way), and its SARIF settings
+record <code class="docutils literal notranslate"><span class="pre">libc_declared:</span> <span class="pre">false</span></code>.</p>
 <p>The presets also differ on the data model (the integer widths, below) when
 none is declared. The default preset, the relaxed one, assumes the common
 hosted model, LP64 (32-bit <code class="docutils literal notranslate"><span class="pre">int</span></code>, 64-bit <code class="docutils literal notranslate"><span class="pre">long</span></code> and pointers), as a
@@ -669,12 +673,33 @@ and says when each one fits.</p>
 <p>296 rules are tracked across 17 categories (API, ARR, CON, DCL, ENV,
 ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, and WIN); 292
 are implemented, and 280 of those are enabled by default (the other
-12 are withheld because they misfire; see <a class="reference internal" href="#withheld-until-rewritten">Withheld until rewritten</a>
-below). The remaining 4 are tracked but not implemented;
-see <a class="reference internal" href="#tracked-but-not-implemented">Tracked but not implemented</a> below.
+12 are withheld, most of them because they misfire; see <a class="reference internal" href="#withheld-until-rewritten">Withheld
+until rewritten</a> below for each one’s reason). The remaining
+4 are tracked but not implemented; see <a class="reference internal" href="#tracked-but-not-implemented">Tracked but not
+implemented</a> below.
 <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--list-rules</span></code> lists every rule aurora-lint implements, with its
 default setting and severity (<code class="docutils literal notranslate"><span class="pre">--list-rules</span> <span class="pre">json</span></code> for tooling). The rule
 source files are in <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/</span></code>.</p>
+<section id="cwe-ruleset">
+<h3>CWE ruleset<a class="headerlink" href="#cwe-ruleset" title="Link to this heading"></a></h3>
+<p>A weakness that CERT C has no identifier for is checked by the CWE ruleset
+and reported under the weakness’s own CWE id: <code class="docutils literal notranslate"><span class="pre">CWE-327</span></code> (a weak cipher
+such as DES, 3DES, RC2, RC4 or RC5 selected through Windows CryptoAPI or
+OpenSSL), <code class="docutils literal notranslate"><span class="pre">CWE-272</span></code> (a registry write under <code class="docutils literal notranslate"><span class="pre">HKEY_LOCAL_MACHINE</span></code> or
+<code class="docutils literal notranslate"><span class="pre">HKEY_CLASSES_ROOT</span></code>, which needs administrator rights), <code class="docutils literal notranslate"><span class="pre">CWE-428</span></code> (an
+unquoted <code class="docutils literal notranslate"><span class="pre">CreateProcess*</span></code> command path containing a space) and <code class="docutils literal notranslate"><span class="pre">CWE-666</span></code>
+(socket calls out of order on one socket). These checks shipped under
+CERT-shaped ids before v0.7.0; <a class="reference internal" href="#removed-rules">Removed rules</a> below maps each old id to its
+CWE.</p>
+<p>The default manifest enables them. A manifest configures one in a
+<code class="docutils literal notranslate"><span class="pre">[rules.cwe.&lt;ID&gt;]</span></code> table, which takes the same keys as a CERT C rule’s
+<code class="docutils literal notranslate"><span class="pre">[rules.cert_c.&lt;ID&gt;]</span></code> table:</p>
+<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="k">[rules.cwe.CWE-428]</span>
+<span class="n">enabled</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
+<span class="n">disabled_reason</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;no Win32 process creation in this tree&quot;</span>
+</pre></div>
+</div>
+</section>
 </section>
 <section id="strict-vs-relaxed-onboarding">
 <span id="relaxed-onboarding"></span><h2>Strict vs. Relaxed Onboarding<a class="headerlink" href="#strict-vs-relaxed-onboarding" title="Link to this heading"></a></h2>
@@ -735,6 +760,8 @@ removed from the tool, not disabled. A configuration written for an older
 release may still have a <code class="docutils literal notranslate"><span class="pre">[rules.cert_c.&lt;ID&gt;]</span></code> block for it. That
 configuration still loads: aurora-lint prints one warning naming the release
 that removed the rule, why, and which rules cover it, and ignores the block.
+The same warning is given, once per rule, when a <code class="docutils literal notranslate"><span class="pre">--rules</span></code> list or a
+suppression (in <code class="docutils literal notranslate"><span class="pre">suppress.toml</span></code> or an inline comment) names a removed rule.
 <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">--list-rules</span></code> lists every shipped rule, then every removed
 rule with its reason (<code class="docutils literal notranslate"><span class="pre">--list-rules</span> <span class="pre">json</span></code> for tooling). The list is kept in
 <code class="docutils literal notranslate"><span class="pre">rules_templates/removed-rules.toml</span></code>.</p>
