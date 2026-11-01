@@ -208,7 +208,9 @@ tagged commit itself, so a run’s recorded build version reads the
 two commits; the SHA is what identifies the build, and the version string
 adds readability only. (For v0.5.1 a single docs-only commit, <code class="docutils literal notranslate"><span class="pre">d7a4f22f</span></code>,
 sits between the benchmarked commit <code class="docutils literal notranslate"><span class="pre">e405089a</span></code> and the version bump
-<code class="docutils literal notranslate"><span class="pre">3c245249</span></code>; it changes nothing the analyzer reads.)</p>
+<code class="docutils literal notranslate"><span class="pre">3c245249</span></code>; it changes nothing the analyzer reads.) From <code class="docutils literal notranslate"><span class="pre">v0.5.2</span></code> on,
+the runs are made from the tagged commit itself, so they record the
+release’s own version string; the table below gives each tag’s pair.</p>
 <p>Concretely, for v0.5.0:</p>
 <table class="docutils align-default">
 <colgroup>
@@ -331,6 +333,13 @@ keys of 118,837 differ (see below)</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0.6.0</span></code></p></td>
 <td><p>per checkout content, on one machine; cross-machine, 41 labeled
 keys of 122,452 differ (see below)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">v0.7.0</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">78ed3fe0</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">78ed3fe0</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.7.0</span></code></p></td>
+<td><p>per checkout content; cross-machine in the declared benchmark
+environment, every finding identical in both profiles (see below)</p></td>
 </tr>
 </tbody>
 </table>
@@ -678,6 +687,28 @@ System Headers</em> in <a class="reference internal" href="benchmark-setup.html"
 <code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">-m</span> <span class="pre">bench.header_tree</span> <span class="pre">fetch</span> <span class="pre">debian12-benchmark-node-3e6c8a2b</span></code>).
 Scanned that way with the <code class="docutils literal notranslate"><span class="pre">v0.6.0</span></code> binary, all five match the
 benchmark node’s run key for key.</p>
+<p><strong>Re-measured at</strong> <code class="docutils literal notranslate"><span class="pre">v0.7.0</span></code> (<code class="docutils literal notranslate"><span class="pre">78ed3fe0</span></code>), default and strict
+profiles, both machines scanning inside the declared benchmark
+environment (<em>The Benchmark Environment</em> in <a class="reference internal" href="benchmark-setup.html"><span class="doc">Benchmark Setup</span></a>;
+<code class="docutils literal notranslate"><span class="pre">docs/adr/0018</span></code>): the tag built from source in the container on the
+reproducing machine, <code class="docutils literal notranslate"><span class="pre">corpus-check</span></code> clean on all twelve checkouts,
+<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">container-build-db</span></code> for all twelve, then
+<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">container-run</span> <span class="pre">--</span> <span class="pre">realworld-run</span> <span class="pre">--tool</span> <span class="pre">sqc</span> <span class="pre">--profile</span> <span class="pre">P</span></code>
+for each profile, Ventoy with the Win32 header set the licence layer
+adds. Both
+runs record the same environment pin and the same header set for every
+corpus. Compared with the benchmark node’s runs of record, corpus by
+corpus, every finding row is identical – file, line, column, rule,
+severity and message – in all twelve corpora and both profiles:
+153,884 rows (142,590 distinct keys) in default and 162,900 (151,393)
+in strict, of which 82,835 and 88,534 keys carry a label at
+<code class="docutils literal notranslate"><span class="pre">benchmark_adjudication</span></code> <code class="docutils literal notranslate"><span class="pre">2a4fad2</span></code>. No key differs on either side,
+labeled or not. This measures what the pinned environment makes
+reproducible, not the variation above: the header packages, the
+checkouts and the binary’s source were the same on both machines by
+construction, so cause 1 was held fixed rather than tested. A scan on
+the host, outside the image, still reads the host’s headers and is
+subject to everything above.</p>
 </li>
 </ol>
 <p>The same binary on the same checkout, run twice, gives byte-identical

@@ -68,7 +68,9 @@ tagged commit itself, so a run's recorded build version reads the
 two commits; the SHA is what identifies the build, and the version string
 adds readability only. (For v0.5.1 a single docs-only commit, ``d7a4f22f``,
 sits between the benchmarked commit ``e405089a`` and the version bump
-``3c245249``; it changes nothing the analyzer reads.)
+``3c245249``; it changes nothing the analyzer reads.) From ``v0.5.2`` on,
+the runs are made from the tagged commit itself, so they record the
+release's own version string; the table below gives each tag's pair.
 
 Concretely, for v0.5.0:
 
@@ -183,6 +185,12 @@ across copies of the checkout as well.
      - ``0.6.0``
      - per checkout content, on one machine; cross-machine, 41 labeled
        keys of 122,452 differ (see below)
+   * - ``v0.7.0``
+     - ``78ed3fe0``
+     - ``78ed3fe0``
+     - ``0.7.0``
+     - per checkout content; cross-machine in the declared benchmark
+       environment, every finding identical in both profiles (see below)
 
 Input 2: the labels -- ``benchmark_adjudication`` at a SHA
 ----------------------------------------------------------
@@ -542,6 +550,29 @@ reproducer will not guess:
    ``python3 -m bench.header_tree fetch debian12-benchmark-node-3e6c8a2b``).
    Scanned that way with the ``v0.6.0`` binary, all five match the
    benchmark node's run key for key.
+
+   **Re-measured at** ``v0.7.0`` (``78ed3fe0``), default and strict
+   profiles, both machines scanning inside the declared benchmark
+   environment (*The Benchmark Environment* in :doc:`benchmark-setup`;
+   ``docs/adr/0018``): the tag built from source in the container on the
+   reproducing machine, ``corpus-check`` clean on all twelve checkouts,
+   ``python -m bench container-build-db`` for all twelve, then
+   ``python -m bench container-run -- realworld-run --tool sqc --profile P``
+   for each profile, Ventoy with the Win32 header set the licence layer
+   adds. Both
+   runs record the same environment pin and the same header set for every
+   corpus. Compared with the benchmark node's runs of record, corpus by
+   corpus, every finding row is identical -- file, line, column, rule,
+   severity and message -- in all twelve corpora and both profiles:
+   153,884 rows (142,590 distinct keys) in default and 162,900 (151,393)
+   in strict, of which 82,835 and 88,534 keys carry a label at
+   ``benchmark_adjudication`` ``2a4fad2``. No key differs on either side,
+   labeled or not. This measures what the pinned environment makes
+   reproducible, not the variation above: the header packages, the
+   checkouts and the binary's source were the same on both machines by
+   construction, so cause 1 was held fixed rather than tested. A scan on
+   the host, outside the image, still reads the host's headers and is
+   subject to everything above.
 
 The same binary on the same checkout, run twice, gives byte-identical
 exports on every codebase checked (from ``fc9164fd`` on), with one
