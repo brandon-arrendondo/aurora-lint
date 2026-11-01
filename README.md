@@ -398,7 +398,7 @@ generated [option list](docs/options.rst).
 aurora-lint . --diff-base origin/main --min-severity Medium --fail-on-severity High --export results.sarif
 ```
 
-Exit codes: `0` = success, `1` = violations found (with `--fail-on-*`), `2` = the scan could not run (including a `--diff` PATH that is not a repository root), `3` = the scan is incomplete (a rule crashed or ran out of budget; reported on stderr and in SARIF). See [Error handling and exit codes](docs/error-handling.rst).
+Exit codes: `0` = success, `1` = violations found (with `--fail-on-*`), `2` = the scan could not run (including a `--diff` PATH that is not a repository root), `3` = the scan is incomplete (part of the analysis crashed or ran out of its budget, or an input file was skipped; reported on stderr and in SARIF). See [Error handling and exit codes](docs/error-handling.rst).
 
 Ready-to-use workflow examples for [GitHub Actions and Azure DevOps](docs/cicd-integration.rst) are in the Developer Guide.
 
@@ -406,7 +406,10 @@ Ready-to-use workflow examples for [GitHub Actions and Azure DevOps](docs/cicd-i
 
 Honest version: on the narrow set of defect classes clang-tidy checks, **clang-tidy
 is more precise than aurora-lint** — 99.2% to 81.7% on the 15 Juliet CWEs it covers, and it
-finds more true positives there too. It gets that by compiling your code.
+finds more true positives there too. It gets that by compiling your code. (These
+comparison figures are a dated snapshot: aurora-lint v0.4.321 and the other tools'
+versions measured in September 2026, not re-run since; the Juliet CWE counts below
+are from the same snapshot.)
 
 aurora-lint's case is breadth and reach, not beating clang-tidy at its fifteen:
 

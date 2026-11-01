@@ -65,6 +65,16 @@ run and the parse tree is untouched, so findings keep their source locations.
 Paths in a database are absolute; if it was generated on another host, aurora-lint warns
 rather than silently resolving nothing.
 .TP
+\fB\-\-generated\-include\fR \fIDIR\fR
+Declare \fIDIR\fR a build tree whose headers the build generated for one
+configuration. May be specified multiple times; the directory must be outside
+the scanned tree. Their declarations, macro values and function bodies are
+applied only to the files that configuration compiles, as the compile database
+names them; every other file is analysed as if those headers were missing.
+Headers are still found through \fB\-I\fR or the database. A database's own
+build-tree include directories outside the scanned tree are recognised without
+this flag.
+.TP
 \fB\-\-system\-includes\fR
 Also search the compiler's own built-in system header directories, discovered by
 asking it (\fBcc \-E \-Wp,\-v \-\fR) and appended at lowest priority. A

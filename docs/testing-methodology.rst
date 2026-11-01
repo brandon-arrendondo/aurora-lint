@@ -792,7 +792,7 @@ projects; not refreshed, and only the *Implemented* row is today's count):
    * -
      - Rules
    * - Implemented
-     - |rules_total| (|rules_enabled| enabled by default)
+     - |rules_implemented| (|rules_enabled| enabled by default)
    * - Have true-positive evidence somewhere
      - **186** — 127 from Juliet, 144 from real-world TP/FN labels
    * - **No true-positive evidence anywhere**
