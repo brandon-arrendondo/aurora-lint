@@ -145,6 +145,15 @@ impl CParser {
         // definition from every rule while leaving its calls visible.
         let source = crate::analyze::paren_preproc_guard::blank_paren_guarded_preproc(&source);
 
+        // A conditional between the entries of a brace initializer list
+        // (`int t[] = {` / `#if A` / `1,` / `#endif` / `0 };`). The grammar
+        // has no production for it: inside a function the `#if` swallows the
+        // rest of the body and strands its closing brace, and once the rest
+        // of the file parses, recovery can wrap the WHOLE file in one ERROR
+        // around it (mbedtls ssl_tls12_server.c, all 48 definitions).
+        let source =
+            crate::analyze::initializer_preproc_guard::blank_initializer_guarded_preproc(&source);
+
         // An earlier fix: a guard that falls between a control-flow header and the
         // body it governs (`#if ...` / `if (cond)` / `#endif` / `{ ... }`).
         // `preproc_if` is a block item, so the brace block parses as a
@@ -203,6 +212,8 @@ impl CParser {
         let source = crate::analyze::preproc_dangling_else::blank_dangling_else_preproc(&source);
         let source = crate::analyze::label_preproc_guard::blank_label_guarded_preproc(&source);
         let source = crate::analyze::paren_preproc_guard::blank_paren_guarded_preproc(&source);
+        let source =
+            crate::analyze::initializer_preproc_guard::blank_initializer_guarded_preproc(&source);
         let source =
             crate::analyze::control_header_preproc_guard::blank_control_header_guarded_preproc(
                 &source,

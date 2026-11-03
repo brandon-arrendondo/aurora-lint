@@ -43,6 +43,7 @@ pub mod generated_headers;
 pub mod has_include_angle;
 pub mod include_names;
 pub mod init_state;
+pub mod initializer_preproc_guard;
 pub mod input_guard;
 /// Pre-parse repair for a label immediately followed by an `#ifdef`/`#if`
 /// block -- `tree-sitter-c`'s `labeled_statement` can't parse that shape.

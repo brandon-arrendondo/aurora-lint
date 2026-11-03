@@ -155,7 +155,7 @@ const MAX_STATEMENT_LOOKBACK: usize = 64;
 /// `#ifndef X` and `# ifndef X`. The space after `#` is not cosmetic here:
 /// pure-ftpd indents nested conditionals exactly that way (`# ifndef ...`
 /// inside an `#if`), which is the very file this pass exists for.
-fn directive_keyword(line: &str) -> Option<&str> {
+pub(crate) fn directive_keyword(line: &str) -> Option<&str> {
     let rest = line.trim_start().strip_prefix('#')?;
     Some(
         rest.trim_start()
@@ -165,41 +165,46 @@ fn directive_keyword(line: &str) -> Option<&str> {
     )
 }
 
-fn is_directive_start(line: &str) -> bool {
+pub(crate) fn is_directive_start(line: &str) -> bool {
     matches!(directive_keyword(line), Some("if" | "ifdef" | "ifndef"))
 }
 
-fn is_endif(line: &str) -> bool {
+pub(crate) fn is_endif(line: &str) -> bool {
     directive_keyword(line) == Some("endif")
 }
 
-fn is_branch_directive(line: &str) -> bool {
+pub(crate) fn is_branch_directive(line: &str) -> bool {
     matches!(directive_keyword(line), Some("else" | "elif"))
 }
 
-fn is_directive(line: &str) -> bool {
+pub(crate) fn is_directive(line: &str) -> bool {
     line.trim_start().starts_with('#')
 }
 
 /// Per-line view of a file with comments and literals removed, so a `(`,
 /// `;` or `}` counted below is always real code.
-struct CodeLines<'a> {
-    raw: Vec<&'a str>,
+pub(crate) struct CodeLines<'a> {
+    pub(crate) raw: Vec<&'a str>,
     /// The byte offset in the source where `raw[i]` starts.
-    starts: Vec<usize>,
+    pub(crate) starts: Vec<usize>,
     /// `raw[i]` with comments, string and character literals replaced by
     /// spaces. Preprocessor directive lines (including `\`-continuations)
     /// are blank here: their parentheses are the directive's own.
-    code: Vec<String>,
+    pub(crate) code: Vec<String>,
+    /// Whether `raw[i]` begins inside a block comment, so a `#` at its
+    /// start is comment text rather than a directive.
+    pub(crate) starts_in_comment: Vec<bool>,
 }
 
 impl<'a> CodeLines<'a> {
-    fn new(source: &'a str) -> Self {
+    pub(crate) fn new(source: &'a str) -> Self {
         let (raw, starts) = text_bounds::lines_with_starts(source);
         let mut code = Vec::with_capacity(raw.len());
+        let mut starts_in_comment = Vec::with_capacity(raw.len());
         let mut in_block_comment = false;
         let mut in_directive = false;
         for line in &raw {
+            starts_in_comment.push(in_block_comment);
             let (stripped, still_open) = strip_comments_and_literals(line, in_block_comment);
             in_block_comment = still_open;
             let is_directive_line = in_directive || is_directive(line);
@@ -213,14 +218,19 @@ impl<'a> CodeLines<'a> {
                 stripped
             });
         }
-        Self { raw, starts, code }
+        Self {
+            raw,
+            starts,
+            code,
+            starts_in_comment,
+        }
     }
 
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.raw.len()
     }
 
-    fn paren_balance(&self, i: usize) -> i32 {
+    pub(crate) fn paren_balance(&self, i: usize) -> i32 {
         let line = &self.code[i];
         line.matches('(').count() as i32 - line.matches(')').count() as i32
     }
@@ -563,7 +573,7 @@ pub fn blank_paren_guarded_preproc(source: &str) -> String {
 }
 
 /// Replace every non-newline byte of the line at `line_start` with a space.
-fn blank_line(out: &mut [u8], line_start: usize, line_len: usize) {
+pub(crate) fn blank_line(out: &mut [u8], line_start: usize, line_len: usize) {
     for b in out.iter_mut().skip(line_start).take(line_len) {
         if *b != b'\n' && *b != b'\r' {
             *b = b' ';

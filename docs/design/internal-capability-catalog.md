@@ -1658,11 +1658,23 @@ starting with a possibly unary `*`, `&`, `-` or `+` not counted, so sqlite's
 `A | (X&1)==1 | B`; that path is refused while a call's argument list may be
 open before the directive, read across braces, blank lines and any `if`
 condition or grouping, up to the lookback; a single arm is kept whatever its
-condition, `#if 0` included) and
+condition, `#if 0` included),
+`initializer_preproc_guard.rs` (a guard between the entries of a brace
+initializer list: a `{` after `=`, or after `,` or `{` inside such a list,
+tracked forward with each arm read from its `#if`'s brace depth; every arm
+must be whole entries, with no `;` and balanced braces and parentheses, and
+not inside a parenthesis within the list, where the directive sits in a
+macro invocation's arguments and is PRE32-C's. Inside a function body the
+`#if` otherwise swallows the rest of the body and strands its closing
+brace, and recovery can wrap the whole file in one `ERROR` around it,
+mbedtls's `ssl_tls12_server.c` with all 48 definitions; a single arm is kept
+whatever its condition, and a multi-arm conditional keeps the arm
+`compiled_arm` picks rather than splicing entries from exclusive
+configurations into one list) and
 `control_header_preproc_guard.rs` (a guard closing between an
 `if`/`while`/`for` header and the body it governs, which leaves the header
 with a synthesized `(expression_statement (MISSING ";"))` consequence that
-reads as an unbraced body). The first, second and fourth are restricted to a
+reads as an unbraced body). The first, second and fifth are restricted to a
 conditional with NO `#else`/`#elif`: blanking a wrapper that has alternative
 arms would splice mutually exclusive text into one statement stream.
 `paren_preproc_guard.rs` also takes a multi-arm conditional inside a
