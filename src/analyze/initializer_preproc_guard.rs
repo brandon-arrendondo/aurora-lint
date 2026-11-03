@@ -99,7 +99,13 @@ use crate::analyze::preproc_arm_choice::{compiled_arm, directive_extent, locally
 
 /// The comment left where an `#elif`/`#else` was, in an initializer list
 /// whose alternative arms were all kept: [`is_spliced_initializer`] reads it.
-pub const SPLICE_MARKER: &str = "/*S*/";
+///
+/// It cannot be mistaken for the user's own text. Its body is the control
+/// character U+001F, which C source never holds, and the pass writes it only
+/// at the start of a directive line it blanks, alone on that line, which is
+/// the only place the reader accepts it. Five bytes, so it fits the shortest
+/// directive it replaces, `#else`.
+pub const SPLICE_MARKER: &str = "/*\u{1f}*/";
 
 /// Whether `list` is an `initializer_list` whose entries this pass spliced
 /// from the arms of a conditional, so that the list as a whole is no build's
@@ -114,10 +120,17 @@ pub const SPLICE_MARKER: &str = "/*S*/";
 pub fn is_spliced_initializer(list: &tree_sitter::Node, source: &str) -> bool {
     list.kind() == "initializer_list"
         && list.children(&mut list.walk()).any(|c| {
-            c.kind() == "comment"
-                && source
-                    .get(c.start_byte()..c.end_byte())
-                    .is_some_and(|t| t == SPLICE_MARKER)
+            if c.kind() != "comment" || c.start_position().column != 0 {
+                return false;
+            }
+            let rest_of_line = source
+                .get(c.end_byte()..)
+                .map(|t| t.split('\n').next().unwrap_or(""))
+                .unwrap_or("");
+            source
+                .get(c.start_byte()..c.end_byte())
+                .is_some_and(|t| t == SPLICE_MARKER)
+                && rest_of_line.trim().is_empty()
         })
 }
 
@@ -639,6 +652,20 @@ int t[2] = {
         let out = fixed(src);
         assert_eq!(out.matches(SPLICE_MARKER).count(), 2, "{out}");
         assert_eq!(spliced_lists(src), vec![true]);
+    }
+
+    #[test]
+    fn a_comment_in_the_source_is_never_read_as_the_marker() {
+        // The marker's old spelling, written by hand, alone on its line.
+        let src = "\
+int t[] = {
+/*S*/
+    1, 2
+};
+";
+        assert_eq!(spliced_lists(src), vec![false]);
+        assert_eq!(SPLICE_MARKER.len(), "#else".len());
+        assert!(SPLICE_MARKER.contains('\u{1f}'));
     }
 
     #[test]

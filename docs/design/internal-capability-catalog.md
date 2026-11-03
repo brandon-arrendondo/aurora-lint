@@ -1673,7 +1673,9 @@ comma separates each arm's entries from the next, so no code leaves analysis
 -- keeping the compiled arm there dropped a labeled true positive -- and
 falls back to the arm `compiled_arm` picks only when the arms would splice
 into a list that does not parse; a spliced list carries the comment
-`SPLICE_MARKER` where each `#elif`/`#else` was, and
+`SPLICE_MARKER` (`/*`, the control character U+001F, `*/`: five bytes, never
+in real source, accepted only alone at the start of its line) where each
+`#elif`/`#else` was, and
 `initializer_preproc_guard::is_spliced_initializer(list, source)` answers
 whether a list is one: **any reading of a whole initializer list -- its
 element count, a braced literal against the bound -- must ask it and
