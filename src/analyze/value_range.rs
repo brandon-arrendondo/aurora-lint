@@ -9,7 +9,7 @@
 //! Follows the same forward-dataflow pattern as `null_state.rs`.
 #![allow(dead_code)]
 
-use super::address_taken::{store_base, AddressTakenLocals};
+use super::address_taken::{store_base, AddressTakenLocals, LocalId};
 use super::cfg::{BasicBlock, BlockId, CfgEdge, FunctionCfg};
 use super::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
 use super::dataflow::{find_node_at_range, StatementLookup};
@@ -1002,13 +1002,14 @@ fn apply_pointer_writes(
                     } else {
                         None
                     };
-                    for target in aliases.store_targets(&base, source) {
+                    for local in aliases.store_targets(&base, source) {
+                        let target = aliases.name(local).to_string();
                         let Some(cur) = state.get(&target) else {
                             continue;
                         };
                         let var_type = cur.var_type.clone();
                         match stored {
-                            Some(r) if aliases.stores_own_type(&base, &target, source) => {
+                            Some(r) if aliases.stores_own_type(&base, local) => {
                                 let r = match &var_type {
                                     Some(vt) => clamp_to_type_range(
                                         apply_unsigned_wrapping(r, vt),
@@ -1030,16 +1031,17 @@ fn apply_pointer_writes(
                 .child_by_field_name("argument")
                 .and_then(|arg| store_base(&arg))
             {
-                for target in aliases.store_targets(&base, source) {
-                    if let Some(cur) = state.get(&target) {
+                for local in aliases.store_targets(&base, source) {
+                    let target = aliases.name(local);
+                    if let Some(cur) = state.get(target) {
                         let var_type = cur.var_type.clone();
-                        widen_to_type(state, &target, var_type);
+                        widen_to_type(state, target, var_type);
                     }
                 }
             }
         }
         "call_expression" => {
-            let mut reached: HashSet<String> = aliases.escaped().cloned().collect();
+            let mut reached: HashSet<LocalId> = aliases.escaped().collect();
             if let Some(args) = node.child_by_field_name("arguments") {
                 for i in 0..args.named_child_count() {
                     if let Some(arg) = args.named_child(i) {
@@ -1047,10 +1049,13 @@ fn apply_pointer_writes(
                     }
                 }
             }
-            for target in reached {
-                if let Some(cur) = state.get(&target) {
+            // The state is keyed by name: a local and another declaration
+            // of its name it shadows or is shadowed by share one entry.
+            let names: HashSet<&str> = reached.into_iter().map(|l| aliases.name(l)).collect();
+            for target in names {
+                if let Some(cur) = state.get(target) {
                     let var_type = cur.var_type.clone();
-                    widen_to_type(state, &target, var_type);
+                    widen_to_type(state, target, var_type);
                 }
             }
         }
@@ -1664,7 +1669,7 @@ fn analyze_value_ranges_capped(
     };
 
     let initial_state = build_initial_state(func_node, source, macros, summaries);
-    let aliases = Arc::new(AddressTakenLocals::of_function(func_node, source));
+    let aliases = AddressTakenLocals::of_function(func_node, source);
 
     // Collect types for uninitialized local declarations (e.g. `int data;`).
     // These are NOT added to the initial state (would cause stale entry ranges),

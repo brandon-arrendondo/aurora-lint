@@ -19,10 +19,13 @@
 use super::ast_utils;
 use super::guard_dominance;
 use super::std_functions;
-use crate::analyze::address_taken::{store_base, AddressTakenLocals};
+use crate::analyze::address_taken::{store_base, AddressTakenLocals, FunctionKey, LocalId};
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::rc::Rc;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// The spellings a guard on `expr` may use: the expression itself, and what
@@ -117,24 +120,17 @@ pub fn fact_reaches(cond: &Node, site: &Node, targets: &[String], source: &str) 
     if !same_object || entered_by_jump(cond, site, &func, source) {
         return false;
     }
-    let mut root = func;
-    while let Some(parent) = root.parent() {
-        root = parent;
-    }
+    let function = FunctionFacts::of_function(&func, source);
     // An address handed straight to a library call is a write at that call,
     // which `written_between` reads; any other escapes.
-    let addressed: HashSet<String> = query::find_descendants_of_kind(func, "pointer_expression")
-        .into_iter()
-        .filter(|n| {
-            n.child_by_field_name("operator")
-                .is_some_and(|op| op.kind() == "&")
-                && !passed_to_library_call(n, &root, source)
-        })
-        .filter_map(|n| n.child_by_field_name("argument"))
-        .map(|arg| guard_dominance::squeeze_text(&arg, source))
-        .filter(|text| names.contains(text))
+    let addressed: HashSet<String> = function
+        .addressed
+        .iter()
+        .filter(|text| names.contains(*text))
+        .cloned()
         .collect();
-    if !addressed.is_empty() && pointer_write_between(cond, site, &func, &root, &addressed, source)
+    if !addressed.is_empty()
+        && pointer_write_between(cond, site, &func, &function, &addressed, source)
     {
         return false;
     }
@@ -151,7 +147,7 @@ pub fn fact_reaches(cond: &Node, site: &Node, targets: &[String], source: &str) 
                 && between.holds(&n)
                 && !n.child_by_field_name("function").is_some_and(|f| {
                     f.kind() == "identifier"
-                        && library_function(ast_utils::get_node_text(&f, source), &root, source)
+                        && library_function(ast_utils::get_node_text(&f, source), &function.defined)
                 })
         });
         if may_write.is_some() {
@@ -178,28 +174,25 @@ fn pointer_write_between(
     cond: &Node,
     site: &Node,
     func: &Node,
-    root: &Node,
+    function: &FunctionFacts,
     names: &HashSet<String>,
     source: &str,
 ) -> bool {
-    let facts = AddressTakenLocals::of_function(func, source);
-    let unfollowable = names
-        .iter()
-        .any(|name| !facts.is_local(name) || facts.has_escaped(name));
-    if unfollowable {
-        return true;
+    let facts = &function.facts;
+    // The objects the names mean at the site, which are the ones they meant
+    // at the condition: `fact_reaches` checked that first.
+    let mut guarded: HashSet<LocalId> = HashSet::new();
+    for name in names {
+        let local = ast_utils::resolve_identifier_declarator(site, name, source)
+            .and_then(|(_, declarator)| facts.local_declared_by(&declarator));
+        match local {
+            Some(local) if !facts.has_escaped(local) && !function.retained.contains(&local) => {
+                guarded.insert(local);
+            }
+            _ => return true,
+        }
     }
-    let reaches = |targets: HashSet<String>| targets.iter().any(|t| names.contains(t));
-    let retained = query::find_first_descendant(*func, |n| {
-        n.kind() == "call_expression"
-            && call_arguments(&n).iter().any(|arg| {
-                !passed_to_library_call(arg, root, source)
-                    && reaches(facts.argument_targets(arg, source))
-            })
-    });
-    if retained.is_some() {
-        return true;
-    }
+    let reaches = |targets: HashSet<LocalId>| targets.iter().any(|t| guarded.contains(t));
     let between = Between::new(cond, site);
     query::find_first_descendant(*func, |n| {
         between.holds(&n)
@@ -219,6 +212,111 @@ fn pointer_write_between(
             }
     })
     .is_some()
+}
+
+/// What [`fact_reaches`] reads of a whole function, built once however many
+/// (condition, site) pairs of the function ask: a function of N guarded
+/// divisions asked it N times, and each time every `&` and every call
+/// argument looked through the whole file for a definition of its callee.
+struct FunctionFacts {
+    /// The functions the file defines: a call to one of those is no
+    /// library call, whatever its name.
+    defined: HashSet<String>,
+    /// Every `&` argument's spelling, whitespace-squeezed, where some `&` of
+    /// it is not passed straight to a library call that keeps no copy.
+    addressed: HashSet<String>,
+    facts: Arc<AddressTakenLocals>,
+    /// Locals whose address, or a pointer holding it, goes to a call other
+    /// than a library call that keeps no copy, anywhere in the function.
+    retained: HashSet<LocalId>,
+}
+
+thread_local! {
+    /// The [`FunctionFacts`] of the function last asked about on this
+    /// thread.
+    static LAST_FUNCTION_FACTS: RefCell<Option<(FunctionKey, Rc<FunctionFacts>)>> =
+        const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times [`FunctionFacts::of_function`] read a function,
+    /// rather than remembered it, on this thread.
+    static FUNCTION_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Function reads on this thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_function_reads() -> usize {
+    FUNCTION_READS.with(|n| n.replace(0))
+}
+
+impl FunctionFacts {
+    fn of_function(func: &Node, source: &str) -> Rc<Self> {
+        let key = FunctionKey::of(func, source);
+        let hit = LAST_FUNCTION_FACTS.with(|last| {
+            last.borrow()
+                .as_ref()
+                .filter(|(k, _)| *k == key)
+                .map(|(_, facts)| Rc::clone(facts))
+        });
+        if let Some(facts) = hit {
+            return facts;
+        }
+        #[cfg(test)]
+        FUNCTION_READS.with(|n| n.set(n.get() + 1));
+        let defined = defined_functions(&ast_utils::tree_root(func), source);
+        let addressed = query::find_descendants_of_kind(*func, "pointer_expression")
+            .into_iter()
+            .filter(|n| {
+                n.child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "&")
+                    && !passed_to_library_call_in(n, &defined, source)
+            })
+            .filter_map(|n| n.child_by_field_name("argument"))
+            .map(|arg| guard_dominance::squeeze_text(&arg, source))
+            .collect();
+        let facts = AddressTakenLocals::of_function(func, source);
+        let mut retained = HashSet::new();
+        for call in query::find_descendants_of_kind(*func, "call_expression") {
+            for arg in call_arguments(&call) {
+                if !passed_to_library_call_in(&arg, &defined, source) {
+                    retained.extend(facts.argument_targets(&arg, source));
+                }
+            }
+        }
+        let function = Rc::new(FunctionFacts {
+            defined,
+            addressed,
+            facts,
+            retained,
+        });
+        LAST_FUNCTION_FACTS.with(|last| *last.borrow_mut() = Some((key, Rc::clone(&function))));
+        function
+    }
+}
+
+/// The names of the functions the file under `root` defines. A definition
+/// sits at file scope, in a preprocessor arm, a linkage block or a damaged
+/// region, so no function body is walked: a GNU nested function, defined
+/// inside another's body, is not looked for, and a call to one named as a
+/// library function is read as that library function's.
+fn defined_functions(root: &Node, source: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut stack = vec![*root];
+    while let Some(node) = stack.pop() {
+        for child in node.named_child_nodes() {
+            if child.kind() == "function_definition" {
+                if let Some(name) = lang_parsing_substrate::calls::get_function_name(child, source)
+                {
+                    out.insert(name);
+                }
+            } else {
+                stack.push(child);
+            }
+        }
+    }
+    out
 }
 
 /// A call's argument expressions.
@@ -250,6 +348,11 @@ const RETAINS_POINTER: &[&str] = &[
 /// keeps no copy of its pointer arguments: whatever the call does through
 /// `expr`, it does before it returns.
 pub fn passed_to_library_call(expr: &Node, root: &Node, source: &str) -> bool {
+    passed_to_library_call_in(expr, &defined_functions(root, source), source)
+}
+
+/// [`passed_to_library_call`] for a file defining the functions `defined`.
+fn passed_to_library_call_in(expr: &Node, defined: &HashSet<String>, source: &str) -> bool {
     let Some(call) = expr
         .parent()
         .filter(|p| p.kind() == "argument_list")
@@ -262,20 +365,14 @@ pub fn passed_to_library_call(expr: &Node, root: &Node, source: &str) -> bool {
         let name = ast_utils::get_node_text(&f, source);
         f.kind() == "identifier"
             && !RETAINS_POINTER.contains(&name)
-            && library_function(name, root, source)
+            && library_function(name, defined)
     })
 }
 
-/// A library function the translation unit under `root` does not define
-/// for itself.
-fn library_function(name: &str, root: &Node, source: &str) -> bool {
-    std_functions::is_iso_c_or_posix_function(name)
-        && query::find_first_descendant(*root, |n| {
-            n.kind() == "function_definition"
-                && lang_parsing_substrate::calls::get_function_name(n, source).as_deref()
-                    == Some(name)
-        })
-        .is_none()
+/// Whether `name` is an ISO C or POSIX function and the file, defining
+/// `defined`, does not define it.
+fn library_function(name: &str, defined: &HashSet<String>) -> bool {
+    std_functions::is_iso_c_or_posix_function(name) && !defined.contains(name)
 }
 
 /// Whether control can arrive at `site` without having passed `cond`: a
@@ -659,4 +756,54 @@ fn is_nonzero_integer_literal(node: &Node, source: &str) -> bool {
         text.parse::<u64>().ok()
     };
     value.is_some_and(|v| v != 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(code: &str) -> tree_sitter::Tree {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        parser.parse(code, None).unwrap()
+    }
+
+    /// The divisions of a function, in source order.
+    fn divisions<'t>(node: Node<'t>, source: &str) -> Vec<Node<'t>> {
+        query::find_descendants_of_kind(node, "binary_expression")
+            .into_iter()
+            .filter(|b| {
+                b.child_by_field_name("operator")
+                    .is_some_and(|op| ast_utils::get_node_text(&op, source) == "/")
+            })
+            .collect()
+    }
+
+    /// A function of N guarded divisions by address-taken locals, each with
+    /// a library call taking an address, reads the function once however
+    /// many sites ask, and every check still holds: it was read once per
+    /// (condition, site) pair, and each read looked through the whole file
+    /// for every callee's definition. Counted rather than timed.
+    #[test]
+    fn one_read_per_function_answers_every_guarded_site() {
+        let mut code = String::from(
+            "void *memcpy(void *, const void *, unsigned long);\nint r(void);\nint f(void) {\n    int t = 0; int one = 1;\n",
+        );
+        for i in 0..60 {
+            code.push_str(&format!(
+                "    int x{i} = r(); int *p{i} = &x{i}; memcpy(&x{i}, &one, sizeof x{i});\n    if (x{i} != 0) {{ t += 100 / x{i}; }}\n    t += *p{i};\n"
+            ));
+        }
+        code.push_str("    return t;\n}\n");
+        let tree = parse(&code);
+        let sites = divisions(tree.root_node(), &code);
+        assert_eq!(sites.len(), 60);
+        take_function_reads();
+        for (i, site) in sites.iter().enumerate() {
+            let targets = vec![format!("x{i}")];
+            let facts = known_conditions(site, &targets, &code, &HashSet::new());
+            assert_eq!(facts.len(), 1, "site {i} lost its guard");
+        }
+        assert_eq!(take_function_reads(), 1);
+    }
 }
