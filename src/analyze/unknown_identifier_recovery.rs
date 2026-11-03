@@ -84,6 +84,15 @@ pub struct RepairMacros {
     /// The include graph ([`ProjectContext::include_edges`]) that says which
     /// of those files a file can see.
     pub include_edges: Arc<HashMap<String, Vec<String>>>,
+    /// Object-like macros whose expansion means something a rule reads off
+    /// the name: a storage class or `static inline`
+    /// ([`ProjectContext::static_macro_names`], [`Self::storage_class_macros`]),
+    /// a noreturn attribute ([`ProjectContext::attribute_noreturn_macros`],
+    /// [`ProjectContext::keyword_noreturn_macros`]) or an unused attribute.
+    /// An annotation taken for a declaration's type is never blanked when it
+    /// is one of these: the rules resolve it by name, and a blank leaves
+    /// them nothing to resolve.
+    pub meaningful_macros: HashSet<String>,
 }
 
 impl RepairMacros {
@@ -95,6 +104,15 @@ impl RepairMacros {
             unused_attribute_macros: HashSet::clone(&context.unused_attribute_macros),
             storage_class_macros: Arc::clone(&context.storage_class_macros),
             include_edges: Arc::clone(&context.include_edges),
+            meaningful_macros: context
+                .static_macro_names
+                .iter()
+                .chain(context.attribute_noreturn_macros.iter())
+                .chain(context.keyword_noreturn_macros.iter())
+                .chain(context.unused_attribute_macros.iter())
+                .chain(context.storage_class_macros.keys())
+                .cloned()
+                .collect(),
         }
     }
 }
@@ -286,6 +304,141 @@ fn preceding_macro_tokens(
 /// the token the parser stranded; every extra word is another candidate
 /// re-parse for no observed gain.
 const MAX_PRECEDING_TOKENS: usize = 4;
+
+/// Type-specifier keywords: one of these stranded by the parser (wrapped in an
+/// `ERROR`, or read as a declarator `identifier`) means a declaration already
+/// had its type when the parser reached it.
+const TYPE_SPECIFIER_KEYWORDS: &[&str] = &[
+    "void", "char", "short", "int", "long", "float", "double", "signed", "unsigned", "_Bool",
+    "_Complex", "struct", "union", "enum",
+];
+
+/// The keywords that may stand between a declaration's leading type and its
+/// type specifier without being a type themselves: storage classes, function
+/// specifiers and qualifiers.
+const NON_TYPE_SPECIFIER_KEYWORDS: &[&str] = &[
+    "static",
+    "extern",
+    "register",
+    "auto",
+    "inline",
+    "__inline",
+    "__inline__",
+    "_Noreturn",
+    "thread_local",
+    "__thread",
+    "const",
+    "volatile",
+    "restrict",
+];
+
+/// The word ending at `end` (identifier characters only), as a byte range.
+fn word_before(bytes: &[u8], end: usize) -> Option<(usize, usize)> {
+    let mut start = end;
+    while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+        start -= 1;
+    }
+    (start < end).then_some((start, end))
+}
+
+/// Skip whitespace backwards from `at`; the position after the last
+/// non-whitespace byte.
+fn skip_space_back(bytes: &[u8], mut at: usize) -> usize {
+    while at > 0 && bytes[at - 1].is_ascii_whitespace() {
+        at -= 1;
+    }
+    at
+}
+
+/// Whether a declaration may begin right after `at`: the start of the file,
+/// the end of a statement, declaration or block (`;`, `{`, `}`), the end of
+/// a block comment, or the end of a preprocessor directive's line.
+fn declaration_may_start_after(source: &str, at: usize) -> bool {
+    let bytes = source.as_bytes();
+    let before = skip_space_back(bytes, at);
+    if before == 0 {
+        return true;
+    }
+    if matches!(bytes[before - 1], b';' | b'{' | b'}') {
+        return true;
+    }
+    if before >= 2 && &bytes[before - 2..before] == b"*/" {
+        return true;
+    }
+    // Only whitespace, and at least one line break, between a directive's
+    // end and `at`; a directive continued with `\` ends on its last line.
+    source[before..at].contains('\n') && in_preprocessor_directive(source, before - 1)
+}
+
+/// True if the line containing `byte` is a preprocessor directive's, its
+/// first or one it continues onto with a trailing `\`.
+fn in_preprocessor_directive(source: &str, byte: usize) -> bool {
+    let mut line_start = source[..byte].rfind('\n').map_or(0, |i| i + 1);
+    while line_start > 0
+        && source[..line_start - 1]
+            .trim_end_matches('\r')
+            .ends_with('\\')
+    {
+        line_start = source[..line_start - 1].rfind('\n').map_or(0, |i| i + 1);
+    }
+    source[line_start..].trim_start().starts_with('#')
+}
+
+/// Annotation macros the parser took for a declaration's type: in
+/// `MBEDTLS_CHECK_RETURN_CRITICAL` / `static int f(void)` the unknown name
+/// becomes the `type_identifier`, `static` a storage class, and the real
+/// type `int` is stranded in an `ERROR` (or, for `unsigned` or `struct`,
+/// read as the declarator, with the rest of the declaration lost). The
+/// existing repairs cannot help: a stranded keyword is never blanked,
+/// since it is real code, and the name is a macro only the prescan might
+/// know.
+///
+/// Read off the parser's signal, not a name: a type-specifier keyword the
+/// parser stranded, preceded, across only whitespace and storage-class,
+/// function-specifier or qualifier keywords, by one identifier that begins
+/// the declaration. A declaration has one type, so that identifier cannot be
+/// it whatever it names; it is what a preprocessor would have replaced with
+/// an attribute or nothing, and blanking it hands the declaration back its
+/// type. Returns every such identifier's byte range, each once.
+fn find_annotation_taken_for_type(node: &Node, source: &str) -> Vec<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let stranded = query::find_descendants(*node, |n| {
+        let text = source[n.start_byte()..n.end_byte()].trim();
+        TYPE_SPECIFIER_KEYWORDS.contains(&text)
+            && (n.kind() == "ERROR"
+                || (n.kind() == "identifier"
+                    && n.parent()
+                        .is_some_and(|p| matches!(p.kind(), "declaration" | "ERROR"))))
+    });
+    let mut found: Vec<(usize, usize)> = Vec::new();
+    for n in stranded {
+        let text = &source[n.start_byte()..n.end_byte()];
+        let mut at = n.start_byte() + (text.len() - text.trim_start().len());
+        let candidate = loop {
+            at = skip_space_back(bytes, at);
+            let Some((start, end)) = word_before(bytes, at) else {
+                break None;
+            };
+            let word = &source[start..end];
+            if NON_TYPE_SPECIFIER_KEYWORDS.contains(&word) {
+                at = start;
+                continue;
+            }
+            break Some((start, end));
+        };
+        let Some((start, end)) = candidate else {
+            continue;
+        };
+        if is_bare_identifier(&source[start..end])
+            && !line_is_preprocessor_directive(source, start)
+            && declaration_may_start_after(source, start)
+            && !found.contains(&(start, end))
+        {
+            found.push((start, end));
+        }
+    }
+    found
+}
 
 /// True if the line containing `byte` begins (ignoring leading whitespace)
 /// with `#`.
@@ -592,6 +745,11 @@ pub fn parse_with_recovery(
             for (start, end) in invocations {
                 text = blank_range(&text, start, end);
             }
+        } else if let Some(repaired) =
+            repair_annotations_taken_for_type(parser, &text, &tree, macros)
+        {
+            (text, tree) = repaired;
+            continue;
         } else if let Some((start, end)) = find_blankable_identifier_error(&tree.root_node(), &text)
         {
             let (repaired, repaired_tree) = choose_repair(parser, &text, start, end, macros)?;
@@ -610,6 +768,57 @@ pub fn parse_with_recovery(
     }
 
     Some((tree, text))
+}
+
+/// Whether a definition the file writes for an annotation candidate leaves
+/// it safe to blank: an object-like macro whose replacement holds no C
+/// keyword (a storage class, `inline`, a type, `_Noreturn`) and no noreturn
+/// spelling -- nothing, an `__attribute__((...))`, a vendor annotation or
+/// another macro's name. A function-like or unreadable one is not.
+fn is_annotation_definition(definition: &crate::analyze::check_macros::MacroDefinition) -> bool {
+    let crate::analyze::check_macros::MacroDefinition::Object { body } = definition else {
+        return false;
+    };
+    !body.contains("noreturn")
+        && !body
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(|token| is_c_keyword(token) || NON_TYPE_SPECIFIER_KEYWORDS.contains(&token))
+}
+
+/// Blank every [`find_annotation_taken_for_type`] at once and re-parse, except
+/// a name whose definition carries meaning a rule reads by name
+/// ([`RepairMacros::meaningful_macros`], or a definition in this file
+/// [`is_annotation_definition`] refuses); the repair stands only when the re-parse has fewer `ERROR`/`MISSING` nodes.
+/// `None` when there is none, or the repair does not help -- the stranded
+/// keyword then stays, as it always did.
+fn repair_annotations_taken_for_type(
+    parser: &mut Parser,
+    source: &str,
+    tree: &Tree,
+    macros: &RepairMacros,
+) -> Option<(String, Tree)> {
+    let mut sites = find_annotation_taken_for_type(&tree.root_node(), source);
+    if sites.is_empty() {
+        return None;
+    }
+    let own = crate::analyze::check_macros::collect_macro_definitions(source);
+    sites.retain(|&(start, end)| {
+        let name = &source[start..end];
+        !macros.meaningful_macros.contains(name)
+            && own
+                .get(name)
+                .is_none_or(|defs| defs.iter().all(is_annotation_definition))
+    });
+    if sites.is_empty() {
+        return None;
+    }
+    let mut text = source.to_string();
+    for (start, end) in sites {
+        text = blank_range(&text, start, end);
+    }
+    let repaired = parser.parse(&text, None)?;
+    (error_node_count(&repaired.root_node()) < error_node_count(&tree.root_node()))
+        .then_some((text, repaired))
 }
 
 /// Repair the defect tree-sitter reported by stranding `source[start..end]`,
@@ -671,7 +880,93 @@ mod tests {
             unused_attribute_macros: unused_attr.iter().map(|s| (*s).to_string()).collect(),
             storage_class_macros: Arc::default(),
             include_edges: Arc::default(),
+            meaningful_macros: HashSet::new(),
         }
+    }
+
+    /// An annotation macro the parser took for the type: every shape whose
+    /// real type it stranded gets that type back, and the macro is blanked
+    /// in place, whatever it is called and with no prescan.
+    #[test]
+    fn blanks_an_annotation_taken_for_a_declarations_type() {
+        for (src, kept) in [
+            ("CHECKED\nstatic int f(void) { return 0; }\n", "static int f(void)"),
+            ("CHECKED\nint f(void) { return 0; }\n", "int f(void)"),
+            ("CHECKED\nstatic inline int f(void) { return 0; }\n", "static inline int f"),
+            ("CHECKED\nstatic unsigned char *g(void);\n", "static unsigned char *g(void);"),
+            ("CHECKED\nstatic const char *h(void);\n", "static const char *h(void);"),
+            ("CHECKED\nstatic struct s *k(void);\n", "static struct s *k(void);"),
+            (
+                "#if defined(A) || \\\n    defined(B)\nCHECKED\nstatic int f(void) { return 0; }\n#endif\n",
+                "static int f(void)",
+            ),
+            (
+                "/* doc */ CHECKED\nstatic int f(void) { return 0; }\n",
+                "static int f(void)",
+            ),
+        ] {
+            let (has_error, text) = recover(src);
+            assert!(!has_error, "{src:?} -> {text:?}");
+            assert_eq!(text.len(), src.len());
+            assert!(!text.contains("CHECKED"), "{text:?}");
+            assert!(text.contains(kept), "{text:?}");
+        }
+    }
+
+    /// A name whose definition means something the rules read by name is
+    /// never blanked: one the file defines as a storage class, `static
+    /// inline`, a type or a noreturn spelling, or one the project marks as
+    /// such. An attribute the file defines, or none, is.
+    #[test]
+    fn keeps_an_annotation_whose_definition_carries_meaning() {
+        for def in [
+            "#define LOCAL static inline\n",
+            "#define LOCAL static\n",
+            "#define LOCAL __attribute__((__noreturn__))\n",
+            "#define LOCAL [[noreturn]]\n",
+            "#define LOCAL(x) x\n",
+        ] {
+            let src = format!("{def}LOCAL\nint f(void) {{ return 0; }}\n");
+            let (_, text) = recover(&src);
+            assert!(text.contains("LOCAL\nint f"), "{def:?} -> {text:?}");
+        }
+        let src = "LOCAL\nint f(void) { return 0; }\n";
+        let mut marked = macros(&["LOCAL"], &[]);
+        marked.meaningful_macros.insert("LOCAL".to_string());
+        let (_, text) = recover_with(src, &marked);
+        assert!(text.contains("LOCAL\nint f"), "{text:?}");
+        let src = "#define CHECKED __attribute__((__warn_unused_result__))\nCHECKED\nint f(void) { return 0; }\n";
+        let (has_error, text) = recover(src);
+        assert!(!has_error, "{text:?}");
+        assert!(!text.contains("CHECKED\nint f"), "{text:?}");
+    }
+
+    /// Every such site is repaired in one pass, not one per iteration: a file
+    /// with more of them than the iteration budget still parses clean.
+    #[test]
+    fn blanks_every_annotation_taken_for_a_type_at_once() {
+        let src: String = (0..20)
+            .map(|i| format!("CHECKED\nstatic int f{i}(void) {{ return {i}; }}\n"))
+            .collect();
+        let (has_error, text) = recover(&src);
+        assert!(!has_error);
+        assert!(!text.contains("CHECKED"));
+    }
+
+    /// A type name before a storage class is valid C and parses clean, so
+    /// nothing is blanked; and an identifier that does not begin the
+    /// declaration (the tail of an expression) is not taken for one.
+    #[test]
+    fn leaves_a_type_before_its_storage_class_and_a_non_leading_name_alone() {
+        let src = "typedef int myint;\nmyint static f(void) { return 0; }\n";
+        let (has_error, text) = recover(src);
+        assert!(!has_error);
+        assert_eq!(text, src);
+        let bytes = "int x = a + b\nstatic int f(void);\n";
+        let mut parser = Parser::new();
+        parser.set_language(&c_language()).unwrap();
+        let tree = parser.parse(bytes, None).unwrap();
+        assert!(find_annotation_taken_for_type(&tree.root_node(), bytes).is_empty());
     }
 
     #[test]
