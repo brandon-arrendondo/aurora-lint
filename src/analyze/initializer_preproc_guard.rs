@@ -244,21 +244,70 @@ fn is_entry_run(lines: &CodeLines, arm: &std::ops::Range<usize>) -> bool {
 /// exactly one comma, at the end of the one or the start of the other, so
 /// the arms read as one list once the directives are blank. Where both have
 /// one, the splice would read `x,, y`.
+///
+/// Judged on the arms' own text with comments removed and literals kept: an
+/// arm `"b",` begins with a string, not a comma, and an arm holding only
+/// `"ab"` is an entry, not nothing.
 fn arms_splice(lines: &CodeLines, arms: &[std::ops::Range<usize>]) -> bool {
     let code: Vec<String> = arms
         .iter()
         .map(|arm| {
-            arm.clone()
-                .map(|k| lines.code[k].as_str())
+            let text = arm
+                .clone()
+                .map(|k| lines.raw[k])
                 .collect::<Vec<_>>()
-                .join(" ")
-                .trim()
-                .to_string()
+                .join("\n");
+            without_comments(&text).trim().to_string()
         })
         .filter(|c| !c.is_empty())
         .collect();
     code.windows(2)
         .all(|w| w[0].ends_with(',') != w[1].starts_with(','))
+}
+
+/// `text` with every comment replaced by a space and every string and
+/// character literal kept as written.
+fn without_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut prev = '\0';
+                for d in chars.by_ref() {
+                    if prev == '*' && d == '/' {
+                        break;
+                    }
+                    prev = d;
+                }
+                out.push(' ');
+            }
+            '/' if chars.peek() == Some(&'/') => {
+                for d in chars.by_ref() {
+                    if d == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            '"' | '\'' => {
+                out.push(c);
+                while let Some(d) = chars.next() {
+                    out.push(d);
+                    if d == '\\' {
+                        if let Some(e) = chars.next() {
+                            out.push(e);
+                        }
+                    } else if d == c || d == '\n' {
+                        break;
+                    }
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Blank every conditional that sits between the entries of a brace
@@ -464,6 +513,58 @@ static const int tbl[] = {
 };
 ";
         assert_eq!(blank_initializer_guarded_preproc(src), src);
+    }
+
+    #[test]
+    fn keeps_every_arm_of_string_and_character_alternatives() {
+        let src = "\
+const char *names[] = {
+#ifdef UNDECLARED_FEATURE
+    \"a\", /* first */
+#else
+    \"b\",
+#endif
+};
+const char chars[] = {
+#ifdef UNDECLARED_FEATURE
+    'a',
+#else
+    ',',
+#endif
+};
+const char *words[] = {
+#ifdef UNDECLARED_FEATURE
+    \"\u{e9}t\u{e9}\",
+#else
+    \"hiver, // not a comment\",
+#endif
+};
+";
+        let out = fixed(src);
+        assert!(parses_clean(&out), "{out}");
+        for kept in ["\"a\",", "\"b\",", "'a',", "',',", "\"\u{e9}t\u{e9}\","] {
+            assert!(out.contains(kept), "{kept} was dropped:\n{out}");
+        }
+    }
+
+    #[test]
+    fn literal_arms_with_no_comma_between_keep_one_arm() {
+        let src = "\
+char s[3] = {
+#ifdef UNDECLARED_FEATURE
+    \"ab\"
+#else
+    \"cd\"
+#endif
+};
+";
+        let out = fixed(src);
+        assert!(parses_clean(&out), "{out}");
+        assert!(
+            !out.contains("\"ab\""),
+            "the arm no build compiles is dropped"
+        );
+        assert!(out.contains("\"cd\""));
     }
 
     #[test]
