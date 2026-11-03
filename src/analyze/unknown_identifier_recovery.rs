@@ -351,10 +351,15 @@ fn skip_space_back(bytes: &[u8], mut at: usize) -> usize {
 }
 
 /// Whether a declaration may begin right after `at`: the start of the file,
-/// the end of a statement, declaration or block (`;`, `{`, `}`), the end of
-/// a block comment, or the end of a preprocessor directive's line.
-fn declaration_may_start_after(source: &str, at: usize) -> bool {
-    let bytes = source.as_bytes();
+/// the end of a statement, declaration or block (`;`, `{`, `}`), or the end
+/// of a preprocessor directive's line. Read in `masked`, the source with
+/// comments and literal contents blanked ([`pp_tokens::mask_source`]), so a
+/// comment of either kind between the two counts as whitespace: `int x;` /
+/// `// doc` / `CHECKED`. `source` decides what is a directive.
+///
+/// [`pp_tokens::mask_source`]: crate::utility::cert_c::pp_tokens::mask_source
+fn declaration_may_start_after(source: &str, masked: &str, at: usize) -> bool {
+    let bytes = masked.as_bytes();
     let before = skip_space_back(bytes, at);
     if before == 0 {
         return true;
@@ -362,12 +367,9 @@ fn declaration_may_start_after(source: &str, at: usize) -> bool {
     if matches!(bytes[before - 1], b';' | b'{' | b'}') {
         return true;
     }
-    if before >= 2 && &bytes[before - 2..before] == b"*/" {
-        return true;
-    }
     // Only whitespace, and at least one line break, between a directive's
     // end and `at`; a directive continued with `\` ends on its last line.
-    source[before..at].contains('\n') && in_preprocessor_directive(source, before - 1)
+    masked[before..at].contains('\n') && in_preprocessor_directive(source, before - 1)
 }
 
 /// True if the line containing `byte` is a preprocessor directive's, its
@@ -401,7 +403,6 @@ fn in_preprocessor_directive(source: &str, byte: usize) -> bool {
 /// an attribute or nothing, and blanking it hands the declaration back its
 /// type. Returns every such identifier's byte range, each once.
 fn find_annotation_taken_for_type(node: &Node, source: &str) -> Vec<(usize, usize)> {
-    let bytes = source.as_bytes();
     let stranded = query::find_descendants(*node, |n| {
         let text = source[n.start_byte()..n.end_byte()].trim();
         TYPE_SPECIFIER_KEYWORDS.contains(&text)
@@ -410,6 +411,14 @@ fn find_annotation_taken_for_type(node: &Node, source: &str) -> Vec<(usize, usiz
                     && n.parent()
                         .is_some_and(|p| matches!(p.kind(), "declaration" | "ERROR"))))
     });
+    if stranded.is_empty() {
+        return Vec::new();
+    }
+    // Every backward scan reads the masked source, so a comment between the
+    // annotation and what precedes or follows it reads as whitespace:
+    // `CHECKED // note` / `static int f(void)`.
+    let masked = crate::utility::cert_c::pp_tokens::mask_source(source);
+    let bytes = masked.as_bytes();
     let mut found: Vec<(usize, usize)> = Vec::new();
     for n in stranded {
         let text = &source[n.start_byte()..n.end_byte()];
@@ -431,7 +440,7 @@ fn find_annotation_taken_for_type(node: &Node, source: &str) -> Vec<(usize, usiz
         };
         if is_bare_identifier(&source[start..end])
             && !line_is_preprocessor_directive(source, start)
-            && declaration_may_start_after(source, start)
+            && declaration_may_start_after(source, &masked, start)
             && !found.contains(&(start, end))
         {
             found.push((start, end));
@@ -515,6 +524,94 @@ fn find_keyword_argument_macro_invocations(node: &Node, source: &str) -> Vec<(us
         }
     }
     outermost
+}
+
+/// The byte range of every macro invocation that trails a function's
+/// parameter list, `MACRO(args)` in `void f(const char *fmt, ...)
+/// PRINTF_LIKE(1, 2);`, in a top-level item the parser damaged.
+///
+/// tree-sitter-c reads such an invocation as a `call_expression` inside the
+/// `function_declarator`, after its parameters. After preprocessing no
+/// declarator ends in a call: `f(...)(...)` declares a function returning a
+/// function, which C forbids, so the invocation is always a macro that
+/// expands to an attribute or to nothing. Where it stands decides how much
+/// it costs. Followed by a prototype that itself begins with an annotation
+/// macro (dbus writes every prototype as `EXPORT_MACRO` / `void name(...)
+/// FORMAT_MACRO(3, 4);`), the parser reads the `;` and the next prototype's
+/// type and name into an `ERROR` inside the first declaration, and one of
+/// the two prototypes is lost to every rule. Blanking the invocation leaves
+/// both prototypes whole.
+///
+/// Keyed on the parser's own placement of the invocation, never on its
+/// name, and on what a declarator's attributes are followed by: the `;` of a
+/// prototype, the `{` of a definition, or the `,` before another declarator.
+/// Statement macros in a body the parser lost (`C2S(CMD_1)` / `C2S(CMD_2)`,
+/// each expanding to a `case` label) can be read as the same trailing
+/// calls on a declarator that does not exist; they run on to the next
+/// statement or the `}` of the block instead, so they are left as written.
+/// Only an invocation in a top-level item that holds an `ERROR` or `MISSING`
+/// node is taken: in an item that parses cleanly it does no harm, and the
+/// repair touches nothing it does not need to.
+fn find_trailing_attribute_invocations(node: &Node, source: &str) -> Vec<(usize, usize)> {
+    let candidates = query::find_descendants(*node, |n| {
+        n.kind() == "call_expression"
+            && n.parent()
+                .is_some_and(|p| p.kind() == "function_declarator")
+            && n.child_by_field_name("function")
+                .is_some_and(|f| f.kind() == "identifier")
+            && top_level_item(&n).has_error()
+            && !line_is_preprocessor_directive(source, n.start_byte())
+    });
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let masked = crate::utility::cert_c::pp_tokens::mask_source(source);
+    candidates
+        .iter()
+        .filter(|n| {
+            n.parent()
+                .is_some_and(|d| ends_in_attributes_only(&d, &masked))
+        })
+        .map(|n| (n.start_byte(), n.end_byte()))
+        .collect()
+}
+
+/// Whether everything in `declarator` after its parameter list is attribute
+/// invocations, and the declarator is followed by what ends one: `;`, `{` or
+/// `,`. Nothing but the invocations themselves may stand between: no `{`,
+/// `}` or `;` in `masked` (the source with comments and literal contents
+/// blanked) and no `ERROR` child. A declarator the parser assembled out of
+/// a lost function body spans a `}` or an `ERROR` on its way to whatever
+/// follows it.
+fn ends_in_attributes_only(declarator: &Node, masked: &str) -> bool {
+    let Some(params) = declarator.child_by_field_name("parameters") else {
+        return false;
+    };
+    let tail = &masked[params.end_byte()..declarator.end_byte()];
+    let mut cursor = declarator.walk();
+    let tail_is_attributes = !tail.contains(['{', '}', ';'])
+        && declarator
+            .children(&mut cursor)
+            .filter(|c| c.start_byte() >= params.end_byte())
+            .all(|c| !c.is_error() && !c.is_missing());
+    tail_is_attributes
+        && matches!(
+            next_non_space(masked.as_bytes(), declarator.end_byte()),
+            Some(b';' | b'{' | b',')
+        )
+}
+
+/// The ancestor of `node` that is a direct child of the root, or the root
+/// itself for a node with no such ancestor.
+fn top_level_item<'a>(node: &Node<'a>) -> Node<'a> {
+    let mut item = *node;
+    while let Some(parent) = item.parent() {
+        if parent.parent().is_none() {
+            return item;
+        }
+        item = parent;
+    }
+    item
 }
 
 /// The invocation around the byte at `at` (see [`enclosing_invocation`]),
@@ -745,6 +842,14 @@ pub fn parse_with_recovery(
             for (start, end) in invocations {
                 text = blank_range(&text, start, end);
             }
+        } else if let Some(repaired) = blank_if_fewer_errors(
+            parser,
+            &text,
+            &tree,
+            &find_trailing_attribute_invocations(&tree.root_node(), &text),
+        ) {
+            (text, tree) = repaired;
+            continue;
         } else if let Some(repaired) =
             repair_annotations_taken_for_type(parser, &text, &tree, macros)
         {
@@ -809,17 +914,68 @@ fn repair_annotations_taken_for_type(
                 .get(name)
                 .is_none_or(|defs| defs.iter().all(is_annotation_definition))
     });
+    blank_if_fewer_errors(parser, source, tree, &sites)
+}
+
+/// Blank every range in `sites` at once and re-parse. The result stands only
+/// when the re-parse has fewer `ERROR`/`MISSING` nodes than `tree`; `None`
+/// when `sites` is empty or the blank does not help.
+fn blank_if_fewer_errors(
+    parser: &mut Parser,
+    source: &str,
+    tree: &Tree,
+    sites: &[(usize, usize)],
+) -> Option<(String, Tree)> {
     if sites.is_empty() {
         return None;
     }
     let mut text = source.to_string();
-    for (start, end) in sites {
+    for &(start, end) in sites {
         text = blank_range(&text, start, end);
     }
     let repaired = parser.parse(&text, None)?;
-    (error_node_count(&repaired.root_node()) < error_node_count(&tree.root_node()))
-        .then_some((text, repaired))
+    let fewer_errors =
+        error_node_count(&repaired.root_node()) < error_node_count(&tree.root_node());
+    let declared = function_declarator_names(&repaired.root_node(), &text, false);
+    let keeps_every_declaration = function_declarator_names(&tree.root_node(), source, true)
+        .iter()
+        .all(|name| declared.contains(name));
+    (fewer_errors && keeps_every_declaration).then_some((text, repaired))
 }
+
+/// The names of the functions `root` declares or defines: each
+/// `function_declarator`'s innermost name. With `settled_only`, only a
+/// declarator that has no `ERROR` ancestor, one the parser fully placed.
+///
+/// [`blank_if_fewer_errors`] accepts a repair only when every settled name
+/// before it is still declared after it. A lower `ERROR` count alone is not
+/// enough: a repair can tidy two errors away while the parser folds the next
+/// prototype into the one before it, and that prototype is then lost to
+/// every rule.
+fn function_declarator_names(root: &Node, source: &str, settled_only: bool) -> HashSet<String> {
+    query::find_descendants(*root, |n| {
+        n.kind() == "function_declarator"
+            && (!settled_only || query::nearest_ancestor_of_kind(n, "ERROR").is_none())
+    })
+    .iter()
+    .filter_map(|declarator| {
+        let mut inner = declarator.child_by_field_name("declarator")?;
+        for _ in 0..MAX_DECLARATOR_DEPTH {
+            if inner.kind() == "identifier" {
+                return Some(source[inner.start_byte()..inner.end_byte()].to_string());
+            }
+            inner = inner
+                .child_by_field_name("declarator")
+                .or_else(|| inner.named_child(0))?;
+        }
+        None
+    })
+    .collect()
+}
+
+/// How deep [`function_declarator_names`] follows nested declarators
+/// (pointer, parenthesized, function) to a function's name.
+const MAX_DECLARATOR_DEPTH: usize = 8;
 
 /// Repair the defect tree-sitter reported by stranding `source[start..end]`,
 /// returning the repaired text and its re-parse.
@@ -939,6 +1095,91 @@ mod tests {
         let (has_error, text) = recover(src);
         assert!(!has_error, "{text:?}");
         assert!(!text.contains("CHECKED\nint f"), "{text:?}");
+    }
+
+    /// A macro invocation trailing a prototype's parameter list, followed by
+    /// a prototype that begins with an annotation macro: both prototypes
+    /// come out whole, whatever the macros are called.
+    #[test]
+    fn blanks_a_macro_invocation_trailing_a_prototype() {
+        let src = "EXPORTED\nvoid set_error(int *e, const char *fmt, ...) PRINTF_LIKE (2, 3);\n\
+                   EXPORTED\nvoid set_error_const(int *e, const char *msg);\n";
+        let (has_error, text) = recover(src);
+        assert!(!has_error, "{text:?}");
+        assert!(!text.contains("PRINTF_LIKE"), "{text:?}");
+        assert!(
+            text.contains("void set_error(int *e, const char *fmt, ...)"),
+            "{text:?}"
+        );
+        assert!(
+            text.contains("void set_error_const(int *e, const char *msg);"),
+            "{text:?}"
+        );
+        assert_eq!(src.len(), text.len());
+        assert_eq!(src.lines().count(), text.lines().count());
+
+        let src = "void f(int a) M(3, 4);\nvoid g(int b);\n";
+        let (has_error, text) = recover(src);
+        assert!(!has_error, "{text:?}");
+        assert_eq!(text, src.replace("M(3, 4)", "       "), "{text:?}");
+    }
+
+    /// A blank that lowers the `ERROR` count is still refused when a
+    /// function the parser had fully placed is no longer declared after it.
+    /// Blanking only the export macros here lets the parser fold the second
+    /// prototype into the first, around the trailing macro left in place.
+    #[test]
+    fn refuses_a_blank_that_loses_a_settled_declaration() {
+        let src = concat!(
+            "typedef struct ErrorState ErrorState;\n",
+            "EXPORTED\n",
+            "void        lib_error_free      (ErrorState       *error);\n",
+            "EXPORTED\n",
+            "void        lib_set_error       (ErrorState       *error,\n",
+            "                                  const char      *name,\n",
+            "                                  const char      *message,\n",
+            "                                  ...) PRINTF_LIKE (3, 4);\n",
+            "EXPORTED\n",
+            "void        lib_set_error_const (ErrorState       *error,\n",
+            "                                  const char      *name,\n",
+            "                                  const char      *message);\n",
+            "EXPORTED\n",
+            "void        lib_move_error      (ErrorState       *src,\n",
+            "                                  ErrorState       *dest);\n",
+        );
+        let mut parser = Parser::new();
+        parser.set_language(&c_language()).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let settled = function_declarator_names(&tree.root_node(), src, true);
+        assert!(settled.contains("lib_set_error_const"), "{settled:?}");
+        let exports: Vec<(usize, usize)> = src
+            .match_indices("EXPORTED")
+            .map(|(i, m)| (i, i + m.len()))
+            .collect();
+        let blanked = exports
+            .iter()
+            .fold(src.to_string(), |text, &(s, e)| blank_range(&text, s, e));
+        let blanked_tree = parser.parse(&blanked, None).unwrap();
+        assert!(
+            error_node_count(&blanked_tree.root_node()) < error_node_count(&tree.root_node()),
+            "the blank alone looks like an improvement"
+        );
+        assert!(
+            !function_declarator_names(&blanked_tree.root_node(), &blanked, false)
+                .contains("lib_set_error_const"),
+            "and loses a prototype"
+        );
+        assert!(blank_if_fewer_errors(&mut parser, src, &tree, &exports).is_none());
+    }
+
+    /// An invocation trailing a prototype in an item that parses cleanly is
+    /// left as written, even while another item in the file is repaired.
+    #[test]
+    fn leaves_a_trailing_invocation_in_a_clean_item_alone() {
+        let src = "int *f(int a) M(1);\nCHECKED\nstatic int g(void) { return 0; }\n";
+        let (has_error, text) = recover(src);
+        assert!(!has_error, "{text:?}");
+        assert!(text.contains("int *f(int a) M(1);"), "{text:?}");
     }
 
     /// Every such site is repaired in one pass, not one per iteration: a file
