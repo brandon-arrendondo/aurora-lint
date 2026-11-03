@@ -1,7 +1,8 @@
 //! Which arm of a preprocessor conditional a build compiles, for the
 //! pre-parse passes that keep ONE arm of a conditional tree-sitter cannot
 //! parse with all of its arms in place (`paren_preproc_guard`,
-//! `initializer_preproc_guard` for alternative initializer entries, and
+//! `initializer_preproc_guard` for alternative initializer entries with no
+//! comma between them, and
 //! `preproc_split_chain` for arms that each open the shared body).
 //!
 //! Keeping an arm decides which code the rules see, and so which findings

@@ -351,7 +351,8 @@ since.
 - **Parse repairs (ADR-0010).** A pre-parse repair that keeps one arm of a
   conditional tree-sitter cannot parse whole keeps the arm the scan's
   profile compiles, but only in `paren_preproc_guard`'s multi-arm path, in
-  `initializer_preproc_guard` and for an opened header. A chain followed by a lone `{` still keeps the last
+  `initializer_preproc_guard` where the arms have no comma between them (it
+  keeps every arm where they do) and for an opened header. A chain followed by a lone `{` still keeps the last
   incomplete arm, the one the brace follows, by position. Each condition is
   read in order, and a project name the profile does not declare reads as
   undefined. Anything else leaves the conditional unrepaired: a reserved or

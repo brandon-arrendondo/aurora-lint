@@ -1668,9 +1668,11 @@ macro invocation's arguments and is PRE32-C's. Inside a function body the
 `#if` otherwise swallows the rest of the body and strands its closing
 brace, and recovery can wrap the whole file in one `ERROR` around it,
 mbedtls's `ssl_tls12_server.c` with all 48 definitions; a single arm is kept
-whatever its condition, and a multi-arm conditional keeps the arm
-`compiled_arm` picks rather than splicing entries from exclusive
-configurations into one list) and
+whatever its condition, and a multi-arm conditional keeps EVERY arm when a
+comma separates each arm's entries from the next, so no code leaves analysis
+-- keeping the compiled arm there dropped a labeled true positive -- and
+falls back to the arm `compiled_arm` picks only when the arms would splice
+into a list that does not parse) and
 `control_header_preproc_guard.rs` (a guard closing between an
 `if`/`while`/`for` header and the body it governs, which leaves the header
 with a synthesized `(expression_statement (MISSING ";"))` consequence that

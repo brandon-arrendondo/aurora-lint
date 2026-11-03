@@ -43,12 +43,23 @@
 //! * A conditional with one arm keeps that arm whatever its condition says,
 //!   as `paren_preproc_guard` does: `#if 0` entries are analysed as if
 //!   compiled. Blanking only the directives already produces a valid list.
-//! * A conditional with `#else`/`#elif` arms keeps ONE arm, the one the scan's
-//!   profile compiles (`preproc_arm_choice::compiled_arm`), and blanks the
-//!   others. Splicing every arm into one list would parse, but it would hand
-//!   the rules an array with entries from configurations that exclude each
-//!   other, and an element count no build has. A conditional whose arm cannot
-//!   be decided, or whose arms hold directives of their own, is left alone.
+//! * A conditional with `#else`/`#elif` arms keeps EVERY arm when a comma
+//!   separates each arm's entries from the next arm's, so blanking only the
+//!   directives leaves a valid list: `#ifdef A` / `x,` / `#else` / `y,` /
+//!   `#endif` reads `x, y,`. Every arm some configuration compiles is
+//!   reported as written (ADR-0010 Decision 1), so a rule that reads entries
+//!   one at a time sees each alternative; keeping only the arm the scan's
+//!   profile compiles dropped a labeled true positive in the arm it did not
+//!   keep. The list as a whole is then no build's list: its element count
+//!   and its contents mix configurations that exclude each other.
+//! * Arms with no comma between them (`#ifdef A` / `PAIR(1, 2)` / `#else` /
+//!   `PAIR(3, 4)` / `#endif`) would splice into `PAIR(1, 2) PAIR(3, 4)`, which
+//!   does not parse. There the arm the scan's profile compiles is kept
+//!   (`preproc_arm_choice::compiled_arm`) and the others are blanked, the
+//!   cost `paren_preproc_guard` accepts for the same reason. A conditional
+//!   whose arm cannot be decided is left alone.
+//! * A multi-arm conditional whose arms hold directives of their own is left
+//!   alone either way.
 //!
 //! The brace the conditional sits in must be an initializer's. That is read
 //! from the code before it: a `{` right after `=` opens an initializer list,
@@ -229,9 +240,31 @@ fn is_entry_run(lines: &CodeLines, arm: &std::ops::Range<usize>) -> bool {
     braces == 0 && parens == 0
 }
 
+/// Whether every arm's entries are separated from the next non-empty arm's by
+/// exactly one comma, at the end of the one or the start of the other, so
+/// the arms read as one list once the directives are blank. Where both have
+/// one, the splice would read `x,, y`.
+fn arms_splice(lines: &CodeLines, arms: &[std::ops::Range<usize>]) -> bool {
+    let code: Vec<String> = arms
+        .iter()
+        .map(|arm| {
+            arm.clone()
+                .map(|k| lines.code[k].as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+                .trim()
+                .to_string()
+        })
+        .filter(|c| !c.is_empty())
+        .collect();
+    code.windows(2)
+        .all(|w| w[0].ends_with(',') != w[1].starts_with(','))
+}
+
 /// Blank every conditional that sits between the entries of a brace
-/// initializer list, keeping one arm. Length- and line-preserving; a no-op
-/// on a file without the construct.
+/// initializer list: its directives, and for a multi-arm one that does not
+/// splice, every arm but the compiled one. Length- and line-preserving; a
+/// no-op on a file without the construct.
 pub fn blank_initializer_guarded_preproc(source: &str) -> String {
     let lines = CodeLines::new(source);
     let mut out = source.as_bytes().to_vec();
@@ -250,8 +283,9 @@ pub fn blank_initializer_guarded_preproc(source: &str) -> String {
         if !arms.iter().all(|a| is_entry_run(&lines, a)) {
             continue;
         }
+        // `None` keeps every arm.
         let kept = if c.branches.is_empty() {
-            0
+            None
         } else {
             let own_directive = |arm: &std::ops::Range<usize>| {
                 arm.clone()
@@ -260,16 +294,20 @@ pub fn blank_initializer_guarded_preproc(source: &str) -> String {
             if arms.iter().any(own_directive) {
                 continue;
             }
-            let local = local.get_or_insert_with(|| locally_defined_names(&lines.raw));
-            match compiled_arm(&lines.raw, &edges[..edges.len() - 1], local) {
-                Some(kept) => kept,
-                None => continue,
+            if arms_splice(&lines, &arms) {
+                None
+            } else {
+                let local = local.get_or_insert_with(|| locally_defined_names(&lines.raw));
+                match compiled_arm(&lines.raw, &edges[..edges.len() - 1], local) {
+                    Some(kept) => Some(kept),
+                    None => continue,
+                }
             }
         };
         let dropped = arms
             .iter()
             .enumerate()
-            .filter(|&(a, _)| a != kept)
+            .filter(|&(a, _)| kept.is_some_and(|k| k != a))
             .flat_map(|(_, arm)| arm.clone());
         let directives = edges.iter().flat_map(|&d| directive_extent(&lines.raw, d));
         for k in directives.chain(dropped) {
@@ -350,36 +388,79 @@ static const struct pair tbl[] = {
     }
 
     #[test]
-    fn keeps_the_compiled_arm_of_a_two_arm_conditional() {
+    fn keeps_every_arm_of_comma_separated_alternatives() {
         let src = "\
 static const int tbl[] = {
 #ifdef UNDECLARED_FEATURE
     1, 2,
-#else
+#elif FOO_VERSION >= 3
     3,
+#else
 #endif
+    4
+#ifdef OTHER_FEATURE
+    , 5
+#else
+    , 6
+#endif
+};
+";
+        let out = fixed(src);
+        assert!(parses_clean(&out), "{out}");
+        assert!(out.contains("1, 2,") && out.contains("3,"));
+        assert!(out.contains(", 5") && out.contains(", 6"));
+        assert!(!out.contains('#'));
+    }
+
+    #[test]
+    fn a_comma_on_both_sides_of_an_arm_boundary_does_not_splice() {
+        // Each configuration is valid (`0, 1,` and `0, 2`); the splice would
+        // read `0, 1, , 2`.
+        let src = "\
+static const int tbl[] = {
     0
+#ifdef UNDECLARED_FEATURE
+    , 1,
+#else
+    , 2
+#endif
+};
+";
+        let out = fixed(src);
+        assert!(parses_clean(&out), "{out}");
+        assert!(!out.contains(", 1,"), "the compiled arm is kept instead");
+        assert!(out.contains(", 2"));
+    }
+
+    #[test]
+    fn keeps_the_compiled_arm_of_alternatives_with_no_comma_between() {
+        let src = "\
+static const int tbl[] = {
+#ifdef UNDECLARED_FEATURE
+    PAIR(1, 2)
+#else
+    PAIR(3, 4)
+#endif
 };
 ";
         let out = fixed(src);
         assert!(parses_clean(&out), "{out}");
         assert!(
-            !out.contains("1, 2,"),
+            !out.contains("PAIR(1, 2)"),
             "the arm no build compiles is dropped"
         );
-        assert!(out.contains("3,"));
+        assert!(out.contains("PAIR(3, 4)"));
     }
 
     #[test]
-    fn leaves_an_undecidable_two_arm_conditional_alone() {
+    fn leaves_undecidable_alternatives_with_no_comma_between_alone() {
         let src = "\
 static const int tbl[] = {
 #if FOO_VERSION >= 3
-    1,
+    1
 #else
-    2,
+    2
 #endif
-    0
 };
 ";
         assert_eq!(blank_initializer_guarded_preproc(src), src);
