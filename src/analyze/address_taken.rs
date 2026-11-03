@@ -110,10 +110,16 @@ impl FunctionKey {
 }
 
 /// What is computed once per function, remembered for every function of
-/// the source buffer last asked about. A rule walking a file asks for one
-/// function's facts again after asking for every other function's (value-range
+/// the file being scanned. A rule walking a file asks for one function's
+/// facts again after asking for every other function's (value-range
 /// analysis runs over the whole file first), so one remembered function is
-/// not enough; a new buffer starts the memo afresh, and so does reaching
+/// not enough.
+///
+/// The memo is forgotten whenever the parser reads a file
+/// ([`forget_function_facts`], from `CParser`), since what is remembered
+/// can depend on the rest of the file and a buffer's address and length do
+/// not identify its text: the next file may be allocated where the last one
+/// was. A different buffer starts it afresh as well, and so does reaching
 /// [`FunctionMemo::CAPACITY`] functions.
 pub struct FunctionMemo<T> {
     buffer: (usize, usize),
@@ -142,11 +148,23 @@ impl<T: Clone> FunctionMemo<T> {
     /// Remember `value` for `key`.
     pub fn insert(&mut self, key: FunctionKey, value: T) {
         if self.buffer != key.buffer || self.entries.len() >= Self::CAPACITY {
-            self.entries.clear();
+            self.forget();
             self.buffer = key.buffer;
         }
         self.entries.insert(key, value);
     }
+
+    /// Forget everything remembered.
+    pub fn forget(&mut self) {
+        self.entries.clear();
+        self.buffer = (0, 0);
+    }
+}
+
+/// Forget the address facts remembered on this thread; the parser calls it
+/// through `nonzero_facts::forget_function_facts` before each file.
+pub fn forget_function_facts() {
+    FACTS.with(|memo| memo.borrow_mut().forget());
 }
 
 impl<T: Clone> Default for FunctionMemo<T> {

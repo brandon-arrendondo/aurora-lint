@@ -292,6 +292,14 @@ thread_local! {
         RefCell::new(FunctionMemo::new());
 }
 
+/// Forget every function's facts remembered on this thread, this module's
+/// and `address_taken`'s, so nothing read from one file can answer for the
+/// next: `CParser` calls it before parsing each file ([`FunctionMemo`]).
+pub fn forget_function_facts() {
+    FUNCTION_FACTS.with(|memo| memo.borrow_mut().forget());
+    crate::analyze::address_taken::forget_function_facts();
+}
+
 #[cfg(test)]
 thread_local! {
     /// How many times [`FunctionFacts::of_function`] read a function,
@@ -916,6 +924,58 @@ mod tests {
             let facts = known_conditions(site, &targets, &code, &HashSet::new());
             assert_eq!(facts.len(), 1, "site {i} lost its guard");
         }
+        assert_eq!(take_function_reads(), 1);
+    }
+
+    /// Two files of the same length, read one after the other, each get
+    /// their own facts, though the second may be read into the buffer the
+    /// first was and its function is spelled the same at the same offset:
+    /// only the rest of the file says whether `memset` is the library's,
+    /// which writes `s` during the call alone, or the file's own, which may
+    /// keep the pointer and write `s` after `s = 3`.
+    #[test]
+    fn files_of_the_same_length_read_in_turn_get_their_own_facts() {
+        let function = "int f(void) {\n    int s;\n    memset(&s, 0, sizeof s);\n    s = 3;\n    sink();\n    return 1 << s;\n}\n";
+        let own = "void *memset(void *p, int c, unsigned long n) { return p; }\n";
+        let library = format!("/*{}*/\n", "-".repeat(own.len() - 5));
+        assert_eq!(own.len(), library.len());
+        let mut parser = crate::parser::CParser::new().unwrap();
+        for (tail, keeps_the_pointer) in [
+            (library.as_str(), false),
+            (own, true),
+            (library.as_str(), false),
+        ] {
+            let code = format!("void sink(void);\n{function}{tail}");
+            let (tree, source) = parser.parse_source(&code).unwrap();
+            let shift = query::find_descendants_of_kind(tree.root_node(), "binary_expression")
+                .into_iter()
+                .find(|b| ast_utils::get_node_text(b, &source) == "1 << s")
+                .unwrap();
+            let assignment = source.find("s = 3;").unwrap();
+            let origin = (assignment, assignment + "s = 3;".len());
+            assert_eq!(
+                pointer_write_reaches("s", origin, &shift, &source),
+                keeps_the_pointer,
+                "{tail}"
+            );
+        }
+    }
+
+    /// Reading a file forgets what was remembered of the last one.
+    #[test]
+    fn the_parser_forgets_the_last_files_functions() {
+        let code = "int f(int *p) { int x = 1; int *q = &x; *q = 2; return x; }\n";
+        let tree = parse(code);
+        let func = query::find_descendants_of_kind(tree.root_node(), "function_definition")[0];
+        FunctionFacts::of_function(&func, code);
+        take_function_reads();
+        FunctionFacts::of_function(&func, code);
+        assert_eq!(take_function_reads(), 0);
+        crate::parser::CParser::new()
+            .unwrap()
+            .parse_source("int g;\n")
+            .unwrap();
+        FunctionFacts::of_function(&func, code);
         assert_eq!(take_function_reads(), 1);
     }
 

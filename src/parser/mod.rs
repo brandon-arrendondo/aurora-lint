@@ -71,6 +71,9 @@ impl CParser {
     /// suppression writers compute from the file, or text quoted back in a
     /// finding.
     pub fn parse_file_with_original(&mut self, file_path: &str) -> Result<(Tree, String, String)> {
+        // What was remembered per function of the last file answers nothing
+        // about this one, which may even be read into the same buffer.
+        crate::utility::cert_c::nonzero_facts::forget_function_facts();
         let original = read_source_or_transcode(file_path)?;
         let source = original.clone();
         // An earlier fix: neutralize emscripten EM_ASM/EM_JS embedded-JavaScript
@@ -199,6 +202,7 @@ impl CParser {
     /// an earlier fix), so text sliced from the wrong string at an otherwise
     /// correct byte range can silently return stale content.
     pub fn parse_source(&mut self, source: &str) -> Result<(Tree, String)> {
+        crate::utility::cert_c::nonzero_facts::forget_function_facts();
         let source = crate::analyze::embedded_js_blank::blank_embedded_js(source);
         let source = crate::analyze::has_include_angle::quote_has_include_headers(&source);
         let source = crate::analyze::thread_local_keyword::spell_thread_local(&source);
