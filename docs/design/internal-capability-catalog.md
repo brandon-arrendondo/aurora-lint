@@ -1672,7 +1672,9 @@ rather than by a macro name or a parser signal, for the preprocessor
 constructs `tree-sitter-c`'s grammar has no production for at all:
 `preproc_dangling_else.rs` (an if/else chain split across a
 guard; a `} else` guard nested in another's braced arm is repaired first, in
-rounds; it runs after `paren_preproc_guard.rs`, so a conditional operand in an `if`
+rounds, and a nested conditional whose every arm is whole statements, braces
+and parentheses balanced, does not keep the outer guard in place; it runs
+after `paren_preproc_guard.rs`, so a conditional operand in an `if`
 condition is gone before it judges the arm), `label_preproc_guard.rs` (a guard opening right after a
 goto label), `paren_preproc_guard.rs` (a guard opening inside
 an unclosed parenthesized expression, or continuing an expression statement

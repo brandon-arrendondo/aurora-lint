@@ -106,6 +106,7 @@
 //! it, and branching inside an already-ambiguous fragment is harder to
 //! reason about safely).
 
+use crate::analyze::paren_preproc_guard::CodeLines;
 use crate::utility::cert_c::text_bounds;
 
 fn strip_trailing_line_comment(s: &str) -> &str {
@@ -289,8 +290,8 @@ pub(crate) fn blank_directive(out: &mut [u8], lines: &[&str], line_starts: &[usi
 }
 
 /// A guarded block, as the run-based pass below sees it: the line indices of
-/// its `#if` and `#endif`, whether it has an `#elif`/`#else` of its own or
-/// any directive nested inside, and whether its last content line is
+/// its `#if` and `#endif`, whether anything inside it keeps its guard in
+/// place (see [`guarded_block`]), and whether its last content line is
 /// `} else`.
 struct GuardedBlock {
     start: usize,
@@ -299,27 +300,88 @@ struct GuardedBlock {
     ends_with_brace_else: bool,
 }
 
+/// True if the code lines `arm` hold whole statements: braces and
+/// parentheses never close more than they opened and end level, and the last
+/// line is no dangling `else`. Such an arm of a nested conditional parses as
+/// a `preproc_if` among statements wherever its guard lands.
+fn arm_is_self_contained(code: &CodeLines, arm: std::ops::Range<usize>) -> bool {
+    let (mut braces, mut parens) = (0i32, 0i32);
+    let mut last = None;
+    for k in arm {
+        for c in code.code[k].chars() {
+            match c {
+                '{' => braces += 1,
+                '}' => braces -= 1,
+                '(' => parens += 1,
+                ')' => parens -= 1,
+                _ => {}
+            }
+            if braces < 0 || parens < 0 {
+                return false;
+            }
+        }
+        if !code.code[k].trim().is_empty() {
+            last = Some(k);
+        }
+    }
+    braces == 0
+        && parens == 0
+        && !last.is_some_and(|k| {
+            let t = code.code[k].trim_end();
+            t.strip_suffix("else")
+                .is_some_and(|b| !b.ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+        })
+}
+
 /// The `#if` block starting at line `i`, if `lines[i]` opens one that closes.
-fn guarded_block(lines: &[&str], i: usize) -> Option<GuardedBlock> {
+///
+/// Its guard stays in place (`nested_directive`) when it has an `#elif` or
+/// `#else` of its own, holds a conditional nested two deep, or holds one
+/// with an arm that is not [`arm_is_self_contained`]. A nested conditional
+/// of whole statements does not keep it: mbedtls's TLS key-derivation chains
+/// pick a PSA or legacy call inside each braced arm (`#if
+/// defined(MBEDTLS_USE_PSA_CRYPTO)` / `...;` / `#else` / `...;` / `#endif`),
+/// and that conditional is a `preproc_if` among the arm's statements whether
+/// the arm's own guard is there or not.
+fn guarded_block(code: &CodeLines, i: usize) -> Option<GuardedBlock> {
+    let lines = &code.raw;
     if !is_directive_start(lines[i].trim_start()) {
         return None;
     }
     let mut depth = 1i32;
     let mut nested_directive = false;
+    let mut arm_start = 0usize;
     let mut j = i + 1;
     while j < lines.len() {
         let t = lines[j].trim_start();
+        if code.starts_in_comment[j] {
+            j += 1;
+            continue;
+        }
         if is_directive_start(t) {
             depth += 1;
-            nested_directive = true;
+            if depth == 2 {
+                arm_start = j + 1;
+            } else {
+                nested_directive = true;
+            }
         } else if is_endif(t) {
             depth -= 1;
             if depth == 0 {
                 break;
             }
-            nested_directive = true;
+            if depth == 1 && !arm_is_self_contained(code, arm_start..j) {
+                nested_directive = true;
+            }
         } else if is_branch_directive(t) {
-            nested_directive = true;
+            if depth == 2 {
+                if !arm_is_self_contained(code, arm_start..j) {
+                    nested_directive = true;
+                }
+                arm_start = j + 1;
+            } else {
+                nested_directive = true;
+            }
         }
         j += 1;
     }
@@ -390,8 +452,10 @@ fn after_endif_comment(lines: &[&str], endif: usize) -> usize {
 /// tree-sitter-c's recovery reads the arm after it as a function
 /// definition, which is worse than the un-joined original, where each arm
 /// parses on its own and only its `else` is dropped. A run containing an arm
-/// with directives of its own inside (`if (...) { #if X ... #else ... #endif
-/// } else`) is left alone for the same reason.
+/// with a conditional that is not whole statements inside it (`if (...) {
+/// #if X` / `if (a) {` / `#else` / `if (b) {` / `#endif ... } else`) is left
+/// alone for the same reason; one of whole statements is not (see
+/// [`guarded_block`]).
 ///
 /// A guard nested inside a refused run's arm is a candidate of its own, and
 /// is repaired first: mbedtls's `ssl_parse_client_hello` holds a `} else`
@@ -404,9 +468,9 @@ fn blank_brace_else_chains(source: &str) -> Vec<u8> {
     let mut current = source.as_bytes().to_vec();
     loop {
         let text = String::from_utf8_lossy(&current).into_owned();
-        let (lines, line_starts) = text_bounds::lines_with_starts(&text);
+        let code = CodeLines::new(&text);
         let mut out = current.clone();
-        if !blank_brace_else_round(&lines, &line_starts, &mut out) {
+        if !blank_brace_else_round(&code, &mut out) {
             return out;
         }
         current = out;
@@ -416,7 +480,8 @@ fn blank_brace_else_chains(source: &str) -> Vec<u8> {
 /// One round of [`blank_brace_else_chains`]: blank every run whose arms
 /// hold no directive, and step inside the ones that do. True if anything was
 /// blanked.
-fn blank_brace_else_round(lines: &[&str], line_starts: &[usize], out: &mut [u8]) -> bool {
+fn blank_brace_else_round(code: &CodeLines, out: &mut [u8]) -> bool {
+    let (lines, line_starts) = (&code.raw[..], &code.starts[..]);
     let mut blanked = false;
     let mut refused = std::collections::HashSet::new();
     let mut i = 0usize;
@@ -425,7 +490,7 @@ fn blank_brace_else_round(lines: &[&str], line_starts: &[usize], out: &mut [u8])
             i += 1;
             continue;
         }
-        let Some(first) = guarded_block(lines, i) else {
+        let Some(first) = guarded_block(code, i) else {
             i += 1;
             continue;
         };
@@ -445,7 +510,7 @@ fn blank_brace_else_round(lines: &[&str], line_starts: &[usize], out: &mut [u8])
             if k >= lines.len() {
                 break false;
             }
-            match guarded_block(lines, k) {
+            match guarded_block(code, k) {
                 Some(next) if next.ends_with_brace_else => run.push(next),
                 Some(_) => break false,
                 // The `#endif` or `#else` of an enclosing guard is not the
@@ -652,7 +717,8 @@ int f(int alg) {
         assert!(!out.contains("#if defined(HAVE_ONE)"));
         assert!(!out.contains("#endif"));
 
-        // ... but not when the braced arm has directives of its own inside.
+        // A conditional of whole statements inside the braced arm stays a
+        // `preproc_if` among the arm's statements, so the arm's guard goes.
         let nested = "\
 int g(int alg) {
     int status = 0;
@@ -673,12 +739,42 @@ int g(int alg) {
     return status;
 }
 ";
+        assert!(parses_clean(nested));
         let out = blank_dangling_else_preproc(nested);
+        assert!(!out.contains("#if defined(HAVE_ONE)"));
+        assert!(out.contains("#if defined(USE_PSA)"));
+
+        // ... but not when an arm of the nested conditional opens a brace
+        // another arm, or the code after it, closes.
+        let split_arm = "\
+int g(int alg, int x) {
+    int status = 0;
+    if (alg == 0) {
+    } else
+#if defined(HAVE_ONE)
+    if (alg == 1) {
+#if defined(USE_PSA)
+        if (x) {
+#else
+        if (!x) {
+#endif
+            status = 1;
+        }
+    } else
+#endif
+    {
+        status = -1;
+    }
+    return status;
+}
+";
+        let out = blank_dangling_else_preproc(split_arm);
         assert!(out.contains("#if defined(HAVE_ONE)"));
 
         // A run is all-or-nothing: an `#endif /* ...` comment continued on
-        // the next line must not split it, and one nested arm keeps every
-        // guard of the run in place.
+        // the next line must not split it, and one arm whose nested
+        // conditional is not whole statements keeps every guard of the run
+        // in place.
         let split_by_comment = "\
 int h(int alg) {
     int status = 0;
@@ -694,10 +790,12 @@ int h(int alg) {
 #if defined(HAVE_THREE)
     if (alg == 3) {
 #if defined(USE_PSA)
-        status = 3;
+        if (alg) {
 #else
-        status = 4;
+        if (!alg) {
 #endif
+            status = 3;
+        }
     } else
 #endif
     {
