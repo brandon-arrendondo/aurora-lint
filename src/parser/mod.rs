@@ -95,6 +95,14 @@ impl CParser {
         // `thread_local`, which the grammar does know. Length-preserving.
         let source = crate::analyze::thread_local_keyword::spell_thread_local(&source);
 
+        // A GNU attribute between an object's declarator and its initializer
+        // (`blob[] __attribute__((aligned(4))) = { ... }`) has no place in the
+        // grammar: the braced list after it parses as a comma expression
+        // nested one level per entry, and a large table is refused as too
+        // deep. Spell it as the standard `[[...]]`, which the grammar takes
+        // there. Length-preserving.
+        let source = crate::analyze::trailing_attribute::spell_trailing_attributes(&source);
+
         // A storage-class macro (`#define STATIC static`) reads as a type
         // name, which strands the real type in an ERROR node and turns
         // `STATIC struct { ... } s;` into a function definition. Spell it as
@@ -206,6 +214,7 @@ impl CParser {
         let source = crate::analyze::embedded_js_blank::blank_embedded_js(source);
         let source = crate::analyze::has_include_angle::quote_has_include_headers(&source);
         let source = crate::analyze::thread_local_keyword::spell_thread_local(&source);
+        let source = crate::analyze::trailing_attribute::spell_trailing_attributes(&source);
         let source = crate::analyze::storage_class_macro::spell_storage_class_macros(
             &source,
             None,

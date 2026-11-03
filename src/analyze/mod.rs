@@ -82,6 +82,7 @@ pub mod suppression;
 /// (`cc -E -Wp,-v -`), which a `compile_commands.json` can never contain.
 pub mod system_includes;
 pub mod thread_local_keyword;
+pub mod trailing_attribute;
 pub mod unknown_identifier_recovery;
 pub mod value_range;
 pub mod vra_access;

@@ -1646,6 +1646,22 @@ file as written, which every repair pass maps onto line for line and byte
 for byte: suppression hashes read it (so a suppression written for a line a
 pass rewrites still matches), and `restore_spelling` puts `_Thread_local`
 back into a message that quotes a respelled line.
+`trailing_attribute.rs` repairs a GNU attribute GCC accepts between an
+object's declarator and its initializer or terminator (`blob[]
+__attribute__((aligned(4))) = { ... }`, `int v __attribute__((unused));`),
+where the grammar has no place for it: the declaration ended at the
+declarator, and a braced list after it parsed as a comma expression nested
+one level per entry, so a large table was refused as too deep. It moves the
+attribute in front of the declarator, swapping the two within their line,
+so the attribute reads as the declaration's own `attribute_specifier` and
+the declarator stays a plain `array_declarator`/`pointer_declarator`: the
+line and its length are kept, but the declarator's column moves right by
+the attribute's width, the one pass whose rewrite is not byte for byte
+within a line. Where it cannot move (a declarator after a comma, or a type
+written against the declarator) it spells the attribute `[[A]]` in place,
+which parses as an `attributed_declarator` that fewer rules read through.
+Positions that already parse are left alone: a member, a parameter, a
+function declarator, a typedef, a tag.
 A third family sits alongside them, driven by text shape
 rather than by a macro name or a parser signal, for the preprocessor
 constructs `tree-sitter-c`'s grammar has no production for at all:

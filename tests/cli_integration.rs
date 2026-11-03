@@ -8628,6 +8628,30 @@ fn a_file_nested_past_the_depth_limit_is_skipped_and_the_rest_analysed() {
 }
 
 #[test]
+fn a_large_table_with_an_attribute_after_its_declarator_is_not_refused_as_too_deep() {
+    // GCC accepts `blob[] __attribute__((aligned(4))) = { ... }`. Unrepaired,
+    // the grammar read the list as a comma expression nested one level per
+    // entry, so 6000 entries went over the default --max-nesting-depth and
+    // the file was refused. The parser moves the attribute in front of the
+    // declarator and the list parses flat.
+    let dir = tempfile::tempdir().unwrap();
+    let entries: Vec<String> = (0..6000).map(|n| format!("0x{:02x}", n % 256)).collect();
+    let file = dir.path().join("blob.c");
+    std::fs::write(
+        &file,
+        format!(
+            "static const unsigned char blob[] __attribute__((aligned(4))) = {{ {} }};\n\
+             unsigned char blob_byte(unsigned int i) {{ return blob[i % sizeof(blob)]; }}\n",
+            entries.join(", ")
+        ),
+    )
+    .unwrap();
+    let (code, _stdout, stderr) = run_aurora_lint(&[file.to_str().unwrap()]);
+    assert_ne!(code, 3, "{stderr}");
+    assert!(!stderr.contains("input skipped"), "{stderr}");
+}
+
+#[test]
 fn an_included_header_nested_past_the_depth_limit_is_reported_not_dropped() {
     // A header outside the scanned tree, read only for its declarations and
     // macros, nests 153 levels deep under a limit of 100. Dropping it in
