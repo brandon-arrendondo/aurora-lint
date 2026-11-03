@@ -8280,6 +8280,29 @@ fn copies_of_violation(n: usize) -> tempfile::TempDir {
     dir
 }
 
+/// Nested loops that read and then clear a field of a subscripted element
+/// made the null-state worklist oscillate until its iteration cap. Inside a
+/// scan the cap is a contained failure (ADR-0017): the file lost its EXP34-C
+/// findings and the scan exited 3. A rule fixture cannot see that -- outside a
+/// unit of work the cap only warns -- so the scan itself is asserted here.
+#[test]
+fn null_state_converges_on_nested_loops_over_a_subscripted_field() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "src/rules/cert_c/EXP/EXP34-C/tests/fail/nested_loop_subscript_field_reaches_fixpoint.c",
+    );
+    let (code, stdout, stderr) = run_aurora_lint(&[
+        fixture.to_str().unwrap(),
+        "-m",
+        fixtures().join("manifest_exp34.toml").to_str().unwrap(),
+    ]);
+    assert!(!stderr.contains("iteration cap"), "{stderr}");
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stdout.contains("nested_loop_subscript_field_reaches_fixpoint.c:27:12: [high] EXP34-C:"),
+        "{stdout}"
+    );
+}
+
 #[test]
 #[cfg_attr(
     not(debug_assertions),

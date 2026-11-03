@@ -1717,6 +1717,21 @@ fn run_null_state_worklist(
             continue;
         }
 
+        // Accumulate: a block's entry is the join of every entry computed for
+        // it so far, never just the latest one. The transfer is not monotone
+        // -- an assignment from a key that is not tracked yet yields the
+        // literal `NotNull`, but once that key is tracked it inherits its
+        // state, e.g. `DefinitelyNull` -- so with overwriting, a stale value
+        // from an early trip round a nested loop keeps circulating and the
+        // worklist never settles. Joining makes every entry climb a finite
+        // lattice, so the fixpoint is reached; and it keeps that first trip's
+        // contribution, which overwriting dropped although the path is real.
+        // Where the transfer is monotone the entries only climb anyway, so
+        // this changes nothing there.
+        if let Some(old_entry) = entry_states.get(&block_id) {
+            new_entry = join_states(old_entry, &new_entry);
+        }
+
         // Compute exit state
         let block = &cfg.blocks[block_id];
         let new_exit = apply_transfer(
