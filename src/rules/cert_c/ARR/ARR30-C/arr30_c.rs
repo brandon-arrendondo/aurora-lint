@@ -71,6 +71,7 @@ use crate::utility::cert_c::guard_dominance::{
     self, collect_call_arg_guards, has_dominating_comparison, ComparisonKind,
 };
 use crate::utility::cert_c::node_children::NodeChildren;
+use crate::utility::cert_c::nonzero_facts;
 
 pub struct Arr30C {
     /// Macros any scanned file defines as `static`
@@ -1386,29 +1387,24 @@ impl Arr30C {
         let any_assign_re = regex::Regex::new(&any_assign_pattern).ok()?;
         let total_assign_count = any_assign_re.find_iter(func_text).count();
 
-        if total_assign_count > 1 {
-            // Multiple assignments — check if ALL are constant.
-            // If so, resolve to the last value (handles "data = -1; data = 7;" patterns
-            // where an initialization is overwritten by a known-good value).
-            let const_count = re.find_iter(func_text).count();
-            if const_count == total_assign_count {
-                if let Some(caps) = re.captures_iter(func_text).last() {
-                    if let Some(value_str) = caps.get(1) {
-                        return value_str.as_str().parse::<isize>().ok();
-                    }
-                }
-            }
+        // Multiple assignments resolve only when ALL are constant, to the
+        // last value (handles "data = -1; data = 7;" patterns where an
+        // initialization is overwritten by a known-good value); one
+        // assignment resolves to itself.
+        if total_assign_count > 1 && re.find_iter(func_text).count() != total_assign_count {
             return None;
         }
-
-        // Only one assignment - resolve it
-        if let Some(caps) = re.captures(func_text) {
-            if let Some(value_str) = caps.get(1) {
-                return value_str.as_str().parse::<isize>().ok();
-            }
+        let caps = re.captures_iter(func_text).last()?;
+        let whole = caps.get(0)?;
+        let origin = (
+            func_node.start_byte() + whole.start(),
+            func_node.start_byte() + whole.end(),
+        );
+        // `int i = 0; int *q = &i; *q = n;` leaves `i` holding `n`.
+        if nonzero_facts::pointer_write_reaches(var_name, origin, current_node, source) {
+            return None;
         }
-
-        None
+        caps.get(1)?.as_str().parse::<isize>().ok()
     }
 
     /// Resolve what `name` evaluates to at `position_node`'s source
@@ -1470,7 +1466,7 @@ impl Arr30C {
         }
 
         let mut last_value_expr: Option<Node> = None;
-        let mut last_store_end = decl.end_byte();
+        let mut last_store = (decl.start_byte(), decl.end_byte());
         if let Some(init) = Self::declaration_initializer_for(&decl, name, source) {
             last_value_expr = Some(init);
         }
@@ -1485,9 +1481,10 @@ impl Arr30C {
             }
             if let Some(value) = Self::plain_assignment_value(&stmt, name, source) {
                 last_value_expr = Some(value);
-                last_store_end = stmt.end_byte();
+                last_store = (stmt.start_byte(), stmt.end_byte());
             }
         }
+        let last_store_end = last_store.1;
 
         // A step or compound assignment after that store changes the value
         // it gave (`i = 6; i -= 1; a[i]` indexes 5), and so does one anywhere
@@ -1508,6 +1505,13 @@ impl Arr30C {
                 ) && subtree_steps_identifier(n, source, name)
             });
         if stepped_between || stepped_in_loop {
+            return None;
+        }
+        // So does a store through a pointer to it (`int i = 0; int *q = &i;
+        // *q = n; a[i]` indexes `n`).
+        if last_value_expr.is_some()
+            && nonzero_facts::pointer_write_reaches(name, last_store, position_node, source)
+        {
             return None;
         }
 

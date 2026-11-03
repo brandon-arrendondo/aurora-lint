@@ -97,7 +97,8 @@ pub fn known_conditions<'a>(
 /// - control can reach `site` without passing `cond` ([`entered_by_jump`]);
 /// - the address of a target or a variable it reads is taken, other than
 ///   as an argument of a library call that keeps no copy
-///   ([`passed_to_library_call`]), which writes only during the call, and a
+///   ([`passed_to_library_call`]) and whose value is discarded, which
+///   writes only during the call, and a
 ///   write through a pointer can change it between the two
 ///   ([`pointer_write_between`]);
 /// - a target reads a file-scope variable and a call between the two may
@@ -192,8 +193,58 @@ fn pointer_write_between(
             _ => return true,
         }
     }
+    written_through_pointer(&Between::new(cond, site), func, facts, &guarded, source)
+}
+
+/// Whether a write through a pointer may change the local that `name` means
+/// at `site` after the statement spanning `origin` (byte range) gave it the
+/// value a caller is about to rely on: a store through a pointer that may
+/// hold its address, a call handed such a pointer, or, for a local whose
+/// address escaped or went to a call that may keep it, anything at all.
+///
+/// The stretch is the one [`fact_reaches`] reads: from the end of `origin`
+/// to `site`, plus every loop holding `site` but not `origin`. A name that
+/// is no local of the function holding `site` is not this question's, and
+/// the answer is no.
+///
+/// For a resolver that takes a local's value from its last assignment
+/// (`int s = 3; int *q = &s; *q = v; 1 << s` shifts by `v`, not 3).
+pub fn pointer_write_reaches(
+    name: &str,
+    origin: (usize, usize),
+    site: &Node,
+    source: &str,
+) -> bool {
+    let Some(func) = ast_utils::find_containing_function(site) else {
+        return false;
+    };
+    let function = FunctionFacts::of_function(&func, source);
+    let facts = &function.facts;
+    if facts.is_empty() && function.retained.is_empty() {
+        return false;
+    }
+    let Some(local) = ast_utils::resolve_identifier_declarator(site, name, source)
+        .and_then(|(_, declarator)| facts.local_declared_by(&declarator))
+    else {
+        return false;
+    };
+    if facts.has_escaped(local) || function.retained.contains(&local) {
+        return true;
+    }
+    let between = Between::after(origin, site);
+    written_through_pointer(&between, &func, facts, &HashSet::from([local]), source)
+}
+
+/// Whether a store, step or call in `between` writes through a pointer that
+/// may hold the address of one of `guarded`.
+fn written_through_pointer(
+    between: &Between,
+    func: &Node,
+    facts: &AddressTakenLocals,
+    guarded: &HashSet<LocalId>,
+    source: &str,
+) -> bool {
     let reaches = |targets: HashSet<LocalId>| targets.iter().any(|t| guarded.contains(t));
-    let between = Between::new(cond, site);
     query::find_first_descendant(*func, |n| {
         between.holds(&n)
             && match n.kind() {
@@ -223,7 +274,8 @@ struct FunctionFacts {
     /// library call, whatever its name.
     defined: HashSet<String>,
     /// Every `&` argument's spelling, whitespace-squeezed, where some `&` of
-    /// it is not passed straight to a library call that keeps no copy.
+    /// it is not passed straight to a library call that keeps no copy and
+    /// hands back nothing that is kept ([`call_value_unused`]).
     addressed: HashSet<String>,
     facts: Arc<AddressTakenLocals>,
     /// Locals whose address, or a pointer holding it, goes to a call other
@@ -271,7 +323,8 @@ impl FunctionFacts {
             .filter(|n| {
                 n.child_by_field_name("operator")
                     .is_some_and(|op| op.kind() == "&")
-                    && !passed_to_library_call_in(n, &defined, source)
+                    && !(passed_to_library_call_in(n, &defined, source)
+                        && call_value_unused(n, source))
             })
             .filter_map(|n| n.child_by_field_name("argument"))
             .map(|arg| guard_dominance::squeeze_text(&arg, source))
@@ -367,6 +420,39 @@ fn passed_to_library_call_in(expr: &Node, defined: &HashSet<String>, source: &st
             && !RETAINS_POINTER.contains(&name)
             && library_function(name, defined)
     })
+}
+
+/// Whether the value of the call that `arg` is an argument of goes nowhere:
+/// the call is a statement of its own, the left of a comma, or cast to
+/// `void`. A library call that keeps no copy of a pointer may still hand it
+/// back (`int *q = memcpy(&x, &y, sizeof x);` leaves `q` pointing at `x`),
+/// and what it hands back can be written through after the call.
+fn call_value_unused(arg: &Node, source: &str) -> bool {
+    let Some(mut call) = arg
+        .parent()
+        .and_then(|list| list.parent())
+        .filter(|c| c.kind() == "call_expression")
+    else {
+        return false;
+    };
+    while let Some(parent) = call.parent() {
+        match parent.kind() {
+            "parenthesized_expression" => call = parent,
+            "expression_statement" => return true,
+            "comma_expression" => {
+                return parent
+                    .child_by_field_name("left")
+                    .is_some_and(|l| l.id() == call.id())
+            }
+            "cast_expression" => {
+                return parent
+                    .child_by_field_name("type")
+                    .is_some_and(|t| guard_dominance::squeeze_text(&t, source) == "void")
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// Whether `name` is an ISO C or POSIX function and the file, defining
@@ -476,6 +562,18 @@ impl Between {
                 ) && !spans(owner, site)
             })
             .map_or(cond.end_byte(), |owner| owner.end_byte());
+        Self::spanning(from, (cond.start_byte(), cond.end_byte()), site)
+    }
+
+    /// The stretch after the code spanning `origin` (byte range), a
+    /// statement that runs before `site`.
+    fn after(origin: (usize, usize), site: &Node) -> Self {
+        Self::spanning(origin.1, origin, site)
+    }
+
+    /// From `from` to `site`, plus every loop holding `site` but not the
+    /// code spanning `origin`.
+    fn spanning(from: usize, origin: (usize, usize), site: &Node) -> Self {
         let mut ranges = vec![(from, site.start_byte())];
         let mut current = *site;
         while let Some(parent) = current.parent() {
@@ -486,7 +584,8 @@ impl Between {
                 parent.kind(),
                 "for_statement" | "while_statement" | "do_statement"
             );
-            if is_loop && !spans(&parent, cond) {
+            let holds_origin = parent.start_byte() <= origin.0 && parent.end_byte() >= origin.1;
+            if is_loop && !holds_origin {
                 ranges.push((parent.start_byte(), parent.end_byte()));
             }
             current = parent;

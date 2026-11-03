@@ -12,6 +12,7 @@ use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::data_model::{Fact, IntFacts, Rank};
 use crate::utility::cert_c::node_children::NodeChildren;
+use crate::utility::cert_c::nonzero_facts;
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 use tree_sitter::Node;
@@ -3578,15 +3579,16 @@ pub fn resolve_local_var_range_among<'a>(
 ) -> Option<ValueRange> {
     #[cfg(test)]
     LOCAL_RANGE_RESOLUTIONS.with(|n| n.set(n.get() + 1));
+    let ancestors: Vec<Node<'a>> = ancestors.collect();
     // Find the enclosing compound_statement (function body or block).
-    for parent in ancestors {
+    for parent in &ancestors {
         if parent.kind() == "compound_statement" {
             // Scan statements before our node, keeping the LAST assignment
             // (not the first) since later assignments overwrite earlier ones.
             // If the last modification is unevaluable (e.g., data = rand(),
             // or fscanf(stdin, "%d", &data)), return None so callers don't
             // use a stale range from an earlier assignment.
-            let mut last_range: Option<ValueRange> = None;
+            let mut last: Option<(ValueRange, (usize, usize))> = None;
             let mut invalidated = false;
             for stmt in parent.child_nodes() {
                 if stmt.start_byte() >= node_start {
@@ -3602,20 +3604,24 @@ pub fn resolve_local_var_range_among<'a>(
                     fmacros,
                     depth,
                 ) {
-                    last_range = Some(range);
+                    last = Some((range, (stmt.start_byte(), stmt.end_byte())));
                     invalidated = false;
                 } else if stmt_modifies_var(&stmt, var_name, source) {
                     // Assignment found but RHS unevaluable (e.g., rand()),
                     // or variable modified through pointer (e.g., fscanf(&var))
-                    last_range = None;
+                    last = None;
                     invalidated = true;
                 }
             }
             if invalidated {
                 return None;
             }
-            if last_range.is_some() {
-                return last_range;
+            if let Some((range, origin)) = last {
+                // `int s = 3; int *q = &s; *q = v;` leaves `s` holding `v`.
+                return (!written_through_pointer_after(
+                    var_name, origin, node_start, &ancestors, source,
+                ))
+                .then_some(range);
             }
         }
         // Leaving a loop: a value stored before it reaches `node` only on
@@ -3625,7 +3631,7 @@ pub fn resolve_local_var_range_among<'a>(
         if matches!(
             parent.kind(),
             "while_statement" | "do_statement" | "for_statement"
-        ) && subtree_writes_var(&parent, var_name, source)
+        ) && subtree_writes_var(parent, var_name, source)
         {
             return None;
         }
@@ -3634,6 +3640,27 @@ pub fn resolve_local_var_range_among<'a>(
         }
     }
     None
+}
+
+/// Whether a store through a pointer, or a call that may keep one, can
+/// write the local `var_name` means at `node_start` after the statement
+/// spanning `origin` assigned it ([`nonzero_facts::pointer_write_reaches`]).
+/// `ancestors` holds the occurrence's function, when it has one.
+fn written_through_pointer_after(
+    var_name: &str,
+    origin: (usize, usize),
+    node_start: usize,
+    ancestors: &[Node],
+    source: &str,
+) -> bool {
+    let Some(site) = ancestors
+        .iter()
+        .find(|n| n.kind() == "function_definition")
+        .and_then(|func| func.descendant_for_byte_range(node_start, node_start))
+    else {
+        return false;
+    };
+    nonzero_facts::pointer_write_reaches(var_name, origin, &site, source)
 }
 
 /// Whether anything under `node` assigns `var_name` (`=` or a compound
