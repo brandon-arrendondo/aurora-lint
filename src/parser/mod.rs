@@ -124,6 +124,22 @@ impl CParser {
         // unaffected by this substitution.
         let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(&source);
 
+        // An earlier fix: blank a #if/#ifdef/#ifndef + matching #endif pair that
+        // opens inside an unclosed parenthesized expression (a build-time-
+        // optional operand of a condition, or entry in a parameter or
+        // argument list). tree-sitter-c has no production for a
+        // preprocessor conditional between two operands, and which repair
+        // GLR error recovery picks depends on tokens far away -- on
+        // pure-ftpd's ls.c a one-statement edit at the end of the file
+        // flipped `listfile` between a normal function_definition and a
+        // single ERROR node spanning everything from it to EOF, hiding the
+        // definition from every rule while leaving its calls visible.
+        // It runs before the dangling-else pass: a conditional inside an `if`
+        // condition is an expression fragment, not a statement-level guard,
+        // and while it is still there the dangling-else pass counts it as a
+        // directive inside the arm and leaves the arm's own guard in place.
+        let source = crate::analyze::paren_preproc_guard::blank_paren_guarded_preproc(&source);
+
         // An earlier fix: blank #if/#ifdef/#ifndef + #endif directive pairs that
         // wrap a dangling `else` fragment (an if/else-if chain split across
         // a build-time feature guard) -- tree-sitter-c's grammar has no
@@ -143,18 +159,6 @@ impl CParser {
         // Purely text-level and length-preserving, so it runs
         // unconditionally like the pass above.
         let source = crate::analyze::label_preproc_guard::blank_label_guarded_preproc(&source);
-
-        // An earlier fix: blank a #if/#ifdef/#ifndef + matching #endif pair that
-        // opens inside an unclosed parenthesized expression (a build-time-
-        // optional operand of a condition, or entry in a parameter or
-        // argument list). tree-sitter-c has no production for a
-        // preprocessor conditional between two operands, and which repair
-        // GLR error recovery picks depends on tokens far away -- on
-        // pure-ftpd's ls.c a one-statement edit at the end of the file
-        // flipped `listfile` between a normal function_definition and a
-        // single ERROR node spanning everything from it to EOF, hiding the
-        // definition from every rule while leaving its calls visible.
-        let source = crate::analyze::paren_preproc_guard::blank_paren_guarded_preproc(&source);
 
         // A conditional between the entries of a brace initializer list
         // (`int t[] = {` / `#if A` / `1,` / `#endif` / `0 };`). The grammar
@@ -222,9 +226,9 @@ impl CParser {
             &self.repair_macros.include_edges,
         );
         let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(&source);
+        let source = crate::analyze::paren_preproc_guard::blank_paren_guarded_preproc(&source);
         let source = crate::analyze::preproc_dangling_else::blank_dangling_else_preproc(&source);
         let source = crate::analyze::label_preproc_guard::blank_label_guarded_preproc(&source);
-        let source = crate::analyze::paren_preproc_guard::blank_paren_guarded_preproc(&source);
         let source =
             crate::analyze::initializer_preproc_guard::blank_initializer_guarded_preproc(&source);
         let source =

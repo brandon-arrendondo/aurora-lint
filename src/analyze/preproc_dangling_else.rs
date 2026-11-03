@@ -392,9 +392,39 @@ fn after_endif_comment(lines: &[&str], endif: usize) -> usize {
 /// parses on its own and only its `else` is dropped. A run containing an arm
 /// with directives of its own inside (`if (...) { #if X ... #else ... #endif
 /// } else`) is left alone for the same reason.
-fn blank_brace_else_chains(lines: &[&str], line_starts: &[usize], out: &mut [u8]) {
+///
+/// A guard nested inside a refused run's arm is a candidate of its own, and
+/// is repaired first: mbedtls's `ssl_parse_client_hello` holds a `} else`
+/// guard for the cookie check inside the braced arm of a `} else` guard for
+/// DTLS. Once the inner run is blanked the outer one has no directive left
+/// inside it, so rounds repeat until one blanks nothing. A run that is
+/// refused keeps every one of its guards: a later block of it is never taken
+/// up as a run of its own, which would blank part of the chain.
+fn blank_brace_else_chains(source: &str) -> Vec<u8> {
+    let mut current = source.as_bytes().to_vec();
+    loop {
+        let text = String::from_utf8_lossy(&current).into_owned();
+        let (lines, line_starts) = text_bounds::lines_with_starts(&text);
+        let mut out = current.clone();
+        if !blank_brace_else_round(&lines, &line_starts, &mut out) {
+            return out;
+        }
+        current = out;
+    }
+}
+
+/// One round of [`blank_brace_else_chains`]: blank every run whose arms
+/// hold no directive, and step inside the ones that do. True if anything was
+/// blanked.
+fn blank_brace_else_round(lines: &[&str], line_starts: &[usize], out: &mut [u8]) -> bool {
+    let mut blanked = false;
+    let mut refused = std::collections::HashSet::new();
     let mut i = 0usize;
     while i < lines.len() {
+        if refused.contains(&i) {
+            i += 1;
+            continue;
+        }
         let Some(first) = guarded_block(lines, i) else {
             i += 1;
             continue;
@@ -418,7 +448,12 @@ fn blank_brace_else_chains(lines: &[&str], line_starts: &[usize], out: &mut [u8]
             match guarded_block(lines, k) {
                 Some(next) if next.ends_with_brace_else => run.push(next),
                 Some(_) => break false,
-                None => break !is_directive_start(lines[k].trim_start()),
+                // The `#endif` or `#else` of an enclosing guard is not the
+                // code the chain's last `else` takes as its body.
+                None => {
+                    let t = lines[k].trim_start();
+                    break !is_directive_start(t) && !is_endif(t) && !is_branch_directive(t);
+                }
             }
         };
         let last_end = run.last().unwrap().end;
@@ -427,9 +462,14 @@ fn blank_brace_else_chains(lines: &[&str], line_starts: &[usize], out: &mut [u8]
                 blank_directive(out, lines, line_starts, b.start);
                 blank_directive(out, lines, line_starts, b.end);
             }
+            blanked = true;
+            i = last_end + 1;
+        } else {
+            refused.extend(run.iter().map(|b| b.start));
+            i += 1;
         }
-        i = last_end + 1;
     }
+    blanked
 }
 
 /// Blank the preprocessor directive lines wrapping a dangling `else`
@@ -437,9 +477,7 @@ fn blank_brace_else_chains(lines: &[&str], line_starts: &[usize], out: &mut [u8]
 pub fn blank_dangling_else_preproc(source: &str) -> String {
     let (lines, line_starts) = text_bounds::lines_with_starts(source);
 
-    let mut out = source.as_bytes().to_vec();
-
-    blank_brace_else_chains(&lines, &line_starts, &mut out);
+    let mut out = blank_brace_else_chains(source);
 
     let mut i = 0usize;
     while i < lines.len() {
@@ -1008,5 +1046,104 @@ int f(int fmt) {
         // in place, never a panic.
         let cr = src.replace('\n', "\r");
         assert_eq!(blank_dangling_else_preproc(&cr).len(), cr.len());
+    }
+
+    #[test]
+    fn repairs_a_guard_nested_in_a_guarded_arm_first() {
+        // The arm of an outer `} else` guard holds a `} else` guard of its
+        // own, whose condition holds a conditional operand. The operand's
+        // conditional goes to the paren pass, which runs first in the
+        // pipeline; here it is a whole line inside the arm's parentheses.
+        let src = "\
+int use(int);
+int f(int t, int n, int c)
+{
+    int off;
+#if defined(HAVE_A)
+    if (t == 1) {
+#if defined(HAVE_B)
+        if (c != 0) {
+            use(1);
+        } else
+#endif
+        {
+            use(2);
+        }
+        off = n + 1;
+    } else
+#endif
+    off = n + 2;
+    return use(off);
+}
+";
+        let out = blank_dangling_else_preproc(src);
+        assert!(!out.contains('#'), "a guard was left in place:\n{out}");
+        assert!(parses_clean(src));
+        assert_eq!(out.len(), src.len());
+        assert_eq!(out.lines().count(), src.lines().count());
+    }
+
+    #[test]
+    fn a_refused_run_keeps_the_guards_after_its_refused_arm() {
+        // The first block of the run is refused (its nested conditional
+        // splits a brace across arms); the second must not be taken up as a
+        // run of its own, which would blank half the chain.
+        let src = "\
+int f(int alg, int x) {
+    int status = 0;
+    if (alg == 0) {
+    } else
+#if defined(HAVE_ONE)
+    if (alg == 1) {
+#if defined(USE_PSA)
+        if (x) {
+#else
+        if (!x) {
+#endif
+            status = 1;
+        }
+    } else
+#endif
+#if defined(HAVE_TWO)
+    if (alg == 2) {
+        status = 2;
+    } else
+#endif
+    {
+        status = -1;
+    }
+    return status;
+}
+";
+        let out = blank_dangling_else_preproc(src);
+        assert!(out.contains("#if defined(HAVE_ONE)"));
+        assert!(out.contains("#if defined(HAVE_TWO)"));
+    }
+
+    #[test]
+    fn an_inner_else_closed_by_the_outer_endif_is_left_alone() {
+        // The inner `} else` has no body before the outer `#endif`: it is no
+        // chain this pass can join, so neither guard is blanked.
+        let src = "\
+int f(int t, int c) {
+    int r = 0;
+#if defined(HAVE_A)
+    if (t) {
+        r = 1;
+    } else
+#if defined(HAVE_B)
+    if (c) {
+        r = 2;
+    } else
+#endif
+#endif
+    {
+        r = 3;
+    }
+    return r;
+}
+";
+        let out = blank_dangling_else_preproc(src);
+        assert!(out.contains("#if defined(HAVE_B)"));
     }
 }
