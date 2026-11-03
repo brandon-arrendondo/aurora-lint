@@ -1,3 +1,6 @@
+/// Which locals of a function a write through a pointer, or a call handed
+/// one, may change: the address-taken facts value-range analysis applies.
+pub mod address_taken;
 /// Which storage object a call argument names, in the caller's frame
 /// .
 pub mod arg_origin;

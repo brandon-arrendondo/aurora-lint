@@ -9,6 +9,7 @@
 //! Follows the same forward-dataflow pattern as `null_state.rs`.
 #![allow(dead_code)]
 
+use super::address_taken::{store_base, AddressTakenLocals};
 use super::cfg::{BasicBlock, BlockId, CfgEdge, FunctionCfg};
 use super::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
 use super::dataflow::{find_node_at_range, StatementLookup};
@@ -93,6 +94,9 @@ pub struct RangeAnalysisResult {
     /// [`get_all_var_ranges_at`] (replacing a linear scan over every
     /// statement in the function, also part of an earlier fix's O(n) per query).
     statement_index: Vec<(usize, usize, BlockId)>,
+    /// Which locals a store through a pointer or a call may write, for the
+    /// intra-block replay to apply as the analysis did.
+    aliases: Arc<AddressTakenLocals>,
 }
 
 // ---------------------------------------------------------------------------
@@ -368,6 +372,7 @@ fn apply_range_transfer(
     macros: &MacroConstantMap,
     summaries: &(impl SummaryLookup + ?Sized),
     local_types: &HashMap<String, VarType>,
+    aliases: &AddressTakenLocals,
 ) -> RangeMap {
     let mut state = entry.clone();
     // Resolve every statement in this block in one linear pass rather than
@@ -385,6 +390,7 @@ fn apply_range_transfer(
             summaries,
             &mut state,
             local_types,
+            aliases,
         );
     }
     state
@@ -398,11 +404,15 @@ fn process_statement_for_ranges(
     summaries: &(impl SummaryLookup + ?Sized),
     state: &mut RangeMap,
     local_types: &HashMap<String, VarType>,
+    aliases: &AddressTakenLocals,
 ) {
     // Before the statement's own effect: a callee may write through any
     // `&var` it receives, wherever in the statement the call sits. Idempotent,
     // so the bare-call and opaque-region paths below doing it again is fine.
     widen_address_taken_call_args(node, source, state);
+    if !aliases.is_empty() {
+        apply_pointer_writes(node, source, macros, state, aliases);
+    }
     match node.kind() {
         "declaration" => {
             process_declaration_range(node, source, macros, summaries, state);
@@ -955,6 +965,100 @@ fn process_call_arg_widening_range(node: &Node, source: &str, state: &mut RangeM
                 );
             }
             break;
+        }
+    }
+}
+
+/// Apply every write `node` makes through a pointer to the locals it may
+/// reach ([`AddressTakenLocals`]), before the statement's own effect.
+///
+/// A name-keyed state changes a variable only where it is assigned by name,
+/// so `int *q = &x; *q = read_untrusted();` left `x` at its old value and a
+/// consumer proved a division by it safe. A plain store (`*q = v`) through a
+/// pointer of the target's own type may or may not reach the target (another
+/// path may have pointed `q` elsewhere), so the target keeps its old range
+/// joined with the stored value's; any other write (a compound assignment,
+/// `++`/`--`, a store through a pointer of another type, a store whose value
+/// has no range, a callee handed the pointer) leaves only the type's range.
+/// A call also does that to every local whose address escaped.
+fn apply_pointer_writes(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    state: &mut RangeMap,
+    aliases: &AddressTakenLocals,
+) {
+    match node.kind() {
+        "assignment_expression" => {
+            if let (Some(left), Some(right)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) {
+                if let Some(base) = store_base(&left) {
+                    let plain = get_assignment_operator(node, source) == "=";
+                    let stored = if plain {
+                        let var_ranges = extract_var_ranges_from_state(state);
+                        const_eval::try_evaluate_range(&right, source, macros, &var_ranges)
+                    } else {
+                        None
+                    };
+                    for target in aliases.store_targets(&base, source) {
+                        let Some(cur) = state.get(&target) else {
+                            continue;
+                        };
+                        let var_type = cur.var_type.clone();
+                        match stored {
+                            Some(r) if aliases.stores_own_type(&base, &target, source) => {
+                                let r = match &var_type {
+                                    Some(vt) => clamp_to_type_range(
+                                        apply_unsigned_wrapping(r, vt),
+                                        &var_type,
+                                    ),
+                                    None => r,
+                                };
+                                let range = join_range(&cur.range, &r);
+                                state.insert(target, TypedRange { range, var_type });
+                            }
+                            _ => widen_to_type(state, &target, var_type),
+                        }
+                    }
+                }
+            }
+        }
+        "update_expression" => {
+            if let Some(base) = node
+                .child_by_field_name("argument")
+                .and_then(|arg| store_base(&arg))
+            {
+                for target in aliases.store_targets(&base, source) {
+                    if let Some(cur) = state.get(&target) {
+                        let var_type = cur.var_type.clone();
+                        widen_to_type(state, &target, var_type);
+                    }
+                }
+            }
+        }
+        "call_expression" => {
+            let mut reached: HashSet<String> = aliases.escaped().cloned().collect();
+            if let Some(args) = node.child_by_field_name("arguments") {
+                for i in 0..args.named_child_count() {
+                    if let Some(arg) = args.named_child(i) {
+                        reached.extend(aliases.argument_targets(&arg, source));
+                    }
+                }
+            }
+            for target in reached {
+                if let Some(cur) = state.get(&target) {
+                    let var_type = cur.var_type.clone();
+                    widen_to_type(state, &target, var_type);
+                }
+            }
+        }
+        _ => {}
+    }
+    for i in 0..node.named_child_count() {
+        if let Some(child) = node.named_child(i) {
+            apply_pointer_writes(&child, source, macros, state, aliases);
         }
     }
 }
@@ -1560,6 +1664,7 @@ fn analyze_value_ranges_capped(
     };
 
     let initial_state = build_initial_state(func_node, source, macros, summaries);
+    let aliases = Arc::new(AddressTakenLocals::of_function(func_node, source));
 
     // Collect types for uninitialized local declarations (e.g. `int data;`).
     // These are NOT added to the initial state (would cause stale entry ranges),
@@ -1587,6 +1692,7 @@ fn analyze_value_ranges_capped(
         macros,
         summaries,
         &local_types,
+        &aliases,
     );
     exit_ranges.insert(cfg.entry, entry_exit);
 
@@ -1688,6 +1794,7 @@ fn analyze_value_ranges_capped(
             macros,
             summaries,
             &local_types,
+            &aliases,
         );
 
         // Check convergence
@@ -1714,7 +1821,8 @@ fn analyze_value_ranges_capped(
     let mut statement_index: Vec<(usize, usize, BlockId)> = Vec::new();
     for block in &cfg.blocks {
         let entry = entry_ranges.get(&block.id).cloned().unwrap_or_default();
-        let checkpoints = build_block_checkpoints(&entry, block, &body, source, macros, replay);
+        let checkpoints =
+            build_block_checkpoints(&entry, block, &body, source, macros, replay, &aliases);
         block_checkpoints.insert(block.id, checkpoints);
         for &(start, end) in &block.statements {
             statement_index.push((start, end, block.id));
@@ -1728,6 +1836,7 @@ fn analyze_value_ranges_capped(
         replay_summaries: Arc::clone(replay),
         block_checkpoints,
         statement_index,
+        aliases,
     }
 }
 
@@ -1739,6 +1848,7 @@ fn empty_range_result() -> RangeAnalysisResult {
         replay_summaries: Arc::default(),
         block_checkpoints: HashMap::new(),
         statement_index: Vec::new(),
+        aliases: Arc::default(),
     }
 }
 
@@ -1915,6 +2025,7 @@ pub fn get_var_range_at(
                 replay_summaries,
                 &mut state,
                 &empty_types,
+                &result.aliases,
             );
         }
     }
@@ -1954,6 +2065,7 @@ pub fn eval_expr_range_at(
                 replay_summaries,
                 &mut state,
                 &empty_types,
+                &result.aliases,
             );
         }
     }
@@ -2097,6 +2209,7 @@ fn build_block_checkpoints(
     source: &str,
     macros: &MacroConstantMap,
     replay_summaries: &HashMap<String, FunctionSummary>,
+    aliases: &AddressTakenLocals,
 ) -> BlockCheckpoints {
     let mut state = entry.clone();
     let mut before = entry.clone();
@@ -2117,6 +2230,7 @@ fn build_block_checkpoints(
                 replay_summaries,
                 &mut state,
                 &empty_types,
+                aliases,
             );
         }
         let changes = state_changes(&before, &state);
@@ -3493,6 +3607,7 @@ void f(int x) {
                     &*result.replay_summaries,
                     &mut state,
                     &empty_types,
+                    &result.aliases,
                 );
             }
         }
@@ -3642,5 +3757,161 @@ void f(int x) {
         let small = checkpoint_entries(&chained_locals(500));
         let large = checkpoint_entries(&chained_locals(1000));
         assert!(large <= 2 * small + 64, "500 -> {small}, 1000 -> {large}");
+    }
+
+    /// The range of `var` just before the first occurrence of `needle`.
+    fn range_before(code: &str, var: &str, needle: &str) -> Option<(i64, i64)> {
+        range_at_expr(code, var, needle).map(|r| (r.min, r.max))
+    }
+
+    const INT_FULL: (i64, i64) = (i32::MIN as i64, i32::MAX as i64);
+
+    #[test]
+    fn a_store_through_a_pointer_to_a_local_widens_it() {
+        let code = "
+int read_untrusted(void);
+int f(void) {
+    int x = 1;
+    int *q = &x;
+    *q = read_untrusted();
+    return 100 / x;
+}
+";
+        assert_eq!(range_before(code, "x", "return"), Some(INT_FULL));
+    }
+
+    #[test]
+    fn a_store_of_the_locals_own_type_joins_the_stored_value() {
+        // `q` may not point at `x` on every path; when it does, `x` is 5.
+        let code = "
+int f(int c) {
+    int x = 1;
+    int *q = &x;
+    if (c) *q = 5;
+    return 100 / x;
+}
+";
+        assert_eq!(range_before(code, "x", "return"), Some((1, 5)));
+    }
+
+    #[test]
+    fn a_store_through_a_pointer_of_another_type_widens() {
+        // Writing one byte of `x` does not make `x` the byte's value.
+        let code = "
+int f(void) {
+    int x = 1;
+    char *c = (char *)&x;
+    c[1] = 1;
+    return 100 / x;
+}
+";
+        assert_eq!(range_before(code, "x", "return"), Some(INT_FULL));
+    }
+
+    #[test]
+    fn writes_through_copies_steps_and_callees_widen() {
+        let copy = "
+int read_untrusted(void);
+int f(void) {
+    int x = 1;
+    int *q = &x;
+    int *r = q + 0;
+    *r = read_untrusted();
+    return x;
+}
+";
+        assert_eq!(range_before(copy, "x", "return"), Some(INT_FULL));
+        let step = "
+int f(void) {
+    int x = 1;
+    int *q = &x;
+    (*q)--;
+    return x;
+}
+";
+        assert_eq!(range_before(step, "x", "return"), Some(INT_FULL));
+        let callee = "
+void fill(int *out);
+int f(void) {
+    int x = 1;
+    int *q = &x;
+    fill(q);
+    return x;
+}
+";
+        assert_eq!(range_before(callee, "x", "return"), Some(INT_FULL));
+        let double = "
+int read_untrusted(void);
+int f(void) {
+    int x = 1;
+    int *q = &x;
+    int **pp = &q;
+    **pp = read_untrusted();
+    return x;
+}
+";
+        assert_eq!(range_before(double, "x", "return"), Some(INT_FULL));
+    }
+
+    #[test]
+    fn an_escaped_address_is_written_by_any_store_or_call() {
+        let store = "
+int *g;
+int read_untrusted(void);
+int f(int *other) {
+    int x = 1;
+    g = &x;
+    *other = read_untrusted();
+    return x;
+}
+";
+        assert_eq!(range_before(store, "x", "return"), Some(INT_FULL));
+        let call = "
+int *g;
+void run(void);
+int f(void) {
+    int x = 1;
+    g = &x;
+    run();
+    return x;
+}
+";
+        assert_eq!(range_before(call, "x", "return"), Some(INT_FULL));
+    }
+
+    #[test]
+    fn a_store_that_cannot_reach_a_local_leaves_it() {
+        // `x`'s address is held only by `q`, which nothing writes through;
+        // `other` came from the caller, who never had `&x`.
+        let code = "
+void run(void);
+int f(int *other) {
+    int x = 1;
+    int *q = &x;
+    *other = 0;
+    run();
+    return x + *q;
+}
+";
+        assert_eq!(range_before(code, "x", "return"), Some((1, 1)));
+    }
+
+    #[test]
+    fn a_guard_after_a_store_through_a_pointer_still_narrows() {
+        let code = "
+int read_untrusted(void);
+int f(void) {
+    int x = 1;
+    int *q = &x;
+    *q = read_untrusted();
+    if (x < 1)
+        return 0;
+    return 100 / x;
+}
+";
+        assert_eq!(
+            range_before(code, "x", "return 100"),
+            Some((1, i32::MAX as i64))
+        );
     }
 }

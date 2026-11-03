@@ -923,6 +923,31 @@ are two different dictionary keys.
 any expression node within a single-file analysis. Already adopted by
 MEM30-C, DCL13-C, MEM31-C.
 
+### `src/analyze/address_taken.rs`
+**Problem solved:** which locals of a function a write through a pointer,
+or a call handed one, may change. A name-keyed state (value-range
+analysis) changes a variable only where it is assigned by name, so
+`int *q = &x; *q = read_untrusted();` left `x` at its old range and a
+consumer proved `100 / x` safe. Flow-insensitive and intraprocedural; every
+point it cannot follow answers "may write".
+
+| Item | Signature | Description |
+|---|---|---|
+| `AddressTakenLocals::of_function` | `(func: &Node, source) -> AddressTakenLocals` | One function's facts: each local pointer's possible targets (from `&x` through casts, parentheses, `p + n`, `?:`, the comma operator, copies and call results that may hand an argument back), the pointers whose value may come from outside (a parameter, a file-scope object, a read through memory), and the locals whose address ESCAPED: stored anywhere but a local pointer variable (a file-scope object, a member, an element, a pointee, an initializer list), or held by a pointer whose own address is taken (`**pp = v`). A function that takes no address answers empty without walking further. |
+| `store_targets` / `argument_targets` | `(&self, base: &Node, source) -> HashSet<String>` | The locals a store through `base` (`*base`, `base[i]`, `base->m`) may write: the targets of the pointers it names, plus every escaped local when `base` may come from outside. The locals a callee handed `arg` may write through it, `&x` itself included. Passing a pointer to a call is a write at that call, not an escape: a callee that keeps it and writes through it at a later call is not followed, the assumption VRA has always made for `f(&x)`. |
+| `escaped` | `(&self) -> impl Iterator<Item = &String>` | Locals any store through a pointer, and any call, may write. |
+| `stores_own_type` | `(&self, base, target, source) -> bool` | Whether `*base = v` stores an object of `target`'s declared type (a single local pointer, one level of indirection, pointee spelled as the target's type), so the stored value is the target's value. A store through `char *` into an `int` is not. |
+| `store_base` | `(lvalue: &Node) -> Option<Node>` | The pointer a write to `lvalue` stores through: `p` of `*p`, `p[i]`, `p->m`, `(*p).m`. A plain name or a member of a struct held by value is none. |
+
+**Wiring pattern:** `value_range` builds it once per function, applies it in
+`process_statement_for_ranges` before each statement's own effect (a plain
+store of the target's own type joins the stored value into the target's
+range, any other write widens it to its type), and keeps it on
+`RangeAnalysisResult` so intra-block replay applies the same writes. Rules
+that resolve a variable to its last textual assignment (INT34-C's
+last-assignment pass, ARR30-C's constant propagation, `last_write`) do not
+consult it yet.
+
 ### `src/analyze/argument_objects.rs`
 **Problem solved:** whether a call argument NAMES a storage object, answered
 in the caller's frame. Distinct from `points_to`'s `LValue`, which
@@ -1094,6 +1119,12 @@ actually consumes:
   `i -= 8` from 32 under `while (i)` can, by interval, go below zero and
   wrap, so it is not proved and INT34-C still reports the shift: a known
   false positive that no fixture pins.
+- A write through a pointer to a local reaches the local
+  (`address_taken.rs`): `*q = v` through a pointer of the local's own type
+  joins `v`'s range into the local's, and any other write through a pointer
+  that may reach it, a call handed such a pointer, and (for a local whose
+  address escaped) any store through a pointer and any call widen it to its
+  type.
 - **"No range" can mean "never runs".** A block whose every incoming edge
   is dead — the branch condition contradicts the incoming value
   (`data = 127; if (data < 127)`), or contradicts itself
