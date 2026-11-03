@@ -8018,7 +8018,7 @@ pub fn resolve_includes_scoped(
             let directives = extract_include_directives_with_liveness(&tree.root_node(), &source);
             let source_dir = Path::new(file_path).parent().map(|p| p.to_path_buf());
             let includer: Arc<str> = Arc::from(file_path.as_str());
-            if has_computed_include(&tree.root_node()) {
+            if has_computed_include(&tree.root_node(), &source) {
                 add_include_edge(
                     context,
                     &mut includer_real_paths,
@@ -8093,12 +8093,18 @@ pub fn resolve_includes_scoped(
                 Err(_) => resolved.clone(),
             };
             let header_key = canonical.to_string_lossy().to_string();
-            add_include_edge(
-                context,
-                &mut includer_real_paths,
-                includer.as_ref(),
-                header_key.clone(),
-            );
+            // An `#include` in an arm the file proves is never compiled is no
+            // edge: a closure through it would make the header's definitions
+            // visible to a file no build lets see them. The header is still
+            // read below, so a live include of it elsewhere finds its facts.
+            if !in_dead_arm {
+                add_include_edge(
+                    context,
+                    &mut includer_real_paths,
+                    includer.as_ref(),
+                    header_key.clone(),
+                );
+            }
             if resolved_set.contains(&canonical) {
                 continue;
             }
@@ -8236,7 +8242,7 @@ pub fn resolve_includes_scoped(
                 // Enqueue transitive includes from this header
                 let header_dir = resolved.parent().map(|p| p.to_path_buf());
                 let includer: Arc<str> = Arc::from(header_path.as_str());
-                if has_computed_include(&root) {
+                if has_computed_include(&root, &hsource) {
                     add_include_edge(
                         context,
                         &mut includer_real_paths,
@@ -8258,13 +8264,16 @@ pub fn resolve_includes_scoped(
         } else {
             // It may name a header the prescan read under a search path this
             // run lacks, and a closure that drops it would drop that
-            // header's definitions.
-            add_include_edge(
-                context,
-                &mut includer_real_paths,
-                includer.as_ref(),
-                format!("{}{include_path}", super::context::UNRESOLVED_INCLUDE),
-            );
+            // header's definitions. Not from a dead arm, which no build
+            // compiles; the report below still records that row.
+            if !in_dead_arm {
+                add_include_edge(
+                    context,
+                    &mut includer_real_paths,
+                    includer.as_ref(),
+                    format!("{}{include_path}", super::context::UNRESOLVED_INCLUDE),
+                );
+            }
             let (includer_outside, project_header) = unresolved.record(
                 context,
                 &origins,
@@ -8441,13 +8450,26 @@ fn add_include_edge(
 
 /// Whether the file holds a computed `#include` (`#include DEFS_H`), whose
 /// header the scan cannot know without expanding the macro: it may be any.
-fn has_computed_include(root: &Node) -> bool {
-    lang_parsing_substrate::query::find_descendants_of_kind(*root, "preproc_include")
+/// Not one in an arm the file proves is never compiled
+/// ([`file_proven_dead_lines`](crate::analyze::init_state::file_proven_dead_lines)),
+/// which includes nothing in any build.
+fn has_computed_include(root: &Node, source: &str) -> bool {
+    let computed: Vec<usize> =
+        lang_parsing_substrate::query::find_descendants_of_kind(*root, "preproc_include")
+            .iter()
+            .filter(|inc| {
+                inc.child_by_field_name("path")
+                    .is_some_and(|p| !matches!(p.kind(), "string_literal" | "system_lib_string"))
+            })
+            .map(|inc| inc.start_position().row + 1)
+            .collect();
+    if computed.is_empty() {
+        return false;
+    }
+    let dead = crate::analyze::init_state::file_proven_dead_lines(source);
+    computed
         .iter()
-        .any(|inc| {
-            inc.child_by_field_name("path")
-                .is_some_and(|p| !matches!(p.kind(), "string_literal" | "system_lib_string"))
-        })
+        .any(|line| !dead.iter().any(|&(s, e)| (s..=e).contains(line)))
 }
 
 /// Extract `#include` directive paths from an AST.
@@ -10945,6 +10967,94 @@ void caller(char *other) {
                 ctx.unresolved_project_headers
             );
         }
+    }
+
+    /// An `#include` in an arm the file proves is never compiled is no edge
+    /// of the include graph, resolved or not, and a computed `#include` there
+    /// does not make every header reachable; the live includes keep theirs.
+    /// The unresolved one still has its row in the include report.
+    #[test]
+    fn a_dead_arm_include_adds_no_include_edge() {
+        use crate::analyze::context::{ANY_INCLUDE, UNRESOLVED_INCLUDE};
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("dead.h"), "#define DEAD 1\n").unwrap();
+        std::fs::write(tmp.path().join("live.h"), "#define LIVE 1\n").unwrap();
+        let main = tmp.path().join("main.c");
+        std::fs::write(
+            &main,
+            "#define HAVE_X\n#if 0\n#include \"dead.h\"\n#include DEFS_H\n#endif\n\
+             #ifndef HAVE_X\n#include \"gone.h\"\n#endif\n#include \"live.h\"\n",
+        )
+        .unwrap();
+        let main_c = main.to_string_lossy().to_string();
+        let mut ctx = ProjectContext::new();
+        resolve_includes(
+            std::slice::from_ref(&main_c),
+            &[],
+            &[],
+            &[tmp.path().to_string_lossy().to_string()],
+            &mut ctx,
+            None,
+            Default::default(),
+            &HeaderLookup::default(),
+        )
+        .unwrap();
+        let from = crate::analyze::compile_commands::real_path(Path::new(&main_c));
+        let edges = ctx.include_edges.get(&from).cloned().unwrap_or_default();
+        let live = crate::analyze::compile_commands::real_path(&tmp.path().join("live.h"));
+        assert_eq!(edges, vec![live], "{edges:?}");
+        assert!(!edges.iter().any(|e| e == ANY_INCLUDE), "{edges:?}");
+        assert!(
+            !edges.iter().any(|e| e.starts_with(UNRESOLVED_INCLUDE)),
+            "{edges:?}"
+        );
+        assert!(
+            ctx.include_report
+                .unresolved
+                .iter()
+                .any(|u| u.spelling == "gone.h" && u.in_dead_arm),
+            "{:?}",
+            ctx.include_report.unresolved
+        );
+    }
+
+    /// The same includes outside any dead arm are edges: the header, the
+    /// unresolved marker, and the computed include's every-header marker.
+    #[test]
+    fn a_live_include_adds_its_include_edge() {
+        use crate::analyze::context::{ANY_INCLUDE, UNRESOLVED_INCLUDE};
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("dead.h"), "#define DEAD 1\n").unwrap();
+        let main = tmp.path().join("main.c");
+        std::fs::write(
+            &main,
+            "#include \"dead.h\"\n#include DEFS_H\n#include \"gone.h\"\n",
+        )
+        .unwrap();
+        let main_c = main.to_string_lossy().to_string();
+        let mut ctx = ProjectContext::new();
+        resolve_includes(
+            std::slice::from_ref(&main_c),
+            &[],
+            &[],
+            &[tmp.path().to_string_lossy().to_string()],
+            &mut ctx,
+            None,
+            Default::default(),
+            &HeaderLookup::default(),
+        )
+        .unwrap();
+        let from = crate::analyze::compile_commands::real_path(Path::new(&main_c));
+        let edges = ctx.include_edges.get(&from).cloned().unwrap_or_default();
+        let dead = crate::analyze::compile_commands::real_path(&tmp.path().join("dead.h"));
+        assert!(edges.contains(&dead), "{edges:?}");
+        assert!(edges.iter().any(|e| e == ANY_INCLUDE), "{edges:?}");
+        assert!(
+            edges
+                .iter()
+                .any(|e| e == &format!("{UNRESOLVED_INCLUDE}gone.h")),
+            "{edges:?}"
+        );
     }
 
     /// The include report names every unresolved `#include` with its

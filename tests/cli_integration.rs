@@ -4295,6 +4295,73 @@ fn crossfile_header_declared_suppresses_dcl15c() {
     );
 }
 
+/// An `#include` in an arm the file proves is never compiled -- `#if 0`, or
+/// an arm its own `#define` rules out -- is no include edge, so a header
+/// reached only that way lends the file none of its definitions: a local
+/// named `STATIC` stays a variable and keeps its DCL00-C finding. A live
+/// include of the same header still makes `STATIC` the keyword.
+#[test]
+fn a_header_reached_only_through_a_dead_include_is_not_visible() {
+    let dir = tempfile::tempdir().unwrap();
+    let proj = dir.path().join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("s.h"),
+        "#define STATIC static\ntypedef int myint;\n",
+    )
+    .unwrap();
+    let local = "int f(void) {\n    int STATIC = 5;\n    return STATIC;\n}\n";
+    std::fs::write(
+        proj.join("if0.c"),
+        format!("#if 0\n#include \"s.h\"\n#endif\n\n{local}"),
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("ruled_out.c"),
+        format!("#define HAVE_S\n#ifndef HAVE_S\n#include \"s.h\"\n#endif\n{local}"),
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("live.c"),
+        "#include \"s.h\"\nSTATIC myint helper(void) { return 1; }\n\
+         int live_api(void) { return helper(); }\n",
+    )
+    .unwrap();
+    let json = dir.path().join("out.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        proj.to_str().unwrap(),
+        "-d",
+        proj.to_str().unwrap(),
+        "--rules",
+        "DCL00-C,DCL15-C",
+        "-e",
+        json.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+    let found: Vec<(String, u64, String)> = rows
+        .iter()
+        .map(|r| {
+            let file = r["file"].as_str().unwrap_or("");
+            let name = file.rsplit('/').next().unwrap_or(file).to_string();
+            (
+                name,
+                r["line"].as_u64().unwrap_or(0),
+                r["rule_id"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    let has = |file: &str, line: u64, rule: &str| {
+        found
+            .iter()
+            .any(|(f, l, r)| f == file && *l == line && r == rule)
+    };
+    assert!(has("if0.c", 6, "DCL00-C"), "{found:?}");
+    assert!(has("ruled_out.c", 6, "DCL00-C"), "{found:?}");
+    assert!(!has("live.c", 2, "DCL15-C"), "{found:?}");
+}
+
 /// A storage-class macro is read as its keyword only by the files that can
 /// see its definition: a header's `#define STATIC static` repairs its
 /// includer, an unrelated test stub's empty `#define STATIC` does not veto

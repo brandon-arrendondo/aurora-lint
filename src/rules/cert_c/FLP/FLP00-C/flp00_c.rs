@@ -317,11 +317,11 @@ struct Walk<'a, 'b> {
 /// with whether it is the one: a `"quoted"` spelling found beside `file` is,
 /// as the preprocessor looks there first. Otherwise the edges whose real
 /// path ends with the spelling (`.` and `..` segments dropped) are
-/// candidates, and only a lone one is sure. The edges hold every `#include`
-/// line of `file`, those in dead arms too, and an include that resolved to
-/// no file has none: an edge that another of `file`'s lines spells more
-/// fully (`sub/x.h` for `x.h`), or finds beside `file`, is that line's, not
-/// this one's.
+/// candidates, and only a lone one is sure. The edges hold the `#include`
+/// lines of `file` outside the arms it proves dead, and an include that
+/// resolved to no file has none: an edge that another of `file`'s lines
+/// spells more fully (`sub/x.h` for `x.h`), or finds beside `file`, is that
+/// line's, not this one's.
 fn targets_of(
     layers: &[&HashMap<String, Vec<String>>],
     file: &str,

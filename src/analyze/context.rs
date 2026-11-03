@@ -1013,7 +1013,9 @@ pub struct ProjectContext {
     /// from `resolve_includes` (so only when there are search paths or forced
     /// includes). The build's forced includes are filed under the empty
     /// name, and an include that resolved to no file under its spelling
-    /// behind [`UNRESOLVED_INCLUDE`]. [`IncludeClosure::of`] walks it.
+    /// behind [`UNRESOLVED_INCLUDE`]. An `#include` in an arm the file
+    /// proves is never compiled (`#if 0`, `__cplusplus` read as C, an arm its
+    /// own `#define`s rule out) is no edge. [`IncludeClosure::of`] walks it.
     #[serde(default)]
     pub include_edges: Arc<HashMap<String, Vec<String>>>,
     /// The context of a file the build configuration does not compile: built
@@ -1662,7 +1664,7 @@ pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
 /// to a serialized field of [`ProjectContext`] (or of a type it holds), or to
 /// what such a field means: the cache header carries it, so an old cache is
 /// refused instead of misread.
-const PRESCAN_CACHE_FORMAT: u32 = 68;
+const PRESCAN_CACHE_FORMAT: u32 = 69;
 
 /// The header a prescan cache file starts with: a magic, the layout version
 /// and the aurora-lint version that wrote it.
