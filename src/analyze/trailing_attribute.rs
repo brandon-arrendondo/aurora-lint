@@ -1,5 +1,5 @@
-//! Pre-parse pass: spell a GNU attribute that follows an object's declarator,
-//! `x __attribute__((A)) = ...`, as the standard attribute `x [[A]] = ...`.
+//! Pre-parse pass: repair a GNU attribute that follows an object's
+//! declarator, `x __attribute__((A)) = ...`, which the grammar cannot place.
 //!
 //! GCC accepts an attribute after a declarator and before its initializer or
 //! the `;` or `,` that ends it: `static const uint8_t blob[]
@@ -17,28 +17,39 @@
 //! grammar takes it as the declaration's own `attribute_specifier`, exactly
 //! as for an attribute written before the declarator: `blob[]
 //! __attribute__((aligned(4)))` becomes `__attribute__((aligned(4))) blob[]`.
-//! The two are swapped within their line, so the line and its length are
-//! unchanged, but the declarator's column moves right by the attribute's
-//! width. A rule that reads the attribute by name (STR11-C's `nonstring`, an
-//! unused annotation) still finds it in the declaration, and the declarator
-//! is the plain `array_declarator` or `pointer_declarator` rules read.
+//! A rule that reads the attribute by name (STR11-C's `nonstring`, an unused
+//! annotation) still finds it in the declaration, and the declarator is the
+//! plain `array_declarator` or `pointer_declarator` rules read.
 //!
 //! Where it cannot be moved, it is spelled as the standard attribute
 //! `[[A]]`, padded with spaces to the same length, which the grammar takes
 //! after a declarator (an `attributed_declarator`): for a declarator after a
-//! comma, where the grammar accepts no attribute in front, and where the type
-//! is written against the declarator (`char*p`), which a moved attribute
-//! would fuse with. Fewer rules read through an `attributed_declarator`, so
-//! the move is preferred.
+//! comma, where the grammar accepts no attribute in front; for the first of
+//! several declarators, where a GNU attribute moved in front would apply to
+//! all of them; and where the type is written against the declarator
+//! (`char*p`), which a moved attribute would fuse with. Fewer rules read
+//! through an `attributed_declarator`, so the move is preferred where it
+//! keeps the meaning.
+//!
+//! Both rewrites keep every line and its length, but not every column: the
+//! swap moves the declarator right and the attribute left, and `[[A]]` moves
+//! `A` left. [`rewritten_sites`] finds the rewrites again from the file's own
+//! text and [`restore_in_finding`] maps a finding's column back to the token
+//! it names in the file, and puts the file's own text back where a message or
+//! suggestion quotes a rewritten span. Suppression and the oracle key on
+//! lines, which never move.
 //!
 //! Only that position is rewritten: an `__attribute__`/`__attribute`
-//! keyword whose previous token ends a declarator (an identifier, or `]`),
-//! whose `((A))` closes on the same line, and after which, past any further
-//! attributes, the next token is `=`, `;` or `,`. Not inside parentheses (a
-//! parameter list already parses), not in a struct, union or enum body (a
-//! member already parses), not in a `typedef` (it already parses), not after
-//! a `struct`/`union`/`enum` tag, and never on a directive line. Attribute
-//! arguments are copied as written; one holding `[[` or `]]` is left alone.
+//! keyword whose previous token ends a declarator (an identifier that is not
+//! a C keyword, or `]`), whose `((A))` closes on the same line, and after
+//! which, past any further attributes, the next token is `=`, `;` or `,`.
+//! Not after a keyword (`else __attribute__((fallthrough));` is a
+//! statement), not inside parentheses (a parameter list already parses), not
+//! in a struct, union or enum body (a member already parses), not in a
+//! `typedef`, including after the record body a typedef declares (it already
+//! parses), not after a `struct`/`union`/`enum` tag, and never on a directive
+//! line. Attribute arguments are copied as written; one holding `[[` or `]]`
+//! is left alone.
 //!
 //! Braces are read in source order without following a conditional's arms,
 //! so a conditional whose arms open different numbers of braces can leave
@@ -186,11 +197,76 @@ fn attribute_at(masked: &[u8], at: usize, keyword_len: usize) -> Option<Rewrite>
     })
 }
 
-/// `source` with each GNU attribute that trails an object's declarator
-/// spelled as a standard attribute of the same length.
-pub fn spell_trailing_attributes(source: &str) -> Cow<'_, str> {
+/// C keywords. One of them before an attribute ends no declarator:
+/// `else __attribute__((fallthrough));` is a statement, not a declaration.
+const C_KEYWORDS: [&str; 44] = [
+    "auto",
+    "break",
+    "case",
+    "char",
+    "const",
+    "continue",
+    "default",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "extern",
+    "float",
+    "for",
+    "goto",
+    "if",
+    "inline",
+    "int",
+    "long",
+    "register",
+    "restrict",
+    "return",
+    "short",
+    "signed",
+    "sizeof",
+    "static",
+    "struct",
+    "switch",
+    "typedef",
+    "union",
+    "unsigned",
+    "void",
+    "volatile",
+    "while",
+    "_Alignas",
+    "_Alignof",
+    "_Atomic",
+    "_Bool",
+    "_Complex",
+    "_Generic",
+    "_Imaginary",
+    "_Noreturn",
+    "_Static_assert",
+    "_Thread_local",
+];
+
+/// Whether the declaration continues with another declarator after the one
+/// whose attributes end just before `from` (where the masked text holds the
+/// `=`, `;` or `,` after them): a `,` at bracket depth 0 before the `;`.
+fn more_declarators_follow(masked: &[u8], from: usize) -> bool {
+    let mut depth = 0usize;
+    for &b in &masked[from..] {
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => return true,
+            b';' if depth == 0 => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Every repair the pass makes to `source`, in source order.
+fn edits(source: &str) -> Vec<Edit> {
     if !source.contains("__attribute") {
-        return Cow::Borrowed(source);
+        return Vec::new();
     }
     let masked_text = mask_source(source);
     let masked = masked_text.as_bytes();
@@ -203,8 +279,10 @@ pub fn spell_trailing_attributes(source: &str) -> Cow<'_, str> {
     }
 
     let mut edits: Vec<Edit> = Vec::new();
-    // Each open brace: whether it opens a record (struct/union/enum) body.
-    let mut braces: Vec<bool> = Vec::new();
+    // Each open brace: whether it opens a record (struct/union/enum) body,
+    // and the first word of the statement it sits in, which the statement
+    // keeps after a record body closes (`typedef struct { ... } t ...`).
+    let mut braces: Vec<(bool, Option<&str>)> = Vec::new();
     let mut parens = 0usize;
     // The last two words, the first word of the statement, and the last
     // non-blank byte, all outside directives.
@@ -225,10 +303,10 @@ pub fn spell_trailing_attributes(source: &str) -> Cow<'_, str> {
             }
             let word = &masked_text[start..i];
             if KEYWORDS.contains(&word) {
-                let declarator_ends = (is_ident(last_byte) || last_byte == b']')
-                    && !RECORD_KEYWORDS.contains(&last_word)
+                let declarator_ends = (last_byte == b']'
+                    || (is_ident(last_byte) && !C_KEYWORDS.contains(&last_word)))
                     && !RECORD_KEYWORDS.contains(&word_before);
-                let in_record = braces.last().copied().unwrap_or(false);
+                let in_record = braces.last().is_some_and(|(record, _)| *record);
                 if declarator_ends
                     && parens == 0
                     && !in_record
@@ -237,7 +315,11 @@ pub fn spell_trailing_attributes(source: &str) -> Cow<'_, str> {
                     if let Some((chain, after)) = attribute_chain(masked, &in_directive, start) {
                         if matches!(masked.get(after), Some(b'=' | b';' | b',')) {
                             i = chain.last().map_or(i, |r| r.whole.end);
-                            edits.push(match movable_declarator(masked, start) {
+                            // Moved off the first of several declarators, a
+                            // GNU attribute would apply to all of them.
+                            let movable = movable_declarator(masked, start)
+                                .filter(|_| !more_declarators_follow(masked, after));
+                            edits.push(match movable {
                                 Some(declarator) => Edit::Move {
                                     declarator,
                                     attributes: start..i,
@@ -260,12 +342,14 @@ pub fn spell_trailing_attributes(source: &str) -> Cow<'_, str> {
             b'{' => {
                 let record = RECORD_KEYWORDS.contains(&last_word)
                     || (is_ident(last_byte) && RECORD_KEYWORDS.contains(&word_before));
-                braces.push(record);
+                braces.push((record, statement_first));
                 statement_first = None;
             }
             b'}' => {
-                braces.pop();
-                statement_first = None;
+                statement_first = match braces.pop() {
+                    Some((true, outer)) => outer,
+                    _ => None,
+                };
             }
             b';' => statement_first = None,
             b'(' => parens += 1,
@@ -284,42 +368,163 @@ pub fn spell_trailing_attributes(source: &str) -> Cow<'_, str> {
         }
         i += 1;
     }
+    edits
+}
 
+/// The bytes `edit` writes over its span of `source`, and the span.
+fn rewrite(source: &str, edit: &Edit) -> (std::ops::Range<usize>, String) {
+    match edit {
+        Edit::Move {
+            declarator,
+            attributes,
+        } => (
+            // `D gap A` becomes `A gap D`: the same bytes in a new order.
+            declarator.start..attributes.end,
+            [
+                &source[attributes.clone()],
+                &source[declarator.end..attributes.start],
+                &source[declarator.clone()],
+            ]
+            .concat(),
+        ),
+        Edit::Bracket(chain) => {
+            let span = chain[0].whole.start..chain[chain.len() - 1].whole.end;
+            let mut text = source[span.clone()].to_string();
+            for r in chain.iter().rev() {
+                let inner = &source[r.inner.clone()];
+                let spelled = format!("[[{inner}]]");
+                let padded = format!("{spelled:<width$}", width = r.whole.len());
+                text.replace_range(
+                    r.whole.start - span.start..r.whole.end - span.start,
+                    &padded,
+                );
+            }
+            (span, text)
+        }
+    }
+}
+
+/// `source` with each GNU attribute that trails an object's declarator moved
+/// in front of it, or spelled as a standard attribute where it cannot move.
+pub fn spell_trailing_attributes(source: &str) -> Cow<'_, str> {
+    let edits = edits(source);
     if edits.is_empty() {
         return Cow::Borrowed(source);
     }
     let mut out = source.as_bytes().to_vec();
     for edit in &edits {
-        match edit {
-            Edit::Move {
-                declarator,
-                attributes,
-            } => {
-                // `D gap A` becomes `A gap D`: the same bytes in a new order.
-                let moved = [
-                    &source[attributes.clone()],
-                    &source[declarator.end..attributes.start],
-                    &source[declarator.clone()],
-                ]
-                .concat();
-                out[declarator.start..attributes.end].copy_from_slice(moved.as_bytes());
-            }
-            Edit::Bracket(chain) => {
-                for r in chain {
-                    let inner = &source[r.inner.clone()];
-                    let spelled = format!("[[{inner}]]");
-                    let span = &mut out[r.whole.clone()];
-                    span[..spelled.len()].copy_from_slice(spelled.as_bytes());
-                    for b in &mut span[spelled.len()..] {
-                        *b = b' ';
-                    }
-                }
-            }
-        }
+        let (span, text) = rewrite(source, edit);
+        out[span].copy_from_slice(text.as_bytes());
     }
     // Whole tokens were reordered or ASCII written over whole tokens, and
     // every boundary moved is between tokens, never inside a character.
     Cow::Owned(String::from_utf8(out).expect("a token-level reordering keeps UTF-8"))
+}
+
+/// One place the pass rewrote, as found in a file's own text and its
+/// repaired text.
+pub struct RewrittenSite {
+    span: std::ops::Range<usize>,
+    /// For a moved attribute, the lengths of the declarator, the blank
+    /// between, and the attributes, in the file's own order.
+    swap: Option<(usize, usize, usize)>,
+    /// For an attribute spelled `[[A]]` in place, each `A` that moved left:
+    /// where it starts in the repaired text, where in the file, and its
+    /// length. Everything else in the span is the spelling itself.
+    respelled: Vec<(usize, usize, usize)>,
+}
+
+/// Every site where `repaired` holds this pass's rewrite of `original`. The
+/// pass is run again on the file's own text, and a rewrite is kept only
+/// where the repaired text shows exactly those bytes, so a site another pass
+/// also touched is skipped rather than mapped wrongly.
+pub fn rewritten_sites(original: &str, repaired: &str) -> Vec<RewrittenSite> {
+    if original.len() != repaired.len() {
+        return Vec::new();
+    }
+    edits(original)
+        .iter()
+        .filter_map(|edit| {
+            let (span, text) = rewrite(original, edit);
+            (repaired.get(span.clone()) == Some(text.as_str())).then(|| RewrittenSite {
+                respelled: match edit {
+                    Edit::Bracket(chain) => chain
+                        .iter()
+                        .map(|r| (r.whole.start + 2, r.inner.start, r.inner.len()))
+                        .collect(),
+                    Edit::Move { .. } => Vec::new(),
+                },
+                swap: match edit {
+                    Edit::Move {
+                        declarator,
+                        attributes,
+                    } => Some((
+                        declarator.len(),
+                        attributes.start - declarator.end,
+                        attributes.len(),
+                    )),
+                    Edit::Bracket(_) => None,
+                },
+                span,
+            })
+        })
+        .collect()
+}
+
+/// `finding` as the file's own text has it: a column inside a moved
+/// declaration points at the same token in the file, and text the message or
+/// suggestion quotes from a rewritten span reads as written.
+pub fn restore_in_finding(
+    finding: &mut crate::rules::RuleViolation,
+    original: &str,
+    repaired: &str,
+    sites: &[RewrittenSite],
+) {
+    if sites.is_empty() {
+        return;
+    }
+    let line_start = original
+        .split_inclusive('\n')
+        .take(finding.line.saturating_sub(1))
+        .map(str::len)
+        .sum::<usize>();
+    let at = line_start + finding.column.saturating_sub(1);
+    for site in sites {
+        if let Some((d, gap, a)) = site.swap {
+            if site.span.contains(&at) {
+                // The repaired span reads `A gap D`; the file reads `D gap A`.
+                let p = at - site.span.start;
+                let mapped = if p < a {
+                    d + gap + p
+                } else if p < a + gap {
+                    d + (p - a)
+                } else {
+                    p - a - gap
+                };
+                finding.column = site.span.start + mapped - line_start + 1;
+            }
+        }
+        // Inside `[[A]]`, `A` sits where `__attribute__((A))` had its keyword.
+        if let Some(&(from, to, _)) = site
+            .respelled
+            .iter()
+            .find(|(from, _, len)| (*from..from + len).contains(&at))
+        {
+            finding.column = to + (at - from) - line_start + 1;
+        }
+        let rewritten = &repaired[site.span.clone()];
+        let written = &original[site.span.clone()];
+        if finding.message.contains(rewritten) {
+            finding.message = finding.message.replace(rewritten, written);
+        }
+        if let Some(s) = finding
+            .suggestion
+            .as_mut()
+            .filter(|s| s.contains(rewritten))
+        {
+            *s = s.replace(rewritten, written);
+        }
+    }
 }
 
 /// The attributes in a row starting with the keyword at `at`, and the offset
@@ -406,17 +611,99 @@ char * const p __attribute__((unused)) = 0;
 
     #[test]
     fn spells_an_attribute_it_cannot_move_as_a_standard_one() {
+        // A first declarator with more after it: moved in front, a GNU
+        // attribute would apply to every declarator of the declaration.
         let src = "\
 static int c __attribute((unused)), d __attribute__((unused));
+int e __attribute__((unused)) = 1, f;
 char*q __attribute__((unused)) = 0;
 ";
         let out = spelled(src);
         assert!(parses_clean(&out), "{out}");
-        assert!(
-            out.contains("static int __attribute((unused)) c, d [[unused]]"),
-            "{out}"
-        );
+        assert!(out.starts_with("static int c [[unused]]"), "{out}");
+        assert!(out.contains(", d [[unused]]"), "{out}");
+        assert!(out.contains("int e [[unused]]"), "{out}");
         assert!(out.contains("char*q [[unused]]"), "{out}");
+        assert!(!out.contains("__attribute"), "{out}");
+    }
+
+    #[test]
+    fn leaves_a_typedef_of_a_record_and_a_keyword_alone() {
+        let src = "\
+typedef struct { int z; } boxed __attribute__((aligned(16)));
+typedef union { int z; float f; } either __attribute__((aligned(8)));
+void g(int x) {
+    switch (x) {
+    case 1:
+        if (x) { x++; } else __attribute__((fallthrough));
+    default:
+        return __attribute__((unused)) ;
+    }
+}
+";
+        assert_eq!(spell_trailing_attributes(src), src);
+    }
+
+    /// The finding a rule would make at `needle` in `repaired`, restored.
+    fn restored(original: &str, needle: &str, message: &str) -> crate::rules::RuleViolation {
+        let repaired = spelled(original);
+        let at = repaired.find(needle).expect("needle in the repaired text");
+        let line_start = repaired[..at].rfind('\n').map_or(0, |n| n + 1);
+        let mut v = crate::rules::RuleViolation {
+            line: repaired[..at].matches('\n').count() + 1,
+            column: at - line_start + 1,
+            message: message.to_string(),
+            ..Default::default()
+        };
+        let sites = rewritten_sites(original, &repaired);
+        restore_in_finding(&mut v, original, &repaired, &sites);
+        v
+    }
+
+    #[test]
+    fn a_finding_in_a_moved_declaration_is_restored_to_the_file() {
+        let original = "\
+int x;
+static const unsigned char tbl[] __attribute__((aligned(16))) = { 1, 2 };
+";
+        let column_in = |needle: &str| original.lines().nth(1).unwrap().find(needle).unwrap() + 1;
+        // At the declarator: its own column, not the attribute's.
+        let v = restored(original, "tbl[]", "tbl");
+        assert_eq!((v.line, v.column), (2, column_in("tbl[]")));
+        // Inside the attribute: the same token in the file.
+        let v = restored(original, "16", "");
+        assert_eq!(v.column, column_in("16"));
+        // At the blank between them.
+        let repaired = spelled(original);
+        let blank = repaired.find(")) tbl").unwrap() + 2;
+        let v = restored(original, &repaired[blank..blank + 4], "");
+        assert_eq!(v.column, column_in(" __attribute__"));
+        // Quoted text reads as the file has it.
+        let quoted = &repaired.lines().nth(1).unwrap()[..70];
+        let v = restored(original, "tbl[]", &format!("declaration '{quoted}'"));
+        assert_eq!(
+            v.message,
+            format!("declaration '{}'", &original.lines().nth(1).unwrap()[..70])
+        );
+        // Off the rewritten span, nothing moves.
+        let v = restored(original, "int x", "");
+        assert_eq!((v.line, v.column), (1, 1));
+    }
+
+    #[test]
+    fn a_finding_quoting_a_standard_spelling_reads_the_file_s() {
+        let original = "int a __attribute__((unused)), b = 1;\n";
+        let repaired = spelled(original);
+        let v = restored(
+            original,
+            "a [[",
+            &format!("declares '{}'", repaired.trim_end()),
+        );
+        assert_eq!(v.message, format!("declares '{}'", original.trim_end()));
+        assert_eq!(v.column, original.find("a __").unwrap() + 1);
+        // Inside the attribute: the same token in the file.
+        let v = restored(original, "unused", "");
+        assert_eq!(v.column, original.find("unused").unwrap() + 1);
     }
 
     #[test]

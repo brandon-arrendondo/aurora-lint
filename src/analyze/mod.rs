@@ -1430,6 +1430,9 @@ fn analyze_one_file(
         // Where the parser respelled `_Thread_local`, a message quoting the
         // line is given the user's spelling back.
         let respelled = thread_local_keyword::respelled_sites(&original, &source);
+        // Where the parser moved a trailing attribute in front of its
+        // declarator, a finding's column and quoted text are put back.
+        let moved_attributes = trailing_attribute::rewritten_sites(&original, &source);
         // A `.h` file is ambiguous between C and C++ by extension alone; a
         // header written entirely in C++ (a vendored C++ wrapper API
         // shipped alongside a C library, e.g. mosquitto's
@@ -1518,6 +1521,12 @@ fn analyze_one_file(
                     v.file_path = file_path.to_string();
                     v.debug_assert_located();
                     thread_local_keyword::restore_in_finding(v, &original, &source, &respelled);
+                    trailing_attribute::restore_in_finding(
+                        v,
+                        &original,
+                        &source,
+                        &moved_attributes,
+                    );
                     v.severity = rule_config
                         .severity
                         .clone()

@@ -1654,14 +1654,19 @@ declarator, and a braced list after it parsed as a comma expression nested
 one level per entry, so a large table was refused as too deep. It moves the
 attribute in front of the declarator, swapping the two within their line,
 so the attribute reads as the declaration's own `attribute_specifier` and
-the declarator stays a plain `array_declarator`/`pointer_declarator`: the
-line and its length are kept, but the declarator's column moves right by
-the attribute's width, the one pass whose rewrite is not byte for byte
-within a line. Where it cannot move (a declarator after a comma, or a type
-written against the declarator) it spells the attribute `[[A]]` in place,
-which parses as an `attributed_declarator` that fewer rules read through.
-Positions that already parse are left alone: a member, a parameter, a
-function declarator, a typedef, a tag.
+the declarator stays a plain `array_declarator`/`pointer_declarator`. Where
+a move would not parse or would change the meaning (a declarator after a
+comma, the first of several declarators, a type written against the
+declarator) it spells the attribute `[[A]]` in place, an
+`attributed_declarator` that fewer rules read through. Either rewrite keeps
+lines and lengths but moves columns within the span, so the scan maps each
+finding back: `rewritten_sites(original, repaired)` re-derives the rewrites
+from the file's own text, and `restore_in_finding` restores a finding's
+column to the token it names and puts quoted text back as written, next to
+`thread_local_keyword::restore_in_finding`. Positions that already parse
+are left alone: a member, a parameter, a function declarator, a typedef
+(also after the record body it declares), a tag, and a keyword such as
+`else __attribute__((fallthrough));`.
 A third family sits alongside them, driven by text shape
 rather than by a macro name or a parser signal, for the preprocessor
 constructs `tree-sitter-c`'s grammar has no production for at all:

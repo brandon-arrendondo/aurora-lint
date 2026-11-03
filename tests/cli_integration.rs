@@ -8652,6 +8652,40 @@ fn a_large_table_with_an_attribute_after_its_declarator_is_not_refused_as_too_de
 }
 
 #[test]
+fn findings_on_a_line_whose_attribute_the_parser_moved_report_the_file_s_columns() {
+    // The parser moves `big[] __attribute__((aligned(4096)))` to
+    // `__attribute__((aligned(4096))) big[]` and spells the attribute after
+    // `tbl[]`, the first of two declarators, `[[aligned(16)]]` in place. A
+    // finding at the declarator or inside the attribute still reports the
+    // column of that token in the file.
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("attrs.c");
+    let lines = [
+        "static int big[] __attribute__((aligned(4096)));",
+        "static const unsigned char tbl[] __attribute__((aligned(16))), o[2];",
+    ];
+    std::fs::write(&file, format!("{}\n{}\n", lines[0], lines[1])).unwrap();
+    let out = dir.path().join("out.json");
+    let (_, _, stderr) = run_aurora_lint(&[file.to_str().unwrap(), "-e", out.to_str().unwrap()]);
+    let found: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap_or_else(|e| {
+            panic!("{e}: {stderr}");
+        });
+    let at = |rule: &str, line: usize| -> Vec<usize> {
+        found
+            .iter()
+            .filter(|v| v["rule_id"] == rule && v["line"] == line)
+            .map(|v| v["column"].as_u64().unwrap() as usize)
+            .collect()
+    };
+    let column_of = |line: usize, text: &str| lines[line - 1].find(text).unwrap() + 1;
+    assert_eq!(at("ARR02-C", 1), vec![column_of(1, "big[]")], "{found:?}");
+    assert_eq!(at("DCL06-C", 1), vec![column_of(1, "4096")], "{found:?}");
+    assert_eq!(at("ARR02-C", 2), vec![column_of(2, "tbl[]")], "{found:?}");
+    assert_eq!(at("DCL06-C", 2), vec![column_of(2, "16")], "{found:?}");
+}
+
+#[test]
 fn an_included_header_nested_past_the_depth_limit_is_reported_not_dropped() {
     // A header outside the scanned tree, read only for its declarations and
     // macros, nests 153 levels deep under a limit of 100. Dropping it in

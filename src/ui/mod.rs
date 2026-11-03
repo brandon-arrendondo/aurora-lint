@@ -2382,10 +2382,18 @@ impl TerminalUI {
             return false;
         };
         let respelled = crate::analyze::thread_local_keyword::respelled_sites(original, source);
+        let moved_attributes =
+            crate::analyze::trailing_attribute::rewritten_sites(original, source);
         let mut file_violations = rule.check(root_node, source);
         for violation in &mut file_violations {
             crate::analyze::thread_local_keyword::restore_in_finding(
                 violation, original, source, &respelled,
+            );
+            crate::analyze::trailing_attribute::restore_in_finding(
+                violation,
+                original,
+                source,
+                &moved_attributes,
             );
             violation.file_path = file_path.to_string();
             violation.debug_assert_located();
