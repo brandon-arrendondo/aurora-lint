@@ -701,15 +701,25 @@ pub fn branch_always_leaves(node: &Node, source: &str, noreturn: &HashSet<String
 /// the next iteration. A write holding the site, `b = a % b`, happens after
 /// it and does not count, and neither does a plain assignment of a non-zero
 /// integer literal (`if (d == -1) d = 1;`): every caller of this module asks
-/// whether a value is non-zero, and such a write keeps it so.
+/// whether a value is non-zero, and such a write keeps it so. An operand
+/// that is a plain name counts only where it means the object the name
+/// means at the site: in `{ int x = 2; int *q = &x; }` the inner `x` is
+/// another object than an outer `x` the site divides by (ADR-0006).
 pub fn written_between(cond: &Node, site: &Node, targets: &[String], source: &str) -> bool {
     let Some(func) = ast_utils::find_containing_function(site) else {
         return false;
     };
     let names = target_names(targets);
     let between = Between::new(cond, site);
+    let declarator = |at: &Node, name: &str| {
+        ast_utils::resolve_identifier_declarator(at, name, source).map(|(_, d)| d.id())
+    };
     let writes = |operand: Option<Node>| {
-        operand.is_some_and(|op| names.contains(&guard_dominance::squeeze_text(&op, source)))
+        operand.is_some_and(|op| {
+            let text = guard_dominance::squeeze_text(&op, source);
+            names.contains(&text)
+                && (op.kind() != "identifier" || declarator(&op, &text) == declarator(site, &text))
+        })
     };
     query::find_first_descendant(func, |n| {
         between.holds(&n)
@@ -805,5 +815,26 @@ mod tests {
             assert_eq!(facts.len(), 1, "site {i} lost its guard");
         }
         assert_eq!(take_function_reads(), 1);
+    }
+
+    /// A store through a pointer to a block's own `x`, and an assignment to
+    /// it, leave a check of the outer `x` standing; a store through a
+    /// pointer to the outer `x` does not.
+    #[test]
+    fn a_write_to_a_shadowing_local_keeps_the_check() {
+        let cases = [
+            ("{ int x = 2; int *q = &x; *q = r(); (void)x; }", 1),
+            ("{ int x = 2; x = r(); (void)x; }", 1),
+            ("{ int x = 0; (void)x; } *p = r();", 0),
+        ];
+        for (block, kept) in cases {
+            let code = format!(
+                "int r(void);\nint f(void) {{ int x = r(); int *p = &x; if (x != 0) {{ {block} return 100 / x; }} return 0; }}\n"
+            );
+            let tree = parse(&code);
+            let site = divisions(tree.root_node(), &code).pop().unwrap();
+            let facts = known_conditions(&site, &["x".to_string()], &code, &HashSet::new());
+            assert_eq!(facts.len(), kept, "{block}");
+        }
     }
 }
