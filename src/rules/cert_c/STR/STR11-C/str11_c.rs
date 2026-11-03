@@ -495,8 +495,17 @@ impl<'a, 's> Cx<'a, 's> {
                     return;
                 }
                 let elements = list_elements(value);
-                // `char s[4] = {"abc"}`: a braced literal.
+                // `char s[4] = {"abc"}`: a braced literal. Not on a list
+                // spliced from a conditional's arms, which no build has
+                // (ADR-0010 Decision 4); each entry of an array of strings
+                // below is still read on its own.
                 if matches!(**element, Shape::Other) {
+                    if crate::analyze::initializer_preproc_guard::is_spliced_initializer(
+                        value,
+                        self.source,
+                    ) {
+                        return;
+                    }
                     if let [only] = elements.as_slice() {
                         if is_string(only) {
                             self.check_literal(*bound, only, *nonstring, *omittable, only, out);

@@ -1672,7 +1672,13 @@ whatever its condition, and a multi-arm conditional keeps EVERY arm when a
 comma separates each arm's entries from the next, so no code leaves analysis
 -- keeping the compiled arm there dropped a labeled true positive -- and
 falls back to the arm `compiled_arm` picks only when the arms would splice
-into a list that does not parse) and
+into a list that does not parse; a spliced list carries the comment
+`SPLICE_MARKER` where each `#elif`/`#else` was, and
+`initializer_preproc_guard::is_spliced_initializer(list, source)` answers
+whether a list is one: **any reading of a whole initializer list -- its
+element count, a braced literal against the bound -- must ask it and
+abstain** (ADR-0010 Decision 4), as `array_size`'s inferred count, ARR02-C
+and STR11-C do; a reading of one entry at a time need not) and
 `control_header_preproc_guard.rs` (a guard closing between an
 `if`/`while`/`for` header and the body it governs, which leaves the header
 with a synthesized `(expression_statement (MISSING ";"))` consequence that

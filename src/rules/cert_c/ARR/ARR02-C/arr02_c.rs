@@ -206,7 +206,7 @@ impl Arr02C {
         // Get the array size from the declarator
         if let Some(array_size) = self.extract_array_size(declarator, source) {
             // Count initializer elements
-            if let Some(init_count) = self.count_initializer_elements(initializer) {
+            if let Some(init_count) = self.count_initializer_elements(initializer, source) {
                 if init_count > array_size {
                     let line = declarator.start_position().row + 1;
                     let column = declarator.start_position().column + 1;
@@ -247,8 +247,13 @@ impl Arr02C {
         None
     }
 
-    /// Count the number of elements in an initializer list
-    fn count_initializer_elements(&self, node: &Node) -> Option<usize> {
+    /// Count the number of elements in an initializer list. `None` for a
+    /// list spliced from the arms of a conditional: its count is no build's
+    /// count (ADR-0010 Decision 4).
+    fn count_initializer_elements(&self, node: &Node, source: &str) -> Option<usize> {
+        if crate::analyze::initializer_preproc_guard::is_spliced_initializer(node, source) {
+            return None;
+        }
         if node.kind() == "initializer_list" {
             let mut count = 0;
             let mut cursor = node.walk();

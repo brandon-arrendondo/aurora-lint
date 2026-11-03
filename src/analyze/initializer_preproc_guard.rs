@@ -51,7 +51,12 @@
 //!   one at a time sees each alternative; keeping only the arm the scan's
 //!   profile compiles dropped a labeled true positive in the arm it did not
 //!   keep. The list as a whole is then no build's list: its element count
-//!   and its contents mix configurations that exclude each other.
+//!   and its contents mix configurations that exclude each other. So the
+//!   pass marks it, writing [`SPLICE_MARKER`] where each `#elif`/`#else` was,
+//!   and a reading of the whole list asks [`is_spliced_initializer`] and
+//!   abstains (ADR-0010 Decision 4; Brandon's ruling): ARR02-C's count
+//!   against the declared size, STR11-C's braced literal against the bound,
+//!   and the element count `array_size` infers for an unsized array.
 //! * Arms with no comma between them (`#ifdef A` / `PAIR(1, 2)` / `#else` /
 //!   `PAIR(3, 4)` / `#endif`) would splice into `PAIR(1, 2) PAIR(3, 4)`, which
 //!   does not parse. There the arm the scan's profile compiles is kept
@@ -91,6 +96,30 @@ use crate::analyze::paren_preproc_guard::{
     blank_line, is_branch_directive, is_directive, is_directive_start, is_endif, CodeLines,
 };
 use crate::analyze::preproc_arm_choice::{compiled_arm, directive_extent, locally_defined_names};
+
+/// The comment left where an `#elif`/`#else` was, in an initializer list
+/// whose alternative arms were all kept: [`is_spliced_initializer`] reads it.
+pub const SPLICE_MARKER: &str = "/*S*/";
+
+/// Whether `list` is an `initializer_list` whose entries this pass spliced
+/// from the arms of a conditional, so that the list as a whole is no build's
+/// list: its element count, and any reading of the entries together, mix
+/// configurations that exclude each other. A reading that depends on the
+/// whole list abstains on one (ADR-0010 Decision 4: a finding that only
+/// exists by combining arms is a misfire); a reading of one entry at a time
+/// does not need to.
+///
+/// Only the list's own entries count, not a nested aggregate's: a spliced
+/// inner list leaves the outer list's count alone.
+pub fn is_spliced_initializer(list: &tree_sitter::Node, source: &str) -> bool {
+    list.kind() == "initializer_list"
+        && list.children(&mut list.walk()).any(|c| {
+            c.kind() == "comment"
+                && source
+                    .get(c.start_byte()..c.end_byte())
+                    .is_some_and(|t| t == SPLICE_MARKER)
+        })
+}
 
 /// One open `{`, as the forward scan tracks it.
 #[derive(Clone, Copy)]
@@ -362,6 +391,14 @@ pub fn blank_initializer_guarded_preproc(source: &str) -> String {
         for k in directives.chain(dropped) {
             blank_line(&mut out, lines.starts[k], lines.raw[k].len());
         }
+        // Every arm kept: mark the list as spliced where each `#elif`/`#else`
+        // was. The line held at least `#else`, so the marker always fits.
+        if kept.is_none() {
+            for &b in &c.branches {
+                let at = lines.starts[b];
+                out[at..at + SPLICE_MARKER.len()].copy_from_slice(SPLICE_MARKER.as_bytes());
+            }
+        }
     }
 
     String::from_utf8(out).unwrap_or_else(|_| source.to_string())
@@ -565,6 +602,81 @@ char s[3] = {
             "the arm no build compiles is dropped"
         );
         assert!(out.contains("\"cd\""));
+    }
+
+    /// Every `initializer_list` in `src` after the pass, in source order,
+    /// with whether it reads as spliced.
+    fn spliced_lists(src: &str) -> Vec<bool> {
+        let out = fixed(src);
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&c_language()).unwrap();
+        let tree = parser.parse(&out, None).unwrap();
+        let mut found = Vec::new();
+        let mut stack = vec![tree.root_node()];
+        while let Some(n) = stack.pop() {
+            if n.kind() == "initializer_list" {
+                found.push((n.start_byte(), is_spliced_initializer(&n, &out)));
+            }
+            stack.extend(n.children(&mut n.walk()));
+        }
+        found.sort();
+        found.into_iter().map(|(_, s)| s).collect()
+    }
+
+    #[test]
+    fn marks_a_list_whose_alternative_arms_were_all_kept() {
+        let src = "\
+int t[2] = {
+#ifdef UNDECLARED_FEATURE
+    1, 2,
+#elif OTHER
+    3, 4,
+#else
+    5, 6,
+#endif
+};
+";
+        let out = fixed(src);
+        assert_eq!(out.matches(SPLICE_MARKER).count(), 2, "{out}");
+        assert_eq!(spliced_lists(src), vec![true]);
+    }
+
+    #[test]
+    fn a_single_arm_or_a_compiled_arm_is_not_a_splice() {
+        let src = "\
+int a[] = {
+#ifdef UNDECLARED_FEATURE
+    1,
+#endif
+    2
+};
+int b[] = {
+#ifdef UNDECLARED_FEATURE
+    PAIR(1, 2)
+#else
+    PAIR(3, 4)
+#endif
+};
+";
+        assert!(!fixed(src).contains(SPLICE_MARKER));
+        assert_eq!(spliced_lists(src), vec![false, false]);
+    }
+
+    #[test]
+    fn a_spliced_inner_list_leaves_the_outer_count_alone() {
+        let src = "\
+int t[2][3] = {
+    { 1, 2, 3 },
+    {
+#ifdef UNDECLARED_FEATURE
+        4,
+#else
+        5,
+#endif
+        6 },
+};
+";
+        assert_eq!(spliced_lists(src), vec![false, false, true]);
     }
 
     #[test]

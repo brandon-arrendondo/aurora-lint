@@ -140,7 +140,7 @@ fn declared_size(arr_decl: &Node, source: &str, macros: &MacroConstantMap) -> Op
         .filter(|p| p.kind() == "init_declarator")
         .and_then(|p| p.child_by_field_name("value"))
         .filter(|v| v.kind() == "initializer_list")
-        .and_then(|v| count_initializer_elements(&v));
+        .and_then(|v| count_initializer_elements(&v, source));
 
     match (declared, init_count) {
         (Some(d), Some(c)) => Some(d.max(c)),
@@ -208,8 +208,13 @@ fn scan_block_declarators<'a>(
 /// Count top-level elements in an `initializer_list`.
 ///
 /// Returns `None` if the list uses designated initializers (e.g. `[3] = x`),
-/// where the element count does not bound the array size.
-fn count_initializer_elements(list: &Node) -> Option<usize> {
+/// where the element count does not bound the array size, or if its entries
+/// were spliced from the arms of a conditional, where the count is no
+/// build's count (`initializer_preproc_guard::is_spliced_initializer`).
+fn count_initializer_elements(list: &Node, source: &str) -> Option<usize> {
+    if crate::analyze::initializer_preproc_guard::is_spliced_initializer(list, source) {
+        return None;
+    }
     let mut count = 0;
     for i in 0..list.child_count() {
         if let Some(child) = list.child(i) {
