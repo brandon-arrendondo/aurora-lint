@@ -3914,4 +3914,26 @@ int f(void) {
             Some((1, i32::MAX as i64))
         );
     }
+
+    #[test]
+    fn a_pointer_advanced_by_a_call_result_does_not_point_at_its_arguments() {
+        // `p += read_varint(p, &len)` moves `p` by an integer: it does not
+        // make `p` a pointer to `len`, so handing `p` on keeps `len`'s check.
+        let code = "
+int read_varint(const char *p, int *out);
+void require(const char *p, int n);
+int f(const char *p) {
+    int len = 0;
+    p += read_varint(p, &len);
+    if (len <= 0)
+        return 0;
+    require(p, len);
+    return len;
+}
+";
+        assert_eq!(
+            range_before(code, "len", "return len"),
+            Some((1, i32::MAX as i64))
+        );
+    }
 }

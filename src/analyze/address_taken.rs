@@ -223,6 +223,12 @@ impl AddressTakenLocals {
     }
 }
 
+/// Whether an `assignment_expression` is a plain `=`.
+fn is_plain_assignment(node: &Node) -> bool {
+    node.child_by_field_name("operator")
+        .is_none_or(|op| op.kind() == "=")
+}
+
 /// The node under any parentheses.
 fn strip_parens<'a>(node: &Node<'a>) -> Node<'a> {
     let mut n = *node;
@@ -336,9 +342,16 @@ fn collect_sources(expr: &Node, source: &str, out: &mut Vec<Source>) {
                 collect_sources(&right, source, out);
             }
         }
+        // The value of `p = v` is `v`; of `p += n`, `p` moved by an
+        // integer offset, which points where `p` did.
         "assignment_expression" => {
-            if let Some(right) = expr.child_by_field_name("right") {
-                collect_sources(&right, source, out);
+            let field = if is_plain_assignment(expr) {
+                "right"
+            } else {
+                "left"
+            };
+            if let Some(value) = expr.child_by_field_name(field) {
+                collect_sources(&value, source, out);
             }
         }
         "update_expression" => {
@@ -470,7 +483,12 @@ fn collect_flows(
     address_taken: &mut HashSet<String>,
 ) {
     match node.kind() {
-        "assignment_expression" => {
+        // Only `=` stores a pointer: in `p += n` and `p -= n` the right
+        // side is an integer offset, which moves `p` within whatever it
+        // already pointed into, and the other compound operators take no
+        // pointer. Reading the offset as a source made
+        // `p += read_varint(p, &len)` look like `p` may point at `len`.
+        "assignment_expression" if is_plain_assignment(node) => {
             if let (Some(left), Some(right)) = (
                 node.child_by_field_name("left"),
                 node.child_by_field_name("right"),
