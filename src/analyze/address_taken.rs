@@ -109,13 +109,58 @@ impl FunctionKey {
     }
 }
 
+/// What is computed once per function, remembered for every function of
+/// the source buffer last asked about. A rule walking a file asks for one
+/// function's facts again after asking for every other function's (value-range
+/// analysis runs over the whole file first), so one remembered function is
+/// not enough; a new buffer starts the memo afresh, and so does reaching
+/// [`FunctionMemo::CAPACITY`] functions.
+pub struct FunctionMemo<T> {
+    buffer: (usize, usize),
+    entries: HashMap<FunctionKey, T>,
+}
+
+impl<T: Clone> FunctionMemo<T> {
+    /// Functions remembered before the memo starts afresh.
+    pub const CAPACITY: usize = 4096;
+
+    /// An empty memo.
+    pub fn new() -> Self {
+        FunctionMemo {
+            buffer: (0, 0),
+            entries: HashMap::new(),
+        }
+    }
+
+    /// What is remembered for `key`.
+    pub fn get(&self, key: &FunctionKey) -> Option<T> {
+        (self.buffer == key.buffer)
+            .then(|| self.entries.get(key).cloned())
+            .flatten()
+    }
+
+    /// Remember `value` for `key`.
+    pub fn insert(&mut self, key: FunctionKey, value: T) {
+        if self.buffer != key.buffer || self.entries.len() >= Self::CAPACITY {
+            self.entries.clear();
+            self.buffer = key.buffer;
+        }
+        self.entries.insert(key, value);
+    }
+}
+
+impl<T: Clone> Default for FunctionMemo<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 thread_local! {
-    /// The facts of the function last asked about on this thread. Value-range
-    /// analysis and every guard a rule checks in one function ask for the
-    /// same facts; one entry serves a rule walking a file function by
-    /// function.
-    static LAST_FACTS: RefCell<Option<(FunctionKey, Arc<AddressTakenLocals>)>> =
-        const { RefCell::new(None) };
+    /// The facts of the functions of the source last asked about on this
+    /// thread: value-range analysis and every guard a rule checks ask for
+    /// the same facts.
+    static FACTS: RefCell<FunctionMemo<Arc<AddressTakenLocals>>> =
+        RefCell::new(FunctionMemo::new());
 }
 
 #[cfg(test)]
@@ -133,20 +178,14 @@ pub(crate) fn take_builds() -> usize {
 
 impl AddressTakenLocals {
     /// The facts for `func`, a `function_definition`, built once for the
-    /// function however many callers in a row ask.
+    /// function however many callers ask ([`FunctionMemo`]).
     pub fn of_function(func: &Node, source: &str) -> Arc<Self> {
         let key = FunctionKey::of(func, source);
-        let hit = LAST_FACTS.with(|last| {
-            last.borrow()
-                .as_ref()
-                .filter(|(k, _)| *k == key)
-                .map(|(_, facts)| Arc::clone(facts))
-        });
-        if let Some(facts) = hit {
+        if let Some(facts) = FACTS.with(|memo| memo.borrow().get(&key)) {
             return facts;
         }
         let facts = Arc::new(Self::build(func, source));
-        LAST_FACTS.with(|last| *last.borrow_mut() = Some((key, Arc::clone(&facts))));
+        FACTS.with(|memo| memo.borrow_mut().insert(key, Arc::clone(&facts)));
         facts
     }
 
@@ -833,5 +872,26 @@ mod tests {
         let tree2 = parse(other);
         AddressTakenLocals::of_function(&first_function(&tree2), other);
         assert_eq!(take_builds(), 1);
+    }
+
+    #[test]
+    fn a_function_asked_about_again_after_the_others_is_not_rebuilt() {
+        // Value-range analysis asks for every function's facts before a
+        // rule's checks ask for the first function's again.
+        let src = "int f(void) { int x = 1; int *q = &x; *q = 2; return x; }\n\
+                   int g(void) { int y = 1; int *p = &y; *p = 3; return y; }\n";
+        let tree = parse(src);
+        let functions: Vec<_> = (0..tree.root_node().named_child_count())
+            .filter_map(|i| tree.root_node().named_child(i))
+            .filter(|n| n.kind() == "function_definition")
+            .collect();
+        assert_eq!(functions.len(), 2);
+        take_builds();
+        for _ in 0..10 {
+            for func in &functions {
+                AddressTakenLocals::of_function(func, src);
+            }
+        }
+        assert_eq!(take_builds(), 2);
     }
 }

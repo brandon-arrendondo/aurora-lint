@@ -19,7 +19,9 @@
 use super::ast_utils;
 use super::guard_dominance;
 use super::std_functions;
-use crate::analyze::address_taken::{store_base, AddressTakenLocals, FunctionKey, LocalId};
+use crate::analyze::address_taken::{
+    store_base, AddressTakenLocals, FunctionKey, FunctionMemo, LocalId,
+};
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -146,10 +148,7 @@ pub fn fact_reaches(cond: &Node, site: &Node, targets: &[String], source: &str) 
         let may_write = query::find_first_descendant(func, |n| {
             n.kind() == "call_expression"
                 && between.holds(&n)
-                && !n.child_by_field_name("function").is_some_and(|f| {
-                    f.kind() == "identifier"
-                        && library_function(ast_utils::get_node_text(&f, source), &function.defined)
-                })
+                && !function.library_calls.contains(&n.id())
         });
         if may_write.is_some() {
             return false;
@@ -270,9 +269,12 @@ fn written_through_pointer(
 /// divisions asked it N times, and each time every `&` and every call
 /// argument looked through the whole file for a definition of its callee.
 struct FunctionFacts {
-    /// The functions the file defines: a call to one of those is no
-    /// library call, whatever its name.
-    defined: HashSet<String>,
+    /// The node ids of the function's direct calls to a library function
+    /// the file does not define: a call to a function the file defines is
+    /// no library call, whatever its name. Per function, not the file's
+    /// definitions themselves, since every function of a file is
+    /// remembered at once.
+    library_calls: HashSet<usize>,
     /// Every `&` argument's spelling, whitespace-squeezed, where some `&` of
     /// it is not passed straight to a library call that keeps no copy and
     /// hands back nothing that is kept ([`call_value_unused`]).
@@ -284,10 +286,10 @@ struct FunctionFacts {
 }
 
 thread_local! {
-    /// The [`FunctionFacts`] of the function last asked about on this
-    /// thread.
-    static LAST_FUNCTION_FACTS: RefCell<Option<(FunctionKey, Rc<FunctionFacts>)>> =
-        const { RefCell::new(None) };
+    /// The [`FunctionFacts`] of the functions of the source last asked about
+    /// on this thread.
+    static FUNCTION_FACTS: RefCell<FunctionMemo<Rc<FunctionFacts>>> =
+        RefCell::new(FunctionMemo::new());
 }
 
 #[cfg(test)]
@@ -306,13 +308,7 @@ pub(crate) fn take_function_reads() -> usize {
 impl FunctionFacts {
     fn of_function(func: &Node, source: &str) -> Rc<Self> {
         let key = FunctionKey::of(func, source);
-        let hit = LAST_FUNCTION_FACTS.with(|last| {
-            last.borrow()
-                .as_ref()
-                .filter(|(k, _)| *k == key)
-                .map(|(_, facts)| Rc::clone(facts))
-        });
-        if let Some(facts) = hit {
+        if let Some(facts) = FUNCTION_FACTS.with(|memo| memo.borrow().get(&key)) {
             return facts;
         }
         #[cfg(test)]
@@ -331,7 +327,14 @@ impl FunctionFacts {
             .collect();
         let facts = AddressTakenLocals::of_function(func, source);
         let mut retained = HashSet::new();
+        let mut library_calls = HashSet::new();
         for call in query::find_descendants_of_kind(*func, "call_expression") {
+            if call.child_by_field_name("function").is_some_and(|f| {
+                f.kind() == "identifier"
+                    && library_function(ast_utils::get_node_text(&f, source), &defined)
+            }) {
+                library_calls.insert(call.id());
+            }
             for arg in call_arguments(&call) {
                 if !passed_to_library_call_in(&arg, &defined, source) {
                     retained.extend(facts.argument_targets(&arg, source));
@@ -339,12 +342,12 @@ impl FunctionFacts {
             }
         }
         let function = Rc::new(FunctionFacts {
-            defined,
+            library_calls,
             addressed,
             facts,
             retained,
         });
-        LAST_FUNCTION_FACTS.with(|last| *last.borrow_mut() = Some((key, Rc::clone(&function))));
+        FUNCTION_FACTS.with(|memo| memo.borrow_mut().insert(key, Rc::clone(&function)));
         function
     }
 }

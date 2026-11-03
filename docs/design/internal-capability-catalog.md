@@ -938,7 +938,7 @@ local `g` (ADR-0006).
 
 | Item | Signature | Description |
 |---|---|---|
-| `AddressTakenLocals::of_function` | `(func: &Node, source) -> Arc<AddressTakenLocals>` | One function's facts: each local pointer's possible targets (from `&x` through casts, parentheses, `p + n`, `?:`, the comma operator, copies and call results that may hand an argument back), the pointers whose value may come from outside (a parameter, a file-scope object, a read through memory), and the locals whose address ESCAPED: stored anywhere but a local pointer variable (a file-scope object, a member, an element, a pointee, an initializer list), or held by a pointer whose own address is taken (`**pp = v`). A function that takes no address answers empty without walking further. Memoised on the thread for the function last asked about (`FunctionKey`: node id, span, source buffer and a hash of the function's text), so VRA and every guard checked in the function share one build. |
+| `AddressTakenLocals::of_function` | `(func: &Node, source) -> Arc<AddressTakenLocals>` | One function's facts: each local pointer's possible targets (from `&x` through casts, parentheses, `p + n`, `?:`, the comma operator, copies and call results that may hand an argument back), the pointers whose value may come from outside (a parameter, a file-scope object, a read through memory), and the locals whose address ESCAPED: stored anywhere but a local pointer variable (a file-scope object, a member, an element, a pointee, an initializer list), or held by a pointer whose own address is taken (`**pp = v`). A function that takes no address answers empty without walking further. Memoised on the thread for every function of the source buffer last asked about (`FunctionMemo`, keyed by `FunctionKey`: node id, span, source buffer and a hash of the function's text), so VRA, which asks for every function first, and every guard and constant a rule then checks share one build per function. |
 | `local_of` / `local_declared_by` / `name` | `(&self, ident: &Node) -> Option<LocalId>` / `(&self, declarator: &Node) -> Option<LocalId>` / `(&self, LocalId) -> &str` | The local an identifier occurrence refers to (none for a file-scope object, a function, an enumerator); the local a declarator from `resolve_identifier_declarator` declares; a local's name, for a name-keyed consumer. |
 | `store_targets` / `argument_targets` | `(&self, base: &Node, source) -> HashSet<LocalId>` | The locals a store through `base` (`*base`, `base[i]`, `base->m`) may write: the targets of the pointers it names, plus every escaped local when `base` may come from outside. The locals a callee handed `arg` may write through it, `&x` itself included. Passing a pointer to a call is a write at that call, not an escape: a callee that keeps it and writes through it at a later call is not followed, the assumption VRA has always made for `f(&x)`. |
 | `escaped` / `has_escaped` | `(&self) -> impl Iterator<Item = LocalId>` / `(&self, LocalId) -> bool` | Locals any store through a pointer, and any call, may write. |
@@ -951,10 +951,11 @@ store of the target's own type joins the stored value into the target's
 range, any other write widens it to its type), and keeps it on
 `RangeAnalysisResult` so intra-block replay applies the same writes.
 `nonzero_facts::fact_reaches` asks it whether a check on an address-taken
-local still holds at a later site. Rules
-that resolve a variable to its last textual assignment (INT34-C's
-last-assignment pass, ARR30-C's constant propagation, `last_write`) do not
-consult it yet.
+local still holds at a later site, and `nonzero_facts::pointer_write_reaches`
+whether a local's last assignment is still its value at a use, which
+`const_eval::resolve_local_var_range` (INT34-C's last-assignment pass among
+its callers) and ARR30-C's constant-index resolution ask. `last_write` does
+not consult it yet.
 
 ### `src/analyze/argument_objects.rs`
 **Problem solved:** whether a call argument NAMES a storage object, answered
