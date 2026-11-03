@@ -140,6 +140,14 @@ impl CParser {
         // directive inside the arm and leaves the arm's own guard in place.
         let source = crate::analyze::paren_preproc_guard::blank_paren_guarded_preproc(&source);
 
+        // An `else` whose body is a conditional of one braced block per arm
+        // (`} else` / `#if B` / `{ ... }` / `#else` / `{ ... }` / `#endif`):
+        // the grammar has no production for `else` before a `preproc_if`.
+        // Keeps the first arm and blanks the rest. It runs before the
+        // dangling-else pass, which can then join a guard around the `else`
+        // to the block that now follows its `#endif`.
+        let source = crate::analyze::else_braced_arms::join_else_to_braced_arms(&source);
+
         // An earlier fix: blank #if/#ifdef/#ifndef + #endif directive pairs that
         // wrap a dangling `else` fragment (an if/else-if chain split across
         // a build-time feature guard) -- tree-sitter-c's grammar has no
@@ -227,6 +235,7 @@ impl CParser {
         );
         let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(&source);
         let source = crate::analyze::paren_preproc_guard::blank_paren_guarded_preproc(&source);
+        let source = crate::analyze::else_braced_arms::join_else_to_braced_arms(&source);
         let source = crate::analyze::preproc_dangling_else::blank_dangling_else_preproc(&source);
         let source = crate::analyze::label_preproc_guard::blank_label_guarded_preproc(&source);
         let source =

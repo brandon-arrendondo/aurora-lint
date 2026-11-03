@@ -1675,7 +1675,12 @@ guard; a `} else` guard nested in another's braced arm is repaired first, in
 rounds, and a nested conditional whose every arm is whole statements, braces
 and parentheses balanced, does not keep the outer guard in place; it runs
 after `paren_preproc_guard.rs`, so a conditional operand in an `if`
-condition is gone before it judges the arm), `label_preproc_guard.rs` (a guard opening right after a
+condition is gone before it judges the arm), `else_braced_arms.rs` (an `else` whose body is a conditional of one
+balanced `{ ... }` block per arm, after it or after the `#endif` of the
+guard holding it: the first arm, the block the `else` reaches, is kept and
+every later arm blanked whole so none reads as a statement after the `if`;
+no condition is decided, and it runs before the dangling-else pass, which
+then joins that guard), `label_preproc_guard.rs` (a guard opening right after a
 goto label), `paren_preproc_guard.rs` (a guard opening inside
 an unclosed parenthesized expression, or continuing an expression statement
 across it: the code line before it ends no statement or label, and it ends

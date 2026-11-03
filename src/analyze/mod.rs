@@ -34,6 +34,7 @@ pub mod dataflow;
 /// definitions.
 pub mod dead_regions;
 pub mod deallocator_candidates;
+pub mod else_braced_arms;
 pub mod embedded_js_blank;
 pub mod empty_macro_blank;
 pub mod function_summary;
