@@ -121,6 +121,17 @@ impl AddressTakenLocals {
         self.escaped.iter()
     }
 
+    /// Whether `name`'s address escaped.
+    pub fn has_escaped(&self, name: &str) -> bool {
+        self.escaped.contains(name)
+    }
+
+    /// Whether the function declares `name`: a parameter or an object its
+    /// body declares.
+    pub fn is_local(&self, name: &str) -> bool {
+        self.locals.contains(name)
+    }
+
     /// The locals a store through the pointer `base` may write, as in
     /// `*base = v`, `base[i] = v` or `base->m = v`.
     pub fn store_targets(&self, base: &Node, source: &str) -> HashSet<String> {

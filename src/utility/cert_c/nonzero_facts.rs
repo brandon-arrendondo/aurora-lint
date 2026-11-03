@@ -19,6 +19,7 @@
 use super::ast_utils;
 use super::guard_dominance;
 use super::std_functions;
+use crate::analyze::address_taken::{store_base, AddressTakenLocals};
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
@@ -91,10 +92,11 @@ pub fn known_conditions<'a>(
 /// - a name in the targets means another object at `site` than at `cond`,
 ///   as an inner declaration shadowing it does (ADR-0006);
 /// - control can reach `site` without passing `cond` ([`entered_by_jump`]);
-/// - the address of a target or a variable it reads is taken anywhere in
-///   the function, so a write through a pointer can change it unseen --
-///   except as an argument of a library call that keeps no copy
-///   ([`passed_to_library_call`]), which writes only during the call;
+/// - the address of a target or a variable it reads is taken, other than
+///   as an argument of a library call that keeps no copy
+///   ([`passed_to_library_call`]), which writes only during the call, and a
+///   write through a pointer can change it between the two
+///   ([`pointer_write_between`]);
 /// - a target reads a file-scope variable and a call between the two may
 ///   write it: any call but to a library function the file does not
 ///   define, which cannot reach the program's own globals except through
@@ -121,15 +123,19 @@ pub fn fact_reaches(cond: &Node, site: &Node, targets: &[String], source: &str) 
     }
     // An address handed straight to a library call is a write at that call,
     // which `written_between` reads; any other escapes.
-    let escapes = query::find_first_descendant(func, |n| {
-        n.kind() == "pointer_expression"
-            && n.child_by_field_name("operator")
+    let addressed: HashSet<String> = query::find_descendants_of_kind(func, "pointer_expression")
+        .into_iter()
+        .filter(|n| {
+            n.child_by_field_name("operator")
                 .is_some_and(|op| op.kind() == "&")
-            && n.child_by_field_name("argument")
-                .is_some_and(|arg| names.contains(&guard_dominance::squeeze_text(&arg, source)))
-            && !passed_to_library_call(&n, &root, source)
-    });
-    if escapes.is_some() {
+                && !passed_to_library_call(n, &root, source)
+        })
+        .filter_map(|n| n.child_by_field_name("argument"))
+        .map(|arg| guard_dominance::squeeze_text(&arg, source))
+        .filter(|text| names.contains(text))
+        .collect();
+    if !addressed.is_empty() && pointer_write_between(cond, site, &func, &root, &addressed, source)
+    {
         return false;
     }
     let reads_global = words.iter().any(|name| {
@@ -153,6 +159,78 @@ pub fn fact_reaches(cond: &Node, site: &Node, targets: &[String], source: &str) 
         }
     }
     !written_between(cond, site, targets, source)
+}
+
+/// Whether a write through a pointer may change one of `names` between
+/// `cond` and `site`, for names whose address the function takes.
+///
+/// The condition read the variable's value after every write before it, so
+/// only a write after it can make the fact stale: a store through a pointer
+/// that may hold its address, or a call handed such a pointer
+/// ([`AddressTakenLocals`]). Where the pointer cannot be followed the
+/// answer is yes, as before: a name that is not a plain local (a member, a
+/// file-scope object), a local whose address escaped into storage the
+/// analysis does not track, and a local whose address, or a pointer
+/// holding it, goes anywhere in the function to a call other than a
+/// library call that keeps no copy, since that callee may keep the pointer
+/// and write through it at any later call.
+fn pointer_write_between(
+    cond: &Node,
+    site: &Node,
+    func: &Node,
+    root: &Node,
+    names: &HashSet<String>,
+    source: &str,
+) -> bool {
+    let facts = AddressTakenLocals::of_function(func, source);
+    let unfollowable = names
+        .iter()
+        .any(|name| !facts.is_local(name) || facts.has_escaped(name));
+    if unfollowable {
+        return true;
+    }
+    let reaches = |targets: HashSet<String>| targets.iter().any(|t| names.contains(t));
+    let retained = query::find_first_descendant(*func, |n| {
+        n.kind() == "call_expression"
+            && call_arguments(&n).iter().any(|arg| {
+                !passed_to_library_call(arg, root, source)
+                    && reaches(facts.argument_targets(arg, source))
+            })
+    });
+    if retained.is_some() {
+        return true;
+    }
+    let between = Between::new(cond, site);
+    query::find_first_descendant(*func, |n| {
+        between.holds(&n)
+            && match n.kind() {
+                "assignment_expression" => n
+                    .child_by_field_name("left")
+                    .and_then(|l| store_base(&l))
+                    .is_some_and(|base| reaches(facts.store_targets(&base, source))),
+                "update_expression" => n
+                    .child_by_field_name("argument")
+                    .and_then(|a| store_base(&a))
+                    .is_some_and(|base| reaches(facts.store_targets(&base, source))),
+                "call_expression" => call_arguments(&n)
+                    .iter()
+                    .any(|arg| reaches(facts.argument_targets(arg, source))),
+                _ => false,
+            }
+    })
+    .is_some()
+}
+
+/// A call's argument expressions.
+fn call_arguments<'a>(call: &Node<'a>) -> Vec<Node<'a>> {
+    call.child_by_field_name("arguments")
+        .map(|args| {
+            (0..args.named_child_count())
+                .filter_map(|i| args.named_child(i))
+                .filter(|a| a.kind() != "comment")
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Library functions that keep a pointer argument past the call: what it
