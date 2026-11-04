@@ -580,9 +580,13 @@ fn find_trailing_attribute_invocations(node: &Node, source: &str) -> Vec<(usize,
 /// invocations, and the declarator is followed by what ends one: `;`, `{` or
 /// `,`. Nothing but the invocations themselves may stand between: no `{`,
 /// `}` or `;` in `masked` (the source with comments and literal contents
-/// blanked) and no `ERROR` child. A declarator the parser assembled out of
-/// a lost function body spans a `}` or an `ERROR` on its way to whatever
-/// follows it.
+/// blanked), and every child after the parameters is a call with no `ERROR`
+/// or `MISSING` node anywhere inside it. A declarator the parser assembled
+/// out of a lost function body spans a `}` or an `ERROR` on its way to
+/// whatever follows it, and one assembled out of a body macro and the next
+/// prototype (`int get(int a) BODY(a)` / `int helper(int b);`) holds that
+/// prototype's type as a bare identifier and its name and parameters as a
+/// call whose argument list hides the `ERROR`.
 fn ends_in_attributes_only(declarator: &Node, masked: &str) -> bool {
     let Some(params) = declarator.child_by_field_name("parameters") else {
         return false;
@@ -593,7 +597,7 @@ fn ends_in_attributes_only(declarator: &Node, masked: &str) -> bool {
         && declarator
             .children(&mut cursor)
             .filter(|c| c.start_byte() >= params.end_byte())
-            .all(|c| !c.is_error() && !c.is_missing());
+            .all(|c| c.kind() == "call_expression" && !c.has_error());
     tail_is_attributes
         && matches!(
             next_non_space(masked.as_bytes(), declarator.end_byte()),
@@ -936,28 +940,31 @@ fn blank_if_fewer_errors(
     let repaired = parser.parse(&text, None)?;
     let fewer_errors =
         error_node_count(&repaired.root_node()) < error_node_count(&tree.root_node());
-    let declared = function_declarator_names(&repaired.root_node(), &text, false);
-    let keeps_every_declaration = function_declarator_names(&tree.root_node(), source, true)
+    let after = settled_function_declarators(&repaired.root_node(), &text);
+    let keeps_every_declaration = settled_function_declarators(&tree.root_node(), source)
         .iter()
-        .all(|name| declared.contains(name));
+        .all(|(name, count)| after.get(name).is_some_and(|kept| kept >= count));
     (fewer_errors && keeps_every_declaration).then_some((text, repaired))
 }
 
-/// The names of the functions `root` declares or defines: each
-/// `function_declarator`'s innermost name. With `settled_only`, only a
-/// declarator that has no `ERROR` ancestor, one the parser fully placed.
+/// How many times each function name is declared or defined in `root` by a
+/// settled `function_declarator`: one with no `ERROR` ancestor, which the
+/// parser fully placed. The name is the declarator's innermost identifier.
 ///
-/// [`blank_if_fewer_errors`] accepts a repair only when every settled name
-/// before it is still declared after it. A lower `ERROR` count alone is not
-/// enough: a repair can tidy two errors away while the parser folds the next
-/// prototype into the one before it, and that prototype is then lost to
-/// every rule.
-fn function_declarator_names(root: &Node, source: &str, settled_only: bool) -> HashSet<String> {
-    query::find_descendants(*root, |n| {
-        n.kind() == "function_declarator"
-            && (!settled_only || query::nearest_ancestor_of_kind(n, "ERROR").is_none())
+/// [`blank_if_fewer_errors`] accepts a repair only when no name has fewer
+/// settled declarators after it than before. A lower `ERROR` count alone is
+/// not enough: a repair can tidy two errors away while the parser folds the
+/// next prototype into the one before it, and that prototype is then lost
+/// to every rule. Counting rather than collecting names catches a function
+/// that is both prototyped and defined and loses one of the two, and
+/// counting only settled declarators on both sides catches one the repair
+/// moved under an `ERROR`.
+fn settled_function_declarators(root: &Node, source: &str) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    let names = query::find_descendants(*root, |n| {
+        n.kind() == "function_declarator" && query::nearest_ancestor_of_kind(n, "ERROR").is_none()
     })
-    .iter()
+    .into_iter()
     .filter_map(|declarator| {
         let mut inner = declarator.child_by_field_name("declarator")?;
         for _ in 0..MAX_DECLARATOR_DEPTH {
@@ -969,11 +976,14 @@ fn function_declarator_names(root: &Node, source: &str, settled_only: bool) -> H
                 .or_else(|| inner.named_child(0))?;
         }
         None
-    })
-    .collect()
+    });
+    for name in names {
+        *counts.entry(name).or_insert(0) += 1;
+    }
+    counts
 }
 
-/// How deep [`function_declarator_names`] follows nested declarators
+/// How deep [`settled_function_declarators`] follows nested declarators
 /// (pointer, parenthesized, function) to a function's name.
 const MAX_DECLARATOR_DEPTH: usize = 8;
 
@@ -1150,8 +1160,8 @@ mod tests {
         let mut parser = Parser::new();
         parser.set_language(&c_language()).unwrap();
         let tree = parser.parse(src, None).unwrap();
-        let settled = function_declarator_names(&tree.root_node(), src, true);
-        assert!(settled.contains("lib_set_error_const"), "{settled:?}");
+        let settled = settled_function_declarators(&tree.root_node(), src);
+        assert!(settled.contains_key("lib_set_error_const"), "{settled:?}");
         let exports: Vec<(usize, usize)> = src
             .match_indices("EXPORTED")
             .map(|(i, m)| (i, i + m.len()))
@@ -1165,11 +1175,82 @@ mod tests {
             "the blank alone looks like an improvement"
         );
         assert!(
-            !function_declarator_names(&blanked_tree.root_node(), &blanked, false)
-                .contains("lib_set_error_const"),
+            !settled_function_declarators(&blanked_tree.root_node(), &blanked)
+                .contains_key("lib_set_error_const"),
             "and loses a prototype"
         );
         assert!(blank_if_fewer_errors(&mut parser, src, &tree, &exports).is_none());
+    }
+
+    /// The same blank is refused when the lost prototype's function is also
+    /// defined further down: the definition survives, but one of the name's
+    /// two declarators does not, and the guard counts them.
+    #[test]
+    fn refuses_a_blank_that_loses_a_prototype_of_a_defined_function() {
+        let src = concat!(
+            "typedef struct ErrorState ErrorState;\n",
+            "EXPORTED\n",
+            "void        lib_error_free      (ErrorState       *error);\n",
+            "EXPORTED\n",
+            "void        lib_set_error       (ErrorState       *error,\n",
+            "                                  const char      *name,\n",
+            "                                  const char      *message,\n",
+            "                                  ...) PRINTF_LIKE (3, 4);\n",
+            "EXPORTED\n",
+            "void        lib_set_error_const (ErrorState       *error,\n",
+            "                                  const char      *name,\n",
+            "                                  const char      *message);\n",
+            "EXPORTED\n",
+            "void        lib_move_error      (ErrorState       *src,\n",
+            "                                  ErrorState       *dest);\n",
+            "void lib_set_error_const(ErrorState *error, const char *name, const char *message)\n",
+            "{\n",
+            "}\n",
+        );
+        let mut parser = Parser::new();
+        parser.set_language(&c_language()).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let before = settled_function_declarators(&tree.root_node(), src);
+        assert_eq!(before.get("lib_set_error_const"), Some(&2), "{before:?}");
+        let exports: Vec<(usize, usize)> = src
+            .match_indices("EXPORTED")
+            .map(|(i, m)| (i, i + m.len()))
+            .collect();
+        let blanked = exports
+            .iter()
+            .fold(src.to_string(), |text, &(s, e)| blank_range(&text, s, e));
+        let blanked_tree = parser.parse(&blanked, None).unwrap();
+        let after = settled_function_declarators(&blanked_tree.root_node(), &blanked);
+        assert_eq!(after.get("lib_set_error_const"), Some(&1), "{after:?}");
+        assert!(blank_if_fewer_errors(&mut parser, src, &tree, &exports).is_none());
+    }
+
+    /// A function-like macro that expands to a definition's body, followed
+    /// by a prototype: the parser reads the macro, the next prototype's type
+    /// and its name and parameters as calls trailing the first declarator,
+    /// with the `ERROR` inside the last call's arguments. None of it is an
+    /// attribute run, and the trailing repair blanks nothing. (The
+    /// single-identifier repair still blanks the parameter name `b`, as it
+    /// always has; `helper` keeps its name and its prototype.)
+    #[test]
+    fn leaves_a_body_macro_and_the_next_prototype_alone() {
+        let src = concat!(
+            "#define GETTER(n) { return n; }\n",
+            "int get_a(int a) GETTER(a)\n",
+            "int helper(int b);\n",
+            "int k(void) { return helper(2); }\n",
+        );
+        let (_, text) = recover(src);
+        assert!(text.contains("int get_a(int a) GETTER(a)\n"), "{text:?}");
+        assert!(text.contains("\nint helper(int "), "{text:?}");
+        assert!(
+            text.ends_with(");\nint k(void) { return helper(2); }\n"),
+            "{text:?}"
+        );
+        let mut parser = Parser::new();
+        parser.set_language(&c_language()).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        assert!(find_trailing_attribute_invocations(&tree.root_node(), src).is_empty());
     }
 
     /// An invocation trailing a prototype in an item that parses cleanly is
