@@ -46,15 +46,28 @@
 //! around the `if`.
 //!
 //! Deliberately narrow: every arm (`#elif` included) is exactly one balanced
-//! `{ ... }` block with no directive of its own inside, the first arm's
-//! condition is not a literal `0`, and the code line before the `#if`, or
-//! before the `#endif` directly ahead of it, ends with the keyword `else`.
-//! Length- and line-preserving: only whole lines are blanked.
+//! `{ ... }` block with no directive of any kind inside, the first arm is
+//! not one a literal condition rules out (`#if 0`, `#if (0)`), and the
+//! code line before the `#if`, or before the `#endif` directly ahead of it,
+//! ends with the keyword `else`. That `else` must itself be compiled in some
+//! configuration, and a guard holding it must have no `#elif` or `#else`,
+//! which would keep the guard and leave the `else` unjoined. Length- and
+//! line-preserving: only whole lines are blanked. A directive's extent is
+//! blanked whole, as `directive_extent` reads it: text after a block
+//! comment the directive opened, on the line that closes it, is part of the
+//! directive (C11 5.1.1.2, phase 3), and a compiler drops it there too.
 
+use crate::analyze::init_state::literal_dead_lines;
 use crate::analyze::paren_preproc_guard::{
     blank_line, is_branch_directive, is_directive, is_directive_start, is_endif, CodeLines,
 };
 use crate::analyze::preproc_arm_choice::directive_extent;
+
+/// True if 0-based line `k` lies in an arm a literal condition keeps out of
+/// every build (`#if 0`, `#if (0)`, `#if 0 /* off */`).
+fn in_dead_arm(dead: &[(usize, usize)], k: usize) -> bool {
+    dead.iter().any(|&(s, e)| (s..=e).contains(&(k + 1)))
+}
 
 /// True if code line `k` ends with the keyword `else`.
 fn ends_with_else(code: &str) -> bool {
@@ -73,11 +86,19 @@ fn previous_line(code: &CodeLines, i: usize) -> Option<usize> {
 
 /// True if the conditional opening at line `i` follows an `else`: directly,
 /// or across the `#endif` of the guard that holds that `else`.
-fn follows_else(code: &CodeLines, i: usize) -> bool {
+///
+/// Not when the `else` is in an arm no configuration compiles, and not
+/// when the guard holding it has an `#elif` or `#else` of its own: the
+/// dangling-else pass keeps that guard, so the `else` is never joined and
+/// the arms blanked here would be lost for nothing.
+fn follows_else(code: &CodeLines, dead: &[(usize, usize)], i: usize) -> bool {
     let Some(k) = previous_line(code, i) else {
         return false;
     };
     let k = if is_endif(code.raw[k]) && !code.starts_in_comment[k] {
+        if guard_has_branch(code, k) {
+            return false;
+        }
         match previous_line(code, k) {
             Some(k) => k,
             None => return false,
@@ -85,7 +106,30 @@ fn follows_else(code: &CodeLines, i: usize) -> bool {
     } else {
         k
     };
-    !is_directive(code.raw[k]) && ends_with_else(&code.code[k])
+    !is_directive(code.raw[k]) && ends_with_else(&code.code[k]) && !in_dead_arm(dead, k)
+}
+
+/// True if the conditional closed by the `#endif` on line `endif` has an
+/// `#elif` or `#else` of its own, or no `#if` opens it.
+fn guard_has_branch(code: &CodeLines, endif: usize) -> bool {
+    let mut depth = 1usize;
+    for j in (0..endif).rev() {
+        let line = code.raw[j];
+        if code.starts_in_comment[j] {
+            continue;
+        }
+        if is_endif(line) {
+            depth += 1;
+        } else if is_directive_start(line) {
+            depth -= 1;
+            if depth == 0 {
+                return false;
+            }
+        } else if depth == 1 && is_branch_directive(line) {
+            return true;
+        }
+    }
+    true
 }
 
 /// True if the code lines `arm` are exactly one balanced brace block: the
@@ -119,20 +163,20 @@ fn is_one_braced_block(code: &CodeLines, arm: std::ops::Range<usize>) -> bool {
 
 /// The conditional opening at line `i`: the line of each arm's directive
 /// (`#if`, then each `#elif`/`#else`) and of its `#endif`. `None` if it does
-/// not close, or holds a directive conditional of its own.
+/// not close, or holds any directive of its own: a conditional, or a
+/// `#define`/`#undef`/`#include` that blanking a later arm whole would drop.
 fn arms(code: &CodeLines, i: usize) -> Option<(Vec<usize>, usize)> {
     let mut openers = vec![i];
     let mut j = directive_extent(&code.raw, i).end;
     while j < code.len() {
         let line = code.raw[j];
         if !code.starts_in_comment[j] {
-            if is_directive_start(line) {
-                return None;
-            }
             if is_branch_directive(line) {
                 openers.push(j);
             } else if is_endif(line) {
                 return Some((openers, j));
+            } else if is_directive(line) {
+                return None;
             }
         }
         j += 1;
@@ -140,18 +184,11 @@ fn arms(code: &CodeLines, i: usize) -> Option<(Vec<usize>, usize)> {
     None
 }
 
-/// True if the `#if` on `line` tests a literal `0`: an arm no configuration
-/// compiles, which this pass must not keep.
-fn is_if_zero(line: &str) -> bool {
-    let rest = line.trim_start().trim_start_matches('#').trim_start();
-    rest.strip_prefix("if")
-        .is_some_and(|cond| cond.split("//").next().unwrap_or("").trim() == "0")
-}
-
 /// Join each `else` to a conditional of braced arms after it, per the module
 /// docs. Length- and line-preserving.
 pub fn join_else_to_braced_arms(source: &str) -> String {
     let code = CodeLines::new(source);
+    let dead = literal_dead_lines(source);
     let mut out = source.as_bytes().to_vec();
     let mut changed = false;
     let mut i = 0usize;
@@ -172,11 +209,12 @@ pub fn join_else_to_braced_arms(source: &str) -> String {
                 directive_extent(&code.raw, o).end..end
             })
             .collect();
-        let qualifies = !is_if_zero(code.raw[i])
+        // The kept arm must be one some configuration compiles.
+        let qualifies = !bounds[0].clone().any(|k| in_dead_arm(&dead, k))
             && bounds
                 .iter()
                 .all(|arm| is_one_braced_block(&code, arm.clone()))
-            && follows_else(&code, i);
+            && follows_else(&code, &dead, i);
         if !qualifies {
             i += 1;
             continue;
@@ -300,6 +338,21 @@ int f(int h)
     }
 
     #[test]
+    fn a_comment_the_endif_opens_is_blanked_with_it() {
+        // `g(5);` after the `*/` is part of the `#endif` line once the
+        // comment becomes a space, and a compiler drops it there as well.
+        let src = GUARDED.replace(
+            "#endif\n    return 0;",
+            "#endif /* B\n */ g(5);\n    return 0;",
+        );
+        let out = join_else_to_braced_arms(&src);
+        assert_eq!(out.len(), src.len());
+        assert!(out.contains("g(2);"));
+        assert!(!out.contains("g(5);"));
+        assert!(!out.contains("return -1;"));
+    }
+
+    #[test]
     fn leaves_conditionals_that_are_not_a_choice_of_else_bodies() {
         let no_else = GUARDED.replace("    } else\n#endif", "    }\n#endif");
         assert_eq!(join_else_to_braced_arms(&no_else), no_else);
@@ -313,8 +366,35 @@ int f(int h)
         let nested = GUARDED.replace("        g(2);\n", "#if defined(C)\n        g(2);\n#endif\n");
         assert_eq!(join_else_to_braced_arms(&nested), nested);
 
-        let if_zero = GUARDED.replace("#if defined(B)", "#if 0");
-        assert_eq!(join_else_to_braced_arms(&if_zero), if_zero);
+        for zero in ["#if 0", "#if 0 /* off */", "#if (0)", "#if 0 // off"] {
+            let if_zero = GUARDED.replace("#if defined(B)", zero);
+            assert_eq!(join_else_to_braced_arms(&if_zero), if_zero, "{zero}");
+        }
+
+        let dead_else = GUARDED.replace("#if defined(A)", "#if 0");
+        assert_eq!(join_else_to_braced_arms(&dead_else), dead_else);
+
+        // A guard the file only names in a commented-out `#define` is one a
+        // build flag turns on, not a dead arm: the else is still joined.
+        let flag = format!(
+            "//#define B\n{}",
+            GUARDED.replace("#if defined(B)", "#ifdef B")
+        );
+        assert!(!join_else_to_braced_arms(&flag).contains("return -1;"));
+
+        let guard_with_else = GUARDED.replace(
+            "    } else\n#endif",
+            "    } else\n#else\n    if (h == 2) {\n        g(0);\n    } else\n#endif",
+        );
+        assert_eq!(join_else_to_braced_arms(&guard_with_else), guard_with_else);
+
+        for directive in ["#define B_MODE 2", "#undef B_MODE", "#include \"b.h\""] {
+            let holds = GUARDED.replace(
+                "        return -1;\n",
+                &format!("{directive}\n        return -1;\n"),
+            );
+            assert_eq!(join_else_to_braced_arms(&holds), holds, "{directive}");
+        }
 
         let identifier = GUARDED.replace("    } else\n#endif", "    } elsewhere\n#endif");
         assert_eq!(join_else_to_braced_arms(&identifier), identifier);
