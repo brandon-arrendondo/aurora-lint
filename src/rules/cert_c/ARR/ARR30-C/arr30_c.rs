@@ -1414,6 +1414,24 @@ impl Arr30C {
         if total_assign_count > 1 && constant_assigns.len() != total_assign_count {
             return None;
         }
+        // Declarations in alternative preprocessor arms are not in sequence:
+        // any arm may be the one built, so they resolve only when they agree.
+        let declarations = any_assign_re
+            .find_iter(func_text)
+            .filter(|m| binds(m.start()))
+            .filter(|m| Self::declares_at(&func_node, func_node.start_byte() + m.start()))
+            .count();
+        if declarations > 1
+            && constant_assigns
+                .iter()
+                .filter_map(|c| c.get(1))
+                .map(|v| v.as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                > 1
+        {
+            return None;
+        }
         let caps = constant_assigns.last()?;
         let whole = caps.get(0)?;
         let origin = (
@@ -1427,12 +1445,6 @@ impl Arr30C {
         caps.get(1)?.as_str().parse::<isize>().ok()
     }
 
-    /// A test of whether the name `var_name` starting at a byte offset
-    /// inside `func_node` names the same object as `index_node`, resolved
-    /// by declarator (ADR-0006). The occurrence that declares an object is
-    /// its own declarator; any other is resolved at its own position. None
-    /// when the index is not a bare identifier or its declarator cannot be
-    /// found, so the caller keeps every occurrence.
     /// True when `func_node` steps or compound-assigns (`i++`, `(i)--`,
     /// `i += 2`) the object `index_node` names, resolved by declarator like
     /// [`Self::assignment_binding_filter`]; by name when the index's
@@ -1455,6 +1467,14 @@ impl Arr30C {
         .is_some()
     }
 
+    /// A test of whether the name `var_name` starting at a byte offset
+    /// inside `func_node` names the same object as `index_node`, resolved
+    /// by declarator (ADR-0006). The occurrence that declares an object is
+    /// its own declarator; any other is resolved at its own position. None
+    /// when the index is not a bare identifier or its declarator cannot be
+    /// found, so the caller keeps every occurrence. A declaration of the
+    /// same name directly in the same scope is an alternative preprocessor
+    /// arm, and counts as the same object.
     #[allow(clippy::type_complexity)]
     fn assignment_binding_filter<'a>(
         func_node: &Node<'a>,
@@ -1475,18 +1495,54 @@ impl Arr30C {
             if ident.kind() != "identifier" || get_node_text(&ident, source) != name {
                 return false;
             }
-            if ident.id() == used.id() {
-                return true;
-            }
             let declares = ident.parent().is_some_and(|p| {
                 p.kind() == "init_declarator"
                     && p.child_by_field_name("declarator")
                         .is_some_and(|d| d.id() == ident.id())
             });
-            !declares
-                && resolve_identifier_declarator(&ident, &name, source)
-                    .is_some_and(|(_, d)| d.id() == used.id())
+            let declarator = if declares {
+                Some(ident)
+            } else {
+                resolve_identifier_declarator(&ident, &name, source).map(|(_, d)| d)
+            };
+            declarator.is_some_and(|d| {
+                d.id() == used.id() || Self::declaring_scope(&d) == Self::declaring_scope(&used)
+            })
         }))
+    }
+
+    /// True when the identifier starting at byte `at` is the declarator of
+    /// an `init_declarator`.
+    fn declares_at(func_node: &Node, at: usize) -> bool {
+        func_node
+            .descendant_for_byte_range(at, at + 1)
+            .filter(|n| n.kind() == "identifier")
+            .and_then(|ident| {
+                let p = ident.parent()?;
+                Some(
+                    p.kind() == "init_declarator"
+                        && p.child_by_field_name("declarator")
+                            .is_some_and(|d| d.id() == ident.id()),
+                )
+            })
+            .unwrap_or(false)
+    }
+
+    /// The id of the scope a declarator declares its name in. Two
+    /// declarations of one name directly in the same scope can only be
+    /// alternative preprocessor arms, so they are joined as one object.
+    fn declaring_scope(declarator: &Node) -> Option<usize> {
+        let mut n = declarator.parent();
+        while let Some(p) = n {
+            if matches!(
+                p.kind(),
+                "compound_statement" | "function_definition" | "for_statement" | "translation_unit"
+            ) {
+                return Some(p.id());
+            }
+            n = p.parent();
+        }
+        None
     }
 
     /// Resolve what `name` evaluates to at `position_node`'s source
