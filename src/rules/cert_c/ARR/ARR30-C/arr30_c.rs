@@ -1281,7 +1281,9 @@ impl Arr30C {
         }
 
         // Try to resolve variable to a constant value via simple constant propagation
-        if let Some(const_val) = self.try_resolve_variable_to_constant(index_text, node, source) {
+        if let Some(const_val) =
+            self.try_resolve_variable_to_constant(index_text, &index_node, node, source)
+        {
             return Some(IndexValue::Constant(const_val));
         }
 
@@ -1352,6 +1354,7 @@ impl Arr30C {
     fn try_resolve_variable_to_constant(
         &self,
         var_name: &str,
+        index_node: &Node,
         current_node: &Node,
         source: &str,
     ) -> Option<isize> {
@@ -1385,16 +1388,33 @@ impl Arr30C {
         // Pattern: var_name = <something> but exclude comparison operators (==, !=, <=, >=)
         let any_assign_pattern = format!(r"\b{}\s*=[^=!<>]", regex::escape(var_name));
         let any_assign_re = regex::Regex::new(&any_assign_pattern).ok()?;
-        let total_assign_count = any_assign_re.find_iter(func_text).count();
+
+        // Only the assignments to the object the index names count: an
+        // inner block's `int i = 2;` is a different `i` from the outer one,
+        // and so is a member `s.i`.
+        let binding = Self::assignment_binding_filter(&func_node, index_node, var_name, source);
+        let binds = |at: usize| {
+            binding
+                .as_ref()
+                .is_none_or(|b| b(func_node.start_byte() + at))
+        };
+        let total_assign_count = any_assign_re
+            .find_iter(func_text)
+            .filter(|m| binds(m.start()))
+            .count();
+        let constant_assigns: Vec<regex::Captures> = re
+            .captures_iter(func_text)
+            .filter(|c| c.get(0).is_some_and(|m| binds(m.start())))
+            .collect();
 
         // Multiple assignments resolve only when ALL are constant, to the
         // last value (handles "data = -1; data = 7;" patterns where an
         // initialization is overwritten by a known-good value); one
         // assignment resolves to itself.
-        if total_assign_count > 1 && re.find_iter(func_text).count() != total_assign_count {
+        if total_assign_count > 1 && constant_assigns.len() != total_assign_count {
             return None;
         }
-        let caps = re.captures_iter(func_text).last()?;
+        let caps = constant_assigns.last()?;
         let whole = caps.get(0)?;
         let origin = (
             func_node.start_byte() + whole.start(),
@@ -1405,6 +1425,68 @@ impl Arr30C {
             return None;
         }
         caps.get(1)?.as_str().parse::<isize>().ok()
+    }
+
+    /// A test of whether the name `var_name` starting at a byte offset
+    /// inside `func_node` names the same object as `index_node`, resolved
+    /// by declarator (ADR-0006). The occurrence that declares an object is
+    /// its own declarator; any other is resolved at its own position. None
+    /// when the index is not a bare identifier or its declarator cannot be
+    /// found, so the caller keeps every occurrence.
+    /// True when `func_node` steps or compound-assigns (`i++`, `(i)--`,
+    /// `i += 2`) the object `index_node` names, resolved by declarator like
+    /// [`Self::assignment_binding_filter`]; by name when the index's
+    /// declarator cannot be found.
+    fn steps_same_object(func_node: &Node, index_node: &Node, name: &str, source: &str) -> bool {
+        let binding = Self::assignment_binding_filter(func_node, index_node, name, source);
+        query::find_first_descendant(*func_node, |n| {
+            if !is_step_of_identifier(&n, source, name) {
+                return false;
+            }
+            let field = if n.kind() == "update_expression" {
+                "argument"
+            } else {
+                "left"
+            };
+            n.child_by_field_name(field)
+                .map(strip_parens_and_casts)
+                .is_some_and(|o| binding.as_ref().is_none_or(|b| b(o.start_byte())))
+        })
+        .is_some()
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn assignment_binding_filter<'a>(
+        func_node: &Node<'a>,
+        index_node: &Node<'a>,
+        var_name: &str,
+        source: &'a str,
+    ) -> Option<Box<dyn Fn(usize) -> bool + 'a>> {
+        if index_node.kind() != "identifier" {
+            return None;
+        }
+        let (_, used) = resolve_identifier_declarator(index_node, var_name, source)?;
+        let func = *func_node;
+        let name = var_name.to_string();
+        Some(Box::new(move |at: usize| {
+            let Some(ident) = func.descendant_for_byte_range(at, at + name.len()) else {
+                return false;
+            };
+            if ident.kind() != "identifier" || get_node_text(&ident, source) != name {
+                return false;
+            }
+            if ident.id() == used.id() {
+                return true;
+            }
+            let declares = ident.parent().is_some_and(|p| {
+                p.kind() == "init_declarator"
+                    && p.child_by_field_name("declarator")
+                        .is_some_and(|d| d.id() == ident.id())
+            });
+            !declares
+                && resolve_identifier_declarator(&ident, &name, source)
+                    .is_some_and(|(_, d)| d.id() == used.id())
+        }))
     }
 
     /// Resolve what `name` evaluates to at `position_node`'s source
@@ -2652,7 +2734,10 @@ impl Arr30C {
     /// Such an index is judged as the variable it is, by its range at the
     /// access, and when that range is one value out of bounds, it is reported
     /// as that index (`i = 4; i++; a[i]` names 5). An in-bounds constant is
-    /// left as it was, and so is any constant for a buffer of no known size.
+    /// not the value either when the same object is stepped (`i = 3; i++;`
+    /// indexes 4, and a search loop's counter is not its initial 0): it is
+    /// the one value its range holds at the access, else the variable. Any
+    /// constant for a buffer of no known size is left as it was.
     fn stepped_constant_as_variable(
         &self,
         node: &Node,
@@ -2671,9 +2756,6 @@ impl Arr30C {
         ) {
             return index;
         }
-        if idx >= 0 && (idx as usize) < effective_size {
-            return index;
-        }
         let Some(ident) = node
             .child_by_field_name("index")
             .filter(|i| i.kind() == "identifier")
@@ -2681,16 +2763,26 @@ impl Arr30C {
             return index;
         };
         let name = &source[ident.start_byte()..ident.end_byte()];
-        if !find_containing_function(node)
-            .is_some_and(|f| subtree_steps_identifier(f, source, name))
-        {
+        let Some(func) = find_containing_function(node) else {
+            return index;
+        };
+        let in_bounds = idx >= 0 && (idx as usize) < effective_size;
+        let stepped = if in_bounds {
+            Self::steps_same_object(&func, &ident, name, source)
+        } else {
+            subtree_steps_identifier(func, source, name)
+        };
+        if !stepped {
             return index;
         }
         let at_access = self
             .vra_var_ranges_at(node, source, macro_constants)
             .and_then(|ranges| ranges.get(name).copied());
         match at_access {
-            Some(r) if r.min == r.max && (r.min < 0 || (r.min as usize) >= effective_size) => {
+            Some(r)
+                if r.min == r.max
+                    && (in_bounds || r.min < 0 || (r.min as usize) >= effective_size) =>
+            {
                 IndexValue::Constant(r.min as isize)
             }
             _ => IndexValue::Variable(name.to_string()),
