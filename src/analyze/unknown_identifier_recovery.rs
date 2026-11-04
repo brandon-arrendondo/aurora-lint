@@ -580,8 +580,10 @@ fn find_trailing_attribute_invocations(node: &Node, source: &str) -> Vec<(usize,
 /// invocations, and the declarator is followed by what ends one: `;`, `{` or
 /// `,`. Nothing but the invocations themselves may stand between: no `{`,
 /// `}` or `;` in `masked` (the source with comments and literal contents
-/// blanked), and every child after the parameters is a call with no `ERROR`
-/// or `MISSING` node anywhere inside it. A declarator the parser assembled
+/// blanked), and every child after the parameters is a call, a GNU or C23
+/// attribute, an `asm` label or a comment, with no `ERROR` or `MISSING` node
+/// anywhere inside it; anything else, a bare identifier above all, ends the
+/// run. A declarator the parser assembled
 /// out of a lost function body spans a `}` or an `ERROR` on its way to
 /// whatever follows it, and one assembled out of a body macro and the next
 /// prototype (`int get(int a) BODY(a)` / `int helper(int b);`) holds that
@@ -597,7 +599,16 @@ fn ends_in_attributes_only(declarator: &Node, masked: &str) -> bool {
         && declarator
             .children(&mut cursor)
             .filter(|c| c.start_byte() >= params.end_byte())
-            .all(|c| c.kind() == "call_expression" && !c.has_error());
+            .all(|c| {
+                matches!(
+                    c.kind(),
+                    "call_expression"
+                        | "attribute_specifier"
+                        | "attribute_declaration"
+                        | "gnu_asm_expression"
+                        | "comment"
+                ) && !c.has_error()
+            });
     tail_is_attributes
         && matches!(
             next_non_space(masked.as_bytes(), declarator.end_byte()),
@@ -1251,6 +1262,47 @@ mod tests {
         parser.set_language(&c_language()).unwrap();
         let tree = parser.parse(src, None).unwrap();
         assert!(find_trailing_attribute_invocations(&tree.root_node(), src).is_empty());
+    }
+
+    /// A GNU attribute, an `asm` label or a comment beside the trailing
+    /// macro is part of the same run, before it or after it: the macro is
+    /// blanked and the attribute, label and comment stay.
+    #[test]
+    fn blanks_a_trailing_macro_mixed_with_gnu_attributes_and_comments() {
+        let next = "EXPORTED\nvoid x2(E *e);\n";
+        for (first, kept) in [
+            (
+                "void f(const char *fmt, ...) __attribute__((format(printf,1,2))) PRINTF_LIKE(1, 2);\n",
+                "__attribute__((format(printf,1,2)))",
+            ),
+            (
+                "void g(int a) PRINTF_LIKE(1, 2) __attribute__((noreturn));\n",
+                "__attribute__((noreturn));",
+            ),
+            (
+                "void b1(E *e, const char *fmt, ...) PRINTF_LIKE(2, 3) __attribute__((nonnull));\n",
+                "__attribute__((nonnull));",
+            ),
+            (
+                "void a1(E *e, const char *fmt, ...) /* printf */ PRINTF_LIKE(2, 3);\n",
+                "/* printf */",
+            ),
+            (
+                "void c1(E *e, const char *fmt, ...) PRINTF_LIKE(2, 3) /* printf */;\n",
+                "/* printf */;",
+            ),
+            (
+                "void d1(E *e, const char *fmt, ...) __asm__(\"d1_v2\") PRINTF_LIKE(2, 3);\n",
+                "__asm__(\"d1_v2\")",
+            ),
+        ] {
+            let src = format!("{first}{next}");
+            let (has_error, text) = recover(&src);
+            assert!(!has_error, "{text:?}");
+            assert!(!text.contains("PRINTF_LIKE"), "{text:?}");
+            assert!(text.contains(kept), "{text:?}");
+            assert!(text.contains("void x2(E *e);"), "{text:?}");
+        }
     }
 
     /// An invocation trailing a prototype in an item that parses cleanly is
