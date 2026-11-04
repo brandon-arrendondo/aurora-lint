@@ -482,12 +482,15 @@ fn after_endif_comment(lines: &[&str], endif: usize) -> usize {
 /// these guards a level or two deep, and a crafted nest hundreds deep must
 /// not stall a scan. Guards past the cap stay in place, as on a refused run.
 fn blank_brace_else_chains(source: &str) -> Vec<u8> {
+    // Read once, from the text as written: the rounds blank directives, and
+    // a guard blanked in an earlier round must not turn a dead arm live.
+    let dead = crate::analyze::init_state::literal_dead_lines(source);
     let mut current = source.as_bytes().to_vec();
     for _ in 0..MAX_NESTED_GUARD_ROUNDS {
         let text = String::from_utf8_lossy(&current).into_owned();
         let code = CodeLines::new(&text);
         let mut out = current.clone();
-        if !blank_brace_else_round(&code, &mut out) {
+        if !blank_brace_else_round(&code, &dead, &mut out) {
             return out;
         }
         current = out;
@@ -500,9 +503,11 @@ fn blank_brace_else_chains(source: &str) -> Vec<u8> {
 const MAX_NESTED_GUARD_ROUNDS: usize = 16;
 
 /// One round of [`blank_brace_else_chains`]: blank every run whose arms
-/// hold no directive, and step inside the ones that do. True if anything was
-/// blanked.
-fn blank_brace_else_round(code: &CodeLines, out: &mut [u8]) -> bool {
+/// hold no directive, and step inside the ones that do. A run with a block
+/// in `dead` (1-based line ranges a literal condition such as `#if 0` keeps
+/// out of every build) is refused: its `} else` exists in no configuration. True if
+/// anything was blanked.
+fn blank_brace_else_round(code: &CodeLines, dead: &[(usize, usize)], out: &mut [u8]) -> bool {
     let (lines, line_starts) = (&code.raw[..], &code.starts[..]);
     let mut blanked = false;
     let blocks = guarded_blocks(code);
@@ -545,7 +550,9 @@ fn blank_brace_else_round(code: &CodeLines, out: &mut [u8]) -> bool {
             }
         };
         let last_end = run.last().unwrap().end;
-        if closed_by_code && run.iter().all(|b| !b.nested_directive) {
+        let compiled =
+            |b: &GuardedBlock| !dead.iter().any(|&(s, e)| (s..=e).contains(&(b.start + 2)));
+        if closed_by_code && run.iter().all(|b| !b.nested_directive && compiled(b)) {
             for b in &run {
                 blank_directive(out, lines, line_starts, b.start);
                 blank_directive(out, lines, line_starts, b.end);
@@ -1239,6 +1246,43 @@ int f(int alg, int x) {
         let out = blank_dangling_else_preproc(src);
         assert!(out.contains("#if defined(HAVE_ONE)"));
         assert!(out.contains("#if defined(HAVE_TWO)"));
+    }
+
+    #[test]
+    fn a_dead_guard_around_an_else_is_not_joined() {
+        // The `#if 0` arm is compiled in no configuration: joining its
+        // `} else` would put dead code into the chain.
+        let src = "\
+int g(int);
+int f(int x, int y) {
+    if (x) {
+        g(1);
+    } else
+#if 0
+    if (y) {
+        g(3);
+    } else
+#endif
+    {
+        g(2);
+    }
+    return 0;
+}
+";
+        assert_eq!(
+            String::from_utf8(blank_brace_else_chains(src)).unwrap(),
+            src
+        );
+        assert!(blank_dangling_else_preproc(src).contains("#if 0"));
+        let live = src.replace("#if 0", "#if defined(HAVE_Y)");
+        assert!(!blank_dangling_else_preproc(&live).contains('#'));
+        // A guard the file only names in a commented-out `#define` is one a
+        // build flag turns on: it is no literal `#if 0`, and is joined.
+        let flag = format!(
+            "//#define HAVE_Y\n{}",
+            src.replace("#if 0", "#ifdef HAVE_Y")
+        );
+        assert!(!blank_dangling_else_preproc(&flag).contains("#ifdef"));
     }
 
     #[test]

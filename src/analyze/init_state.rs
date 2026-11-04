@@ -2912,6 +2912,19 @@ pub(crate) fn file_proven_dead_lines(source: &str) -> Vec<(usize, usize)> {
         .collect()
 }
 
+/// The subset of [`file_proven_dead_lines`] dead by a literal condition
+/// alone: `#if 0`, written with parentheses or a comment or not. A guard on
+/// a macro the file never defines, or defines inside another conditional,
+/// is left out: a build flag can still turn it on. For a text repair that
+/// must not join a dead arm, but must not refuse a live one either.
+pub(crate) fn literal_dead_lines(source: &str) -> Vec<(usize, usize)> {
+    lang_parsing_substrate::dead_code_ranges(source)
+        .into_iter()
+        .filter(|r| r.reason == lang_parsing_substrate::DeadCodeReason::IfZero)
+        .map(|r| (r.start_line, r.end_line))
+        .collect()
+}
+
 /// Whether `node` starts inside one of `dead` ([`file_proven_dead_lines`]).
 pub(crate) fn starts_in_dead_lines(node: &Node, dead: &[(usize, usize)]) -> bool {
     let line = node.start_position().row + 1;
