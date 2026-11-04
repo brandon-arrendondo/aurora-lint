@@ -445,7 +445,11 @@ pub fn collect_function_macros(root: &Node, source: &str) -> HashMap<String, Fun
     for (name, m) in collect_function_macros_textual_outside(source, &dead) {
         out.entry(name).or_insert(m);
     }
-    for (name, alternatives) in live_alternatives(source, &dead) {
+    let arity: HashMap<String, usize> = out
+        .iter()
+        .map(|(name, m)| (name.clone(), m.params.len()))
+        .collect();
+    for (name, alternatives) in live_alternatives(source, &dead, &arity) {
         if let Some(m) = out.get_mut(&name) {
             m.alternatives = alternatives;
         }
@@ -457,9 +461,17 @@ pub fn collect_function_macros(root: &Node, source: &str) -> HashMap<String, Fun
 /// with all of them: every `#define` outside a region `dead` rules out,
 /// deduplicated by expansion, an unreadable one as `None`. Line-oriented, so
 /// it sees every arm, including those tree-sitter buried in error recovery.
+///
+/// An object-like arm that renames the macro to another identifier is read
+/// as the call it makes, at the arity `arity` gives the name: under
+/// `#define curlx_free Curl_cfree`, `curlx_free(p)` is `Curl_cfree(p)`. So
+/// curl's `Curl_safefree`, which frees through `curlx_free`, frees in that
+/// build as it does in the one where `curlx_free(ptr)` is
+/// `curl_dbg_free(ptr, ...)`. Any other object-like arm stays unreadable.
 fn live_alternatives(
     source: &str,
     dead: &DeadRegions,
+    arity: &HashMap<String, usize>,
 ) -> HashMap<String, Vec<Option<FunctionMacro>>> {
     let lines: Vec<&str> = source.lines().collect();
     let mut out: HashMap<String, Vec<Option<FunctionMacro>>> = HashMap::new();
@@ -473,14 +485,33 @@ fn live_alternatives(
         }
         if let Some((name, outcome)) = classify_define_line(&logical) {
             push_alternative(out.entry(name).or_default(), outcome.ok());
-        } else if let Some(name) = object_like_define_name(&logical) {
+        } else if let Some((name, body)) = object_like_define(&logical) {
             // `#else #define RELEASE my_release`: the name is a macro there
-            // too, just not one the expander reads.
-            push_alternative(out.entry(name).or_default(), None);
+            // too, one the expander reads only as a rename.
+            let renamed = arity
+                .get(&name)
+                .and_then(|&n| renaming_definition(&name, &body, n));
+            push_alternative(out.entry(name).or_default(), renamed);
         }
     }
     out.retain(|_, alts| alts.len() > 1 && alts.iter().any(Option::is_some));
     out
+}
+
+/// `name(a0, …)` as `body(a0, …)` when the object-like body is one
+/// identifier other than `name`: what an invocation of a renamed
+/// function-like macro becomes in that build.
+fn renaming_definition(name: &str, body: &str, arity: usize) -> Option<FunctionMacro> {
+    let is_identifier = body.starts_with(is_ident_start) && body.chars().all(is_ident_char);
+    if !is_identifier || body == name {
+        return None;
+    }
+    let params: Vec<String> = (0..arity).map(|i| format!("__renamed_arg{i}__")).collect();
+    Some(FunctionMacro {
+        body: format!("{body}({})", params.join(", ")),
+        params,
+        alternatives: Vec::new(),
+    })
 }
 
 /// Secondary, error-correcting collector: scans raw source line-by-line for
@@ -2490,8 +2521,9 @@ pub fn scan_function_macro_defines(source: &str) -> Vec<ScannedDefine> {
     out
 }
 
-/// The name an object-like `#define NAME body` defines, if `line` is one.
-fn object_like_define_name(line: &str) -> Option<String> {
+/// The name an object-like `#define NAME body` defines and its body, comments
+/// removed and trimmed, if `line` is one.
+fn object_like_define(line: &str) -> Option<(String, String)> {
     let s = line.trim_start().strip_prefix('#')?;
     let s = s.trim_start().strip_prefix("define")?;
     if !s.starts_with(|c: char| c.is_whitespace()) {
@@ -2503,7 +2535,8 @@ fn object_like_define_name(line: &str) -> Option<String> {
     if name.is_empty() || !name.starts_with(is_ident_start) || s[end..].starts_with('(') {
         return None;
     }
-    Some(name.to_string())
+    let body = strip_comments(&s[end..]).trim().to_string();
+    Some((name.to_string(), body))
 }
 
 /// Parse one logical line as a function-like `#define`. Returns `None` for
@@ -4957,7 +4990,9 @@ mod tests {
     }
 
     #[test]
-    fn an_object_like_definition_in_another_arm_is_unreadable() {
+    fn an_object_like_definition_in_another_arm_is_the_call_it_renames() {
+        // In the #else build `SAFE_FREE(p)` is `my_safe_free(p)`, which
+        // nulls nothing, so the null holds in one build only.
         let t = table(concat!(
             "#ifdef TRACK\n",
             "#define SAFE_FREE(x) do { free(x); (x) = NULL; } while(0)\n",
@@ -4965,10 +5000,56 @@ mod tests {
             "#define SAFE_FREE my_safe_free\n",
             "#endif\n",
         ));
+        assert_eq!(
+            t["SAFE_FREE"].alternatives[1]
+                .as_ref()
+                .map(|m| m.body.as_str()),
+            Some("my_safe_free(__renamed_arg0__)")
+        );
         assert!(macro_nulls_param_indices(&t, "SAFE_FREE", Live::All).is_empty());
         assert_eq!(
             macro_nulls_param_indices(&t, "SAFE_FREE", Live::Any),
             vec![0]
+        );
+        // A body that is not one identifier is still unreadable.
+        let t = table(concat!(
+            "#ifdef TRACK\n",
+            "#define RELEASE(x) free(x)\n",
+            "#else\n",
+            "#define RELEASE (void)\n",
+            "#endif\n",
+        ));
+        assert!(t["RELEASE"].alternatives[1].is_none());
+    }
+
+    #[test]
+    fn a_free_through_renaming_arms_holds_in_every_build() {
+        // curl's shape: `Curl_safefree` frees through `curlx_free`, a
+        // function-like macro in the debug build and a rename of a
+        // deallocator in each of the others.
+        let t = table(concat!(
+            "#ifdef DEBUGBUILD\n",
+            "#define curlx_free(ptr) curl_dbg_free(ptr, __LINE__, __FILE__)\n",
+            "#else\n",
+            "#ifdef BUILDING_LIBCURL\n",
+            "#define curlx_free Curl_cfree\n",
+            "#else\n",
+            "#define curlx_free free\n",
+            "#endif\n",
+            "#endif\n",
+            "#define Curl_safefree(ptr) do { curlx_free(ptr); (ptr) = NULL; } while(0)\n",
+        ));
+        let frees = |callee: &str, k: usize| {
+            k == 0 && matches!(callee, "curl_dbg_free" | "Curl_cfree" | "free")
+        };
+        assert_eq!(
+            macro_param_indices_released_at(&t, "Curl_safefree", frees, Live::All),
+            vec![0]
+        );
+        let no_cfree =
+            |callee: &str, k: usize| k == 0 && matches!(callee, "curl_dbg_free" | "free");
+        assert!(
+            macro_param_indices_released_at(&t, "Curl_safefree", no_cfree, Live::All).is_empty()
         );
     }
 
