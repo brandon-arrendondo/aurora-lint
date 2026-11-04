@@ -291,8 +291,9 @@ pub(crate) fn blank_directive(out: &mut [u8], lines: &[&str], line_starts: &[usi
 
 /// A guarded block, as the run-based pass below sees it: the line indices of
 /// its `#if` and `#endif`, whether anything inside it keeps its guard in
-/// place (see [`guarded_block`]), and whether its last content line is
+/// place (see [`guarded_blocks`]), and whether its last content line is
 /// `} else`.
+#[derive(Clone, Copy)]
 struct GuardedBlock {
     start: usize,
     end: usize,
@@ -333,74 +334,85 @@ fn arm_is_self_contained(code: &CodeLines, arm: std::ops::Range<usize>) -> bool 
         })
 }
 
-/// The `#if` block starting at line `i`, if `lines[i]` opens one that closes.
+/// Every `#if` block that closes, indexed by the line of its `#if`, found
+/// in one pass over `code`.
 ///
-/// Its guard stays in place (`nested_directive`) when it has an `#elif` or
-/// `#else` of its own, holds a conditional nested two deep, or holds one
-/// with an arm that is not [`arm_is_self_contained`]. A nested conditional
-/// of whole statements does not keep it: mbedtls's TLS key-derivation chains
-/// pick a PSA or legacy call inside each braced arm (`#if
-/// defined(MBEDTLS_USE_PSA_CRYPTO)` / `...;` / `#else` / `...;` / `#endif`),
-/// and that conditional is a `preproc_if` among the arm's statements whether
-/// the arm's own guard is there or not.
-fn guarded_block(code: &CodeLines, i: usize) -> Option<GuardedBlock> {
+/// A block's guard stays in place (`nested_directive`) when it has an
+/// `#elif` or `#else` of its own, holds a conditional nested two deep, or
+/// holds one with an arm that is not [`arm_is_self_contained`]. A nested
+/// conditional of whole statements does not keep it: mbedtls's TLS
+/// key-derivation chains pick a PSA or legacy call inside each braced arm
+/// (`#if defined(MBEDTLS_USE_PSA_CRYPTO)` / `...;` / `#else` / `...;` /
+/// `#endif`), and that conditional is a `preproc_if` among the arm's
+/// statements whether the arm's own guard is there or not.
+///
+/// A directive on a line that starts inside a block comment is no
+/// directive: a commented-out `#if` taken as a block would pair with the
+/// `#endif` of a real enclosing guard and blank it.
+fn guarded_blocks(code: &CodeLines) -> Vec<Option<GuardedBlock>> {
     let lines = &code.raw;
-    if !is_directive_start(lines[i].trim_start()) {
-        return None;
-    }
-    let mut depth = 1i32;
-    let mut nested_directive = false;
-    let mut arm_start = 0usize;
-    let mut j = i + 1;
-    while j < lines.len() {
-        let t = lines[j].trim_start();
+    let mut blocks: Vec<Option<GuardedBlock>> = vec![None; lines.len()];
+    // Each open block: its `#if` line, whether it keeps its guard, and the
+    // first line of its current arm.
+    let mut open: Vec<(usize, bool, usize)> = Vec::new();
+    for j in 0..lines.len() {
         if code.starts_in_comment[j] {
-            j += 1;
             continue;
         }
-        if is_directive_start(t) {
-            depth += 1;
-            if depth == 2 {
-                arm_start = j + 1;
-            } else {
-                nested_directive = true;
+        let t = lines[j].trim_start();
+        let closes_arm = if is_directive_start(t) {
+            // A conditional two deep keeps the guard two levels out.
+            if let Some(n) = open.len().checked_sub(2) {
+                open[n].1 = true;
             }
+            open.push((j, false, j + 1));
+            None
         } else if is_endif(t) {
-            depth -= 1;
-            if depth == 0 {
-                break;
-            }
-            if depth == 1 && !arm_is_self_contained(code, arm_start..j) {
-                nested_directive = true;
-            }
+            open.pop().map(|(start, nested, arm_start)| {
+                blocks[start] = Some(block_bounds(lines, start, j, nested));
+                (open.len(), arm_start)
+            })
         } else if is_branch_directive(t) {
-            if depth == 2 {
-                if !arm_is_self_contained(code, arm_start..j) {
-                    nested_directive = true;
+            let level = open.len().checked_sub(1);
+            level.map(|level| {
+                let block = &mut open[level];
+                block.1 = true;
+                (level, std::mem::replace(&mut block.2, j + 1))
+            })
+        } else {
+            None
+        };
+        // An arm of the block at `level` ended: unless it is whole
+        // statements, the block around it keeps its guard. An arm holding a
+        // conditional already set that (two deep), so the check is skipped
+        // and each line is read here at most once.
+        if let Some((level, arm_start)) = closes_arm {
+            if let Some(parent) = level.checked_sub(1).map(|p| &mut open[p]) {
+                if !parent.1 && !arm_is_self_contained(code, arm_start..j) {
+                    parent.1 = true;
                 }
-                arm_start = j + 1;
-            } else {
-                nested_directive = true;
             }
         }
-        j += 1;
     }
-    if j >= lines.len() {
-        return None;
-    }
-    let mut first_content = i + 1;
-    while first_content < j && lines[first_content - 1].trim_end().ends_with('\\') {
+    blocks
+}
+
+/// The [`GuardedBlock`] from the `#if` on line `start` to its `#endif` on
+/// line `end`.
+fn block_bounds(lines: &[&str], start: usize, end: usize, nested_directive: bool) -> GuardedBlock {
+    let mut first_content = start + 1;
+    while first_content < end && lines[first_content - 1].trim_end().ends_with('\\') {
         first_content += 1;
     }
-    let last = (first_content..j)
+    let last = (first_content..end)
         .rev()
         .find(|&k| !lines[k].trim().is_empty());
-    Some(GuardedBlock {
-        start: i,
-        end: j,
+    GuardedBlock {
+        start,
+        end,
         nested_directive,
         ends_with_brace_else: last.is_some_and(|k| is_brace_else_line(lines[k])),
-    })
+    }
 }
 
 /// The first line after `endif` that is not inside a block comment the
@@ -455,7 +467,7 @@ fn after_endif_comment(lines: &[&str], endif: usize) -> usize {
 /// with a conditional that is not whole statements inside it (`if (...) {
 /// #if X` / `if (a) {` / `#else` / `if (b) {` / `#endif ... } else`) is left
 /// alone for the same reason; one of whole statements is not (see
-/// [`guarded_block`]).
+/// [`guarded_blocks`]).
 ///
 /// A guard nested inside a refused run's arm is a candidate of its own, and
 /// is repaired first: mbedtls's `ssl_parse_client_hello` holds a `} else`
@@ -464,9 +476,14 @@ fn after_endif_comment(lines: &[&str], endif: usize) -> usize {
 /// inside it, so rounds repeat until one blanks nothing. A run that is
 /// refused keeps every one of its guards: a later block of it is never taken
 /// up as a run of its own, which would blank part of the chain.
+///
+/// Each round repairs only the innermost guards of a nest and rescans the
+/// whole file, so rounds stop at [`MAX_NESTED_GUARD_ROUNDS`]: real code nests
+/// these guards a level or two deep, and a crafted nest hundreds deep must
+/// not stall a scan. Guards past the cap stay in place, as on a refused run.
 fn blank_brace_else_chains(source: &str) -> Vec<u8> {
     let mut current = source.as_bytes().to_vec();
-    loop {
+    for _ in 0..MAX_NESTED_GUARD_ROUNDS {
         let text = String::from_utf8_lossy(&current).into_owned();
         let code = CodeLines::new(&text);
         let mut out = current.clone();
@@ -475,7 +492,12 @@ fn blank_brace_else_chains(source: &str) -> Vec<u8> {
         }
         current = out;
     }
+    current
 }
+
+/// Most rounds [`blank_brace_else_chains`] runs: the deepest nest of `} else`
+/// guards it repairs.
+const MAX_NESTED_GUARD_ROUNDS: usize = 16;
 
 /// One round of [`blank_brace_else_chains`]: blank every run whose arms
 /// hold no directive, and step inside the ones that do. True if anything was
@@ -483,6 +505,7 @@ fn blank_brace_else_chains(source: &str) -> Vec<u8> {
 fn blank_brace_else_round(code: &CodeLines, out: &mut [u8]) -> bool {
     let (lines, line_starts) = (&code.raw[..], &code.starts[..]);
     let mut blanked = false;
+    let blocks = guarded_blocks(code);
     let mut refused = std::collections::HashSet::new();
     let mut i = 0usize;
     while i < lines.len() {
@@ -490,7 +513,7 @@ fn blank_brace_else_round(code: &CodeLines, out: &mut [u8]) -> bool {
             i += 1;
             continue;
         }
-        let Some(first) = guarded_block(code, i) else {
+        let Some(first) = blocks[i] else {
             i += 1;
             continue;
         };
@@ -510,7 +533,7 @@ fn blank_brace_else_round(code: &CodeLines, out: &mut [u8]) -> bool {
             if k >= lines.len() {
                 break false;
             }
-            match guarded_block(code, k) {
+            match blocks[k] {
                 Some(next) if next.ends_with_brace_else => run.push(next),
                 Some(_) => break false,
                 // The `#endif` or `#else` of an enclosing guard is not the
@@ -1216,6 +1239,72 @@ int f(int alg, int x) {
         let out = blank_dangling_else_preproc(src);
         assert!(out.contains("#if defined(HAVE_ONE)"));
         assert!(out.contains("#if defined(HAVE_TWO)"));
+    }
+
+    #[test]
+    fn a_commented_out_if_never_pairs_with_a_real_endif() {
+        // The real guard has an `#else` of its own, so it is refused; the
+        // `#if` inside the comment must not take the real `#endif` as its
+        // own and blank it, which would leave `#if defined(HAVE_C)` open.
+        let src = "\
+int g(int);
+int f(int x) {
+#if defined(HAVE_C)
+    g(0);
+#else
+/*
+#if defined(HAVE_A)
+*/
+    if (x) {
+        g(1);
+    } else
+#endif
+    g(2);
+    return 0;
+}
+";
+        let out = String::from_utf8(blank_brace_else_chains(src)).unwrap();
+        assert_eq!(out, src);
+        assert!(blank_dangling_else_preproc(src).contains("#endif"));
+    }
+
+    /// `depth` `} else` guards, each nested in the arm of the one before.
+    fn nested_guards(depth: usize) -> String {
+        let mut src = String::from("int f(int x) {\n    int r = 0;\n");
+        for k in 0..depth {
+            src.push_str(&format!("#if defined(G{k})\n    if (x == {k}) {{\n"));
+        }
+        src.push_str("        r = -1;\n");
+        for k in (0..depth).rev() {
+            src.push_str(&format!("    }} else\n#endif\n    r = {k};\n"));
+        }
+        src.push_str("    return r;\n}\n");
+        src
+    }
+
+    #[test]
+    fn nested_guards_are_repaired_innermost_first_up_to_the_round_cap() {
+        let shallow = nested_guards(3);
+        let out = String::from_utf8(blank_brace_else_chains(&shallow)).unwrap();
+        assert!(!out.contains('#'), "a guard was left in place:\n{out}");
+        assert!(parses_clean(&shallow));
+
+        let deep = nested_guards(MAX_NESTED_GUARD_ROUNDS + 24);
+        let out = String::from_utf8(blank_brace_else_chains(&deep)).unwrap();
+        assert_eq!(out.len(), deep.len());
+        assert_eq!(out.matches("#if").count(), 24);
+        assert!(out.contains("#if defined(G0)\n"));
+        assert!(!out.contains(&format!("#if defined(G{})\n", 24)));
+    }
+
+    #[test]
+    fn a_crafted_nest_of_guards_does_not_stall_a_scan() {
+        let src = nested_guards(800);
+        let start = std::time::Instant::now();
+        let out = blank_brace_else_chains(&src);
+        let elapsed = start.elapsed();
+        assert_eq!(out.len(), src.len());
+        assert!(elapsed.as_secs() < 5, "800 nested guards took {elapsed:?}");
     }
 
     #[test]
