@@ -792,7 +792,9 @@ fn collect_parameters(declarator: &Node, source: &str, facts: &mut AddressTakenL
     }
 }
 
-fn is_extern(decl: &Node, source: &str) -> bool {
+/// Whether `decl`, a `declaration`, is `extern`: it declares an object
+/// defined elsewhere, not a local.
+pub(crate) fn is_extern(decl: &Node, source: &str) -> bool {
     (0..decl.named_child_count())
         .filter_map(|i| decl.named_child(i))
         .any(|c| c.kind() == "storage_class_specifier" && text(&c, source) == "extern")

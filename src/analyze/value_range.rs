@@ -428,6 +428,10 @@ fn process_statement_for_ranges(
     aliases: &AddressTakenLocals,
     names: &ShadowedNames,
 ) {
+    // A block before the statement that has ended took its own variables
+    // with it. Every replay of a block's statements passes here, so none
+    // carries an ended block's entries on to the next statement.
+    names.forget_ended(state, node.start_byte());
     // Before the statement's own effect: a callee may write through any
     // `&var` it receives, wherever in the statement the call sits. Idempotent,
     // so the bare-call and opaque-region paths below doing it again is fine.
@@ -1842,6 +1846,9 @@ fn analyze_value_ranges_capped(
             }
             continue;
         };
+
+        // A block's own variables are gone once their block has ended.
+        names.forget_ended(&mut new_entry, cfg.blocks[block_id].byte_range.0);
 
         // Apply widening at a loop head after the threshold
         if widening_points.contains(&block_id) {
@@ -4008,6 +4015,94 @@ int f(int p) {
 ";
         assert_eq!(range_before(code, "p", "(void)(p +"), Some((0, 0)));
         assert_eq!(range_before(code, "p", "return p"), Some((1, 9)));
+    }
+
+    #[test]
+    fn a_name_declared_in_each_preprocessor_arm_joins_both_arms() {
+        let code = "
+int f(void) {
+#ifdef A
+    int x = 1;
+#else
+    int x = 4;
+#endif
+    return x;
+}
+";
+        assert_eq!(range_before(code, "x", "return x"), Some((1, 4)));
+    }
+
+    #[test]
+    fn a_declaration_in_one_arm_is_not_in_scope_in_a_later_arm() {
+        let code = "
+int f(void) {
+    int x = 1;
+    {
+#ifdef A
+        int x = 4;
+        (void)(x + 0);
+#else
+        x = 7;
+        (void)(x + 1);
+#endif
+    }
+    return x;
+}
+";
+        assert_eq!(range_before(code, "x", "(void)(x + 0"), Some((4, 4)));
+        assert_eq!(range_before(code, "x", "(void)(x + 1"), Some((7, 7)));
+        assert_eq!(range_before(code, "x", "return x"), Some((1, 7)));
+    }
+
+    #[test]
+    fn a_block_extern_leaves_the_local_it_hides() {
+        let code = "
+int x;
+int f(void) {
+    int x = 1;
+    {
+        extern int x;
+        x = 7;
+        (void)(x + 0);
+    }
+    return x;
+}
+";
+        assert_eq!(range_before(code, "x", "(void)(x +"), Some((7, 7)));
+        assert_eq!(range_before(code, "x", "return x"), Some((1, 1)));
+    }
+
+    #[test]
+    fn a_block_extern_leaves_the_parameter_it_hides() {
+        let code = "
+int p;
+int f(int p) {
+    if (p < 1 || p > 9)
+        return 0;
+    {
+        extern int p;
+        p = 20;
+        (void)(p + 0);
+    }
+    return p;
+}
+";
+        assert_eq!(range_before(code, "p", "(void)(p +"), Some((20, 20)));
+        assert_eq!(range_before(code, "p", "return p"), Some((1, 9)));
+    }
+
+    #[test]
+    fn sibling_blocks_each_read_their_own_variable() {
+        let code = "
+int f(void) {
+    int s = 0;
+    { int x = 1; s += x; }
+    { int x = 2; s += x; }
+    { int x = 3; (void)(x + 0); }
+    return s;
+}
+";
+        assert_eq!(range_before(code, "x", "(void)(x +"), Some((3, 3)));
     }
 
     #[test]

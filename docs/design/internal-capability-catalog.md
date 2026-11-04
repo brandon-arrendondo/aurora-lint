@@ -1189,15 +1189,24 @@ keyed per declaration when the function declares it twice, or when some
 occurrence of a name it declares once resolves to no local (a file-scope
 object of that name used outside the local's block). Occurrences resolve
 through `ScopeDeclarations::find_declaration_in_scope_chain` on a scope stack
-carried down one walk of the body, never by spelling (ADR-0006). A function
-none of whose names needs it, most of them, gets an empty value and keys by
-name exactly as before.
+carried down one walk of the body, never by spelling (ADR-0006). Two
+declarations of a name directly in one scope can only be alternative
+preprocessor arms, which the analysis reads as branches, so they share one key
+and their ranges meet at the join. A declaration in one arm is not in scope in
+a later arm of the same conditional, for the lookup or the reader: an `#else`
+arm that only assigns the name assigns the declaration around the
+conditional. A block's `extern` of a keyed name is a
+binding too: under it the name is the file-scope object, kept under its plain
+name, even where a local or parameter of the name is otherwise in scope. A
+function none of whose names needs it, most of them, gets an empty value and
+keys by name exactly as before.
 
 | Item | Signature | Description |
 |---|---|---|
 | `ShadowedNames::of_function` | `(func: &Node, source) -> ShadowedNames` | Build once per function; VRA does, and keeps it on `RangeAnalysisResult`. |
 | `key` / `key_of_local` / `key_of_declarator` / `key_of_parameter` | `(&self, ident: &Node, name) -> Cow<str>` / `(LocalId, name)` / `(declarator: &Node, name)` / `(name)` | The key an occurrence, a local, a declarator's object or a parameter is kept under: `name#id` for a keyed name, the name itself otherwise (and for an occurrence that names no local). |
-| `view` | `(&self, keyed: VarRangeMap, offset) -> VarRangeMap` | Ranges by key as ranges by name at `offset`: each keyed name's declaration in scope there and no other, the innermost when blocks nest; a name with none in scope keeps its plain entry (the file-scope object's). The identity for an empty value. |
+| `view` | `(&self, keyed: VarRangeMap, offset) -> VarRangeMap` | Ranges by key as ranges by name at `offset`: each keyed name's declaration in scope there and no other, the innermost when blocks nest; a name with none in scope, or under a block `extern`, keeps its plain entry (the file-scope object's). The identity for an empty value. |
+| `forget_ended` | `(&self, state: &mut HashMap<String, V>, offset)` | Drop every key whose declaration's scope ended at or before `offset`. Changes no range `view` returns; VRA calls it per statement so a function of many sibling blocks declaring one name does not carry every block's entry to its end. |
 
 ### `src/analyze/name_writes.rs`
 **Problem solved:** "can this stretch of a body write variable `v`?" when a
