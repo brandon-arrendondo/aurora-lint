@@ -1629,12 +1629,44 @@ justification = "Third-party code"
     }
 
     #[test]
-    fn test_dead_code_never_defined_macro_commented_out() {
-        // A macro only ever mentioned as a commented-out `#define` is never
-        // validly defined in this file, so the `#ifdef` branch is dead.
+    fn test_dead_code_commented_out_define_is_not_evidence() {
+        // A commented-out `#define` says nothing about the build, which can
+        // still define the macro (`-DSUPPORT_FONT_DATA_COPY`).
         let source = "// #define SUPPORT_FONT_DATA_COPY\n\
-                      #ifdef SUPPORT_FONT_DATA_COPY\ndead();\n#endif\n";
-        assert_eq!(dead_ranges(source), vec![(3, 3)]);
+                      #ifdef SUPPORT_FONT_DATA_COPY\nmaybe();\n#endif\n";
+        assert!(dead_ranges(source).is_empty());
+    }
+
+    #[test]
+    fn test_dead_code_define_in_an_undecided_arm_decides_nothing_after_it() {
+        // Only a WIN build defines USE_FN, so every other build compiles the
+        // second group.
+        let source = "#if defined(WIN)\n#define USE_FN\n#endif\n\
+                      #if !defined(USE_FN)\n#define conv(n) use_once((n))\n#endif\n";
+        assert!(dead_ranges(source).is_empty());
+    }
+
+    #[test]
+    fn test_dead_code_undef_in_an_undecided_arm_decides_nothing_after_it() {
+        let source = "#define X\n#ifdef WIN\n#undef X\n#endif\n#ifndef X\nmaybe();\n#endif\n";
+        assert!(dead_ranges(source).is_empty());
+    }
+
+    #[test]
+    fn test_dead_code_default_in_the_else_of_if_0_holds_in_every_build() {
+        // The `#else` of `#if 0` is compiled by every build, so its default
+        // value leaves FAST defined, and the last `#else` is dead.
+        let source = "#if 0\n#else\n#ifndef FAST\n#define FAST 1\n#endif\n#endif\n\
+                      #ifdef FAST\nlive();\n#else\ndead();\n#endif\n";
+        assert_eq!(dead_ranges(source), vec![(10, 10)]);
+    }
+
+    #[test]
+    fn test_dead_code_undef_then_define_keeps_the_macro_defined() {
+        let source = "#ifndef FAST\n#define FAST 1\n#endif\n\
+                      #ifdef WIN\n#undef FAST\n#define FAST 2\n#endif\n\
+                      #ifdef FAST\nlive();\n#else\ndead();\n#endif\n";
+        assert_eq!(dead_ranges(source), vec![(11, 11)]);
     }
 
     #[test]

@@ -4300,9 +4300,10 @@ mod tests {
         // Defined in every build: the arm is no build's.
         let always = "#define USE_FN\n#if !defined(USE_FN)\n#define conv(n) dead(n)\n#endif\n";
         assert!(bodies(always).is_empty());
-        // Never mentioned but in a comment: still dead, as the substrate reads it.
-        let commented = "/* #define USE_FN */\n#ifdef USE_FN\n#define conv(n) dead(n)\n#endif\n";
-        assert!(bodies(commented).is_empty());
+        // Mentioned only in a comment: the build can still define USE_FN
+        // (`-DUSE_FN`), so the arm is some build's.
+        let commented = "/* #define USE_FN */\n#ifdef USE_FN\n#define conv(n) maybe(n)\n#endif\n";
+        assert_eq!(bodies(commented), ["maybe(n)"]);
     }
 
     #[test]
