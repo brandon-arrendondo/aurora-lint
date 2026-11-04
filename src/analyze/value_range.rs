@@ -14,7 +14,9 @@ use super::cfg::{BasicBlock, BlockId, CfgEdge, FunctionCfg};
 use super::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
 use super::dataflow::{find_node_at_range, StatementLookup};
 use super::function_summary::FunctionSummary;
+use super::shadowed_names::ShadowedNames;
 use crate::analyze::context::SummaryLookup;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tree_sitter::Node;
@@ -97,6 +99,23 @@ pub struct RangeAnalysisResult {
     /// Which locals a store through a pointer or a call may write, for the
     /// intra-block replay to apply as the analysis did.
     aliases: Arc<AddressTakenLocals>,
+    /// The names the function declares more than once, whose ranges are
+    /// kept per declaration: what turns the state's keys into the names in
+    /// scope at a point.
+    names: Arc<ShadowedNames>,
+}
+
+impl RangeAnalysisResult {
+    /// The ranges of `state`, one of this function's range maps, by the
+    /// names in scope at `offset`.
+    pub(crate) fn ranges_at(&self, state: &RangeMap, offset: usize) -> VarRangeMap {
+        extract_var_ranges_from_state(state, &self.names, offset)
+    }
+
+    /// The key the range of the parameter `name` is kept under.
+    pub(crate) fn parameter_key<'n>(&self, name: &'n str) -> Cow<'n, str> {
+        self.names.key_of_parameter(name)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +392,7 @@ fn apply_range_transfer(
     summaries: &(impl SummaryLookup + ?Sized),
     local_types: &HashMap<String, VarType>,
     aliases: &AddressTakenLocals,
+    names: &ShadowedNames,
 ) -> RangeMap {
     let mut state = entry.clone();
     // Resolve every statement in this block in one linear pass rather than
@@ -391,6 +411,7 @@ fn apply_range_transfer(
             &mut state,
             local_types,
             aliases,
+            names,
         );
     }
     state
@@ -405,28 +426,37 @@ fn process_statement_for_ranges(
     state: &mut RangeMap,
     local_types: &HashMap<String, VarType>,
     aliases: &AddressTakenLocals,
+    names: &ShadowedNames,
 ) {
     // Before the statement's own effect: a callee may write through any
     // `&var` it receives, wherever in the statement the call sits. Idempotent,
     // so the bare-call and opaque-region paths below doing it again is fine.
-    widen_address_taken_call_args(node, source, state);
+    widen_address_taken_call_args(node, source, state, names);
     if !aliases.is_empty() {
-        apply_pointer_writes(node, source, macros, state, aliases);
+        apply_pointer_writes(node, source, macros, state, aliases, names);
     }
     match node.kind() {
         "declaration" => {
-            process_declaration_range(node, source, macros, summaries, state);
+            process_declaration_range(node, source, macros, summaries, state, names);
         }
         "expression_statement" => {
             if let Some(expr) = node.child(0) {
-                process_expression_range(&expr, source, macros, summaries, state, local_types);
+                process_expression_range(
+                    &expr,
+                    source,
+                    macros,
+                    summaries,
+                    state,
+                    local_types,
+                    names,
+                );
             }
         }
         "switch_statement" => {
             // The CFG lowers a switch to a single opaque statement, so its
             // internal control flow is unmodeled: any contained modification
             // may or may not execute on a given path.
-            process_opaque_region(node, source, macros, summaries, state, local_types);
+            process_opaque_region(node, source, macros, summaries, state, local_types, names);
         }
         // A `for` clause is stored in the CFG as a bare expression node, not
         // wrapped in an `expression_statement`: `process_for` records the
@@ -440,7 +470,7 @@ fn process_statement_for_ranges(
         // `for (int i = 0; i <= 5; i++)` reported `i == [0, 0]` at the
         // subscript instead of `[0, 5]`.
         "assignment_expression" | "update_expression" => {
-            process_expression_range(node, source, macros, summaries, state, local_types);
+            process_expression_range(node, source, macros, summaries, state, local_types, names);
         }
         _ => {
             // Recurse for nested assignments
@@ -456,6 +486,7 @@ fn process_statement_for_ranges(
                             summaries,
                             state,
                             local_types,
+                            names,
                         );
                     }
                 }
@@ -476,6 +507,7 @@ fn process_opaque_region(
     summaries: &(impl SummaryLookup + ?Sized),
     state: &mut RangeMap,
     local_types: &HashMap<String, VarType>,
+    names: &ShadowedNames,
 ) {
     let widen = |state: &mut RangeMap, var_name: String| {
         let var_type = state
@@ -496,10 +528,11 @@ fn process_opaque_region(
                 node.child_by_field_name("right"),
             ) {
                 if left.kind() == "identifier" {
-                    let var_name = get_text(&left, source);
+                    let var_name = names.key(&left, &get_text(&left, source)).into_owned();
                     let op = get_assignment_operator(node, source);
                     let rhs_range = if op == "=" {
-                        let var_ranges = extract_var_ranges_from_state(state);
+                        let var_ranges =
+                            extract_var_ranges_from_state(state, names, right.start_byte());
                         const_eval::try_evaluate_range(&right, source, macros, &var_ranges)
                             .or_else(|| resolve_call_return_range(&right, source, summaries))
                     } else {
@@ -530,19 +563,19 @@ fn process_opaque_region(
         "update_expression" => {
             if let Some(arg) = node.child_by_field_name("argument") {
                 if arg.kind() == "identifier" {
-                    widen(state, get_text(&arg, source));
+                    widen(state, names.key(&arg, &get_text(&arg, source)).into_owned());
                 }
             }
         }
         "call_expression" => {
             // Reuse the `&var` argument widening from the exact transfer.
-            process_expression_range(node, source, macros, summaries, state, local_types);
+            process_expression_range(node, source, macros, summaries, state, local_types, names);
         }
         _ => {}
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            process_opaque_region(&child, source, macros, summaries, state, local_types);
+            process_opaque_region(&child, source, macros, summaries, state, local_types, names);
         }
     }
 }
@@ -617,6 +650,7 @@ fn process_declaration_range(
     macros: &MacroConstantMap,
     summaries: &(impl SummaryLookup + ?Sized),
     state: &mut RangeMap,
+    names: &ShadowedNames,
 ) {
     let var_type = extract_var_type_from_declaration(node, source, macros);
 
@@ -628,6 +662,7 @@ fn process_declaration_range(
                     if var_name.is_empty() {
                         continue;
                     }
+                    let var_name = names.key_of_declarator(&declarator, &var_name).into_owned();
                     // Skip pointer/array declarators — we track integer ranges only
                     if is_pointer_or_array(&declarator) {
                         continue;
@@ -635,7 +670,8 @@ fn process_declaration_range(
 
                     if let Some(value) = child.child_by_field_name("value") {
                         // Has initializer: try to evaluate it
-                        let var_ranges = extract_var_ranges_from_state(state);
+                        let var_ranges =
+                            extract_var_ranges_from_state(state, names, value.start_byte());
                         if let Some(raw_range) =
                             const_eval::try_evaluate_range(&value, source, macros, &var_ranges)
                         {
@@ -698,6 +734,7 @@ fn process_declaration_range(
                 if var_name.is_empty() || is_pointer_or_array(&child) {
                     continue;
                 }
+                let var_name = names.key_of_declarator(&child, &var_name).into_owned();
                 let range = var_type
                     .as_ref()
                     .map(|t| t.full_range())
@@ -731,13 +768,14 @@ fn process_expression_range(
     summaries: &(impl SummaryLookup + ?Sized),
     state: &mut RangeMap,
     local_types: &HashMap<String, VarType>,
+    names: &ShadowedNames,
 ) {
     match node.kind() {
         "assignment_expression" => {
-            process_assignment_range(node, source, macros, summaries, state, local_types)
+            process_assignment_range(node, source, macros, summaries, state, local_types, names)
         }
-        "update_expression" => process_update_range(node, source, state),
-        "call_expression" => process_call_arg_widening_range(node, source, state),
+        "update_expression" => process_update_range(node, source, state, names),
+        "call_expression" => process_call_arg_widening_range(node, source, state, names),
         _ => {}
     }
 }
@@ -752,6 +790,7 @@ fn process_assignment_range(
     summaries: &(impl SummaryLookup + ?Sized),
     state: &mut RangeMap,
     local_types: &HashMap<String, VarType>,
+    names: &ShadowedNames,
 ) {
     let (Some(left), Some(right)) = (
         node.child_by_field_name("left"),
@@ -762,9 +801,9 @@ fn process_assignment_range(
     if left.kind() != "identifier" {
         return;
     }
-    let var_name = get_text(&left, source);
+    let var_name = names.key(&left, &get_text(&left, source)).into_owned();
     let op = get_assignment_operator(node, source);
-    let var_ranges = extract_var_ranges_from_state(state);
+    let var_ranges = extract_var_ranges_from_state(state, names, right.start_byte());
 
     match op.as_str() {
         "=" => process_simple_assignment_range(
@@ -891,8 +930,8 @@ fn widen_to_type(state: &mut RangeMap, var_name: &str, var_type: Option<VarType>
 
 /// `"update_expression"` case of [`process_expression_range`]: `x++` / `x--`
 /// / `++x` / `--x`.
-fn process_update_range(node: &Node, source: &str, state: &mut RangeMap) {
-    let (var_node, op_text) = get_update_info(node, source);
+fn process_update_range(node: &Node, source: &str, state: &mut RangeMap, names: &ShadowedNames) {
+    let (var_node, op_text) = get_update_info(node, source, names);
     let Some(var_name) = var_node else { return };
     let Some(cur) = state.get(&var_name) else {
         return;
@@ -920,13 +959,18 @@ fn process_update_range(node: &Node, source: &str, state: &mut RangeMap) {
 /// assignment (`i += getVarint(p, &v)`) left its output arguments untouched,
 /// so `x` kept whatever it was initialised to and a consumer proved
 /// arithmetic on a file-derived value safe from `x == 0`.
-fn widen_address_taken_call_args(node: &Node, source: &str, state: &mut RangeMap) {
+fn widen_address_taken_call_args(
+    node: &Node,
+    source: &str,
+    state: &mut RangeMap,
+    names: &ShadowedNames,
+) {
     if node.kind() == "call_expression" {
-        process_call_arg_widening_range(node, source, state);
+        process_call_arg_widening_range(node, source, state, names);
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            widen_address_taken_call_args(&child, source, state);
+            widen_address_taken_call_args(&child, source, state, names);
         }
     }
 }
@@ -934,7 +978,12 @@ fn widen_address_taken_call_args(node: &Node, source: &str, state: &mut RangeMap
 /// `"call_expression"` case of [`process_expression_range`]: any variable
 /// passed as `&var` may be written to by the callee, so widen it to its
 /// full type range (conservative).
-fn process_call_arg_widening_range(node: &Node, source: &str, state: &mut RangeMap) {
+fn process_call_arg_widening_range(
+    node: &Node,
+    source: &str,
+    state: &mut RangeMap,
+    names: &ShadowedNames,
+) {
     let Some(args) = node.child_by_field_name("arguments") else {
         return;
     };
@@ -949,7 +998,7 @@ fn process_call_arg_widening_range(node: &Node, source: &str, state: &mut RangeM
             if inner.kind() != "identifier" {
                 continue;
             }
-            let var_name = get_text(&inner, source);
+            let var_name = names.key(&inner, &get_text(&inner, source)).into_owned();
             if let Some(existing) = state.get(&var_name) {
                 let var_type = existing.var_type.clone();
                 let full_range = var_type
@@ -987,6 +1036,7 @@ fn apply_pointer_writes(
     macros: &MacroConstantMap,
     state: &mut RangeMap,
     aliases: &AddressTakenLocals,
+    names: &ShadowedNames,
 ) {
     match node.kind() {
         "assignment_expression" => {
@@ -997,13 +1047,14 @@ fn apply_pointer_writes(
                 if let Some(base) = store_base(&left) {
                     let plain = get_assignment_operator(node, source) == "=";
                     let stored = if plain {
-                        let var_ranges = extract_var_ranges_from_state(state);
+                        let var_ranges =
+                            extract_var_ranges_from_state(state, names, right.start_byte());
                         const_eval::try_evaluate_range(&right, source, macros, &var_ranges)
                     } else {
                         None
                     };
                     for local in aliases.store_targets(&base, source) {
-                        let target = aliases.name(local).to_string();
+                        let target = names.key_of_local(local, aliases.name(local)).into_owned();
                         let Some(cur) = state.get(&target) else {
                             continue;
                         };
@@ -1032,10 +1083,10 @@ fn apply_pointer_writes(
                 .and_then(|arg| store_base(&arg))
             {
                 for local in aliases.store_targets(&base, source) {
-                    let target = aliases.name(local);
-                    if let Some(cur) = state.get(target) {
+                    let target = names.key_of_local(local, aliases.name(local));
+                    if let Some(cur) = state.get(target.as_ref()) {
                         let var_type = cur.var_type.clone();
-                        widen_to_type(state, target, var_type);
+                        widen_to_type(state, &target, var_type);
                     }
                 }
             }
@@ -1049,13 +1100,16 @@ fn apply_pointer_writes(
                     }
                 }
             }
-            // The state is keyed by name: a local and another declaration
-            // of its name it shadows or is shadowed by share one entry.
-            let names: HashSet<&str> = reached.into_iter().map(|l| aliases.name(l)).collect();
-            for target in names {
-                if let Some(cur) = state.get(target) {
+            // Each local by its own key: a block's `x` and the `x` it hides
+            // are two entries ([`ShadowedNames`]).
+            let targets: HashSet<Cow<str>> = reached
+                .into_iter()
+                .map(|l| names.key_of_local(l, aliases.name(l)))
+                .collect();
+            for target in targets {
+                if let Some(cur) = state.get(target.as_ref()) {
                     let var_type = cur.var_type.clone();
-                    widen_to_type(state, target, var_type);
+                    widen_to_type(state, &target, var_type);
                 }
             }
         }
@@ -1063,7 +1117,7 @@ fn apply_pointer_writes(
     }
     for i in 0..node.named_child_count() {
         if let Some(child) = node.named_child(i) {
-            apply_pointer_writes(&child, source, macros, state, aliases);
+            apply_pointer_writes(&child, source, macros, state, aliases, names);
         }
     }
 }
@@ -1152,6 +1206,7 @@ fn apply_range_edge_refinement(
     body: &Node,
     source: &str,
     macros: &MacroConstantMap,
+    names: &ShadowedNames,
 ) -> Option<RangeMap> {
     let mut state = pred_exit.clone();
 
@@ -1159,7 +1214,7 @@ fn apply_range_edge_refinement(
         return Some(state);
     };
 
-    let infos = parse_range_conditions(&cond_node, source, macros, &state);
+    let infos = parse_range_conditions(&cond_node, source, macros, &state, names);
 
     for info in &infos {
         let refinement = if is_true {
@@ -1198,11 +1253,12 @@ fn parse_range_conditions(
     source: &str,
     macros: &MacroConstantMap,
     state: &RangeMap,
+    names: &ShadowedNames,
 ) -> Vec<RangeConditionInfo> {
     match node.kind() {
         "parenthesized_expression" => {
             if let Some(inner) = node.child(1) {
-                return parse_range_conditions(&inner, source, macros, state);
+                return parse_range_conditions(&inner, source, macros, state, names);
             }
             Vec::new()
         }
@@ -1214,10 +1270,10 @@ fn parse_range_conditions(
                     let left = node.child_by_field_name("left");
                     let right = node.child_by_field_name("right");
                     let left_infos = left
-                        .map(|l| parse_range_conditions(&l, source, macros, state))
+                        .map(|l| parse_range_conditions(&l, source, macros, state, names))
                         .unwrap_or_default();
                     let right_infos = right
-                        .map(|r| parse_range_conditions(&r, source, macros, state))
+                        .map(|r| parse_range_conditions(&r, source, macros, state, names))
                         .unwrap_or_default();
 
                     merge_compound_conditions(&left_infos, &right_infos, true)
@@ -1227,16 +1283,16 @@ fn parse_range_conditions(
                     let left = node.child_by_field_name("left");
                     let right = node.child_by_field_name("right");
                     let left_infos = left
-                        .map(|l| parse_range_conditions(&l, source, macros, state))
+                        .map(|l| parse_range_conditions(&l, source, macros, state, names))
                         .unwrap_or_default();
                     let right_infos = right
-                        .map(|r| parse_range_conditions(&r, source, macros, state))
+                        .map(|r| parse_range_conditions(&r, source, macros, state, names))
                         .unwrap_or_default();
 
                     merge_compound_conditions(&left_infos, &right_infos, false)
                 }
                 "<" | "<=" | ">" | ">=" | "==" | "!=" => {
-                    parse_comparison_condition(node, source, macros, state)
+                    parse_comparison_condition(node, source, macros, state, names)
                 }
                 _ => Vec::new(),
             }
@@ -1253,7 +1309,7 @@ fn parse_range_conditions(
                         .or_else(|| node.child(1))
                     {
                         // Negate: swap true/false ranges
-                        let inner = parse_range_conditions(&arg, source, macros, state);
+                        let inner = parse_range_conditions(&arg, source, macros, state, names);
                         return inner
                             .into_iter()
                             .map(|info| RangeConditionInfo {
@@ -1269,7 +1325,7 @@ fn parse_range_conditions(
         }
         "identifier" => {
             // Bare `if (x)` — means x != 0
-            let var_name = get_text(node, source);
+            let var_name = names.key(node, &get_text(node, source)).into_owned();
             if state.contains_key(&var_name) {
                 let existing = &state[&var_name].range;
                 // True branch: x != 0
@@ -1299,6 +1355,7 @@ fn parse_comparison_condition(
     source: &str,
     macros: &MacroConstantMap,
     state: &RangeMap,
+    names: &ShadowedNames,
 ) -> Vec<RangeConditionInfo> {
     let left = match node.child_by_field_name("left") {
         Some(n) => n,
@@ -1310,13 +1367,13 @@ fn parse_comparison_condition(
     };
     let op = get_operator_text(node, source);
 
-    let var_ranges = extract_var_ranges_from_state(state);
+    let var_ranges = extract_var_ranges_from_state(state, names, node.start_byte());
 
     // Try both orientations: var OP const and const OP var
     let mut results = Vec::new();
 
     // Case 1: identifier on left, evaluable expression on right
-    if let Some(var_name) = extract_simple_var(&left, source) {
+    if let Some(var_name) = extract_simple_var(&left, source, names) {
         if let Some(bound) = const_eval::try_evaluate_range(&right, source, macros, &var_ranges) {
             if let Some(info) = make_comparison_info(var_name, &op, bound, state, false) {
                 results.push(info);
@@ -1325,7 +1382,7 @@ fn parse_comparison_condition(
     }
 
     // Case 2: evaluable expression on left, identifier on right (reversed)
-    if let Some(var_name) = extract_simple_var(&right, source) {
+    if let Some(var_name) = extract_simple_var(&right, source, names) {
         if let Some(bound) = const_eval::try_evaluate_range(&left, source, macros, &var_ranges) {
             // Reverse the operator
             let rev_op = match op.as_str() {
@@ -1668,7 +1725,8 @@ fn analyze_value_ranges_capped(
         None => return empty_range_result(),
     };
 
-    let initial_state = build_initial_state(func_node, source, macros, summaries);
+    let names = Arc::new(ShadowedNames::of_function(func_node, source));
+    let initial_state = build_initial_state(func_node, source, macros, summaries, &names);
     let aliases = AddressTakenLocals::of_function(func_node, source);
 
     // Collect types for uninitialized local declarations (e.g. `int data;`).
@@ -1676,7 +1734,7 @@ fn analyze_value_ranges_capped(
     // but passed as a fallback type lookup so that assignments like `data = atoi()`
     // use [INT_MIN, INT_MAX] instead of [i64::MIN, i64::MAX].
     let mut local_types: HashMap<String, VarType> = HashMap::new();
-    collect_local_decl_types(&body, source, macros, &mut local_types);
+    collect_local_decl_types(&body, source, macros, &names, &mut local_types);
 
     let mut entry_ranges: HashMap<BlockId, RangeMap> = HashMap::new();
     let mut exit_ranges: HashMap<BlockId, RangeMap> = HashMap::new();
@@ -1698,6 +1756,7 @@ fn analyze_value_ranges_capped(
         summaries,
         &local_types,
         &aliases,
+        &names,
     );
     exit_ranges.insert(cfg.entry, entry_exit);
 
@@ -1765,7 +1824,7 @@ fn analyze_value_ranges_capped(
 
         // Join predecessor exit states with edge refinement
         let Some(mut new_entry) =
-            join_predecessor_entry(block_id, cfg, &body, source, macros, &exit_ranges)
+            join_predecessor_entry(block_id, cfg, &body, source, macros, &exit_ranges, &names)
         else {
             // Unreachable. A block can become unreachable only after a
             // predecessor's ranges sharpen, so drop anything recorded on an
@@ -1800,6 +1859,7 @@ fn analyze_value_ranges_capped(
             summaries,
             &local_types,
             &aliases,
+            &names,
         );
 
         // Check convergence
@@ -1826,8 +1886,9 @@ fn analyze_value_ranges_capped(
     let mut statement_index: Vec<(usize, usize, BlockId)> = Vec::new();
     for block in &cfg.blocks {
         let entry = entry_ranges.get(&block.id).cloned().unwrap_or_default();
-        let checkpoints =
-            build_block_checkpoints(&entry, block, &body, source, macros, replay, &aliases);
+        let checkpoints = build_block_checkpoints(
+            &entry, block, &body, source, macros, replay, &aliases, &names,
+        );
         block_checkpoints.insert(block.id, checkpoints);
         for &(start, end) in &block.statements {
             statement_index.push((start, end, block.id));
@@ -1842,6 +1903,7 @@ fn analyze_value_ranges_capped(
         block_checkpoints,
         statement_index,
         aliases,
+        names,
     }
 }
 
@@ -1854,6 +1916,7 @@ fn empty_range_result() -> RangeAnalysisResult {
         block_checkpoints: HashMap::new(),
         statement_index: Vec::new(),
         aliases: Arc::default(),
+        names: Arc::default(),
     }
 }
 
@@ -1864,11 +1927,12 @@ fn build_initial_state(
     source: &str,
     macros: &MacroConstantMap,
     summaries: &(impl SummaryLookup + ?Sized),
+    names: &ShadowedNames,
 ) -> RangeMap {
     // Build initial state from function parameters
     let mut initial_state = RangeMap::new();
     if let Some(declarator) = func_node.child_by_field_name("declarator") {
-        collect_param_ranges(&declarator, source, macros, &mut initial_state);
+        collect_param_ranges(&declarator, source, macros, names, &mut initial_state);
     }
     // Narrow parameter ranges to what every caller passes. This suppresses
     // goodG2B-style FPs where data=2 is always safe but VRA would otherwise
@@ -1880,7 +1944,8 @@ fn build_initial_state(
                 for (&param_idx, &(min, max)) in &summary.callsite_param_int_range {
                     if let Some(name) = param_names.get(param_idx) {
                         if !name.is_empty() {
-                            if let Some(typed_range) = initial_state.get_mut(name) {
+                            let key = names.key_of_parameter(name);
+                            if let Some(typed_range) = initial_state.get_mut(key.as_ref()) {
                                 typed_range.range = ValueRange::new(min, max);
                             }
                         }
@@ -1902,6 +1967,7 @@ fn join_predecessor_entry(
     source: &str,
     macros: &MacroConstantMap,
     exit_ranges: &HashMap<BlockId, RangeMap>,
+    names: &ShadowedNames,
 ) -> Option<RangeMap> {
     let preds = cfg.predecessors(block_id);
     let mut new_entry = RangeMap::new();
@@ -1927,9 +1993,9 @@ fn join_predecessor_entry(
         // `None` means the edge's condition contradicts the incoming ranges,
         // so this predecessor cannot reach the block -- same treatment as a
         // constant-false branch above.
-        let Some(refined) =
-            apply_range_edge_refinement(&pred_exit, *pred_id, edge_kind, cfg, body, source, macros)
-        else {
+        let Some(refined) = apply_range_edge_refinement(
+            &pred_exit, *pred_id, edge_kind, cfg, body, source, macros, names,
+        ) else {
             continue;
         };
 
@@ -2031,11 +2097,12 @@ pub fn get_var_range_at(
                 &mut state,
                 &empty_types,
                 &result.aliases,
+                &result.names,
             );
         }
     }
 
-    state.get(var_name).map(|t| t.range)
+    result.ranges_at(&state, byte_offset).get(var_name).copied()
 }
 
 /// Evaluate an expression's range at its location using VRA-computed variable ranges.
@@ -2071,11 +2138,12 @@ pub fn eval_expr_range_at(
                 &mut state,
                 &empty_types,
                 &result.aliases,
+                &result.names,
             );
         }
     }
 
-    let var_ranges = extract_var_ranges_from_state(&state);
+    let var_ranges = result.ranges_at(&state, byte_offset);
     const_eval::try_evaluate_range(expr_node, source, macros, &var_ranges)
 }
 
@@ -2099,10 +2167,11 @@ pub fn get_all_var_ranges_at(
     // offset (its own effects, e.g. `data = data + 1`, must not be applied
     // before evaluation). Precomputed once per block in `analyze_value_ranges`
     // instead of replayed here on every call.
-    let ranges = match result.block_checkpoints.get(&block_id) {
+    let keyed = match result.block_checkpoints.get(&block_id) {
         Some(checkpoints) => checkpoints.var_ranges_before(entry, byte_offset),
-        None => extract_var_ranges_from_state(entry),
+        None => keyed_ranges(entry),
     };
+    let ranges = result.names.view(keyed, byte_offset);
     if ranges.is_empty() {
         None
     } else {
@@ -2143,19 +2212,19 @@ const SNAPSHOT_MIN_CHANGES: usize = 64;
 
 impl BlockCheckpoints {
     /// The variable ranges after every statement of the block that ends at or
-    /// before `byte_offset`, starting from the block's `entry` state.
+    /// before `byte_offset`, starting from the block's `entry` state, by key.
     fn var_ranges_before(&self, entry: &RangeMap, byte_offset: usize) -> VarRangeMap {
         let done = self.ends.partition_point(|&end| end <= byte_offset);
         if done == 0 {
-            return extract_var_ranges_from_state(entry);
+            return keyed_ranges(entry);
         }
         let last = done - 1;
         let copy = self.snapshots.partition_point(|&(i, _)| i <= last);
         let (mut ranges, from) = match copy {
-            0 => (extract_var_ranges_from_state(entry), 0),
+            0 => (keyed_ranges(entry), 0),
             _ => {
                 let (i, state) = &self.snapshots[copy - 1];
-                (extract_var_ranges_from_state(state), i + 1)
+                (keyed_ranges(state), i + 1)
             }
         };
         for change in &self.changes[from..=last] {
@@ -2215,6 +2284,7 @@ fn build_block_checkpoints(
     macros: &MacroConstantMap,
     replay_summaries: &HashMap<String, FunctionSummary>,
     aliases: &AddressTakenLocals,
+    names: &ShadowedNames,
 ) -> BlockCheckpoints {
     let mut state = entry.clone();
     let mut before = entry.clone();
@@ -2236,6 +2306,7 @@ fn build_block_checkpoints(
                 &mut state,
                 &empty_types,
                 aliases,
+                names,
             );
         }
         let changes = state_changes(&before, &state);
@@ -2367,13 +2438,14 @@ fn find_block_containing(cfg: &FunctionCfg, byte_offset: usize) -> Option<&Basic
     })
 }
 
-/// Extract a simple variable name from an identifier node.
-fn extract_simple_var(node: &Node, source: &str) -> Option<String> {
+/// The key of the variable an identifier node (possibly parenthesized)
+/// names.
+fn extract_simple_var(node: &Node, source: &str, names: &ShadowedNames) -> Option<String> {
     if node.kind() == "identifier" {
-        Some(get_text(node, source))
+        Some(names.key(node, &get_text(node, source)).into_owned())
     } else if node.kind() == "parenthesized_expression" {
         node.child(1)
-            .and_then(|inner| extract_simple_var(&inner, source))
+            .and_then(|inner| extract_simple_var(&inner, source, names))
     } else {
         None
     }
@@ -2401,7 +2473,18 @@ fn resolve_call_return_range(
     summary.return_range
 }
 
-fn extract_var_ranges_from_state(state: &RangeMap) -> VarRangeMap {
+/// The ranges of `state` by the names in scope at `offset`
+/// ([`ShadowedNames::view`]).
+fn extract_var_ranges_from_state(
+    state: &RangeMap,
+    names: &ShadowedNames,
+    offset: usize,
+) -> VarRangeMap {
+    names.view(keyed_ranges(state), offset)
+}
+
+/// The ranges of `state` by key.
+fn keyed_ranges(state: &RangeMap) -> VarRangeMap {
     state
         .iter()
         .map(|(name, typed)| (name.clone(), typed.range))
@@ -2517,14 +2600,14 @@ fn get_assignment_operator(node: &Node, source: &str) -> String {
     "=".to_string()
 }
 
-/// Extract var name and operator from update_expression (x++, --x, etc.)
-fn get_update_info(node: &Node, source: &str) -> (Option<String>, String) {
+/// Extract var key and operator from update_expression (x++, --x, etc.)
+fn get_update_info(node: &Node, source: &str, names: &ShadowedNames) -> (Option<String>, String) {
     let mut var_name = None;
     let mut op = String::new();
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if child.kind() == "identifier" {
-                var_name = Some(get_text(&child, source));
+                var_name = Some(names.key(&child, &get_text(&child, source)).into_owned());
             } else if child.kind() == "++" || child.kind() == "--" {
                 op = child.kind().to_string();
             }
@@ -2538,6 +2621,7 @@ fn collect_param_ranges(
     declarator: &Node,
     source: &str,
     macros: &MacroConstantMap,
+    names: &ShadowedNames,
     state: &mut RangeMap,
 ) {
     // Look for parameter_list in the function_declarator
@@ -2565,7 +2649,8 @@ fn collect_param_ranges(
                                 .as_ref()
                                 .map(|t| t.full_range())
                                 .unwrap_or(ValueRange::new(i64::MIN, i64::MAX));
-                            state.insert(name, TypedRange { range, var_type });
+                            let key = names.key_of_parameter(&name).into_owned();
+                            state.insert(key, TypedRange { range, var_type });
                         }
                     }
                 }
@@ -2581,6 +2666,7 @@ fn collect_local_decl_types(
     body: &Node,
     source: &str,
     macros: &MacroConstantMap,
+    names: &ShadowedNames,
     types: &mut HashMap<String, VarType>,
 ) {
     for i in 0..body.named_child_count() {
@@ -2591,7 +2677,8 @@ fn collect_local_decl_types(
                         if !is_pointer_or_array(&decl) {
                             let name = get_declarator_name(&decl, source);
                             if !name.is_empty() {
-                                types.entry(name).or_insert(var_type.clone());
+                                let key = names.key_of_declarator(&decl, &name).into_owned();
+                                types.entry(key).or_insert(var_type.clone());
                             }
                         }
                         // Also handle init_declarator
@@ -2600,7 +2687,9 @@ fn collect_local_decl_types(
                                 if !is_pointer_or_array(&inner) {
                                     let name = get_declarator_name(&inner, source);
                                     if !name.is_empty() {
-                                        types.entry(name).or_insert(var_type);
+                                        let key =
+                                            names.key_of_declarator(&inner, &name).into_owned();
+                                        types.entry(key).or_insert(var_type);
                                     }
                                 }
                             }
@@ -2609,7 +2698,7 @@ fn collect_local_decl_types(
                 }
             }
             if child.kind() == "compound_statement" || child.kind().starts_with("preproc_") {
-                collect_local_decl_types(&child, source, macros, types);
+                collect_local_decl_types(&child, source, macros, names, types);
             }
         }
     }
@@ -3613,10 +3702,12 @@ void f(int x) {
                     &mut state,
                     &empty_types,
                     &result.aliases,
+                    &result.names,
                 );
             }
         }
-        (!state.is_empty()).then(|| extract_var_ranges_from_state(&state))
+        let ranges = result.ranges_at(&state, offset);
+        (!ranges.is_empty()).then_some(ranges)
     }
 
     /// Every block's answer at every statement boundary, from the stored
@@ -3744,10 +3835,10 @@ void f(int x) {
             snapshots: Vec::new(),
         };
         let ranges = checkpoints.var_ranges_before(&before, 10);
-        assert_eq!(ranges, extract_var_ranges_from_state(&after));
+        assert_eq!(ranges, keyed_ranges(&after));
         assert_eq!(
             checkpoints.var_ranges_before(&before, 9),
-            extract_var_ranges_from_state(&before)
+            keyed_ranges(&before)
         );
     }
 
@@ -3770,6 +3861,154 @@ void f(int x) {
     }
 
     const INT_FULL: (i64, i64) = (i32::MIN as i64, i32::MAX as i64);
+
+    #[test]
+    fn a_blocks_own_variable_leaves_the_one_it_hides() {
+        let code = "
+int read_untrusted(void);
+int f(void) {
+    int x = 1;
+    {
+        int x = 2;
+        x = read_untrusted();
+        (void)(x + 0);
+    }
+    return 100 / x;
+}
+";
+        assert_eq!(range_before(code, "x", "(void)(x +"), Some(INT_FULL));
+        assert_eq!(range_before(code, "x", "return"), Some((1, 1)));
+    }
+
+    #[test]
+    fn a_store_through_a_pointer_to_a_blocks_own_variable_leaves_the_one_it_hides() {
+        let code = "
+int read_untrusted(void);
+int f(void) {
+    int x = 1;
+    {
+        int x = 2;
+        int *q = &x;
+        *q = read_untrusted();
+        (void)(x + 0);
+    }
+    return 100 / x;
+}
+";
+        assert_eq!(range_before(code, "x", "(void)(x +"), Some(INT_FULL));
+        assert_eq!(range_before(code, "x", "return"), Some((1, 1)));
+    }
+
+    #[test]
+    fn a_call_handed_a_blocks_own_variable_leaves_the_one_it_hides() {
+        let code = "
+void fill(int *p);
+int f(void) {
+    int x = 1;
+    {
+        int x = 2;
+        fill(&x);
+        (void)(x + 0);
+    }
+    return 100 / x;
+}
+";
+        assert_eq!(range_before(code, "x", "(void)(x +"), Some(INT_FULL));
+        assert_eq!(range_before(code, "x", "return"), Some((1, 1)));
+    }
+
+    #[test]
+    fn each_nested_block_reads_its_own_variable() {
+        let code = "
+int f(void) {
+    int x = 1;
+    {
+        int x = 2;
+        {
+            int x = 3;
+            (void)(x + 30);
+        }
+        (void)(x + 20);
+        if (x > 1)
+            (void)(x + 21);
+    }
+    return x + 10;
+}
+";
+        assert_eq!(range_before(code, "x", "(void)(x + 30)"), Some((3, 3)));
+        assert_eq!(range_before(code, "x", "(void)(x + 20)"), Some((2, 2)));
+        assert_eq!(range_before(code, "x", "(void)(x + 21)"), Some((2, 2)));
+        assert_eq!(range_before(code, "x", "return"), Some((1, 1)));
+    }
+
+    #[test]
+    fn a_loops_own_counter_leaves_the_variable_it_hides() {
+        let code = "
+int f(void) {
+    int i = 7;
+    for (int i = 3; i > 0; i--) {
+        (void)(i + 0);
+    }
+    return i;
+}
+";
+        assert_eq!(range_before(code, "i", "(void)(i +"), Some((1, 3)));
+        assert_eq!(range_before(code, "i", "return"), Some((7, 7)));
+    }
+
+    #[test]
+    fn a_name_declared_again_after_a_block_is_a_new_variable() {
+        let code = "
+int read_untrusted(void);
+int f(void) {
+    {
+        int x = 0;
+        (void)(x + 0);
+    }
+    (void)read_untrusted();
+    int x = 5;
+    return x;
+}
+";
+        assert_eq!(range_before(code, "x", "(void)(x"), Some((0, 0)));
+        // Between the two, neither is in scope.
+        assert_eq!(range_before(code, "x", "(void)read"), None);
+        assert_eq!(range_before(code, "x", "return"), Some((5, 5)));
+    }
+
+    #[test]
+    fn a_block_variable_hiding_a_file_scope_object_leaves_the_object() {
+        let code = "
+int x;
+int f(void) {
+    x = 1;
+    {
+        int x = 0;
+        (void)(x + 0);
+    }
+    return x;
+}
+";
+        assert_eq!(range_before(code, "x", "(void)(x +"), Some((0, 0)));
+        assert_eq!(range_before(code, "x", "return x"), Some((1, 1)));
+    }
+
+    #[test]
+    fn a_block_variable_hiding_a_parameter_leaves_the_parameter() {
+        let code = "
+int f(int p) {
+    if (p < 1 || p > 9)
+        return 0;
+    {
+        int p = 0;
+        (void)(p + 0);
+    }
+    return p;
+}
+";
+        assert_eq!(range_before(code, "p", "(void)(p +"), Some((0, 0)));
+        assert_eq!(range_before(code, "p", "return p"), Some((1, 9)));
+    }
 
     #[test]
     fn a_store_through_a_pointer_to_a_local_widens_it() {

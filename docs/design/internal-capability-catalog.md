@@ -953,6 +953,7 @@ local `g` (ADR-0006).
 | Item | Signature | Description |
 |---|---|---|
 | `AddressTakenLocals::of_function` | `(func: &Node, source) -> Arc<AddressTakenLocals>` | One function's facts: each local pointer's possible targets (from `&x` through casts, parentheses, `p + n`, `?:`, the comma operator, copies and call results that may hand an argument back), the pointers whose value may come from outside (a parameter, a file-scope object, a read through memory), and the locals whose address ESCAPED: stored anywhere but a local pointer variable (a file-scope object, a member, an element, a pointee, an initializer list), or held by a pointer whose own address is taken (`**pp = v`). A function that takes no address answers empty without walking further. Memoised on the thread for every function of the file being scanned (`FunctionMemo`, keyed by `FunctionKey`: node id, span, source buffer and a hash of the function's text), so VRA, which asks for every function first, and every guard and constant a rule then checks share one build per function. `CParser` forgets the memo before each file it reads (`nonzero_facts::forget_function_facts`): a buffer's address and length do not identify its text, and `fact_reaches`' per-function facts depend on the rest of the file. |
+| `function_locals` | `(func: &Node, source) -> Vec<(LocalId, String)>` | Every local the function declares, as the facts count them (parameters, then every non-`extern` object the body declares), whether or not the function takes an address. `ShadowedNames` builds on it. |
 | `local_of` / `local_declared_by` / `name` | `(&self, ident: &Node) -> Option<LocalId>` / `(&self, declarator: &Node) -> Option<LocalId>` / `(&self, LocalId) -> &str` | The local an identifier occurrence refers to (none for a file-scope object, a function, an enumerator); the local a declarator from `resolve_identifier_declarator` declares; a local's name, for a name-keyed consumer. |
 | `store_targets` / `argument_targets` | `(&self, base: &Node, source) -> HashSet<LocalId>` | The locals a store through `base` (`*base`, `base[i]`, `base->m`) may write: the targets of the pointers it names, plus every escaped local when `base` may come from outside. The locals a callee handed `arg` may write through it, `&x` itself included. Passing a pointer to a call is a write at that call, not an escape: a callee that keeps it and writes through it at a later call is not followed, the assumption VRA has always made for `f(&x)`. |
 | `escaped` / `has_escaped` | `(&self) -> impl Iterator<Item = LocalId>` / `(&self, LocalId) -> bool` | Locals any store through a pointer, and any call, may write. |
@@ -1160,11 +1161,43 @@ actually consumes:
   intersect and the identity under join) rather than as the absence of a
   constraint, which is what keeps the two meanings apart.
 
+- **Its state is keyed by name, except where a name does not pick out one
+  object** (`shadowed_names.rs`, below): a block's `int x` hiding the
+  function's `x`, two loops each declaring `int i`, a block local hiding a
+  parameter or a file-scope object of its name. Those are kept per
+  declaration, and every range map a query hands out (`get_all_var_ranges_at`,
+  `get_var_range_at`, `eval_expr_range_at`, `vra_access`) is by the names in
+  scope where it is asked, so a consumer still looks a variable up by its
+  spelling. Reading `block_entry_ranges` / `block_exit_ranges` directly gets
+  the internal keys: go through `RangeAnalysisResult::ranges_at(state,
+  offset)` (and `parameter_key(name)` for a parameter's entry), as
+  `vra_access` does.
+
 **Wiring pattern:** Rules that want VRA-backed integer-fit checks should go
 through `const_eval.rs`'s `expression_fits_in_signed_vra`/
 `expression_overflows_signed_vra` etc. rather than calling into
 `value_range.rs` directly — those wrapper functions already handle the
 CFG-lookup-with-syntactic-fallback pattern.
+
+### `src/analyze/shadowed_names.rs`
+**Problem solved:** which of a function's names do not pick out one object,
+and for those, which declaration each occurrence and each point of the body
+means. VRA's state was keyed by spelling, so `int x = 1; { int x = 2; x =
+read_untrusted(); } return 100 / x;` divided by the inner `x`'s range, and an
+inner constant could just as well hide an unchecked outer divisor. A name is
+keyed per declaration when the function declares it twice, or when some
+occurrence of a name it declares once resolves to no local (a file-scope
+object of that name used outside the local's block). Occurrences resolve
+through `ScopeDeclarations::find_declaration_in_scope_chain` on a scope stack
+carried down one walk of the body, never by spelling (ADR-0006). A function
+none of whose names needs it, most of them, gets an empty value and keys by
+name exactly as before.
+
+| Item | Signature | Description |
+|---|---|---|
+| `ShadowedNames::of_function` | `(func: &Node, source) -> ShadowedNames` | Build once per function; VRA does, and keeps it on `RangeAnalysisResult`. |
+| `key` / `key_of_local` / `key_of_declarator` / `key_of_parameter` | `(&self, ident: &Node, name) -> Cow<str>` / `(LocalId, name)` / `(declarator: &Node, name)` / `(name)` | The key an occurrence, a local, a declarator's object or a parameter is kept under: `name#id` for a keyed name, the name itself otherwise (and for an occurrence that names no local). |
+| `view` | `(&self, keyed: VarRangeMap, offset) -> VarRangeMap` | Ranges by key as ranges by name at `offset`: each keyed name's declaration in scope there and no other, the innermost when blocks nest; a name with none in scope keeps its plain entry (the file-scope object's). The identity for an empty value. |
 
 ### `src/analyze/name_writes.rs`
 **Problem solved:** "can this stretch of a body write variable `v`?" when a

@@ -713,7 +713,7 @@ fn takes_an_address(func: &Node) -> bool {
 
 /// The identifier a declarator declares, or `None` for a function
 /// declarator (a block-scope prototype names no object).
-fn declared_identifier<'a>(declarator: &Node<'a>) -> Option<Node<'a>> {
+pub(crate) fn declared_identifier<'a>(declarator: &Node<'a>) -> Option<Node<'a>> {
     match declarator.kind() {
         "identifier" => Some(*declarator),
         "function_declarator" => None,
@@ -723,6 +723,23 @@ fn declared_identifier<'a>(declarator: &Node<'a>) -> Option<Node<'a>> {
         "parenthesized_declarator" => declared_identifier(&declarator.named_child(0)?),
         _ => None,
     }
+}
+
+/// Every local `func` declares, as [`AddressTakenLocals`] counts them: its
+/// parameters, then every object its body declares (`extern` declarations
+/// and prototypes excluded), each with its name, whether or not the
+/// function takes an address.
+pub(crate) fn function_locals(func: &Node, source: &str) -> Vec<(LocalId, String)> {
+    let mut facts = AddressTakenLocals::default();
+    if let Some(declarator) = func.child_by_field_name("declarator") {
+        collect_parameters(&declarator, source, &mut facts);
+    }
+    if let Some(body) = func.child_by_field_name("body") {
+        collect_declarations(&body, source, &mut facts);
+    }
+    let mut locals: Vec<(LocalId, String)> = facts.names.into_iter().collect();
+    locals.sort_unstable_by_key(|&(id, _)| id);
+    locals
 }
 
 fn record_decl(
@@ -781,17 +798,20 @@ fn is_extern(decl: &Node, source: &str) -> bool {
         .any(|c| c.kind() == "storage_class_specifier" && text(&c, source) == "extern")
 }
 
+/// Record every declaration under `node`. A stack, not recursion: value-range
+/// analysis asks for the locals of every function it analyses, however
+/// deeply its statements nest.
 fn collect_declarations(node: &Node, source: &str, facts: &mut AddressTakenLocals) {
-    if node.kind() == "declaration" && !is_extern(node, source) {
+    let mut stack = vec![*node];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "declaration" && !is_extern(&node, source) {
+            let mut cursor = node.walk();
+            for d in node.children_by_field_name("declarator", &mut cursor) {
+                record_decl(&node, &d, source, facts);
+            }
+        }
         let mut cursor = node.walk();
-        for d in node.children_by_field_name("declarator", &mut cursor) {
-            record_decl(node, &d, source, facts);
-        }
-    }
-    for i in 0..node.named_child_count() {
-        if let Some(child) = node.named_child(i) {
-            collect_declarations(&child, source, facts);
-        }
+        stack.extend(node.named_children(&mut cursor));
     }
 }
 

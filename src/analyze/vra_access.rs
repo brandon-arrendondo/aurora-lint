@@ -93,10 +93,7 @@ pub fn var_ranges_entry_at(
         })?;
 
     let entry = vra.block_entry_ranges.get(&block.id)?;
-    let var_ranges: VarRangeMap = entry
-        .iter()
-        .map(|(name, typed)| (name.clone(), typed.range))
-        .collect();
+    let var_ranges: VarRangeMap = vra.ranges_at(entry, byte_offset);
     if var_ranges.is_empty() {
         None
     } else {
@@ -143,7 +140,11 @@ pub(crate) fn unwritten_param_entry_range<'s>(
         |n: &Node| n.kind() == "identifier" && ast_utils::get_node_text(n, source) == name;
     // The entry range first: the scope is built only for a parameter that
     // has one to keep.
-    let range = vra.block_entry_ranges.get(&cfg.entry)?.get(name)?.range;
+    let range = vra
+        .block_entry_ranges
+        .get(&cfg.entry)?
+        .get(vra.parameter_key(name).as_ref())?
+        .range;
     let writes = scope().may_write(
         &body,
         source,
