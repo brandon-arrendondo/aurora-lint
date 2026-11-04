@@ -18,7 +18,9 @@ use tree_sitter::Node;
 /// a `#define`, not a while statement. tree-sitter ends a macro's
 /// `preproc_arg` at a `/* */` comment on a continued line and parses the rest
 /// of the body as C (valkey's `ZIP_DECODE_PREVLEN`), which strands the tail
-/// with the `do` on the far side of the cut. So the pairing is read from the
+/// with the `do` on the far side of the cut. The pre-parse pass
+/// `define_comment_blank` now blanks such comments, so only a comment that
+/// hides an unspliced line break still strands a tail here. So the pairing is read from the
 /// directive's own text: the `}` right before `while` must close a brace
 /// opened by `do`. Anything the scan cannot pair keeps its finding.
 fn closes_macro_do_block(while_node: Node, source: &str) -> bool {

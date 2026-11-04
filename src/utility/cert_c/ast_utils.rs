@@ -2849,7 +2849,10 @@ pub fn is_on_preproc_directive_line(source: &str, offset: usize) -> bool {
 /// [`is_on_preproc_directive_line`], for a caller that has to read the
 /// directive's text up to `offset`: tree-sitter ends a `#define`'s
 /// `preproc_arg` at a `/* */` comment on a continued line and parses the rest
-/// of the body as C, so a rule landing there needs the part it lost.
+/// of the body as C, so a rule landing there needs the part it lost. (The
+/// pre-parse pass `define_comment_blank` blanks such comments; the one shape
+/// it leaves, a comment that hides an unspliced line break, still parses
+/// this way.)
 pub fn preproc_directive_start(source: &str, offset: usize) -> Option<usize> {
     let offset = offset.min(source.len());
     let mut line_start = source[..offset].rfind('\n').map_or(0, |i| i + 1);

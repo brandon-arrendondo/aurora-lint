@@ -1,8 +1,9 @@
 /*
  * Rule: EXP19-C
  * Source: testcases
- * Status: FAIL - an unbraced if inside a macro body is still unbraced when a
- * comment makes the parser read the rest of the body as code
+ * Status: PASS - a macro's replacement list is not code the rule reads, with a
+ * comment inside it or without one: the comment no longer cuts the #define
+ * short and leaves the rest of the body parsed as statements
  */
 
 #define LENGTH(enc, len)                                \

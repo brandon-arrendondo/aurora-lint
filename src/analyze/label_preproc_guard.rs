@@ -75,10 +75,13 @@
 //! though: the whole arm before the label, which can run to a hundred lines,
 //! becomes unconditional, so a `free` in it followed by a use after the old
 //! `#endif` reads as a definite use after free rather than a possible one.
-//! A label that ends an inner group whose `#endif` is directly followed by
-//! the outer group's `#endif` is only partly repaired (the inner pair is
-//! blanked and the label then meets the outer `#endif`); that is an
-//! accepted miss.
+//! When what follows the old `#endif` cannot fill the label's slot either,
+//! because it is another directive (the next group, an `#else`, or the
+//! outer group's `#endif`) or the block's closing `}`, the blanked `#endif`
+//! line gets a `;` at its start, so the label labels an empty statement
+//! (mbedtls `ecdsa.c`, where `sign:` ends a `#if` arm and the next line opens
+//! an `#if` ... `#else` group). `label: ;` is how C spells a label with no
+//! statement, and control from it goes where it went before.
 //!
 //! Deliberately conservative: skips any block containing its own nested
 //! `#else`/`#elif` at the top depth -- unclear how to preserve two-branch
@@ -278,12 +281,26 @@ pub fn blank_label_guarded_preproc(source: &str) -> String {
             lines[i].len(),
             open_text.as_deref(),
         );
-        write_marker_or_blank(
-            &mut out,
-            line_starts[end_idx],
-            lines[end_idx].len(),
-            open_text.as_ref().map(|_| CLOSE_MARKER),
-        );
+        // A label that ended the arm now labels whatever follows the old
+        // `#endif`. When that is no statement (another directive, or the
+        // block's `}`), give it the empty statement it would need anyway,
+        // written where the `#endif` was: `sign: ;` runs as `sign:` would.
+        let next_content = lines[end_idx + 1..]
+            .iter()
+            .map(|l| l.trim_start())
+            .find(|t| !t.is_empty());
+        let needs_statement =
+            ends_in_label && next_content.is_some_and(|t| t.starts_with('#') || t.starts_with('}'));
+        let close = match (needs_statement, open_text.is_some()) {
+            (true, true) => Some(";/*E*/"),
+            (true, false) => Some(";"),
+            (false, true) => Some(CLOSE_MARKER),
+            (false, false) => None,
+        };
+        write_marker_or_blank(&mut out, line_starts[end_idx], lines[end_idx].len(), close);
+        if needs_statement && out[line_starts[end_idx]] != b';' && !lines[end_idx].is_empty() {
+            out[line_starts[end_idx]] = b';';
+        }
     }
 
     String::from_utf8(out).unwrap_or_else(|_| source.to_string())
@@ -708,5 +725,67 @@ out:
         // in place, never a panic.
         let cr = src.replace('\n', "\r");
         assert_eq!(blank_label_guarded_preproc(&cr).len(), cr.len());
+    }
+
+    /// A label that ends an arm, followed by a group with an `#else` of its
+    /// own: blanking the first pair leaves the label before `#if`, which is
+    /// no statement, so the old `#endif` line becomes the empty statement.
+    #[test]
+    fn a_label_ending_an_arm_before_another_group_labels_an_empty_statement() {
+        let src = "\
+int f(int r) {
+    int ret;
+#if defined(R)
+    if (r) {
+        goto sign;
+    }
+sign:
+#endif
+#if defined(ALT)
+    ret = a(r);
+#else
+    ret = b(r);
+#endif
+    return ret;
+}
+";
+        let fixed = blank_label_guarded_preproc(src);
+        assert_eq!(fixed.len(), src.len());
+        assert!(
+            fixed.contains("sign:\n;     \n#if defined(ALT)"),
+            "{fixed:?}"
+        );
+        assert!(parses_clean(src));
+    }
+
+    /// The same before the block's closing brace, and before the outer
+    /// group's `#endif`.
+    #[test]
+    fn a_label_ending_an_arm_before_a_brace_or_an_outer_endif_labels_an_empty_statement() {
+        for src in [
+            "int f(int r) {\n#if defined(R)\n    goto out;\nout:\n#endif\n}\n",
+            "int f(int r) {\n#ifdef A\n#if defined(R)\n    goto out;\nout:\n#endif\n#endif\n    return r;\n}\n",
+        ] {
+            let fixed = blank_label_guarded_preproc(src);
+            assert_eq!(fixed.len(), src.len());
+            assert!(fixed.contains("out:\n;"), "{fixed:?}");
+            assert!(parses_clean(src), "{fixed:?}");
+        }
+        // A guard marker still fits after the `;`.
+        let src = "int f(int r) {\n#ifdef R\n    goto out;\nout:\n#endif\n}\n";
+        let fixed = blank_label_guarded_preproc(src);
+        assert!(fixed.contains("out:\n;/*E*/\n}"), "{fixed:?}");
+        assert!(parses_clean(src));
+    }
+
+    /// A statement after the old `#endif` fills the label's slot itself, and
+    /// no empty statement is written.
+    #[test]
+    fn a_label_ending_an_arm_before_a_statement_gets_no_empty_statement() {
+        let src = "int f(int r) {\n#if defined(R)\n    goto out;\nout:\n#endif\n    return r;\n}\n";
+        let fixed = blank_label_guarded_preproc(src);
+        assert!(!fixed.contains("out:\n;"), "{fixed:?}");
+        assert!(fixed.contains("out:\n      \n    return r;"), "{fixed:?}");
+        assert!(parses_clean(src));
     }
 }

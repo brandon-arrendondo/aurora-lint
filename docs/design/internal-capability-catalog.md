@@ -225,6 +225,20 @@ unrelated content later in the file.
 **Wiring pattern:** Called once on raw source text *before* parsing (see
 `src/parser/mod.rs`), not from within a rule.
 
+### `src/analyze/define_comment_blank.rs`
+**Problem solved:** pre-parse pass for a block comment inside a `#define`'s
+replacement list with a `\` continuation after it. tree-sitter-c ends the
+`preproc_arg` at the comment and does not take the continued lines back, so
+the rest of a statement-like body (`do { ... } while (0)`) parses as code at
+file scope, where it can tip the whole file into one `ERROR`.
+
+| Function | Signature | Description |
+|---|---|---|
+| `blank_define_body_comments` | `(source: &str) -> Cow<str>` | Every comment of such a `#define` (block or `//`, with the lines a `\` splices into a `//` comment) becomes spaces; every continuation `\` and line break stays, so length, lines and the directive's extent are unchanged, and the macro defines what it did (a comment is a space to the preprocessor). A directive with no block comment after the first token of its replacement list and before a continuation is left as written, as is one whose block comment closes the list (a `\` inside it continues only the comment) and one where a comment hides a line break no `\` splices. Borrowed when nothing changes. |
+
+**Wiring pattern:** Called once on raw source text *before* parsing, right
+after `blank_embedded_js` (see `src/parser/mod.rs`), not from within a rule.
+
 ### `src/analyze/storage_class_macro.rs`
 **Problem solved:** pre-parse pass for an object-like macro that expands to
 a storage-class specifier (`#define STATIC static`). tree-sitter-c reads it
@@ -1682,7 +1696,13 @@ guard holding it: the first arm, the block the `else` reaches, is kept and
 every later arm blanked whole so none reads as a statement after the `if`;
 no condition is decided, and it runs before the dangling-else pass, which
 then joins that guard), `label_preproc_guard.rs` (a guard opening right after a
-goto label), `paren_preproc_guard.rs` (a guard opening inside
+goto label, or ending with one; when what follows the blanked `#endif` is
+another directive or the block's `}`, that line becomes the label's empty
+statement `;`), `define_comment_blank.rs` (a block comment inside a
+`#define` that a `\` continuation follows, which ends the grammar's
+`preproc_arg` and leaves the rest of the body parsed as code at file scope:
+every comment of such a directive is blanked, continuations kept, unless a
+comment hides a line break no `\` splices), `paren_preproc_guard.rs` (a guard opening inside
 an unclosed parenthesized expression, or continuing an expression statement
 across it: the code line before it ends no statement or label, and it ends
 with a binary operator or every arm begins with one, `,` excepted and an arm

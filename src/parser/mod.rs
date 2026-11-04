@@ -84,6 +84,13 @@ impl CParser {
         // only C. Length- and newline-preserving.
         let source = crate::analyze::embedded_js_blank::blank_embedded_js(&source);
 
+        // A block comment inside a `#define` that a `\` continuation follows
+        // ends tree-sitter-c's reading of the directive, and the rest of the
+        // macro body is parsed as code at file scope. Blank such comments
+        // (the preprocessor reads each as a space anyway). Length- and
+        // line-preserving.
+        let source = crate::analyze::define_comment_blank::blank_define_body_comments(&source);
+
         // `__has_include(<hdr.h>)` in a `#if` is not a C expression, and the
         // recovery from it swallowed statements below the `#endif` (valkey
         // module.c). Spell the header quoted. Length-preserving, and a no-op
@@ -224,6 +231,7 @@ impl CParser {
     pub fn parse_source(&mut self, source: &str) -> Result<(Tree, String)> {
         crate::utility::cert_c::nonzero_facts::forget_function_facts();
         let source = crate::analyze::embedded_js_blank::blank_embedded_js(source);
+        let source = crate::analyze::define_comment_blank::blank_define_body_comments(&source);
         let source = crate::analyze::has_include_angle::quote_has_include_headers(&source);
         let source = crate::analyze::thread_local_keyword::spell_thread_local(&source);
         let source = crate::analyze::trailing_attribute::spell_trailing_attributes(&source);
