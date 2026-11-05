@@ -107,6 +107,7 @@
 //! reason about safely).
 
 use crate::analyze::paren_preproc_guard::CodeLines;
+use crate::analyze::preproc_conditionals::{match_conditionals, CondLine};
 use crate::utility::cert_c::text_bounds;
 
 fn strip_trailing_line_comment(s: &str) -> &str {
@@ -573,42 +574,28 @@ pub fn blank_dangling_else_preproc(source: &str) -> String {
     let (lines, line_starts) = text_bounds::lines_with_starts(source);
 
     let mut out = blank_brace_else_chains(source);
-
-    let mut i = 0usize;
-    while i < lines.len() {
-        let trimmed = lines[i].trim_start();
-        if !is_directive_start(trimmed) {
-            i += 1;
-            continue;
+    let conditionals = match_conditionals(lines.len(), |k| {
+        let t = lines[k].trim_start();
+        if is_directive_start(t) {
+            Some(CondLine::Open)
+        } else if is_endif(t) {
+            Some(CondLine::End)
+        } else if is_branch_directive(t) {
+            Some(CondLine::Branch)
+        } else {
+            None
         }
+    });
 
-        let mut depth = 1i32;
-        let mut end_idx = None;
-        let mut has_branch = false;
-        let mut j = i + 1;
-        while j < lines.len() {
-            let t = lines[j].trim_start();
-            if is_directive_start(t) {
-                depth += 1;
-            } else if is_endif(t) {
-                depth -= 1;
-                if depth == 0 {
-                    end_idx = Some(j);
-                    break;
-                }
-            } else if depth == 1 && is_branch_directive(t) {
-                has_branch = true;
-            }
-            j += 1;
-        }
-
-        let Some(end_idx) = end_idx else {
-            // No matching #endif found (truncated snippet, or this file has
-            // other unrelated unbalanced-directive issues) -- move on rather
-            // than halt the whole scan.
-            i += 1;
+    for i in 0..lines.len() {
+        // No #if here, or no matching #endif (truncated snippet, or this
+        // file has other unrelated unbalanced-directive issues) -- move on
+        // rather than halt the whole scan.
+        let Some(conditional) = conditionals.at(i) else {
             continue;
         };
+        let end_idx = conditional.endif;
+        let has_branch = !conditional.branches.is_empty();
 
         if !has_branch {
             let body = (i + 1)..end_idx;
@@ -654,12 +641,11 @@ pub fn blank_dangling_else_preproc(source: &str) -> String {
             }
         }
 
-        // Advance by one line, not past `end_idx`: a `#if` nested inside this
-        // block (e.g. raylib's per-format `#if SUPPORT_FILEFORMAT_PNG` guards
-        // nested inside an outer `#if SUPPORT_IMAGE_EXPORT`) must still get
-        // its own independent leading/trailing-else check on a later
-        // iteration, rather than being skipped as "already handled".
-        i += 1;
+        // A `#if` nested inside this block (e.g. raylib's per-format
+        // `#if SUPPORT_FILEFORMAT_PNG` guards nested inside an outer
+        // `#if SUPPORT_IMAGE_EXPORT`) still gets its own independent
+        // leading/trailing-else check on a later line, rather than being
+        // skipped as "already handled".
     }
 
     String::from_utf8(out).unwrap_or_else(|_| source.to_string())

@@ -102,10 +102,11 @@
 //! even; no lone `{` follows such a chain.
 
 use crate::analyze::control_header_preproc_guard::{
-    blank_line, ends_with_control_header, is_branch_directive, is_directive, is_directive_start,
-    is_endif, strip_comments,
+    blank_line, ends_with_control_header, is_directive, strip_comments,
 };
+use crate::analyze::paren_preproc_guard::cond_line;
 use crate::analyze::preproc_arm_choice::{compiled_arm, directive_extent, locally_defined_names};
+use crate::analyze::preproc_conditionals::{match_conditionals, Conditional};
 use crate::analyze::preproc_dangling_else::is_bare_else_line;
 use crate::utility::cert_c::text_bounds;
 
@@ -208,44 +209,24 @@ pub fn blank_split_chain_preproc(source: &str) -> String {
 
     let mut out = source.as_bytes().to_vec();
     let local = locally_defined_names(&lines);
+    let conditionals = match_conditionals(lines.len(), |k| cond_line(lines[k]));
 
-    let mut i = 0usize;
-    while i < lines.len() {
-        if !is_directive_start(lines[i]) {
-            i += 1;
-            continue;
-        }
-
-        let mut depth = 1i32;
-        let mut end_idx = None;
-        let mut branches: Vec<usize> = Vec::new();
-        let mut j = i + 1;
-        while j < lines.len() {
-            if is_directive_start(lines[j]) {
-                depth += 1;
-            } else if is_endif(lines[j]) {
-                depth -= 1;
-                if depth == 0 {
-                    end_idx = Some(j);
-                    break;
-                }
-            } else if depth == 1 && is_branch_directive(lines[j]) {
-                branches.push(j);
-            }
-            j += 1;
-        }
-
-        let Some(end_idx) = end_idx else {
-            // No matching #endif (truncated snippet, or unbalanced directives
-            // elsewhere in the file) -- move on rather than halt the scan.
-            i += 1;
+    for i in 0..lines.len() {
+        // No #if here, or no matching #endif (truncated snippet, or
+        // unbalanced directives elsewhere in the file) -- move on rather
+        // than halt the scan.
+        let Some(Conditional {
+            branches,
+            endif: end_idx,
+        }) = conditionals.at(i)
+        else {
             continue;
         };
+        let end_idx = *end_idx;
 
         // Single-arm chains belong to `control_header_preproc_guard` and
         // `preproc_dangling_else`; this pass exists for the case they refuse.
         if branches.is_empty() {
-            i += 1;
             continue;
         }
 
@@ -279,7 +260,6 @@ pub fn blank_split_chain_preproc(source: &str) -> String {
             None
         };
         let Some(keep) = keep else {
-            i += 1;
             continue;
         };
 
@@ -302,9 +282,8 @@ pub fn blank_split_chain_preproc(source: &str) -> String {
             blank_line(&mut out, line_starts[k], lines[k].len());
         }
 
-        // Advance by one line, not past `end_idx`: a chain nested inside this
-        // one must still get its own independent check.
-        i += 1;
+        // A chain nested inside this one gets its own independent check on
+        // a later line.
     }
 
     String::from_utf8(out).unwrap_or_else(|_| source.to_string())

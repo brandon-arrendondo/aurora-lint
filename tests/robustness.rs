@@ -1992,3 +1992,94 @@ fn large_and_deep_inputs_scale_near_linearly_under_every_rule() {
         ),
     ]);
 }
+
+/// `n` unclosed `#if` lines, a declaration under each.
+fn unclosed_ifs_with_declarations(n: usize) -> String {
+    (0..n).map(|i| format!("#if A{i}\nint a{i};\n")).collect()
+}
+
+/// `n` unclosed `#if` lines in a function, each opening a brace an `#else`
+/// opens too.
+fn unclosed_ifs_opening_braces(n: usize) -> String {
+    let arms: String = (0..n)
+        .map(|i| format!("#if A{i}\nif (c) {{\n#else\nif (!c) {{\n"))
+        .collect();
+    format!("void f(int c) {{\n{arms}}}\n}}\n")
+}
+
+/// A nest of `n` closed `#if` blocks in a function, each opening an `if`
+/// whose `else` comes after the nest.
+fn closed_nest_of_else_guards(n: usize) -> String {
+    let opens: String = (0..n)
+        .map(|i| format!("#if A{i}\nif (c) {{ c++; }} else\n"))
+        .collect();
+    format!(
+        "void f(int c) {{\n{opens}{{ c--; }}\n{}}}\n",
+        "#endif\n".repeat(n)
+    )
+}
+
+/// A nest of `n` closed `#if` blocks in an initializer, each adding one
+/// level of braces.
+fn closed_nest_in_an_initializer(n: usize) -> String {
+    let opens: String = (0..n).map(|i| format!("#if A{i}\n{{ 1,\n")).collect();
+    format!("int t[] = {{\n{opens}0{}}};\n", " },\n#endif\n".repeat(n))
+}
+
+/// A named generator of source text of a given size.
+type SourceSeries = (&'static str, fn(usize) -> String);
+
+/// Malformed conditional structure at four sizes, each parsed with the
+/// pre-parse repair passes the scan runs: unclosed `#if` lines (a truncated
+/// or generated file), and a deep nest of closed ones. A pass that finds a
+/// conditional's `#endif` by scanning forward from each `#if`, or rereads
+/// each block's whole body, is quadratic here, and a few thousand lines of
+/// such input once held a scan for minutes. Timed on the parse alone: what
+/// the rules then do with the file is the other series' concern.
+#[test]
+#[ignore = "size series: run in release with --ignored (CI robustness job)"]
+fn malformed_conditionals_parse_near_linearly() {
+    let _runner = timed();
+    let series: [SourceSeries; 4] = [
+        (
+            "unclosed_ifs_with_declarations",
+            unclosed_ifs_with_declarations,
+        ),
+        ("unclosed_ifs_opening_braces", unclosed_ifs_opening_braces),
+        ("closed_nest_of_else_guards", closed_nest_of_else_guards),
+        (
+            "closed_nest_in_an_initializer",
+            closed_nest_in_an_initializer,
+        ),
+    ];
+    let small = 2_500;
+    let mut failures = Vec::new();
+    for (name, generate) in series {
+        let sources: Vec<(usize, String)> = SIZE_SERIES_STEPS
+            .iter()
+            .map(|&step| (step * small, generate(step * small)))
+            .collect();
+        let mut fastest = vec![Duration::MAX; sources.len()];
+        for _ in 0..SIZE_SERIES_RUNS {
+            for (i, (_, source)) in sources.iter().enumerate() {
+                let mut parser = aurora_lint::parser::CParser::new().unwrap();
+                let start = Instant::now();
+                parser.parse_source(source).unwrap();
+                fastest[i] = fastest[i].min(start.elapsed());
+            }
+        }
+        let points: Vec<(usize, Duration)> = sources.iter().map(|s| s.0).zip(fastest).collect();
+        let slope = log_log_slope(&points);
+        let times = points
+            .iter()
+            .map(|(_, t)| format!("{t:.1?}"))
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        let line = format!("{name}: {times} for 1x/2x/4x/8x (slope {slope:.2})");
+        println!("{line}");
+        if slope > SIZE_SERIES_MAX_SLOPE {
+            failures.push(format!("{line}, steeper than {SIZE_SERIES_MAX_SLOPE}"));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}

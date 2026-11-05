@@ -143,6 +143,7 @@
 //! root's `ERROR` children misses this shape: the root is the `ERROR`.)
 
 use crate::analyze::preproc_arm_choice::{compiled_arm, directive_extent, locally_defined_names};
+use crate::analyze::preproc_conditionals::{match_conditionals, CondLine, Conditional};
 use crate::utility::cert_c::text_bounds;
 
 /// How far back the paren scan will look for the start of the statement
@@ -175,6 +176,19 @@ pub(crate) fn is_endif(line: &str) -> bool {
 
 pub(crate) fn is_branch_directive(line: &str) -> bool {
     matches!(directive_keyword(line), Some("else" | "elif"))
+}
+
+/// What `line` is to the conditional structure, by [`directive_keyword`].
+pub(crate) fn cond_line(line: &str) -> Option<CondLine> {
+    if is_directive_start(line) {
+        Some(CondLine::Open)
+    } else if is_endif(line) {
+        Some(CondLine::End)
+    } else if is_branch_directive(line) {
+        Some(CondLine::Branch)
+    } else {
+        None
+    }
 }
 
 pub(crate) fn is_directive(line: &str) -> bool {
@@ -482,33 +496,18 @@ pub fn blank_paren_guarded_preproc(source: &str) -> String {
 
     let mut out = source.as_bytes().to_vec();
     let local = locally_defined_names(&lines.raw);
+    let conditionals = match_conditionals(lines.len(), |k| cond_line(lines.raw[k]));
 
     for i in 0..lines.len() {
-        if !is_directive_start(lines.raw[i]) {
-            continue;
-        }
-        let in_paren = inside_unclosed_paren(&lines, i);
-
-        let mut depth = 1i32;
-        let mut end_idx = None;
-        let mut branches = Vec::new();
-        for (j, raw) in lines.raw.iter().enumerate().skip(i + 1) {
-            if is_directive_start(raw) {
-                depth += 1;
-            } else if is_endif(raw) {
-                depth -= 1;
-                if depth == 0 {
-                    end_idx = Some(j);
-                    break;
-                }
-            } else if depth == 1 && is_branch_directive(raw) {
-                branches.push(j);
-            }
-        }
-
-        let Some(end_idx) = end_idx else {
-            continue; // No matching #endif -- move on rather than halt.
+        let Some(Conditional {
+            branches,
+            endif: end_idx,
+        }) = conditionals.at(i)
+        else {
+            continue; // No #if here, or no matching #endif -- move on.
         };
+        let end_idx = *end_idx;
+        let in_paren = inside_unclosed_paren(&lines, i);
 
         let mut edges = vec![i];
         edges.extend(branches.iter().copied());

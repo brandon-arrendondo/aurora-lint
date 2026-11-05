@@ -79,33 +79,9 @@
 //! to the surrounding code.
 
 use crate::analyze::init_state;
+use crate::analyze::paren_preproc_guard::cond_line;
+use crate::analyze::preproc_conditionals::match_conditionals;
 use crate::utility::cert_c::text_bounds;
-
-/// The directive keyword on `line`, if it is one -- `"ifndef"` for both
-/// `#ifndef X` and `# ifndef X`. The space after `#` is not cosmetic:
-/// pure-ftpd indents nested conditionals exactly that way.
-pub(crate) fn directive_keyword(line: &str) -> Option<&str> {
-    let rest = line.trim_start().strip_prefix('#')?;
-    Some(
-        rest.trim_start()
-            .split(|c: char| !c.is_alphanumeric())
-            .next()
-            .unwrap_or(""),
-    )
-}
-
-pub(crate) fn is_directive_start(line: &str) -> bool {
-    matches!(directive_keyword(line), Some("if" | "ifdef" | "ifndef"))
-}
-
-pub(crate) fn is_endif(line: &str) -> bool {
-    directive_keyword(line) == Some("endif")
-}
-
-pub(crate) fn is_branch_directive(line: &str) -> bool {
-    matches!(directive_keyword(line), Some("else" | "elif"))
-}
-
 pub(crate) fn is_directive(line: &str) -> bool {
     line.trim_start().starts_with('#')
 }
@@ -328,53 +304,57 @@ pub fn blank_control_header_guarded_preproc(source: &str) -> String {
 
     let mut out = source.as_bytes().to_vec();
     let dead = init_state::file_proven_dead_lines(source);
-
-    let mut i = 0usize;
-    while i < lines.len() {
-        if !is_directive_start(lines[i]) {
-            i += 1;
-            continue;
-        }
-
-        let mut depth = 1i32;
-        let mut end_idx = None;
-        let mut has_branch = false;
-        let mut j = i + 1;
-        while j < lines.len() {
-            if is_directive_start(lines[j]) {
-                depth += 1;
-            } else if is_endif(lines[j]) {
-                depth -= 1;
-                if depth == 0 {
-                    end_idx = Some(j);
-                    break;
-                }
-            } else if depth == 1 && is_branch_directive(lines[j]) {
-                has_branch = true;
+    let conditionals = match_conditionals(lines.len(), |k| cond_line(lines[k]));
+    // The last line at or before each line holding code: not blank, not a
+    // directive.
+    let last_code_line: Vec<Option<usize>> = lines
+        .iter()
+        .enumerate()
+        .scan(None, |last, (k, l)| {
+            if !l.trim().is_empty() && !is_directive(l) {
+                *last = Some(k);
             }
-            j += 1;
-        }
+            Some(*last)
+        })
+        .collect();
+    // How many lines before each line are code holding a `/`.
+    let slash_lines: Vec<usize> = std::iter::once(0)
+        .chain(lines.iter().scan(0, |n, l| {
+            *n += usize::from(!is_directive(l) && l.contains('/'));
+            Some(*n)
+        }))
+        .collect();
 
-        let Some(end_idx) = end_idx else {
-            // No matching #endif (truncated snippet, or unbalanced directives
-            // elsewhere in the file) -- move on rather than halt the scan.
-            i += 1;
+    for i in 0..lines.len() {
+        // No #if here, or no matching #endif (truncated snippet, or
+        // unbalanced directives elsewhere in the file) -- move on rather
+        // than halt the scan.
+        let Some(conditional) = conditionals.at(i) else {
             continue;
         };
+        let end_idx = conditional.endif;
+        let has_branch = !conditional.branches.is_empty();
 
         // An `#else`/`#elif` arm means the two arms are alternatives; blanking
         // the wrapper would splice both into one statement stream.
-        // The line after the directive is 1-based `i + 2`.
-        let in_dead = dead.iter().any(|&(s, e)| (s..=e).contains(&(i + 2)));
         if !has_branch {
-            let last = (i + 1..end_idx)
-                .rev()
-                .find(|&k| !lines[k].trim().is_empty() && !is_directive(lines[k]));
+            let last = end_idx
+                .checked_sub(1)
+                .and_then(|k| last_code_line[k])
+                .filter(|&k| k > i);
 
             if let Some(last) = last {
-                if !continues_a_directive(&lines, last) {
+                // With no `/` in the block's code there is no comment to
+                // strip, so the code ends with a header only if its last
+                // line ends with `)`. Checked first, so a deep nest of
+                // blocks does not join each block's whole body.
+                let no_comment = slash_lines[last + 1] == slash_lines[i + 1];
+                let may_end_header = !no_comment || lines[last].trim_end().ends_with(')');
+                if may_end_header && !continues_a_directive(&lines, last) {
                     let content = joined_code(&lines, i + 1, last);
                     if ends_with_control_header(&content) {
+                        // The line after the directive is 1-based `i + 2`.
+                        let in_dead = dead.iter().any(|&(s, e)| (s..=e).contains(&(i + 2)));
                         if in_dead {
                             // The header exists in no build: blank it and
                             // keep the guard, so nothing becomes its body.
@@ -388,9 +368,8 @@ pub fn blank_control_header_guarded_preproc(source: &str) -> String {
             }
         }
 
-        // Advance by one line, not past `end_idx`: a nested `#if` inside this
-        // block must still get its own independent check.
-        i += 1;
+        // A nested `#if` inside this block gets its own independent check
+        // on a later line.
     }
 
     String::from_utf8(out).unwrap_or_else(|_| source.to_string())

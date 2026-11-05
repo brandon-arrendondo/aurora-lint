@@ -1843,6 +1843,18 @@ the last arm that ends incomplete and blanking the other arms' fragments,
 which discards code and is only worth it where the alternative is a spliced
 statement stream.
 
+`preproc_conditionals::match_conditionals(len, kind)` matches a file's
+conditionals once, in one stack pass: `at(open)` gives an `#if` line's own
+`#elif`/`#else` lines and its `#endif` (`None` when nothing closes it), and
+`opener_of(end)` the `#if` an `#endif` closes. `kind` classifies each line as
+`CondLine::Open`, `Branch` or `End`, so a pass keeps its own reading of what
+is a directive (skipping lines that begin inside a comment, say). **A
+repair pass asks it rather than scanning forward from each `#if` to its
+`#endif`**: that scan runs to the end of the file when none closes it, and a
+file of a few thousand unclosed `#if` lines cost seconds per pass.
+`tests/robustness.rs`'s `malformed_conditionals_parse_near_linearly` holds
+the parse linear on unclosed `#if` lines and on a deep nest of closed ones.
+
 Each blanks the offending directive
 lines, length-preserving, so the guarded code rejoins the construct it
 belongs to. All of them operate at parse time, not from within a rule — a rule

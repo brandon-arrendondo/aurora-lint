@@ -59,9 +59,11 @@
 
 use crate::analyze::init_state::literal_dead_lines;
 use crate::analyze::paren_preproc_guard::{
-    blank_line, is_branch_directive, is_directive, is_directive_start, is_endif, CodeLines,
+    blank_line, cond_line, is_branch_directive, is_directive, is_directive_start, is_endif,
+    CodeLines,
 };
 use crate::analyze::preproc_arm_choice::directive_extent;
+use crate::analyze::preproc_conditionals::{match_conditionals, Conditionals};
 
 /// True if 0-based line `k` lies in an arm a literal condition keeps out of
 /// every build (`#if 0`, `#if (0)`, `#if 0 /* off */`).
@@ -91,12 +93,17 @@ fn previous_line(code: &CodeLines, i: usize) -> Option<usize> {
 /// when the guard holding it has an `#elif` or `#else` of its own: the
 /// dangling-else pass keeps that guard, so the `else` is never joined and
 /// the arms blanked here would be lost for nothing.
-fn follows_else(code: &CodeLines, dead: &[(usize, usize)], i: usize) -> bool {
+fn follows_else(
+    code: &CodeLines,
+    conditionals: &Conditionals,
+    dead: &[(usize, usize)],
+    i: usize,
+) -> bool {
     let Some(k) = previous_line(code, i) else {
         return false;
     };
     let k = if is_endif(code.raw[k]) && !code.starts_in_comment[k] {
-        if guard_has_branch(code, k) {
+        if guard_has_branch(conditionals, k) {
             return false;
         }
         match previous_line(code, k) {
@@ -111,25 +118,11 @@ fn follows_else(code: &CodeLines, dead: &[(usize, usize)], i: usize) -> bool {
 
 /// True if the conditional closed by the `#endif` on line `endif` has an
 /// `#elif` or `#else` of its own, or no `#if` opens it.
-fn guard_has_branch(code: &CodeLines, endif: usize) -> bool {
-    let mut depth = 1usize;
-    for j in (0..endif).rev() {
-        let line = code.raw[j];
-        if code.starts_in_comment[j] {
-            continue;
-        }
-        if is_endif(line) {
-            depth += 1;
-        } else if is_directive_start(line) {
-            depth -= 1;
-            if depth == 0 {
-                return false;
-            }
-        } else if depth == 1 && is_branch_directive(line) {
-            return true;
-        }
-    }
-    true
+fn guard_has_branch(conditionals: &Conditionals, endif: usize) -> bool {
+    conditionals
+        .opener_of(endif)
+        .and_then(|open| conditionals.at(open))
+        .is_none_or(|c| !c.branches.is_empty())
 }
 
 /// True if the code lines `arm` are exactly one balanced brace block: the
@@ -189,6 +182,11 @@ fn arms(code: &CodeLines, i: usize) -> Option<(Vec<usize>, usize)> {
 pub fn join_else_to_braced_arms(source: &str) -> String {
     let code = CodeLines::new(source);
     let dead = literal_dead_lines(source);
+    let conditionals = match_conditionals(code.len(), |k| {
+        (!code.starts_in_comment[k])
+            .then(|| cond_line(code.raw[k]))
+            .flatten()
+    });
     let mut out = source.as_bytes().to_vec();
     let mut changed = false;
     let mut i = 0usize;
@@ -214,7 +212,7 @@ pub fn join_else_to_braced_arms(source: &str) -> String {
             && bounds
                 .iter()
                 .all(|arm| is_one_braced_block(&code, arm.clone()))
-            && follows_else(&code, &dead, i);
+            && follows_else(&code, &conditionals, &dead, i);
         if !qualifies {
             i += 1;
             continue;

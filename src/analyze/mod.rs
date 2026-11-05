@@ -69,6 +69,7 @@ pub mod preproc_arm_choice;
 /// arms, so a positional lookup does not answer with a record from a branch
 /// this position cannot coexist with.
 pub mod preproc_arms;
+pub(crate) mod preproc_conditionals;
 pub mod preproc_dangling_else;
 pub mod preproc_split_chain;
 /// The pre-scan phase: a first pass over the project (and sibling headers)

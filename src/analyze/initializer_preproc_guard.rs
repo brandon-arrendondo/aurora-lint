@@ -96,6 +96,7 @@ use crate::analyze::paren_preproc_guard::{
     blank_line, is_branch_directive, is_directive, is_directive_start, is_endif, CodeLines,
 };
 use crate::analyze::preproc_arm_choice::{compiled_arm, directive_extent, locally_defined_names};
+use std::rc::Rc;
 
 /// The comment left where an `#elif`/`#else` was, in an initializer list
 /// whose alternative arms were all kept: [`is_spliced_initializer`] reads it.
@@ -144,10 +145,54 @@ struct Brace {
     paren_depth: i32,
 }
 
+/// The open braces, innermost on top. Persistent: every conditional keeps
+/// the state its arms start from, so a clone shares the stack rather than
+/// copying it, and a file that opens a brace under each of thousands of
+/// unclosed `#if` lines is not quadratic in time and memory.
+#[derive(Clone, Default)]
+struct BraceStack(Option<Rc<BraceNode>>);
+
+struct BraceNode {
+    brace: Brace,
+    below: BraceStack,
+}
+
+impl BraceStack {
+    fn last(&self) -> Option<&Brace> {
+        self.0.as_deref().map(|n| &n.brace)
+    }
+
+    fn push(&mut self, brace: Brace) {
+        let below = std::mem::take(self);
+        self.0 = Some(Rc::new(BraceNode { brace, below }));
+    }
+
+    fn pop(&mut self) -> Option<Brace> {
+        let node = self.0.take()?;
+        let brace = node.brace;
+        *self = node.below.clone();
+        Some(brace)
+    }
+}
+
+impl Drop for BraceStack {
+    /// Unlink the nodes nothing else holds one at a time: dropping a deep
+    /// stack recursively would overflow the thread's stack.
+    fn drop(&mut self) {
+        let mut next = self.0.take();
+        while let Some(node) = next {
+            next = match Rc::try_unwrap(node) {
+                Ok(mut node) => node.below.0.take(),
+                Err(_) => None,
+            };
+        }
+    }
+}
+
 /// What the scan knows at a point in the file.
 #[derive(Clone)]
 struct ScanState {
-    braces: Vec<Brace>,
+    braces: BraceStack,
     paren_depth: i32,
     /// The last non-blank code character, across lines.
     last_code: Option<char>,
@@ -214,7 +259,7 @@ struct Conditional {
 fn initializer_conditionals(lines: &CodeLines) -> Vec<Conditional> {
     let mut found = Vec::new();
     let mut state = ScanState {
-        braces: Vec::new(),
+        braces: BraceStack::default(),
         paren_depth: 0,
         last_code: None,
     };
@@ -259,27 +304,96 @@ fn initializer_conditionals(lines: &CodeLines) -> Vec<Conditional> {
     found
 }
 
-/// Whether the lines of `arm` are whole initializer entries: no `;`, and
-/// braces and parentheses that balance without ever closing more than they
-/// opened.
-fn is_entry_run(lines: &CodeLines, arm: &std::ops::Range<usize>) -> bool {
-    let (mut braces, mut parens) = (0i32, 0i32);
-    for k in arm.clone() {
-        for c in lines.code[k].chars() {
-            match c {
-                ';' => return false,
-                '{' => braces += 1,
-                '}' => braces -= 1,
-                '(' => parens += 1,
-                ')' => parens -= 1,
-                _ => {}
-            }
-            if braces < 0 || parens < 0 {
-                return false;
-            }
+/// Whether a run of lines is whole initializer entries: no `;`, and braces
+/// and parentheses that balance without ever closing more than they opened.
+///
+/// Answered for any run in constant time from tables built once per file:
+/// arms nest, so checking each arm's lines afresh is quadratic in the depth
+/// of the nest.
+struct EntryRuns {
+    /// How many lines before each line hold a `;`.
+    semicolons: Vec<usize>,
+    braces: Nesting,
+    parens: Nesting,
+}
+
+impl EntryRuns {
+    fn new(lines: &CodeLines) -> Self {
+        let semicolons = std::iter::once(0)
+            .chain(lines.code.iter().scan(0, |n, code| {
+                *n += usize::from(code.contains(';'));
+                Some(*n)
+            }))
+            .collect();
+        Self {
+            semicolons,
+            braces: Nesting::new(&lines.code, '{', '}'),
+            parens: Nesting::new(&lines.code, '(', ')'),
         }
     }
-    braces == 0 && parens == 0
+
+    fn is_entry_run(&self, arm: &std::ops::Range<usize>) -> bool {
+        self.semicolons[arm.end] == self.semicolons[arm.start]
+            && self.braces.balanced(arm)
+            && self.parens.balanced(arm)
+    }
+}
+
+/// One kind of bracket's depth across a file, counted from its start.
+struct Nesting {
+    /// The depth before each line, and after the last.
+    before: Vec<i64>,
+    /// `lowest[j][k]`: the lowest depth reached after any character of lines
+    /// `k..k + 2^j`, or the depth before line `k` where they have none.
+    lowest: Vec<Vec<i64>>,
+}
+
+impl Nesting {
+    fn new(code: &[String], open: char, close: char) -> Self {
+        let mut before = Vec::with_capacity(code.len() + 1);
+        let mut low = Vec::with_capacity(code.len());
+        let mut depth = 0i64;
+        for line in code {
+            before.push(depth);
+            let mut line_low = depth;
+            for c in line.chars() {
+                if c == open {
+                    depth += 1;
+                } else if c == close {
+                    depth -= 1;
+                    line_low = line_low.min(depth);
+                }
+            }
+            low.push(line_low);
+        }
+        before.push(depth);
+        let mut lowest = vec![low];
+        let mut span = 1;
+        while span * 2 <= code.len() {
+            let prev = lowest.last().expect("a level");
+            let next = (0..=code.len() - span * 2)
+                .map(|k| prev[k].min(prev[k + span]))
+                .collect();
+            lowest.push(next);
+            span *= 2;
+        }
+        Self { before, lowest }
+    }
+
+    /// Whether lines `run` end at the depth they start at without going
+    /// below it.
+    fn balanced(&self, run: &std::ops::Range<usize>) -> bool {
+        let start = self.before[run.start];
+        if self.before[run.end] != start {
+            return false;
+        }
+        if run.is_empty() {
+            return true;
+        }
+        let level = (run.len().ilog2()) as usize;
+        let table = &self.lowest[level];
+        table[run.start].min(table[run.end - (1 << level)]) >= start
+    }
 }
 
 /// Whether every arm's entries are separated from the next non-empty arm's by
@@ -360,6 +474,7 @@ pub fn blank_initializer_guarded_preproc(source: &str) -> String {
     let lines = CodeLines::new(source);
     let mut out = source.as_bytes().to_vec();
     let mut local = None;
+    let runs = EntryRuns::new(&lines);
 
     for c in initializer_conditionals(&lines) {
         let edges: Vec<usize> = std::iter::once(c.start)
@@ -371,7 +486,7 @@ pub fn blank_initializer_guarded_preproc(source: &str) -> String {
             .windows(2)
             .map(|e| directive_extent(&lines.raw, e[0]).end..e[1])
             .collect();
-        if !arms.iter().all(|a| is_entry_run(&lines, a)) {
+        if !arms.iter().all(|a| runs.is_entry_run(a)) {
             continue;
         }
         // `None` keeps every arm.
@@ -438,6 +553,53 @@ mod tests {
         parser.set_language(&c_language()).unwrap();
         let tree = parser.parse(src, None).unwrap();
         !tree.root_node().has_error()
+    }
+
+    /// The per-arm scan the tables replace.
+    fn entry_run_by_scan(code: &[&str], arm: std::ops::Range<usize>) -> bool {
+        let (mut braces, mut parens) = (0i32, 0i32);
+        for k in arm {
+            for c in code[k].chars() {
+                match c {
+                    ';' => return false,
+                    '{' => braces += 1,
+                    '}' => braces -= 1,
+                    '(' => parens += 1,
+                    ')' => parens -= 1,
+                    _ => {}
+                }
+                if braces < 0 || parens < 0 {
+                    return false;
+                }
+            }
+        }
+        braces == 0 && parens == 0
+    }
+
+    #[test]
+    fn entry_runs_answer_as_a_scan_of_the_run_would() {
+        // Every file of up to six lines drawn from these, every run of it.
+        let alphabet = ["", "{", "}", "(", ")", "1,", "};", "} {", "({ x })", ")("];
+        let n = alphabet.len();
+        for len in 0..=6u32 {
+            // A sample of each length's files: every one is too many.
+            for code in (0..n.pow(len)).step_by(1 + n.pow(len) / 4000) {
+                let code_lines: Vec<&str> =
+                    (0..len).map(|p| alphabet[code / n.pow(p) % n]).collect();
+                let src: String = code_lines.iter().map(|l| format!("{l}\n")).collect();
+                let lines = CodeLines::new(&src);
+                let runs = EntryRuns::new(&lines);
+                for a in 0..=code_lines.len() {
+                    for b in a..=code_lines.len() {
+                        assert_eq!(
+                            runs.is_entry_run(&(a..b)),
+                            entry_run_by_scan(&code_lines, a..b),
+                            "{code_lines:?} {a}..{b}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
