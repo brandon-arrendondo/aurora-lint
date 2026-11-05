@@ -35,6 +35,7 @@ pub mod dataflow;
 pub mod dead_regions;
 pub mod deallocator_candidates;
 pub mod define_comment_blank;
+pub mod directive_text_repair;
 pub mod else_braced_arms;
 pub mod embedded_js_blank;
 pub mod empty_macro_blank;

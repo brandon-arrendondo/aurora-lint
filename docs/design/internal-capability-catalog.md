@@ -236,7 +236,24 @@ file scope, where it can tip the whole file into one `ERROR`.
 | `blank_define_body_comments` | `(source: &str) -> Cow<str>` | Every comment of such a `#define` (block or `//`, with the lines a `\` splices into a `//` comment) becomes spaces; every continuation `\` and line break stays, so length, lines and the directive's extent are unchanged, and the macro defines what it did (a comment is a space to the preprocessor). A directive with no block comment after the first token of its replacement list and before a continuation is left as written, as is one whose block comment closes the list (a `\` inside it continues only the comment) and one where a comment hides a line break no `\` splices. Borrowed when nothing changes. |
 
 **Wiring pattern:** Called once on raw source text *before* parsing, right
-after `blank_embedded_js` (see `src/parser/mod.rs`), not from within a rule.
+after `repair_directive_text` (see `src/parser/mod.rs`), not from within a rule.
+
+### `src/analyze/directive_text_repair.rs`
+**Problem solved:** pre-parse pass for two spellings in a preprocessing
+directive that tree-sitter-c reads differently from the preprocessor, either
+of which ends the directive early and leaves the rest of a continued body
+parsed as code: a `\` with blanks between it and the line break (a
+continuation to GCC, Clang and `pp_tokens`, not to the grammar), and a `/*`
+inside a string or character literal of a directive whose operands are a
+`preproc_arg` (the grammar's token stops at it even there).
+
+| Function | Signature | Description |
+|---|---|---|
+| `repair_directive_text` | `(source: &str) -> Cow<str>` | In every directive, a continuation `\` followed by blanks moves to the last byte before its line break (`\n`, or `\r\n`) and the blanks go before it. In every directive but a conditional and `#include`/`#include_next`/`#import`, each `/*` inside a literal keeps its `/` and has its `*` replaced with a space: one character of the literal changes in the repaired source, which rules and their messages read, and its length does not; suppressions read the original text. Bytes are only moved or replaced, so length, lines and every directive's extent are unchanged. Borrowed when nothing changes. |
+
+**Wiring pattern:** Called once on raw source text *before* parsing, right
+after `blank_embedded_js` and before `blank_define_body_comments` (see
+`src/parser/mod.rs`), not from within a rule.
 
 ### `src/analyze/storage_class_macro.rs`
 **Problem solved:** pre-parse pass for an object-like macro that expands to
@@ -1743,7 +1760,11 @@ statement `;`), `define_comment_blank.rs` (a block comment inside a
 `#define` that a `\` continuation follows, which ends the grammar's
 `preproc_arg` and leaves the rest of the body parsed as code at file scope:
 every comment of such a directive is blanked, continuations kept, unless a
-comment hides a line break no `\` splices), `paren_preproc_guard.rs` (a guard opening inside
+comment hides a line break no `\` splices), `directive_text_repair.rs` (a
+`\` that blanks separate from its line break, and a `/*` inside a literal of
+a directive the grammar reads as a `preproc_arg`, each of which ends the
+directive early: the `\` moves to the end of its line and the `*` becomes a
+space), `paren_preproc_guard.rs` (a guard opening inside
 an unclosed parenthesized expression, or continuing an expression statement
 across it: the code line before it ends no statement or label, and it ends
 with a binary operator or every arm begins with one, `,` excepted and an arm
