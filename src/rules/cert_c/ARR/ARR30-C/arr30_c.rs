@@ -1415,24 +1415,37 @@ impl Arr30C {
             return None;
         }
         // Declarations in alternative preprocessor arms are not in sequence:
-        // any arm may be the one built, so they resolve only when they agree.
+        // any arm may be the one built. Unless a later plain assignment
+        // overwrites them, arms that disagree take the value furthest out
+        // of range (the most negative, else the largest), so an
+        // out-of-bounds arm is reported and arms all in bounds stay silent.
+        let declares = |c: &regex::Captures| {
+            c.get(0)
+                .is_some_and(|m| Self::declares_at(&func_node, func_node.start_byte() + m.start()))
+        };
         let declarations = any_assign_re
             .find_iter(func_text)
             .filter(|m| binds(m.start()))
             .filter(|m| Self::declares_at(&func_node, func_node.start_byte() + m.start()))
             .count();
-        if declarations > 1
-            && constant_assigns
+        let last = constant_assigns.last()?;
+        let value = |c: &regex::Captures| c.get(1).and_then(|v| v.as_str().parse::<isize>().ok());
+        let caps = if declarations > 1 && declares(last) {
+            let arms: Vec<(&regex::Captures, isize)> = constant_assigns
                 .iter()
-                .filter_map(|c| c.get(1))
-                .map(|v| v.as_str())
-                .collect::<std::collections::HashSet<_>>()
-                .len()
-                > 1
-        {
-            return None;
-        }
-        let caps = constant_assigns.last()?;
+                .filter(|c| declares(c))
+                .filter_map(|c| Some((c, value(c)?)))
+                .collect();
+            let min = arms.iter().min_by_key(|(_, v)| *v).copied()?;
+            let max = arms.iter().max_by_key(|(_, v)| *v).copied()?;
+            if min.1 < 0 {
+                min.0
+            } else {
+                max.0
+            }
+        } else {
+            last
+        };
         let whole = caps.get(0)?;
         let origin = (
             func_node.start_byte() + whole.start(),
