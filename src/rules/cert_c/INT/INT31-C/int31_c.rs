@@ -203,9 +203,9 @@ impl Int31C {
             });
         range.is_some_and(|range| match char_signed {
             // A plain `char` the project has not declared either way keeps
-            // a value that fits it either way, as INT32-C reads `CHAR_MAX`.
+            // only a value that fits it whichever way the build has it.
             Some(None) => {
-                range.fits_in_signed(target_width) || range.fits_in_unsigned(target_width)
+                range.fits_in_signed(target_width) && range.fits_in_unsigned(target_width)
             }
             Some(Some(signed)) if signed => range.fits_in_signed(target_width),
             Some(Some(_)) => range.fits_in_unsigned(target_width),
@@ -1990,7 +1990,7 @@ impl Int31C {
             return match char_signed {
                 Some(true) => !signed_range.contains(&value),
                 Some(false) => !unsigned_range.contains(&value),
-                None => !(signed_range.contains(&value) || unsigned_range.contains(&value)),
+                None => !(signed_range.contains(&value) && unsigned_range.contains(&value)),
             };
         }
         if self.is_signed_type(target) {
@@ -2252,8 +2252,8 @@ impl Int31C {
             return false;
         };
         let source_signed = self.is_signed_type(source_type);
-        // A plain `char` the project has not declared either way keeps a
-        // value that fits it either way.
+        // A plain `char` the project has not declared either way keeps only
+        // a value that fits it whichever way the build has it.
         let readings: &[bool] = match self.plain_char_signedness(target_type) {
             Some(Some(true)) => &[true],
             Some(Some(false)) => &[false],
@@ -2261,7 +2261,7 @@ impl Int31C {
             None if self.is_signed_type(target_type) => &[true],
             None => &[false],
         };
-        readings.iter().any(|&target_signed| {
+        readings.iter().all(|&target_signed| {
             self.guards_prove_fit_as(
                 site,
                 &operand,
