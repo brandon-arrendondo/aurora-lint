@@ -129,7 +129,8 @@ pub(crate) fn locally_defined_names(lines: &[&str]) -> HashSet<String> {
 }
 
 /// The index of the arm a build compiles, given the lines that open each
-/// arm (`#if`/`#ifdef`/`#ifndef`, then each `#elif`/`#else`) in order.
+/// arm (`#if`/`#ifdef`/`#ifndef`, then each `#elif`, C23 `#elifdef` and
+/// `#elifndef`, and `#else`) in order.
 /// `None` when a condition cannot be decided, or when no arm compiles (an
 /// `#if`/`#elif` chain with no `#else`, every condition false).
 pub(crate) fn compiled_arm(
@@ -158,8 +159,8 @@ pub(crate) fn compiled_arm(
         let condition = rest[keyword.len()..].trim();
         let value = match keyword.as_str() {
             "else" => true,
-            "ifdef" => defined(first_word(condition)?)?,
-            "ifndef" => !defined(first_word(condition)?)?,
+            "ifdef" | "elifdef" => defined(first_word(condition)?)?,
+            "ifndef" | "elifndef" => !defined(first_word(condition)?)?,
             "if" | "elif" => evaluate(condition, &defined)? != 0,
             _ => return None,
         };
@@ -433,6 +434,16 @@ mod tests {
             arm("#ifdef A\na\n#elif !defined(B)\nb\n#else\nc\n#endif"),
             Some(1)
         );
+    }
+
+    #[test]
+    fn c23_elifdef_and_elifndef_are_read() {
+        assert_eq!(arm("#ifdef A\na\n#elifdef B\nb\n#else\nc\n#endif"), Some(2));
+        assert_eq!(
+            arm("#ifdef A\na\n#elifndef B\nb\n#else\nc\n#endif"),
+            Some(1)
+        );
+        assert_eq!(arm("# ifdef A\na\n# elifndef B\nb\n# endif"), Some(1));
     }
 
     #[test]

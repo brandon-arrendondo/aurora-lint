@@ -1854,6 +1854,13 @@ repair pass asks it rather than scanning forward from each `#if` to its
 file of a few thousand unclosed `#if` lines cost seconds per pass.
 `tests/robustness.rs`'s `malformed_conditionals_parse_near_linearly` holds
 the parse linear on unclosed `#if` lines and on a deep nest of closed ones.
+The same module holds the one reading of a conditional directive every
+repair pass uses: `directive_keyword(line)` (the name after `#`, white space
+allowed between them, so `# endif` and `#  ifdef X` are directives),
+`is_directive_start`, `is_branch_directive` (C23's `#elifdef` and
+`#elifndef` included), `is_endif`, and `cond_line`, which classifies a line
+for `match_conditionals`. A longer name is no match (`#ifdefX`, `#endiff`):
+never test a directive with a `"#if"` or `"#endif"` prefix.
 
 Each blanks the offending directive
 lines, length-preserving, so the guarded code rejoins the construct it

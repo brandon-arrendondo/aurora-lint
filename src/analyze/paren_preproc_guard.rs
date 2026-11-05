@@ -143,7 +143,7 @@
 //! root's `ERROR` children misses this shape: the root is the `ERROR`.)
 
 use crate::analyze::preproc_arm_choice::{compiled_arm, directive_extent, locally_defined_names};
-use crate::analyze::preproc_conditionals::{match_conditionals, CondLine, Conditional};
+use crate::analyze::preproc_conditionals::{cond_line, match_conditionals, Conditional};
 use crate::utility::cert_c::text_bounds;
 
 /// How far back the paren scan will look for the start of the statement
@@ -151,45 +151,6 @@ use crate::utility::cert_c::text_bounds;
 /// quadratic, and because a parenthesized expression spanning more lines
 /// than this is not a shape worth guessing about.
 const MAX_STATEMENT_LOOKBACK: usize = 64;
-
-/// The directive keyword on `line`, if it is one -- `"ifndef"` for both
-/// `#ifndef X` and `# ifndef X`. The space after `#` is not cosmetic here:
-/// pure-ftpd indents nested conditionals exactly that way (`# ifndef ...`
-/// inside an `#if`), which is the very file this pass exists for.
-pub(crate) fn directive_keyword(line: &str) -> Option<&str> {
-    let rest = line.trim_start().strip_prefix('#')?;
-    Some(
-        rest.trim_start()
-            .split(|c: char| !c.is_alphanumeric())
-            .next()
-            .unwrap_or(""),
-    )
-}
-
-pub(crate) fn is_directive_start(line: &str) -> bool {
-    matches!(directive_keyword(line), Some("if" | "ifdef" | "ifndef"))
-}
-
-pub(crate) fn is_endif(line: &str) -> bool {
-    directive_keyword(line) == Some("endif")
-}
-
-pub(crate) fn is_branch_directive(line: &str) -> bool {
-    matches!(directive_keyword(line), Some("else" | "elif"))
-}
-
-/// What `line` is to the conditional structure, by [`directive_keyword`].
-pub(crate) fn cond_line(line: &str) -> Option<CondLine> {
-    if is_directive_start(line) {
-        Some(CondLine::Open)
-    } else if is_endif(line) {
-        Some(CondLine::End)
-    } else if is_branch_directive(line) {
-        Some(CondLine::Branch)
-    } else {
-        None
-    }
-}
 
 pub(crate) fn is_directive(line: &str) -> bool {
     line.trim_start().starts_with('#')

@@ -89,20 +89,9 @@
 //! `preproc_dangling_else` makes for the analogous case). A directive's
 //! backslash continuations and a comment it opens are blanked with it.
 
+use crate::analyze::preproc_conditionals::{cond_line, directive_keyword, match_conditionals};
 use crate::analyze::preproc_dangling_else::blank_directive;
 use crate::utility::cert_c::text_bounds;
-
-fn is_directive_start(trimmed: &str) -> bool {
-    trimmed.starts_with("#if") // covers #if, #ifdef, #ifndef (all start "#if")
-}
-
-fn is_endif(trimmed: &str) -> bool {
-    trimmed.starts_with("#endif")
-}
-
-fn is_branch_directive(trimmed: &str) -> bool {
-    trimmed.starts_with("#else") || trimmed.starts_with("#elif")
-}
 
 /// True if `line`, trimmed, is exactly `identifier:` -- a goto-style label
 /// alone on its own line -- and that identifier isn't the `default` keyword
@@ -135,22 +124,23 @@ fn blank_line(out: &mut [u8], line_start: usize, line_len: usize) {
     }
 }
 
-/// Extract the directive keyword (`"#ifdef"`/`"#ifndef"`) and the guarded
-/// macro name from a directive line's left-trimmed text, e.g.
-/// `"#ifdef CONFIG_ELOOP_SELECT"` -> `("#ifdef", "CONFIG_ELOOP_SELECT")`.
+/// Extract the directive keyword (`"#ifdef"`/`"#ifndef"`, however spaced
+/// after the `#`) and the guarded macro name from a directive line, e.g.
+/// `"#ifdef CONFIG_ELOOP_SELECT"` and `"# ifdef CONFIG_ELOOP_SELECT"` ->
+/// `("#ifdef", "CONFIG_ELOOP_SELECT")`.
 /// Returns `None` for a bare `#if EXPR` (an arbitrary expression, not a
 /// single macro name -- `enclosing_ifdef_guard_key` in EXP33-C only
 /// correlates `preproc_ifdef` nodes, i.e. `#ifdef`/`#ifndef`, so there is
 /// nothing to encode for `#if` here either; see an earlier fix).
-fn directive_keyword_and_name(trimmed: &str) -> Option<(&'static str, &str)> {
-    let (keyword, after) = if let Some(rest) = trimmed.strip_prefix("#ifdef") {
-        ("#ifdef", rest)
-    } else if let Some(rest) = trimmed.strip_prefix("#ifndef") {
-        ("#ifndef", rest)
-    } else {
-        return None;
+fn directive_keyword_and_name(line: &str) -> Option<(&'static str, &str)> {
+    let word = directive_keyword(line)?;
+    let keyword = match word {
+        "ifdef" => "#ifdef",
+        "ifndef" => "#ifndef",
+        _ => return None,
     };
-    let name = after.split_whitespace().next()?;
+    let after = line.trim_start().strip_prefix('#')?.trim_start();
+    let name = after[word.len()..].split_whitespace().next()?;
     Some((keyword, name))
 }
 
@@ -202,41 +192,6 @@ fn write_marker_or_blank(out: &mut [u8], line_start: usize, line_len: usize, mar
     blank_line(out, line_start, line_len);
 }
 
-/// One `#if`/`#ifdef`/`#ifndef` group: its opening and `#endif` line
-/// indexes, and whether it has an `#else`/`#elif` of its own.
-struct Group {
-    open: usize,
-    end: usize,
-    has_branch: bool,
-}
-
-/// Every matched group in `lines`, in order of their opening lines. An
-/// unmatched `#if` or `#endif` belongs to no group.
-fn directive_groups(lines: &[&str]) -> Vec<Group> {
-    let mut groups = Vec::new();
-    let mut open: Vec<(usize, bool)> = Vec::new();
-    for (j, line) in lines.iter().enumerate() {
-        let t = line.trim_start();
-        if is_directive_start(t) {
-            open.push((j, false));
-        } else if is_branch_directive(t) {
-            if let Some(top) = open.last_mut() {
-                top.1 = true;
-            }
-        } else if is_endif(t) {
-            if let Some((start, has_branch)) = open.pop() {
-                groups.push(Group {
-                    open: start,
-                    end: j,
-                    has_branch,
-                });
-            }
-        }
-    }
-    groups.sort_by_key(|g| g.open);
-    groups
-}
-
 /// Blank the `#if`/`#ifdef`/`#ifndef` + matching `#endif` directive lines
 /// of a group that opens immediately after a bare goto-label line, or whose
 /// last line before the `#endif` is one, per the module docs above.
@@ -246,12 +201,13 @@ pub fn blank_label_guarded_preproc(source: &str) -> String {
 
     let mut out = source.as_bytes().to_vec();
 
-    for Group {
-        open: i,
-        end: end_idx,
-        has_branch,
-    } in directive_groups(&lines)
-    {
+    let conditionals = match_conditionals(lines.len(), |k| cond_line(lines[k]));
+
+    for i in 0..lines.len() {
+        let Some(conditional) = conditionals.at(i) else {
+            continue;
+        };
+        let (end_idx, has_branch) = (conditional.endif, !conditional.branches.is_empty());
         let trimmed = lines[i].trim_start();
         let prev_content = (0..i).rev().find(|&k| !lines[k].trim().is_empty());
         let follows_label = prev_content.is_some_and(|k| is_bare_label_line(lines[k]));
@@ -503,6 +459,25 @@ out:
         let src_ifndef = src_ifdef.replace("#ifdef X", "#ifndef X");
         assert!(blank_label_guarded_preproc(src_ifdef).contains("/*Gd:X*/"));
         assert!(blank_label_guarded_preproc(&src_ifndef).contains("/*Gn:X*/"));
+    }
+
+    #[test]
+    fn a_guard_spelled_with_spaces_after_the_hash_is_repaired() {
+        // C allows white space between `#` and the directive's name.
+        let src = "\
+void f(void) {
+    goto out;
+out:
+#  ifdef X
+    os_free(rfds);
+# endif
+    return;
+}
+";
+        let fixed = blank_label_guarded_preproc(src);
+        assert!(fixed.contains("/*Gd:X*/"), "{fixed}");
+        assert!(!fixed.contains("endif"), "{fixed}");
+        assert!(parses_clean(&fixed));
     }
 
     #[test]

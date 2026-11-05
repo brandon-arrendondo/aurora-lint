@@ -107,7 +107,9 @@
 //! reason about safely).
 
 use crate::analyze::paren_preproc_guard::CodeLines;
-use crate::analyze::preproc_conditionals::{match_conditionals, CondLine};
+use crate::analyze::preproc_conditionals::{
+    cond_line, is_branch_directive, is_directive_start, is_endif, match_conditionals,
+};
 use crate::utility::cert_c::text_bounds;
 
 fn strip_trailing_line_comment(s: &str) -> &str {
@@ -245,18 +247,6 @@ fn block_is_lone_closing_brace(lines: &[&str], start_idx: usize, end_idx: usize)
         return false;
     }
     strip_trailing_line_comment(lines[only_line].trim()) == "}"
-}
-
-fn is_directive_start(trimmed: &str) -> bool {
-    trimmed.starts_with("#if") // covers #if, #ifdef, #ifndef (all start "#if")
-}
-
-fn is_endif(trimmed: &str) -> bool {
-    trimmed.starts_with("#endif")
-}
-
-fn is_branch_directive(trimmed: &str) -> bool {
-    trimmed.starts_with("#else") || trimmed.starts_with("#elif")
 }
 
 /// Replace every non-newline byte of `line` (located at `line_start` in
@@ -574,18 +564,7 @@ pub fn blank_dangling_else_preproc(source: &str) -> String {
     let (lines, line_starts) = text_bounds::lines_with_starts(source);
 
     let mut out = blank_brace_else_chains(source);
-    let conditionals = match_conditionals(lines.len(), |k| {
-        let t = lines[k].trim_start();
-        if is_directive_start(t) {
-            Some(CondLine::Open)
-        } else if is_endif(t) {
-            Some(CondLine::End)
-        } else if is_branch_directive(t) {
-            Some(CondLine::Branch)
-        } else {
-            None
-        }
-    });
+    let conditionals = match_conditionals(lines.len(), |k| cond_line(lines[k]));
 
     for i in 0..lines.len() {
         // No #if here, or no matching #endif (truncated snippet, or this

@@ -104,9 +104,8 @@
 use crate::analyze::control_header_preproc_guard::{
     blank_line, ends_with_control_header, is_directive, strip_comments,
 };
-use crate::analyze::paren_preproc_guard::cond_line;
 use crate::analyze::preproc_arm_choice::{compiled_arm, directive_extent, locally_defined_names};
-use crate::analyze::preproc_conditionals::{match_conditionals, Conditional};
+use crate::analyze::preproc_conditionals::{cond_line, match_conditionals, Conditional};
 use crate::analyze::preproc_dangling_else::is_bare_else_line;
 use crate::utility::cert_c::text_bounds;
 

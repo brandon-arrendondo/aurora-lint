@@ -58,12 +58,11 @@
 //! directive (C11 5.1.1.2, phase 3), and a compiler drops it there too.
 
 use crate::analyze::init_state::literal_dead_lines;
-use crate::analyze::paren_preproc_guard::{
-    blank_line, cond_line, is_branch_directive, is_directive, is_directive_start, is_endif,
-    CodeLines,
-};
+use crate::analyze::paren_preproc_guard::{blank_line, is_directive, CodeLines};
 use crate::analyze::preproc_arm_choice::directive_extent;
-use crate::analyze::preproc_conditionals::{match_conditionals, Conditionals};
+use crate::analyze::preproc_conditionals::{
+    cond_line, is_branch_directive, is_directive_start, is_endif, match_conditionals, Conditionals,
+};
 
 /// True if 0-based line `k` lies in an arm a literal condition keeps out of
 /// every build (`#if 0`, `#if (0)`, `#if 0 /* off */`).

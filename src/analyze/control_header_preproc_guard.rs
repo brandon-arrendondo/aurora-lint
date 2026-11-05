@@ -79,8 +79,7 @@
 //! to the surrounding code.
 
 use crate::analyze::init_state;
-use crate::analyze::paren_preproc_guard::cond_line;
-use crate::analyze::preproc_conditionals::match_conditionals;
+use crate::analyze::preproc_conditionals::{cond_line, match_conditionals};
 use crate::utility::cert_c::text_bounds;
 pub(crate) fn is_directive(line: &str) -> bool {
     line.trim_start().starts_with('#')

@@ -7,6 +7,55 @@
 //! generated file) then cost time quadratic in its length, once per pass.
 //! [`match_conditionals`] matches every conditional in one stack pass, with
 //! the same answer the forward scan gave for each `#if`.
+//!
+//! It also holds the passes' one reading of a conditional directive,
+//! [`directive_keyword`] and the predicates on it. Two passes used to match
+//! a `#if` or `#endif` prefix, and so missed `# else` and `#  endif`, which
+//! are the same directives.
+
+/// The keyword of the directive `line` is, if it is one: `"ifndef"` for
+/// `#ifndef X`, `# ifndef X` and `#  ifndef X` alike. White space may stand
+/// between the `#` and the directive's name (C11 6.10p2), and nested
+/// conditionals are often indented that way (pure-ftpd's `# ifndef`), so a
+/// line is never matched on a `#if` or `#endif` prefix.
+pub(crate) fn directive_keyword(line: &str) -> Option<&str> {
+    let rest = line.trim_start().strip_prefix('#')?.trim_start();
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+/// `#if`, `#ifdef` or `#ifndef`.
+pub(crate) fn is_directive_start(line: &str) -> bool {
+    matches!(directive_keyword(line), Some("if" | "ifdef" | "ifndef"))
+}
+
+/// `#endif`.
+pub(crate) fn is_endif(line: &str) -> bool {
+    directive_keyword(line) == Some("endif")
+}
+
+/// `#elif`, C23's `#elifdef` and `#elifndef`, or `#else`.
+pub(crate) fn is_branch_directive(line: &str) -> bool {
+    matches!(
+        directive_keyword(line),
+        Some("else" | "elif" | "elifdef" | "elifndef")
+    )
+}
+
+/// What `line` is to the conditional structure, by [`directive_keyword`].
+pub(crate) fn cond_line(line: &str) -> Option<CondLine> {
+    if is_directive_start(line) {
+        Some(CondLine::Open)
+    } else if is_endif(line) {
+        Some(CondLine::End)
+    } else if is_branch_directive(line) {
+        Some(CondLine::Branch)
+    } else {
+        None
+    }
+}
 
 /// What a line is to the conditional structure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,6 +206,31 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_keyword_is_read_however_the_directive_is_spaced() {
+        for line in ["#endif", "# endif", "  #\tendif /* x */", "#endif//x"] {
+            assert_eq!(directive_keyword(line), Some("endif"), "{line:?}");
+            assert_eq!(cond_line(line), Some(CondLine::End), "{line:?}");
+        }
+        for line in ["# else", "#elif X", "#  elifdef X", "#elifndef X"] {
+            assert_eq!(cond_line(line), Some(CondLine::Branch), "{line:?}");
+        }
+        for line in ["# if X", "#ifdef X", "#  ifndef X"] {
+            assert_eq!(cond_line(line), Some(CondLine::Open), "{line:?}");
+        }
+        // A longer name is another directive (or none), not a prefix match.
+        for line in [
+            "#ifdefX",
+            "#if_x",
+            "#endiff",
+            "#elsewhere",
+            "#include <a.h>",
+            "x # if",
+        ] {
+            assert_eq!(cond_line(line), None, "{line:?}");
         }
     }
 

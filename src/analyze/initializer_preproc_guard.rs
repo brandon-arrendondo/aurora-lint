@@ -92,10 +92,9 @@
 //! for these entries. Nothing read it: before the repair they sat in an
 //! `ERROR` node or outside the declaration altogether.
 
-use crate::analyze::paren_preproc_guard::{
-    blank_line, is_branch_directive, is_directive, is_directive_start, is_endif, CodeLines,
-};
+use crate::analyze::paren_preproc_guard::{blank_line, is_directive, CodeLines};
 use crate::analyze::preproc_arm_choice::{compiled_arm, directive_extent, locally_defined_names};
+use crate::analyze::preproc_conditionals::{is_branch_directive, is_directive_start, is_endif};
 use std::rc::Rc;
 
 /// The comment left where an `#elif`/`#else` was, in an initializer list
