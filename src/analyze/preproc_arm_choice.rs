@@ -37,6 +37,7 @@
 //! [`dead_regions::platform_assumptions`]: crate::analyze::dead_regions::platform_assumptions
 
 use crate::analyze::dead_regions;
+use crate::analyze::preproc_conditionals::directive_parts;
 use std::collections::HashSet;
 
 /// The lines `line` and every `\`-continuation after it: one directive's
@@ -151,13 +152,9 @@ pub(crate) fn compiled_arm(
     };
     for (arm, &line) in openers.iter().enumerate() {
         let text = strip_comments(&directive_text(lines, line));
-        let rest = text.trim_start().strip_prefix('#')?.trim_start();
-        let keyword: String = rest
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect();
-        let condition = rest[keyword.len()..].trim();
-        let value = match keyword.as_str() {
+        let (keyword, condition) = directive_parts(&text)?;
+        let condition = condition.trim();
+        let value = match keyword {
             "else" => true,
             "ifdef" | "elifdef" => defined(first_word(condition)?)?,
             "ifndef" | "elifndef" => !defined(first_word(condition)?)?,

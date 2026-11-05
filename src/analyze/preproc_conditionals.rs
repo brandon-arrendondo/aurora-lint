@@ -19,11 +19,19 @@
 /// conditionals are often indented that way (pure-ftpd's `# ifndef`), so a
 /// line is never matched on a `#if` or `#endif` prefix.
 pub(crate) fn directive_keyword(line: &str) -> Option<&str> {
+    directive_parts(line).map(|(keyword, _)| keyword)
+}
+
+/// The keyword of the directive `line` is, as [`directive_keyword`] reads
+/// it, and the text after it. The keyword runs as far as an identifier
+/// would: an identifier may hold characters outside ASCII (C11 6.4.2.1), so
+/// `#ifé X` names the directive `ifé`, which is no `#if`.
+pub(crate) fn directive_parts(line: &str) -> Option<(&str, &str)> {
     let rest = line.trim_start().strip_prefix('#')?.trim_start();
     let end = rest
-        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
         .unwrap_or(rest.len());
-    Some(&rest[..end])
+    Some(rest.split_at(end))
 }
 
 /// `#if`, `#ifdef` or `#ifndef`.
@@ -227,6 +235,8 @@ mod tests {
             "#if_x",
             "#endiff",
             "#elsewhere",
+            "#if\u{e9} X",
+            "#endif\u{3b1}",
             "#include <a.h>",
             "x # if",
         ] {

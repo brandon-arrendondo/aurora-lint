@@ -1857,10 +1857,13 @@ the parse linear on unclosed `#if` lines and on a deep nest of closed ones.
 The same module holds the one reading of a conditional directive every
 repair pass uses: `directive_keyword(line)` (the name after `#`, white space
 allowed between them, so `# endif` and `#  ifdef X` are directives),
-`is_directive_start`, `is_branch_directive` (C23's `#elifdef` and
-`#elifndef` included), `is_endif`, and `cond_line`, which classifies a line
-for `match_conditionals`. A longer name is no match (`#ifdefX`, `#endiff`):
-never test a directive with a `"#if"` or `"#endif"` prefix.
+`directive_parts(line)` (that name and the text after it, which
+`compiled_arm` reads its condition from), `is_directive_start`,
+`is_branch_directive` (C23's `#elifdef` and `#elifndef` included), `is_endif`,
+and `cond_line`, which classifies a line for `match_conditionals`. The name
+runs as far as an identifier would, non-ASCII characters included, so a
+longer name is no match (`#ifdefX`, `#endiff`, `#ifé`): never test a directive
+with a `"#if"` or `"#endif"` prefix.
 
 A pass that asks a question of each block's whole body (does it end with a
 control header, do its braces pair up) answers it from the file read once,

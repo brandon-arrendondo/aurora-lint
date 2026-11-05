@@ -89,7 +89,7 @@
 //! `preproc_dangling_else` makes for the analogous case). A directive's
 //! backslash continuations and a comment it opens are blanked with it.
 
-use crate::analyze::preproc_conditionals::{cond_line, directive_keyword, match_conditionals};
+use crate::analyze::preproc_conditionals::{cond_line, directive_parts, match_conditionals};
 use crate::analyze::preproc_dangling_else::blank_directive;
 use crate::utility::cert_c::text_bounds;
 
@@ -133,14 +133,13 @@ fn blank_line(out: &mut [u8], line_start: usize, line_len: usize) {
 /// correlates `preproc_ifdef` nodes, i.e. `#ifdef`/`#ifndef`, so there is
 /// nothing to encode for `#if` here either; see an earlier fix).
 fn directive_keyword_and_name(line: &str) -> Option<(&'static str, &str)> {
-    let word = directive_keyword(line)?;
+    let (word, after) = directive_parts(line)?;
     let keyword = match word {
         "ifdef" => "#ifdef",
         "ifndef" => "#ifndef",
         _ => return None,
     };
-    let after = line.trim_start().strip_prefix('#')?.trim_start();
-    let name = after[word.len()..].split_whitespace().next()?;
+    let name = after.split_whitespace().next()?;
     Some((keyword, name))
 }
 
