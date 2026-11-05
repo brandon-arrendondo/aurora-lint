@@ -144,7 +144,7 @@ pub fn fact_reaches(cond: &Node, site: &Node, targets: &[String], source: &str) 
         )
     });
     if reads_global {
-        let between = Between::new(cond, site);
+        let between = Between::new(cond, site, source);
         let may_write = query::find_first_descendant(func, |n| {
             n.kind() == "call_expression"
                 && between.holds(&n)
@@ -192,7 +192,13 @@ fn pointer_write_between(
             _ => return true,
         }
     }
-    written_through_pointer(&Between::new(cond, site), func, facts, &guarded, source)
+    written_through_pointer(
+        &Between::new(cond, site, source),
+        func,
+        facts,
+        &guarded,
+        source,
+    )
 }
 
 /// Whether a write through a pointer may change the local that `name` means
@@ -230,7 +236,7 @@ pub fn pointer_write_reaches(
     if facts.has_escaped(local) || function.retained.contains(&local) {
         return true;
     }
-    let between = Between::after(origin, site);
+    let between = Between::after(origin, site, source);
     written_through_pointer(&between, &func, facts, &HashSet::from([local]), source)
 }
 
@@ -561,7 +567,7 @@ struct Between {
 }
 
 impl Between {
-    fn new(cond: &Node, site: &Node) -> Self {
+    fn new(cond: &Node, site: &Node, source: &str) -> Self {
         // A loop's condition is known false after the whole loop, so the
         // writes that count start where the loop ends.
         let from = cond
@@ -573,29 +579,38 @@ impl Between {
                 ) && !spans(owner, site)
             })
             .map_or(cond.end_byte(), |owner| owner.end_byte());
-        Self::spanning(from, (cond.start_byte(), cond.end_byte()), site)
+        Self::spanning(from, (cond.start_byte(), cond.end_byte()), site, source)
     }
 
     /// The stretch after the code spanning `origin` (byte range), a
     /// statement that runs before `site`.
-    fn after(origin: (usize, usize), site: &Node) -> Self {
-        Self::spanning(origin.1, origin, site)
+    fn after(origin: (usize, usize), site: &Node, source: &str) -> Self {
+        Self::spanning(origin.1, origin, site, source)
     }
 
     /// From `from` to `site`, plus every loop holding `site` but not the
-    /// code spanning `origin`.
-    fn spanning(from: usize, origin: (usize, usize), site: &Node) -> Self {
+    /// code spanning `origin`, a backward `goto` loop included.
+    fn spanning(from: usize, origin: (usize, usize), site: &Node, source: &str) -> Self {
         let mut ranges = vec![(from, site.start_byte())];
+        let holds_origin = |lo: usize, hi: usize| lo <= origin.0 && hi >= origin.1;
         let mut current = *site;
         while let Some(parent) = current.parent() {
             if parent.kind() == "function_definition" {
+                // A `goto` after the site back to a label before it is a
+                // loop too: from the label to the `goto` runs again before
+                // the site, unless it runs `origin` again as well.
+                for (label, goto) in backward_jumps(&parent, site, source) {
+                    if !holds_origin(label, goto) {
+                        ranges.push((label, goto));
+                    }
+                }
                 break;
             }
             let is_loop = matches!(
                 parent.kind(),
                 "for_statement" | "while_statement" | "do_statement"
             );
-            let holds_origin = parent.start_byte() <= origin.0 && parent.end_byte() >= origin.1;
+            let holds_origin = holds_origin(parent.start_byte(), parent.end_byte());
             if is_loop && !holds_origin {
                 ranges.push((parent.start_byte(), parent.end_byte()));
             }
@@ -616,6 +631,37 @@ impl Between {
                 .iter()
                 .any(|&(lo, hi)| n.start_byte() >= lo && n.start_byte() < hi)
     }
+}
+
+/// The `(label start, goto end)` byte spans of every backward jump around
+/// `site` in `func`: a `goto` after the site naming a label before it.
+fn backward_jumps(func: &Node, site: &Node, source: &str) -> Vec<(usize, usize)> {
+    let labels: Vec<(String, usize)> = query::find_descendants_of_kind(*func, "labeled_statement")
+        .into_iter()
+        .filter(|l| l.start_byte() < site.start_byte())
+        .filter_map(|l| {
+            let label = l.child_by_field_name("label")?;
+            Some((
+                ast_utils::get_node_text(&label, source).to_string(),
+                l.start_byte(),
+            ))
+        })
+        .collect();
+    if labels.is_empty() {
+        return Vec::new();
+    }
+    query::find_descendants_of_kind(*func, "goto_statement")
+        .into_iter()
+        .filter(|g| g.start_byte() >= site.end_byte())
+        .filter_map(|g| {
+            let target = g.child_by_field_name("label")?;
+            let target = ast_utils::get_node_text(&target, source);
+            labels
+                .iter()
+                .find(|(name, _)| name == target)
+                .map(|&(_, start)| (start, g.end_byte()))
+        })
+        .collect()
 }
 
 /// Conditions of statements before `site` in one of its enclosing blocks
@@ -820,7 +866,7 @@ pub fn written_between(cond: &Node, site: &Node, targets: &[String], source: &st
         return false;
     };
     let names = target_names(targets);
-    let between = Between::new(cond, site);
+    let between = Between::new(cond, site, source);
     let declarator = |at: &Node, name: &str| {
         ast_utils::resolve_identifier_declarator(at, name, source).map(|(_, d)| d.id())
     };
