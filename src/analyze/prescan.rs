@@ -2277,12 +2277,92 @@ fn file_name_of(path: &str) -> &str {
 /// or an array element read all pass a function pointer along just as well as
 /// `&f` does, and the surplus names cost nothing -- only a name that is also a
 /// function's is ever looked up.
+///
+/// A `#define`'s replacement list is read too
+/// ([`collect_define_value_identifiers`]): tree-sitter keeps it as one
+/// token, so without that a static stored only through a macro
+/// (`#define IOMETHODS(...) { ..., unixWrite, ... }`) would look as though
+/// its address never escaped.
 pub(crate) fn collect_value_position_identifiers(
     node: &Node,
     source: &str,
     out: &mut HashSet<String>,
 ) {
     collect_value_position_identifiers_under(node, node.parent(), source, out);
+    collect_define_value_identifiers(node, source, out);
+}
+
+/// Every identifier a `#define` under `node` uses as a value in its
+/// replacement list: not a parameter of the macro, not stringized or pasted
+/// (`#x` is a string, `a ## b` names neither `a` nor `b`), and not followed
+/// by `(`, which makes it the callee of a direct call, as
+/// [`is_direct_call_target`] reads one in code. A name followed by one of
+/// the macro's parameters is a callee too (`#define TRACE(x) trace_low x`,
+/// used as `TRACE(("%d", n))`): the argument brings the parentheses. An
+/// object-like macro whose list is one identifier is a rename
+/// (`#define getpwuid vms_getpwuid`), so what its uses do decides: the
+/// target escapes only once the macro's own name is a value, here or in
+/// another replacement list. A replacement list has no
+/// scope to resolve a name in, so this is by name, which errs toward an
+/// escaped address, the sound direction. A `#define` in an arm the file
+/// proves is never compiled (`#if 0`, ADR-0010 D2) is skipped: it stores
+/// nothing in any build.
+fn collect_define_value_identifiers(node: &Node, source: &str, out: &mut HashSet<String>) {
+    let defines = crate::utility::cert_c::pp_tokens::define_directives(node, source);
+    if defines.is_empty() {
+        return;
+    }
+    let dead = crate::analyze::init_state::file_proven_dead_lines(source);
+    let mut renames: Vec<(String, String)> = Vec::new();
+    let (mut line, mut at) = (1, 0);
+    for (range, define) in defines {
+        line += source.as_bytes()[at..range.start]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count();
+        at = range.start;
+        if dead.iter().any(|&(s, e)| line >= s && line <= e) {
+            continue;
+        }
+        let params = define.params.as_deref().unwrap_or(&[]);
+        let is_param = |text: &str| {
+            text == "__VA_ARGS__" || params.iter().any(|p| p.trim_end_matches("...") == text)
+        };
+        let tokens = define.tokens();
+        if let [only] = tokens.as_slice() {
+            if define.params.is_none()
+                && only.kind == crate::utility::cert_c::pp_tokens::PpKind::Identifier
+            {
+                renames.push((define.name.to_string(), only.text.to_string()));
+                continue;
+            }
+        }
+        for (k, t) in tokens.iter().enumerate() {
+            if t.kind != crate::utility::cert_c::pp_tokens::PpKind::Identifier
+                || t.stringized
+                || t.pasted
+                || is_param(&t.text)
+                || tokens
+                    .get(k + 1)
+                    .is_some_and(|next| next.is("(") || (!next.pasted && is_param(&next.text)))
+            {
+                continue;
+            }
+            out.insert(t.text.to_string());
+        }
+    }
+    // A rename chain (`A` -> `B` -> `f`) resolves one link per round.
+    loop {
+        let before = out.len();
+        for (name, target) in &renames {
+            if out.contains(name) {
+                out.insert(target.clone());
+            }
+        }
+        if out.len() == before {
+            break;
+        }
+    }
 }
 
 /// [`collect_value_position_identifiers`] with `node`'s parent in hand. The
@@ -2330,15 +2410,21 @@ fn is_direct_call_target(node: &Node, parent: Option<Node>) -> bool {
 /// Covers a function definition's own name and every prototype
 /// (`function_declarator`), plus a variable's declarator
 /// (`int x;` / `int *p;` / `int a[4];`) -- but NOT an `init_declarator`'s
-/// value, which is a use.
+/// value, which is a use. A `#define`'s own name is one too: it names the
+/// macro, so a rename (`#define getpwuid vms_getpwuid`) reads as a value
+/// only where its name is used as one.
 fn is_declarator_name(node: &Node, parent: Option<Node>) -> bool {
     parent.is_some_and(|parent| {
-        matches!(
-            parent.kind(),
-            "function_declarator" | "array_declarator" | "pointer_declarator"
-        ) && parent
-            .child_by_field_name("declarator")
-            .is_some_and(|d| d.id() == node.id())
+        matches!(parent.kind(), "preproc_def" | "preproc_function_def")
+            && parent
+                .child_by_field_name("name")
+                .is_some_and(|n| n.id() == node.id())
+            || matches!(
+                parent.kind(),
+                "function_declarator" | "array_declarator" | "pointer_declarator"
+            ) && parent
+                .child_by_field_name("declarator")
+                .is_some_and(|d| d.id() == node.id())
             || parent.kind() == "declaration"
                 && parent
                     .child_by_field_name("declarator")
@@ -12697,5 +12783,69 @@ void caller(char *other) {
         let (_, parsed) = parses_while_prescanning(linked.path());
         assert!(!alone.is_empty(), "the buffer-size propagation did not run");
         assert_eq!(parsed.len(), alone.len(), "{parsed:?}");
+    }
+
+    // -- collect_value_position_identifiers: replacement lists --
+
+    fn value_names(src: &str) -> HashSet<String> {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let mut out = HashSet::new();
+        collect_value_position_identifiers(&tree.root_node(), src, &mut out);
+        out
+    }
+
+    /// A static stored only through a macro's replacement list escapes like
+    /// one stored in code: the sqlite `IOMETHODS` shape, a struct initializer
+    /// in a function-like macro, and a rename whose own name is then used as
+    /// a value, directly or through another rename.
+    #[test]
+    fn a_function_named_as_a_value_in_a_replacement_list_is_collected() {
+        let names = value_names(
+            "static int unix_write(int a);\n\
+             static int unix_sleep(int a);\n\
+             #define IOMETHODS(NAME, CLOSE) \\\n\
+             static const struct io NAME = { CLOSE, unix_write };\n\
+             #define SLEEPER unix_sleep\n\
+             #define DEFAULT_SLEEPER SLEEPER\n\
+             int (*pick(void))(int) { return DEFAULT_SLEEPER; }\n",
+        );
+        assert!(names.contains("unix_write"), "{names:?}");
+        assert!(names.contains("unix_sleep"), "{names:?}");
+    }
+
+    /// A rename that is only ever called, and a name an argument list
+    /// follows through a parameter, are calls, not stored addresses.
+    #[test]
+    fn a_called_rename_or_a_callee_before_its_argument_list_is_not_collected() {
+        let names = value_names(
+            "#define getpwuid vms_getpwuid\n\
+             #define TRACE(x) do { trace_low x; } while (0)\n\
+             #define LOG(...) log_low __VA_ARGS__\n\
+             int f(int uid) { TRACE((\"%d\", uid)); return getpwuid(uid) != 0; }\n",
+        );
+        for absent in ["vms_getpwuid", "trace_low", "log_low"] {
+            assert!(!names.contains(absent), "{absent}: {names:?}");
+        }
+    }
+
+    /// What a replacement list does not use as a value stays out: a direct
+    /// call, a stringized or pasted operand, and any `#define` in an `#if 0`
+    /// arm. (A parameter list is tree-sitter nodes, which the walk over code
+    /// already collects; a surplus name there costs nothing.)
+    #[test]
+    fn a_replacement_list_call_paste_or_dead_arm_is_not_collected() {
+        let names = value_names(
+            "#define CALL(x) unix_write (x)\n\
+             #define NAME_OF(f) #f\n\
+             #define INIT(sub) restart_ ## sub ## _init(sub)\n\
+             #if 0\n\
+             #define OLD { unix_sleep }\n\
+             #endif\n",
+        );
+        for absent in ["unix_write", "restart_", "_init", "unix_sleep"] {
+            assert!(!names.contains(absent), "{absent}: {names:?}");
+        }
     }
 }
