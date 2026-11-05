@@ -1419,6 +1419,8 @@ impl Arr30C {
         // overwrites them, arms that disagree take the value furthest out
         // of range (the most negative, else the largest), so an
         // out-of-bounds arm is reported and arms all in bounds stay silent.
+        // An array declared inside an arm pairs with that arm's index, which
+        // the pick cannot see, so it keeps the last arm's value.
         let declares = |c: &regex::Captures| {
             c.get(0)
                 .is_some_and(|m| Self::declares_at(&func_node, func_node.start_byte() + m.start()))
@@ -1430,7 +1432,10 @@ impl Arr30C {
             .count();
         let last = constant_assigns.last()?;
         let value = |c: &regex::Captures| c.get(1).and_then(|v| v.as_str().parse::<isize>().ok());
-        let caps = if declarations > 1 && declares(last) {
+        let caps = if declarations > 1
+            && declares(last)
+            && !Self::array_declared_in_preprocessor_arm(current_node, source)
+        {
             let arms: Vec<(&regex::Captures, isize)> = constant_assigns
                 .iter()
                 .filter(|c| declares(c))
@@ -1522,6 +1527,36 @@ impl Arr30C {
                 d.id() == used.id() || Self::declaring_scope(&d) == Self::declaring_scope(&used)
             })
         }))
+    }
+
+    /// True when the array `subscript` indexes is declared inside a
+    /// preprocessor conditional arm within its scope, so another arm may
+    /// declare it with a different size. Unknown counts as true.
+    fn array_declared_in_preprocessor_arm(subscript: &Node, source: &str) -> bool {
+        let Some(array) = subscript
+            .child_by_field_name("argument")
+            .filter(|a| a.kind() == "identifier")
+        else {
+            return true;
+        };
+        let name = get_node_text(&array, source);
+        let Some((_, declarator)) = resolve_identifier_declarator(&array, name, source) else {
+            return true;
+        };
+        let mut n = declarator.parent();
+        while let Some(p) = n {
+            if matches!(
+                p.kind(),
+                "compound_statement" | "function_definition" | "for_statement" | "translation_unit"
+            ) {
+                return false;
+            }
+            if p.kind().starts_with("preproc_") {
+                return true;
+            }
+            n = p.parent();
+        }
+        true
     }
 
     /// True when the identifier starting at byte `at` is the declarator of
