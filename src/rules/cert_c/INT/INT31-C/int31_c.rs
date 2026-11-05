@@ -181,10 +181,11 @@ impl Int31C {
         node: &Node,
         source_expr_node: &Node,
         source: &str,
-        _target_type: &str,
+        target_type: &str,
         target_width: u32,
         target_signed: bool,
     ) -> bool {
+        let char_signed = self.plain_char_signedness(target_type);
         let macros = self.current_macros.borrow();
         let var_ranges = vra_access::var_ranges_replay_at(
             &self.function_cfgs.borrow(),
@@ -200,13 +201,23 @@ impl Int31C {
                     .get(get_node_text(source_expr_node, source).trim())
                     .copied()
             });
-        range.is_some_and(|range| {
-            if target_signed {
-                range.fits_in_signed(target_width)
-            } else {
-                range.fits_in_unsigned(target_width)
+        range.is_some_and(|range| match char_signed {
+            // A plain `char` the project has not declared either way keeps
+            // a value that fits it either way, as INT32-C reads `CHAR_MAX`.
+            Some(None) => {
+                range.fits_in_signed(target_width) || range.fits_in_unsigned(target_width)
             }
+            Some(Some(signed)) if signed => range.fits_in_signed(target_width),
+            Some(Some(_)) => range.fits_in_unsigned(target_width),
+            None if target_signed => range.fits_in_signed(target_width),
+            None => range.fits_in_unsigned(target_width),
         })
+    }
+
+    /// For a plain `char` target, whether the project declares it signed
+    /// (`None` when it does not say). `None` for any other type.
+    fn plain_char_signedness(&self, target_type: &str) -> Option<Option<bool>> {
+        (target_type.trim() == "char").then(|| self.data_model.get().char_signed())
     }
 
     /// Value-based definite-truncation channel — the conversion analogue of
@@ -1973,8 +1984,17 @@ impl Int31C {
         if bits == 0 || bits >= 64 {
             return false;
         }
+        let signed_range = -(1i64 << (bits - 1))..=(1i64 << (bits - 1)) - 1;
+        let unsigned_range = 0..=(1i64 << bits) - 1;
+        if let Some(char_signed) = self.plain_char_signedness(target) {
+            return match char_signed {
+                Some(true) => !signed_range.contains(&value),
+                Some(false) => !unsigned_range.contains(&value),
+                None => !(signed_range.contains(&value) || unsigned_range.contains(&value)),
+            };
+        }
         if self.is_signed_type(target) {
-            value < -(1i64 << (bits - 1)) || value > (1i64 << (bits - 1)) - 1
+            !signed_range.contains(&value)
         } else if self.is_unsigned_type(target) {
             if value < 0 {
                 // EX3 needs the target at least as wide as `int`. A type the
@@ -2232,7 +2252,42 @@ impl Int31C {
             return false;
         };
         let source_signed = self.is_signed_type(source_type);
-        let target_signed = self.is_signed_type(target_type);
+        // A plain `char` the project has not declared either way keeps a
+        // value that fits it either way.
+        let readings: &[bool] = match self.plain_char_signedness(target_type) {
+            Some(Some(true)) => &[true],
+            Some(Some(false)) => &[false],
+            Some(None) => &[true, false],
+            None if self.is_signed_type(target_type) => &[true],
+            None => &[false],
+        };
+        readings.iter().any(|&target_signed| {
+            self.guards_prove_fit_as(
+                site,
+                &operand,
+                var,
+                source,
+                source_width,
+                target_width,
+                source_signed,
+                target_signed,
+            )
+        })
+    }
+
+    /// [`Self::guards_prove_fit`] for a target of the given signedness.
+    #[allow(clippy::too_many_arguments)]
+    fn guards_prove_fit_as(
+        &self,
+        site: &Node,
+        _operand: &Node,
+        var: &str,
+        source: &str,
+        source_width: IntWidth,
+        target_width: IntWidth,
+        source_signed: bool,
+        target_signed: bool,
+    ) -> bool {
         let narrower = may_be_narrower(target_width, source_width);
         let need_lower = source_signed && (!target_signed || narrower);
         let need_upper = narrower || (!source_signed && target_signed);
