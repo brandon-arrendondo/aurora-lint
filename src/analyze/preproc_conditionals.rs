@@ -94,6 +94,9 @@ pub(crate) struct Conditionals {
     /// By the line of the `#endif`: the `#if` it closes, or `None` when it
     /// closes none, or the line is no `#endif`.
     by_end: Vec<Option<usize>>,
+    /// Every `#if` no line closes, in line order, with its own
+    /// `#elif`/`#else` lines.
+    unclosed: Vec<(usize, Vec<usize>)>,
 }
 
 impl Conditionals {
@@ -106,12 +109,19 @@ impl Conditionals {
     pub(crate) fn opener_of(&self, end: usize) -> Option<usize> {
         *self.by_end.get(end)?
     }
+
+    /// Every `#if` still open at the end of the file, in line order, each
+    /// with its own `#elif`/`#else` lines (not those of a conditional
+    /// nested in it).
+    pub(crate) fn unclosed(&self) -> &[(usize, Vec<usize>)] {
+        &self.unclosed
+    }
 }
 
 /// Match the conditionals of `len` lines classified by `kind`. A stray
 /// `#endif` or `#elif` (one no `#if` is open for) is ignored, and an `#if`
 /// still open at the end of the file has no conditional, as the forward
-/// scan from it would have found.
+/// scan from it would have found; [`Conditionals::unclosed`] lists those.
 pub(crate) fn match_conditionals(
     len: usize,
     kind: impl Fn(usize) -> Option<CondLine>,
@@ -136,7 +146,11 @@ pub(crate) fn match_conditionals(
             None => {}
         }
     }
-    Conditionals { by_open, by_end }
+    Conditionals {
+        by_open,
+        by_end,
+        unclosed: open,
+    }
 }
 
 #[cfg(test)]
@@ -175,6 +189,22 @@ mod tests {
         None
     }
 
+    /// The `#else` lines at the depth of the `#if` on line `i`, to the end
+    /// of the file: an unclosed conditional's own branches.
+    fn own_branches(lines: &[&str], i: usize) -> Vec<usize> {
+        let mut depth = 1;
+        let mut branches = Vec::new();
+        for (j, l) in lines.iter().enumerate().skip(i + 1) {
+            match *l {
+                "if" => depth += 1,
+                "endif" => depth -= 1,
+                "else" if depth == 1 => branches.push(j),
+                _ => {}
+            }
+        }
+        branches
+    }
+
     /// The backward scan from an `#endif` on line `e` to its `#if`.
     fn backward(lines: &[&str], e: usize) -> Option<usize> {
         if lines[e] != "endif" {
@@ -205,6 +235,11 @@ mod tests {
             for code in 0..4usize.pow(n) {
                 let lines: Vec<&str> = (0..n).map(|p| alphabet[code / 4usize.pow(p) % 4]).collect();
                 let c = classify(&lines);
+                let unclosed: Vec<(usize, Vec<usize>)> = (0..lines.len())
+                    .filter(|&i| lines[i] == "if" && forward(&lines, i).is_none())
+                    .map(|i| (i, own_branches(&lines, i)))
+                    .collect();
+                assert_eq!(c.unclosed(), unclosed.as_slice(), "{lines:?}");
                 for i in 0..lines.len() {
                     assert_eq!(c.opener_of(i), backward(&lines, i), "{lines:?} at {i}");
                     let expected = forward(&lines, i);

@@ -89,6 +89,7 @@ pub mod suppression;
 pub mod system_includes;
 pub mod thread_local_keyword;
 pub mod trailing_attribute;
+pub mod unclosed_conditional_blank;
 pub mod unknown_identifier_recovery;
 pub mod value_range;
 pub mod vra_access;

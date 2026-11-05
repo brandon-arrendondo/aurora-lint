@@ -1854,6 +1854,17 @@ repair pass asks it rather than scanning forward from each `#if` to its
 file of a few thousand unclosed `#if` lines cost seconds per pass.
 `tests/robustness.rs`'s `malformed_conditionals_parse_near_linearly` holds
 the parse linear on unclosed `#if` lines and on a deep nest of closed ones.
+`unclosed()` lists every `#if` still open at the end of the file, with its
+own `#elif`/`#else` lines: `unclosed_conditional_blank.rs`, which runs before
+every other conditional pass, blanks those directives and keeps each arm's
+code, and blanks whole any arm a literal condition proves dead (`#if 0`), so
+that text stays out of analysis as the dead-code ranges kept it. No
+configuration compiles an unclosed conditional, so there is no arm to
+choose. Left in, it made the file one flat root `ERROR`, whose children are
+every declaration after it, and a node's ancestor climb is linear in a
+parent's child count, so every rule that climbs was quadratic there;
+`every_rule_size_series_scales_near_linearly` scans such a file against the
+same file blanked by hand.
 The same module holds the one reading of a conditional directive every
 repair pass uses: `directive_keyword(line)` (the name after `#`, white space
 allowed between them, so `# endif` and `#  ifdef X` are directives),

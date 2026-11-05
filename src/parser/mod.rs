@@ -137,6 +137,16 @@ impl CParser {
         // unaffected by this substitution.
         let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(&source);
 
+        // A `#if` no `#endif` closes (a truncated or generated file) leaves
+        // the rest of the file in ERROR nodes, and a file of many is one
+        // flat root ERROR that makes every ancestor climb quadratic. No
+        // configuration compiles it, so blank its directive and its own
+        // `#elif`/`#else` lines and keep every arm's code. It runs before
+        // the passes below, which match only closed conditionals.
+        // Length-preserving.
+        let source =
+            crate::analyze::unclosed_conditional_blank::blank_unclosed_conditionals(&source);
+
         // An earlier fix: blank a #if/#ifdef/#ifndef + matching #endif pair that
         // opens inside an unclosed parenthesized expression (a build-time-
         // optional operand of a condition, or entry in a parameter or
@@ -249,6 +259,8 @@ impl CParser {
             &self.repair_macros.include_edges,
         );
         let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(&source);
+        let source =
+            crate::analyze::unclosed_conditional_blank::blank_unclosed_conditionals(&source);
         let source = crate::analyze::paren_preproc_guard::blank_paren_guarded_preproc(&source);
         let source = crate::analyze::else_braced_arms::join_else_to_braced_arms(&source);
         let source = crate::analyze::preproc_dangling_else::blank_dangling_else_preproc(&source);

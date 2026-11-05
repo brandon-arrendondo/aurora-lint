@@ -1959,7 +1959,9 @@ fn assert_series_near_linear(series: &[Series]) {
 /// per-rule series above time only the rules picked for them. Every rule
 /// scanning one file takes about 65 us per byte of the functions and 35 us
 /// per byte of the declaration line, so the largest is a 35 s scan and the
-/// test takes about five minutes.
+/// test takes about five minutes. A file of unclosed `#if` lines, and the
+/// same file with them blanked by hand as its control, check that such a
+/// file scans as fast as the one the repair makes of it.
 #[test]
 #[ignore = "size series: run in release with --ignored (CI robustness job)"]
 fn every_rule_size_series_scales_near_linearly() {
@@ -1972,7 +1974,31 @@ fn every_rule_size_series_scales_near_linearly() {
             one_line_declarations,
             64 * 1024,
         ),
+        ("unclosed_ifs_scanned", None, unclosed_ifs_scanned, 1_000),
+        (
+            "unclosed_ifs_blanked_by_hand",
+            None,
+            unclosed_ifs_blanked_by_hand,
+            1_000,
+        ),
     ]);
+}
+
+/// [`unclosed_ifs_with_declarations`] as a file to scan. Parsed as it is,
+/// the file is one flat root `ERROR` whose children are every declaration,
+/// and climbing to a node's ancestors there is linear in their number, so
+/// a rule that climbs from each declaration is quadratic.
+fn unclosed_ifs_scanned(n: usize) -> Vec<u8> {
+    unclosed_ifs_with_declarations(n).into_bytes()
+}
+
+/// The control for [`unclosed_ifs_scanned`]: the same file with each `#if`
+/// line already blank, as the repair leaves it. The two scale alike.
+fn unclosed_ifs_blanked_by_hand(n: usize) -> Vec<u8> {
+    (0..n)
+        .map(|i| format!("{}\nint a{i};\n", " ".repeat(format!("#if A{i}").len())))
+        .collect::<String>()
+        .into_bytes()
 }
 
 /// [`every_rule_size_series_scales_near_linearly`] at the sizes of the large
@@ -1996,6 +2022,12 @@ fn large_and_deep_inputs_scale_near_linearly_under_every_rule() {
 /// `n` unclosed `#if` lines, a declaration under each.
 fn unclosed_ifs_with_declarations(n: usize) -> String {
     (0..n).map(|i| format!("#if A{i}\nint a{i};\n")).collect()
+}
+
+/// `n` unclosed `#if 0` lines, a declaration under each: every arm dead to
+/// the end of the file.
+fn unclosed_dead_ifs_with_declarations(n: usize) -> String {
+    (0..n).map(|i| format!("#if 0\nint a{i};\n")).collect()
 }
 
 /// `n` unclosed `#if` lines in a function, each opening a brace an `#else`
@@ -2071,7 +2103,7 @@ type SourceSeries = (&'static str, fn(usize) -> String);
 #[ignore = "size series: run in release with --ignored (CI robustness job)"]
 fn malformed_conditionals_parse_near_linearly() {
     let _runner = timed();
-    let series: [SourceSeries; 7] = [
+    let series: [SourceSeries; 8] = [
         (
             "unclosed_ifs_with_declarations",
             unclosed_ifs_with_declarations,
@@ -2088,6 +2120,10 @@ fn malformed_conditionals_parse_near_linearly() {
             closed_nest_ending_in_a_header,
         ),
         ("dead_nest_ending_in_a_header", dead_nest_ending_in_a_header),
+        (
+            "unclosed_dead_ifs_with_declarations",
+            unclosed_dead_ifs_with_declarations,
+        ),
     ];
     let small = 2_500;
     let mut failures = Vec::new();
