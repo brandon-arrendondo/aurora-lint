@@ -336,11 +336,6 @@ struct AncestorFacts<'a> {
     /// `sizeof`, `_Static_assert`, an enumerator's value or an array size
     /// (`int arr[N + 1]`), below the innermost function definition.
     compile_time: bool,
-    /// An operand of a comparison (`a + b > c`, the shape of an overflow
-    /// check) within the node's statement: some `binary_expression` with a
-    /// comparison operator encloses it below the nearest statement,
-    /// declaration, block or function.
-    in_comparison: bool,
     /// The innermost `for`/`while`/`do` enclosing the node within its
     /// function, whose conditions bound the loop variables.
     innermost_loop: Option<Node<'a>>,
@@ -354,29 +349,18 @@ const NEAR_ANCESTORS: usize = 15;
 
 impl<'a> AncestorFacts<'a> {
     /// The facts for a child of `parent`, given `parent`'s own.
-    fn step(&self, parent: Node<'a>, source: &str) -> Self {
+    fn step(&self, parent: Node<'a>) -> Self {
         let mut near = [None; NEAR_ANCESTORS];
         near[0] = Some(parent);
         near[1..].copy_from_slice(&self.near[..NEAR_ANCESTORS - 1]);
-        let in_comparison = match parent.kind() {
-            "expression_statement"
-            | "return_statement"
-            | "declaration"
-            | "function_definition"
-            | "compound_statement" => false,
-            "binary_expression" => self.in_comparison || Self::compares(parent, source),
-            _ => self.in_comparison,
-        };
         match parent.kind() {
             "function_definition" => AncestorFacts {
                 function: Some(parent),
                 compile_time: false,
-                in_comparison,
                 innermost_loop: None,
                 near,
             },
             "for_statement" | "while_statement" | "do_statement" => AncestorFacts {
-                in_comparison,
                 innermost_loop: Some(parent),
                 near,
                 ..*self
@@ -386,15 +370,10 @@ impl<'a> AncestorFacts<'a> {
             | "enumerator"
             | "array_declarator" => AncestorFacts {
                 compile_time: true,
-                in_comparison,
                 near,
                 ..*self
             },
-            _ => AncestorFacts {
-                in_comparison,
-                near,
-                ..*self
-            },
+            _ => AncestorFacts { near, ..*self },
         }
     }
 
@@ -404,19 +383,6 @@ impl<'a> AncestorFacts<'a> {
         // Lazily: `parent()` costs the node's depth.
         let beyond = std::iter::successors(self.near[NEAR_ANCESTORS - 1], |n| n.parent()).skip(1);
         self.near.iter().map_while(|p| *p).chain(beyond)
-    }
-
-    /// Whether a `binary_expression` has a comparison operator among its
-    /// children.
-    fn compares(binary: Node, source: &str) -> bool {
-        let mut cursor = binary.walk();
-        let found = binary.children(&mut cursor).any(|child| {
-            matches!(
-                get_node_text(&child, source),
-                ">" | "<" | ">=" | "<=" | "==" | "!="
-            )
-        });
-        found
     }
 }
 
@@ -553,7 +519,7 @@ impl Int32C {
                 "call_expression",
             ],
             AncestorFacts::default(),
-            |facts, parent| facts.step(parent, source),
+            |facts, parent| facts.step(parent),
         );
 
         // Scope type_map per function to avoid cross-function name collisions
@@ -833,11 +799,6 @@ impl Int32C {
             }
 
             if self.is_signed_type(&left_type) || self.is_signed_type(&right_type) {
-                // Skip if this operation is part of an overflow check comparison
-                if site.in_comparison {
-                    return;
-                }
-
                 // Opt-in provenance gate: only flag when an operand derives
                 // from untrusted/unbounded input. Bounded local state (counters,
                 // indices, struct-field counts) cannot reach the type limit here.
@@ -928,11 +889,6 @@ impl Int32C {
             }
 
             if self.is_signed_type(&left_type) || self.is_signed_type(&right_type) {
-                // Skip if this operation is part of an overflow check comparison
-                if site.in_comparison {
-                    return;
-                }
-
                 // Skip if both operands are constants (compiler handles these)
                 let left_text = get_node_text(&left, source);
                 let right_text = get_node_text(&right, source);
@@ -1017,11 +973,6 @@ impl Int32C {
             }
 
             if self.is_signed_type(&left_type) || self.is_signed_type(&right_type) {
-                // Skip if this operation is part of an overflow check comparison
-                if site.in_comparison {
-                    return;
-                }
-
                 // Opt-in provenance gate (see check_addition).
                 if !self.has_risky_operand_provenance(node, source, type_map, site) {
                     return;
@@ -1103,11 +1054,6 @@ impl Int32C {
             // Check for signed integer division
             // INT_MIN / -1 causes overflow because -INT_MIN cannot be represented
             if self.is_signed_type(&left_type) || self.is_signed_type(&right_type) {
-                // Skip if this division is part of an overflow check comparison
-                if site.in_comparison {
-                    return;
-                }
-
                 // Check if there's explicit INT_MIN/-1 pattern OR generic signed division without checks
                 let has_explicit_risk = right_text.trim() == "-1"
                     || right_text.contains("-1")
@@ -1127,6 +1073,7 @@ impl Int32C {
 
                 if (has_explicit_risk || is_variable_division)
                     && !self.has_division_overflow_check(node, source)
+                    && !self.division_cannot_overflow(node, &left, &right, source, type_map)
                 {
                     let start_point = node.start_position();
                     let expr_text = get_node_text(node, source);
@@ -3868,6 +3815,37 @@ impl Int32C {
         }
 
         guard_dominance::has_dominating_limit_guard(node, node, source)
+    }
+
+    /// Whether the ranges of `left / right` rule out the one division that
+    /// overflows, the type's minimum divided by -1: the dividend cannot be
+    /// that minimum (`INT_MAX / b`, a constant or a range above it), or the
+    /// divisor cannot be -1 (`INT_MIN / a` where `a > 0` holds).
+    fn division_cannot_overflow(
+        &self,
+        node: &Node,
+        left: &Node,
+        right: &Node,
+        source: &str,
+        type_map: &FileTypes,
+    ) -> bool {
+        let bits = self.signed_arith_width_bits(node, source, type_map);
+        let min = if bits >= 64 {
+            i64::MIN
+        } else {
+            -(1i64 << (bits - 1))
+        };
+        let macros = self.current_macros.borrow();
+        let ranges = self
+            .value_ranges_at(node, source, type_map)
+            .unwrap_or_default();
+        let dividend_above_min = const_eval::try_evaluate_range(left, source, &macros, &ranges)
+            .is_some_and(|l| l.min > min);
+        let divisor_not_minus_one = || {
+            const_eval::try_evaluate_range(right, source, &macros, &ranges)
+                .is_some_and(|r| r.min > -1 || r.max < -1)
+        };
+        dividend_above_min || divisor_not_minus_one()
     }
 
     fn has_division_overflow_check(&self, node: &Node, source: &str) -> bool {

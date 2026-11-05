@@ -3003,8 +3003,14 @@ fn try_evaluate_range_uncached(
                 let lr = try_evaluate_range_inner(&left, source, macros, var_ranges, fmacros, memo);
                 let rr =
                     try_evaluate_range_inner(&right, source, macros, var_ranges, fmacros, memo);
+                // A non-negative constant mask bounds the result whatever
+                // the other operand's sign: the mask's sign bit is clear, so
+                // the result's is too, and no bit outside the mask survives.
+                let mask = |m: ValueRange| {
+                    (m.min == m.max && m.min >= 0).then(|| ValueRange::new(0, m.min))
+                };
                 return match (lr, rr) {
-                    (Some(l), Some(r)) => l.bitand(&r),
+                    (Some(l), Some(r)) => l.bitand(&r).or_else(|| mask(r)).or_else(|| mask(l)),
                     // One side unknown, other is a known non-negative constant mask.
                     (None, Some(r)) if r.min == r.max && r.min >= 0 => {
                         Some(ValueRange::new(0, r.min))

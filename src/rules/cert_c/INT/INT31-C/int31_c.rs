@@ -12,7 +12,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self, FunctionCfg};
-use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
+use crate::analyze::const_eval::{self, MacroConstantMap};
 use crate::analyze::context::SummaryLookup;
 use crate::analyze::context::{ProjectContext, ScopedTable};
 use crate::analyze::function_summary::{self, FunctionSummary};
@@ -24,6 +24,7 @@ use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::ast_utils::{self, get_node_text, is_function_parameter};
 use crate::utility::cert_c::data_model::IntWidth;
 use crate::utility::cert_c::declarator_utils;
+use crate::utility::cert_c::guard_dominance;
 use lang_parsing_substrate::query;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -169,16 +170,12 @@ impl Int31C {
         )
     }
 
-    fn vra_var_ranges_at(&self, expr_node: &Node) -> Option<VarRangeMap> {
-        vra_access::var_ranges_entry_at(
-            &self.function_cfgs.borrow(),
-            &self.vra_results.borrow(),
-            expr_node,
-        )
-    }
-
-    /// Check if VRA proves the source expression fits in the target type at this node.
-    /// Returns true if the value is provably safe for the conversion.
+    /// Whether the value of `source_expr_node` just before `node` provably
+    /// fits a target of `target_width` bits and the given signedness: its
+    /// range from value-range analysis, which follows each guard the path
+    /// to `node` passes and its polarity, with this file's macros. A
+    /// constant expression (`v & 0xFF`) has its range with no analysis at
+    /// all.
     fn vra_proves_conversion_safe(
         &self,
         node: &Node,
@@ -188,33 +185,28 @@ impl Int31C {
         target_width: u32,
         target_signed: bool,
     ) -> bool {
-        let var_ranges = match self.vra_var_ranges_at(node) {
-            Some(r) => r,
-            None => return false,
-        };
-
-        let macros = MacroConstantMap::new();
-        if let Some(range) =
-            const_eval::try_evaluate_range(source_expr_node, source, &macros, &var_ranges)
-        {
+        let macros = self.current_macros.borrow();
+        let var_ranges = vra_access::var_ranges_replay_at(
+            &self.function_cfgs.borrow(),
+            &self.vra_results.borrow(),
+            node,
+            source,
+            &macros,
+        )
+        .unwrap_or_default();
+        let range = const_eval::try_evaluate_range(source_expr_node, source, &macros, &var_ranges)
+            .or_else(|| {
+                var_ranges
+                    .get(get_node_text(source_expr_node, source).trim())
+                    .copied()
+            });
+        range.is_some_and(|range| {
             if target_signed {
-                return range.fits_in_signed(target_width);
+                range.fits_in_signed(target_width)
             } else {
-                return range.fits_in_unsigned(target_width);
+                range.fits_in_unsigned(target_width)
             }
-        }
-
-        // For identifiers, also try looking up directly by name
-        let expr_text = get_node_text(source_expr_node, source).trim().to_string();
-        if let Some(&range) = var_ranges.get(&expr_text) {
-            if target_signed {
-                return range.fits_in_signed(target_width);
-            } else {
-                return range.fits_in_unsigned(target_width);
-            }
-        }
-
-        false
+        })
     }
 
     /// Value-based definite-truncation channel — the conversion analogue of
@@ -798,7 +790,6 @@ impl Int31C {
             if let Some(body) = func_node.child_by_field_name("body") {
                 // Track variable types and validated variables
                 let mut var_types: HashMap<String, String> = HashMap::new();
-                let mut validated_vars: HashSet<String> = HashSet::new();
 
                 // First: collect parameter types from function declarator
                 if let Some(declarator) = func_node.child_by_field_name("declarator") {
@@ -807,16 +798,9 @@ impl Int31C {
 
                 // Then: collect variable types from body
                 self.collect_var_types(&body, source, &mut var_types);
-                Self::collect_validations(&body, source, &mut validated_vars, &var_types);
 
                 // Second pass: check for unsafe conversions
-                self.check_unsafe_conversions(
-                    &body,
-                    source,
-                    violations,
-                    &var_types,
-                    &validated_vars,
-                );
+                self.check_unsafe_conversions(&body, source, violations, &var_types);
             }
         }
     }
@@ -973,175 +957,12 @@ impl Int31C {
         String::new()
     }
 
-    fn collect_validations(
-        node: &Node,
-        source: &str,
-        validated_vars: &mut HashSet<String>,
-        var_types: &HashMap<String, String>,
-    ) {
-        for node in &query::find_descendants_of_kinds(
-            *node,
-            &["if_statement", "expression_statement", "init_declarator"],
-        ) {
-            match node.kind() {
-                // Look for if statements that validate bounds
-                "if_statement" => {
-                    Self::collect_if_bounds_validation(node, source, validated_vars, var_types)
-                }
-                // Detect bounded constant assignments: data = CHAR_MAX - 5;
-                // If a tracked variable is assigned a value referencing a type-limit macro,
-                // the programmer is aware of type bounds and subsequent casts are intentional.
-                "expression_statement" => {
-                    Self::collect_narrow_limit_assignment(node, source, validated_vars, var_types)
-                }
-                // Also check init_declarator: int data = CHAR_MAX - 5;
-                "init_declarator" => Self::collect_narrow_limit_init(node, source, validated_vars),
-                _ => {}
-            }
-        }
-    }
-
-    /// `if_statement` case of [`collect_validations`]: for each tracked
-    /// variable mentioned in a bounds-checking condition, mark it validated
-    /// if either branch shows error handling or performs the conversion.
-    fn collect_if_bounds_validation(
-        node: &Node,
-        source: &str,
-        validated_vars: &mut HashSet<String>,
-        var_types: &HashMap<String, String>,
-    ) {
-        let Some(condition) = node.child_by_field_name("condition") else {
-            return;
-        };
-        let cond_text = get_node_text(&condition, source);
-
-        // Check for validations of each tracked variable
-        for var in var_types.keys() {
-            if !cond_text.contains(var) {
-                continue;
-            }
-            // Check for common validation patterns:
-            // - < 0 (negative check for signed to unsigned)
-            // - > MAX / <= MAX (upper bound for unsigned to signed or narrowing)
-            // - < MIN / >= MIN (lower bound for signed narrowing)
-            let has_bounds_check = (cond_text.contains('<')
-                || cond_text.contains('>')
-                || cond_text.contains("<=")
-                || cond_text.contains(">="))
-                && (cond_text.contains('0')
-                    || cond_text.contains("MAX")
-                    || cond_text.contains("MIN")
-                    || cond_text.contains("_MAX")
-                    || cond_text.contains("_MIN"));
-            if !has_bounds_check {
-                continue;
-            }
-
-            // The variable is validated if:
-            // 1. There's error handling in consequence (then block) - else block is safe
-            // 2. The conversion happens in the consequence when bounds are validated
-            // 3. There's an alternative (else) that handles errors
-            if let Some(consequence) = node.child_by_field_name("consequence") {
-                let cons_text = get_node_text(&consequence, source);
-                // If error handling in consequence, the else branch is safe
-                if cons_text.contains("return")
-                    || cons_text.contains("Handle error")
-                    || cons_text.contains("error")
-                {
-                    validated_vars.insert(var.clone());
-                }
-                // If the conversion/assignment to var is in consequence after bounds check
-                // (like `if (u_a <= SCHAR_MAX) { sc = (signed char)u_a; }`)
-                // The variable being converted (u_a) is validated for that use
-                if cons_text.contains(var) {
-                    validated_vars.insert(var.clone());
-                }
-            }
-            if let Some(alternative) = node.child_by_field_name("alternative") {
-                let alt_text = get_node_text(&alternative, source);
-                // If assignment is in alternative (else), var is validated
-                if alt_text.contains(var) {
-                    validated_vars.insert(var.clone());
-                }
-                // If else has error handling, then branch is safe
-                if alt_text.contains("Handle error") || alt_text.contains("error") {
-                    validated_vars.insert(var.clone());
-                }
-            }
-        }
-    }
-
-    /// `expression_statement` case of [`collect_validations`]: `var = ...LIMIT_MACRO...;`.
-    fn collect_narrow_limit_assignment(
-        node: &Node,
-        source: &str,
-        validated_vars: &mut HashSet<String>,
-        var_types: &HashMap<String, String>,
-    ) {
-        let Some(expr) = node.child(0) else { return };
-        if expr.kind() != "assignment_expression" {
-            return;
-        }
-        let Some(left) = expr.child_by_field_name("left") else {
-            return;
-        };
-        let lhs = get_node_text(&left, source).trim().to_string();
-        if !var_types.contains_key(&lhs) {
-            return;
-        }
-        let Some(right) = expr.child_by_field_name("right") else {
-            return;
-        };
-        let rhs = get_node_text(&right, source);
-        if Self::rhs_has_narrow_limit_macro(rhs) {
-            validated_vars.insert(lhs);
-        }
-    }
-
-    /// `init_declarator` case of [`collect_validations`]: `int var = ...LIMIT_MACRO...;`.
-    fn collect_narrow_limit_init(node: &Node, source: &str, validated_vars: &mut HashSet<String>) {
-        let Some(declarator) = node.child_by_field_name("declarator") else {
-            return;
-        };
-        let var_name = Self::extract_var_name(&declarator, source);
-        if var_name.is_empty() {
-            return;
-        }
-        let Some(value) = node.child_by_field_name("value") else {
-            return;
-        };
-        let rhs = get_node_text(&value, source);
-        if Self::rhs_has_narrow_limit_macro(rhs) {
-            validated_vars.insert(var_name);
-        }
-    }
-
-    /// Check if a right-hand-side expression references a narrow-type limit macro.
-    /// Only suppress for macros that bound the value to a narrow (char-sized) range.
-    /// Wide-type limits like LONG_MAX or INT_MAX suggest the value may be too large
-    /// for a narrowing cast, so those should NOT suppress (e.g., `s_a = LONG_MAX;
-    /// (signed char)s_a` is a genuine truncation).
-    fn rhs_has_narrow_limit_macro(rhs: &str) -> bool {
-        const NARROW_LIMIT_MACROS: &[&str] = &[
-            "CHAR_MAX",
-            "CHAR_MIN",
-            "SCHAR_MAX",
-            "SCHAR_MIN",
-            "UCHAR_MAX",
-            "INT8_MAX",
-            "INT8_MIN",
-            "UINT8_MAX",
-        ];
-        NARROW_LIMIT_MACROS.iter().any(|m| rhs.contains(m))
-    }
-
     fn check_unsafe_conversions(
         &self,
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
         var_types: &HashMap<String, String>,
-        validated_vars: &HashSet<String>,
     ) {
         for node in &query::find_descendants_of_kinds(
             *node,
@@ -1163,13 +984,7 @@ impl Int31C {
                         }
                     }
                 }
-                self.check_call_argument_conversion(
-                    node,
-                    source,
-                    violations,
-                    var_types,
-                    validated_vars,
-                );
+                self.check_call_argument_conversion(node, source, violations, var_types);
             }
 
             // Check for time_t comparison with uncast -1
@@ -1179,18 +994,12 @@ impl Int31C {
 
             // Check for cast expressions with potential loss of data
             if node.kind() == "cast_expression" {
-                self.check_cast_conversion(node, source, violations, var_types, validated_vars);
+                self.check_cast_conversion(node, source, violations, var_types);
             }
 
             // Check for implicit conversion in assignments
             if node.kind() == "assignment_expression" || node.kind() == "init_declarator" {
-                self.check_assignment_conversion(
-                    node,
-                    source,
-                    violations,
-                    var_types,
-                    validated_vars,
-                );
+                self.check_assignment_conversion(node, source, violations, var_types);
                 self.check_narrow_accessor_before_alloc(node, source, violations);
             }
         }
@@ -1372,7 +1181,6 @@ impl Int31C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         var_types: &HashMap<String, String>,
-        _validated_vars: &HashSet<String>,
     ) {
         let func = match node.child_by_field_name("function") {
             Some(f) => f,
@@ -1446,15 +1254,7 @@ impl Int31C {
             if self.vra_proves_conversion_safe(node, arg_node, source, "size_t", 64, false) {
                 continue;
             }
-
-            // Suppression: inside a bounds-checked block that validates against
-            // a type-limit macro (SHRT_MAX, INT_MAX, SIZE_MAX, etc.)
-            if self.is_inside_bounds_checked_block(node, source, &ident) {
-                continue;
-            }
-
-            // Suppression: enclosed in an if-condition that checks var >= 0
-            if Self::is_inside_non_negative_guard(node, source, &ident) {
+            if self.guards_prove_fit(node, arg_node, source, &arg_type, "size_t") {
                 continue;
             }
 
@@ -1583,13 +1383,73 @@ impl Int31C {
         }
     }
 
+    /// A cast of a constant to an integer type, reported when the cast
+    /// changes its value. True when the operand is a constant, which this
+    /// settles.
+    fn check_constant_cast(
+        &self,
+        node: &Node,
+        source: &str,
+        target_type: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) -> bool {
+        if target_type.contains('*') {
+            return false;
+        }
+        let Some(value) = self
+            .get_cast_operand_node(node)
+            .and_then(|operand| self.constant_value(&operand, source))
+        else {
+            return false;
+        };
+        let target = target_type.replace(['(', ')'], "").trim().to_string();
+        if self.constant_changes_value(value, &target) {
+            let pos = node.start_position();
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                severity: Severity::High,
+                message: format!(
+                    "Cast of the constant {} to {} changes its value",
+                    value, target
+                ),
+                file_path: String::new(),
+                line: pos.row + 1,
+                column: pos.column + 1,
+                suggestion: Some("Use a value the type can represent, or a wider type".to_string()),
+                ..Default::default()
+            });
+        }
+        true
+    }
+
+    /// Whether the cast `node` of `operand` from `source_type` to `target`
+    /// provably keeps the value: by its range checked as `signed` at
+    /// `target_width`, or by the guards on the path to it.
+    #[allow(clippy::too_many_arguments)]
+    fn cast_proved_safe(
+        &self,
+        node: &Node,
+        operand: Option<&Node>,
+        source: &str,
+        source_type: &str,
+        target: &str,
+        target_width: Option<u32>,
+        signed: bool,
+    ) -> bool {
+        let Some(operand) = operand else {
+            return false;
+        };
+        target_width.is_some_and(|tw| {
+            self.vra_proves_conversion_safe(node, operand, source, target, tw, signed)
+        }) || self.guards_prove_fit(node, operand, source, source_type, target)
+    }
+
     fn check_cast_conversion(
         &self,
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
         var_types: &HashMap<String, String>,
-        validated_vars: &HashSet<String>,
     ) {
         // Get the target type of the cast
         let mut target_type = String::new();
@@ -1602,15 +1462,14 @@ impl Int31C {
             }
         }
 
+        if self.check_constant_cast(node, source, &target_type, violations) {
+            return;
+        }
+
         // Get the source expression being cast
         let source_expr = self.get_cast_operand(node, source);
 
         if target_type.is_empty() || source_expr.is_empty() {
-            return;
-        }
-
-        // Check if source_expr is a validated variable
-        if validated_vars.contains(&source_expr) {
             return;
         }
 
@@ -1677,14 +1536,16 @@ impl Int31C {
 
         // Signed to unsigned without validation
         if self.is_signed_type(&source_type) && self.is_unsigned_type(&target_clean) {
-            // VRA: if value is provably non-negative and fits in target width, suppress
-            if let (Some(tw), Some(ref op_node)) = (target_width, &operand_node) {
-                if self.vra_proves_conversion_safe(node, op_node, source, &target_clean, tw, false)
-                {
-                    return;
-                }
-            }
-            if self.is_inside_bounds_checked_block(node, source, &source_expr) {
+            // Suppress where the value is provably non-negative and fits.
+            if self.cast_proved_safe(
+                node,
+                operand_node.as_ref(),
+                source,
+                &source_type,
+                &target_clean,
+                target_width,
+                false,
+            ) {
                 return;
             }
             let pos = node.start_position();
@@ -1707,13 +1568,16 @@ impl Int31C {
 
         // Unsigned to signed without validation
         if self.is_unsigned_type(&source_type) && self.is_signed_type(&target_clean) {
-            // VRA: if value is provably within signed target range, suppress
-            if let (Some(tw), Some(ref op_node)) = (target_width, &operand_node) {
-                if self.vra_proves_conversion_safe(node, op_node, source, &target_clean, tw, true) {
-                    return;
-                }
-            }
-            if self.is_inside_bounds_checked_block(node, source, &source_expr) {
+            // Suppress where the value is provably inside the signed target.
+            if self.cast_proved_safe(
+                node,
+                operand_node.as_ref(),
+                source,
+                &source_type,
+                &target_clean,
+                target_width,
+                true,
+            ) {
                 return;
             }
             let pos = node.start_position();
@@ -1736,20 +1600,16 @@ impl Int31C {
 
         // Narrowing conversion (wide to narrow)
         if self.is_wide_type(&source_type) && self.is_narrow_type(&target_clean) {
-            // VRA: if value provably fits in target type, suppress
-            if let (Some(tw), Some(ref op_node)) = (target_width, &operand_node) {
-                if self.vra_proves_conversion_safe(
-                    node,
-                    op_node,
-                    source,
-                    &target_clean,
-                    tw,
-                    target_signed,
-                ) {
-                    return;
-                }
-            }
-            if self.is_inside_bounds_checked_block(node, source, &source_expr) {
+            // Suppress where the value provably fits the target.
+            if self.cast_proved_safe(
+                node,
+                operand_node.as_ref(),
+                source,
+                &source_type,
+                &target_clean,
+                target_width,
+                target_signed,
+            ) {
                 return;
             }
             let pos = node.start_position();
@@ -1816,129 +1676,6 @@ impl Int31C {
         }
     }
 
-    /// Check if a node is inside a bounds-checked block — an enclosing
-    /// if-statement (or ternary) whose condition validates the source expression
-    /// against a type-limit macro (CHAR_MAX, SCHAR_MIN, UINT8_MAX, etc.).
-    fn is_inside_bounds_checked_block(&self, node: &Node, source: &str, source_expr: &str) -> bool {
-        const LIMIT_MACROS: &[&str] = &[
-            "CHAR_MAX",
-            "CHAR_MIN",
-            "SCHAR_MAX",
-            "SCHAR_MIN",
-            "UCHAR_MAX",
-            "SHRT_MAX",
-            "SHRT_MIN",
-            "USHRT_MAX",
-            "INT_MAX",
-            "INT_MIN",
-            "UINT_MAX",
-            "LONG_MAX",
-            "LONG_MIN",
-            "ULONG_MAX",
-            "LLONG_MAX",
-            "LLONG_MIN",
-            "ULLONG_MAX",
-            "INT8_MAX",
-            "INT8_MIN",
-            "UINT8_MAX",
-            "INT16_MAX",
-            "INT16_MIN",
-            "UINT16_MAX",
-            "INT32_MAX",
-            "INT32_MIN",
-            "UINT32_MAX",
-            "INT64_MAX",
-            "INT64_MIN",
-            "UINT64_MAX",
-            "SIZE_MAX",
-        ];
-
-        if source_expr.is_empty() {
-            return false;
-        }
-
-        let mut current = *node;
-        for _ in 0..15 {
-            let parent = match current.parent() {
-                Some(p) => p,
-                None => break,
-            };
-
-            if parent.kind() == "if_statement" {
-                if let Some(condition) = parent.child_by_field_name("condition") {
-                    let cond_text = get_node_text(&condition, source);
-
-                    let has_comparison = cond_text.contains('<')
-                        || cond_text.contains('>')
-                        || cond_text.contains("<=")
-                        || cond_text.contains(">=");
-
-                    let has_bound = LIMIT_MACROS.iter().any(|m| cond_text.contains(m));
-
-                    let references_operand = cond_text.contains(source_expr);
-
-                    if has_comparison && has_bound && references_operand {
-                        return true;
-                    }
-                }
-            }
-
-            // Also check ternary (conditional_expression)
-            if parent.kind() == "conditional_expression" {
-                if let Some(condition) = parent.child(0) {
-                    let cond_text = get_node_text(&condition, source);
-
-                    let has_comparison = cond_text.contains('<') || cond_text.contains('>');
-                    let has_bound = LIMIT_MACROS.iter().any(|m| cond_text.contains(m));
-                    let references_operand = cond_text.contains(source_expr);
-
-                    if has_comparison && has_bound && references_operand {
-                        return true;
-                    }
-                }
-            }
-
-            current = parent;
-        }
-        false
-    }
-
-    /// Check if the node is inside an if-block whose condition verifies the
-    /// variable is non-negative: `if (var >= 0)` or `if (0 <= var)`.
-    /// This is the proper guard against signed→unsigned conversion issues.
-    fn is_inside_non_negative_guard(node: &Node, source: &str, var_name: &str) -> bool {
-        let mut current = *node;
-        for _ in 0..15 {
-            let parent = match current.parent() {
-                Some(p) => p,
-                None => break,
-            };
-
-            if parent.kind() == "if_statement" {
-                if let Some(condition) = parent.child_by_field_name("condition") {
-                    let cond_text = get_node_text(&condition, source);
-                    if cond_text.contains(var_name) {
-                        // Check for patterns: var >= 0, var > 0, 0 <= var, 0 < var
-                        // Also: var >= 0 && var < LIMIT (compound)
-                        let trimmed = cond_text.replace(' ', "");
-                        let patterns = [
-                            format!("{}>=0", var_name),
-                            format!("{}>0", var_name),
-                            format!("0<={}", var_name),
-                            format!("0<{}", var_name),
-                        ];
-                        if patterns.iter().any(|p| trimmed.contains(p)) {
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            current = parent;
-        }
-        false
-    }
-
     fn get_cast_operand(&self, node: &Node, source: &str) -> String {
         // Find the operand of the cast (skip type_descriptor and parens)
         for i in 0..node.child_count() {
@@ -1970,7 +1707,6 @@ impl Int31C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         var_types: &HashMap<String, String>,
-        validated_vars: &HashSet<String>,
     ) {
         // Extract LHS name and RHS node depending on node kind
         let (lhs_name, rhs_node) = if node.kind() == "assignment_expression" {
@@ -2012,6 +1748,37 @@ impl Int31C {
             None => return,
         };
 
+        // A constant stored by a plain `=` or an initializer: its value, not
+        // a width, says whether it survives the conversion. A cast of one is
+        // the cast's conversion, which the cast check reports.
+        let plain_store = node.kind() == "init_declarator"
+            || node
+                .child_by_field_name("operator")
+                .is_some_and(|op| op.kind() == "=");
+        if plain_store && unwrap_parenthesized(rhs_node).kind() != "cast_expression" {
+            if let Some(value) = self.constant_value(&rhs_node, source) {
+                if self.constant_changes_value(value, &lhs_type) {
+                    let pos = node.start_position();
+                    violations.push(RuleViolation {
+                        rule_id: self.rule_id().to_string(),
+                        severity: Severity::High,
+                        message: format!(
+                            "Conversion of the constant {} to '{}' ({}) changes its value",
+                            value, lhs_name, lhs_type
+                        ),
+                        file_path: String::new(),
+                        line: pos.row + 1,
+                        column: pos.column + 1,
+                        suggestion: Some(
+                            "Store a value the type can represent, or use a wider type".to_string(),
+                        ),
+                        ..Default::default()
+                    });
+                }
+                return;
+            }
+        }
+
         let rhs_width = match self.infer_rhs_width(&rhs_node, source, var_types) {
             Some(w) => w,
             None => return,
@@ -2032,11 +1799,6 @@ impl Int31C {
             return;
         }
 
-        // Suppression: validated variable
-        if validated_vars.contains(&lhs_name) {
-            return;
-        }
-
         // VRA suppression: if RHS value provably fits in LHS type, suppress
         let lhs_signed = self.is_signed_type(&lhs_type);
         if self
@@ -2044,25 +1806,10 @@ impl Int31C {
         {
             return;
         }
-
-        // Suppression: inside bounds-checked block
-        // Try to extract source expression name for the bounds check
-        let rhs_text = get_node_text(&rhs_node, source);
-        let source_expr = Self::extract_dominant_identifier(&rhs_node, source);
-        if !source_expr.is_empty()
-            && self.is_inside_bounds_checked_block(node, source, &source_expr)
-        {
-            return;
-        }
-
-        // Suppression: RHS literal fits in LHS type
-        if Self::rhs_literal_fits_in_width(&rhs_node, source, lhs_width) {
-            return;
-        }
-
-        // Suppression: RHS has safe mask (& 0xFF etc.)
-        if Self::rhs_has_safe_mask(&rhs_text, lhs_width) {
-            return;
+        if let Some(rhs_type) = Self::rhs_variable_type(&rhs_node, source, var_types) {
+            if self.guards_prove_fit(node, &rhs_node, source, &rhs_type, &lhs_type) {
+                return;
+            }
         }
 
         // Opt-in provenance gate (mirrors INT30-C/INT32-C): only flag a
@@ -2090,6 +1837,19 @@ impl Int31C {
             ),
             ..Default::default()
         });
+    }
+
+    /// The declared type of `rhs` when it is a variable, through any
+    /// parentheses.
+    fn rhs_variable_type(
+        rhs: &Node,
+        source: &str,
+        var_types: &HashMap<String, String>,
+    ) -> Option<String> {
+        let rhs = unwrap_parenthesized(*rhs);
+        (rhs.kind() == "identifier")
+            .then(|| var_types.get(get_node_text(&rhs, source).trim()).cloned())
+            .flatten()
     }
 
     /// Infer the bit-width of the RHS expression.
@@ -2133,8 +1893,103 @@ impl Int31C {
                 }
                 None
             }
+            "binary_expression" => {
+                let op = node.child_by_field_name("operator")?;
+                let left = node.child_by_field_name("left")?;
+                let right = node.child_by_field_name("right")?;
+                match op.kind() {
+                    "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" => {
+                        self.promoted_width(&[left, right], source, var_types)
+                    }
+                    // A shift has its left operand's promoted type.
+                    "<<" | ">>" => self.promoted_width(&[left], source, var_types),
+                    // A comparison or logical operator yields 0 or 1.
+                    _ => None,
+                }
+            }
+            "unary_expression" => {
+                let op = node.child_by_field_name("operator")?;
+                let argument = node.child_by_field_name("argument")?;
+                match op.kind() {
+                    "-" | "+" | "~" => self.promoted_width(&[argument], source, var_types),
+                    _ => None,
+                }
+            }
             "number_literal" => None,
             _ => None,
+        }
+    }
+
+    /// The width of arithmetic on `operands` after the integer promotions
+    /// and the usual arithmetic conversions: at least `int`'s, and the
+    /// widest operand's where that is wider. An operand of unknown type
+    /// counts as `int`, which can only understate the width.
+    fn promoted_width(
+        &self,
+        operands: &[Node],
+        source: &str,
+        var_types: &HashMap<String, String>,
+    ) -> Option<IntWidth> {
+        let mut width = self.get_type_width_resolved("int")?;
+        for operand in operands {
+            if let Some(w) = self.infer_rhs_width(operand, source, var_types) {
+                if may_be_narrower(width, w) {
+                    width = w;
+                }
+            }
+        }
+        Some(width)
+    }
+
+    /// The value of `node` when it is an integer constant: a literal, a
+    /// macro, or arithmetic on them. None for a character literal, whose
+    /// store into a character type is CERT's EX2.
+    fn constant_value(&self, node: &Node, source: &str) -> Option<i64> {
+        let node = unwrap_parenthesized(*node);
+        if node.kind() == "char_literal" {
+            return None;
+        }
+        let macros = self.current_macros.borrow();
+        const_eval::try_evaluate_range(&node, source, &macros, &Default::default())
+            .filter(|r| r.min == r.max)
+            .map(|r| r.min)
+    }
+
+    /// Whether converting the constant `value` to `target_type` changes it.
+    /// A negative constant into an unsigned type at least as wide as `int`
+    /// is CERT's EX3, and a `_Bool` target is a truth-value conversion.
+    fn constant_changes_value(&self, value: i64, target_type: &str) -> bool {
+        let target = target_type.trim();
+        if matches!(target, "_Bool" | "bool") {
+            return false;
+        }
+        let Some(width) = self.get_type_width_resolved(target) else {
+            return false;
+        };
+        if width.min == FLOAT_AS_INTEGER_WIDTH {
+            return false;
+        }
+        let bits = width.min;
+        if bits == 0 || bits >= 64 {
+            return false;
+        }
+        if self.is_signed_type(target) {
+            value < -(1i64 << (bits - 1)) || value > (1i64 << (bits - 1)) - 1
+        } else if self.is_unsigned_type(target) {
+            if value < 0 {
+                // EX3 needs the target at least as wide as `int`. A type the
+                // model gives neither a rank nor an exact width (`size_t`
+                // under ISO C's widths) is read by the widths guaranteed.
+                let Some(int) = self.get_type_width_resolved("int") else {
+                    return true;
+                };
+                let open = width.rank.is_none() && width.max.is_none();
+                may_be_narrower(width, int) && !(open && width.min >= int.min)
+            } else {
+                value > (1i64 << bits) - 1
+            }
+        } else {
+            false
         }
     }
 
@@ -2169,81 +2024,6 @@ impl Int31C {
             }
         }
         false
-    }
-
-    /// Check if RHS is a number literal that fits in the given bit width.
-    fn rhs_literal_fits_in_width(node: &Node, source: &str, width: u32) -> bool {
-        let check = if node.kind() == "parenthesized_expression" {
-            // Unwrap one level of parens
-            let mut inner = None;
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() != "(" && child.kind() != ")" {
-                        inner = Some(child);
-                        break;
-                    }
-                }
-            }
-            match inner {
-                Some(n) => n,
-                None => return false,
-            }
-        } else {
-            *node
-        };
-
-        if check.kind() != "number_literal" {
-            return false;
-        }
-
-        let text = get_node_text(&check, source).trim().to_string();
-        // Strip suffixes (U, L, UL, LL, ULL, etc.)
-        let cleaned = text.trim_end_matches(['u', 'U', 'l', 'L']);
-
-        let value = if cleaned.starts_with("0x") || cleaned.starts_with("0X") {
-            i64::from_str_radix(&cleaned[2..], 16).ok()
-        } else if cleaned.starts_with("0b") || cleaned.starts_with("0B") {
-            i64::from_str_radix(&cleaned[2..], 2).ok()
-        } else if cleaned.starts_with('0') && cleaned.len() > 1 && !cleaned.contains('.') {
-            i64::from_str_radix(cleaned, 8).ok()
-        } else {
-            cleaned.parse::<i64>().ok()
-        };
-
-        match value {
-            Some(v) => match width {
-                8 => (0..=255).contains(&v) || (-128..=127).contains(&v),
-                16 => (0..=65535).contains(&v) || (-32768..=32767).contains(&v),
-                32 => (0..=4294967295i64).contains(&v) || (-2147483648..=2147483647).contains(&v),
-                _ => true,
-            },
-            None => false,
-        }
-    }
-
-    /// Check if RHS text contains a safe bitmask that limits the value to fit in `width` bits.
-    fn rhs_has_safe_mask(rhs_text: &str, width: u32) -> bool {
-        if !rhs_text.contains('&') {
-            return false;
-        }
-
-        let masks: &[&str] = match width {
-            8 => &["0xFF", "0xff", "0XFF", "0Xff", "255"],
-            16 => &[
-                "0xFFFF", "0xffff", "0XFFFF", "0Xffff", "65535", "0xFF", "0xff", "255",
-            ],
-            32 => &[
-                "0xFFFFFFFF",
-                "0xffffffff",
-                "0xFFFF",
-                "0xffff",
-                "0xFF",
-                "0xff",
-            ],
-            _ => return false,
-        };
-
-        masks.iter().any(|m| rhs_text.contains(m))
     }
 
     /// Extract the dominant identifier from an expression for bounds-check lookup.
@@ -2357,4 +2137,344 @@ impl Int31C {
         }
         false
     }
+}
+
+/// The `<limits.h>` and `<stdint.h>` limit macros, each with the type whose
+/// limit it is and whether it is that type's largest value (else its
+/// smallest).
+const LIMIT_MACROS: &[(&str, &str, bool)] = &[
+    ("SCHAR_MAX", "signed char", true),
+    ("SCHAR_MIN", "signed char", false),
+    ("UCHAR_MAX", "unsigned char", true),
+    ("SHRT_MAX", "short", true),
+    ("SHRT_MIN", "short", false),
+    ("USHRT_MAX", "unsigned short", true),
+    ("INT_MAX", "int", true),
+    ("INT_MIN", "int", false),
+    ("UINT_MAX", "unsigned int", true),
+    ("LONG_MAX", "long", true),
+    ("LONG_MIN", "long", false),
+    ("ULONG_MAX", "unsigned long", true),
+    ("LLONG_MAX", "long long", true),
+    ("LLONG_MIN", "long long", false),
+    ("ULLONG_MAX", "unsigned long long", true),
+    ("INT8_MAX", "int8_t", true),
+    ("INT8_MIN", "int8_t", false),
+    ("UINT8_MAX", "uint8_t", true),
+    ("INT16_MAX", "int16_t", true),
+    ("INT16_MIN", "int16_t", false),
+    ("UINT16_MAX", "uint16_t", true),
+    ("INT32_MAX", "int32_t", true),
+    ("INT32_MIN", "int32_t", false),
+    ("UINT32_MAX", "uint32_t", true),
+    ("INT64_MAX", "int64_t", true),
+    ("INT64_MIN", "int64_t", false),
+    ("UINT64_MAX", "uint64_t", true),
+    ("SIZE_MAX", "size_t", true),
+];
+
+/// A conversion's target, as the guards before it are read against.
+struct Target {
+    width: IntWidth,
+    signed: bool,
+    /// The largest value every implementation gives the target.
+    max: i64,
+    /// The smallest value every implementation gives the target.
+    min: i64,
+}
+
+/// What a governing condition establishes about a variable against a
+/// target: that it is at least the target's smallest value, and that it is
+/// at most its largest.
+#[derive(Default, Clone, Copy)]
+struct Bounds {
+    lower: bool,
+    upper: bool,
+}
+
+impl Bounds {
+    fn or(self, other: Bounds) -> Bounds {
+        Bounds {
+            lower: self.lower || other.lower,
+            upper: self.upper || other.upper,
+        }
+    }
+}
+
+impl Int31C {
+    /// Whether the conditions governing `site` keep the variable `operand`
+    /// inside `target_type`, from a `source_type` value: each side the
+    /// conversion can lose on is bounded by a condition, read with the
+    /// polarity the path to `site` gives it, against a number inside the
+    /// target or a limit macro that is inside it on every implementation
+    /// (`SCHAR_MAX` for a `short`, `UCHAR_MAX` for a `uint8_t`). This is
+    /// what credits CERT's own guards under ISO C's widths, where
+    /// `UCHAR_MAX` is no number for value-range analysis to compare with.
+    /// A condition counts only when nothing writes the variable between it
+    /// and `site`.
+    fn guards_prove_fit(
+        &self,
+        site: &Node,
+        operand: &Node,
+        source: &str,
+        source_type: &str,
+        target_type: &str,
+    ) -> bool {
+        let operand = unwrap_parenthesized(*operand);
+        if operand.kind() != "identifier" {
+            return false;
+        }
+        let var = get_node_text(&operand, source).trim();
+        let (Some(source_width), Some(target_width)) = (
+            self.get_type_width_resolved(source_type),
+            self.get_type_width_resolved(target_type),
+        ) else {
+            return false;
+        };
+        let source_signed = self.is_signed_type(source_type);
+        let target_signed = self.is_signed_type(target_type);
+        let narrower = may_be_narrower(target_width, source_width);
+        let need_lower = source_signed && (!target_signed || narrower);
+        let need_upper = narrower || (!source_signed && target_signed);
+        if !need_lower && !need_upper {
+            return true;
+        }
+        let bits = target_width.min;
+        if bits == 0 || bits > 63 {
+            return false;
+        }
+        let target = Target {
+            width: target_width,
+            signed: target_signed,
+            max: if target_signed {
+                (1i64 << (bits - 1)) - 1
+            } else {
+                (1i64 << bits) - 1
+            },
+            min: if target_signed {
+                -((1i64 << (bits - 1)) - 1)
+            } else {
+                0
+            },
+        };
+        let Some(function) = ast_utils::find_containing_function(site) else {
+            return false;
+        };
+        let mut bounds = Bounds::default();
+        for (condition, branch) in guard_dominance::dominating_conditions_with_branches(site) {
+            let Some(truth) = branch else {
+                continue;
+            };
+            if written_between(
+                &function,
+                var,
+                condition.end_byte(),
+                site.start_byte(),
+                source,
+            ) {
+                continue;
+            }
+            bounds = bounds.or(self.condition_bounds(&condition, var, truth, &target, source));
+        }
+        (bounds.lower || !need_lower) && (bounds.upper || !need_upper)
+    }
+
+    /// What `condition`, evaluated `truth`, says about `var` against
+    /// `target`. A true `&&` and a false `||` make each side a fact, `!`
+    /// flips the truth, and a comparison of `var` with a bound in either
+    /// order is a fact on one side.
+    fn condition_bounds(
+        &self,
+        condition: &Node,
+        var: &str,
+        truth: bool,
+        target: &Target,
+        source: &str,
+    ) -> Bounds {
+        let condition = unwrap_parenthesized(*condition);
+        match condition.kind() {
+            "unary_expression" => {
+                let negates = condition
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "!");
+                match condition.child_by_field_name("argument") {
+                    Some(argument) if negates => {
+                        self.condition_bounds(&argument, var, !truth, target, source)
+                    }
+                    _ => Bounds::default(),
+                }
+            }
+            "binary_expression" => {
+                let (Some(op), Some(left), Some(right)) = (
+                    condition.child_by_field_name("operator"),
+                    condition.child_by_field_name("left"),
+                    condition.child_by_field_name("right"),
+                ) else {
+                    return Bounds::default();
+                };
+                match op.kind() {
+                    "&&" if truth => self
+                        .condition_bounds(&left, var, true, target, source)
+                        .or(self.condition_bounds(&right, var, true, target, source)),
+                    "||" if !truth => self
+                        .condition_bounds(&left, var, false, target, source)
+                        .or(self.condition_bounds(&right, var, false, target, source)),
+                    "<" | "<=" | ">" | ">=" | "==" | "!=" => {
+                        let is_var = |n: &Node| {
+                            let n = unwrap_parenthesized(*n);
+                            n.kind() == "identifier" && get_node_text(&n, source).trim() == var
+                        };
+                        let (op, bound) = if is_var(&left) {
+                            (op.kind(), right)
+                        } else if is_var(&right) {
+                            (flip_comparison(op.kind()), left)
+                        } else {
+                            return Bounds::default();
+                        };
+                        let op = if truth { op } else { negate_comparison(op) };
+                        self.comparison_bounds(op, &bound, target, source)
+                    }
+                    _ => Bounds::default(),
+                }
+            }
+            _ => Bounds::default(),
+        }
+    }
+
+    /// What `var OP bound`, known true, says about `var` against `target`.
+    fn comparison_bounds(&self, op: &str, bound: &Node, target: &Target, source: &str) -> Bounds {
+        let bound = unwrap_parenthesized(*bound);
+        let text = get_node_text(&bound, source).trim().to_string();
+        let limit = LIMIT_MACROS.iter().find(|(name, _, _)| *name == text);
+        let value = || {
+            let macros = self.current_macros.borrow();
+            const_eval::try_evaluate_range(&bound, source, &macros, &Default::default())
+                .filter(|r| r.min == r.max)
+                .map(|r| r.min)
+        };
+        let upper = matches!(op, "<" | "<=" | "==")
+            && match limit {
+                Some((_, ty, true)) => self.limit_max_within(ty, target),
+                Some(_) => false,
+                None => value().is_some_and(|v| {
+                    let largest = if op == "<" { v.saturating_sub(1) } else { v };
+                    largest <= target.max
+                }),
+            };
+        let lower = matches!(op, ">" | ">=" | "==")
+            && match limit {
+                Some((_, ty, false)) => self.limit_min_within(ty, target),
+                Some(_) => false,
+                None => value().is_some_and(|v| {
+                    let smallest = if op == ">" { v.saturating_add(1) } else { v };
+                    smallest >= target.min
+                }),
+            };
+        Bounds { lower, upper }
+    }
+
+    /// The width of the type a limit macro belongs to, as compared with a
+    /// target of exactly 8 bits: a `(u)int8_t` exists only where a byte is
+    /// 8 bits, so the character types are 8 bits wherever it does.
+    fn limit_width(&self, limit_type: &str, target: &Target) -> Option<IntWidth> {
+        let width = self.get_type_width_resolved(limit_type)?;
+        let byte = matches!(limit_type, "signed char" | "unsigned char");
+        if byte && target.width.max == Some(8) && target.width.min == 8 {
+            return Some(IntWidth {
+                rank: width.rank,
+                min: 8,
+                max: Some(8),
+            });
+        }
+        Some(width)
+    }
+
+    /// Whether the largest value of `limit_type` is at most the target's on
+    /// every implementation.
+    fn limit_max_within(&self, limit_type: &str, target: &Target) -> bool {
+        let Some(width) = self.limit_width(limit_type, target) else {
+            return false;
+        };
+        let limit_signed = self.is_signed_type(limit_type);
+        if may_be_narrower(target.width, width) {
+            return false;
+        }
+        // An unsigned type's largest value can pass a signed type's of the
+        // same width.
+        limit_signed || !target.signed || width.max.is_some_and(|w| w < target.width.min)
+    }
+
+    /// Whether the smallest value of `limit_type`, a signed type, is at
+    /// least the target's on every implementation.
+    fn limit_min_within(&self, limit_type: &str, target: &Target) -> bool {
+        let Some(width) = self.limit_width(limit_type, target) else {
+            return false;
+        };
+        target.signed && !may_be_narrower(target.width, width)
+    }
+}
+
+/// `node` with any parentheses around it removed.
+fn unwrap_parenthesized(mut node: Node) -> Node {
+    while node.kind() == "parenthesized_expression" {
+        match node.named_child(0) {
+            Some(inner) => node = inner,
+            None => break,
+        }
+    }
+    node
+}
+
+/// The comparison `b OP a` means as `a OP' b`.
+fn flip_comparison(op: &str) -> &str {
+    match op {
+        "<" => ">",
+        "<=" => ">=",
+        ">" => "<",
+        ">=" => "<=",
+        other => other,
+    }
+}
+
+/// The comparison that holds where `a OP b` is false.
+fn negate_comparison(op: &str) -> &str {
+    match op {
+        "<" => ">=",
+        "<=" => ">",
+        ">" => "<=",
+        ">=" => "<",
+        "==" => "!=",
+        _ => "==",
+    }
+}
+
+/// Whether `function` writes `var` (an assignment to it, `++`/`--`, or its
+/// address taken) anywhere in `[from, to)`.
+fn written_between(function: &Node, var: &str, from: usize, to: usize, source: &str) -> bool {
+    if from >= to {
+        return false;
+    }
+    let names = |n: Option<Node>| {
+        n.map(unwrap_parenthesized)
+            .is_some_and(|n| n.kind() == "identifier" && get_node_text(&n, source).trim() == var)
+    };
+    query::find_descendants_of_kinds(
+        *function,
+        &[
+            "assignment_expression",
+            "update_expression",
+            "pointer_expression",
+        ],
+    )
+    .into_iter()
+    .filter(|n| n.start_byte() >= from && n.start_byte() < to)
+    .any(|n| match n.kind() {
+        "assignment_expression" => names(n.child_by_field_name("left")),
+        "update_expression" => names(n.child_by_field_name("argument")),
+        _ => {
+            n.child_by_field_name("operator")
+                .is_some_and(|op| op.kind() == "&")
+                && names(n.child_by_field_name("argument"))
+        }
+    })
 }
