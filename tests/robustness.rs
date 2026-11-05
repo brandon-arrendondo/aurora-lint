@@ -2026,6 +2026,35 @@ fn closed_nest_in_an_initializer(n: usize) -> String {
     format!("int t[] = {{\n{opens}0{}}};\n", " },\n#endif\n".repeat(n))
 }
 
+/// A nest of `n` closed `#if` blocks in a function, each holding a
+/// statement with a `/` in it, and `inner` innermost.
+fn closed_nest_of_statements(n: usize, inner: &str) -> String {
+    let opens: String = (0..n).map(|i| format!("#if A{i}\nc = c / 2;\n")).collect();
+    format!(
+        "int f(int c)\n{{\n{opens}{inner}{}{{ c++; }}\nreturn c;\n}}\n",
+        "#endif\n".repeat(n)
+    )
+}
+
+/// [`closed_nest_of_statements`] with nothing more innermost.
+fn closed_nest_with_slashes(n: usize) -> String {
+    closed_nest_of_statements(n, "")
+}
+
+/// [`closed_nest_of_statements`] whose innermost line, and so every
+/// block's last, is a control header.
+fn closed_nest_ending_in_a_header(n: usize) -> String {
+    closed_nest_of_statements(n, "if (c)\n")
+}
+
+/// [`closed_nest_ending_in_a_header`] inside `#if 0`, where the header is
+/// blanked rather than its guards.
+fn dead_nest_ending_in_a_header(n: usize) -> String {
+    closed_nest_of_statements(n, "if (c)\n")
+        .replacen("{\n", "{\n#if 0\n", 1)
+        .replacen("{ c++; }", "#endif\n{ c++; }", 1)
+}
+
 /// A named generator of source text of a given size.
 type SourceSeries = (&'static str, fn(usize) -> String);
 
@@ -2034,13 +2063,15 @@ type SourceSeries = (&'static str, fn(usize) -> String);
 /// or generated file), and a deep nest of closed ones. A pass that finds a
 /// conditional's `#endif` by scanning forward from each `#if`, or rereads
 /// each block's whole body, is quadratic here, and a few thousand lines of
-/// such input once held a scan for minutes. Timed on the parse alone: what
+/// such input once held a scan for minutes. The nests of statements check
+/// that a block's code is not rejoined to ask whether it ends with a
+/// control header, live or in `#if 0`. Timed on the parse alone: what
 /// the rules then do with the file is the other series' concern.
 #[test]
 #[ignore = "size series: run in release with --ignored (CI robustness job)"]
 fn malformed_conditionals_parse_near_linearly() {
     let _runner = timed();
-    let series: [SourceSeries; 4] = [
+    let series: [SourceSeries; 7] = [
         (
             "unclosed_ifs_with_declarations",
             unclosed_ifs_with_declarations,
@@ -2051,6 +2082,12 @@ fn malformed_conditionals_parse_near_linearly() {
             "closed_nest_in_an_initializer",
             closed_nest_in_an_initializer,
         ),
+        ("closed_nest_with_slashes", closed_nest_with_slashes),
+        (
+            "closed_nest_ending_in_a_header",
+            closed_nest_ending_in_a_header,
+        ),
+        ("dead_nest_ending_in_a_header", dead_nest_ending_in_a_header),
     ];
     let small = 2_500;
     let mut failures = Vec::new();

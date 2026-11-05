@@ -1862,6 +1862,16 @@ allowed between them, so `# endif` and `#  ifdef X` are directives),
 for `match_conditionals`. A longer name is no match (`#ifdefX`, `#endiff`):
 never test a directive with a `"#if"` or `"#endif"` prefix.
 
+A pass that asks a question of each block's whole body (does it end with a
+control header, do its braces pair up) answers it from the file read once,
+not by joining each block's lines: blocks nest, so the joins are quadratic in
+the nest's depth. `control_header_preproc_guard` strips the comments of the
+file's code once and finds each block's code as a slice of that, and
+`range_min::MinTree` gives the least of a list of per-line depths over any
+range, from which a run of lines' brackets balance when the run ends at the
+depth it starts at and never goes below it (`initializer_preproc_guard`'s
+`EntryRuns` and the control-header pass's `#if 0` headers both use it).
+
 Each blanks the offending directive
 lines, length-preserving, so the guarded code rejoins the construct it
 belongs to. All of them operate at parse time, not from within a rule — a rule

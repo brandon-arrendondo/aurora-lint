@@ -75,6 +75,7 @@ pub mod preproc_split_chain;
 /// The pre-scan phase: a first pass over the project (and sibling headers)
 /// that builds the [`context::ProjectContext`] later rule passes consume.
 pub mod prescan;
+pub(crate) mod range_min;
 pub mod relevance;
 pub mod shadowed_names;
 /// Per-function mod/ref summaries: what calling a function can write or

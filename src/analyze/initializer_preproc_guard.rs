@@ -95,6 +95,7 @@
 use crate::analyze::paren_preproc_guard::{blank_line, is_directive, CodeLines};
 use crate::analyze::preproc_arm_choice::{compiled_arm, directive_extent, locally_defined_names};
 use crate::analyze::preproc_conditionals::{is_branch_directive, is_directive_start, is_endif};
+use crate::analyze::range_min::MinTree;
 use std::rc::Rc;
 
 /// The comment left where an `#elif`/`#else` was, in an initializer list
@@ -306,9 +307,10 @@ fn initializer_conditionals(lines: &CodeLines) -> Vec<Conditional> {
 /// Whether a run of lines is whole initializer entries: no `;`, and braces
 /// and parentheses that balance without ever closing more than they opened.
 ///
-/// Answered for any run in constant time from tables built once per file:
-/// arms nest, so checking each arm's lines afresh is quadratic in the depth
-/// of the nest.
+/// Answered for any run in time logarithmic in the file's length, from
+/// tables built once per file that has an initializer conditional: arms
+/// nest, so checking each arm's lines afresh is quadratic in the depth of
+/// the nest.
 struct EntryRuns {
     /// How many lines before each line hold a `;`.
     semicolons: Vec<usize>,
@@ -341,57 +343,42 @@ impl EntryRuns {
 /// One kind of bracket's depth across a file, counted from its start.
 struct Nesting {
     /// The depth before each line, and after the last.
-    before: Vec<i64>,
-    /// `lowest[j][k]`: the lowest depth reached after any character of lines
-    /// `k..k + 2^j`, or the depth before line `k` where they have none.
-    lowest: Vec<Vec<i64>>,
+    before: Vec<i32>,
+    /// By line: the lowest depth reached after any of its characters, or
+    /// the depth before it where it has none.
+    lowest: MinTree,
 }
 
 impl Nesting {
     fn new(code: &[String], open: char, close: char) -> Self {
         let mut before = Vec::with_capacity(code.len() + 1);
         let mut low = Vec::with_capacity(code.len());
-        let mut depth = 0i64;
+        let mut depth = 0i32;
         for line in code {
             before.push(depth);
             let mut line_low = depth;
             for c in line.chars() {
                 if c == open {
-                    depth += 1;
+                    depth = depth.saturating_add(1);
                 } else if c == close {
-                    depth -= 1;
+                    depth = depth.saturating_sub(1);
                     line_low = line_low.min(depth);
                 }
             }
             low.push(line_low);
         }
         before.push(depth);
-        let mut lowest = vec![low];
-        let mut span = 1;
-        while span * 2 <= code.len() {
-            let prev = lowest.last().expect("a level");
-            let next = (0..=code.len() - span * 2)
-                .map(|k| prev[k].min(prev[k + span]))
-                .collect();
-            lowest.push(next);
-            span *= 2;
+        Self {
+            before,
+            lowest: MinTree::new(&low),
         }
-        Self { before, lowest }
     }
 
     /// Whether lines `run` end at the depth they start at without going
     /// below it.
     fn balanced(&self, run: &std::ops::Range<usize>) -> bool {
         let start = self.before[run.start];
-        if self.before[run.end] != start {
-            return false;
-        }
-        if run.is_empty() {
-            return true;
-        }
-        let level = (run.len().ilog2()) as usize;
-        let table = &self.lowest[level];
-        table[run.start].min(table[run.end - (1 << level)]) >= start
+        self.before[run.end] == start && self.lowest.min(run.clone()) >= start
     }
 }
 
@@ -473,7 +460,8 @@ pub fn blank_initializer_guarded_preproc(source: &str) -> String {
     let lines = CodeLines::new(source);
     let mut out = source.as_bytes().to_vec();
     let mut local = None;
-    let runs = EntryRuns::new(&lines);
+    // Built on the first conditional, since most files have none.
+    let mut runs = None;
 
     for c in initializer_conditionals(&lines) {
         let edges: Vec<usize> = std::iter::once(c.start)
@@ -485,6 +473,7 @@ pub fn blank_initializer_guarded_preproc(source: &str) -> String {
             .windows(2)
             .map(|e| directive_extent(&lines.raw, e[0]).end..e[1])
             .collect();
+        let runs = runs.get_or_insert_with(|| EntryRuns::new(&lines));
         if !arms.iter().all(|a| runs.is_entry_run(a)) {
             continue;
         }
