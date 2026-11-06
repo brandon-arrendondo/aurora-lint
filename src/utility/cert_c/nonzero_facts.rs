@@ -20,7 +20,7 @@ use super::ast_utils;
 use super::guard_dominance;
 use super::std_functions;
 use crate::analyze::address_taken::{
-    is_extern, store_base, AddressTakenLocals, FunctionKey, FunctionMemo, LocalId,
+    self, is_extern, store_base, AddressTakenLocals, FunctionKey, FunctionMemo, LocalId,
 };
 use crate::analyze::init_state::addressed_object_root;
 use crate::analyze::macro_expand;
@@ -423,6 +423,8 @@ pub struct FileScopeFacts {
     pub constant: HashSet<String>,
     /// The functions the file defines.
     defined: HashSet<String>,
+    /// The typedef names the file defines.
+    typedefs: HashSet<String>,
     /// The function-like macros the file defines, each with what an
     /// invocation may write unseen ([`file_macros`]).
     macros: HashMap<String, CallWrites>,
@@ -520,7 +522,7 @@ impl FileScopeFacts {
         }
         // A `#define` body naming a static assigns it wherever the macro is
         // used, which no function's own text shows.
-        let defined_in_macros = define_body_identifiers(source);
+        let defined_in_macros = address_taken::define_body_identifiers(source);
         for (name, writers) in statics.iter_mut() {
             if defined_in_macros.contains(name) {
                 writers.insert(usize::MAX);
@@ -531,8 +533,18 @@ impl FileScopeFacts {
             .flat_map(|t| {
                 let mut cursor = t.walk();
                 t.children_by_field_name("declarator", &mut cursor)
-                    .filter(|d| d.kind() == "type_identifier")
-                    .map(|d| ast_utils::get_node_text(&d, source).to_string())
+                    .filter_map(|d| {
+                        // `typedef int *ip;`, `typedef int (*fp_t)(int);`:
+                        // the name is under pointer, function and
+                        // parenthesized declarators.
+                        let mut d = d;
+                        while d.kind() != "type_identifier" {
+                            d = d
+                                .child_by_field_name("declarator")
+                                .or_else(|| d.named_child(0))?;
+                        }
+                        Some(ast_utils::get_node_text(&d, source).to_string())
+                    })
                     .collect::<Vec<_>>()
             })
             .collect();
@@ -541,6 +553,7 @@ impl FileScopeFacts {
             addressed,
             constant,
             macros: file_macros(source, &defined, &typedefs),
+            typedefs,
             defined,
             statics,
         }
@@ -563,8 +576,21 @@ impl FileScopeFacts {
     /// a pointer it is handed, for a library function the file does not
     /// define or a `__builtin_`; anything, for every other call.
     pub fn call_writes(&self, call: &Node, source: &str) -> CallWrites {
-        let Some(name) = call
-            .child_by_field_name("function")
+        let callee = call.child_by_field_name("function");
+        // `(u8x)(a)` with `u8x` a type name parses as a call; it is a cast.
+        let cast = callee
+            .filter(|f| f.kind() == "parenthesized_expression")
+            .and_then(|f| f.named_child(0))
+            .filter(|t| t.kind() == "identifier")
+            .is_some_and(|t| {
+                side_effects::names_a_type(ast_utils::get_node_text(&t, source), |n| {
+                    self.typedefs.contains(n)
+                })
+            });
+        if cast {
+            return CallWrites::Nothing;
+        }
+        let Some(name) = callee
             .filter(|f| f.kind() == "identifier")
             .map(|f| ast_utils::get_node_text(&f, source))
         else {
@@ -677,36 +703,6 @@ fn callee_name<'a>(call: &Node, source: &'a str) -> Option<&'a str> {
     call.child_by_field_name("function")
         .filter(|f| f.kind() == "identifier")
         .map(|f| ast_utils::get_node_text(&f, source))
-}
-
-/// Every identifier the body of some `#define` of `source` spells.
-fn define_body_identifiers(source: &str) -> HashSet<String> {
-    let mut out = HashSet::new();
-    let mut lines = source.lines();
-    while let Some(line) = lines.next() {
-        let trimmed = line.trim_start();
-        let Some(rest) = trimmed.strip_prefix('#') else {
-            continue;
-        };
-        if !rest.trim_start().starts_with("define") {
-            continue;
-        }
-        let mut logical = line.to_string();
-        while logical.ends_with('\\') {
-            logical.pop();
-            match lines.next() {
-                Some(next) => logical.push_str(next),
-                None => break,
-            }
-        }
-        out.extend(
-            logical
-                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                .filter(|w| is_identifier(w))
-                .map(str::to_string),
-        );
-    }
-    out
 }
 
 /// What a call may write unseen ([`FileScopeFacts::call_writes`]).

@@ -33,6 +33,7 @@ use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 use std::sync::Arc;
 use tree_sitter::Node;
 
@@ -165,6 +166,7 @@ impl<T: Clone> FunctionMemo<T> {
 /// through `nonzero_facts::forget_function_facts` before each file.
 pub fn forget_function_facts() {
     FACTS.with(|memo| memo.borrow_mut().forget());
+    DEFINE_BODY_IDENTIFIERS.with(|memo| *memo.borrow_mut() = None);
 }
 
 impl<T: Clone> Default for FunctionMemo<T> {
@@ -386,13 +388,23 @@ impl AddressTakenLocals {
                 (None, _) => false,
             }
         };
+        // A macro body that spells the pointer may assign it wherever the
+        // macro is used.
+        if define_body_identifiers(source).contains(text(&base, source)) {
+            return None;
+        }
         let mut stack = vec![func];
         while let Some(n) = stack.pop() {
             stack.extend((0..n.named_child_count()).filter_map(|i| n.named_child(i)));
             if n.kind() != "identifier" || self.local_of(&n) != Some(pointer) {
                 continue;
             }
-            if !self.pointer_use_keeps_target(&n, source, &mut agree) {
+            // A GNU nested function may run whenever it is called, at any
+            // call after the store.
+            let nested = std::iter::successors(n.parent(), |p| p.parent())
+                .take_while(|p| p.id() != func.id())
+                .any(|p| p.kind() == "function_definition");
+            if nested || !self.pointer_use_keeps_target(&n, source, &mut agree) {
                 return None;
             }
         }
@@ -577,28 +589,105 @@ impl AddressTakenLocals {
     }
 }
 
+/// Every identifier the body of some `#define` of `source` spells, read
+/// from the text.
+fn read_define_body_identifiers(source: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut lines = source.lines();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix('#') else {
+            continue;
+        };
+        if !rest.trim_start().starts_with("define") {
+            continue;
+        }
+        let mut logical = line.to_string();
+        while logical.ends_with('\\') {
+            logical.pop();
+            match lines.next() {
+                Some(next) => logical.push_str(next),
+                None => break,
+            }
+        }
+        out.extend(
+            logical
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|w| w.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_'))
+                .map(str::to_string),
+        );
+    }
+    out
+}
+
+/// A source buffer's address and length, with the identifiers its
+/// `#define` bodies spell.
+type DefineBodyMemo = Option<((usize, usize), Rc<HashSet<String>>)>;
+
+thread_local! {
+    /// [`define_body_identifiers`] of the source last asked about on this
+    /// thread.
+    static DEFINE_BODY_IDENTIFIERS: RefCell<DefineBodyMemo> = const { RefCell::new(None) };
+}
+
+/// Every identifier some `#define` body of `source` spells: a name a macro
+/// may assign or read wherever it is used, which no occurrence in a
+/// function's tree shows. Read once per file ([`forget_function_facts`]
+/// forgets it with the facts).
+pub fn define_body_identifiers(source: &str) -> Rc<HashSet<String>> {
+    let key = (source.as_ptr() as usize, source.len());
+    if let Some(found) = DEFINE_BODY_IDENTIFIERS.with(|memo| {
+        memo.borrow()
+            .as_ref()
+            .filter(|(k, _)| *k == key)
+            .map(|(_, ids)| Rc::clone(ids))
+    }) {
+        return found;
+    }
+    let ids = Rc::new(read_define_body_identifiers(source));
+    DEFINE_BODY_IDENTIFIERS.with(|memo| *memo.borrow_mut() = Some((key, Rc::clone(&ids))));
+    ids
+}
+
 /// Whether the file holding `node` defines the typedef `name` with a
 /// `volatile` qualifier (`typedef volatile int vint;`).
 fn typedef_is_volatile(node: &Node, name: &str, source: &str) -> bool {
     let root = tree_root(node);
+    let mut definitions: Vec<Node> = Vec::new();
     let mut stack = vec![root];
     while let Some(n) = stack.pop() {
         if n.kind() == "type_definition" {
-            let mut cursor = n.walk();
-            let names = n
-                .children_by_field_name("declarator", &mut cursor)
-                .any(|d| text(&d, source) == name);
-            if names {
-                return (0..n.named_child_count())
-                    .filter_map(|i| n.named_child(i))
-                    .any(|c| c.kind() == "type_qualifier" && text(&c, source) == "volatile");
-            }
-            continue;
-        }
-        if n.kind() == "function_definition" {
+            definitions.push(n);
             continue;
         }
         stack.extend((0..n.named_child_count()).filter_map(|i| n.named_child(i)));
+    }
+    // Follow a chain of typedefs (`typedef vint vv;`), any of which may be
+    // the volatile one, whether at file scope or in a function.
+    let mut name = name.to_string();
+    for _ in 0..16 {
+        let Some(def) = definitions.iter().find(|d| {
+            let mut cursor = d.walk();
+            let found = d
+                .children_by_field_name("declarator", &mut cursor)
+                .any(|x| text(&x, source) == name);
+            found
+        }) else {
+            return false;
+        };
+        let volatile = (0..def.named_child_count())
+            .filter_map(|i| def.named_child(i))
+            .any(|c| c.kind() == "type_qualifier" && text(&c, source) == "volatile");
+        if volatile {
+            return true;
+        }
+        match def
+            .child_by_field_name("type")
+            .filter(|t| t.kind() == "type_identifier")
+        {
+            Some(t) => name = text(&t, source).to_string(),
+            None => return false,
+        }
     }
     false
 }
