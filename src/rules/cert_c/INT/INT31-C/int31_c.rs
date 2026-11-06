@@ -2635,12 +2635,14 @@ impl Int31C {
                         let bounds = self.comparison_bounds(op, &bound, target, source);
                         let below = matches!(op, "<" | "<=");
                         // Compared as unsigned, a negative value reads as a
-                        // large one: `x < B` then also says `x` is not
-                        // negative, and `x >= B` or `x == B` says nothing.
+                        // large one, at least 2^(w-1) for a common type of w
+                        // bits: `x < B` then also says `x` is not negative
+                        // when `B` is a constant no larger than that, and
+                        // `x >= B` or `x == B` says nothing.
                         match self.compared_as_unsigned(&occurrence, &bound, source) {
                             Some(false) => bounds,
                             Some(true) => Bounds {
-                                lower: below,
+                                lower: below && self.rules_out_a_negative_value(op, &bound, source),
                                 upper: below && bounds.upper,
                             },
                             None => Bounds {
@@ -2653,6 +2655,32 @@ impl Int31C {
                 }
             }
             _ => Bounds::default(),
+        }
+    }
+
+    /// Whether `x OP bound`, known true and compared as unsigned, rules out
+    /// a negative `x`: a negative value converts to at least 2^(w-1), `w`
+    /// the unsigned bound type's smallest width, so a constant bound below
+    /// that (`<`) or at most one less (`<=`) excludes it. A bound that is
+    /// not a constant (`x < n`) says nothing: `n` may be `UINT_MAX`.
+    fn rules_out_a_negative_value(&self, op: &str, bound: &Node, source: &str) -> bool {
+        let Some(bits) = self
+            .bound_type_spelling(bound, source)
+            .and_then(|ty| self.get_type_width_resolved(&ty))
+            .map(|w| w.min)
+            .filter(|&b| (1..=64).contains(&b))
+        else {
+            return false;
+        };
+        let Some(value) = self.constant_value(&unwrap_parenthesized(*bound), source) else {
+            return false;
+        };
+        let threshold = 1i128 << (bits - 1);
+        let value = i128::from(value);
+        match op {
+            "<" => value <= threshold,
+            "<=" => value < threshold,
+            _ => false,
         }
     }
 
@@ -2670,7 +2698,16 @@ impl Int31C {
             return Some(false);
         }
         let Some(bound_type) = self.bound_type_spelling(bound, source) else {
-            return Some(false);
+            // A macro whose definitions do not show its type may be an
+            // unsigned constant (`#define ZERO 0u`).
+            let named = unwrap_parenthesized(*bound);
+            let macro_bound = named.kind() == "identifier"
+                && operand_type_spelling(&named, source).is_none()
+                && self
+                    .macro_definitions
+                    .borrow()
+                    .contains_key(get_node_text(&named, source).trim());
+            return if macro_bound { None } else { Some(false) };
         };
         if !self.is_unsigned_type(&bound_type) {
             return Some(false);
@@ -2700,23 +2737,78 @@ impl Int31C {
         if let Some((_, ty, _)) = LIMIT_MACROS.iter().find(|(name, _, _)| *name == text) {
             return Some(ty.to_string());
         }
+        // A name declared where it is used is that object, whatever a macro
+        // elsewhere in the project spells the same (ADR-0006).
+        if bound.kind() == "identifier" {
+            if let Some(ty) = operand_type_spelling(&bound, source) {
+                return Some(ty);
+            }
+            if let Some(ty) = self.macro_constant_type(text, 0) {
+                return Some(ty);
+            }
+        }
         if bound.kind() == "number_literal" {
-            let (sign, rank) = match expr_type::number_literal_type(text, self.data_model.get())? {
-                CType::Int { sign, rank } => (sign, rank),
-                _ => return None,
-            };
-            let rank = match rank {
-                Rank::Int => "int",
-                Rank::Long => "long",
-                Rank::LongLong => "long long",
-                _ => return None,
-            };
-            return Some(match sign {
-                Sign::Unsigned => format!("unsigned {rank}"),
-                _ => rank.to_string(),
-            });
+            return self.literal_type_spelling(text);
         }
         operand_type_spelling(&bound, source)
+    }
+
+    /// The type of an integer constant's spelling (`0u` is `unsigned int`).
+    fn literal_type_spelling(&self, text: &str) -> Option<String> {
+        let (sign, rank) = match expr_type::number_literal_type(text, self.data_model.get())? {
+            CType::Int { sign, rank } => (sign, rank),
+            _ => return None,
+        };
+        let rank = match rank {
+            Rank::Int => "int",
+            Rank::Long => "long",
+            Rank::LongLong => "long long",
+            _ => return None,
+        };
+        Some(match sign {
+            Sign::Unsigned => format!("unsigned {rank}"),
+            _ => rank.to_string(),
+        })
+    }
+
+    /// The type an object-like macro's constant has, over every definition
+    /// of it: an integer constant's, a limit macro's, or another macro's.
+    /// `None` when a definition is none of those, or the definitions
+    /// disagree.
+    fn macro_constant_type(&self, name: &str, depth: usize) -> Option<String> {
+        if depth > 8 {
+            return None;
+        }
+        let definitions = self.macro_definitions.borrow().get(name).cloned()?;
+        let mut types = definitions.iter().map(|d| match d {
+            MacroDefinition::Object { body } => self.constant_text_type(body, depth),
+            _ => None,
+        });
+        let first = types.next()??;
+        types
+            .all(|t| t.as_deref() == Some(first.as_str()))
+            .then_some(first)
+    }
+
+    /// [`Self::macro_constant_type`] for one replacement list.
+    fn constant_text_type(&self, body: &str, depth: usize) -> Option<String> {
+        let mut text = body.trim();
+        while let Some(inner) = text.strip_prefix('(').and_then(|t| t.strip_suffix(')')) {
+            if inner.contains(['(', ')']) {
+                break;
+            }
+            text = inner.trim();
+        }
+        if text.starts_with(|c: char| c.is_ascii_digit()) {
+            return self.literal_type_spelling(text);
+        }
+        if let Some((_, ty, _)) = LIMIT_MACROS.iter().find(|(name, _, _)| *name == text) {
+            return Some(ty.to_string());
+        }
+        if text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return self.macro_constant_type(text, depth + 1);
+        }
+        None
     }
 
     /// What `var OP bound`, known true, says about `var` against `target`.
@@ -2724,11 +2816,21 @@ impl Int31C {
         let bound = unwrap_parenthesized(*bound);
         let text = get_node_text(&bound, source).trim().to_string();
         let limit = LIMIT_MACROS.iter().find(|(name, _, _)| *name == text);
+        // An unsigned constant is its value modulo its type's width:
+        // `x <= ~0U` bounds `x` by `UINT_MAX`, not by -1.
         let value = || {
-            let macros = self.current_macros.borrow();
-            const_eval::try_evaluate_range(&bound, source, &macros, &Default::default())
+            if bound.kind() == "char_literal" {
+                let macros = self.current_macros.borrow();
+                return const_eval::try_evaluate_range(
+                    &bound,
+                    source,
+                    &macros,
+                    &Default::default(),
+                )
                 .filter(|r| r.min == r.max)
-                .map(|r| r.min)
+                .map(|r| r.min);
+            }
+            self.constant_value(&bound, source)
         };
         let upper = matches!(op, "<" | "<=" | "==")
             && match limit {
