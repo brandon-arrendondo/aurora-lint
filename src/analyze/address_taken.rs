@@ -392,50 +392,7 @@ impl AddressTakenLocals {
             if n.kind() != "identifier" || self.local_of(&n) != Some(pointer) {
                 continue;
             }
-            let Some(parent) = n.parent() else { continue };
-            let is = |field: &str| {
-                parent
-                    .child_by_field_name(field)
-                    .is_some_and(|c| c.id() == n.id())
-            };
-            let ok = match parent.kind() {
-                "init_declarator" if is("declarator") => agree(parent.child_by_field_name("value")),
-                "declaration" => {
-                    // `int *p;` with no initializer, unless it is static.
-                    !has_storage(&parent, source, "static")
-                }
-                "pointer_declarator" => {
-                    // Climb to the declaration: `int *p = &l;` puts `p`
-                    // under a pointer declarator.
-                    let mut d = parent;
-                    while let Some(up) = d.parent() {
-                        if up.kind() != "pointer_declarator" {
-                            break;
-                        }
-                        d = up;
-                    }
-                    match d.parent() {
-                        Some(init) if init.kind() == "init_declarator" => {
-                            let decl = init.parent();
-                            !decl.is_some_and(|x| has_storage(&x, source, "static"))
-                                && agree(init.child_by_field_name("value"))
-                        }
-                        Some(decl) if decl.kind() == "declaration" => {
-                            !has_storage(&decl, source, "static")
-                        }
-                        _ => false,
-                    }
-                }
-                "assignment_expression" if is("left") => {
-                    is_plain_assignment(&parent) && agree(parent.child_by_field_name("right"))
-                }
-                "update_expression" => false,
-                "pointer_expression" => parent
-                    .child_by_field_name("operator")
-                    .is_none_or(|op| op.kind() != "&"),
-                _ => true,
-            };
-            if !ok {
+            if !self.pointer_use_keeps_target(&n, source, &mut agree) {
                 return None;
             }
         }
@@ -446,8 +403,107 @@ impl AddressTakenLocals {
         }
         let volatile = (0..decl.named_child_count())
             .filter_map(|i| decl.named_child(i))
-            .any(|c| c.kind() == "type_qualifier" && text(&c, source) == "volatile");
+            .any(|c| c.kind() == "type_qualifier" && text(&c, source) == "volatile")
+            || decl
+                .child_by_field_name("type")
+                .filter(|t| t.kind() == "type_identifier")
+                .is_some_and(|t| typedef_is_volatile(&func, text(&t, source), source));
         (!volatile).then_some(target)
+    }
+
+    /// Whether the occurrence `ident` of a pointer leaves it holding the
+    /// address `agree` has seen, read through any parentheses: its own
+    /// declaration (not `static`, not a `volatile` pointer, initialized by
+    /// an address `agree` accepts, if at all), a plain assignment of such
+    /// an address, or a read that cannot change it: `*p`, `p[i]`, `p->m`,
+    /// an operand of an operator or a cast, a condition, a value assigned
+    /// or returned, `sizeof`. Anything else may change it: `&p`, a step, a
+    /// compound assignment, an argument (which may be a macro's, and the
+    /// macro may assign it), inline assembly, or a use this does not know.
+    fn pointer_use_keeps_target(
+        &self,
+        ident: &Node,
+        source: &str,
+        agree: &mut impl FnMut(Option<Node>) -> bool,
+    ) -> bool {
+        // A declarator: climb `*p`, `(p)` and `* volatile p` declarators.
+        let mut d = *ident;
+        while let Some(up) = d.parent() {
+            match up.kind() {
+                "pointer_declarator" => {
+                    let volatile = (0..up.named_child_count())
+                        .filter_map(|i| up.named_child(i))
+                        .any(|c| c.kind() == "type_qualifier" && text(&c, source) == "volatile");
+                    if volatile {
+                        return false;
+                    }
+                    d = up;
+                }
+                "parenthesized_declarator" => d = up,
+                _ => break,
+            }
+        }
+        if let Some(up) = d.parent() {
+            let is_declarator = up
+                .child_by_field_name("declarator")
+                .is_some_and(|c| c.id() == d.id());
+            match up.kind() {
+                "init_declarator" if is_declarator => {
+                    let decl = up.parent();
+                    return !decl.is_some_and(|x| has_storage(&x, source, "static"))
+                        && agree(up.child_by_field_name("value"));
+                }
+                "declaration" if is_declarator => return !has_storage(&up, source, "static"),
+                _ if d.id() != ident.id() => return false,
+                _ => {}
+            }
+        }
+        // An expression: climb parentheses.
+        let mut e = *ident;
+        while let Some(up) = e
+            .parent()
+            .filter(|p| p.kind() == "parenthesized_expression")
+        {
+            e = up;
+        }
+        let Some(parent) = e.parent() else {
+            return false;
+        };
+        let is = |field: &str| {
+            parent
+                .child_by_field_name(field)
+                .is_some_and(|c| c.id() == e.id())
+        };
+        match parent.kind() {
+            "assignment_expression" if is("left") => {
+                is_plain_assignment(&parent) && agree(parent.child_by_field_name("right"))
+            }
+            "assignment_expression" => is("right"),
+            "pointer_expression" => parent
+                .child_by_field_name("operator")
+                .is_some_and(|op| op.kind() == "*"),
+            "subscript_expression" => is("argument"),
+            "field_expression" => {
+                is("argument")
+                    && parent
+                        .child_by_field_name("operator")
+                        .is_some_and(|op| op.kind() == "->")
+            }
+            "binary_expression"
+            | "unary_expression"
+            | "cast_expression"
+            | "sizeof_expression"
+            | "conditional_expression"
+            | "comma_expression"
+            | "return_statement"
+            | "if_statement"
+            | "while_statement"
+            | "do_statement"
+            | "for_statement"
+            | "expression_statement" => true,
+            "init_declarator" => is("value"),
+            _ => false,
+        }
     }
 
     /// The locals a callee handed `arg` may write through it: the locals a
@@ -519,6 +575,32 @@ impl AddressTakenLocals {
         self.collect_sources(expr, source, &mut out);
         out
     }
+}
+
+/// Whether the file holding `node` defines the typedef `name` with a
+/// `volatile` qualifier (`typedef volatile int vint;`).
+fn typedef_is_volatile(node: &Node, name: &str, source: &str) -> bool {
+    let root = tree_root(node);
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "type_definition" {
+            let mut cursor = n.walk();
+            let names = n
+                .children_by_field_name("declarator", &mut cursor)
+                .any(|d| text(&d, source) == name);
+            if names {
+                return (0..n.named_child_count())
+                    .filter_map(|i| n.named_child(i))
+                    .any(|c| c.kind() == "type_qualifier" && text(&c, source) == "volatile");
+            }
+            continue;
+        }
+        if n.kind() == "function_definition" {
+            continue;
+        }
+        stack.extend((0..n.named_child_count()).filter_map(|i| n.named_child(i)));
+    }
+    false
 }
 
 /// Whether `decl` has a storage-class specifier spelled `word`.

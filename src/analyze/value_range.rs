@@ -1044,6 +1044,8 @@ pub(crate) struct FileScopeWrites {
     local_keys: HashSet<String>,
     /// The function's start byte, for [`FileScopeFacts::may_write_by_name`].
     func_start: usize,
+    /// The function's name, for telling a call of itself.
+    func_name: Option<String>,
 }
 
 impl FileScopeWrites {
@@ -1056,6 +1058,7 @@ impl FileScopeWrites {
             facts: std::sync::OnceLock::new(),
             local_keys,
             func_start: func.start_byte(),
+            func_name: lang_parsing_substrate::calls::get_function_name(*func, source),
         }
     }
 
@@ -1078,8 +1081,8 @@ impl FileScopeWrites {
         let facts = self
             .facts
             .get_or_init(|| nonzero_facts::file_scope_facts(node, source));
-        let (by_name, through_pointer) = facts.writes_under(node, source);
-        if !by_name && !through_pointer {
+        let writes = facts.writes_under(node, source, self.func_name.as_deref());
+        if !writes.by_name && !writes.through_pointer {
             return;
         }
         let written: Vec<String> = state
@@ -1087,8 +1090,9 @@ impl FileScopeWrites {
             .filter(|k| {
                 self.file_scope(k)
                     && !facts.constant.contains(*k)
-                    && ((by_name && facts.may_write_by_name(k, self.func_start))
-                        || (through_pointer && facts.addressed.contains(*k)))
+                    && ((writes.by_name
+                        && facts.may_write_by_name(k, self.func_start, writes.recursive))
+                        || (writes.through_pointer && facts.addressed.contains(*k)))
             })
             .cloned()
             .collect();

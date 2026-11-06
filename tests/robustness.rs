@@ -1734,6 +1734,25 @@ fn alias_chain_in_functions(depth: usize) -> Vec<u8> {
     out.into_bytes()
 }
 
+/// `count` file-scope objects, a file-scope table of their addresses, and a
+/// function that assigns one of them and shifts by it past a call: the
+/// shift's value range holds a file-scope key, so the analysis reads the
+/// file's facts about which objects a call may write, whose cost grows with
+/// every `&` in the file unless each is read once.
+fn address_table_with_live_file_scope_key(count: usize) -> Vec<u8> {
+    let mut out = String::new();
+    for i in 0..count {
+        let _ = writeln!(out, "int g_{i};");
+    }
+    out.push_str("int *table[] = {\n");
+    for i in 0..count {
+        let _ = writeln!(out, "    &g_{i},");
+    }
+    out.push_str("};\nvoid refresh(void);\n");
+    out.push_str("int mask(void) { g_0 = 3; refresh(); return 1 << g_0; }\n");
+    out.into_bytes()
+}
+
 /// A chain of `depth` object-like macros, each reading the one before and
 /// a parameter of its own function, with a local initialized from every
 /// two-hundredth link and overwritten unread: a dead-store rule records
@@ -1871,7 +1890,7 @@ fn time_series(
 #[ignore = "size series: run in release with --ignored (CI robustness job)"]
 fn generated_size_series_scale_near_linearly() {
     let _runner = timed();
-    let series: [Series; 9] = [
+    let series: [Series; 10] = [
         (
             "one_line_functions",
             Some("MSC04-C"),
@@ -1920,6 +1939,12 @@ fn generated_size_series_scale_near_linearly() {
             Some("MEM05-C"),
             sizeof_chains_in_functions,
             200,
+        ),
+        (
+            "address_table_with_live_file_scope_key",
+            Some("INT34-C"),
+            address_table_with_live_file_scope_key,
+            2_000,
         ),
     ];
     assert_series_near_linear(&series);

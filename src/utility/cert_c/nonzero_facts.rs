@@ -24,6 +24,7 @@ use crate::analyze::address_taken::{
 };
 use crate::analyze::init_state::addressed_object_root;
 use crate::analyze::macro_expand;
+use crate::analyze::side_effects;
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -517,11 +518,29 @@ impl FileScopeFacts {
                 }
             }
         }
+        // A `#define` body naming a static assigns it wherever the macro is
+        // used, which no function's own text shows.
+        let defined_in_macros = define_body_identifiers(source);
+        for (name, writers) in statics.iter_mut() {
+            if defined_in_macros.contains(name) {
+                writers.insert(usize::MAX);
+            }
+        }
+        let typedefs: HashSet<String> = query::find_descendants_of_kind(*root, "type_definition")
+            .into_iter()
+            .flat_map(|t| {
+                let mut cursor = t.walk();
+                t.children_by_field_name("declarator", &mut cursor)
+                    .filter(|d| d.kind() == "type_identifier")
+                    .map(|d| ast_utils::get_node_text(&d, source).to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         let defined = defined_functions(root, source);
         FileScopeFacts {
             addressed,
             constant,
-            macros: file_macros(source, &defined),
+            macros: file_macros(source, &defined, &typedefs),
             defined,
             statics,
         }
@@ -529,11 +548,13 @@ impl FileScopeFacts {
 
     /// Whether a call made in the function starting at byte `func_start`
     /// may write the file-scope object `name` by name: any may, unless it
-    /// is `static` and no other function of the file assigns or steps it.
-    pub fn may_write_by_name(&self, name: &str, func_start: usize) -> bool {
+    /// is `static` and no function of the file assigns or steps it but the
+    /// calling one, and the call does not call that function again
+    /// (`recursive`), nor any macro of the file name it.
+    pub fn may_write_by_name(&self, name: &str, func_start: usize, recursive: bool) -> bool {
         self.statics
             .get(name)
-            .is_none_or(|writers| writers.iter().any(|&f| f != func_start))
+            .is_none_or(|writers| writers.iter().any(|&f| recursive || f != func_start))
     }
 
     /// What `call` may write unseen: nothing, for an invocation of a
@@ -563,54 +584,57 @@ impl FileScopeFacts {
     /// not a library function may write any by name; any call, and any
     /// store or step through a pointer, may write one whose address is
     /// taken.
-    pub fn writes_under(&self, node: &Node, source: &str) -> (bool, bool) {
-        let mut by_name = false;
-        let mut through_pointer = false;
+    pub fn writes_under(&self, node: &Node, source: &str, caller: Option<&str>) -> Writes {
+        let mut writes = Writes::default();
         let mut stack = vec![*node];
         while let Some(n) = stack.pop() {
             match n.kind() {
-                "call_expression" => match self.call_writes(&n, source) {
-                    CallWrites::Nothing => {}
-                    CallWrites::ThroughPointer => through_pointer = true,
-                    CallWrites::Anything => {
-                        through_pointer = true;
-                        by_name = true;
+                "call_expression" => {
+                    writes.recursive |= caller.is_some_and(|c| callee_name(&n, source) == Some(c));
+                    match self.call_writes(&n, source) {
+                        CallWrites::Nothing => {}
+                        CallWrites::ThroughPointer => writes.through_pointer = true,
+                        CallWrites::Anything => {
+                            writes.through_pointer = true;
+                            writes.by_name = true;
+                        }
                     }
-                },
+                }
                 "assignment_expression" => {
-                    through_pointer |= n
+                    writes.through_pointer |= n
                         .child_by_field_name("left")
                         .and_then(|l| store_base(&l))
                         .is_some();
                 }
                 "update_expression" => {
-                    through_pointer |= n
+                    writes.through_pointer |= n
                         .child_by_field_name("argument")
                         .and_then(|a| store_base(&a))
                         .is_some();
                 }
                 _ => {}
             }
-            if by_name {
-                break;
-            }
             stack.extend(n.named_child_nodes());
         }
-        (by_name, through_pointer)
+        writes
     }
 
     /// Whether something in `between` may write a file-scope object whose
     /// address is taken (`addressed`) or not.
     fn written_in(&self, between: &Between, func: &Node, name: &str, source: &str) -> bool {
         let addressed = self.addressed.contains(name);
-        let by_name = self.may_write_by_name(name, func.start_byte());
+        let caller = lang_parsing_substrate::calls::get_function_name(*func, source);
         query::find_first_descendant(*func, |n| {
             between.holds(&n)
                 && match n.kind() {
                     "call_expression" => match self.call_writes(&n, source) {
                         CallWrites::Nothing => false,
                         CallWrites::ThroughPointer => addressed,
-                        CallWrites::Anything => addressed || by_name,
+                        CallWrites::Anything => {
+                            let recursive =
+                                caller.is_some() && callee_name(&n, source) == caller.as_deref();
+                            addressed || self.may_write_by_name(name, func.start_byte(), recursive)
+                        }
                     },
                     "assignment_expression" => {
                         addressed
@@ -635,6 +659,56 @@ impl FileScopeFacts {
 /// source buffer's address and length.
 type FileKey = (usize, usize, usize);
 
+/// What the calls, stores and steps under a node may write unseen
+/// ([`FileScopeFacts::writes_under`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Writes {
+    /// A call may write a file-scope object by name.
+    pub by_name: bool,
+    /// A call, or a store or step through a pointer, may write a
+    /// file-scope object whose address is taken.
+    pub through_pointer: bool,
+    /// A call calls the function holding it.
+    pub recursive: bool,
+}
+
+/// The name a call's callee is spelled with, when it is a plain name.
+fn callee_name<'a>(call: &Node, source: &'a str) -> Option<&'a str> {
+    call.child_by_field_name("function")
+        .filter(|f| f.kind() == "identifier")
+        .map(|f| ast_utils::get_node_text(&f, source))
+}
+
+/// Every identifier the body of some `#define` of `source` spells.
+fn define_body_identifiers(source: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut lines = source.lines();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix('#') else {
+            continue;
+        };
+        if !rest.trim_start().starts_with("define") {
+            continue;
+        }
+        let mut logical = line.to_string();
+        while logical.ends_with('\\') {
+            logical.pop();
+            match lines.next() {
+                Some(next) => logical.push_str(next),
+                None => break,
+            }
+        }
+        out.extend(
+            logical
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|w| is_identifier(w))
+                .map(str::to_string),
+        );
+    }
+    out
+}
+
 /// What a call may write unseen ([`FileScopeFacts::call_writes`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CallWrites {
@@ -652,27 +726,15 @@ pub enum CallWrites {
 /// define (or calls through a parameter, a member or a pointer); only
 /// through a pointer, when one calls only library functions; otherwise
 /// nothing.
-fn file_macros(source: &str, defined: &HashSet<String>) -> HashMap<String, CallWrites> {
-    // `(void)(x)` reads as a call of `void`: the body reader leaves a cast
-    // for the caller to tell apart by knowing the name a type.
-    let cast = |c: &str| {
-        matches!(
-            c,
-            "void"
-                | "char"
-                | "short"
-                | "int"
-                | "long"
-                | "float"
-                | "double"
-                | "signed"
-                | "unsigned"
-                | "_Bool"
-                | "bool"
-                | "const"
-                | "volatile"
-        )
-    };
+fn file_macros(
+    source: &str,
+    defined: &HashSet<String>,
+    typedefs: &HashSet<String>,
+) -> HashMap<String, CallWrites> {
+    // `(void)(x)` and `(uint8_t)(x)` read as calls of `void` and `uint8_t`:
+    // the body reader leaves a cast for the caller to tell apart by knowing
+    // the name a type.
+    let cast = |c: &str| side_effects::names_a_type(c, |n| typedefs.contains(n));
     let library =
         |c: &String| cast(c) || c.starts_with("__builtin_") || library_function(c, defined);
     macro_expand::collect_function_macro_arms(source)
