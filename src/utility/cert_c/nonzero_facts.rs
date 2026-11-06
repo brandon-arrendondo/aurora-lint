@@ -20,9 +20,10 @@ use super::ast_utils;
 use super::guard_dominance;
 use super::std_functions;
 use crate::analyze::address_taken::{
-    store_base, AddressTakenLocals, FunctionKey, FunctionMemo, LocalId,
+    is_extern, store_base, AddressTakenLocals, FunctionKey, FunctionMemo, LocalId,
 };
 use crate::analyze::init_state::addressed_object_root;
+use crate::analyze::macro_expand;
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -229,13 +230,20 @@ pub fn pointer_write_reaches(
     let Some(func) = ast_utils::find_containing_function(site) else {
         return false;
     };
-    let Some((_, declarator)) = ast_utils::resolve_identifier_declarator(site, name, source) else {
-        return false;
-    };
+    let resolved = ast_utils::resolve_identifier_declarator(site, name, source);
     let function = FunctionFacts::of_function(&func, source);
     let facts = &function.facts;
-    let Some(local) = facts.local_declared_by(&declarator) else {
-        if ast_utils::find_containing_function(&declarator).is_some() {
+    let local = resolved
+        .as_ref()
+        .and_then(|(_, declarator)| facts.local_declared_by(declarator));
+    let Some(local) = local else {
+        // A name with no declaration in view is a file-scope object whose
+        // header was not read, and a block's `extern` names one too.
+        let file_scope = resolved.as_ref().is_none_or(|(declaration, declarator)| {
+            ast_utils::find_containing_function(declarator).is_none()
+                || is_extern(declaration, source)
+        });
+        if !file_scope {
             return false;
         }
         let file = file_scope_facts(&func, source);
@@ -414,6 +422,9 @@ pub struct FileScopeFacts {
     pub constant: HashSet<String>,
     /// The functions the file defines.
     defined: HashSet<String>,
+    /// The function-like macros the file defines, each with what an
+    /// invocation may write unseen ([`file_macros`]).
+    macros: HashMap<String, CallWrites>,
     /// The `static` file-scope objects, by name, each with the start bytes
     /// of the functions of the file that assign or step it by name. Nothing
     /// outside the file can name one, so a call writes it by name only
@@ -423,20 +434,7 @@ pub struct FileScopeFacts {
 
 impl FileScopeFacts {
     fn of_file(root: &Node, source: &str) -> Self {
-        let addressed = query::find_descendants_of_kind(*root, "pointer_expression")
-            .into_iter()
-            .filter(|n| {
-                n.child_by_field_name("operator")
-                    .is_some_and(|op| op.kind() == "&")
-            })
-            .filter_map(|n| addressed_object_root(&n.child_by_field_name("argument")?))
-            .filter_map(|ident| {
-                let name = ast_utils::get_node_text(&ident, source);
-                let local = ast_utils::resolve_identifier_declarator(&ident, name, source)
-                    .is_some_and(|(_, d)| ast_utils::find_containing_function(&d).is_some());
-                (!local).then(|| name.to_string())
-            })
-            .collect();
+        let mut addressed = HashSet::new();
         let mut constant = HashSet::new();
         let mut statics: HashMap<String, HashSet<usize>> = HashMap::new();
         let mut functions = Vec::new();
@@ -445,6 +443,10 @@ impl FileScopeFacts {
             for child in node.named_child_nodes() {
                 match child.kind() {
                     "declaration" => {
+                        // At file scope, `&` can name no local.
+                        for ident in addressed_under(child) {
+                            addressed.insert(ast_utils::get_node_text(&ident, source).to_string());
+                        }
                         let has = |kind: &str, word: &str| {
                             child.named_child_nodes().any(|q| {
                                 q.kind() == kind && ast_utils::get_node_text(&q, source) == word
@@ -481,7 +483,16 @@ impl FileScopeFacts {
                 }
             }
         }
+        // Inside a function, an occurrence names a local exactly when the
+        // function's address facts map it to one: one read of each
+        // function, not a scope walk per occurrence.
         for func in functions {
+            let locals = AddressTakenLocals::of_function(&func, source);
+            for ident in addressed_under(func) {
+                if locals.local_of(&ident).is_none() {
+                    addressed.insert(ast_utils::get_node_text(&ident, source).to_string());
+                }
+            }
             for n in query::find_descendants_of_kinds(
                 func,
                 &["assignment_expression", "update_expression"],
@@ -501,17 +512,17 @@ impl FileScopeFacts {
                 let Some(writers) = statics.get_mut(name) else {
                     continue;
                 };
-                let local = ast_utils::resolve_identifier_declarator(&ident, name, source)
-                    .is_some_and(|(_, d)| ast_utils::find_containing_function(&d).is_some());
-                if !local {
+                if locals.local_of(&ident).is_none() {
                     writers.insert(func.start_byte());
                 }
             }
         }
+        let defined = defined_functions(root, source);
         FileScopeFacts {
             addressed,
             constant,
-            defined: defined_functions(root, source),
+            macros: file_macros(source, &defined),
+            defined,
             statics,
         }
     }
@@ -525,13 +536,26 @@ impl FileScopeFacts {
             .is_none_or(|writers| writers.iter().any(|&f| f != func_start))
     }
 
-    /// Whether `call` calls a library function the file does not define,
-    /// which writes no file-scope object of the file by name.
-    pub fn is_library_call(&self, call: &Node, source: &str) -> bool {
-        call.child_by_field_name("function").is_some_and(|f| {
-            f.kind() == "identifier"
-                && library_function(ast_utils::get_node_text(&f, source), &self.defined)
-        })
+    /// What `call` may write unseen: nothing, for an invocation of a
+    /// function-like macro of the file whose body neither writes nor calls
+    /// anything (`CHECK(x)` as `((void)(x))`, `MIN(a, b)`); only through
+    /// a pointer it is handed, for a library function the file does not
+    /// define or a `__builtin_`; anything, for every other call.
+    pub fn call_writes(&self, call: &Node, source: &str) -> CallWrites {
+        let Some(name) = call
+            .child_by_field_name("function")
+            .filter(|f| f.kind() == "identifier")
+            .map(|f| ast_utils::get_node_text(&f, source))
+        else {
+            return CallWrites::Anything;
+        };
+        match self.macros.get(name) {
+            Some(&writes) => writes,
+            None if name.starts_with("__builtin_") || library_function(name, &self.defined) => {
+                CallWrites::ThroughPointer
+            }
+            None => CallWrites::Anything,
+        }
     }
 
     /// Whether a call, store or step under `node` may write a file-scope
@@ -545,10 +569,14 @@ impl FileScopeFacts {
         let mut stack = vec![*node];
         while let Some(n) = stack.pop() {
             match n.kind() {
-                "call_expression" => {
-                    through_pointer = true;
-                    by_name |= !self.is_library_call(&n, source);
-                }
+                "call_expression" => match self.call_writes(&n, source) {
+                    CallWrites::Nothing => {}
+                    CallWrites::ThroughPointer => through_pointer = true,
+                    CallWrites::Anything => {
+                        through_pointer = true;
+                        by_name = true;
+                    }
+                },
                 "assignment_expression" => {
                     through_pointer |= n
                         .child_by_field_name("left")
@@ -579,9 +607,11 @@ impl FileScopeFacts {
         query::find_first_descendant(*func, |n| {
             between.holds(&n)
                 && match n.kind() {
-                    "call_expression" => {
-                        addressed || (by_name && !self.is_library_call(&n, source))
-                    }
+                    "call_expression" => match self.call_writes(&n, source) {
+                        CallWrites::Nothing => false,
+                        CallWrites::ThroughPointer => addressed,
+                        CallWrites::Anything => addressed || by_name,
+                    },
                     "assignment_expression" => {
                         addressed
                             && n.child_by_field_name("left")
@@ -604,6 +634,84 @@ impl FileScopeFacts {
 /// A file's identity for [`FILE_SCOPE_FACTS`]: its tree root's id and its
 /// source buffer's address and length.
 type FileKey = (usize, usize, usize);
+
+/// What a call may write unseen ([`FileScopeFacts::call_writes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallWrites {
+    /// Nothing: a macro invocation whose body neither writes nor calls.
+    Nothing,
+    /// Only through a pointer handed to it: a library function.
+    ThroughPointer,
+    /// Any file-scope object, by name or through a pointer.
+    Anything,
+}
+
+/// The function-like macros `source` defines, each with what an invocation
+/// may write unseen, read from every definition's body: anything, when one
+/// writes or calls a name that is not a library function the file does not
+/// define (or calls through a parameter, a member or a pointer); only
+/// through a pointer, when one calls only library functions; otherwise
+/// nothing.
+fn file_macros(source: &str, defined: &HashSet<String>) -> HashMap<String, CallWrites> {
+    // `(void)(x)` reads as a call of `void`: the body reader leaves a cast
+    // for the caller to tell apart by knowing the name a type.
+    let cast = |c: &str| {
+        matches!(
+            c,
+            "void"
+                | "char"
+                | "short"
+                | "int"
+                | "long"
+                | "float"
+                | "double"
+                | "signed"
+                | "unsigned"
+                | "_Bool"
+                | "bool"
+                | "const"
+                | "volatile"
+        )
+    };
+    let library =
+        |c: &String| cast(c) || c.starts_with("__builtin_") || library_function(c, defined);
+    macro_expand::collect_function_macro_arms(source)
+        .into_iter()
+        .map(|(name, arms)| {
+            let mut writes = CallWrites::Nothing;
+            for arm in &arms {
+                let calls = macro_expand::macro_body_calls(arm);
+                if calls.writes
+                    || !calls.written_params.is_empty()
+                    || calls.indirect
+                    || !calls.param_calls.is_empty()
+                    || !calls.paren_param_calls.is_empty()
+                    || calls.callees.iter().any(|c| !library(c))
+                {
+                    writes = CallWrites::Anything;
+                    break;
+                }
+                if calls.callees.iter().any(|c| !cast(c)) {
+                    writes = CallWrites::ThroughPointer;
+                }
+            }
+            (name, writes)
+        })
+        .collect()
+}
+
+/// The objects `&` takes the address of under `node`, by the identifier
+/// each is named by.
+fn addressed_under<'a>(node: Node<'a>) -> Vec<Node<'a>> {
+    query::find_descendants_of_kind(node, "pointer_expression")
+        .into_iter()
+        .filter(|n| {
+            n.child_by_field_name("operator")
+                .is_some_and(|op| op.kind() == "&")
+        })
+        .filter_map(|n| addressed_object_root(&n.child_by_field_name("argument")?))
+        .collect()
+}
 
 thread_local! {
     /// The [`FileScopeFacts`] of the file last asked about on this thread.

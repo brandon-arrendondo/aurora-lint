@@ -345,31 +345,109 @@ impl AddressTakenLocals {
         out
     }
 
-    /// The one local a store through `base` writes whenever it runs:
-    /// every value `base` may hold is that local's address. None for a
-    /// pointer that may also hold another local's address, or a value from
-    /// where this function cannot see.
+    /// The one local a store through `base` writes whenever it runs, read
+    /// from the source rather than from the may-point-to facts, which keep
+    /// only locals: `base` is a local pointer `p` the body declares, not
+    /// `static`, whose address is never taken (`&p`), which is never
+    /// stepped or compound-assigned, and whose every assignment, its
+    /// initializer included, is `&l` of one and the same local `l`, which
+    /// is not `volatile`. Anything else (another object's address, a copy,
+    /// a call's value, an integer) has none.
     pub fn sole_store_target(&self, base: &Node, source: &str) -> Option<LocalId> {
-        let mut out = HashSet::new();
-        for s in self.sources(base, source) {
-            match s {
-                Source::AddrOf(local) => {
-                    out.insert(local);
+        let base = strip_parens(base);
+        let pointer = self.local_of(&base)?;
+        let mut func = base.parent()?;
+        while func.kind() != "function_definition" {
+            func = func.parent()?;
+        }
+        if pointer < func.child_by_field_name("body")?.start_byte() {
+            return None; // a parameter: its value comes from the caller
+        }
+        let mut target: Option<LocalId> = None;
+        let mut agree = |value: Option<Node>| -> bool {
+            let Some(value) = value.map(|v| strip_parens(&v)) else {
+                return false;
+            };
+            let is_addr = value.kind() == "pointer_expression"
+                && value
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "&");
+            let local = value
+                .child_by_field_name("argument")
+                .map(|a| strip_parens(&a))
+                .filter(|a| is_addr && a.kind() == "identifier")
+                .and_then(|a| self.local_of(&a));
+            match (local, target) {
+                (Some(l), None) => {
+                    target = Some(l);
+                    true
                 }
-                Source::Name(pointer) => {
-                    if self.opaque.contains(&pointer) {
-                        return None;
+                (Some(l), Some(t)) => l == t,
+                (None, _) => false,
+            }
+        };
+        let mut stack = vec![func];
+        while let Some(n) = stack.pop() {
+            stack.extend((0..n.named_child_count()).filter_map(|i| n.named_child(i)));
+            if n.kind() != "identifier" || self.local_of(&n) != Some(pointer) {
+                continue;
+            }
+            let Some(parent) = n.parent() else { continue };
+            let is = |field: &str| {
+                parent
+                    .child_by_field_name(field)
+                    .is_some_and(|c| c.id() == n.id())
+            };
+            let ok = match parent.kind() {
+                "init_declarator" if is("declarator") => agree(parent.child_by_field_name("value")),
+                "declaration" => {
+                    // `int *p;` with no initializer, unless it is static.
+                    !has_storage(&parent, source, "static")
+                }
+                "pointer_declarator" => {
+                    // Climb to the declaration: `int *p = &l;` puts `p`
+                    // under a pointer declarator.
+                    let mut d = parent;
+                    while let Some(up) = d.parent() {
+                        if up.kind() != "pointer_declarator" {
+                            break;
+                        }
+                        d = up;
                     }
-                    out.extend(self.targets.get(&pointer)?.iter().copied());
+                    match d.parent() {
+                        Some(init) if init.kind() == "init_declarator" => {
+                            let decl = init.parent();
+                            !decl.is_some_and(|x| has_storage(&x, source, "static"))
+                                && agree(init.child_by_field_name("value"))
+                        }
+                        Some(decl) if decl.kind() == "declaration" => {
+                            !has_storage(&decl, source, "static")
+                        }
+                        _ => false,
+                    }
                 }
-                Source::Opaque => return None,
+                "assignment_expression" if is("left") => {
+                    is_plain_assignment(&parent) && agree(parent.child_by_field_name("right"))
+                }
+                "update_expression" => false,
+                "pointer_expression" => parent
+                    .child_by_field_name("operator")
+                    .is_none_or(|op| op.kind() != "&"),
+                _ => true,
+            };
+            if !ok {
+                return None;
             }
         }
-        let mut targets = out.into_iter();
-        match (targets.next(), targets.next()) {
-            (Some(local), None) => Some(local),
-            _ => None,
+        let target = target?;
+        let mut decl = func.descendant_for_byte_range(target, target + 1)?;
+        while decl.kind() != "declaration" {
+            decl = decl.parent()?;
         }
+        let volatile = (0..decl.named_child_count())
+            .filter_map(|i| decl.named_child(i))
+            .any(|c| c.kind() == "type_qualifier" && text(&c, source) == "volatile");
+        (!volatile).then_some(target)
     }
 
     /// The locals a callee handed `arg` may write through it: the locals a
@@ -441,6 +519,13 @@ impl AddressTakenLocals {
         self.collect_sources(expr, source, &mut out);
         out
     }
+}
+
+/// Whether `decl` has a storage-class specifier spelled `word`.
+fn has_storage(decl: &Node, source: &str, word: &str) -> bool {
+    (0..decl.named_child_count())
+        .filter_map(|i| decl.named_child(i))
+        .any(|c| c.kind() == "storage_class_specifier" && text(&c, source) == word)
 }
 
 /// Whether an `assignment_expression` is a plain `=`.

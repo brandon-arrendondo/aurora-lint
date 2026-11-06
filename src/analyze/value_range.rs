@@ -445,7 +445,7 @@ fn process_statement_for_ranges(
     widen_address_taken_call_args(node, source, state, names);
     file_scope.widen_written(node, source, state);
     if !aliases.is_empty() {
-        apply_pointer_writes(node, source, macros, state, aliases, names);
+        apply_pointer_writes(node, node.id(), source, macros, state, aliases, names);
     }
     match node.kind() {
         "declaration" => {
@@ -1038,7 +1038,9 @@ fn process_call_arg_widening_range(
 /// own locals that are plain names, which are no file-scope object's.
 #[derive(Debug, Default)]
 pub(crate) struct FileScopeWrites {
-    facts: Arc<FileScopeFacts>,
+    /// The file's facts, read the first time a state holds a file-scope
+    /// key: a function that never names one never asks.
+    facts: std::sync::OnceLock<Arc<FileScopeFacts>>,
     local_keys: HashSet<String>,
     /// The function's start byte, for [`FileScopeFacts::may_write_by_name`].
     func_start: usize,
@@ -1051,39 +1053,42 @@ impl FileScopeWrites {
             .map(|(id, name)| names.key_of_local(id, &name).into_owned())
             .collect();
         FileScopeWrites {
-            facts: nonzero_facts::file_scope_facts(func, source),
+            facts: std::sync::OnceLock::new(),
             local_keys,
             func_start: func.start_byte(),
         }
     }
 
-    /// Whether the state's `key` is a file-scope object's that something
-    /// may write: a plain name that is no local of the function and no
-    /// `const` object of the file.
-    fn writable(&self, key: &str) -> bool {
+    /// Whether the state's `key` may be a file-scope object's: a plain name
+    /// that is no local of the function.
+    fn file_scope(&self, key: &str) -> bool {
         !key.is_empty()
             && !key.starts_with(|c: char| c.is_ascii_digit())
             && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
             && !self.local_keys.contains(key)
-            && !self.facts.constant.contains(key)
     }
 
     /// Widen every file-scope object `node` may write without naming it to
-    /// its type's range, before the statement's own effect.
+    /// its type's range, before the statement's own effect. A `const`
+    /// object is left alone.
     fn widen_written(&self, node: &Node, source: &str, state: &mut RangeMap) {
-        if !state.keys().any(|k| self.writable(k)) {
+        if !state.keys().any(|k| self.file_scope(k)) {
             return;
         }
-        let (by_name, through_pointer) = self.facts.writes_under(node, source);
+        let facts = self
+            .facts
+            .get_or_init(|| nonzero_facts::file_scope_facts(node, source));
+        let (by_name, through_pointer) = facts.writes_under(node, source);
         if !by_name && !through_pointer {
             return;
         }
         let written: Vec<String> = state
             .keys()
             .filter(|k| {
-                self.writable(k)
-                    && ((by_name && self.facts.may_write_by_name(k, self.func_start))
-                        || (through_pointer && self.facts.addressed.contains(*k)))
+                self.file_scope(k)
+                    && !facts.constant.contains(*k)
+                    && ((by_name && facts.may_write_by_name(k, self.func_start))
+                        || (through_pointer && facts.addressed.contains(*k)))
             })
             .cloned()
             .collect();
@@ -1123,6 +1128,7 @@ fn is_dereference(lvalue: &Node) -> bool {
 /// A call also does that to every local whose address escaped.
 fn apply_pointer_writes(
     node: &Node,
+    statement: usize,
     source: &str,
     macros: &MacroConstantMap,
     state: &mut RangeMap,
@@ -1140,7 +1146,14 @@ fn apply_pointer_writes(
                     // `*q = v` through a pointer that holds one local's
                     // address and nothing else replaces that local's value;
                     // through one that may point elsewhere, it may not.
-                    let sole = (plain && is_dereference(&left))
+                    // Only a store that runs whenever the statement does:
+                    // the statement's own expression, not one under `&&`,
+                    // `?:`, a comma or a statement expression inside it.
+                    let whole_statement = node.id() == statement
+                        || node.parent().is_some_and(|p| {
+                            p.kind() == "expression_statement" && p.id() == statement
+                        });
+                    let sole = (plain && whole_statement && is_dereference(&left))
                         .then(|| aliases.sole_store_target(&base, source))
                         .flatten();
                     let stored = if plain {
@@ -1218,7 +1231,7 @@ fn apply_pointer_writes(
     }
     for i in 0..node.named_child_count() {
         if let Some(child) = node.named_child(i) {
-            apply_pointer_writes(&child, source, macros, state, aliases, names);
+            apply_pointer_writes(&child, statement, source, macros, state, aliases, names);
         }
     }
 }
