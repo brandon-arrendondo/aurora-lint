@@ -74,6 +74,7 @@ struct FilePrescanResult {
     struct_field_shapes: HashMap<String, HashMap<String, String>>,
     struct_typedef_aliases: HashMap<String, String>,
     typedef_types: HashMap<String, String>,
+    typedef_arms: HashMap<String, Vec<String>>,
     /// Every name a file-scope `typedef` here declares
     /// (`typedef_names_declared`).
     typedef_names: HashSet<String>,
@@ -199,6 +200,7 @@ impl FilePrescanResult {
             struct_field_shapes: HashMap::new(),
             struct_typedef_aliases: HashMap::new(),
             typedef_types: HashMap::new(),
+            typedef_arms: HashMap::new(),
             typedef_names: HashSet::new(),
             function_pointer_typedef_names: HashSet::new(),
             function_typedef_names: HashSet::new(),
@@ -385,6 +387,7 @@ fn process_file(
         );
         collect_struct_typedef_aliases(&root, &source, &mut result.struct_typedef_aliases);
         collect_typedef_aliases(&root, &source, &mut result.typedef_types);
+        collect_typedef_arms(&root, &source, &mut result.typedef_arms);
         result.typedef_names =
             crate::utility::cert_c::declarator_utils::typedef_names_declared(&root, &source);
         collect_function_pointer_typedef_names(
@@ -828,6 +831,7 @@ fn prescan_file_list(
     let mut struct_field_shapes: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut struct_typedef_aliases: HashMap<String, String> = HashMap::new();
     let mut typedef_types: HashMap<String, String> = HashMap::new();
+    let mut typedef_arms: HashMap<String, Vec<String>> = HashMap::new();
     let mut typedef_names_by_file: HashMap<String, HashSet<String>> = HashMap::new();
     let mut any_header_typedef_names: HashSet<String> = HashSet::new();
     let mut function_pointer_typedef_names: HashSet<String> = HashSet::new();
@@ -1130,6 +1134,12 @@ fn prescan_file_list(
         struct_field_shapes.extend(r.struct_field_shapes);
         struct_typedef_aliases.extend(r.struct_typedef_aliases);
         typedef_types.extend(r.typedef_types);
+        for (name, definitions) in r.typedef_arms {
+            let all = typedef_arms.entry(name).or_default();
+            all.extend(definitions);
+            all.sort();
+            all.dedup();
+        }
         // A typedef in a .c file is visible only in that translation unit
         // (and one that #includes the file), which its closure decides.
         if !r.typedef_names.is_empty() {
@@ -1746,6 +1756,7 @@ fn prescan_file_list(
         struct_field_shapes: Arc::new(struct_field_shapes),
         struct_typedef_aliases: Arc::new(struct_typedef_aliases),
         typedef_types: Arc::new(typedef_types),
+        typedef_arms: Arc::new(typedef_arms),
         function_pointer_typedef_names: Arc::new(function_pointer_typedef_names),
         function_typedef_names: Arc::new(function_typedef_names),
         pointer_typedef_names: Arc::new(pointer_typedef_names),
@@ -7267,6 +7278,68 @@ fn collect_typedef_aliases_rec(
                 || kind == "declaration_list" =>
             {
                 collect_typedef_aliases_rec(&child, source, dead, typedef_types);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Every live definition of each typedef name, one entry per arm: the
+/// aliased type's text for a simple scalar typedef (`typedef long T;`,
+/// `typedef MACRO T;`), and an empty string for any other (a pointer,
+/// array, function, struct, union or enum), which is no integer type a
+/// caller can read. `collect_typedef_aliases` keeps one definition per name
+/// (the first), so a name defined differently in `#if` arms, such as
+/// sqlite's `sqlite_int64` (`SQLITE_INT64_TYPE`, `__int64` or `long long
+/// int`), needs this to ask whether the arms agree. A typedef in a
+/// platform-dead branch is skipped, as there.
+pub(crate) fn collect_typedef_arms(
+    node: &Node,
+    source: &str,
+    arms: &mut HashMap<String, Vec<String>>,
+) {
+    let dead = DeadRegions::of(source);
+    collect_typedef_arms_rec(node, source, &dead, arms);
+    for definitions in arms.values_mut() {
+        definitions.sort();
+        definitions.dedup();
+    }
+}
+
+fn collect_typedef_arms_rec(
+    node: &Node,
+    source: &str,
+    dead: &DeadRegions,
+    arms: &mut HashMap<String, Vec<String>>,
+) {
+    for child in node.child_nodes() {
+        match child.kind() {
+            "type_definition" if !dead.contains_node(&child) => {
+                let simple = child.child_by_field_name("type").filter(|t| {
+                    matches!(
+                        t.kind(),
+                        "primitive_type" | "sized_type_specifier" | "type_identifier"
+                    )
+                });
+                let mut cursor = child.walk();
+                for declarator in child.children_by_field_name("declarator", &mut cursor) {
+                    let Some(name) = find_type_or_ident_in_declarator(&declarator, source) else {
+                        continue;
+                    };
+                    let aliased = match simple {
+                        Some(ty) if declarator.kind() == "type_identifier" => {
+                            get_node_text(&ty, source).trim().to_string()
+                        }
+                        _ => String::new(),
+                    };
+                    arms.entry(name).or_default().push(aliased);
+                }
+            }
+            kind if kind.starts_with("preproc_")
+                || kind == "linkage_specification"
+                || kind == "declaration_list" =>
+            {
+                collect_typedef_arms_rec(&child, source, dead, arms);
             }
             _ => {}
         }

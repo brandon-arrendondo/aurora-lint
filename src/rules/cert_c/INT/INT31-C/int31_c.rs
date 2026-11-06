@@ -12,6 +12,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self, FunctionCfg};
+use crate::analyze::check_macros::MacroDefinition;
 use crate::analyze::const_eval::{self, MacroConstantMap};
 use crate::analyze::context::SummaryLookup;
 use crate::analyze::context::{ProjectContext, ScopedTable};
@@ -61,6 +62,14 @@ pub struct Int31C {
     /// instead of falling through as `None` (third consumer
     /// of an earlier fix's shared resolver).
     typedef_types: RefCell<Arc<HashMap<String, String>>>,
+    /// Every `#define` of every name in the project, for a typedef chain
+    /// that ends at an object-like macro (`typedef LUA_INTEGER lua_Integer;`).
+    macro_definitions: RefCell<Arc<HashMap<String, Vec<MacroDefinition>>>>,
+    /// Every live definition of each typedef name: the project's, and this
+    /// file's own, which wins for a name it defines. A name's signedness is
+    /// what all of its definitions agree on.
+    project_typedef_arms: RefCell<Arc<HashMap<String, Vec<String>>>>,
+    file_typedef_arms: RefCell<HashMap<String, Vec<String>>>,
     /// The integer data model the settings credit: how wide each side of a
     /// conversion is, or may be.
     data_model: Cell<IntFacts>,
@@ -79,6 +88,9 @@ impl Int31C {
             risky_vars_cache: RefCell::new(HashMap::new()),
             param_names_cache: RefCell::new(HashMap::new()),
             typedef_types: RefCell::new(Arc::new(HashMap::new())),
+            macro_definitions: RefCell::default(),
+            project_typedef_arms: RefCell::default(),
+            file_typedef_arms: RefCell::default(),
             data_model: Cell::new(IntFacts::default()),
         }
     }
@@ -832,6 +844,8 @@ impl CertRule for Int31C {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.global_writers.borrow_mut() = context.global_writers.clone();
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
+        *self.macro_definitions.borrow_mut() = context.macro_definitions.clone();
+        *self.project_typedef_arms.borrow_mut() = context.typedef_arms.clone();
 
         *self.callers.borrow_mut() = context.callers.clone();
     }
@@ -861,6 +875,9 @@ impl CertRule for Int31C {
         // one parse tree — reset per file.
         self.risky_vars_cache.borrow_mut().clear();
         self.param_names_cache.borrow_mut().clear();
+        let mut file_arms = HashMap::new();
+        crate::analyze::prescan::collect_typedef_arms(node, source, &mut file_arms);
+        *self.file_typedef_arms.borrow_mut() = file_arms;
         self.check_function(node, source, &mut violations);
         violations
     }
@@ -2290,18 +2307,81 @@ impl Int31C {
 
     /// `Some(true)` for a signed integer type, `Some(false)` for an unsigned
     /// one, `None` for plain `char`, a pointer, or a name it does not know.
+    ///
+    /// A typedef name has the signedness every live definition of it agrees
+    /// on, followed through typedefs and object-like macros: sqlite's
+    /// `sqlite_int64` is `SQLITE_INT64_TYPE` in one arm, which no scanned
+    /// file defines, so it is unknown, while lua's `lua_Integer`, a
+    /// `LUA_INTEGER` every definition of which is signed, is signed. A name
+    /// nothing defines is unknown, whatever it is spelled like.
     fn integer_signedness(&self, type_str: &str) -> Option<bool> {
+        self.integer_signedness_through(type_str, &mut Vec::new(), &mut HashMap::new())
+    }
+
+    /// [`Self::integer_signedness`] with the names being read (`reading`,
+    /// a name met again on its own chain is unknown) and the names already
+    /// read (`known`), so arms that name one another are each read once.
+    /// The first definition that is unknown or disagrees ends the reading.
+    fn integer_signedness_through(
+        &self,
+        type_str: &str,
+        reading: &mut Vec<String>,
+        known: &mut HashMap<String, Option<bool>>,
+    ) -> Option<bool> {
         if let Some(signed) = spelled_signedness(type_str) {
             return Some(signed);
         }
         let core = type_core(type_str);
-        let typedefs = self.typedef_types.borrow();
-        let resolved =
-            crate::utility::cert_c::overflow_helpers::resolve_typedef_chain(&core, &typedefs);
-        if resolved == core {
+        if core.is_empty() || core.contains(['*', '[', ' ']) || reading.contains(&core) {
             return None;
         }
-        spelled_signedness(&resolved)
+        if let Some(&answer) = known.get(&core) {
+            return answer;
+        }
+        let arms = self
+            .file_typedef_arms
+            .borrow()
+            .get(&core)
+            .cloned()
+            .or_else(|| self.project_typedef_arms.borrow().get(&core).cloned());
+        let definitions: Vec<String> = match arms {
+            Some(arms) => arms,
+            None => self
+                .macro_definitions
+                .borrow()
+                .get(&core)
+                .map(|defs| {
+                    defs.iter()
+                        .map(|d| match d {
+                            MacroDefinition::Object { body } => body.clone(),
+                            _ => String::new(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        reading.push(core.clone());
+        let mut agreed: Option<bool> = None;
+        let mut answer = !definitions.is_empty();
+        for definition in &definitions {
+            let reading_of = if definition.is_empty() {
+                None
+            } else {
+                self.integer_signedness_through(definition, reading, known)
+            };
+            match (reading_of, agreed) {
+                (Some(s), None) => agreed = Some(s),
+                (Some(s), Some(a)) if s == a => {}
+                _ => {
+                    answer = false;
+                    break;
+                }
+            }
+        }
+        reading.pop();
+        let answer = if answer { agreed } else { None };
+        known.insert(core, answer);
+        answer
     }
 
     fn is_narrow_type(&self, type_str: &str) -> bool {

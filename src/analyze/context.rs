@@ -1220,6 +1220,13 @@ pub struct ProjectContext {
     /// project-wide.
     #[serde(default)]
     pub typedef_types: Arc<HashMap<String, String>>,
+    /// Every live definition of each typedef name across the scanned files,
+    /// one entry per distinct arm: the aliased type's text for a simple
+    /// scalar typedef, an empty string for any other (pointer, array,
+    /// function, struct, union, enum). `typedef_types` keeps one definition
+    /// per name; this is for asking whether a name's definitions agree.
+    #[serde(default)]
+    pub typedef_arms: Arc<HashMap<String, Vec<String>>>,
     /// Names of typedefs whose declared type is a function pointer -- e.g.
     /// sqlite's `typedef int (*RecordCompare)(void *, int);` in
     /// `sqliteInt.h`. `collect_from_simple_typedef` filed under
@@ -1664,7 +1671,7 @@ pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
 /// to a serialized field of [`ProjectContext`] (or of a type it holds), or to
 /// what such a field means: the cache header carries it, so an old cache is
 /// refused instead of misread.
-const PRESCAN_CACHE_FORMAT: u32 = 73;
+const PRESCAN_CACHE_FORMAT: u32 = 76;
 
 /// The header a prescan cache file starts with: a magic, the layout version
 /// and the aurora-lint version that wrote it.
