@@ -1573,6 +1573,16 @@ impl Int31C {
             return;
         }
 
+        // A comparison, `!`, `&&` or `||` is an `int` that is 0 or 1 (C11
+        // 6.5.3.3, 6.5.8-6.5.14), which every integer type holds, whatever
+        // its operands are.
+        if self
+            .get_cast_operand_node(node)
+            .is_some_and(|op| is_truth_value(unwrap_parenthesized(op), source))
+        {
+            return;
+        }
+
         // Get source type if known
         let mut source_expr = source_expr;
         let mut source_type = var_types.get(&source_expr).cloned().unwrap_or_default();
@@ -2779,6 +2789,23 @@ impl Int31C {
             return false;
         };
         target.signed && !may_be_narrower(target.width, width)
+    }
+}
+
+/// Whether `expr` is a comparison, `!`, `&&` or `||`: an `int` whose value
+/// is 0 or 1.
+fn is_truth_value(expr: Node, source: &str) -> bool {
+    match expr.kind() {
+        "binary_expression" => expr.child_by_field_name("operator").is_some_and(|op| {
+            matches!(
+                get_node_text(&op, source),
+                "<" | "<=" | ">" | ">=" | "==" | "!=" | "&&" | "||"
+            )
+        }),
+        "unary_expression" => expr
+            .child_by_field_name("operator")
+            .is_some_and(|op| get_node_text(&op, source) == "!"),
+        _ => false,
     }
 }
 
