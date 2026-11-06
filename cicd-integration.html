@@ -148,8 +148,10 @@ with <code class="docutils literal notranslate"><span class="pre">--report-exclu
 reads every file under <code class="docutils literal notranslate"><span class="pre">PATH</span></code>, so cross-file findings in a changed file
 keep their context.</p></li>
 <li><p>When no C file changed, the log says
-<code class="docutils literal notranslate"><span class="pre">diff-only:</span> <span class="pre">no</span> <span class="pre">changed</span> <span class="pre">C</span> <span class="pre">files</span> <span class="pre">to</span> <span class="pre">analyze</span></code>, so it can be told apart from
-a clean scan.</p></li>
+<code class="docutils literal notranslate"><span class="pre">diff-only:</span> <span class="pre">no</span> <span class="pre">changed</span> <span class="pre">C</span> <span class="pre">files</span> <span class="pre">to</span> <span class="pre">analyze</span></code> and the scan exits <code class="docutils literal notranslate"><span class="pre">0</span></code>, so it
+can be told apart from a clean scan without failing the job. If the tree has
+no C file to select at all, changed or not, the scan exits <code class="docutils literal notranslate"><span class="pre">3</span></code>; see
+<a class="reference internal" href="error-handling.html"><span class="doc">Error Handling and Exit Codes</span></a>.</p></li>
 </ul>
 </section>
 <section id="github-actions">

@@ -8,6 +8,24 @@ lists every change; this page covers only the ones that can change a CI
 result, a configuration file, a suppression or a tool that reads the SARIF
 export.
 
+From 0.7.0 to the next release
+------------------------------
+
+A scan that selects no files
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A path with no ``.c`` or ``.h`` file under it, or with all of them excluded, now
+exits ``3`` instead of ``0``. A job that scans a tree which may legitimately hold
+no C files should pass ``--allow-empty``. A ``--diff`` or ``--diff-base`` scan
+where no C file changed still exits ``0``. See :doc:`error-handling`.
+
+Text and SARIF output
+~~~~~~~~~~~~~~~~~~~~~
+
+The summary gains a ``Files scanned: N`` line above ``Total violations``, and the
+SARIF run's ``properties`` gain ``aurora-lint/filesScanned``. Neither replaces
+anything.
+
 From 0.6.0 to 0.7.0
 -------------------
 

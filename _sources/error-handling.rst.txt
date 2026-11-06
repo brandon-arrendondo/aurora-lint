@@ -24,9 +24,9 @@ Code    Meaning
 ``2``   The scan could not run: a usage or configuration error, such as a bad
         path, an invalid manifest or suppression file, or an unknown option.
 ``3``   The scan completed but is **incomplete**: some part of the analysis
-        crashed or ran out of its budget. The findings it did produce are
-        printed and exported; the ones the failed part would have produced
-        are missing.
+        crashed or ran out of its budget, or the scan selected no files. The
+        findings it did produce are printed and exported; the ones the failed
+        part would have produced are missing.
 ======  ======================================================================
 
 ``3`` takes precedence over ``1``, and is returned whether or not a
@@ -36,6 +36,36 @@ as clean.
 ``--check-config`` does not scan. It exits ``0`` when the configuration is
 valid and ``1`` when it is not, with one ``error:`` line per problem. A command-line argument the parser rejects
 still exits ``2``.
+
+A scan that selected no files
+-----------------------------
+
+A path with no ``.c`` or ``.h`` file under it, or one where the exclusions
+removed them all, scans nothing. So does a tree whose only such files are skipped
+as not being C: NUL bytes in no text layout, or a header written in C++. Scanning nothing shows nothing about the code,
+so it exits ``3`` rather than reading as a clean result:
+
+.. code-block:: text
+
+    Files scanned: 0
+    Total violations: 0 (0 suppressed)
+    Error: nothing to scan: the path holds no C source or C header, every such file was excluded, or each was skipped as not being C. Check the path and the exclusions, or pass --allow-empty if this is expected.
+
+Where an empty selection is expected, ``--allow-empty`` accepts it: the scan
+says so on stderr and exits ``0``. The flag covers only a selection with nothing
+in it. A scan that selected files and could not read them is still incomplete.
+
+A ``--diff`` or ``--diff-base`` scan needs no flag when the tree has C files and
+none of them changed, as on a pull request that touches only documentation: it
+has done its whole job, so it exits ``0`` and prints
+``diff-only: no changed C files to analyze``. A diff scan of a tree with nothing
+to scan, even if every file had changed, is an empty selection like any other.
+
+An empty file is a selected file. It is scanned and counted, and finds nothing.
+
+Every scan prints ``Files scanned: N`` above the violation count. A file that
+was refused, failed before any rule's results could stand, or was skipped as not
+being C is not counted, and the line says how many there were.
 
 What fails, and what it costs
 -----------------------------
@@ -179,7 +209,17 @@ In a **SARIF** export, the run's ``invocations[0]`` has
   ``properties.sourceLocation``.
 
 Code-scanning dashboards show these as tool errors. A complete scan has
-``executionSuccessful: true`` and no notifications.
+``executionSuccessful: true`` and no error notifications.
+
+The run's ``properties["aurora-lint/filesScanned"]`` holds the same count as the
+``Files scanned`` line. The run's ``artifacts`` list only the files a result
+points into, so this is what tells a clean scan of 400 files from a scan of none.
+
+An empty selection is a notification with ``descriptor.id``
+``aurora-lint/empty-selection``: at level ``error`` with
+``executionSuccessful: false`` when it exits ``3``, and at level ``note`` with
+``executionSuccessful: true`` under ``--allow-empty`` or on a diff scan where
+nothing changed.
 
 The **JSON** export is a list of findings only and does not change; for a
 JSON consumer, the exit code is what says the list is incomplete.

@@ -52,6 +52,11 @@
 <li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
 <li class="toctree-l1"><a class="reference internal" href="error-handling.html">Error Handling and Exit Codes</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Upgrading</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#from-0-7-0-to-the-next-release">From 0.7.0 to the next release</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#a-scan-that-selects-no-files">A scan that selects no files</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#text-and-sarif-output">Text and SARIF output</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#from-0-6-0-to-0-7-0">From 0.6.0 to 0.7.0</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#configuration-files-and-command-lines">Configuration files and command lines</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#exit-status-3">Exit status 3</a></li>
@@ -115,6 +120,22 @@ change to move to the next. The <a class="reference external" href="https://gith
 lists every change; this page covers only the ones that can change a CI
 result, a configuration file, a suppression or a tool that reads the SARIF
 export.</p>
+<section id="from-0-7-0-to-the-next-release">
+<h2>From 0.7.0 to the next release<a class="headerlink" href="#from-0-7-0-to-the-next-release" title="Link to this heading"></a></h2>
+<section id="a-scan-that-selects-no-files">
+<h3>A scan that selects no files<a class="headerlink" href="#a-scan-that-selects-no-files" title="Link to this heading"></a></h3>
+<p>A path with no <code class="docutils literal notranslate"><span class="pre">.c</span></code> or <code class="docutils literal notranslate"><span class="pre">.h</span></code> file under it, or with all of them excluded, now
+exits <code class="docutils literal notranslate"><span class="pre">3</span></code> instead of <code class="docutils literal notranslate"><span class="pre">0</span></code>. A job that scans a tree which may legitimately hold
+no C files should pass <code class="docutils literal notranslate"><span class="pre">--allow-empty</span></code>. A <code class="docutils literal notranslate"><span class="pre">--diff</span></code> or <code class="docutils literal notranslate"><span class="pre">--diff-base</span></code> scan
+where no C file changed still exits <code class="docutils literal notranslate"><span class="pre">0</span></code>. See <a class="reference internal" href="error-handling.html"><span class="doc">Error Handling and Exit Codes</span></a>.</p>
+</section>
+<section id="text-and-sarif-output">
+<h3>Text and SARIF output<a class="headerlink" href="#text-and-sarif-output" title="Link to this heading"></a></h3>
+<p>The summary gains a <code class="docutils literal notranslate"><span class="pre">Files</span> <span class="pre">scanned:</span> <span class="pre">N</span></code> line above <code class="docutils literal notranslate"><span class="pre">Total</span> <span class="pre">violations</span></code>, and the
+SARIF run’s <code class="docutils literal notranslate"><span class="pre">properties</span></code> gain <code class="docutils literal notranslate"><span class="pre">aurora-lint/filesScanned</span></code>. Neither replaces
+anything.</p>
+</section>
+</section>
 <section id="from-0-6-0-to-0-7-0">
 <h2>From 0.6.0 to 0.7.0<a class="headerlink" href="#from-0-6-0-to-0-7-0" title="Link to this heading"></a></h2>
 <section id="configuration-files-and-command-lines">

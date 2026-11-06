@@ -652,7 +652,8 @@ a pull-request job uses ``--diff-base`` with the target branch, which implies
 ``--diff``. The checkout needs that branch and the history back to the merge
 base. The pre-scan still reads every file under ``PATH``, so cross-file
 context is kept. When no C file changed, the run prints
-``diff-only: no changed C files to analyze``. See :doc:`cicd-integration`.
+``diff-only: no changed C files to analyze`` and exits ``0``. See
+:doc:`cicd-integration`.
 
 
 Project-Relevance Detection
@@ -711,4 +712,5 @@ Exit Codes
 
 The exit codes, what a failure costs, how it is reported (stderr and SARIF), the
 ``--rule-step-limit`` / ``--rule-time-limit`` budgets, the ``--max-file-size``
-and ``--max-nesting-depth`` input guards, and what CI should do with ``3``: :doc:`error-handling`.
+and ``--max-nesting-depth`` input guards, ``--allow-empty`` for a scan that
+selects no files, and what CI should do with ``3``: :doc:`error-handling`.

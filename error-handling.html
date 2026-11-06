@@ -52,6 +52,7 @@
 <li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Error Handling and Exit Codes</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#exit-codes">Exit codes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#a-scan-that-selected-no-files">A scan that selected no files</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#what-fails-and-what-it-costs">What fails, and what it costs</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#files-that-are-not-source">Files that are not source</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#crashes-and-bounds">Crashes and bounds</a></li>
@@ -134,9 +135,9 @@ path, an invalid manifest or suppression file, or an unknown option.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">3</span></code></p></td>
 <td><p>The scan completed but is <strong>incomplete</strong>: some part of the analysis
-crashed or ran out of its budget. The findings it did produce are
-printed and exported; the ones the failed part would have produced
-are missing.</p></td>
+crashed or ran out of its budget, or the scan selected no files. The
+findings it did produce are printed and exported; the ones the failed
+part would have produced are missing.</p></td>
 </tr>
 </tbody>
 </table>
@@ -146,6 +147,30 @@ as clean.</p>
 <p><code class="docutils literal notranslate"><span class="pre">--check-config</span></code> does not scan. It exits <code class="docutils literal notranslate"><span class="pre">0</span></code> when the configuration is
 valid and <code class="docutils literal notranslate"><span class="pre">1</span></code> when it is not, with one <code class="docutils literal notranslate"><span class="pre">error:</span></code> line per problem. A command-line argument the parser rejects
 still exits <code class="docutils literal notranslate"><span class="pre">2</span></code>.</p>
+</section>
+<section id="a-scan-that-selected-no-files">
+<h2>A scan that selected no files<a class="headerlink" href="#a-scan-that-selected-no-files" title="Link to this heading"></a></h2>
+<p>A path with no <code class="docutils literal notranslate"><span class="pre">.c</span></code> or <code class="docutils literal notranslate"><span class="pre">.h</span></code> file under it, or one where the exclusions
+removed them all, scans nothing. So does a tree whose only such files are skipped
+as not being C: NUL bytes in no text layout, or a header written in C++. Scanning nothing shows nothing about the code,
+so it exits <code class="docutils literal notranslate"><span class="pre">3</span></code> rather than reading as a clean result:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Files scanned: 0
+Total violations: 0 (0 suppressed)
+Error: nothing to scan: the path holds no C source or C header, every such file was excluded, or each was skipped as not being C. Check the path and the exclusions, or pass --allow-empty if this is expected.
+</pre></div>
+</div>
+<p>Where an empty selection is expected, <code class="docutils literal notranslate"><span class="pre">--allow-empty</span></code> accepts it: the scan
+says so on stderr and exits <code class="docutils literal notranslate"><span class="pre">0</span></code>. The flag covers only a selection with nothing
+in it. A scan that selected files and could not read them is still incomplete.</p>
+<p>A <code class="docutils literal notranslate"><span class="pre">--diff</span></code> or <code class="docutils literal notranslate"><span class="pre">--diff-base</span></code> scan needs no flag when the tree has C files and
+none of them changed, as on a pull request that touches only documentation: it
+has done its whole job, so it exits <code class="docutils literal notranslate"><span class="pre">0</span></code> and prints
+<code class="docutils literal notranslate"><span class="pre">diff-only:</span> <span class="pre">no</span> <span class="pre">changed</span> <span class="pre">C</span> <span class="pre">files</span> <span class="pre">to</span> <span class="pre">analyze</span></code>. A diff scan of a tree with nothing
+to scan, even if every file had changed, is an empty selection like any other.</p>
+<p>An empty file is a selected file. It is scanned and counted, and finds nothing.</p>
+<p>Every scan prints <code class="docutils literal notranslate"><span class="pre">Files</span> <span class="pre">scanned:</span> <span class="pre">N</span></code> above the violation count. A file that
+was refused, failed before any rule’s results could stand, or was skipped as not
+being C is not counted, and the line says how many there were.</p>
 </section>
 <section id="what-fails-and-what-it-costs">
 <h2>What fails, and what it costs<a class="headerlink" href="#what-fails-and-what-it-costs" title="Link to this heading"></a></h2>
@@ -275,7 +300,15 @@ Error: scan INCOMPLETE: 4 unit(s) of work did not finish in 4 file(s) (rules INT
 <code class="docutils literal notranslate"><span class="pre">properties.sourceLocation</span></code>.</p></li>
 </ul>
 <p>Code-scanning dashboards show these as tool errors. A complete scan has
-<code class="docutils literal notranslate"><span class="pre">executionSuccessful:</span> <span class="pre">true</span></code> and no notifications.</p>
+<code class="docutils literal notranslate"><span class="pre">executionSuccessful:</span> <span class="pre">true</span></code> and no error notifications.</p>
+<p>The run’s <code class="docutils literal notranslate"><span class="pre">properties[&quot;aurora-lint/filesScanned&quot;]</span></code> holds the same count as the
+<code class="docutils literal notranslate"><span class="pre">Files</span> <span class="pre">scanned</span></code> line. The run’s <code class="docutils literal notranslate"><span class="pre">artifacts</span></code> list only the files a result
+points into, so this is what tells a clean scan of 400 files from a scan of none.</p>
+<p>An empty selection is a notification with <code class="docutils literal notranslate"><span class="pre">descriptor.id</span></code>
+<code class="docutils literal notranslate"><span class="pre">aurora-lint/empty-selection</span></code>: at level <code class="docutils literal notranslate"><span class="pre">error</span></code> with
+<code class="docutils literal notranslate"><span class="pre">executionSuccessful:</span> <span class="pre">false</span></code> when it exits <code class="docutils literal notranslate"><span class="pre">3</span></code>, and at level <code class="docutils literal notranslate"><span class="pre">note</span></code> with
+<code class="docutils literal notranslate"><span class="pre">executionSuccessful:</span> <span class="pre">true</span></code> under <code class="docutils literal notranslate"><span class="pre">--allow-empty</span></code> or on a diff scan where
+nothing changed.</p>
 <p>The <strong>JSON</strong> export is a list of findings only and does not change; for a
 JSON consumer, the exit code is what says the list is incomplete.</p>
 </section>

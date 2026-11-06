@@ -728,7 +728,8 @@ a pull-request job uses <code class="docutils literal notranslate"><span class="
 <code class="docutils literal notranslate"><span class="pre">--diff</span></code>. The checkout needs that branch and the history back to the merge
 base. The pre-scan still reads every file under <code class="docutils literal notranslate"><span class="pre">PATH</span></code>, so cross-file
 context is kept. When no C file changed, the run prints
-<code class="docutils literal notranslate"><span class="pre">diff-only:</span> <span class="pre">no</span> <span class="pre">changed</span> <span class="pre">C</span> <span class="pre">files</span> <span class="pre">to</span> <span class="pre">analyze</span></code>. See <a class="reference internal" href="cicd-integration.html"><span class="doc">CI/CD Integration</span></a>.</p>
+<code class="docutils literal notranslate"><span class="pre">diff-only:</span> <span class="pre">no</span> <span class="pre">changed</span> <span class="pre">C</span> <span class="pre">files</span> <span class="pre">to</span> <span class="pre">analyze</span></code> and exits <code class="docutils literal notranslate"><span class="pre">0</span></code>. See
+<a class="reference internal" href="cicd-integration.html"><span class="doc">CI/CD Integration</span></a>.</p>
 </section>
 <section id="project-relevance-detection">
 <h2>Project-Relevance Detection<a class="headerlink" href="#project-relevance-detection" title="Link to this heading"></a></h2>
@@ -780,7 +781,8 @@ never overwritten by this flag.</p>
 <h2>Exit Codes<a class="headerlink" href="#exit-codes" title="Link to this heading"></a></h2>
 <p>The exit codes, what a failure costs, how it is reported (stderr and SARIF), the
 <code class="docutils literal notranslate"><span class="pre">--rule-step-limit</span></code> / <code class="docutils literal notranslate"><span class="pre">--rule-time-limit</span></code> budgets, the <code class="docutils literal notranslate"><span class="pre">--max-file-size</span></code>
-and <code class="docutils literal notranslate"><span class="pre">--max-nesting-depth</span></code> input guards, and what CI should do with <code class="docutils literal notranslate"><span class="pre">3</span></code>: <a class="reference internal" href="error-handling.html"><span class="doc">Error Handling and Exit Codes</span></a>.</p>
+and <code class="docutils literal notranslate"><span class="pre">--max-nesting-depth</span></code> input guards, <code class="docutils literal notranslate"><span class="pre">--allow-empty</span></code> for a scan that
+selects no files, and what CI should do with <code class="docutils literal notranslate"><span class="pre">3</span></code>: <a class="reference internal" href="error-handling.html"><span class="doc">Error Handling and Exit Codes</span></a>.</p>
 </section>
 </section>
 
