@@ -1529,19 +1529,40 @@ impl Arr30C {
         }))
     }
 
-    /// True when the array `subscript` indexes is declared inside a
-    /// preprocessor conditional arm within its scope, so another arm may
-    /// declare it with a different size. Unknown counts as true.
+    /// True when the array `subscript` indexes may have another size in
+    /// another preprocessor arm: it is declared inside a conditional arm
+    /// within its scope that does not also hold the subscript, or it takes
+    /// its size from a typedef name, which an arm may define with another
+    /// size. An
+    /// array that is not a name, or whose declaration is not found, counts
+    /// as true.
     fn array_declared_in_preprocessor_arm(subscript: &Node, source: &str) -> bool {
-        let Some(array) = subscript
-            .child_by_field_name("argument")
-            .filter(|a| a.kind() == "identifier")
-        else {
+        let mut array = subscript.child_by_field_name("argument");
+        while let Some(inner) = array
+            .filter(|a| a.kind() == "parenthesized_expression")
+            .and_then(|a| a.named_child(0))
+        {
+            array = Some(inner);
+        }
+        let Some(array) = array.filter(|a| a.kind() == "identifier") else {
             return true;
         };
         let name = get_node_text(&array, source);
-        let Some((_, declarator)) = resolve_identifier_declarator(&array, name, source) else {
+        let Some((declaration, declarator)) = resolve_identifier_declarator(&array, name, source)
+            .or_else(|| Self::declared_in_arm_holding(subscript, name, source))
+        else {
             return true;
+        };
+        // `T buf;`: the size is the typedef's, not this declaration's.
+        if declarator.kind() == "identifier"
+            && declaration
+                .child_by_field_name("type")
+                .is_some_and(|t| t.kind() == "type_identifier")
+        {
+            return true;
+        }
+        let holds_subscript = |p: &Node| {
+            p.start_byte() <= subscript.start_byte() && p.end_byte() >= subscript.end_byte()
         };
         let mut n = declarator.parent();
         while let Some(p) = n {
@@ -1551,12 +1572,53 @@ impl Arr30C {
             ) {
                 return false;
             }
-            if p.kind().starts_with("preproc_") {
+            if p.kind().starts_with("preproc_") && !holds_subscript(&p) {
                 return true;
             }
             n = p.parent();
         }
         true
+    }
+
+    /// The declaration of `name`, and its declarator, directly in a
+    /// preprocessor arm holding `node`: a file-scope object inside an
+    /// include guard, which the scope resolver does not look into.
+    fn declared_in_arm_holding<'a>(
+        node: &Node<'a>,
+        name: &str,
+        source: &str,
+    ) -> Option<(Node<'a>, Node<'a>)> {
+        let mut n = node.parent();
+        while let Some(arm) = n {
+            if arm.kind().starts_with("preproc_") {
+                let mut cursor = arm.walk();
+                for declaration in arm
+                    .named_children(&mut cursor)
+                    .filter(|c| c.kind() == "declaration")
+                {
+                    let mut decls = declaration.walk();
+                    let found = declaration
+                        .children_by_field_name("declarator", &mut decls)
+                        .find(|d| {
+                            let mut inner = *d;
+                            while let Some(next) = inner.child_by_field_name("declarator") {
+                                inner = next;
+                            }
+                            inner.kind() == "identifier" && get_node_text(&inner, source) == name
+                        });
+                    if let Some(declarator) = found {
+                        let declarator = if declarator.kind() == "init_declarator" {
+                            declarator.child_by_field_name("declarator")?
+                        } else {
+                            declarator
+                        };
+                        return Some((declaration, declarator));
+                    }
+                }
+            }
+            n = arm.parent();
+        }
+        None
     }
 
     /// True when the identifier starting at byte `at` is the declarator of
