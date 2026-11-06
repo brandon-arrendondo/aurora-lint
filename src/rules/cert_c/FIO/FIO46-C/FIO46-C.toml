@@ -29,10 +29,10 @@ cwe = ["CWE-675"]
 related_cwe = ["CWE-666", "CWE-672", "CWE-758", "CWE-910"]
 
 [presets]
-default = "as_written"
+default = "widened"
 strict = "as_written"
 pedantic = "as_written"
-differs = false
-overlap = "owns double fclose (moved from FIO24-C)"
-basis = "no. Default, strict and pedantic coincide (P/coincide)."
-ruling = "P/coincide"
+differs = true
+overlap = "owns double fclose (moved from FIO24-C) and a second close of a POSIX descriptor"
+basis = "yes, by the POSIX fact: the FILE form coincides in every preset; a second close(fd) on a path is reported where POSIX holds, which default assumes and strict and pedantic require declared (FIO46-C/2026-10-07/presets, amended 2026-11-06)."
+ruling = "FIO46-C/2026-10-07/presets, FIO46-C/2026-11-06/descriptor"

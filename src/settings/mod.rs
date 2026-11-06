@@ -392,11 +392,12 @@ impl fmt::Display for EditionConflict {
 /// or `pedantic` with `posix_version` unknown, none of them credits it. The
 /// first three read a POSIX-only entry of a library contract today (`_exit`
 /// ends a path; a POSIX call's side effects); FIO14-C exempts its
-/// constructs when POSIX holds; the others are ruled to exempt a construct
-/// under POSIX and do not read the fact yet.
+/// constructs when POSIX holds; FIO46-C reports a second `close` of a
+/// descriptor only then; the others are ruled to exempt a construct under
+/// POSIX and do not read the fact yet.
 pub static POSIX_DEPENDENT_RULES: &[&str] = &[
-    "API00-C", "CON37-C", "FIO08-C", "FIO14-C", "FIO19-C", "FIO24-C", "MSC05-C", "MSC37-C",
-    "PRE31-C", "SIG30-C",
+    "API00-C", "CON37-C", "FIO08-C", "FIO14-C", "FIO19-C", "FIO24-C", "FIO46-C", "MSC05-C",
+    "MSC37-C", "PRE31-C", "SIG30-C",
 ];
 
 /// Which axis an option belongs to.
@@ -1897,8 +1898,9 @@ impl AnalysisSettings {
     /// When the preset assumes no POSIX and the project declares none (not
     /// in the configuration, nor in a compile database that states it for
     /// every unit): the notice a scan prints, naming the `posix_version` key
-    /// and the enabled rules (those `enabled` accepts) whose exemption waits
-    /// on it. Silent when none is enabled.
+    /// and the enabled rules (those `enabled` accepts) whose reading waits on
+    /// it: an exemption it would credit, or a finding it would give grounds
+    /// for. Silent when none is enabled.
     pub fn posix_notice(&self, enabled: impl Fn(&str) -> bool) -> Option<String> {
         if self.environment != EnvironmentKind::Hosted
             || self.posix_assumed_by_preset
@@ -1917,7 +1919,9 @@ impl AnalysisSettings {
             return None;
         }
         Some(format!(
-            "POSIX is not declared, so no exemption that depends on it applies; declare it with \
+            "POSIX is not declared, so nothing that depends on it is credited: no exemption that \
+             rests on it applies, and no finding only POSIX gives grounds for is reported. \
+             Declaring it can remove findings or add them. Declare it with \
              [environment] posix_version = \"2008\" (or pre2001, 2001, 2017, 2024, none), --set \
              posix_version=2008, or a compile database that defines _POSIX_C_SOURCE for every \
              unit. Rules that depend on it: {}.",
@@ -2639,7 +2643,7 @@ pub fn render_text(current: &AnalysisSettings) -> String {
     if current.posix_version.is_none() {
         let line = match current.posix_for(None) {
             PosixState::Assumed => "POSIX: assumed by the default preset, no edition declared",
-            _ => "POSIX: not declared, so no exemption that depends on it applies",
+            _ => "POSIX: not declared, so nothing that depends on it is credited",
         };
         out.pop();
         out.push_str(&format!("{line}\n\n"));
@@ -2859,11 +2863,12 @@ pub fn render_rst() -> String {
          answer (see :doc:`configuration`); the configuration holds for the whole\n   \
          project and wins a disagreement, which the scan reports. Each declared\n   \
          fact's source (``cli``, ``config`` or ``compile database``) is part of\n   \
-         the settings hash. When a fact is unknown, no exemption that depends on it\n   \
-         applies, except that the default preset assumes POSIX with no edition.\n   \
-         Under ``strict`` and ``pedantic`` the scan names the missing\n   \
-         ``posix_version`` and the enabled rules whose exemption waits on it\n   \
-         (``--check-config`` warns the same way).\n\n   \
+         the settings hash. When a fact is unknown, nothing that depends on it is\n   \
+         credited: no exemption that rests on it applies, and no finding only it\n   \
+         gives grounds for is reported. The default preset is the exception: it\n   \
+         assumes POSIX with no edition. Under ``strict`` and ``pedantic`` the scan\n   \
+         names the missing ``posix_version`` and the enabled rules whose reading\n   \
+         waits on it (``--check-config`` warns the same way).\n\n   \
          - Set with ``[environment]`` keys, ``--libc``, or ``--set c_standard=c99``\n     \
          (also ``posix_version``, ``libc_version``), or with a compile database\n   \
          - ``newlib-nano``: newlib with nano-malloc, whose ``free(NULL)`` returns at\n     \
@@ -3035,7 +3040,7 @@ mod tests {
         // them, so exact include-name matching must not move them.
         assert_eq!(
             AnalysisSettings::preset(Preset::Default).settings_hash(),
-            "8823c3e89a7bf2d2adb1f1bc4e9ec99b6f962e86a8ce85b4fbe66b882ba34026"
+            "22c58791ff78f5e69f78f92a94d5c887ba90ed8b69c0b263a6bb8fc3cdcbdfc9"
         );
         assert_eq!(
             AnalysisSettings::preset(Preset::Strict).settings_hash(),

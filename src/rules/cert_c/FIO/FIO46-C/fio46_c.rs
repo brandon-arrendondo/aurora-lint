@@ -14,21 +14,34 @@
 // The paths are the function's control-flow graph: a close on a branch that
 // returns reaches nothing after the branch, and a call to a noreturn
 // function ends its path.
+//
+// CERT generalizes the rule to other file representations. Where POSIX holds,
+// a second `close(fd)` on a path from a first, with `fd` not assigned between,
+// is reported too. That is not undefined: POSIX gives it `EBADF`, and the harm
+// is that the number may by then name a file another open returned. Nothing
+// else is read about a descriptor, since an `int` stays valid after its close.
 
 use super::super::{CertRule, RuleViolation};
-use crate::analyze::cfg::{build_function_cfg_with_constants_and_noreturn, BlockId, FunctionCfg};
-use crate::analyze::const_eval::MacroConstantMap;
+use crate::analyze::cfg::{
+    build_function_cfg_with_constants_and_noreturn, BlockId, CfgEdge, FunctionCfg,
+};
+use crate::analyze::const_eval::{
+    collect_macro_alias_alternatives, resolve_macro_alias_where, MacroConstantMap,
+};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::dataflow::find_node_at_range;
 use crate::analyze::noreturn::{
-    called_function_name, library_function_replaced, noreturn_names_for_file, ByNoreturnTrust,
+    called_function_name, library_function_replaced, library_names_redefined_among,
+    noreturn_names_for_file, ByNoreturnTrust,
 };
+use crate::analyze::preproc_arms::PreprocArms;
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
-use crate::utility::cert_c::ast_utils::{get_node_text, stream_key};
+use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declarator, stream_key};
+use crate::utility::cert_c::std_functions::is_iso_c_or_posix_function;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tree_sitter::Node;
@@ -127,6 +140,15 @@ impl CertRule for Fio46C {
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.scan_streams(node, source, violations);
+        if self.settings.borrow().posix_holds_project() {
+            self.scan_descriptors(node, source, violations);
+        }
+    }
+}
+
+impl Fio46C {
+    fn scan_streams(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         let functions = query::find_descendants_of_kind(*node, "function_definition");
         if !functions.iter().any(|f| closes_a_stream(f, source)) {
             return;
@@ -228,7 +250,11 @@ impl Fio46C {
             spellings: &spellings,
         };
 
-        let entry_state = solve(&cfg, &walker);
+        let entry_state = solve(
+            &cfg,
+            |id, state| walker.block(&cfg, id, state, None),
+            |_, _, _| {},
+        );
         let mut seen = HashSet::new();
         for block in &cfg.blocks {
             let Some(state) = entry_state.get(&block.id) else {
@@ -309,32 +335,39 @@ impl Fio46C {
 }
 
 /// The closed state at each reachable block's entry: a forward may-analysis
-/// whose merge is union, so a stream closed on any path into a block may be
-/// closed there. A block is walked again only when its entry state gains a
-/// stream or an earlier close of one, and both only move one way, so this
-/// ends.
-fn solve(cfg: &FunctionCfg, walker: &Walker) -> BTreeMap<BlockId, Closed> {
-    let mut entry: BTreeMap<BlockId, Closed> = BTreeMap::new();
-    entry.insert(cfg.entry, Closed::new());
+/// whose merge is union, so a file closed on any path into a block may be
+/// closed there. `transfer` applies a block to a state and `on_edge` what
+/// taking one edge out of it adds. A block is walked again only when its entry
+/// state gains a file or an earlier close of one, and both only move one way,
+/// so this ends.
+fn solve<V: Clone + Ord>(
+    cfg: &FunctionCfg,
+    transfer: impl Fn(BlockId, &mut BTreeMap<String, V>),
+    on_edge: impl Fn(BlockId, &CfgEdge, &mut BTreeMap<String, V>),
+) -> BTreeMap<BlockId, BTreeMap<String, V>> {
+    let mut entry: BTreeMap<BlockId, BTreeMap<String, V>> = BTreeMap::new();
+    entry.insert(cfg.entry, BTreeMap::new());
     let mut work = VecDeque::from([cfg.entry]);
     while let Some(id) = work.pop_front() {
         let mut state = entry[&id].clone();
-        walker.block(cfg, id, &mut state, None);
-        for (succ, _) in cfg.successors(id) {
+        transfer(id, &mut state);
+        for (succ, edge) in cfg.successors(id) {
+            let mut state = state.clone();
+            on_edge(id, edge, &mut state);
             let first_visit = !entry.contains_key(&succ);
             let into = entry.entry(succ).or_default();
             let mut grew = false;
-            for (stream, closed) in &state {
-                match into.get_mut(stream) {
+            for (file, closed) in &state {
+                match into.get_mut(file) {
                     Some(have) if *have <= *closed => {}
                     // An earlier close reaches the block: the state is the
-                    // same streams, but its messages name another line.
+                    // same files, but its messages name another line.
                     Some(have) => {
                         *have = closed.clone();
                         grew = true;
                     }
                     None => {
-                        into.insert(stream.clone(), closed.clone());
+                        into.insert(file.clone(), closed.clone());
                         grew = true;
                     }
                 }
@@ -594,4 +627,567 @@ impl<'t> Walker<'_, 't> {
             ));
         }
     }
+}
+
+/// A descriptor that may be closed at a program point, with what ends that:
+/// the names its spelling reads and the members it goes through.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ClosedFd {
+    line: usize,
+    byte: usize,
+    spelling: String,
+    /// The identifiers the spelling reads: `fd`; `ctx` in `ctx->fd`; `fds` and
+    /// `i` in `fds[i]`. Assigning one means the spelling names another object.
+    names: BTreeSet<String>,
+    /// The members the spelling goes through: `fd` in `ctx->fd`.
+    members: BTreeSet<String>,
+    /// Whether code the function cannot see can write it: a member, an
+    /// element, a file-scope or `static` object. A local no `&` reaches and a
+    /// parameter cannot be written that way.
+    shared: bool,
+}
+
+type ClosedFds = BTreeMap<String, ClosedFd>;
+
+/// What a file's calls to a function resolve to.
+struct CallNames {
+    /// `#define CLOSE close`, every arm: a build in which it is `close` is
+    /// enough (ADR-0010). A name the file `#undef`s is not one: its definitions
+    /// hold in turn, not in alternative builds.
+    aliases: HashMap<String, Vec<String>>,
+    /// Library names the file gives its own definitions.
+    redefined: HashSet<String>,
+}
+
+impl CallNames {
+    /// Whether a call spelled `name` reaches `target`.
+    fn reaches(&self, name: &str, target: &str) -> bool {
+        resolve_macro_alias_where(&self.aliases, name, |n| n == target).is_some()
+    }
+
+    /// Whether a call spelled `name` is to the C or POSIX library, which does
+    /// not write what it is not given.
+    fn is_library(&self, name: &str) -> bool {
+        resolve_macro_alias_where(&self.aliases, name, |n| {
+            is_iso_c_or_posix_function(n) && !self.redefined.contains(n)
+        })
+        .is_some()
+    }
+}
+
+impl Fio46C {
+    fn scan_descriptors(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let mut aliases = collect_macro_alias_alternatives(node, source);
+        for undef in undefined_names(node, source) {
+            aliases.remove(&undef);
+        }
+        let names = CallNames {
+            aliases,
+            redefined: library_names_redefined_among(node, source, is_iso_c_or_posix_function),
+        };
+        let functions: Vec<_> = query::find_descendants_of_kind(*node, "function_definition")
+            .into_iter()
+            .filter(|func| closes_a_descriptor(func, source, &names))
+            .collect();
+        // A file whose `close` is its own function or a macro calls that, not
+        // the library's.
+        if functions.is_empty()
+            || library_function_replaced(
+                node,
+                source,
+                "close",
+                self.project.borrow().as_ref(),
+                self.file_path.borrow().as_deref(),
+            )
+        {
+            return;
+        }
+        let settings = Arc::clone(&self.settings.borrow());
+        let noreturn = noreturn_names_for_file(
+            self.noreturn_functions.borrow().get(&settings),
+            node,
+            source,
+            &settings,
+        );
+        let arms = PreprocArms::collect(node);
+        for func in functions {
+            self.analyze_descriptors(&func, source, &noreturn, &names, &arms, violations);
+        }
+    }
+
+    fn analyze_descriptors(
+        &self,
+        func: &Node,
+        source: &str,
+        noreturn: &HashSet<String>,
+        names: &CallNames,
+        arms: &PreprocArms,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let Some(cfg) = build_function_cfg_with_constants_and_noreturn(
+            func,
+            source,
+            &MacroConstantMap::new(),
+            noreturn,
+        ) else {
+            return;
+        };
+        let walker = FdWalker {
+            func: *func,
+            source,
+            names,
+            addressed: addressed_names(func, source),
+        };
+        let entry_state = solve(
+            &cfg,
+            |id, state| walker.block(&cfg, id, state, None),
+            |id, edge, state| walker.edge(&cfg, id, edge, state),
+        );
+        let mut seen = HashSet::new();
+        for block in &cfg.blocks {
+            let Some(state) = entry_state.get(&block.id) else {
+                continue;
+            };
+            let mut state = state.clone();
+            let mut findings = Vec::new();
+            walker.block(&cfg, block.id, &mut state, Some(&mut findings));
+            for (call, spelling, closed_line, closed_byte) in findings {
+                // Two arms of one `#if` chain are never compiled together.
+                if arms.exclusive(closed_byte, call.start_byte()) || !seen.insert(call.start_byte())
+                {
+                    continue;
+                }
+                let earlier = if closed_byte == call.start_byte() {
+                    "this close() on an earlier pass through the loop".to_string()
+                } else {
+                    format!("close() at line {closed_line}")
+                };
+                let position = call.start_position();
+                violations.push(RuleViolation {
+                    rule_id: self.rule_id().to_string(),
+                    severity: self.severity(),
+                    line: position.row + 1,
+                    column: position.column + 1,
+                    file_path: String::new(),
+                    message: format!(
+                        "Descriptor '{spelling}' may already be closed by {earlier}. A second close() fails with EBADF, or closes another file if an open has since returned that number."
+                    ),
+                    suggestion: Some(
+                        "Close each descriptor once, or assign it again (-1, or a new open) after the first close()."
+                            .to_string(),
+                    ),
+                    requires_manual_review: None,
+                });
+            }
+        }
+    }
+}
+
+/// The names some `#undef` in the file ends.
+fn undefined_names(root: &Node, source: &str) -> Vec<String> {
+    query::find_descendants_of_kind(*root, "preproc_call")
+        .iter()
+        .filter(|call| {
+            call.child_by_field_name("directive")
+                .is_some_and(|d| get_node_text(&d, source) == "#undef")
+        })
+        .filter_map(|call| call.child_by_field_name("argument"))
+        .map(|arg| get_node_text(&arg, source).trim().to_string())
+        .collect()
+}
+
+/// Whether `declarator`, in `decl`, is a `const` object whose value is fixed
+/// where it is declared: `const int fd = 3`, a constant by another spelling.
+/// One initialized by a call, or a `const` parameter, holds whatever it is given.
+fn is_const_constant(decl: &Node, declarator: &Node, source: &str) -> bool {
+    let mut cursor = decl.walk();
+    let is_const = decl
+        .children(&mut cursor)
+        .any(|c| c.kind() == "type_qualifier" && get_node_text(&c, source).trim() == "const");
+    let value = declarator
+        .parent()
+        .filter(|parent| parent.kind() == "init_declarator")
+        .and_then(|init| init.child_by_field_name("value"));
+    is_const
+        && value.is_some_and(|value| {
+            value.kind() != "call_expression"
+                && query::find_descendants_of_kind(value, "call_expression").is_empty()
+        })
+}
+
+/// The argument of `call` when it calls `close` with one argument.
+fn close_argument<'a>(call: &Node<'a>, source: &str, names: &CallNames) -> Option<Node<'a>> {
+    let name = called_function_name(call, source)?;
+    if !names.reaches(&name, "close") {
+        return None;
+    }
+    let args = call.child_by_field_name("arguments")?;
+    (args.named_child_count() == 1)
+        .then(|| args.named_child(0))
+        .flatten()
+}
+
+/// Whether `func` spells a call to `close`: the cheap test before a CFG.
+fn closes_a_descriptor(func: &Node, source: &str, names: &CallNames) -> bool {
+    query::find_descendants_of_kind(*func, "call_expression")
+        .iter()
+        .any(|call| {
+            callee_spelling(call, source).is_some_and(|callee| names.reaches(callee, "close"))
+                && close_argument(call, source, names).is_some()
+        })
+}
+
+/// The identifiers in `node`, itself included.
+fn identifiers_in(node: &Node, source: &str) -> BTreeSet<String> {
+    let mut found: BTreeSet<String> = query::find_descendants_of_kind(*node, "identifier")
+        .iter()
+        .map(|ident| get_node_text(ident, source).to_string())
+        .collect();
+    if node.kind() == "identifier" {
+        found.insert(get_node_text(node, source).to_string());
+    }
+    found
+}
+
+/// The names under some `&` in `func`: what is written through that pointer
+/// is out of sight, so a descriptor read through one of them is never tracked.
+fn addressed_names(func: &Node, source: &str) -> BTreeSet<String> {
+    query::find_descendants_of_kind(*func, "pointer_expression")
+        .iter()
+        .filter(|expr| {
+            expr.child_by_field_name("operator")
+                .is_some_and(|op| get_node_text(&op, source) == "&")
+        })
+        .filter_map(|expr| expr.child_by_field_name("argument"))
+        .flat_map(|operand| identifiers_in(&operand, source))
+        .collect()
+}
+
+fn strip_parens<'a>(node: &Node<'a>) -> Node<'a> {
+    let mut expr = *node;
+    while expr.kind() == "parenthesized_expression" {
+        match expr.named_child(0) {
+            Some(inner) => expr = inner,
+            None => break,
+        }
+    }
+    expr
+}
+
+/// Whether nothing reads the result of `call`: it is a statement, through
+/// parentheses, a cast or a comma.
+fn result_discarded(call: &Node) -> bool {
+    let mut node = *call;
+    while let Some(parent) = node.parent() {
+        match parent.kind() {
+            "expression_statement" => return true,
+            "parenthesized_expression" | "cast_expression" | "comma_expression" => node = parent,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Which way a branch on `close`'s result goes when the close succeeded: the
+/// `close` call, and whether success takes the true edge. `None` for any
+/// other condition, which leaves neither edge known to be past a close.
+fn close_test<'a>(cond: &Node<'a>, source: &str) -> Option<(Node<'a>, bool)> {
+    let cond = strip_parens(cond);
+    match cond.kind() {
+        "call_expression" => Some((cond, false)),
+        "unary_expression"
+            if cond
+                .child_by_field_name("operator")
+                .is_some_and(|op| get_node_text(&op, source) == "!") =>
+        {
+            let (call, on_true) = close_test(&cond.child_by_field_name("argument")?, source)?;
+            Some((call, !on_true))
+        }
+        "binary_expression" => {
+            let left = strip_parens(&cond.child_by_field_name("left")?);
+            let right = strip_parens(&cond.child_by_field_name("right")?);
+            let op = get_node_text(&cond.child_by_field_name("operator")?, source);
+            let (call, value, op) = if left.kind() == "call_expression" {
+                (left, right, op)
+            } else if right.kind() == "call_expression" {
+                let flipped = match op {
+                    "<" => ">",
+                    ">" => "<",
+                    "<=" => ">=",
+                    ">=" => "<=",
+                    same => same,
+                };
+                (right, left, flipped)
+            } else {
+                return None;
+            };
+            // POSIX: 0 on success, -1 otherwise.
+            let on_true = match (op, get_node_text(&value, source).replace(' ', "").as_str()) {
+                ("==", "0") | ("!=", "-1") | (">=", "0") | (">", "-1") => true,
+                ("!=", "0") | ("==", "-1") | ("<", "0") | ("<=", "-1") => false,
+                _ => return None,
+            };
+            Some((call, on_true))
+        }
+        _ => None,
+    }
+}
+
+/// Walks statements in evaluation order, updating the closed descriptors and,
+/// when asked, recording each `close` of one that may already be closed: the
+/// call, the spelling, and the line and byte of the earlier close.
+struct FdWalker<'s, 't> {
+    func: Node<'t>,
+    source: &'s str,
+    names: &'s CallNames,
+    addressed: BTreeSet<String>,
+}
+
+type FdFindings<'t> = Vec<(Node<'t>, String, usize, usize)>;
+
+impl<'t> FdWalker<'_, 't> {
+    fn block(
+        &self,
+        cfg: &FunctionCfg,
+        id: BlockId,
+        state: &mut ClosedFds,
+        mut findings: Option<&mut FdFindings<'t>>,
+    ) {
+        let Some(block) = cfg.get_block(id) else {
+            return;
+        };
+        for &(start, end) in &block.statements {
+            if let Some(stmt) = find_node_at_range(&self.func, start, end) {
+                self.expr(&stmt, state, &mut findings);
+            }
+        }
+    }
+
+    /// The edge of a branch on `close`'s result that means it succeeded is
+    /// past the close. The other is its failure path, where POSIX leaves the
+    /// descriptor open or unspecified, so a retry there is not reported.
+    fn edge(&self, cfg: &FunctionCfg, id: BlockId, edge: &CfgEdge, state: &mut ClosedFds) {
+        let took_true = match edge {
+            CfgEdge::TrueBranch => true,
+            CfgEdge::FalseBranch => false,
+            _ => return,
+        };
+        let Some((start, end)) = cfg.get_block(id).and_then(|b| b.condition_range) else {
+            return;
+        };
+        let Some(cond) = find_node_at_range(&self.func, start, end) else {
+            return;
+        };
+        let Some((call, on_true)) = close_test(&cond, self.source) else {
+            return;
+        };
+        if on_true == took_true {
+            if let Some(arg) = close_argument(&call, self.source, self.names) {
+                self.mark_closed(&call, &arg, state);
+            }
+        }
+    }
+
+    /// The key and state of the descriptor `arg` names, when it is an object
+    /// the function can follow. Not a constant, or a name no declaration in
+    /// reach gives (`STDIN_FILENO`, a macro), or anything computed.
+    fn descriptor(&self, call: &Node, arg: &Node) -> Option<(String, ClosedFd)> {
+        let expr = strip_parens(arg);
+        let shared = match expr.kind() {
+            "identifier" => {
+                let text = get_node_text(&expr, self.source);
+                let (decl, declarator) = resolve_identifier_declarator(&expr, text, self.source)?;
+                if declarator.kind() != "identifier"
+                    || is_const_constant(&decl, &declarator, self.source)
+                {
+                    return None;
+                }
+                let inside = decl.start_byte() >= self.func.start_byte()
+                    && decl.end_byte() <= self.func.end_byte();
+                let mut cursor = decl.walk();
+                let is_static = decl.children(&mut cursor).any(|c| {
+                    c.kind() == "storage_class_specifier"
+                        && get_node_text(&c, self.source).trim() == "static"
+                });
+                !inside || is_static
+            }
+            "field_expression" | "subscript_expression" => {
+                if query::find_descendants_of_kinds(
+                    expr,
+                    &[
+                        "call_expression",
+                        "update_expression",
+                        "assignment_expression",
+                    ],
+                )
+                .into_iter()
+                .next()
+                .is_some()
+                {
+                    return None;
+                }
+                true
+            }
+            _ => return None,
+        };
+        let names = identifiers_in(&expr, self.source);
+        if !names.is_disjoint(&self.addressed) {
+            return None;
+        }
+        let members = query::find_descendants_of_kind(expr, "field_identifier")
+            .iter()
+            .map(|field| get_node_text(field, self.source).to_string())
+            .collect();
+        Some((
+            stream_key(&expr, self.source),
+            ClosedFd {
+                line: call.start_position().row + 1,
+                byte: call.start_byte(),
+                spelling: get_node_text(&expr, self.source).to_string(),
+                names,
+                members,
+                shared,
+            },
+        ))
+    }
+
+    fn mark_closed(&self, call: &Node, arg: &Node, state: &mut ClosedFds) {
+        if let Some((key, closed)) = self.descriptor(call, arg) {
+            state.entry(key).or_insert(closed);
+        }
+    }
+
+    fn expr(
+        &self,
+        node: &Node<'t>,
+        state: &mut ClosedFds,
+        findings: &mut Option<&mut FdFindings<'t>>,
+    ) {
+        match node.kind() {
+            "sizeof_expression" | "alignof_expression" | "offsetof_expression" => {}
+            "function_definition" | "compound_statement" => {}
+            "call_expression" => self.call(node, state, findings),
+            "assignment_expression" => {
+                if let Some(right) = node.child_by_field_name("right") {
+                    self.expr(&right, state, findings);
+                }
+                if let Some(left) = node.child_by_field_name("left") {
+                    self.expr(&left, state, findings);
+                    self.written(&left, state);
+                }
+            }
+            "update_expression" => {
+                if let Some(argument) = node.child_by_field_name("argument") {
+                    self.written(&argument, state);
+                }
+            }
+            "init_declarator" => {
+                if let Some(value) = node.child_by_field_name("value") {
+                    self.expr(&value, state, findings);
+                }
+                if let Some(declarator) = node.child_by_field_name("declarator") {
+                    forget_names(&identifiers_in(&declarator, self.source), state);
+                }
+            }
+            "declaration" => {
+                let mut cursor = node.walk();
+                for declarator in node.children_by_field_name("declarator", &mut cursor) {
+                    if declarator.kind() == "init_declarator" {
+                        self.expr(&declarator, state, findings);
+                    } else {
+                        forget_names(&identifiers_in(&declarator, self.source), state);
+                    }
+                }
+            }
+            _ => {
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    self.expr(&child, state, findings);
+                }
+            }
+        }
+    }
+
+    /// `target` is assigned. A name assigned means every spelling that reads
+    /// it names something else now. A member assigned ends the spellings
+    /// through that member, by whatever pointer. Anything else, as `*p` and
+    /// `a[i]`, may be any shared object.
+    fn written(&self, target: &Node, state: &mut ClosedFds) {
+        let target = strip_parens(target);
+        match target.kind() {
+            "identifier" => forget_names(&identifiers_in(&target, self.source), state),
+            "field_expression" => {
+                if let Some(field) = target.child_by_field_name("field") {
+                    let member = get_node_text(&field, self.source);
+                    state.retain(|_, closed| !closed.members.contains(member));
+                }
+            }
+            _ => state.retain(|_, closed| !closed.shared),
+        }
+    }
+
+    fn call(
+        &self,
+        call: &Node<'t>,
+        state: &mut ClosedFds,
+        findings: &mut Option<&mut FdFindings<'t>>,
+    ) {
+        if let Some(arg) = close_argument(call, self.source, self.names) {
+            if let Some((key, _)) = self.descriptor(call, &arg) {
+                if let (Some(closed), Some(findings)) = (state.get(&key), findings.as_deref_mut()) {
+                    findings.push((*call, closed.spelling.clone(), closed.line, closed.byte));
+                }
+            }
+            // A close whose result something reads is known to have closed
+            // only on the edge of a test of that result (`FdWalker::edge`).
+            if result_discarded(call) {
+                self.mark_closed(call, &arg, state);
+            }
+            return;
+        }
+        let name = called_function_name(call, self.source);
+        let args: Vec<Node<'t>> = call
+            .child_by_field_name("arguments")
+            .map(|args| {
+                let mut cursor = args.walk();
+                args.named_children(&mut cursor).collect()
+            })
+            .unwrap_or_default();
+        for arg in &args {
+            self.expr(arg, state, findings);
+        }
+        if name.as_deref().is_some_and(|n| self.names.is_library(n)) {
+            // `dup2(x, fd)` opens `fd` without assigning it.
+            if name
+                .as_deref()
+                .is_some_and(|n| self.names.reaches(n, "dup2"))
+            {
+                if let Some(target) = args.get(1) {
+                    let names = identifiers_in(&strip_parens(target), self.source);
+                    forget_names(&names, state);
+                }
+            }
+            // `pipe(fds)` and `memset(ctx, ...)` write what they are given a
+            // pointer to; `read(fds[0], ...)` is given the value and does not.
+            for arg in &args {
+                let text = get_node_text(&strip_parens(arg), self.source).to_string();
+                let names = identifiers_in(arg, self.source);
+                state.retain(|_, closed| {
+                    !closed.shared || closed.spelling == text || closed.names.is_disjoint(&names)
+                });
+            }
+        } else {
+            // A function can write a shared object, and what looks like one
+            // can be a macro that assigns its argument.
+            state.retain(|_, closed| !closed.shared);
+            for arg in &args {
+                forget_names(&identifiers_in(arg, self.source), state);
+            }
+        }
+    }
+}
+
+/// Ends every closed descriptor whose spelling reads one of `names`.
+fn forget_names(names: &BTreeSet<String>, state: &mut ClosedFds) {
+    state.retain(|_, closed| closed.names.is_disjoint(names));
 }

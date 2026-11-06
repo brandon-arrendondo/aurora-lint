@@ -87,8 +87,7 @@ only ISO C: both trust the ISO C library unless a ``libc`` is declared, but
 strict applies a POSIX contract or exemption only when ``posix_version`` is
 declared, in the configuration or by a compile database passed with
 ``--compile-commands`` (see *Declaring the platform* below). A strict scan with
-neither names the missing fact and the enabled rules whose exemption waits on
-it. The **pedantic** preset is the pedantic policy on a hosted
+neither names the missing fact and the enabled rules whose reading waits on it. The **pedantic** preset is the pedantic policy on a hosted
 environment that trusts only a declared library: small targets often link a
 reduced one, so a full ISO C library is not assumed. With no ``libc``
 declared, a pedantic scan trusts no library contract and says so on stderr,
@@ -225,13 +224,15 @@ The settings record where each declared fact came from (``cli``, ``config`` or
 ``compile database``), and that source is part of the settings hash; a scan
 with no declaration and no compile database hashes as it always did.
 
-When a fact is unknown, no exemption that depends on it applies. The default
-preset is the one exception: it assumes POSIX, with no edition, because most
-code runs on a POSIX system. ``strict`` and ``pedantic`` do not, so a
-``--strict`` scan of POSIX code that declares nothing reports the findings the
-POSIX exemptions would have withheld. Declare ``posix_version``, or pass a
-compile database that defines ``_POSIX_C_SOURCE`` for every unit, to restore
-them.
+When a fact is unknown, nothing that depends on it is credited: no exemption
+that rests on it applies, and no finding only it gives grounds for is reported.
+The default preset is the one exception: it assumes POSIX, with no edition,
+because most code runs on a POSIX system. ``strict`` and ``pedantic`` do not, so
+a ``--strict`` scan of POSIX code that declares nothing reports the findings the
+POSIX exemptions would have withheld, and omits the ones only POSIX gives grounds
+for, such as FIO46-C's second ``close()`` of a descriptor. Declare
+``posix_version``, or pass a compile database that defines ``_POSIX_C_SOURCE``
+for every unit, to get both.
 
 Some facts no other declaration implies. Whether a handler installed with
 ``signal()`` stays installed while it runs is implementation-defined in C11

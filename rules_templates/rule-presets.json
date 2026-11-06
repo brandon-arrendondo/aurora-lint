@@ -153,7 +153,7 @@
     "FIO42-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
     "FIO44-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
     "FIO45-C": {"default": "narrowed", "strict": "as_written", "pedantic": "stricter", "differs": true},
-    "FIO46-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
+    "FIO46-C": {"default": "widened", "strict": "as_written", "pedantic": "as_written", "differs": true},
     "FIO47-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
     "FLP00-C": {"default": "narrowed", "strict": "as_written", "pedantic": "as_written", "differs": true},
     "FLP01-C": {"default": "not_enforced", "strict": "not_enforced", "pedantic": "not_enforced", "differs": false},
