@@ -1,13 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
+use std::cell::RefCell;
+
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::{get_sanitized_node_text, is_likely_macro_constant};
+use crate::utility::cert_c::ast_utils::get_sanitized_node_text;
+use crate::utility::cert_c::constant_expression::{
+    in_block_scope, ConstantExpressions, Constness, ProjectTables,
+};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
-pub struct Arr32C;
+#[derive(Default)]
+pub struct Arr32C {
+    /// The project's macro and typedef tables: an array size macro is
+    /// usually defined in a header.
+    project: RefCell<ProjectTables>,
+}
 
 impl CertRule for Arr32C {
     fn rule_id(&self) -> &'static str {
@@ -26,8 +37,14 @@ impl CertRule for Arr32C {
         "ARR32-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project.borrow_mut() = ProjectTables::from_context(context);
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+        let project = self.project.borrow();
+        let constants = ConstantExpressions::new(*node, source, &project);
 
         for n in
             query::find_descendants_of_kinds(*node, &["array_declarator", "parameter_declaration"])
@@ -42,7 +59,10 @@ impl CertRule for Arr32C {
                         let start_point = n.start_position();
 
                         // Check if this is a VLA (size is not a constant)
-                        if is_variable_length_array(&size_node, source) {
+                        if in_block_scope(&n)
+                            && constants.integer_constant_expression(&size_node)
+                                == Constness::NotConstant
+                        {
                             let size_text = &source[size_node.start_byte()..size_node.end_byte()];
 
                             // Check for obvious violations
@@ -107,29 +127,6 @@ impl CertRule for Arr32C {
     }
 }
 
-fn is_variable_length_array(size_node: &Node, source: &str) -> bool {
-    // A VLA has a size that is not a compile-time constant
-    // Simple heuristic: if it's an identifier or expression (not a number literal)
-    match size_node.kind() {
-        "identifier" => {
-            // ALL_CAPS identifiers are conventionally preprocessor constants, not VLAs
-            let name = &source[size_node.start_byte()..size_node.end_byte()];
-            !is_likely_macro_constant(name)
-        }
-        "binary_expression" => {
-            // Check if all leaf identifiers are macro constants.
-            // `MACRO_A * MACRO_B` is a compile-time constant expression.
-            !is_all_constant_expression(size_node, source)
-        }
-        "call_expression" => true,
-        "number_literal" => false,
-        _ => {
-            // Check if it contains any identifiers (making it non-constant)
-            contains_identifier(size_node, source)
-        }
-    }
-}
-
 fn is_problematic_vla_size(size_node: &Node, source: &str) -> bool {
     let size_text = &source[size_node.start_byte()..size_node.end_byte()];
 
@@ -150,27 +147,6 @@ fn is_problematic_vla_size(size_node: &Node, source: &str) -> bool {
         if operator == "*" || operator == "+" {
             // Potential for overflow
             return true;
-        }
-    }
-
-    false
-}
-
-#[allow(dead_code)]
-fn is_identifier_node(node: &Node) -> bool {
-    node.kind() == "identifier"
-}
-
-fn contains_identifier(node: &Node, _source: &str) -> bool {
-    if node.kind() == "identifier" {
-        return true;
-    }
-
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if contains_identifier(&child, _source) {
-                return true;
-            }
         }
     }
 
@@ -322,38 +298,6 @@ fn has_prior_validation(body_node: &Node, source: &str, var_name: &str, vla_line
         }
     }
     false
-}
-
-/// Check if an expression tree consists entirely of compile-time constants:
-/// numeric literals, ALL_CAPS macro identifiers, sizeof, and arithmetic operators.
-fn is_all_constant_expression(node: &Node, source: &str) -> bool {
-    match node.kind() {
-        "number_literal" => true,
-        "identifier" => {
-            let name = &source[node.start_byte()..node.end_byte()];
-            is_likely_macro_constant(name)
-        }
-        "binary_expression" | "parenthesized_expression" => {
-            // All children must be constant
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    match child.kind() {
-                        // Operators and parens are fine
-                        "+" | "-" | "*" | "/" | "%" | "<<" | ">>" | "&" | "|" | "^" | "(" | ")" => {
-                        }
-                        _ => {
-                            if !is_all_constant_expression(&child, source) {
-                                return false;
-                            }
-                        }
-                    }
-                }
-            }
-            true
-        }
-        "sizeof_expression" => true,
-        _ => false,
-    }
 }
 
 fn get_binary_operator<'a>(node: &Node, source: &'a str) -> &'a str {

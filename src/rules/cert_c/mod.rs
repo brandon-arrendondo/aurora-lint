@@ -882,7 +882,7 @@ impl RuleRegistry {
         registry.register(Box::new(arr01_c::Arr01C));
         registry.register(Box::new(arr02_c::Arr02C));
         registry.register(Box::new(arr30_c::Arr30C::new()));
-        registry.register(Box::new(arr32_c::Arr32C));
+        registry.register(Box::new(arr32_c::Arr32C::default()));
         registry.register(Box::new(arr36_c::Arr36C::new()));
         registry.register(Box::new(arr37_c::Arr37C));
         registry.register(Box::new(arr38_c::Arr38C::new()));
@@ -930,7 +930,7 @@ impl RuleRegistry {
         registry.register(Box::new(err02_c::Err02C));
         registry.register(Box::new(dcl01_c::Dcl01C));
         registry.register(Box::new(dcl02_c::Dcl02C));
-        registry.register(Box::new(dcl03_c::Dcl03C));
+        registry.register(Box::new(dcl03_c::Dcl03C::default()));
         registry.register(Box::new(dcl04_c::Dcl04C));
         registry.register(Box::new(dcl05_c::Dcl05C::new()));
         registry.register(Box::new(dcl19_c::DCL19C::new()));
