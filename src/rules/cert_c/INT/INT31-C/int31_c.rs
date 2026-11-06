@@ -2539,22 +2539,22 @@ impl Int31C {
             return true;
         }
         let bits = target_width.min;
-        if bits == 0 || bits > 63 {
+        if bits == 0 || bits > 64 {
             return false;
         }
+        // A 64-bit unsigned target's largest value passes `i64`; a bound is
+        // checked against the part of the range `i64` holds, which proves
+        // less but never more.
+        let max = if target_signed {
+            (1i128 << (bits - 1)) - 1
+        } else {
+            (1i128 << bits) - 1
+        };
         let target = Target {
             width: target_width,
             signed: target_signed,
-            max: if target_signed {
-                (1i64 << (bits - 1)) - 1
-            } else {
-                (1i64 << bits) - 1
-            },
-            min: if target_signed {
-                -((1i64 << (bits - 1)) - 1)
-            } else {
-                0
-            },
+            max: i64::try_from(max).unwrap_or(i64::MAX),
+            min: if target_signed { -(max as i64) } else { 0 },
         };
         let Some(function) = ast_utils::find_containing_function(site) else {
             return false;
