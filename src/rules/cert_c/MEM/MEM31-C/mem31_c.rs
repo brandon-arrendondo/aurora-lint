@@ -3,7 +3,8 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval;
-use crate::analyze::context::{self, ProjectContext, ScopedTable};
+use crate::analyze::context::{self, ProjectContext, ScopedTable, VisibleTypes};
+use crate::analyze::dead_regions::DeadRegions;
 use crate::analyze::deallocator_candidates;
 use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::init_state;
@@ -11,7 +12,7 @@ use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::noreturn::ByNoreturnTrust;
 use crate::analyze::preproc_arms::PreprocArms;
 use crate::manifest::Severity;
-use crate::settings::AnalysisSettings;
+use crate::settings::{AnalysisSettings, IntFacts};
 use std::borrow::Cow;
 
 /// Where a call sits: its source and 1-based line, which decide the `#if`
@@ -24,10 +25,12 @@ fn site_of<'s>(node: &Node, source: &'s str) -> Site<'s> {
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::declarator_utils;
+use crate::utility::cert_c::expr_type::{self, CType, TypeEnv};
 use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::overflow_helpers;
+use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
 use lang_parsing_substrate::query;
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
@@ -128,6 +131,14 @@ pub struct Mem31C {
     /// file's own: an alias among them and a body under the same name are
     /// two builds (`const_eval::alias_chain_builds`).
     project_conditional_macros: RefCell<Arc<HashSet<String>>>,
+    /// The typedefs and struct tables this file sees, for typing the operand
+    /// of an ordering test ([`OperandTypes`]).
+    visible_types: RefCell<VisibleTypes>,
+    /// `ProjectContext::pointer_typedef_names`, for a typedef only a header
+    /// declares.
+    project_pointer_typedefs: RefCell<Arc<HashSet<String>>>,
+    /// `ProjectContext::function_pointer_typedef_names`, likewise.
+    project_function_pointer_typedefs: RefCell<Arc<HashSet<String>>>,
 }
 
 impl Mem31C {
@@ -144,6 +155,9 @@ impl Mem31C {
             project_aliases: RefCell::new(Arc::new(HashMap::new())),
             project_alias_alternatives: RefCell::new(Arc::new(HashMap::new())),
             project_conditional_macros: RefCell::new(Arc::new(HashSet::new())),
+            visible_types: RefCell::default(),
+            project_pointer_typedefs: RefCell::default(),
+            project_function_pointer_typedefs: RefCell::default(),
         }
     }
 }
@@ -184,10 +198,14 @@ impl CertRule for Mem31C {
         *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
         *self.project_alias_alternatives.borrow_mut() = context.macro_alias_alternatives.clone();
         *self.project_conditional_macros.borrow_mut() = context.conditional_macro_names.clone();
+        *self.project_pointer_typedefs.borrow_mut() = context.pointer_typedef_names.clone();
+        *self.project_function_pointer_typedefs.borrow_mut() =
+            context.function_pointer_typedef_names.clone();
     }
 
     fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
         *self.struct_field_types.borrow_mut() = types.struct_field_types.clone();
+        *self.visible_types.borrow_mut() = types.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -287,6 +305,17 @@ impl CertRule for Mem31C {
         // outermost function_definitions (no function_definition ancestor)
         // is a no-op on every normal file and fixes this at the source
         // rather than deduping at export.
+        let visible_types = self.visible_types.borrow();
+        let project_pointer_typedefs = self.project_pointer_typedefs.borrow();
+        let project_function_pointer_typedefs = self.project_function_pointer_typedefs.borrow();
+        let operand_types = OperandTypes {
+            visible: &visible_types,
+            pointer_typedefs: &project_pointer_typedefs,
+            function_pointer_typedefs: &project_function_pointer_typedefs,
+            model: settings.facts,
+            facts: OnceCell::new(),
+            typedefs: OnceCell::new(),
+        };
         for func in query::find_descendants_of_kind(*node, "function_definition") {
             if overflow_helpers::enclosing_function_definition(&func).is_some() {
                 continue;
@@ -302,6 +331,8 @@ impl CertRule for Mem31C {
                 &conditional_macros,
             );
             analyzer.realloc_in_one_build = Some(&realloc_in_one_build);
+            analyzer.operand_types = Some(&operand_types);
+            analyzer.current_function = Some(func);
             analyzer.analyze_function(&func, source, &mut violations);
         }
 
@@ -488,6 +519,14 @@ struct MemoryLeakAnalyzer<'a> {
     // Aliases that are `realloc` in some builds only: a call through one
     // allocates and may release its argument, but does not prove it did.
     realloc_in_one_build: Option<&'a HashSet<String>>,
+    // What types the operand of an ordering test (`ResultTest`); `None` reads
+    // every such operand as unresolved.
+    operand_types: Option<&'a OperandTypes<'a>>,
+    // This function's `{name -> declared type}` map, built on the same
+    // first need.
+    variable_types: OnceCell<HashMap<String, String>>,
+    // The function being analyzed, which `variable_types` is read from.
+    current_function: Option<Node<'a>>,
     // Where a call through one of `realloc_in_one_build` released each
     // variable, so a double free it causes says so rather than naming a
     // jump.
@@ -876,6 +915,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             macro_aliases,
             conditional_macros,
             realloc_in_one_build: None,
+            operand_types: None,
+            variable_types: OnceCell::new(),
+            current_function: None,
             released_in_one_build: HashMap::new(),
             released_by_some_definition: HashMap::new(),
             realloc_in_some_builds: HashSet::new(),
@@ -4480,6 +4522,101 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         None
     }
 
+    /// The variable a comparison tests for an integer acquirer's failure
+    /// value, when `cond` is that test in the direction `want` asks about. A
+    /// file descriptor or handle returned as an `int` reports failure as
+    /// `-1` or any negative value, so `if (fd == -1)` is that acquirer's
+    /// NULL check: on its true branch nothing was acquired and nothing can
+    /// leak. Either operand order is read (`-1 == fd`, `0 > fd`).
+    ///
+    /// The equality forms (`== -1`, `!= -1`) are read whatever the operand
+    /// is: a pointer compared with `-1` is a constraint violation without a
+    /// cast, and a cast is not an operand this reads. The ordering forms
+    /// (`< 0`, `>= 0`, `<= -1`, `> -1`) are not like that, since C orders a
+    /// pointer against `0` with no cast, so they are read only when the
+    /// operand does not resolve to a pointer ([`Self::operand_is_pointer`]).
+    /// On a pointer, `b < 0` is never true, so it cannot be the allocation's
+    /// failure branch. An operand whose type does not resolve keeps the
+    /// integer reading.
+    ///
+    /// A zero test (`fd == 0`, `fd <= 0`) is not a failure test, since 0 is
+    /// a valid descriptor; `== 0` keeps its NULL reading.
+    fn negative_result_test(&self, cond: &Node, source: &str, want: ResultTest) -> Option<String> {
+        let op = cond.child_by_field_name("operator")?;
+        let op = ast_utils::get_node_text_owned(&op, source);
+        let left = cond.child_by_field_name("left")?;
+        let right = cond.child_by_field_name("right")?;
+        // Read `CONST op x` as `x op' CONST`.
+        let (tested, constant, op) = if is_tested_operand(&left) {
+            (left, right, op.as_str())
+        } else if is_tested_operand(&right) {
+            let mirrored = match op.as_str() {
+                "<" => ">",
+                ">" => "<",
+                "<=" => ">=",
+                ">=" => "<=",
+                other => other,
+            };
+            (right, left, mirrored)
+        } else {
+            return None;
+        };
+        let constant: String = ast_utils::get_node_text_owned(&constant, source)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let (reads, ordering) = match (op, constant.as_str()) {
+            ("==", "-1") => (ResultTest::Failure, false),
+            ("!=", "-1") => (ResultTest::Success, false),
+            ("<", "0") | ("<=", "-1") => (ResultTest::Failure, true),
+            (">=", "0") | (">", "-1") => (ResultTest::Success, true),
+            _ => return None,
+        };
+        if reads != want || (ordering && self.operand_is_pointer(&tested, source)) {
+            return None;
+        }
+        Some(ast_utils::get_node_text_owned(&tested, source))
+    }
+
+    /// `operand` resolves to a pointer, or to an array, which decays to one:
+    /// by the declarator its occurrence resolves to (ADR-0006), through a
+    /// typedef ([`OperandTypes::typedefs`]), as an element of an array or
+    /// pointer, or as a field by its declared type and shape.
+    fn operand_is_pointer(&self, operand: &Node, source: &str) -> bool {
+        let Some(types) = self.operand_types else {
+            return false;
+        };
+        let root = ast_utils::tree_root(operand);
+        let facts = types
+            .facts
+            .get_or_init(|| PointerFacts::collect(&root, source));
+        let variable_types = self.variable_types.get_or_init(|| {
+            self.current_function
+                .map(|f| overflow_helpers::collect_variable_types(&f, source))
+                .unwrap_or_default()
+        });
+        if pointer_typing::expr_is_pointer(
+            operand,
+            source,
+            variable_types,
+            self.struct_field_types,
+            facts,
+        ) {
+            return true;
+        }
+        let env = TypeEnv::new(
+            types.typedefs(&root, source),
+            &types.visible.struct_field_types,
+            &types.visible.struct_field_shapes,
+            &types.visible.struct_typedef_aliases,
+            types.model,
+        );
+        matches!(
+            expr_type::expr_type(operand, source, &env),
+            Some(CType::Pointer(_) | CType::Array(_))
+        )
+    }
+
     /// Check if an if_statement's condition is a NULL check (var == NULL)
     /// Returns the variable name if it's a NULL check
     fn get_null_check_variable(&self, if_node: &Node, source: &str) -> Option<String> {
@@ -4514,6 +4651,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 return self
                     .null_check_variable_in(&left, source)
                     .or_else(|| self.null_check_variable_in(&right, source));
+            }
+
+            if let Some(tested) = self.negative_result_test(&cond, source, ResultTest::Failure) {
+                return Some(tested);
             }
 
             // Only handle == (var is NULL in true branch)
@@ -4585,6 +4726,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     .child_by_field_name("operator")
                     .map(|op| ast_utils::get_node_text_owned(&op, source))
                     .unwrap_or_default();
+
+                if let Some(tested) = self.negative_result_test(&cond, source, ResultTest::Success)
+                {
+                    return Some(tested);
+                }
 
                 // Handle != (var is NOT NULL in true branch, NULL in else branch)
                 if op_text == "!=" {
@@ -5264,4 +5410,130 @@ fn pointer_shaped_operand_names(node: &Node, source: &str) -> Vec<String> {
         _ => {}
     }
     names
+}
+
+/// Which outcome of an acquisition a
+/// [`MemoryLeakAnalyzer::negative_result_test`] asks about.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ResultTest {
+    /// True when the acquisition failed: `x == -1`, `x < 0`, `x <= -1`.
+    Failure,
+    /// True when it succeeded: `x != -1`, `x >= 0`, `x > -1`.
+    Success,
+}
+
+/// What one file types the operand of an ordering test against, built on the
+/// first such test ([`MemoryLeakAnalyzer::operand_is_pointer`]).
+struct OperandTypes<'a> {
+    visible: &'a VisibleTypes,
+    pointer_typedefs: &'a HashSet<String>,
+    function_pointer_typedefs: &'a HashSet<String>,
+    model: IntFacts,
+    facts: OnceCell<PointerFacts>,
+    typedefs: OnceCell<HashMap<String, String>>,
+}
+
+impl OperandTypes<'_> {
+    /// The visible typedef table with the pointer typedefs it leaves out,
+    /// since it records only a typedef with no declarator derivation. This
+    /// file's are read from their declarators, so a pointer to const counts,
+    /// and they win over a table entry of another file's. A block's typedef
+    /// is keyed here like a file-scope one, for an operand only it can type.
+    /// One only a header declares is known by name alone, as a pointer to
+    /// nothing, so the operand itself reads as a pointer but what it leads to
+    /// does not: an element of a pointer to pointer or of an array of pointers,
+    /// and a field through a pointer to struct. A pointer to const is not even
+    /// named, since no project table records it, and stays unresolved.
+    fn typedefs(&self, root: &Node, source: &str) -> &HashMap<String, String> {
+        self.typedefs.get_or_init(|| {
+            let mut typedefs = HashMap::clone(&self.visible.typedef_types);
+            let dead = DeadRegions::of(source);
+            let definitions = query::find_descendants_of_kind(*root, "type_definition");
+            let (in_blocks, at_file_scope): (Vec<_>, Vec<_>) = definitions
+                .into_iter()
+                .filter(|d| !dead.contains_node(d))
+                .partition(|d| overflow_helpers::enclosing_function_definition(d).is_some());
+            for (name, spelling) in at_file_scope
+                .iter()
+                .flat_map(|d| pointer_typedefs_of(d, source))
+            {
+                typedefs.insert(name, spelling);
+            }
+            for (name, spelling) in in_blocks
+                .iter()
+                .flat_map(|d| pointer_typedefs_of(d, source))
+            {
+                typedefs.entry(name).or_insert(spelling);
+            }
+            for name in self
+                .pointer_typedefs
+                .iter()
+                .chain(self.function_pointer_typedefs)
+            {
+                typedefs
+                    .entry(name.clone())
+                    .or_insert_with(|| "void *".to_string());
+            }
+            typedefs
+        })
+    }
+}
+
+/// `(name, spelling)` for each name `definition` (a `type_definition`) binds
+/// to a pointer, an array or a function pointer. Each level of pointer or
+/// array is one `*`: only what an element or a dereference leaves matters
+/// here, and an array decays. The spelling keeps the struct a pointer names,
+/// so a field through it still resolves. A struct with no tag goes by the plain
+/// name the same definition gives it, as `S` in `typedef struct {...} S, *SP`.
+/// With neither, as in `typedef struct {...} *SP`, its fields are filed under
+/// no name, so the pointer resolves and a field through it does not.
+fn pointer_typedefs_of(definition: &Node, source: &str) -> Vec<(String, String)> {
+    let specifier = definition.child_by_field_name("type");
+    let declarators = declarator_utils::typedef_declarators(definition);
+    let plain_name = || {
+        declarators
+            .iter()
+            .filter(|d| !d.has_error() && expr_type::declarator_shape(d).is_empty())
+            .find_map(|d| declarator_utils::TypedefShape::of(d, source).name)
+    };
+    let pointee = match specifier.as_ref().map(|t| (t.kind(), t)) {
+        Some(("primitive_type" | "sized_type_specifier" | "type_identifier", t)) => {
+            ast_utils::get_node_text_owned(t, source)
+        }
+        Some(("struct_specifier" | "union_specifier", t)) => t
+            .child_by_field_name("name")
+            .map(|tag| {
+                let keyword = t.kind().trim_end_matches("_specifier");
+                format!("{keyword} {}", ast_utils::get_node_text(&tag, source))
+            })
+            .or_else(plain_name)
+            .unwrap_or_else(|| "void".to_string()),
+        _ => "void".to_string(),
+    };
+    declarators
+        .iter()
+        .filter(|d| !d.has_error())
+        .filter_map(|d| {
+            let name = declarator_utils::TypedefShape::of(d, source).name?;
+            let shape = expr_type::declarator_shape(d);
+            // The levels outside any function: none is a plain alias, or a
+            // function type, which no object has.
+            let levels = shape.rsplit('(').next().filter(|l| !l.is_empty())?;
+            let base = if shape.contains('(') {
+                "void"
+            } else {
+                pointee.as_str()
+            };
+            Some((name, format!("{base} {}", "*".repeat(levels.len()))))
+        })
+        .collect()
+}
+
+/// An operand [`MemoryLeakAnalyzer::negative_result_test`] can name: a variable, a field, or an
+/// element.
+fn is_tested_operand(node: &Node) -> bool {
+    matches!(
+        node.kind(),
+        "identifier" | "field_expression" | "subscript_expression"
+    )
 }
