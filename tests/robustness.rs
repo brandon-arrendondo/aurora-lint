@@ -410,11 +410,6 @@ fn table_cases(rng: &mut Rng) -> Vec<Case> {
         "crlf_unterminated_comment",
         replace_once(b, "*/", "").replace('\n', "\r\n").into(),
     );
-    add("nul_mid_file", {
-        let mut v = b.as_bytes().to_vec();
-        v.insert(b.find("int i;").unwrap(), 0);
-        v
-    });
     add("invalid_utf8", {
         let mut v = b.as_bytes().to_vec();
         let at = b.find("local[i").unwrap();
@@ -600,6 +595,13 @@ fn table_cases(rng: &mut Rng) -> Vec<Case> {
         c.refuse = Refuse::Must;
         out.push(c);
     }
+    // One NUL in no text layout makes the file not source (ADR-0017 decision
+    // 9). The guard's first-8-KiB ratio passes it, and the parser refuses it.
+    let mut nul = b.as_bytes().to_vec();
+    nul.insert(b.find("int i;").unwrap(), 0);
+    let mut c = Case::new("t_nul_mid_file.c", nul, "table: nul_mid_file");
+    c.refuse = Refuse::Must;
+    out.push(c);
     out
 }
 

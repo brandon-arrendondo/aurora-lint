@@ -1497,8 +1497,9 @@ fn sort_for_deterministic_output(
     });
 }
 
-/// Whether a scan would skip this file as not being C, as [`analyze_one_file`]
-/// does: the parser will not read it, or it is a header written in C++.
+/// Whether a scan would have nothing to analyse in this file: the parser
+/// refuses it as not source text, or it is a header written in C++, which
+/// [`analyze_one_file`] skips as not being C.
 fn skipped_as_not_c(file_path: &str) -> bool {
     match crate::parser::read_source_or_transcode(file_path) {
         Ok(source) => {
@@ -1548,13 +1549,22 @@ fn analyze_one_file(
             None
         }
         Err(e) => {
-            // A file the directory walk listed but the parser would not
-            // take -- a binary blob with a C extension, an
-            // unreadable path. Say so once here, at the one place each
-            // file is scanned; silently producing nothing for it is how a
-            // whole file used to vanish from a run unnoticed.
-            eprintln!("Warning: {}: {}", file_path, e.root_cause());
-            containment::note_skipped(file_path);
+            // Read and decode failures arrive as refusals above. What is left
+            // is the parser producing no tree at all, which it does only on a
+            // timeout or cancellation the scan never sets: an internal error.
+            // The file contributes nothing, and that is reported as a failed
+            // file (ADR-0017 decision 1), never as a warning beside a clean
+            // exit.
+            file_failures.push(containment::ScanFailure::new(
+                containment::Stage::File,
+                file_path,
+                None,
+                containment::Failure {
+                    cause: containment::Cause::Panic,
+                    message: format!("{:#}", e),
+                    location: None,
+                },
+            ));
             None
         }
     };

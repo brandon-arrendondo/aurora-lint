@@ -41,8 +41,8 @@ A scan that selected no files
 -----------------------------
 
 A path with no ``.c`` or ``.h`` file under it, or one where the exclusions
-removed them all, scans nothing. So does a tree whose only such files are skipped
-as not being C: NUL bytes in no text layout, or a header written in C++. Scanning nothing shows nothing about the code,
+removed them all, scans nothing. So does a tree whose only such files are
+headers written in C++, which are skipped as not being C. Scanning nothing shows nothing about the code,
 so it exits ``3`` rather than reading as a clean result:
 
 .. code-block:: text
@@ -107,6 +107,9 @@ any case, is offered to the parser. Before parsing, each file is checked:
   PE, Mach-O, zip, gzip, xz, 7z, zstd, tar, PDF, an image, and so on), or
   its first 8 KiB has too many NUL, control or invalid-UTF-8 bytes to be
   text. This is a heuristic, tuned so that real C source is never refused.
+  A file with only a few NUL bytes passes that check, and is refused when
+  it is read instead: aurora-lint does not read a file with a NUL byte
+  outside a UTF-16 layout, even one a compiler accepts with a warning.
   A path that is not a regular readable file (a FIFO, a device) is refused
   the same way, since reading it could block.
   Files with a UTF-16 byte-order mark are text and are read normally, and

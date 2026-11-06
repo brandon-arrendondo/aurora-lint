@@ -74,7 +74,13 @@ impl CParser {
         // What was remembered per function of the last file answers nothing
         // about this one, which may even be read into the same buffer.
         crate::utility::cert_c::nonzero_facts::forget_function_facts();
-        let original = read_source_or_transcode(file_path)?;
+        // A file that cannot be read as source text is refused, as the input
+        // guard refuses one (ADR-0017 decision 9): skipped, and reported as
+        // a failure that makes the scan incomplete. The guard looks only at
+        // the first 8 KiB and passes a file with a few NUL bytes, so this is
+        // where such a file is caught, in the scan, the prescan and an
+        // included file read for its declarations alike.
+        let original = read_source_or_transcode(file_path).map_err(refused_as_not_text)?;
         let source = original.clone();
         // An earlier fix: neutralize emscripten EM_ASM/EM_JS embedded-JavaScript
         // macro bodies. A JS block parses as ordinary-looking C rather than
@@ -329,8 +335,10 @@ impl Default for CParser {
 /// byte of every character below U+0100 is zero, so ASCII-dominated
 /// source lights up one parity and leaves the other dark, and the lit
 /// parity names the endianness. Anything else with NULs in it is treated
-/// as binary and refused with [`NotSourceText`], which the scan loop
-/// reports as a warning and skips. Refusing is the point: a NUL-strewn
+/// as binary and refused with [`NotSourceText`], which
+/// [`CParser::parse_file_with_original`] reports as an input refusal
+/// (ADR-0017 decision 9), so the scan is incomplete rather than clean.
+/// Refusing is the point: a NUL-strewn
 /// file parses to one flat `ERROR` root with a child per stray byte, and
 /// the `node.child(i)` walk every pass and rule uses is quadratic on that
 /// shape -- WinDialog.c, decoded as ISO-8859-1, pegged a core for over ten
@@ -352,9 +360,9 @@ pub(crate) fn read_source_or_transcode(file_path: &str) -> Result<String> {
 
 /// A file `read_source_or_transcode` refused because its bytes contain
 /// NULs in no recognisable text layout -- a binary blob carrying a C
-/// extension. Its own type so the scan loop can tell "not text, skipped"
-/// (worth a warning) from an I/O failure. Carries the NUL count so the
-/// warning can say why the file was judged binary.
+/// extension. Its own type so the parser can refuse it as not source text
+/// with the reason. Carries the NUL count so the report can say why the
+/// file was judged binary.
 #[derive(Debug)]
 pub struct NotSourceText {
     /// How many NUL bytes the file held.
@@ -365,13 +373,25 @@ impl std::fmt::Display for NotSourceText {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "not C source text ({} NUL bytes with no UTF-16 layout); skipped",
+            "holds {} NUL byte(s), in no UTF-16 layout",
             self.nul_bytes
         )
     }
 }
 
 impl std::error::Error for NotSourceText {}
+
+/// The input refusal for a file [`read_source_or_transcode`] could not
+/// read as source text: NUL bytes in no text layout, or a read that failed
+/// after the input guard admitted the file.
+fn refused_as_not_text(e: anyhow::Error) -> anyhow::Error {
+    use crate::analyze::input_guard::Refusal;
+    let refusal = match e.downcast_ref::<NotSourceText>() {
+        Some(not_text) => Refusal::NotText(not_text.to_string()),
+        None => Refusal::NotText(format!("cannot be read ({})", e.root_cause())),
+    };
+    anyhow::Error::from(refusal)
+}
 
 /// The decoding half of [`read_source_or_transcode`], split out so the
 /// encodings can be tested without touching the filesystem.

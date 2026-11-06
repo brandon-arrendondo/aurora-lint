@@ -191,16 +191,17 @@ Before this decision, a failure anywhere ended the scan.
       nothing, or nothing but files it skips, is an empty selection like any
       other.
     - An empty source file is a selected file. It is scanned and counted.
-    - A file skipped as not being C (NUL bytes in no text layout, a header
-      written in C++) is not counted as scanned. On its own that does not make
-      a scan incomplete, but a selection with nothing else in it is empty.
-      For a NUL-bearing file this conflicts with decision 9 and is not settled
-      here. The input guard passes a file with few NULs, the parser then skips
-      it with a warning, and the scan can exit 0 with that file unanalysed,
-      even with `--allow-empty` on a tree of nothing else, while the same file
-      with more NULs is refused and exits 3. Resolving it means checking the
-      corpora first, since exit 3 would leave any scan containing such a file
-      unscored.
+    - A header written in C++ is skipped as not being C and is not counted as
+      scanned. On its own that does not make a scan incomplete, but a
+      selection with nothing else in it is empty.
+    - A file with NUL bytes in no text layout is not read as source, however
+      few NULs it holds, even though a compiler accepts a stray NUL with a
+      warning, so it is refused under decision 9. The input guard's
+      first-8-KiB ratio passes a file with only a few, so the parser refuses
+      it when it reads it: stage `input`, exit 3, in a scanned file and an
+      included file read for its declarations alike. No C file in the
+      benchmark corpora, their header sets or Juliet holds such a byte, so no
+      scan there is left unscored by it.
     - The text summary and the SARIF both give the number of files scanned
       (`aurora-lint/filesScanned`), since a SARIF `artifacts` array lists only
       the files a result points into. The JSON findings export stays a bare

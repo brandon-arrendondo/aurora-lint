@@ -10711,7 +10711,8 @@ fn elf_blob() -> Vec<u8> {
     [b"\x7fELF\x02\x01\x01\0".as_slice(), &[0u8; 4096]].concat()
 }
 
-/// Text enough to pass the input guard, with a NUL the parser then skips it for.
+/// Text enough to pass the input guard, with a NUL the parser then refuses it
+/// for: the guard reads only the first 8 KiB, by ratio, and one NUL is under it.
 const NUL_STREWN: &str = "int a;\0int b;\n";
 
 /// The level of the run's empty-selection notification, if it has one.
@@ -10839,23 +10840,89 @@ fn every_selected_file_refused_is_not_an_empty_selection() {
 fn a_file_skipped_as_not_c_is_not_counted_and_does_not_fail_the_scan() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.c"), "int a;\n").unwrap();
-    std::fs::write(dir.path().join("nul.c"), NUL_STREWN).unwrap();
     std::fs::write(dir.path().join("wrapper.h"), CPP_HEADER).unwrap();
     let (code, stdout, stderr, run) = coverage_scan(dir.path(), &[]);
     assert_eq!(code, 0, "stderr: {stderr}");
     assert!(
-        stdout.contains("Files scanned: 1 (2 more selected but failed or skipped)"),
+        stdout.contains("Files scanned: 1 (1 more selected but failed or skipped)"),
         "{stdout}"
     );
     assert_eq!(run["properties"]["aurora-lint/filesScanned"], 1);
     assert_eq!(empty_selection_level(&run), None);
 }
 
+/// A file with a NUL byte in no text layout is not source, however little of
+/// it the input guard's first-8-KiB ratio sees: it is refused like any input
+/// that is not source (ADR-0017 decision 9), and the scan is incomplete, with
+/// or without `--allow-empty`. The other file in the tree is still analysed.
+#[test]
+fn a_file_with_a_few_nul_bytes_is_refused_and_the_scan_is_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.c"), "int a;\n").unwrap();
+    std::fs::write(dir.path().join("nul.c"), NUL_STREWN).unwrap();
+    for extra in [&[][..], &["--allow-empty"][..]] {
+        let (code, stdout, stderr, run) = coverage_scan(dir.path(), extra);
+        assert_eq!(code, 3, "{extra:?}: stderr: {stderr}");
+        assert!(
+            stderr.contains("input skipped (not source text): ")
+                && stderr.contains("nul.c: holds 1 NUL byte(s), in no UTF-16 layout"),
+            "{extra:?}: {stderr}"
+        );
+        assert!(!stderr.contains("Warning:"), "{extra:?}: {stderr}");
+        assert!(
+            stdout.contains("Files scanned: 1 (1 more selected but failed or skipped)"),
+            "{extra:?}: {stdout}"
+        );
+        assert_eq!(run["invocations"][0]["executionSuccessful"], false);
+    }
+}
+
+/// The other side of that line: a UTF-16 file with its byte-order mark is
+/// NUL in every other byte and is text, read and analysed like any other.
+#[test]
+fn a_utf16_file_with_its_byte_order_mark_is_read_though_half_its_bytes_are_nul() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.c"), "int a;\n").unwrap();
+    std::fs::write(
+        dir.path().join("wide.c"),
+        encode(Encoding::Utf16LeBom, "int wide;\n"),
+    )
+    .unwrap();
+    let (code, stdout, stderr, run) = coverage_scan(dir.path(), &[]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(!stderr.contains("input skipped"), "{stderr}");
+    assert!(stdout.contains("Files scanned: 2"), "{stdout}");
+    assert_eq!(run["invocations"][0]["executionSuccessful"], true);
+}
+
+/// An included header read only for its declarations and macros is refused for a NUL
+/// byte the same way, since leaving it out changes what the scanned file's
+/// findings rest on; the scanned file itself is still analysed.
+#[test]
+fn a_header_with_a_few_nul_bytes_read_for_its_declarations_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let inc = dir.path().join("inc");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::create_dir(&inc).unwrap();
+    std::fs::write(src.join("a.c"), "#include \"nul.h\"\nint a;\n").unwrap();
+    std::fs::write(inc.join("nul.h"), NUL_STREWN).unwrap();
+    let (code, stdout, stderr, run) = coverage_scan(&src, &["-I", inc.to_str().unwrap()]);
+    assert_eq!(code, 3, "stderr: {stderr}");
+    assert!(
+        stderr.contains("input skipped (not source text): ")
+            && stderr.contains("nul.h: holds 1 NUL byte(s), in no UTF-16 layout"),
+        "{stderr}"
+    );
+    assert!(stdout.contains("Files scanned: 1"), "{stdout}");
+    assert_eq!(run["invocations"][0]["executionSuccessful"], false);
+}
+
 #[test]
 fn a_tree_of_nothing_but_skipped_files_scanned_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("nul.c"), NUL_STREWN).unwrap();
     std::fs::write(dir.path().join("wrapper.h"), CPP_HEADER).unwrap();
+    std::fs::write(dir.path().join("other.h"), CPP_HEADER).unwrap();
     let (code, _, stderr, run) = coverage_scan(dir.path(), &[]);
     assert_eq!(code, 3, "stderr: {stderr}");
     assert!(stderr.contains("Error: nothing to scan"), "{stderr}");
@@ -10920,7 +10987,7 @@ fn a_diff_agrees_with_a_full_scan_on_a_tree_of_only_skipped_files() {
     let dir = tempfile::tempdir().unwrap();
     let repo = repo_of(
         dir.path(),
-        &[("wrapper.h", CPP_HEADER), ("nul.c", NUL_STREWN)],
+        &[("wrapper.h", CPP_HEADER), ("other.h", CPP_HEADER)],
     );
 
     let (full, _, stderr, _) = coverage_scan(&repo, &[]);

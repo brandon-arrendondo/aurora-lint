@@ -294,8 +294,9 @@ step, not from within a rule.
 `read_source_or_transcode` decides encoding by BOM, then by NUL layout.
 NUL on one byte parity only is BOM-less UTF-16 (decoded by the lit
 parity's endianness); any other NUL-bearing file is a binary blob with a
-C extension and is refused with `parser::NotSourceText`, which the scan
-loop reports as `Warning: <file>: not C source text (...); skipped`. The
+C extension and is refused with `parser::NotSourceText`, which the parser
+turns into an input refusal (`input skipped (not source text)`, exit 3,
+ADR-0017 decision 9). The
 `child(i)` quadratic above is not confined to this module — every rule
 and prescan walk uses the idiom — so refusing the input is what actually
 bounds the run; a garbage file that still parses to a very wide `ERROR`
