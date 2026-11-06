@@ -1040,6 +1040,8 @@ fn process_call_arg_widening_range(
 pub(crate) struct FileScopeWrites {
     facts: Arc<FileScopeFacts>,
     local_keys: HashSet<String>,
+    /// The function's start byte, for [`FileScopeFacts::may_write_by_name`].
+    func_start: usize,
 }
 
 impl FileScopeWrites {
@@ -1051,6 +1053,7 @@ impl FileScopeWrites {
         FileScopeWrites {
             facts: nonzero_facts::file_scope_facts(func, source),
             local_keys,
+            func_start: func.start_byte(),
         }
     }
 
@@ -1077,7 +1080,11 @@ impl FileScopeWrites {
         }
         let written: Vec<String> = state
             .keys()
-            .filter(|k| self.writable(k) && (by_name || self.facts.addressed.contains(*k)))
+            .filter(|k| {
+                self.writable(k)
+                    && ((by_name && self.facts.may_write_by_name(k, self.func_start))
+                        || (through_pointer && self.facts.addressed.contains(*k)))
+            })
             .cloned()
             .collect();
         for key in written {

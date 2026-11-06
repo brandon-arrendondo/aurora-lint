@@ -26,7 +26,7 @@ use crate::analyze::init_state::addressed_object_root;
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use tree_sitter::Node;
@@ -240,12 +240,7 @@ pub fn pointer_write_reaches(
         }
         let file = file_scope_facts(&func, source);
         return !file.constant.contains(name)
-            && file.written_in(
-                &Between::after(origin, site, source),
-                &func,
-                file.addressed.contains(name),
-                source,
-            );
+            && file.written_in(&Between::after(origin, site, source), &func, name, source);
     };
     if facts.is_empty() && function.retained.is_empty() {
         return false;
@@ -419,6 +414,11 @@ pub struct FileScopeFacts {
     pub constant: HashSet<String>,
     /// The functions the file defines.
     defined: HashSet<String>,
+    /// The `static` file-scope objects, by name, each with the start bytes
+    /// of the functions of the file that assign or step it by name. Nothing
+    /// outside the file can name one, so a call writes it by name only
+    /// through a function of the file that does.
+    statics: HashMap<String, HashSet<usize>>,
 }
 
 impl FileScopeFacts {
@@ -438,32 +438,73 @@ impl FileScopeFacts {
             })
             .collect();
         let mut constant = HashSet::new();
+        let mut statics: HashMap<String, HashSet<usize>> = HashMap::new();
+        let mut functions = Vec::new();
         let mut stack = vec![*root];
         while let Some(node) = stack.pop() {
             for child in node.named_child_nodes() {
                 match child.kind() {
                     "declaration" => {
-                        let is_const = child.named_child_nodes().any(|q| {
-                            q.kind() == "type_qualifier"
-                                && ast_utils::get_node_text(&q, source) == "const"
-                        });
-                        if !is_const {
+                        let has = |kind: &str, word: &str| {
+                            child.named_child_nodes().any(|q| {
+                                q.kind() == kind && ast_utils::get_node_text(&q, source) == word
+                            })
+                        };
+                        let is_const = has("type_qualifier", "const");
+                        let is_static = has("storage_class_specifier", "static");
+                        if !is_const && !is_static {
                             continue;
                         }
                         let mut cursor = child.walk();
                         for d in child.children_by_field_name("declarator", &mut cursor) {
-                            let d = if d.kind() == "init_declarator" {
-                                d.child_by_field_name("declarator").unwrap_or(d)
-                            } else {
-                                d
-                            };
-                            if d.kind() == "identifier" {
-                                constant.insert(ast_utils::get_node_text(&d, source).to_string());
+                            let mut d = d;
+                            while let Some(inner) = d
+                                .child_by_field_name("declarator")
+                                .filter(|_| d.kind() != "function_declarator")
+                            {
+                                d = inner;
+                            }
+                            if d.kind() != "identifier" {
+                                continue;
+                            }
+                            let name = ast_utils::get_node_text(&d, source).to_string();
+                            if is_const {
+                                constant.insert(name.clone());
+                            }
+                            if is_static {
+                                statics.entry(name).or_default();
                             }
                         }
                     }
-                    "function_definition" => {}
+                    "function_definition" => functions.push(child),
                     _ => stack.push(child),
+                }
+            }
+        }
+        for func in functions {
+            for n in query::find_descendants_of_kinds(
+                func,
+                &["assignment_expression", "update_expression"],
+            ) {
+                let field = if n.kind() == "assignment_expression" {
+                    "left"
+                } else {
+                    "argument"
+                };
+                let Some(ident) = n
+                    .child_by_field_name(field)
+                    .and_then(|t| addressed_object_root(&t))
+                else {
+                    continue;
+                };
+                let name = ast_utils::get_node_text(&ident, source);
+                let Some(writers) = statics.get_mut(name) else {
+                    continue;
+                };
+                let local = ast_utils::resolve_identifier_declarator(&ident, name, source)
+                    .is_some_and(|(_, d)| ast_utils::find_containing_function(&d).is_some());
+                if !local {
+                    writers.insert(func.start_byte());
                 }
             }
         }
@@ -471,7 +512,17 @@ impl FileScopeFacts {
             addressed,
             constant,
             defined: defined_functions(root, source),
+            statics,
         }
+    }
+
+    /// Whether a call made in the function starting at byte `func_start`
+    /// may write the file-scope object `name` by name: any may, unless it
+    /// is `static` and no other function of the file assigns or steps it.
+    pub fn may_write_by_name(&self, name: &str, func_start: usize) -> bool {
+        self.statics
+            .get(name)
+            .is_none_or(|writers| writers.iter().any(|&f| f != func_start))
     }
 
     /// Whether `call` calls a library function the file does not define,
@@ -522,11 +573,15 @@ impl FileScopeFacts {
 
     /// Whether something in `between` may write a file-scope object whose
     /// address is taken (`addressed`) or not.
-    fn written_in(&self, between: &Between, func: &Node, addressed: bool, source: &str) -> bool {
+    fn written_in(&self, between: &Between, func: &Node, name: &str, source: &str) -> bool {
+        let addressed = self.addressed.contains(name);
+        let by_name = self.may_write_by_name(name, func.start_byte());
         query::find_first_descendant(*func, |n| {
             between.holds(&n)
                 && match n.kind() {
-                    "call_expression" => addressed || !self.is_library_call(&n, source),
+                    "call_expression" => {
+                        addressed || (by_name && !self.is_library_call(&n, source))
+                    }
                     "assignment_expression" => {
                         addressed
                             && n.child_by_field_name("left")
