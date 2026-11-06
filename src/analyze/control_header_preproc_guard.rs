@@ -79,7 +79,7 @@
 //! to the surrounding code.
 
 use crate::analyze::init_state;
-use crate::analyze::preproc_conditionals::{cond_line, match_conditionals};
+use crate::analyze::preproc_conditionals::{cond_line, directive_lines, match_conditionals};
 use crate::analyze::range_min::MinTree;
 use crate::utility::cert_c::text_bounds;
 pub(crate) fn is_directive(line: &str) -> bool {
@@ -223,18 +223,17 @@ fn braces_balance(text: &str) -> bool {
 #[cfg(test)]
 fn blank_dead_header(
     out: &mut [u8],
-    lines: &[&str],
-    line_starts: &[usize],
+    (lines, line_starts, directive): (&[&str], &[usize], &[bool]),
     from: usize,
     last: usize,
 ) {
     let mut at = Vec::new();
     let mut offset = 0;
-    for k in block_code_lines(lines, from, last) {
+    for k in (from..=last).filter(|&k| !directive[k]) {
         at.push((k, offset));
         offset += lines[k].len() + 1;
     }
-    let text = lexed_code(lines, from, last, true);
+    let text = lexed_code((lines, directive), from, last, true);
     if !braces_balance(&text) {
         return;
     }
@@ -270,8 +269,7 @@ struct BlankedCode {
 }
 
 impl BlankedCode {
-    /// `directive` says which lines are directives, as
-    /// [`CodeStream::directive`] does.
+    /// `directive` says which lines are directives ([`directive_lines`]).
     fn new(lines: &[&str], directive: &[bool]) -> BlankedCode {
         let n = lines.len();
         let mut text = String::new();
@@ -280,6 +278,7 @@ impl BlankedCode {
         let mut any = false;
         for (k, line) in lines.iter().enumerate() {
             if directive[k] {
+                state = lex_line(line, state, &mut String::new(), false);
                 continue;
             }
             if any {
@@ -395,25 +394,24 @@ fn continued_directive_lines(lines: &[&str]) -> Vec<bool> {
     continued
 }
 
-/// The file's code lines (every line that is not a directive), joined with
-/// `\n` and stripped of comments by [`lex_line`], once. A `#` line is a
-/// directive only when it begins in code: inside a block comment it is
-/// comment text, and is read for the `*/` that may close the comment
-/// (`/* Usage:` / `#include "foo.h" */`). The lines
+/// The file's code lines (every line that is not a directive, by
+/// [`directive_lines`]), joined with `\n` and stripped of comments by
+/// [`lex_line`], once. A `#` line inside a block comment is comment text and
+/// is read for the `*/` that may close the comment (`/* Usage:` /
+/// `#include "foo.h" */`). A directive adds no code, but a comment it opens
+/// runs on (`#if A /* why` / `#endif */`), so it is lexed too. The lines
 /// `first..=last` of one block are a slice of it, unless `first` begins
-/// inside a block comment or a literal, so whether a block's code ends with a
+/// inside a comment or a literal, so whether a block's code ends with a
 /// control header is answered from offsets into it rather than by joining
 /// and stripping each block's own code: a deep nest of blocks shares its
 /// code, and that would cost time quadratic in the nest's depth.
 struct CodeStream {
-    /// By line: whether it is a directive, a `#` line that begins in code.
-    directive: Vec<bool>,
     text: String,
     /// By line: where its code starts in `text`, for a directive line where
     /// the next code line's does.
     start: Vec<usize>,
-    /// By line: whether it begins in code, not in a block comment or a
-    /// continued literal.
+    /// By line: whether it begins in code, not in a comment or a continued
+    /// literal.
     in_code: Vec<bool>,
     /// By line: the end of the last code that is not white space, in this
     /// line or before it.
@@ -443,20 +441,20 @@ enum HeaderWord {
 }
 
 impl CodeStream {
-    fn new(lines: &[&str]) -> CodeStream {
+    /// `directive` says which lines are directives ([`directive_lines`]).
+    fn new(lines: &[&str], directive: &[bool]) -> CodeStream {
         let n = lines.len();
         let mut text = String::new();
         let mut start = vec![0; n];
         let mut in_code = vec![true; n];
-        let mut directive = vec![false; n];
         let mut tail = vec![None; n];
         let mut state = Lex::Code;
         let mut any = false;
         let mut last_tail = None;
         for (k, line) in lines.iter().enumerate() {
             in_code[k] = state == Lex::Code;
-            directive[k] = state == Lex::Code && is_directive(line);
             if directive[k] {
+                state = lex_line(line, state, &mut String::new(), false);
                 tail[k] = last_tail;
                 continue;
             }
@@ -482,7 +480,6 @@ impl CodeStream {
             }
         }
         let mut stream = CodeStream {
-            directive,
             text,
             start,
             in_code,
@@ -543,8 +540,8 @@ impl CodeStream {
     /// Whether the code of lines `first..=last` ends with a control-flow
     /// header: whether [`control_header_start`] finds one in that code read
     /// from `first` by [`lex_line`]. `None` when `first` begins inside a
-    /// block comment or a continued literal, where no directive before it
-    /// is one and the block's code is no slice of the stream.
+    /// comment or a continued literal, where no directive before it is one
+    /// and the block's code is no slice of the stream.
     fn ends_with_header(&self, first: usize, last: usize) -> Option<bool> {
         if !self.in_code[first] {
             return None;
@@ -572,13 +569,25 @@ impl CodeStream {
 }
 
 /// Where a line of code begins or ends, to [`lex_line`]: in code, in a
-/// block comment, or in a string or character literal a `\` ending the
-/// line continues.
+/// block comment, in a `//` comment a `\` ending the line continues, or in a
+/// string or character literal a `\` ending the line continues.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Lex {
     Code,
     Comment,
+    LineComment,
     Literal(char),
+}
+
+/// What a `//` comment reaching the end of `line` leaves the next line in.
+/// Blanks may stand between the `\` and the line's end, as they may to a
+/// compiler and to [`pp_tokens`](crate::utility::cert_c::pp_tokens).
+fn after_line_comment(line: &str) -> Lex {
+    if line.trim_end_matches([' ', '\t', '\r']).ends_with('\\') {
+        Lex::LineComment
+    } else {
+        Lex::Code
+    }
 }
 
 /// Append `line`, begun in `state`, to `out` without its comments: dropped,
@@ -598,6 +607,10 @@ fn lex_line(line: &str, mut state: Lex, out: &mut String, blank: bool) -> Lex {
     };
     while i < b.len() {
         match state {
+            Lex::LineComment => {
+                skip(out, &line[i..]);
+                return after_line_comment(line);
+            }
             Lex::Comment => match line[i..].find("*/") {
                 Some(j) => {
                     skip(out, &line[i..i + j + 2]);
@@ -632,7 +645,7 @@ fn lex_line(line: &str, mut state: Lex, out: &mut String, blank: bool) -> Lex {
             }
             Lex::Code if b[i] == b'/' && b.get(i + 1) == Some(&b'/') => {
                 skip(out, &line[i..]);
-                return Lex::Code;
+                return after_line_comment(line);
             }
             Lex::Code => {
                 let ch = line[i..].chars().next().unwrap();
@@ -647,37 +660,30 @@ fn lex_line(line: &str, mut state: Lex, out: &mut String, blank: bool) -> Lex {
     match state {
         // A literal the line does not continue ends with it.
         Lex::Literal(_) if !continued => Lex::Code,
+        // An empty line ends a `//` comment too.
+        Lex::LineComment => after_line_comment(line),
         state => state,
     }
 }
 
-/// The lines of `from..=to` that are no directive, read from `from`: a `#`
-/// line is one only when it begins in code.
-#[cfg(test)]
-fn block_code_lines(lines: &[&str], from: usize, to: usize) -> Vec<usize> {
-    let mut state = Lex::Code;
-    let mut kept = Vec::new();
-    for (k, line) in lines.iter().enumerate().take(to + 1).skip(from) {
-        if state == Lex::Code && is_directive(line) {
-            continue;
-        }
-        kept.push(k);
-        state = lex_line(line, state, &mut String::new(), false);
-    }
-    kept
-}
-
 /// The non-directive lines `from..=to` joined with `\n`, read by
 /// [`lex_line`] from the first: comments dropped, or with `blank` blanked.
-/// A `#` line is a directive only when it begins in code. What
+/// A directive adds no code, but is read for the comment it may open. What
 /// [`CodeStream`] and [`BlankedCode`] hold a slice of.
 #[cfg(test)]
-fn lexed_code(lines: &[&str], from: usize, to: usize, blank: bool) -> String {
+fn lexed_code(
+    (lines, directive): (&[&str], &[bool]),
+    from: usize,
+    to: usize,
+    blank: bool,
+) -> String {
     let mut out = String::new();
     let mut state = Lex::Code;
     let mut any = false;
-    for line in (from..=to).map(|k| lines[k]) {
-        if state == Lex::Code && is_directive(line) {
+    for k in from..=to {
+        let line = lines[k];
+        if directive[k] {
+            state = lex_line(line, state, &mut String::new(), false);
             continue;
         }
         if any && (blank || state != Lex::Comment) {
@@ -709,9 +715,9 @@ pub fn blank_control_header_guarded_preproc(source: &str) -> String {
             Some(*open > 0)
         })
         .collect();
-    let stream = CodeStream::new(&lines);
-    let directive = &stream.directive;
-    // A `#endif` inside a block comment closes nothing.
+    let directive = directive_lines(source, &line_starts);
+    let stream = CodeStream::new(&lines, &directive);
+    // A `#endif` inside a comment or a string closes nothing.
     let conditionals = match_conditionals(lines.len(), |k| {
         directive[k].then(|| cond_line(lines[k])).flatten()
     });
@@ -759,7 +765,7 @@ pub fn blank_control_header_guarded_preproc(source: &str) -> String {
                     // The header exists in no build: blank it and keep the
                     // guard, so nothing becomes its body.
                     let code =
-                        blanked_code.get_or_insert_with(|| BlankedCode::new(&lines, directive));
+                        blanked_code.get_or_insert_with(|| BlankedCode::new(&lines, &directive));
                     let file = (&lines[..], &line_starts[..], &directive[..]);
                     let block = (i + 1, last);
                     blank_dead_header_in(&mut out, file, code, block, &mut blanked);
@@ -804,6 +810,19 @@ mod tests {
         blank_control_header_guarded_preproc(src) == src
     }
 
+    /// By line, as the pass reads `lines` joined into a file.
+    fn directives_of(lines: &[&str]) -> Vec<bool> {
+        let starts: Vec<usize> = lines
+            .iter()
+            .scan(0, |at, l| {
+                let start = *at;
+                *at += l.len() + 1;
+                Some(start)
+            })
+            .collect();
+        directive_lines(&lines.join("\n"), &starts)
+    }
+
     #[test]
     fn the_stream_answers_as_joining_the_block_would() {
         // Every sequence of up to four of these lines, and every block of
@@ -829,15 +848,18 @@ mod tests {
             "s = \"a\\",
             "#include \"f.h\" */",
             "# x */ if (c)",
+            "// z \\",
+            "#if B /* o",
         ];
         let k = alphabet.len();
         for n in 1..=4u32 {
             for code in 0..k.pow(n) {
                 let lines: Vec<&str> = (0..n).map(|p| alphabet[code / k.pow(p) % k]).collect();
-                let stream = CodeStream::new(&lines);
-                for last in (0..lines.len()).filter(|&l| !stream.directive[l]) {
+                let directive = directives_of(&lines);
+                let stream = CodeStream::new(&lines, &directive);
+                for last in (0..lines.len()).filter(|&l| !directive[l]) {
                     for first in 0..=last {
-                        let code = lexed_code(&lines, first, last, false);
+                        let code = lexed_code((&lines, &directive), first, last, false);
                         let joined = control_header_start(&code).is_some();
                         match stream.ends_with_header(first, last) {
                             Some(found) => assert_eq!(found, joined, "{lines:?} {first}..={last}"),
@@ -870,6 +892,8 @@ mod tests {
             "u = \"*/ }\";",
             "#endif */",
             "# x */ if (c)",
+            "// z \\",
+            "#if B /* o",
         ];
         let k = alphabet.len();
         for n in 1..=4u32 {
@@ -877,16 +901,17 @@ mod tests {
                 let lines: Vec<&str> = (0..n).map(|p| alphabet[code / k.pow(p) % k]).collect();
                 let src = lines.join("\n");
                 let (lines, starts) = text_bounds::lines_with_starts(&src);
-                let stream = CodeStream::new(&lines);
-                let blanked = BlankedCode::new(&lines, &stream.directive);
-                for last in (0..lines.len()).filter(|&l| !stream.directive[l]) {
+                let directive = directive_lines(&src, &starts);
+                let stream = CodeStream::new(&lines, &directive);
+                let blanked = BlankedCode::new(&lines, &directive);
+                for last in (0..lines.len()).filter(|&l| !directive[l]) {
                     for from in (0..=last).filter(|&f| stream.in_code[f]) {
+                        let file = (&lines[..], &starts[..], &directive[..]);
                         let mut alone = src.as_bytes().to_vec();
-                        blank_dead_header(&mut alone, &lines, &starts, from, last);
+                        blank_dead_header(&mut alone, file, from, last);
                         let mut shared = src.as_bytes().to_vec();
                         let mut done = Default::default();
                         let block = (from, last);
-                        let file = (&lines[..], &starts[..], &stream.directive[..]);
                         blank_dead_header_in(&mut shared, file, &blanked, block, &mut done);
                         assert_eq!(shared, alone, "{lines:?} {from}..={last}");
                     }
@@ -898,23 +923,76 @@ mod tests {
     #[test]
     fn a_hash_line_inside_a_comment_is_read_for_its_close() {
         let lines = ["/* Usage:", "#include \"foo.h\" */", "#if A", "int k;"];
-        let stream = CodeStream::new(&lines);
-        assert_eq!(stream.directive, [false, false, true, false]);
+        let directive = directives_of(&lines);
+        assert_eq!(directive, [false, false, true, false]);
+        let stream = CodeStream::new(&lines, &directive);
         assert!(stream.in_code[2] && stream.in_code[3]);
-        assert_eq!(lexed_code(&lines, 0, 3, false), "\nint k;");
+        assert_eq!(lexed_code((&lines, &directive), 0, 3, false), "\nint k;");
     }
 
     #[test]
     fn a_literal_a_backslash_continues_keeps_its_braces_out_of_the_depth() {
         let lines = ["s = \"ab\\", "{\";", "x;"];
-        let stream = CodeStream::new(&lines);
-        let code = BlankedCode::new(&lines, &stream.directive);
+        let code = BlankedCode::new(&lines, &directives_of(&lines));
         assert_eq!(code.depth, [0, 0, 0, 0]);
     }
 
     #[test]
+    fn a_line_comment_a_backslash_continues_runs_onto_the_next_line() {
+        let lines = ["// note \\", "/* opened?", "#if A", "int k;"];
+        let directive = directives_of(&lines);
+        assert_eq!(directive, [false, false, true, false]);
+        let stream = CodeStream::new(&lines, &directive);
+        assert_eq!(stream.in_code, [true, false, true, true]);
+        // Blanks may follow the `\\`; an empty line, or none, ends it.
+        for (line, state) in [
+            ("// a \\ \t", Lex::LineComment),
+            ("// a \\ b", Lex::Code),
+            ("// a", Lex::Code),
+        ] {
+            assert_eq!(lex_line(line, Lex::Code, &mut String::new(), false), state);
+        }
+        let mut out = String::new();
+        assert_eq!(lex_line("", Lex::LineComment, &mut out, false), Lex::Code);
+        assert_eq!(
+            lex_line("x\\", Lex::LineComment, &mut out, false),
+            Lex::LineComment
+        );
+        assert_eq!(out, "");
+        let mut out = String::new();
+        lex_line("x", Lex::LineComment, &mut out, true);
+        assert_eq!(out, " ");
+    }
+
+    #[test]
+    fn a_guard_after_a_continued_line_comment_is_still_blanked() {
+        let src = "// note \\\n/* opened?\nvoid f(int c){\n#if A\nif (c)\n#endif\n{ c++; }\n}\n";
+        assert!(!unchanged(src));
+        assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn a_comment_a_directive_opens_hides_the_line_after_it() {
+        let lines = ["#if A /* why", "#endif */", "if (c)", "#endif", "{ }"];
+        let directive = directives_of(&lines);
+        assert_eq!(directive, [true, false, false, true, false]);
+        let stream = CodeStream::new(&lines, &directive);
+        assert_eq!(stream.in_code, [true, false, true, true, true]);
+        assert_eq!(stream.ends_with_header(1, 2), None);
+        assert_eq!(stream.ends_with_header(2, 2), Some(true));
+    }
+
+    #[test]
+    fn a_hash_line_a_backslash_joins_to_code_is_no_directive() {
+        let lines = ["x = \\", "#if A", "#define B \\", "#endif", "y;"];
+        assert_eq!(directives_of(&lines), [false, false, true, false, false]);
+    }
+
+    #[test]
     fn a_comment_opener_in_a_literal_opens_no_comment() {
-        let read = |lines: &[&str], blank| lexed_code(lines, 0, lines.len() - 1, blank);
+        let read = |lines: &[&str], blank| {
+            lexed_code((lines, &directives_of(lines)), 0, lines.len() - 1, blank)
+        };
         assert_eq!(
             read(&["a = \"Accept: */*\"; /* x */ b"], false),
             "a = \"Accept: */*\";  b"

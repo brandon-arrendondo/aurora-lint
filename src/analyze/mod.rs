@@ -35,6 +35,7 @@ pub mod dataflow;
 pub mod dead_regions;
 pub mod deallocator_candidates;
 pub mod define_comment_blank;
+pub mod directive_comment_blank;
 pub mod directive_text_repair;
 pub mod else_braced_arms;
 pub mod embedded_js_blank;
@@ -1470,11 +1471,11 @@ fn analyze_one_file(
         );
 
         // Extract suppressions from the current file. The inactive-branch
-        // ranges come from the text the rules read; matching a suppression's
-        // hash reads the file's own text below, as the suppression writers
-        // hash it: a repair pass keeps lines and length but not always
-        // content.
-        suppression_manager.extract_from_source(file_path, &source);
+        // ranges come from the text the rules read. The comments come from
+        // the file's own text, and matching a suppression's hash below reads
+        // it too, as the suppression writers hash it: a repair pass keeps
+        // lines and length but not always content.
+        suppression_manager.extract_from_source(file_path, &source, &original);
 
         for (rule_id, rule_config) in manifest.enabled_rules() {
             // Sequential mode: check cancellation and report progress per rule

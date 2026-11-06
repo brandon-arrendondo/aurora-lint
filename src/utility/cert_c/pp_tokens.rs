@@ -262,18 +262,52 @@ pub fn mask_source(text: &str) -> String {
 /// character literal or comment, nor a `#` or `##` operator in a macro body.
 pub fn directive_starts(source: &str) -> Vec<usize> {
     let tokens = lex_lines(source);
+    directive_tokens(source, &tokens)
+        .into_iter()
+        .map(|(_, k)| tokens[k].start)
+        .collect()
+}
+
+/// The byte ranges that hold a block comment before a directive's name, each
+/// to be read as white space: from where the directive's line begins to its
+/// `#` (`/* */ #endif`), and from its `#` to its name (`# /* */ endif`). A
+/// comment is one space (C11 5.1.1.2, phase 3) however many physical lines it
+/// spans, so the first range may start on an earlier line. The second is left
+/// out when a line break stands in it, inside a comment or a continuation: its
+/// `#` and name are then on two physical lines, whatever is done to the comment.
+pub fn comments_before_directive_names(source: &str) -> Vec<std::ops::Range<usize>> {
+    let tokens = lex_lines(source);
+    let mut ranges = Vec::new();
+    for (line, k) in directive_tokens(source, &tokens) {
+        let hash = &tokens[k];
+        if source[line..hash.start].contains("/*") {
+            ranges.push(line..hash.start);
+        }
+        if let Some(name) = tokens.get(k + 1) {
+            let gap = &source[hash.end..name.start];
+            if gap.contains("/*") && !gap.contains('\n') {
+                ranges.push(hash.end..name.start);
+            }
+        }
+    }
+    ranges
+}
+
+/// For each directive of `tokens`, lexed from `source`: where its line begins,
+/// and the index of its `#`.
+fn directive_tokens(source: &str, tokens: &[PpToken]) -> Vec<(usize, usize)> {
     let bytes = source.as_bytes();
     tokens
         .iter()
         .enumerate()
-        .filter(|(k, t)| {
-            t.is("#")
-                && match k.checked_sub(1) {
-                    None => true,
-                    Some(p) => has_line_break(&bytes[tokens[p].end..t.start]),
-                }
+        .filter(|(_, t)| t.is("#"))
+        .filter_map(|(k, t)| {
+            let line = match k.checked_sub(1) {
+                None => after_last_line_break(&bytes[..t.start]).unwrap_or(0),
+                Some(p) => tokens[p].end + after_last_line_break(&bytes[tokens[p].end..t.start])?,
+            };
+            Some((line, k))
         })
-        .map(|(_, t)| t.start)
         .collect()
 }
 
@@ -320,10 +354,12 @@ pub fn invocation_arguments(masked: &str, open: usize) -> Option<Vec<std::ops::R
     None
 }
 
-/// Whether the white space and comments between two tokens hold a line
-/// break: a newline that is neither escaped (a line continuation) nor
-/// inside a block comment, which is one space however many lines it spans.
-fn has_line_break(gap: &[u8]) -> bool {
+/// Where the last line of the white space and comments between two tokens
+/// begins: just after its last line break, a newline that is neither escaped
+/// (a line continuation) nor inside a block comment, which is one space
+/// however many lines it spans. `None` when they hold no line break.
+fn after_last_line_break(gap: &[u8]) -> Option<usize> {
+    let mut last = None;
     let mut k = 0;
     while k < gap.len() {
         if gap[k..].starts_with(b"/*") {
@@ -333,16 +369,27 @@ fn has_line_break(gap: &[u8]) -> bool {
                 .map_or(gap.len(), |p| k + 2 + p + 2);
             continue;
         }
+        if gap[k..].starts_with(b"//") {
+            // Up to the newline that ends it: nothing in it opens a comment.
+            while k < gap.len() && gap[k] != b'\n' {
+                if gap[k] == b'\\' && continuation_len(gap, k) > 0 {
+                    k += continuation_len(gap, k);
+                } else {
+                    k += 1;
+                }
+            }
+            continue;
+        }
         if gap[k] == b'\\' && continuation_len(gap, k) > 0 {
             k += continuation_len(gap, k);
             continue;
         }
         if gap[k] == b'\n' {
-            return true;
+            last = Some(k + 1);
         }
         k += 1;
     }
-    false
+    last
 }
 
 fn mask(text: &str, tokens: &[PpToken]) -> String {
@@ -640,7 +687,9 @@ fn scan_to_end(
             i += continuation_len(b, i);
             continue;
         }
-        if c.is_ascii_whitespace() {
+        // `is_ascii_whitespace` leaves out the vertical tab, which is white
+        // space to C (6.4p3).
+        if c.is_ascii_whitespace() || c == 0x0b {
             i += 1;
             continue;
         }
@@ -1113,6 +1162,40 @@ mod tests {
         let src = "x = a \\\n # b;\ny = 1; /* two\nlines */ # c\n#d\n";
         let starts: Vec<usize> = directive_starts(src);
         assert_eq!(starts, [src.rfind("#d").unwrap()]);
+    }
+
+    #[test]
+    fn a_hash_after_a_line_comment_holding_a_comment_opener_is_a_directive() {
+        let src = "int a; // see /* x\n#endif\n";
+        assert_eq!(directive_starts(src), [src.find('#').unwrap()]);
+        // A `\\` splices the next line into the `//` comment.
+        assert!(directive_starts("int a; // see \\\n#endif\n").is_empty());
+    }
+
+    #[test]
+    fn a_comment_before_a_directive_on_its_line_is_found() {
+        let at = |src: &str| comments_before_directive_names(src);
+        let src = "int a;\n/* x */ #endif\n#else\n";
+        assert_eq!(at(src).first(), Some(&(7..src.find('#').unwrap())));
+        let src = "/* x\n y */ /* z */ # if A\n";
+        assert_eq!(at(src).first(), Some(&(0..src.find('#').unwrap())));
+        // Not after code on the line, however many lines the comment spans.
+        assert!(at("int a; /* x */ #endif\n").is_empty());
+        assert!(at("int a; /* x\n y */ #endif\n").is_empty());
+        // Not in a literal, and not with the comment on the line before.
+        assert!(at("char *s = \"/* x */ #endif\";\n").is_empty());
+        assert!(at("/* x */\n#endif\n").is_empty());
+        // Between the `#` and the name, but not where they would then part.
+        assert_eq!(at("# /* x */ endif\n").first(), Some(&(1..10)));
+        assert_eq!(at("/* x */ # /* y */ endif\n"), [0..8, 9..18]);
+        assert!(at("# /* x\n y */ endif\n").is_empty());
+        assert!(at("# /* x */ \\\n endif\n").is_empty());
+        assert!(at("# /* x */\nint a;\n").is_empty());
+        // A vertical tab is white space.
+        assert_eq!(at("/* x */\u{b}#endif\n").first(), Some(&(0..8)));
+        // Spliced onto the comment's line: the same line to the compiler.
+        let src = "/* x */ \\\n#endif\n";
+        assert_eq!(at(src).first(), Some(&(0..src.find('#').unwrap())));
     }
 
     #[test]

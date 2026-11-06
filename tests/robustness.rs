@@ -2030,6 +2030,14 @@ fn unclosed_dead_ifs_with_declarations(n: usize) -> String {
     (0..n).map(|i| format!("#if 0\nint a{i};\n")).collect()
 }
 
+/// `n` conditionals with a comment before each directive on its line, the
+/// first comment of each one spanning two lines.
+fn commented_directives(n: usize) -> String {
+    (0..n)
+        .map(|i| format!("/* a\n b */ #if A{i}\nint a{i};\n/* c */ #endif\n"))
+        .collect()
+}
+
 /// `n` unclosed `#if` lines in a function, each opening a brace an `#else`
 /// opens too.
 fn unclosed_ifs_opening_braces(n: usize) -> String {
@@ -2103,7 +2111,7 @@ type SourceSeries = (&'static str, fn(usize) -> String);
 #[ignore = "size series: run in release with --ignored (CI robustness job)"]
 fn malformed_conditionals_parse_near_linearly() {
     let _runner = timed();
-    let series: [SourceSeries; 8] = [
+    let series: [SourceSeries; 9] = [
         (
             "unclosed_ifs_with_declarations",
             unclosed_ifs_with_declarations,
@@ -2124,6 +2132,7 @@ fn malformed_conditionals_parse_near_linearly() {
             "unclosed_dead_ifs_with_declarations",
             unclosed_dead_ifs_with_declarations,
         ),
+        ("commented_directives", commented_directives),
     ];
     let small = 2_500;
     let mut failures = Vec::new();

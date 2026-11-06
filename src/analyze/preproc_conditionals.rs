@@ -12,6 +12,24 @@
 //! [`directive_keyword`] and the predicates on it. Two passes used to match
 //! a `#if` or `#endif` prefix, and so missed `# else` and `#  endif`, which
 //! are the same directives.
+//!
+//! [`directive_lines`] says which lines hold a directive at all, as a compiler
+//! does.
+
+use crate::utility::cert_c::pp_tokens::directive_starts;
+
+/// By line, `line_starts` being where each line of `source` starts: whether
+/// it holds a directive, read as a compiler reads one
+/// ([`directive_starts`]). A `#` line inside a block comment, a `\`-continued
+/// string or a `\`-continued `//` comment holds none, nor does one a `\`
+/// joins to code before it.
+pub(crate) fn directive_lines(source: &str, line_starts: &[usize]) -> Vec<bool> {
+    let mut directive = vec![false; line_starts.len()];
+    for hash in directive_starts(source) {
+        directive[line_starts.partition_point(|&s| s <= hash) - 1] = true;
+    }
+    directive
+}
 
 /// The keyword of the directive `line` is, if it is one: `"ifndef"` for
 /// `#ifndef X`, `# ifndef X` and `#  ifndef X` alike. White space may stand

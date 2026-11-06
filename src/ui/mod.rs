@@ -2319,10 +2319,10 @@ impl TerminalUI {
         source: &str,
         original: &str,
     ) -> Result<()> {
-        // Extract suppressions from this file; their hashes are matched
-        // against `original` below, as the writers hash it
+        // Extract suppressions from this file, as written; their hashes are
+        // matched against `original` below, as the writers hash it
         let mut suppression_manager = SuppressionManager::new();
-        suppression_manager.extract_from_source(file_path, source);
+        suppression_manager.extract_from_source(file_path, source, original);
 
         // Collect enabled rules to avoid borrow checker issues with terminal.draw
         // A rule the policy in force declines never runs.

@@ -410,10 +410,15 @@ impl SuppressionManager {
     /// unified `tools:suppress aurora-lint:RULE` comment (standalone line only,
     /// matching the spec's own examples), via
     /// `lang_parsing_substrate::suppressions`.
-    pub fn extract_from_source(&mut self, file_path: &str, source: &str) {
+    ///
+    /// A suppression is the user's own text, so it is read from `original`,
+    /// the file as written: a repair pass may have blanked its comment. Which
+    /// branches are inactive is read from `repaired`, the text the rules read,
+    /// so a finding and the range it may fall in agree on what is a directive.
+    pub fn extract_from_source(&mut self, file_path: &str, repaired: &str, original: &str) {
         let mut file_suppressions = Vec::new();
 
-        for (line_num, line) in source.lines().enumerate() {
+        for (line_num, line) in original.lines().enumerate() {
             if Suppression::has_directive(line) {
                 if let Some(suppression) = Suppression::parse(line, line_num) {
                     file_suppressions.push(suppression);
@@ -421,9 +426,10 @@ impl SuppressionManager {
             }
         }
 
-        for s in
-            lang_parsing_substrate::suppressions(source, lang_parsing_substrate::SlocMode::Default)
-        {
+        for s in lang_parsing_substrate::suppressions(
+            original,
+            lang_parsing_substrate::SlocMode::Default,
+        ) {
             if !is_own_tool(&s.tool) {
                 continue;
             }
@@ -449,7 +455,7 @@ impl SuppressionManager {
                 .insert(file_path.to_string(), file_suppressions);
         }
 
-        let dead_ranges: Vec<(usize, usize)> = lang_parsing_substrate::dead_code_ranges(source)
+        let dead_ranges: Vec<(usize, usize)> = lang_parsing_substrate::dead_code_ranges(repaired)
             .into_iter()
             .map(|r| (r.start_line, r.end_line))
             .collect();
@@ -798,10 +804,65 @@ mod tests {
         );
 
         let mut mgr = SuppressionManager::new();
-        mgr.extract_from_source("test.c", &source);
+        mgr.extract_from_source("test.c", &source, &source);
         assert!(mgr
             .should_suppress("test.c", "EXP34-C", 3, &source, "")
             .is_some());
+    }
+
+    /// A suppression comment before a directive on its line, and the same
+    /// file as the repair pass leaves it.
+    fn suppressed_before_a_directive(comment_end: &str) -> (String, String) {
+        let code_line = "    *ptr = value;";
+        let hash = SuppressionManager::calculate_suppression_hash("EXP34-C", code_line);
+        let original = format!(
+            "void f(int *ptr) {{\n\
+             #ifdef A\n\
+             /* AURORA-SUPPRESS: EXP34-C HASH:{hash} JUSTIFICATION:\"x\"{comment_end}\n\
+             {code_line}\n\
+             }}\n"
+        );
+        let repaired =
+            crate::analyze::directive_comment_blank::blank_comments_before_directives(&original);
+        (original, repaired)
+    }
+
+    #[test]
+    fn a_suppression_comment_a_repair_blanked_still_suppresses() {
+        for comment_end in [" */ #endif", " */ #ifdef B", "\n more */ #endif"] {
+            let (original, repaired) = suppressed_before_a_directive(comment_end);
+            assert!(!repaired.contains("AURORA-SUPPRESS"), "{comment_end:?}");
+            let line = original.lines().count() - 1;
+            let mut mgr = SuppressionManager::new();
+            mgr.extract_from_source("test.c", &repaired, &original);
+            assert!(
+                mgr.should_suppress("test.c", "EXP34-C", line, &original, "")
+                    .is_some(),
+                "{comment_end:?}"
+            );
+            // It suppresses that rule on the line it names, and nothing else.
+            assert!(mgr
+                .should_suppress("test.c", "INT30-C", line, &original, "")
+                .is_none());
+            assert!(mgr
+                .should_suppress("test.c", "EXP34-C", 1, &original, "")
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn inactive_branches_are_read_from_the_repaired_text() {
+        let original = "#if 0\nint a;\n/* old */ #endif\nint b;\n";
+        let repaired =
+            crate::analyze::directive_comment_blank::blank_comments_before_directives(original);
+        let mut mgr = SuppressionManager::new();
+        mgr.extract_from_source("test.c", &repaired, original);
+        assert!(mgr
+            .should_suppress("test.c", "X", 2, original, "")
+            .is_some());
+        assert!(mgr
+            .should_suppress("test.c", "X", 4, original, "")
+            .is_none());
     }
 
     #[test]
@@ -939,7 +1000,7 @@ mod tests {
         );
 
         let mut mgr = SuppressionManager::new();
-        mgr.extract_from_source("test.c", &source);
+        mgr.extract_from_source("test.c", &source, &source);
 
         // Should suppress EXP34-C on line 3
         assert!(mgr
@@ -972,7 +1033,7 @@ mod tests {
         );
 
         let mut mgr = SuppressionManager::new();
-        mgr.extract_from_source("test.c", &source);
+        mgr.extract_from_source("test.c", &source, &source);
 
         assert!(mgr
             .should_suppress("test.c", "EXP34-C", 3, &source, "")
@@ -987,7 +1048,7 @@ mod tests {
         let source =
             "// tools:suppress aurora-lint:EXP34-C JUSTIFICATION:\"no hash\"\n    *ptr = value;\n";
         let mut mgr = SuppressionManager::new();
-        mgr.extract_from_source("test.c", source);
+        mgr.extract_from_source("test.c", source, source);
         assert!(mgr
             .should_suppress("test.c", "EXP34-C", 2, source, "")
             .is_none());
@@ -997,7 +1058,7 @@ mod tests {
     fn test_unified_syntax_ignores_other_tools() {
         let source = "// tools:suppress knots:cognitive JUSTIFICATION:\"legacy\"\nvoid f() {}\n";
         let mut mgr = SuppressionManager::new();
-        mgr.extract_from_source("test.c", source);
+        mgr.extract_from_source("test.c", source, source);
         assert!(mgr
             .should_suppress("test.c", "cognitive", 2, source, "")
             .is_none());
@@ -1018,7 +1079,7 @@ mod tests {
         );
 
         let mut mgr = SuppressionManager::new();
-        mgr.extract_from_source("test.c", &source);
+        mgr.extract_from_source("test.c", &source, &source);
 
         assert!(mgr
             .should_suppress("test.c", "EXP34-C", 2, &source, "")
@@ -1102,7 +1163,7 @@ mod tests {
         );
 
         let mut mgr = SuppressionManager::new();
-        mgr.extract_from_source("/project/test.c", &source);
+        mgr.extract_from_source("/project/test.c", &source, &source);
 
         // Add TOML suppression for INT30-C on the same file
         mgr.toml_suppressions.push((
@@ -1145,7 +1206,7 @@ mod tests {
         );
 
         let mut mgr = SuppressionManager::new();
-        mgr.extract_from_source("test.c", &source);
+        mgr.extract_from_source("test.c", &source, &source);
 
         assert!(mgr
             .should_suppress("test.c", "EXP34-C", 2, &source, "")
@@ -1509,7 +1570,7 @@ justification = "Third-party code"
         );
 
         let mut mgr = SuppressionManager::new();
-        mgr.extract_from_source("test.c", &source);
+        mgr.extract_from_source("test.c", &source, &source);
         mgr.wildcard_suppressions.push(
             CompiledWildcard::try_from_spec(WildcardSpec {
                 file_glob: Some("**".to_string()),
@@ -1681,7 +1742,7 @@ justification = "Third-party code"
     fn test_should_suppress_dead_code() {
         let mut mgr = SuppressionManager::new();
         let source = "int a;\n#if 0\nbad_thing();\n#endif\nint b;\n";
-        mgr.extract_from_source("test.c", source);
+        mgr.extract_from_source("test.c", source, source);
 
         // A violation reported on the dead line is suppressed.
         let result = mgr.should_suppress("test.c", "MEM30-C", 3, source, "");

@@ -25,21 +25,21 @@
 //!
 //! A directive is read as [`directive_extent`] reads it, with its
 //! `\`-continuations and the rest of a block comment it opens, so nothing
-//! of it is left behind as code. A `#if` line that starts inside a block
-//! comment is comment text and opens nothing. Length- and line-preserving.
+//! of it is left behind as code. A `#if` line inside a block comment or a
+//! `\`-continued string is text and opens nothing, and a `#endif` line there
+//! closes nothing ([`directive_lines`]). Length- and line-preserving.
 
 use crate::analyze::init_state::literal_dead_lines;
 use crate::analyze::paren_preproc_guard::{blank_line, CodeLines};
 use crate::analyze::preproc_arm_choice::directive_extent;
-use crate::analyze::preproc_conditionals::{cond_line, match_conditionals};
+use crate::analyze::preproc_conditionals::{cond_line, directive_lines, match_conditionals};
 
 /// Blank every conditional no `#endif` closes, per the module docs.
 pub fn blank_unclosed_conditionals(source: &str) -> String {
     let code = CodeLines::new(source);
+    let directive = directive_lines(source, &code.starts);
     let conditionals = match_conditionals(code.len(), |k| {
-        (!code.starts_in_comment[k])
-            .then(|| cond_line(code.raw[k]))
-            .flatten()
+        directive[k].then(|| cond_line(code.raw[k])).flatten()
     });
     if conditionals.unclosed().is_empty() {
         return source.to_string();
@@ -161,6 +161,33 @@ mod tests {
     fn an_if_in_a_block_comment_opens_nothing() {
         let src = "/*\n#if A\n*/\nint a;\n";
         assert_eq!(blank_unclosed_conditionals(src), src);
+    }
+
+    #[test]
+    fn a_directive_line_in_a_continued_string_is_string_text() {
+        // Opens nothing, so its bytes stay.
+        let src = "char *s = \"a\\\n#ifdef A\n\";\n";
+        assert_eq!(blank_unclosed_conditionals(src), src);
+        // Closes nothing, so the `#ifdef` before it is unclosed.
+        let src = "#ifdef A\nchar *s = \"a\\\n#endif\n\";\n";
+        assert_eq!(
+            blank_unclosed_conditionals(src),
+            "        \nchar *s = \"a\\\n#endif\n\";\n"
+        );
+    }
+
+    #[test]
+    fn a_directive_line_in_a_spliced_line_comment_is_comment_text() {
+        let src = "// note \\\n#ifdef A\nint a;\n";
+        assert_eq!(blank_unclosed_conditionals(src), src);
+    }
+
+    #[test]
+    fn an_endif_in_a_comment_a_directive_opened_closes_nothing() {
+        let src = "#if A /* why\n#endif */\nint a;\n";
+        let out = blank_unclosed_conditionals(src);
+        assert_eq!(out.lines().nth(2), Some("int a;"));
+        assert_eq!(out.lines().filter(|l| l.trim().is_empty()).count(), 2);
     }
 
     #[test]

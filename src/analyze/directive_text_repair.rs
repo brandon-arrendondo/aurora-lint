@@ -18,8 +18,9 @@
 //! directive keeps its `/` and has its `*` replaced with a space. That
 //! changes one character of the literal in the repaired source, which
 //! the rules and their messages read, and leaves its length alone; the
-//! `/` stays, so a path prefix such as `"/tmp/"` reads the same. Only
-//! suppressions read the original text. A directive the grammar parses
+//! `/` stays, so a path prefix such as `"/tmp/"` reads the same. A
+//! suppression, its comment and its hash alike, reads the original text. A
+//! directive the grammar parses
 //! as an expression or a header name (`#if`, `#include`) has no
 //! `preproc_arg` and is left as written.
 //!

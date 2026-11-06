@@ -67,9 +67,9 @@ impl CParser {
     /// [`Self::parse_file`], also returning the file's own text as read,
     /// before any repair pass. The two have the same length and lines, so
     /// an offset or line in one is the same in the other. Read the original
-    /// wherever the user's own text matters: a suppression hash, which the
-    /// suppression writers compute from the file, or text quoted back in a
-    /// finding.
+    /// wherever the user's own text matters: a suppression comment, its hash,
+    /// which the suppression writers compute from the file, or text quoted
+    /// back in a finding.
     pub fn parse_file_with_original(&mut self, file_path: &str) -> Result<(Tree, String, String)> {
         // What was remembered per function of the last file answers nothing
         // about this one, which may even be read into the same buffer.
@@ -96,6 +96,13 @@ impl CParser {
         // (the preprocessor reads each as a space anyway). Length- and
         // line-preserving.
         let source = crate::analyze::define_comment_blank::blank_define_body_comments(&source);
+
+        // A block comment before a directive's name on its line (`/* */ #endif`,
+        // `# /* */ endif`) is one space to the compiler, but every pass below
+        // reads a directive from its line's first character. Blank the comment.
+        // Length- and line-preserving.
+        let source =
+            crate::analyze::directive_comment_blank::blank_comments_before_directives(&source);
 
         // `__has_include(<hdr.h>)` in a `#if` is not a C expression, and the
         // recovery from it swallowed statements below the `#endif` (valkey
@@ -249,6 +256,8 @@ impl CParser {
         let source = crate::analyze::embedded_js_blank::blank_embedded_js(source);
         let source = crate::analyze::directive_text_repair::repair_directive_text(&source);
         let source = crate::analyze::define_comment_blank::blank_define_body_comments(&source);
+        let source =
+            crate::analyze::directive_comment_blank::blank_comments_before_directives(&source);
         let source = crate::analyze::has_include_angle::quote_has_include_headers(&source);
         let source = crate::analyze::thread_local_keyword::spell_thread_local(&source);
         let source = crate::analyze::trailing_attribute::spell_trailing_attributes(&source);

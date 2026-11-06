@@ -116,6 +116,7 @@ replacement list.**
 | `directive_comment_unclosed` | `(text: &str) -> bool` | Whether a block comment in the directive `text` starts in never closes, so the directive runs on to the end of the text and what it defines cannot be read. The lexer's own reading: a `/*` inside a `//` comment or a literal opens nothing. |
 | `define_directives` / `in_sorted_ranges` / `LineIndex` | `(root, source) -> Vec<(Range<usize>, DefineDirective)>` / `(ranges, offset) -> bool` / `LineIndex::new(source).point(offset) -> Point` | Every `#define` under a node, in source order, with its whole directive's byte range, for a rule that looks inside replacement lists (a number literal) and must skip the AST nodes a misparsed directive leaves in that range (`in_sorted_ranges` is the binary-search test); `LineIndex` turns a token's offset into a row/column without rescanning the file. DCL16-C, DCL18-C. |
 | `directive_starts` / `mask_source` | `(source: &str) -> Vec<usize>` / `(text: &str) -> String` | The same lexer over a whole file: the byte offset of every `#` that begins a directive (first token on its line, so not `"#if"` in a string nor a `#`/`##` in a macro body), and the whole text masked as `mask_literals_and_comments` masks one directive. For a scan across lines, such as a call's argument list or the source before a directive. PRE32-C. |
+| `comments_before_directive_names` | `(source: &str) -> Vec<Range<usize>>` | The bytes that hold a block comment before a directive's name: from where its line begins to its `#` (`/* */ #endif`), and from its `#` to its name (`# /* */ endif`). A comment is one space to the compiler however many physical lines it spans, so the first range may start on an earlier line; the second is left out when a line break stands in it. A `#` after code on the line is no directive and is not listed. `directive_comment_blank.rs`. |
 | `matching_close` | `(tokens: &[PpToken], open: usize) -> Option<usize>` | The bracket closing the one at `open`. |
 | `invocation_arguments` | `(masked: &str, open: usize) -> Option<Vec<Range<usize>>>` | The arguments of a macro invocation whose `(` is at `open` in `mask_source` text, split as the preprocessor splits them (C11 6.10.3p11): at commas outside inner parentheses only, each range trimmed of white space and blanked comments. tree-sitter splits the list as C, so `cast(unsigned long, x)` parses as three arguments and `TESTONLY( rc = ) work()` as one assignment past the `)`. PRE31-C numbers and quotes arguments by it. |
 | `UNEVALUATED_OPERATORS` / `KEYWORDS` | `&[&str]` | `sizeof`, `_Alignof`/`alignof`, `typeof`/`typeof_unqual` and their GNU spellings; and every C11/C23/common GNU keyword, none of which is an operand (so `return -1`'s `-` is unary). |
@@ -1854,6 +1855,14 @@ repair pass asks it rather than scanning forward from each `#if` to its
 file of a few thousand unclosed `#if` lines cost seconds per pass.
 `tests/robustness.rs`'s `malformed_conditionals_parse_near_linearly` holds
 the parse linear on unclosed `#if` lines and on a deep nest of closed ones.
+`directive_lines` says which lines hold a directive, by `directive_starts`:
+a `#` line inside a comment or a `\`-continued string or `//` comment holds
+none, and neither does one a `\` joins to code before it. Ask it, not a
+line's first character, when text inside those must not count; the control
+header and unclosed-conditional passes do. The other passes read a line's
+first character, so `directive_comment_blank.rs`, which runs before them,
+blanks a block comment before a directive's name (`/* */ #endif`) and every
+later reader sees the plain directive.
 `unclosed()` lists every `#if` still open at the end of the file, with its
 own `#elif`/`#else` lines: `unclosed_conditional_blank.rs`, which runs before
 every other conditional pass, blanks those directives and keeps each arm's
