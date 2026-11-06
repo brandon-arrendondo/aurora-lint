@@ -2192,3 +2192,201 @@ fn malformed_conditionals_parse_near_linearly() {
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
+
+/// A project of `count` `.c` files that each include one header of `count`
+/// object-like renames and call two of them.
+fn umbrella_of_renames(count: usize) -> Vec<(String, String)> {
+    let mut header = String::new();
+    for k in 0..count {
+        let _ = writeln!(header, "#define r{k} impl{k}");
+    }
+    let mut files = vec![("renames.h".to_string(), header)];
+    for i in 0..count {
+        files.push((
+            format!("f{i}.c"),
+            format!(
+                "#include \"renames.h\"\nint impl{i}(int n) {{ return n + 1; }}\n\
+                 int use{i}(int y) {{ return r{i}(y) + r{}(2); }}\n",
+                (i * 7 + 1) % count
+            ),
+        ));
+    }
+    files
+}
+
+/// A project of `count` `.c` files that each include one header holding a
+/// cycle of `count` renames, each stored by a static there, and call one.
+fn rename_cycle_in_a_header(count: usize) -> Vec<(String, String)> {
+    let mut header = String::new();
+    for k in 0..count {
+        let _ = writeln!(
+            header,
+            "#define C{k} C{}\nstatic int (*const s{k})(int) = C{k};",
+            (k + 1) % count
+        );
+    }
+    let mut files = vec![("cycle.h".to_string(), header)];
+    for i in 0..count {
+        files.push((
+            format!("f{i}.c"),
+            format!("#include \"cycle.h\"\nint use{i}(int y) {{ return C{i}(y); }}\n"),
+        ));
+    }
+    files
+}
+
+/// A project of `count` `.c` files that each include one header storing
+/// `count` renames of their functions in a table.
+fn renames_stored_in_a_header(count: usize) -> Vec<(String, String)> {
+    let mut header = String::new();
+    for k in 0..count {
+        let _ = writeln!(header, "#define V{k} vimpl{k}\nint vimpl{k}(int n);");
+    }
+    header.push_str("static int (*const table[])(int) = {\n");
+    for k in 0..count {
+        let _ = writeln!(header, "    V{k},");
+    }
+    header.push_str("};\n");
+    let mut files = vec![("table.h".to_string(), header)];
+    for i in 0..count {
+        files.push((
+            format!("f{i}.c"),
+            format!(
+                "#include \"table.h\"\nint vimpl{i}(int n) {{ return n + {i}; }}\n\
+                 int use{i}(int y) {{ return table[y & 7](y) + V{i}(2); }}\n"
+            ),
+        ));
+    }
+    files
+}
+
+/// Projects that grow in files and in the renames one header gives them
+/// together, scanned under INT32-C, which reads the caller sets the renames
+/// feed: every file sees every rename, so a step that answers each file's
+/// include closure from the renames it sees rather than the ones it uses
+/// grows as files times renames. The shapes are an umbrella of renames
+/// each file calls two of, one cycle of renames each file calls into, and
+/// a table storing every rename. Each series' time must grow no faster
+/// than [`SIZE_SERIES_MAX_SLOPE`]; times and slopes are printed either way.
+#[test]
+#[ignore = "size series: run in release with --ignored (CI robustness job)"]
+fn include_closure_renames_scale_near_linearly() {
+    let _runner = timed();
+    type Tree = fn(usize) -> Vec<(String, String)>;
+    let series: [(&str, Tree); 3] = [
+        ("umbrella_of_renames", umbrella_of_renames),
+        ("rename_cycle_in_a_header", rename_cycle_in_a_header),
+        ("renames_stored_in_a_header", renames_stored_in_a_header),
+    ];
+    let small = 150;
+    let mut failures = Vec::new();
+    for (name, generate) in series {
+        let sizes: Vec<(usize, tempfile::TempDir, &str)> = SIZE_SERIES_STEPS
+            .iter()
+            .map(|&step| {
+                let dir = tempfile::tempdir().unwrap();
+                for (path, text) in generate(step * small) {
+                    std::fs::write(dir.path().join(path), text).unwrap();
+                }
+                let manifest = one_rule_manifest(dir.path(), "INT32-C");
+                (step * small, dir, manifest)
+            })
+            .collect();
+        let mut fastest = vec![Duration::MAX; sizes.len()];
+        for _ in 0..SIZE_SERIES_RUNS {
+            for (i, (size, dir, manifest)) in sizes.iter().enumerate() {
+                let what = format!("{name} ({size}) under INT32-C");
+                fastest[i] = fastest[i].min(time_one_scan(dir.path(), manifest, &what));
+            }
+        }
+        let points: Vec<(usize, Duration)> = sizes.iter().map(|s| s.0).zip(fastest).collect();
+        let slope = log_log_slope(&points);
+        let times = points
+            .iter()
+            .map(|(_, t)| format!("{t:.1?}"))
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        let line = format!("{name} under INT32-C: {times} for 1x/2x/4x/8x (slope {slope:.2})");
+        println!("{line}");
+        if slope > SIZE_SERIES_MAX_SLOPE {
+            failures.push(format!("{line}, steeper than {SIZE_SERIES_MAX_SLOPE}"));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// One file of a cycle of `count` renames, each link called once from one
+/// function.
+fn rename_cycle_called_link_by_link(count: usize) -> Vec<u8> {
+    let mut out = String::new();
+    for k in 0..count {
+        let _ = writeln!(out, "#define L{k} L{}", (k + 1) % count);
+    }
+    out.push_str("static int f(int a, int b) { return a + b; }\nint use(void) {\n    int t = 0;\n");
+    for k in 0..count {
+        let _ = writeln!(out, "    t += L{k}(1, 2);");
+    }
+    out.push_str("    return t;\n}\n");
+    out.into_bytes()
+}
+
+/// The per-file value-range pass follows a file's own renames for the
+/// calls it rebuilds: one file whose every call goes into one long cycle
+/// of renames, scanned under INT32-C at four sizes, must grow in memory no
+/// faster than [`SIZE_SERIES_MAX_SLOPE`] (a walk that copies call sites
+/// under every link it reads holds files of calls times links). Memory,
+/// not time: the scan's time on this shape grows faster than linearly for
+/// reasons of its own, before any rename is followed. Peak resident size
+/// is read from `/proc`; where there is none the test only prints.
+#[test]
+#[ignore = "size series: run in release with --ignored (CI robustness job)"]
+fn one_file_rename_cycle_memory_scales_near_linearly() {
+    let _runner = timed();
+    let small = 500;
+    let mut points: Vec<(usize, Option<u64>)> = Vec::new();
+    for step in SIZE_SERIES_STEPS {
+        let size = step * small;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("cycle.c"),
+            rename_cycle_called_link_by_link(size),
+        )
+        .unwrap();
+        let manifest = one_rule_manifest(dir.path(), "INT32-C");
+        let scan = scan_dir_with(dir.path(), manifest, wall_limit(SCAN_WALL_LIMIT));
+        assert!(
+            matches!(scan.end, End::Exited(0 | 1)),
+            "rename cycle ({size}) did not finish cleanly"
+        );
+        points.push((size, scan.peak_rss_kib));
+    }
+    let report = points
+        .iter()
+        .map(|(_, kib)| format!("{} MB", megabytes(*kib)))
+        .collect::<Vec<_>>()
+        .join(" -> ");
+    let Some(xy) = points
+        .iter()
+        .map(|&(n, kib)| kib.map(|k| ((n as f64).ln(), (k.max(1) as f64).ln())))
+        .collect::<Option<Vec<(f64, f64)>>>()
+    else {
+        println!(
+            "rename_cycle_called_link_by_link under INT32-C: {report} (no /proc, not checked)"
+        );
+        return;
+    };
+    // The least-squares slope of ln(memory) over ln(size), as
+    // `log_log_slope` fits time.
+    let mx = xy.iter().map(|p| p.0).sum::<f64>() / xy.len() as f64;
+    let my = xy.iter().map(|p| p.1).sum::<f64>() / xy.len() as f64;
+    let slope = xy.iter().map(|&(x, y)| (x - mx) * (y - my)).sum::<f64>()
+        / xy.iter().map(|&(x, _)| (x - mx) * (x - mx)).sum::<f64>();
+    let line = format!(
+        "rename_cycle_called_link_by_link under INT32-C: {report} for 1x/2x/4x/8x (memory slope {slope:.2})"
+    );
+    println!("{line}");
+    assert!(
+        slope <= SIZE_SERIES_MAX_SLOPE,
+        "{line}, steeper than {SIZE_SERIES_MAX_SLOPE}"
+    );
+}

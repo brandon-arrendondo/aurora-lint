@@ -109,6 +109,17 @@ struct FilePrescanResult {
     attribute_candidates: HashMap<String, HashSet<String>>,
     initializer_function_refs: HashSet<String>,
     value_position_identifiers: HashSet<String>,
+    /// The file's live object-like renames, `(name, target)`
+    /// ([`collect_value_positions_and_renames`]).
+    define_renames: Vec<(String, String)>,
+    /// The names the file leaves `#undef`'d ([`FileRenames::undefs`]).
+    rename_undefs: Vec<String>,
+    /// The file's calls through an object ([`FileRenames::object_calls`]):
+    /// such a call is through the object, not through a rename of its name.
+    object_calls: Vec<(String, Vec<bool>)>,
+    /// The spelling of each `#include` outside an arm the file proves is
+    /// never compiled, which [`scanned_include_edges`] resolves.
+    live_includes: Vec<String>,
     /// File names of `.c` files this file `#include`s -- a static defined in
     /// one of those is visible to the includer too.
     included_c_files: HashSet<String>,
@@ -175,6 +186,21 @@ struct FilePrescanResult {
 }
 
 impl FilePrescanResult {
+    /// Every callee name the file's call-site tables hold.
+    fn callsite_names(&self) -> impl Iterator<Item = &String> {
+        self.callsite_args
+            .keys()
+            .chain(self.callsite_field_args.keys())
+            .chain(self.callsite_pointee_args.keys())
+            .chain(self.callsite_int_args.keys())
+            .chain(self.callsite_buf_args.keys())
+            .chain(self.callsite_field_buf_args.keys())
+            .chain(self.callsite_taint_args.keys())
+            .chain(self.callsite_arg_origins.keys())
+            .chain(self.callsite_distinct_objects.keys())
+            .chain(self.callsite_validated_args.keys())
+    }
+
     fn empty() -> Self {
         Self {
             known_functions: HashSet::new(),
@@ -224,6 +250,10 @@ impl FilePrescanResult {
             attribute_candidates: HashMap::new(),
             initializer_function_refs: HashSet::new(),
             value_position_identifiers: HashSet::new(),
+            define_renames: Vec::new(),
+            rename_undefs: Vec::new(),
+            object_calls: Vec::new(),
+            live_includes: Vec::new(),
             included_c_files: HashSet::new(),
             global_constants: Vec::new(),
             closure_dependent_constants: HashSet::new(),
@@ -292,11 +322,24 @@ fn process_file(
 
         collect_function_names(&root, &source, &mut result.known_functions);
         collect_initializer_function_refs(&root, &source, &mut result.initializer_function_refs);
-        collect_value_position_identifiers(&root, &source, &mut result.value_position_identifiers);
-        result.included_c_files = extract_include_directives(&root, &source)
+        let mut file_renames = collect_value_positions_and_renames(
+            &root,
+            &source,
+            &mut result.value_position_identifiers,
+        );
+        result.define_renames = std::mem::take(&mut file_renames.renames);
+        result.rename_undefs = std::mem::take(&mut file_renames.undefs);
+        result.object_calls = std::mem::take(&mut file_renames.object_calls);
+        let includes = extract_include_directives_with_liveness(&root, &source);
+        result.included_c_files = includes
+            .iter()
+            .filter(|d| crate::files::is_c_translation_unit(&d.path))
+            .map(|d| file_name_of(&d.path).to_string())
+            .collect();
+        result.live_includes = includes
             .into_iter()
-            .filter(|path| crate::files::is_c_translation_unit(path))
-            .map(|path| file_name_of(&path).to_string())
+            .filter(|d| !d.in_dead_arm)
+            .map(|d| d.path)
             .collect();
 
         if is_header {
@@ -940,7 +983,43 @@ fn prescan_file_list(
     let mut non_array_globals: HashSet<String> = HashSet::new();
     let mut volatile_typedefs: HashSet<String> = HashSet::new();
 
-    for r in file_results {
+    // What each file's translation unit sees through its `#include`s: the
+    // renames a call or a value goes through, and, for a file whose statics
+    // are judged by its own names, its closure's uses of them. Answered one
+    // file at a time inside the merge, from an index by name.
+    let mut closure_index = ClosureIndex::new(&file_results, &ambiguous_statics);
+    let mut call_renames_by_file: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
+
+    for (file_index, mut r) in file_results.into_iter().enumerate() {
+        let closure = closure_index.facts_for(file_index, &r);
+        // A call through a rename is a call to its target.
+        if !closure.call_renames.is_empty() {
+            let renames = &closure.call_renames;
+            let masks = object_call_masks(&r.object_calls);
+            let m = &masks;
+            file_sites_under_rename_targets(&mut r.callsite_args, renames, m, true);
+            file_sites_under_rename_targets(&mut r.callsite_field_args, renames, m, true);
+            file_sites_under_rename_targets(&mut r.callsite_pointee_args, renames, m, true);
+            file_sites_under_rename_targets(&mut r.callsite_int_args, renames, m, true);
+            file_sites_under_rename_targets(&mut r.callsite_buf_args, renames, m, true);
+            file_sites_under_rename_targets(&mut r.callsite_field_buf_args, renames, m, true);
+            file_sites_under_rename_targets(&mut r.callsite_taint_args, renames, m, true);
+            file_sites_under_rename_targets(&mut r.callsite_arg_origins, renames, m, true);
+            // A set of argument pairs, not one entry per call.
+            file_sites_under_rename_targets(&mut r.callsite_distinct_objects, renames, m, false);
+            file_sites_under_rename_targets(&mut r.callsite_validated_args, renames, m, true);
+            // Not `call_graph`: an extra edge there can close a cycle
+            // between a call and a rename in arms no one build compiles
+            // together (a dispatcher calling the portable variant, which
+            // another arm renames to the dispatcher's own name), and a
+            // recursion check reads the cycle.
+            if let Some(path) = &r.source_path {
+                call_renames_by_file.insert(
+                    crate::analyze::compile_commands::real_path(path),
+                    closure.call_renames.clone(),
+                );
+            }
+        }
         known_functions.extend(r.known_functions);
         header_declared_functions.extend(r.header_declared_functions);
 
@@ -1273,12 +1352,12 @@ fn prescan_file_list(
         }
         initializer_function_refs.extend(r.initializer_function_refs);
         if let Some(key) = &file_key {
-            value_positions_by_file
-                .entry(key.clone())
-                .or_default()
-                .extend(r.value_position_identifiers.iter().cloned());
+            let names = value_positions_by_file.entry(key.clone()).or_default();
+            names.extend(r.value_position_identifiers.iter().cloned());
+            names.extend(closure.judged_statics);
         }
         value_position_identifiers.extend(r.value_position_identifiers);
+        value_position_identifiers.extend(closure.new_escapes);
         included_c_files.extend(r.included_c_files);
         // One object per name: two definitions (files, or #if arms) giving
         // different values do not agree on a constant, so the name folds to
@@ -1777,6 +1856,7 @@ fn prescan_file_list(
         macro_constants: Arc::new(macro_constants),
         macro_aliases: Arc::new(macro_aliases),
         macro_alias_alternatives: Arc::new(macro_alias_alternatives),
+        call_renames_by_file: Arc::new(call_renames_by_file),
         function_arities: Arc::new(function_arities),
         alias_call_arities: Arc::new(alias_call_arities),
         include_report: Arc::new(Default::default()),
@@ -2281,6 +2361,667 @@ pub(crate) fn mark_address_taken_scoped(
     }
 }
 
+/// `path` with `.` dropped and each `..` taking back the segment before it,
+/// `/`-separated: a lexical form two spellings of one file share.
+fn lexical_path(path: &Path) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut rooted = false;
+    for c in path.components() {
+        match c {
+            std::path::Component::RootDir => rooted = true,
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if out.pop().is_none() && !rooted {
+                    out.push("..".to_string());
+                }
+            }
+            other => out.push(other.as_os_str().to_string_lossy().into_owned()),
+        }
+    }
+    let joined = out.join("/");
+    if rooted {
+        format!("/{joined}")
+    } else {
+        joined
+    }
+}
+
+/// For each of `files` (paths, in order), the indices of the other scanned
+/// files its live `#include` spellings (`includes`) name directly. The
+/// prescan runs before includes are resolved against the search paths, so
+/// a spelling resolves among the scanned files alone: against the
+/// includer's directory when that names one, else to every scanned file
+/// whose path ends with the spelling (`.` and `..` segments dropped), as
+/// [`IncludeClosure`](super::context::IncludeClosure) reads an unresolved
+/// one. A spelling that matches several files reaches them all, which only
+/// widens what the closure sees.
+fn scanned_include_edges(files: &[Option<&Path>], includes: &[&[String]]) -> Vec<Vec<usize>> {
+    let lexical: Vec<Option<String>> = files.iter().map(|p| p.map(lexical_path)).collect();
+    let mut by_name: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, path) in lexical.iter().enumerate() {
+        if let Some(path) = path {
+            by_name.entry(file_name_of(path)).or_default().push(i);
+        }
+    }
+    (0..files.len())
+        .map(|i| {
+            let Some(from) = files[i] else {
+                return Vec::new();
+            };
+            let mut out: Vec<usize> = Vec::new();
+            for spelling in includes[i] {
+                let tail = spelling
+                    .split(['/', '\\'])
+                    .filter(|segment| !matches!(*segment, "" | "." | ".."))
+                    .collect::<Vec<_>>()
+                    .join("/");
+                let Some(candidates) = by_name.get(file_name_of(&tail)) else {
+                    continue;
+                };
+                let beside = from.parent().map(|dir| lexical_path(&dir.join(spelling)));
+                let exact: Vec<usize> = candidates
+                    .iter()
+                    .copied()
+                    .filter(|&k| beside.is_some() && lexical[k] == beside)
+                    .collect();
+                let reached = if exact.is_empty() {
+                    candidates
+                        .iter()
+                        .copied()
+                        .filter(|&k| {
+                            lexical[k].as_deref().is_some_and(|p| {
+                                p == tail
+                                    || p.strip_suffix(tail.as_str())
+                                        .is_some_and(|dir| dir.ends_with('/'))
+                            })
+                        })
+                        .collect()
+                } else {
+                    exact
+                };
+                out.extend(reached.into_iter().filter(|&k| k != i));
+            }
+            out.sort_unstable();
+            out.dedup();
+            out
+        })
+        .collect()
+}
+
+/// The scanned files the translation unit of file `i` reaches through
+/// `edges` ([`scanned_include_edges`]), transitively, `i` itself first.
+/// `mark` is a stamp per file, reused across calls so that each costs the
+/// closure's size and not the project's: on return the closure's files hold
+/// `stamp`, and a caller tests membership by comparing.
+fn walk_include_closure(
+    edges: &[Vec<usize>],
+    i: usize,
+    mark: &mut [u32],
+    stamp: u32,
+    out: &mut Vec<usize>,
+) {
+    out.clear();
+    mark[i] = stamp;
+    out.push(i);
+    let mut next = 0;
+    while next < out.len() {
+        let k = out[next];
+        next += 1;
+        for &j in &edges[k] {
+            if mark[j] != stamp {
+                mark[j] = stamp;
+                out.push(j);
+            }
+        }
+    }
+}
+
+/// [`scanned_include_edges`] closed transitively, each file's closure
+/// without itself, sorted.
+#[cfg(test)]
+fn scanned_include_closures(files: &[Option<&Path>], includes: &[&[String]]) -> Vec<Vec<usize>> {
+    let edges = scanned_include_edges(files, includes);
+    let mut mark = vec![0u32; files.len()];
+    let mut out = Vec::new();
+    (0..files.len())
+        .map(|i| {
+            walk_include_closure(&edges, i, &mut mark, i as u32 + 1, &mut out);
+            let mut closure = out[1..].to_vec();
+            closure.sort_unstable();
+            closure
+        })
+        .collect()
+}
+
+/// What the merge reads of every scanned file to answer, for one file at a
+/// time, what its include closure adds ([`ClosureIndex::facts_for`]),
+/// taken from the per-file results before the merge consumes them. Each
+/// table is indexed by name, so a file's answer costs the names it uses
+/// and the size of its closure, not every rename its headers define.
+///
+/// What a closure contributes depends only on which of its files hold a
+/// rename, an `#undef` or a value use of a rename's name (`relevant`), so
+/// files whose closures agree on those share one [`ClosureMemo`]: an
+/// umbrella header every file includes is walked once, not once per file.
+/// Only function names are kept as targets, so a rename cycle or a chain
+/// of renames through macro names holds nothing per file.
+struct ClosureIndex {
+    /// [`scanned_include_edges`].
+    edges: Vec<Vec<usize>>,
+    /// Each rename's name -> `(defining file, target)`.
+    renames: HashMap<String, Vec<(usize, String)>>,
+    /// Each name some file leaves `#undef`'d -> those files.
+    undefs: HashMap<String, Vec<usize>>,
+    /// Per file, the names it uses as values that some file renames: where
+    /// a rename's target can escape through a use in another file.
+    valued_renames: Vec<Vec<String>>,
+    /// Per file, whether it holds a rename, an `#undef` or one of
+    /// `valued_renames`: the files a closure's facts depend on.
+    relevant: Vec<bool>,
+    /// Every function name some scanned file defines or declares: the only
+    /// targets a call site or an escape is kept for.
+    functions: HashSet<String>,
+    /// Each static judged by its own file's names
+    /// ([`mark_address_taken_scoped`]) -> the files that use it as a value.
+    judged_statics_valued: HashMap<String, Vec<usize>>,
+    /// The statics judged by their own file's names.
+    judged_statics: HashSet<String>,
+    /// One [`ClosureMemo`] per distinct set of relevant closure files, by
+    /// [`closure_key`]; sets that share a key, by a coincidence a crafted
+    /// tree can force, each keep their own.
+    memo: HashMap<(usize, u64, u64), Vec<ClosureMemo>>,
+    /// The per-file stamps [`walk_include_closure`] marks, and the closure
+    /// it last walked.
+    mark: Vec<u32>,
+    closure: Vec<usize>,
+}
+
+/// What a set of relevant closure files ([`ClosureIndex`]) yields, shared by
+/// every file whose closure has that set.
+#[derive(Default)]
+struct ClosureMemo {
+    /// The relevant closure files the memo is for, checked on every hit: a
+    /// [`closure_key`] names the set, this proves it.
+    files: Vec<u32>,
+    /// The judged statics an escape through the closure's renames reaches.
+    escaping_statics: HashSet<String>,
+    /// Each name a file has called through the closure's renames -> the
+    /// functions the call reaches, filled as files ask, for a walk whose
+    /// answer is the same for every file with this set: one that meets no
+    /// `#undef`, which the calling file's own renames can override.
+    calls: HashMap<String, Vec<String>>,
+}
+
+/// What one scanned file's include closure adds to its own facts
+/// ([`ClosureIndex::facts_for`]).
+#[derive(Default)]
+struct ClosureFacts {
+    /// The functions a call the file makes reaches through renames,
+    /// `name -> targets`, for only the names it calls: its own renames and
+    /// its closure's, followed transitively, less a link the translation
+    /// unit leaves `#undef`'d or a called name the file declares as an
+    /// object in a function that calls it.
+    call_renames: HashMap<String, Vec<String>>,
+    /// Functions that escape through a rename whose name is a value
+    /// somewhere the translation unit sees, reported the first time a
+    /// closure's facts are computed: they go into the project-wide set
+    /// once, not once per file.
+    new_escapes: Vec<String>,
+    /// The file's own statics judged by its own names that escape through
+    /// its closure's renames, or that another file of its closure uses as a
+    /// value.
+    judged_statics: Vec<String>,
+}
+
+impl ClosureIndex {
+    /// The index over `results`. `judged_statics` are the names a file's
+    /// static is judged by its own translation unit's values for.
+    fn new(results: &[FilePrescanResult], judged_statics: &HashSet<String>) -> Self {
+        // `display_path` is every file's own path; `source_path` only a `.c`
+        // file's. An empty one is a file that contributed nothing.
+        let files: Vec<Option<&Path>> = results
+            .iter()
+            .map(|r| (!r.display_path.is_empty()).then(|| Path::new(r.display_path.as_str())))
+            .collect();
+        let includes: Vec<&[String]> = results.iter().map(|r| r.live_includes.as_slice()).collect();
+        let edges = scanned_include_edges(&files, &includes);
+        let mut renames: HashMap<String, Vec<(usize, String)>> = HashMap::new();
+        let mut undefs: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, r) in results.iter().enumerate() {
+            for (name, target) in &r.define_renames {
+                renames
+                    .entry(name.clone())
+                    .or_default()
+                    .push((i, target.clone()));
+            }
+            for name in &r.rename_undefs {
+                undefs.entry(name.clone()).or_default().push(i);
+            }
+        }
+        let functions: HashSet<String> = if renames.is_empty() {
+            HashSet::new()
+        } else {
+            results
+                .iter()
+                .flat_map(|r| r.known_functions.iter().cloned())
+                .collect()
+        };
+        let mut judged_statics_valued: HashMap<String, Vec<usize>> = HashMap::new();
+        let valued_renames: Vec<Vec<String>> = results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let mut out = Vec::new();
+                for name in &r.value_position_identifiers {
+                    if renames.contains_key(name) {
+                        out.push(name.clone());
+                    }
+                    if judged_statics.contains(name) {
+                        judged_statics_valued
+                            .entry(name.clone())
+                            .or_default()
+                            .push(i);
+                    }
+                }
+                out
+            })
+            .collect();
+        let relevant = results
+            .iter()
+            .zip(&valued_renames)
+            .map(|(r, valued)| {
+                !r.define_renames.is_empty() || !r.rename_undefs.is_empty() || !valued.is_empty()
+            })
+            .collect();
+        Self {
+            mark: vec![0; results.len()],
+            closure: Vec::new(),
+            memo: HashMap::new(),
+            judged_statics: judged_statics.clone(),
+            edges,
+            renames,
+            undefs,
+            valued_renames,
+            relevant,
+            functions,
+            judged_statics_valued,
+        }
+    }
+
+    /// [`ClosureFacts`] for file `i`, whose result is `r`. Call it once per
+    /// file, with `i` in order.
+    fn facts_for(&mut self, i: usize, r: &FilePrescanResult) -> ClosureFacts {
+        let stamp = i as u32 + 1;
+        walk_include_closure(&self.edges, i, &mut self.mark, stamp, &mut self.closure);
+        let mut facts = ClosureFacts::default();
+
+        if self.closure.len() > 1 {
+            for name in &r.local_static_functions {
+                if self
+                    .judged_statics_valued
+                    .get(name)
+                    .is_some_and(|files| files.iter().any(|&k| k != i && self.mark[k] == stamp))
+                {
+                    facts.judged_statics.push(name.clone());
+                }
+            }
+        }
+        if self.renames.is_empty() {
+            return facts;
+        }
+
+        let key = closure_key(self.closure.iter().copied().filter(|&k| self.relevant[k]));
+        if key.0 == 0 {
+            return facts;
+        }
+        let mut bucket = self.memo.remove(&key).unwrap_or_default();
+        let known = bucket
+            .iter()
+            .position(|m| {
+                m.files.len() == key.0 && m.files.iter().all(|&k| self.mark[k as usize] == stamp)
+            })
+            .map(|at| bucket.swap_remove(at));
+        let view = ClosureView {
+            index: self,
+            file: i,
+            stamp,
+            own_renames: &r.define_renames,
+        };
+        let mut memo = match known {
+            Some(memo) => memo,
+            None => {
+                let (escapes, mut memo) = view.escapes();
+                facts.new_escapes = escapes;
+                memo.files = self
+                    .closure
+                    .iter()
+                    .filter(|&&k| self.relevant[k])
+                    .map(|&k| k as u32)
+                    .collect();
+                memo
+            }
+        };
+        for name in r.callsite_names() {
+            if facts.call_renames.contains_key(name)
+                || !self.renames.contains_key(name)
+                || only_object_calls(&r.object_calls, name)
+            {
+                continue;
+            }
+            let targets = match memo.calls.get(name) {
+                Some(targets) => targets.clone(),
+                None => {
+                    let (targets, file_dependent) = view.call_targets(name);
+                    if !file_dependent {
+                        memo.calls.insert(name.clone(), targets.clone());
+                    }
+                    targets
+                }
+            };
+            if !targets.is_empty() {
+                facts.call_renames.insert(name.clone(), targets);
+            }
+        }
+        for name in &r.local_static_functions {
+            if memo.escaping_statics.contains(name) && !facts.judged_statics.contains(name) {
+                facts.judged_statics.push(name.clone());
+            }
+        }
+        bucket.push(memo);
+        self.memo.insert(key, bucket);
+        facts
+    }
+}
+
+/// A fixed-size name for a set of file indices, whatever order they come
+/// in: the count and two sums of independently mixed indices. Two sets get
+/// the same key only by a 128-bit coincidence, and a closure of thousands
+/// of headers costs its walk, not a sorted copy of its indices per file.
+fn closure_key(files: impl Iterator<Item = usize>) -> (usize, u64, u64) {
+    fn mix(mut z: u64) -> u64 {
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+    let (mut count, mut a, mut b) = (0usize, 0u64, 0u64);
+    for k in files {
+        let k = k as u64;
+        count += 1;
+        a = a.wrapping_add(mix(k.wrapping_add(0x9e37_79b9_7f4a_7c15)));
+        b = b.wrapping_add(mix(k ^ 0xd6e8_feb8_6659_fd93).rotate_left(17));
+    }
+    (count, a, b)
+}
+
+/// How many rename links [`ClosureView::call_targets`] reads for one call.
+/// A rename written to be called goes through a link or two; the bound is
+/// for a generated cycle or chain, which every calling file would otherwise
+/// walk to its end.
+const MAX_RENAME_LINKS: usize = 64;
+
+/// [`ClosureIndex`] as one file's closure sees it: a file holds the current
+/// `stamp` exactly when the closure reaches it.
+struct ClosureView<'a> {
+    index: &'a ClosureIndex,
+    /// The file the closure is of.
+    file: usize,
+    stamp: u32,
+    /// The file's own renames: a name it defines itself is not undone by
+    /// another file's `#undef`.
+    own_renames: &'a [(String, String)],
+}
+
+impl<'a> ClosureView<'a> {
+    fn seen(&self, k: usize) -> bool {
+        self.index.mark[k] == self.stamp
+    }
+
+    /// The targets of `name`'s renames the closure holds.
+    fn targets_of(&self, name: &str) -> impl Iterator<Item = &'a str> + '_ {
+        self.index
+            .renames
+            .get(name)
+            .into_iter()
+            .flatten()
+            .filter(|(k, _)| self.seen(*k))
+            .map(|(_, target)| target.as_str())
+    }
+
+    /// Whether a call spelled `name` is not through a rename here: the
+    /// file leaves it `#undef`'d, or another file of the closure does and
+    /// the file does not define it itself.
+    fn undefined(&self, name: &str) -> bool {
+        let Some(files) = self.index.undefs.get(name) else {
+            return false;
+        };
+        files.contains(&self.file)
+            || files.iter().any(|&k| self.seen(k))
+                && !self.own_renames.iter().any(|(n, _)| n == name)
+    }
+
+    /// The functions a call spelled `name` reaches through the closure's
+    /// renames, link by link, each once: a cycle ends, and a link the
+    /// closure leaves `#undef`'d is called as written. At most
+    /// [`MAX_RENAME_LINKS`] links are read, so a call through a long cycle
+    /// or chain costs a bounded walk in each file that makes one; past
+    /// that, the call reaches only what the links read so far name.
+    ///
+    /// Also says whether the answer depends on the calling file and not
+    /// only on the closure: the walk met a name some closure file leaves
+    /// `#undef`'d, which the file's own renames decide.
+    fn call_targets(&self, name: &str) -> (Vec<String>, bool) {
+        let mut out: Vec<String> = Vec::new();
+        let mut done: HashSet<&str> = HashSet::from([name]);
+        let mut stack: Vec<&str> = vec![name];
+        let mut file_dependent = false;
+        // The called name, then one pop per link followed.
+        let mut read = 0;
+        while let Some(link) = stack.pop() {
+            read += 1;
+            if read > MAX_RENAME_LINKS + 1 {
+                break;
+            }
+            if link != name && self.index.functions.contains(link) && !out.iter().any(|t| t == link)
+            {
+                out.push(link.to_string());
+            }
+            file_dependent |= self.index.undefs.contains_key(link);
+            if self.undefined(link) {
+                continue;
+            }
+            for target in self.targets_of(link) {
+                if done.insert(target) {
+                    stack.push(target);
+                }
+            }
+        }
+        (out, file_dependent)
+    }
+
+    /// The functions that escape because a rename's name is a value
+    /// somewhere the closure holds, chains followed link by link, and the
+    /// memo that keeps the judged statics among them.
+    fn escapes(&self) -> (Vec<String>, ClosureMemo) {
+        let mut done: HashSet<&str> = HashSet::new();
+        let mut stack: Vec<&str> = self
+            .index
+            .closure
+            .iter()
+            .flat_map(|&k| self.index.valued_renames[k].iter().map(String::as_str))
+            .collect();
+        let mut escapes: Vec<String> = Vec::new();
+        let mut memo = ClosureMemo::default();
+        while let Some(name) = stack.pop() {
+            if !done.insert(name) {
+                continue;
+            }
+            for target in self.targets_of(name) {
+                if self.index.functions.contains(target) {
+                    escapes.push(target.to_string());
+                    if self.index.judged_statics.contains(target) {
+                        memo.escaping_statics.insert(target.to_string());
+                    }
+                }
+                if !done.contains(target) {
+                    stack.push(target);
+                }
+            }
+        }
+        escapes.sort_unstable();
+        escapes.dedup();
+        (escapes, memo)
+    }
+}
+
+/// Every name `name` renames to, through `renames` (`name -> targets`),
+/// transitively; not `name` itself.
+fn rename_targets(renames: &HashMap<String, Vec<String>>, name: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut done: HashSet<&str> = HashSet::from([name]);
+    let mut stack: Vec<&str> = vec![name];
+    while let Some(n) = stack.pop() {
+        for t in renames.get(n).into_iter().flatten() {
+            if done.insert(t) {
+                out.push(t.clone());
+                stack.push(t);
+            }
+        }
+    }
+    out
+}
+
+/// File each call site in `sites` (callee -> sites) that names a rename
+/// under every target the rename reaches too ([`rename_targets`]): a call
+/// `write_all(4, 0)` after `#define write_all write_some` calls
+/// `write_some`. The rename's own key stays, so a name that is a function
+/// in some other configuration keeps its sites. The call graph is left as
+/// written: there an extra edge can close a cycle across arms no one build
+/// compiles together.
+///
+/// A target's caller set grows by the calls through the rename, but it is
+/// only as complete as the calls the tables hold: a header's calls are not
+/// collected, so a static with no other recorded caller goes from none,
+/// which bounds nothing, to the calls through the rename, which bound it
+/// (a header template calling it through another rename is still missed).
+/// A rename is read as in force for every call of its name the file makes:
+/// a call written before the `#define` reaches the target too, and a
+/// function-like wrapper (`#define g(x) f(x)`) is not a rename at all. A
+/// name the translation unit `#undef`s, or the file declares as an object
+/// (`int (*g)(int)`), is not followed ([`FileRenames`]).
+///
+/// Known limit: the phase-4 passes that re-derive call sites from the
+/// source (`propagate_param_null_states`, `propagate_param_buffer_sizes`
+/// and the others keyed by `scoped_by_file`) do not read renames, so a call
+/// through one is still missing from what they collect.
+///
+/// `object_calls` ([`object_call_masks`]) flags, per call of a name in
+/// source order, the calls through an object of that name: those are left
+/// out. A table whose sites of the name are not one per call in order (a
+/// set, or a collector that skipped some) cannot be lined up with the
+/// flags, so `ordered` false, or a count that differs, files none of that
+/// name's sites under the targets.
+pub(crate) fn file_sites_under_rename_targets<C>(
+    sites: &mut HashMap<String, C>,
+    renames: &HashMap<String, Vec<String>>,
+    object_calls: &HashMap<String, Vec<bool>>,
+    ordered: bool,
+) where
+    C: Clone + Default + IntoIterator + Extend<<C as IntoIterator>::Item>,
+{
+    if renames.is_empty() {
+        return;
+    }
+    let moved: Vec<(String, C)> = renames
+        .keys()
+        .filter_map(|name| {
+            let calls = sites.get(name)?;
+            let Some(flags) = object_calls.get(name) else {
+                return Some((name.clone(), calls.clone()));
+            };
+            let all: Vec<_> = calls.clone().into_iter().collect();
+            if !ordered || all.len() != flags.len() {
+                return None;
+            }
+            let mut kept = C::default();
+            kept.extend(
+                all.into_iter()
+                    .zip(flags)
+                    .filter(|(_, &object)| !object)
+                    .map(|(site, _)| site),
+            );
+            Some((name.clone(), kept))
+        })
+        .collect();
+    for (name, calls) in moved {
+        for target in rename_targets(renames, &name) {
+            sites.entry(target).or_default().extend(calls.clone());
+        }
+    }
+}
+
+/// The functions each of the `called` names reaches through renames,
+/// `name -> targets`, by `own` (a file's renames) and `seen` (the renames
+/// the file's translation unit sees, [`ProjectContext::call_renames_by_file`]):
+/// only names `is_function` accepts are kept as targets, and each call
+/// reads at most [`MAX_RENAME_LINKS`] links, as the prescan's walk
+/// ([`ClosureView::call_targets`]) does, so a cycle or chain of renames in
+/// one file costs a bounded walk per called name.
+pub(crate) fn renames_reached<'a>(
+    called: impl Iterator<Item = &'a String>,
+    own: &[(String, String)],
+    seen: Option<&HashMap<String, Vec<String>>>,
+    is_function: impl Fn(&str) -> bool,
+) -> HashMap<String, Vec<String>> {
+    let mut by_name: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (name, target) in own {
+        by_name
+            .entry(name.as_str())
+            .or_default()
+            .push(target.as_str());
+    }
+    let targets_of = |name: &str| -> Vec<&str> {
+        let mut out: Vec<&str> = by_name.get(name).cloned().unwrap_or_default();
+        out.extend(
+            seen.and_then(|p| p.get(name))
+                .into_iter()
+                .flatten()
+                .map(String::as_str),
+        );
+        out
+    };
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    for name in called {
+        if out.contains_key(name)
+            || (!by_name.contains_key(name.as_str()) && seen.is_none_or(|p| !p.contains_key(name)))
+        {
+            continue;
+        }
+        let mut targets: Vec<String> = Vec::new();
+        let mut done: HashSet<&str> = HashSet::from([name.as_str()]);
+        let mut stack: Vec<&str> = vec![name.as_str()];
+        // The called name, then one pop per link followed.
+        let mut read = 0;
+        while let Some(link) = stack.pop() {
+            read += 1;
+            if read > MAX_RENAME_LINKS + 1 {
+                break;
+            }
+            if link != name && is_function(link) && !targets.iter().any(|t| t == link) {
+                targets.push(link.to_string());
+            }
+            for target in targets_of(link) {
+                if done.insert(target) {
+                    stack.push(target);
+                }
+            }
+        }
+        if !targets.is_empty() {
+            out.insert(name.clone(), targets);
+        }
+    }
+    out
+}
+
 /// Whether `path` names a header, whose definitions every file that
 /// includes it sees.
 fn is_header_path(path: &str) -> bool {
@@ -2335,8 +3076,197 @@ pub(crate) fn collect_value_position_identifiers(
     source: &str,
     out: &mut HashSet<String>,
 ) {
-    collect_value_position_identifiers_under(node, node.parent(), source, out);
-    collect_define_value_identifiers(node, source, out);
+    collect_value_position_identifiers_under(node, node.parent(), source, out, None);
+    let renames = collect_define_value_identifiers(node, source, out);
+    resolve_value_renames(&renames, out, |_| false);
+}
+
+/// What [`collect_value_positions_and_renames`] reads of a file besides
+/// its values: its renames, and what keeps a call from going through one.
+#[derive(Default)]
+pub(crate) struct FileRenames {
+    /// The file's live object-like renames, `(name, target)`
+    /// (`#define getpwuid vms_getpwuid`).
+    pub(crate) renames: Vec<(String, String)>,
+    /// The names whose last live `#define` or `#undef` in the file is an
+    /// `#undef` ([`left_undefined`]): a call after it is not through a
+    /// rename. A call is not placed against the directives, so every call
+    /// of the name is read as written.
+    pub(crate) undefs: Vec<String>,
+    /// Each name the file calls at least once as an object, a variable or
+    /// a parameter (`int (*g)(int)`) declared in the calling function or at
+    /// file scope, with one flag per call of the name in source order, set
+    /// for a call through the object ([`ObjectScan::object_calls`]). Such a
+    /// call is through the object, which a rename of the name, if any is in
+    /// force there, renames too, so it is no call to the rename's target.
+    pub(crate) object_calls: Vec<(String, Vec<bool>)>,
+}
+
+impl FileRenames {
+    /// The renames a call this file makes goes through by the file alone:
+    /// those whose name it neither leaves `#undef`'d nor calls as an
+    /// object.
+    pub(crate) fn call_renames(&self) -> Vec<(String, String)> {
+        self.renames
+            .iter()
+            .filter(|(name, _)| {
+                !self.undefs.contains(name) && !only_object_calls(&self.object_calls, name)
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+/// Whether every call of `name` that `object_calls`
+/// ([`FileRenames::object_calls`]) records is through an object.
+fn only_object_calls(object_calls: &[(String, Vec<bool>)], name: &str) -> bool {
+    object_calls
+        .iter()
+        .any(|(n, calls)| n == name && calls.iter().all(|&object| object))
+}
+
+/// The per-call object flags of the names in `object_calls`
+/// ([`FileRenames::object_calls`]) that some calls reach not through an
+/// object: what [`file_sites_under_rename_targets`] leaves out.
+pub(crate) fn object_call_masks(
+    object_calls: &[(String, Vec<bool>)],
+) -> HashMap<String, Vec<bool>> {
+    object_calls
+        .iter()
+        .filter(|(_, calls)| calls.iter().any(|&object| !object))
+        .cloned()
+        .collect()
+}
+
+/// [`collect_value_position_identifiers`], returning the file's renames
+/// (`#define getpwuid vms_getpwuid`, `(name, target)`) as well, with what
+/// keeps a call from going through one ([`FileRenames`]), so a rename
+/// another file uses, or a use of a rename another file defines, can be
+/// resolved across an include closure ([`ClosureIndex`]).
+pub(crate) fn collect_value_positions_and_renames(
+    node: &Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) -> FileRenames {
+    let mut scan = ObjectScan::default();
+    collect_value_position_identifiers_under(node, node.parent(), source, out, Some(&mut scan));
+    let renames = collect_define_value_identifiers(node, source, out);
+    resolve_value_renames(&renames, out, |_| false);
+    FileRenames {
+        undefs: left_undefined(source),
+        object_calls: scan.object_calls(),
+        renames,
+    }
+}
+
+/// What the value walk ([`collect_value_position_identifiers_under`])
+/// records for [`FileRenames::object_calls`]: each object declared and
+/// each direct callee in the order the walk meets it, with the function it
+/// is in (by a number per definition, `None` at file scope).
+#[derive(Default)]
+struct ObjectScan<'s> {
+    objects: HashSet<(&'s str, Option<usize>)>,
+    calls: Vec<(&'s str, Option<usize>)>,
+    scope: Option<usize>,
+    next_scope: usize,
+    /// The parameter list of the function definition the walk is in, whose
+    /// parameters are that function's objects; any other parameter list (a
+    /// prototype's, or one inside a parameter's own type) gets a scope of
+    /// its own, which no call is in.
+    definition_parameters: Option<usize>,
+}
+
+impl ObjectScan<'_> {
+    /// [`FileRenames::object_calls`]: for each name called at least once
+    /// where it is declared as an object (in the calling function, or at
+    /// file scope), whether each of its calls is, in source order. The
+    /// call-site collectors walk the functions in the same order, so the
+    /// flags line up with a table's sites of the name.
+    fn object_calls(&self) -> Vec<(String, Vec<bool>)> {
+        let mut by_name: HashMap<&str, Vec<bool>> = HashMap::new();
+        for &(name, scope) in &self.calls {
+            let object = self.objects.contains(&(name, None))
+                || scope.is_some() && self.objects.contains(&(name, scope));
+            by_name.entry(name).or_default().push(object);
+        }
+        let mut out: Vec<(String, Vec<bool>)> = by_name
+            .into_iter()
+            .filter(|(_, calls)| calls.iter().any(|&object| object))
+            .map(|(name, calls)| (name.to_string(), calls))
+            .collect();
+        out.sort_unstable();
+        out
+    }
+}
+
+/// The names whose last `#define` or `#undef` line in `source`, outside an
+/// arm the file proves is never compiled, is an `#undef`, once each, by the
+/// lines' text: `#define g f` / `#undef g` / `#define g f` leaves `g` a
+/// rename. A directive inside a comment counts too, which only keeps a call
+/// from going through a rename.
+fn left_undefined(source: &str) -> Vec<String> {
+    if !source.contains("undef") {
+        return Vec::new();
+    }
+    let dead = crate::analyze::init_state::file_proven_dead_lines(source);
+    let mut last: HashMap<String, bool> = HashMap::new();
+    for (k, line) in source.lines().enumerate() {
+        let Some(rest) = line.trim_start().strip_prefix('#') else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let (undef, rest) = if let Some(rest) = rest.strip_prefix("undef") {
+            (true, rest)
+        } else if let Some(rest) = rest.strip_prefix("define") {
+            (false, rest)
+        } else {
+            continue;
+        };
+        if !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let number = k + 1;
+        if dead.iter().any(|&(s, e)| number >= s && number <= e) {
+            continue;
+        }
+        let name: String = rest
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() {
+            last.insert(name, undef);
+        }
+    }
+    let mut out: Vec<String> = last
+        .into_iter()
+        .filter(|(_, undef)| *undef)
+        .map(|(name, _)| name)
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+/// Add to `out` the target of each rename in `renames` whose own name is a
+/// value: in `out`, or where `valued_elsewhere` says (another file's values,
+/// read without copying them). A rename chain (`A` -> `B` -> `f`) resolves
+/// one link per round.
+pub(crate) fn resolve_value_renames(
+    renames: &[(String, String)],
+    out: &mut HashSet<String>,
+    valued_elsewhere: impl Fn(&str) -> bool,
+) {
+    loop {
+        let before = out.len();
+        for (name, target) in renames {
+            if !out.contains(target) && (out.contains(name) || valued_elsewhere(name)) {
+                out.insert(target.clone());
+            }
+        }
+        if out.len() == before {
+            break;
+        }
+    }
 }
 
 /// Every identifier a `#define` under `node` uses as a value in its
@@ -2353,11 +3283,15 @@ pub(crate) fn collect_value_position_identifiers(
 /// scope to resolve a name in, so this is by name, which errs toward an
 /// escaped address, the sound direction. A `#define` in an arm the file
 /// proves is never compiled (`#if 0`, ADR-0010 D2) is skipped: it stores
-/// nothing in any build.
-fn collect_define_value_identifiers(node: &Node, source: &str, out: &mut HashSet<String>) {
+/// nothing in any build. Returns the renames, which the caller resolves.
+fn collect_define_value_identifiers(
+    node: &Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) -> Vec<(String, String)> {
     let defines = crate::utility::cert_c::pp_tokens::define_directives(node, source);
     if defines.is_empty() {
-        return;
+        return Vec::new();
     }
     let dead = crate::analyze::init_state::file_proven_dead_lines(source);
     let mut renames: Vec<(String, String)> = Vec::new();
@@ -2398,41 +3332,177 @@ fn collect_define_value_identifiers(node: &Node, source: &str, out: &mut HashSet
             out.insert(t.text.to_string());
         }
     }
-    // A rename chain (`A` -> `B` -> `f`) resolves one link per round.
-    loop {
-        let before = out.len();
-        for (name, target) in &renames {
-            if out.contains(name) {
-                out.insert(target.clone());
-            }
-        }
-        if out.len() == before {
-            break;
-        }
-    }
+    renames
 }
 
 /// [`collect_value_position_identifiers`] with `node`'s parent in hand. The
 /// walk passes each child its parent rather than asking `Node::parent()`,
 /// which costs the node's depth, of every identifier: on an `else if` ladder
 /// that made the prescan quadratic in the ladder's length.
-fn collect_value_position_identifiers_under(
+///
+/// `scan`, when given, records each object's declarator name
+/// ([`is_object_declarator_name`]) and each direct callee, with the
+/// function definition it is in ([`ObjectScan`]).
+fn collect_value_position_identifiers_under<'s>(
     node: &Node,
     parent: Option<Node>,
-    source: &str,
+    source: &'s str,
     out: &mut HashSet<String>,
+    mut scan: Option<&mut ObjectScan<'s>>,
 ) {
-    if node.kind() == "identifier"
-        && !is_direct_call_target(node, parent)
-        && !is_declarator_name(node, parent)
-    {
-        if let Ok(name) = node.utf8_text(source.as_bytes()) {
-            out.insert(name.to_string());
+    if node.kind() == "identifier" {
+        let call = is_direct_call_target(node, parent);
+        if !call && !is_declarator_name(node, parent) {
+            if let Ok(name) = node.utf8_text(source.as_bytes()) {
+                out.insert(name.to_string());
+            }
+        }
+        if let Some(scan) = scan.as_deref_mut() {
+            if let Ok(name) = node.utf8_text(source.as_bytes()) {
+                if call {
+                    scan.calls.push((name, scan.scope));
+                } else if is_object_declarator_name(node, parent) {
+                    scan.objects.insert((name, scan.scope));
+                }
+            }
         }
     }
 
+    if node.kind() == "parameter_declaration" {
+        if let (Some(scan), Some(name)) = (scan.as_deref_mut(), parenthesized_parameter_name(node))
+        {
+            if let Ok(name) = name.utf8_text(source.as_bytes()) {
+                scan.objects.insert((name, scan.scope));
+            }
+        }
+    }
+
+    let outer = match scan.as_deref_mut() {
+        Some(scan) if node.kind() == "function_definition" => {
+            let outer = (scan.scope, scan.definition_parameters);
+            scan.scope = Some(scan.next_scope);
+            scan.next_scope += 1;
+            scan.definition_parameters = definition_parameter_list(node).map(|p| p.id());
+            Some(outer)
+        }
+        Some(scan)
+            if node.kind() == "parameter_list" && scan.definition_parameters != Some(node.id()) =>
+        {
+            let outer = (scan.scope, scan.definition_parameters);
+            scan.scope = Some(scan.next_scope);
+            scan.next_scope += 1;
+            Some(outer)
+        }
+        _ => None,
+    };
     for child in node.child_nodes() {
-        collect_value_position_identifiers_under(&child, Some(*node), source, out);
+        collect_value_position_identifiers_under(
+            &child,
+            Some(*node),
+            source,
+            out,
+            scan.as_deref_mut(),
+        );
+    }
+    if let (Some((scope, parameters)), Some(scan)) = (outer, scan) {
+        scan.scope = scope;
+        scan.definition_parameters = parameters;
+    }
+}
+
+/// The name of a parameter declared with a parenthesized function type,
+/// `int (g)(int, int)`, which the parser reads as an unnamed function
+/// type whose own parameter list holds one parameter of a type named `g`:
+/// `abstract_function_declarator` of an `abstract_function_declarator`
+/// with no declarator, whose list is a lone `type_identifier`.
+fn parenthesized_parameter_name<'t>(parameter: &Node<'t>) -> Option<Node<'t>> {
+    let outer = parameter.child_by_field_name("declarator")?;
+    if outer.kind() != "abstract_function_declarator" {
+        return None;
+    }
+    let inner = outer.child_by_field_name("declarator")?;
+    if inner.kind() != "abstract_function_declarator"
+        || inner.child_by_field_name("declarator").is_some()
+    {
+        return None;
+    }
+    let list = inner.child_by_field_name("parameters")?;
+    let [only] = list.named_children(&mut list.walk()).collect::<Vec<_>>()[..] else {
+        return None;
+    };
+    if only.kind() != "parameter_declaration" || only.child_by_field_name("declarator").is_some() {
+        return None;
+    }
+    only.child_by_field_name("type")
+        .filter(|t| t.kind() == "type_identifier")
+}
+
+/// The parameter list of the function a `function_definition` defines:
+/// that of the function declarator nearest the name, through any pointer
+/// or parentheses around it (`int (*pick(int x))(int)` takes `x`).
+fn definition_parameter_list<'t>(definition: &Node<'t>) -> Option<Node<'t>> {
+    let mut d = definition.child_by_field_name("declarator")?;
+    let mut parameters = None;
+    loop {
+        match d.kind() {
+            "function_declarator" => {
+                parameters = d.child_by_field_name("parameters").or(parameters);
+                d = d.child_by_field_name("declarator")?;
+            }
+            "pointer_declarator" | "attributed_declarator" => {
+                d = d.child_by_field_name("declarator")?;
+            }
+            "parenthesized_declarator" => d = d.named_child(0)?,
+            _ => return parameters,
+        }
+    }
+}
+
+/// Is this identifier the name an object's declarator declares, a
+/// variable's or a parameter's, a function pointer's among them
+/// (`int (*g)(int)`, `int g = 0;`), rather than a function's? `parent` is
+/// the identifier's parent. A parameter declared with a function type
+/// (`int g(int, int)`, `int (g)(int, int)`) is one too: C adjusts it to a
+/// pointer. A function declarator anywhere else declares a function.
+fn is_object_declarator_name(node: &Node, parent: Option<Node>) -> bool {
+    let Some(parent) = parent else {
+        return false;
+    };
+    let declares = |holder: &Node, inner: &Node| {
+        holder
+            .child_by_field_name("declarator")
+            .is_some_and(|d| d.id() == inner.id())
+    };
+    match parent.kind() {
+        "pointer_declarator"
+        | "array_declarator"
+        | "init_declarator"
+        | "parameter_declaration"
+        | "declaration" => declares(&parent, node),
+        "function_declarator" | "parenthesized_declarator" => {
+            // Up through the declarators wrapping the name, to what holds
+            // them: a parameter's is a parameter_declaration.
+            let (mut inner, mut holder) = (*node, parent);
+            loop {
+                let wraps = match holder.kind() {
+                    "parenthesized_declarator" => true,
+                    "function_declarator" | "pointer_declarator" | "array_declarator" => {
+                        declares(&holder, &inner)
+                    }
+                    "parameter_declaration" => return declares(&holder, &inner),
+                    _ => return false,
+                };
+                if !wraps {
+                    return false;
+                }
+                let Some(up) = holder.parent() else {
+                    return false;
+                };
+                inner = holder;
+                holder = up;
+            }
+        }
+        _ => false,
     }
 }
 
@@ -12602,6 +13672,225 @@ void caller(char *other) {
         assert!(b.caller_set_is_closed());
         assert_eq!(b.callsite_param_int_range.get(&0), Some(&(2, 2)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Prescan the files `(relative path, text)` under a fresh directory.
+    fn prescan_tree(files: &[(&str, &str)]) -> (tempfile::TempDir, ProjectContext) {
+        let dir = tempfile::tempdir().unwrap();
+        for (path, text) in files {
+            let path = dir.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        let ctx = prescan_directories(
+            &[dir.path().to_string_lossy().to_string()],
+            None,
+            &|_, _| false,
+            Default::default(),
+        )
+        .unwrap();
+        (dir, ctx)
+    }
+
+    /// The summary of `name` as the file at `file` sees it.
+    fn summary_seen_from(
+        ctx: &ProjectContext,
+        dir: &tempfile::TempDir,
+        file: &str,
+        name: &str,
+    ) -> FunctionSummary {
+        match ctx.as_seen_from(&dir.path().join(file)) {
+            Some(view) => view.function_summaries.get(name).cloned(),
+            None => ctx.function_summaries.get(name).cloned(),
+        }
+        .unwrap_or_else(|| panic!("{name} in {file}"))
+    }
+
+    /// The template pattern: a file names its own static through a rename
+    /// and includes a header that stores the rename. The static escapes,
+    /// whether its name is the project's only one (judged by every file's
+    /// names) or another file has a static of that name too (judged by its
+    /// own translation unit's).
+    #[test]
+    fn a_rename_a_template_header_stores_escapes_its_target() {
+        let template = "static int (*const table[])(int) = { FN };\n";
+        let user = "#define FN cb\nstatic int cb(int n) { return n; }\n#include \"tmpl.h\"\nint use(void) { return cb(1); }\n";
+        let (dir, ctx) = prescan_tree(&[("a.c", user), ("tmpl.h", template)]);
+        assert!(summary_seen_from(&ctx, &dir, "a.c", "cb").address_taken);
+
+        let other = "static int cb(int n) { return n; }\nint other(void) { return cb(2); }\n";
+        let (dir, ctx) = prescan_tree(&[("a.c", user), ("b.c", other), ("tmpl.h", template)]);
+        assert!(summary_seen_from(&ctx, &dir, "a.c", "cb").address_taken);
+        let b = summary_seen_from(&ctx, &dir, "b.c", "cb");
+        assert!(b.caller_set_is_closed());
+        assert_eq!(b.callsite_param_int_range.get(&0), Some(&(2, 2)));
+    }
+
+    /// A header's macro that stores a static by name takes the address of
+    /// the static of each file that includes the header live, and of no
+    /// other file's.
+    #[test]
+    fn a_header_macro_storing_a_static_reaches_only_its_includers() {
+        let reg = "#define REGISTER() register_cb(cb)\nvoid register_cb(int (*)(int));\n";
+        let (dir, ctx) = prescan_tree(&[
+            ("inc/reg.h", reg),
+            (
+                "a.c",
+                "#include \"inc/reg.h\"\nstatic int cb(int n) { return n; }\nvoid a(void) { REGISTER(); cb(1); }\n",
+            ),
+            (
+                "b.c",
+                "static int cb(int n) { return n; }\nint b(void) { return cb(2); }\n",
+            ),
+            (
+                "c.c",
+                "#if 0\n#include \"inc/reg.h\"\n#endif\nstatic int cb(int n) { return n; }\nint c(void) { return cb(3); }\n",
+            ),
+        ]);
+        assert!(summary_seen_from(&ctx, &dir, "a.c", "cb").address_taken);
+        for (file, n) in [("b.c", 2), ("c.c", 3)] {
+            let cb = summary_seen_from(&ctx, &dir, file, "cb");
+            assert!(cb.caller_set_is_closed(), "{file}");
+            assert_eq!(cb.callsite_param_int_range.get(&0), Some(&(n, n)), "{file}");
+        }
+    }
+
+    /// A call through a rename, defined in the file or in a header it
+    /// includes, is a call to the target: its argument joins the target's
+    /// caller-supplied range.
+    #[test]
+    fn a_call_through_a_rename_is_a_call_to_its_target() {
+        let body = "static int write_some(int fd, int n) { return fd + n; }\nint f(void) { return write_all(4, 0) + write_some(5, 0); }\n";
+        let in_file = format!("#define write_all write_some\n{body}");
+        let in_header = format!("#include \"io.h\"\n{body}");
+        for files in [
+            vec![("one.c", in_file.as_str())],
+            vec![
+                ("one.c", in_header.as_str()),
+                ("io.h", "#define write_all write_some\n"),
+            ],
+        ] {
+            let (dir, ctx) = prescan_tree(&files);
+            let w = summary_seen_from(&ctx, &dir, "one.c", "write_some");
+            assert!(w.caller_set_is_closed(), "{files:?}");
+            assert_eq!(
+                w.callsite_param_int_range.get(&0),
+                Some(&(4, 5)),
+                "{files:?}"
+            );
+        }
+    }
+
+    /// A rename reaches only the calls of a file that sees it: one an
+    /// unrelated file defines, or one the includer's header leaves
+    /// `#undef`'d, is not in force where the call is, so the call adds no
+    /// caller. An `#undef` the header follows with the `#define` again, or
+    /// one in an arm it proves dead, undoes nothing. What the
+    /// per-file value-range pass reads (`call_renames_by_file`) says the
+    /// same.
+    #[test]
+    fn a_rename_reaches_only_the_calls_of_a_file_that_sees_it() {
+        let user = "extern int g(int);\nstatic int f(int n) { return n + 1; }\nint use(void) { return g(1) + f(2); }\n";
+        let (dir, ctx) = prescan_tree(&[("a.c", user), ("b.c", "#define g f\n")]);
+        let f = summary_seen_from(&ctx, &dir, "a.c", "f");
+        assert_eq!(f.callsite_param_int_range.get(&0), Some(&(2, 2)));
+        assert!(ctx.call_renames_by_file.is_empty());
+
+        let included = format!("#include \"r.h\"\n{user}");
+        for (header, undefined) in [
+            ("#define g f\n", false),
+            ("#define g f\n#undef g\n", true),
+            ("#define g f\n#undef g\n#define g f\n", false),
+            ("#define g f\n#if 0\n#undef g\n#endif\n", false),
+        ] {
+            let (dir, ctx) = prescan_tree(&[("a.c", included.as_str()), ("r.h", header)]);
+            let f = summary_seen_from(&ctx, &dir, "a.c", "f");
+            let expected = if undefined { (2, 2) } else { (1, 2) };
+            assert_eq!(
+                f.callsite_param_int_range.get(&0),
+                Some(&expected),
+                "{header}"
+            );
+            assert_eq!(ctx.call_renames_by_file.is_empty(), undefined, "{header}");
+        }
+    }
+
+    /// What a call through a rename reaches in one file does not depend on
+    /// another file's name. b.c defines `write_all` itself after a header
+    /// that `#undef`s it, so its own call goes through to `write_some`; a
+    /// file that includes b.c shares b.c's closure but not its definition,
+    /// and whichever of the two the merge reaches first must leave b.c's
+    /// answer alone.
+    #[test]
+    fn a_rename_one_file_defines_after_an_undef_reaches_its_call_whatever_the_file_order() {
+        let b = "#include \"u.h\"\n#include \"d.h\"\n#define write_all MID\n\
+                 static int write_some(int amount, int offset) { return amount + offset; }\n\
+                 int write_body(int len, int pos) { return write_all(len, pos); }\n\
+                 int write_header(void) { return write_some(4, 0); }\n";
+        let includer = "#include \"b.c\"\nint use(int a, int c) { return write_all(a, c); }\n";
+        for name in ["a.c", "z.c"] {
+            let (dir, ctx) = prescan_tree(&[
+                ("b.c", b),
+                ("u.h", "#undef write_all\n"),
+                ("d.h", "#define MID write_some\n"),
+                (name, includer),
+            ]);
+            let w = summary_seen_from(&ctx, &dir, "b.c", "write_some");
+            assert_eq!(w.callsite_param_int_range.get(&0), None, "{name}");
+        }
+    }
+
+    /// A call reads at most `MAX_RENAME_LINKS` renames: a chain of that
+    /// many reaches its function, one more does not.
+    #[test]
+    fn a_call_reads_at_most_the_rename_link_bound() {
+        for (links, reaches) in [(MAX_RENAME_LINKS, true), (MAX_RENAME_LINKS + 1, false)] {
+            let mut text = String::new();
+            for k in 0..links - 1 {
+                text.push_str(&format!("#define L{k} L{}\n", k + 1));
+            }
+            text.push_str(&format!("#define L{} f\n", links - 1));
+            text.push_str("static int f(int n) { return n; }\nint use(int y) { return L0(y); }\n");
+            let (_dir, ctx) = prescan_tree(&[("one.c", text.as_str())]);
+            let reached = ctx
+                .call_renames_by_file
+                .values()
+                .any(|renames| renames.get("L0").is_some_and(|t| t == &["f".to_string()]));
+            assert_eq!(reached, reaches, "{links} links");
+        }
+    }
+
+    /// A prototype's parameter is no object of the file: `int A(int (*g)(int));`
+    /// at file scope leaves a call of `g` elsewhere going through the rename.
+    #[test]
+    fn a_prototype_parameter_named_like_a_rename_does_not_stop_its_calls() {
+        let code = "static int f(int n) { return n; }\nint A(int (*g)(int));\n#define g f\n\
+                    int use(void) { return g(3) + f(5); }\n";
+        let (dir, ctx) = prescan_tree(&[("one.c", code)]);
+        let f = summary_seen_from(&ctx, &dir, "one.c", "f");
+        assert_eq!(f.callsite_param_int_range.get(&0), Some(&(3, 5)));
+    }
+
+    #[test]
+    fn an_include_spelling_resolves_beside_its_includer_then_by_suffix() {
+        let paths = [
+            "/p/src/a.c",
+            "/p/src/inc/x.h",
+            "/p/other/y.h",
+            "/p/src/z.h",
+            "/q/z.h",
+            "/p/src/lone.h",
+        ];
+        let files: Vec<Option<&Path>> = paths.iter().map(|p| Some(Path::new(*p))).collect();
+        let a = ["inc/x.h".to_string(), "y.h".to_string()];
+        let x = ["../z.h".to_string()];
+        let includes: Vec<&[String]> = vec![&a, &x, &[], &[], &[], &[]];
+        let closures = scanned_include_closures(&files, &includes);
+        // Beside the includer wins over a same-named file elsewhere; a
+        // spelling nothing sits beside reaches every file it ends.
+        assert_eq!(closures[0], vec![1, 2, 3]);
+        assert_eq!(closures[1], vec![3]);
+        assert!(closures[5].is_empty());
     }
 
     /// Juliet CWE-134 variant 44, reduced: a sink called only through a local

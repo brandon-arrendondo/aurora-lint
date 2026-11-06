@@ -908,6 +908,14 @@ pub struct ProjectContext {
     /// alias accuses through.
     #[serde(default)]
     pub macro_alias_alternatives: Arc<HashMap<String, Vec<String>>>,
+    /// `file -> name -> targets`, real paths: the renames a call the file
+    /// makes goes through, for the names it calls, by the renames its
+    /// translation unit sees among the scanned files (its own and its
+    /// include closure's), less a name the closure `#undef`s or the file
+    /// declares as an object. Only files with one. Read by the per-file
+    /// value-range pass, which rebuilds the file's call sites.
+    #[serde(default)]
+    pub call_renames_by_file: Arc<HashMap<String, HashMap<String, Vec<String>>>>,
     /// The argument counts each function or function-like macro the
     /// scanned files and resolved headers define or prototype takes
     /// (`const_eval::fixed_arities`), one entry per distinct arity.
@@ -1748,7 +1756,7 @@ pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
 /// to a serialized field of [`ProjectContext`] (or of a type it holds), or to
 /// what such a field means: the cache header carries it, so an old cache is
 /// refused instead of misread.
-const PRESCAN_CACHE_FORMAT: u32 = 81;
+const PRESCAN_CACHE_FORMAT: u32 = 82;
 
 /// The header a prescan cache file starts with: a magic, the layout version
 /// and the aurora-lint version that wrote it.

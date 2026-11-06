@@ -2166,6 +2166,7 @@ pub(crate) fn build_file_analysis(
         Some(context),
         context.settings.facts,
         crate::files::is_c_header(file_path),
+        Some(file_path),
     );
 
     FileAnalysis {
@@ -2192,6 +2193,7 @@ pub(crate) fn compute_vra_if_needed(
     project: Option<&context::ProjectContext>,
     data_model: crate::settings::IntFacts,
     in_header: bool,
+    file_path: Option<&std::path::Path>,
 ) -> HashMap<usize, value_range::RangeAnalysisResult> {
     if !needs_vra || function_cfgs.is_empty() {
         return HashMap::new();
@@ -2224,7 +2226,7 @@ pub(crate) fn compute_vra_if_needed(
     // header's `static inline` referenced from the files that include it.
     {
         let mut value_position_identifiers = std::collections::HashSet::new();
-        prescan::collect_value_position_identifiers(
+        let own_renames = prescan::collect_value_positions_and_renames(
             root_node,
             source,
             &mut value_position_identifiers,
@@ -2253,6 +2255,32 @@ pub(crate) fn compute_vra_if_needed(
                 names: name_tables.as_ref(),
             },
             &mut callsite_int_args,
+        );
+        // A call through a rename is a call to its target: by the renames
+        // the prescan found the file's translation unit sees, or by the
+        // file's own when the prescan did not read it. A rename defined
+        // only in a file this one does not include is not one of them.
+        let seen_renames = project
+            .filter(|p| !p.call_renames_by_file.is_empty())
+            .zip(file_path)
+            .and_then(|(p, path)| {
+                p.call_renames_by_file
+                    .get(&crate::analyze::compile_commands::real_path(path))
+            });
+        let renames = prescan::renames_reached(
+            callsite_int_args.keys(),
+            &own_renames.call_renames(),
+            seen_renames,
+            |name| match project {
+                Some(p) => p.known_functions.contains(name),
+                None => file_summaries.contains_key(name),
+            },
+        );
+        prescan::file_sites_under_rename_targets(
+            &mut callsite_int_args,
+            &renames,
+            &prescan::object_call_masks(&own_renames.object_calls),
+            true,
         );
         prescan::aggregate_callsite_int_args(
             &callsite_int_args,
@@ -2594,6 +2622,7 @@ mod tests {
             None,
             Default::default(),
             false,
+            None,
         );
         assert!(results.is_empty());
     }
@@ -2614,6 +2643,7 @@ mod tests {
             None,
             Default::default(),
             false,
+            None,
         );
         assert!(results.is_empty());
     }
