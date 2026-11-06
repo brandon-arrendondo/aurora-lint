@@ -50,8 +50,10 @@ With either flag:
   reads every file under ``PATH``, so cross-file findings in a changed file
   keep their context.
 - When no C file changed, the log says
-  ``diff-only: no changed C files to analyze``, so it can be told apart from
-  a clean scan.
+  ``diff-only: no changed C files to analyze`` and the scan exits ``0``, so it
+  can be told apart from a clean scan without failing the job. If the tree has
+  no C file to select at all, changed or not, the scan exits ``3``; see
+  :doc:`error-handling`.
 
 GitHub Actions
 --------------

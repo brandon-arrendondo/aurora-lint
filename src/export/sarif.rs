@@ -165,8 +165,24 @@ fn violation_to_sarif_result(
 /// Headers the scan could not find are a `note`, not an error: a missing
 /// header is a difference in the scan's input, not an incomplete scan, so it
 /// leaves `executionSuccessful` alone (ADR-0017).
-fn invocation(incomplete: super::Incomplete<'_>, headers: super::Headers<'_>) -> serde_json::Value {
+///
+/// A scan that selected no files has shown nothing about the code, so it is
+/// unsuccessful too, unless the empty selection was accepted or is a diff with
+/// nothing to look at: those are a `note`.
+fn invocation(
+    incomplete: super::Incomplete<'_>,
+    headers: super::Headers<'_>,
+    coverage: Option<super::Coverage>,
+) -> serde_json::Value {
     use crate::analyze::containment::{Cause, Stage};
+    use crate::analyze::EmptySelection;
+    let empty_selection = |level: &str, text: &str| {
+        serde_json::json!({
+            "level": level,
+            "descriptor": { "id": "aurora-lint/empty-selection" },
+            "message": { "text": text },
+        })
+    };
     let mut notifications: Vec<serde_json::Value> = incomplete
         .failures
         .iter()
@@ -217,7 +233,20 @@ fn invocation(incomplete: super::Incomplete<'_>, headers: super::Headers<'_>) ->
             "associatedRule": { "id": rule },
         })
     }));
+    let empty = coverage.and_then(|c| c.empty_selection);
+    if empty == Some(EmptySelection::Refused) {
+        notifications.push(empty_selection("error", super::EMPTY_REFUSED));
+    }
     let successful = notifications.is_empty();
+    match empty {
+        Some(EmptySelection::Allowed) => {
+            notifications.push(empty_selection("note", super::EMPTY_ALLOWED));
+        }
+        Some(EmptySelection::NothingChanged) => {
+            notifications.push(empty_selection("note", super::EMPTY_NOTHING_CHANGED));
+        }
+        Some(EmptySelection::Refused) | None => {}
+    }
     notifications.extend(incomplete.not_converged.iter().map(|(what, n)| {
         serde_json::json!({
             "level": "warning",
@@ -252,7 +281,9 @@ fn invocation(incomplete: super::Incomplete<'_>, headers: super::Headers<'_>) ->
 /// not run (`disabled`: the configuration disables it, or the policy declines
 /// it) is in the driver's rules with `defaultConfiguration.enabled` false and
 /// its reason, after the rules results point at, so a rule with no results
-/// reads as not run rather than clean.
+/// reads as not run rather than clean. `artifacts` holds only the files a
+/// result points into, so the run's `properties` also record how many files
+/// were scanned (`coverage`): a clean scan and an empty one differ there.
 pub fn export_all_violations_to_sarif(
     violations: &[RuleViolation],
     suppressed: &[SuppressedViolation],
@@ -261,6 +292,7 @@ pub fn export_all_violations_to_sarif(
     incomplete: super::Incomplete<'_>,
     headers: super::Headers<'_>,
     disabled: &[DisabledRule],
+    coverage: Option<super::Coverage>,
 ) -> Result<()> {
     // Collect unique rules from both active and suppressed violations
     let mut rules_map: BTreeMap<String, &RuleViolation> = BTreeMap::new();
@@ -362,7 +394,7 @@ pub fn export_all_violations_to_sarif(
             "artifacts": artifacts_array,
             "columnKind": "utf16CodeUnits",
             "results": results_array,
-            "invocations": [invocation(incomplete, headers)],
+            "invocations": [invocation(incomplete, headers, coverage)],
             "properties": {
                 "aurora-lint/settings": settings.to_json(),
             }
@@ -378,6 +410,11 @@ pub fn export_all_violations_to_sarif(
             "unresolved": r.unresolved,
             "outsideHeaderCount": r.outside_headers.len(),
         });
+    }
+
+    if let Some(c) = coverage {
+        sarif["runs"][0]["properties"]["aurora-lint/filesScanned"] =
+            serde_json::json!(c.files_scanned);
     }
 
     let file = File::create(sarif_path)?;

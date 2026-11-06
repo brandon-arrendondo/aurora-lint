@@ -328,6 +328,12 @@ fn run() -> Result<i32> {
                 .value_name("FILE"),
         )
         .arg(
+            Arg::new("allow_empty")
+                .long("allow-empty")
+                .help("Accept a scan that selects no files: exit 0 instead of 3. Without it, a path with no .c or .h files in it, or with all of them excluded, is an incomplete scan rather than a clean one. A --diff scan where no C file changed needs no flag")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
             Arg::new("generate_suppression")
                 .long("generate-suppression")
                 .help("Generate suppression comment for a specific file:line:rule")
@@ -1132,11 +1138,6 @@ fn run() -> Result<i32> {
         None if diff_only => println!("Mode: diff-only (analyzing uncommitted and untracked files)"),
         None => {}
     }
-    // Otherwise "Found 0 violations" reads the same as a clean scan.
-    if diff_only && project_source.get_modified_c_files()?.is_empty() {
-        println!("diff-only: no changed C files to analyze");
-    }
-
     // Create progress reporter for CLI
     let progress_reporter = CLIProgressReporter::new(verbosity);
 
@@ -1173,6 +1174,12 @@ fn run() -> Result<i32> {
     let abandoned_rules = results.abandoned_rules;
     let not_converged = results.not_converged;
     let header_dependence = results.header_dependence;
+    let coverage = results.coverage;
+    let empty_selection = coverage.empty_selection(matches.get_flag("allow_empty"));
+    // Otherwise "Found 0 violations" reads the same as a clean scan.
+    if empty_selection == Some(analyze::EmptySelection::NothingChanged) {
+        println!("{}", export::EMPTY_NOTHING_CHANGED);
+    }
     let cwd = std::env::current_dir().unwrap_or_default();
     // Paths under the current directory are shown relative to it, as text
     // output shows finding paths, so a report does not depend on where the
@@ -1261,6 +1268,10 @@ fn run() -> Result<i32> {
                 dependence: Some(&header_dependence),
             },
             &not_run,
+            Some(export::Coverage {
+                files_scanned: coverage.files_scanned,
+                empty_selection,
+            }),
         )?;
         println!(
             "Exported {} violations ({} suppressed) to: {}",
@@ -1271,6 +1282,15 @@ fn run() -> Result<i32> {
     }
 
     // Print summary
+    let not_scanned = coverage.files_selected - coverage.files_scanned;
+    if not_scanned == 0 {
+        println!("Files scanned: {}", coverage.files_scanned);
+    } else {
+        println!(
+            "Files scanned: {} ({not_scanned} more selected but failed or skipped)",
+            coverage.files_scanned
+        );
+    }
     println!(
         "Total violations: {} ({} suppressed)",
         violations.len(),
@@ -1320,6 +1340,15 @@ fn run() -> Result<i32> {
             "Warning: {what} did not converge {n} time(s); results there may be incomplete \
              (a known issue, see docs/error-handling.rst)"
         );
+    }
+
+    // Scanning nothing shows nothing about the code, so it does not read as a
+    // clean result unless the user said to expect it (ADR-0017).
+    let nothing_selected = empty_selection == Some(analyze::EmptySelection::Refused);
+    match empty_selection {
+        Some(analyze::EmptySelection::Refused) => eprintln!("Error: {}", export::EMPTY_REFUSED),
+        Some(analyze::EmptySelection::Allowed) => eprintln!("Note: {}", export::EMPTY_ALLOWED),
+        Some(analyze::EmptySelection::NothingChanged) | None => {}
     }
 
     // A crash or a bound (analyze::containment, ADR-0017) leaves every other
@@ -1384,6 +1413,10 @@ fn run() -> Result<i32> {
                  leave it out of the scan with --exclude-all."
             );
         }
+        return Ok(analyze::containment::EXIT_INCOMPLETE);
+    }
+
+    if nothing_selected {
         return Ok(analyze::containment::EXIT_INCOMPLETE);
     }
 

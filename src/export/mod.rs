@@ -29,6 +29,25 @@ pub struct Incomplete<'a> {
     pub not_converged: &'a [(String, u64)],
 }
 
+/// What an empty selection is called wherever it is reported.
+pub const EMPTY_REFUSED: &str = "nothing to scan: the path holds no C source or C header, every \
+     such file was excluded, or each was skipped as not being C. Check the path and the \
+     exclusions, or pass --allow-empty if this is expected.";
+/// The same, accepted by `--allow-empty`.
+pub const EMPTY_ALLOWED: &str = "nothing to scan; --allow-empty accepts this";
+/// A diff-only scan with nothing in scope changed.
+pub const EMPTY_NOTHING_CHANGED: &str = "diff-only: no changed C files to analyze";
+
+/// How much a scan covered, for an export. The interactive UI's export is a
+/// selection of findings rather than a scan's whole report, so it has none.
+#[derive(Debug, Clone, Copy)]
+pub struct Coverage {
+    /// Files the scan analysed.
+    pub files_scanned: usize,
+    /// What an empty selection amounted to, if the selection was empty.
+    pub empty_selection: Option<super::analyze::EmptySelection>,
+}
+
 /// What a scan's `#include` resolution could not see, for an export: the
 /// run's report and which findings may depend on it. Both are optional; an
 /// export without them says nothing about headers.
@@ -69,6 +88,7 @@ pub fn export_all_violations(
     incomplete: Incomplete<'_>,
     headers: Headers<'_>,
     disabled: &[DisabledRule],
+    coverage: Option<Coverage>,
 ) -> Result<()> {
     if export_path.ends_with(".sarif") || export_path.ends_with(".sarif.json") {
         return export_all_violations_to_sarif(
@@ -79,6 +99,7 @@ pub fn export_all_violations(
             incomplete,
             headers,
             disabled,
+            coverage,
         );
     }
     if export_path.ends_with(".json") {

@@ -105,7 +105,7 @@ use suppression::SuppressionManager;
 use crate::utility::cert_c::node_children::NodeChildren;
 use anyhow::Result;
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -143,6 +143,92 @@ pub struct AnalysisResults {
     pub include_report: std::sync::Arc<context::IncludeReport>,
     /// Which findings may depend on a header the scan could not find.
     pub header_dependence: context::HeaderDependence,
+    /// How many files the scan selected and how many it got through.
+    pub coverage: ScanCoverage,
+}
+
+/// How much of the tree a scan covered, so "scanned 400 files, clean" and
+/// "scanned nothing" do not read the same (ADR-0017).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScanCoverage {
+    /// The files the scan set out to analyse: C sources and headers under the
+    /// path, less the exclusions, and on a diff-only scan only the changed ones.
+    pub files_selected: usize,
+    /// Those it analysed. A file on which one rule failed is scanned, and the
+    /// failure is reported on its own. These are not:
+    /// - a file refused or failed before any rule's results could stand,
+    ///   which is reported as a failure;
+    /// - a file skipped because it is not C after all ([`containment::note_skipped`]).
+    pub files_scanned: usize,
+    /// How many selected files are the second kind: they make a scan no less
+    /// complete, but nothing was scanned if they are all there was.
+    pub files_skipped: usize,
+    /// Whether the selection would hold a file to scan if every file counted
+    /// as changed. Only a diff-only scan with nothing to scan asks.
+    pub tree_has_scannable_file: bool,
+}
+
+impl ScanCoverage {
+    fn of(
+        selected: &[String],
+        skipped: &HashSet<String>,
+        failures: &[containment::ScanFailure],
+        tree_has_scannable_file: impl FnOnce() -> Result<bool>,
+    ) -> Result<ScanCoverage> {
+        let failed: HashSet<&str> = failures
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.stage,
+                    containment::Stage::Input | containment::Stage::File
+                )
+            })
+            .map(|f| f.file.as_str())
+            .collect();
+        let is_skipped = |f: &&String| skipped.contains(f.as_str());
+        let files_skipped = selected.iter().filter(is_skipped).count();
+        let files_scanned = selected
+            .iter()
+            .filter(|f| !is_skipped(f) && !failed.contains(f.as_str()))
+            .count();
+        Ok(ScanCoverage {
+            files_selected: selected.len(),
+            files_scanned,
+            files_skipped,
+            tree_has_scannable_file: selected.len() == files_skipped && tree_has_scannable_file()?,
+        })
+    }
+
+    /// What an empty selection means for this scan, or `None` if it has files.
+    ///
+    /// A diff-only scan of a tree with C files in it, none of them changed,
+    /// has done its whole job, as on a pull request that touches only
+    /// documentation. A tree with nothing to select has not: the path or the
+    /// exclusions are wrong, and a clean result would hide that on every run.
+    pub fn empty_selection(&self, allow_empty: bool) -> Option<EmptySelection> {
+        if self.files_selected > self.files_skipped {
+            None
+        } else if self.tree_has_scannable_file {
+            Some(EmptySelection::NothingChanged)
+        } else if allow_empty {
+            Some(EmptySelection::Allowed)
+        } else {
+            Some(EmptySelection::Refused)
+        }
+    }
+}
+
+/// What a scan that selected no files amounts to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmptySelection {
+    /// Nothing to select, and nobody said that was expected: the scan is
+    /// incomplete (exit 3).
+    Refused,
+    /// Nothing to select, accepted by `--allow-empty`.
+    Allowed,
+    /// A diff-only scan where no C file in scope changed, or only files it
+    /// would skip.
+    NothingChanged,
 }
 
 /// Which files a scan leaves out, as path globs relative to the scanned root
@@ -263,6 +349,7 @@ pub fn analyze_project(
 
     // A fresh count of analyses that stop short (`containment::not_converged`).
     let _ = containment::take_not_converged();
+    let _ = containment::take_skipped();
 
     // Build-generated headers, recognised from what the user and the
     // database declare (`generated_headers`). Their facts reach only the
@@ -344,6 +431,16 @@ pub fn analyze_project(
 
     let c_files = collect_c_files(project_source, diff_only, &scope.report_globs())?;
     let total_files = c_files.len();
+    // Whether a tree that left a diff-only scan nothing has anything at all. A
+    // full scan of a tree of nothing but files it skips has nothing either.
+    let tree_has_scannable_file = || -> Result<bool> {
+        if !diff_only {
+            return Ok(false);
+        }
+        let mut all = project_source.get_c_files()?;
+        drop_ignored(project_source, &mut all, &scope.report_globs())?;
+        Ok(all.iter().any(|f| !skipped_as_not_c(f)))
+    };
     // A rule that stands down says so per context: a file outside the
     // configuration is judged against the context it is analysed with.
     let (inside, outside): (Vec<String>, Vec<String>) = c_files
@@ -539,6 +636,8 @@ pub fn analyze_project(
         sort_for_deterministic_output(&mut violations, &mut suppressed);
         failures.sort();
         failures.dedup();
+        let skipped = containment::take_skipped();
+        let coverage = ScanCoverage::of(&c_files, &skipped, &failures, tree_has_scannable_file)?;
 
         if let Some(reporter) = progress {
             reporter.report_complete(violations.len());
@@ -561,6 +660,7 @@ pub fn analyze_project(
             not_converged: containment::take_not_converged(),
             include_report: include_report_split(&context, &context_for, &c_files),
             header_dependence,
+            coverage,
         });
     }
 
@@ -654,6 +754,8 @@ pub fn analyze_project(
     sort_for_deterministic_output(&mut violations, &mut suppressed);
     failures.sort();
     failures.dedup();
+    let skipped = containment::take_skipped();
+    let coverage = ScanCoverage::of(&c_files, &skipped, &failures, tree_has_scannable_file)?;
 
     // Report completion
     if let Some(reporter) = progress {
@@ -677,6 +779,7 @@ pub fn analyze_project(
         not_converged: containment::take_not_converged(),
         include_report: include_report_split(&context, &context_for, &c_files),
         header_dependence,
+        coverage,
     })
 }
 
@@ -1233,15 +1336,7 @@ fn collect_c_files(
         project_source.get_c_files()?
     };
 
-    // Drop files matching a project-wide `toolchain.toml` ignore or an
-    // --exclude/--report-exclude path glob (e.g. checked-in amalgamations or
-    // test harnesses). Whether they still feed the cross-file prescan is the
-    // scope's other half (`ScanScope::prescan_globs`).
-    let ignore = build_path_ignore(project_source, excludes)?;
-    let root = project_source.get_root_path();
-    let before = c_files.len();
-    c_files.retain(|f| !ignore.is_ignored(std::path::Path::new(&relative_to_root(f, root))));
-    let removed = before - c_files.len();
+    let removed = drop_ignored(project_source, &mut c_files, excludes)?;
     if removed > 0 {
         eprintln!("Excluded {} file(s) matching ignore patterns", removed);
     }
@@ -1255,6 +1350,22 @@ fn collect_c_files(
         .sort_by_cached_key(|f| std::cmp::Reverse(fs::metadata(f).map(|m| m.len()).unwrap_or(0)));
 
     Ok(c_files)
+}
+
+/// Drop files matching a project-wide `toolchain.toml` ignore or an
+/// --exclude/--report-exclude path glob (e.g. checked-in amalgamations or
+/// test harnesses), returning how many went. Whether they still feed the
+/// cross-file prescan is the scope's other half (`ScanScope::prescan_globs`).
+fn drop_ignored(
+    project_source: &ProjectSource,
+    c_files: &mut Vec<String>,
+    excludes: &[String],
+) -> Result<usize> {
+    let ignore = build_path_ignore(project_source, excludes)?;
+    let root = project_source.get_root_path();
+    let before = c_files.len();
+    c_files.retain(|f| !ignore.is_ignored(std::path::Path::new(&relative_to_root(f, root))));
+    Ok(before - c_files.len())
 }
 
 /// Builds the combined ignore matcher from `toolchain.toml`'s shared
@@ -1386,6 +1497,18 @@ fn sort_for_deterministic_output(
     });
 }
 
+/// Whether a scan would skip this file as not being C, as [`analyze_one_file`]
+/// does: the parser will not read it, or it is a header written in C++.
+fn skipped_as_not_c(file_path: &str) -> bool {
+    match crate::parser::read_source_or_transcode(file_path) {
+        Ok(source) => {
+            crate::files::is_c_header(file_path)
+                && lang_parsing_substrate::looks_like_cpp(source.as_bytes())
+        }
+        Err(_) => true,
+    }
+}
+
 /// Parse and run all enabled rules over a single file, partitioning findings
 /// into active and suppressed. Shared by the parallel and sequential drivers.
 ///
@@ -1431,6 +1554,7 @@ fn analyze_one_file(
             // file is scanned; silently producing nothing for it is how a
             // whole file used to vanish from a run unnoticed.
             eprintln!("Warning: {}: {}", file_path, e.root_cause());
+            containment::note_skipped(file_path);
             None
         }
     };
@@ -1454,6 +1578,7 @@ fn analyze_one_file(
         if crate::files::is_c_header(file_path)
             && lang_parsing_substrate::looks_like_cpp(source.as_bytes())
         {
+            containment::note_skipped(file_path);
             return (file_violations, file_suppressed, file_failures);
         }
 
@@ -2492,6 +2617,7 @@ mod tests {
             not_converged: vec![],
             include_report: Default::default(),
             header_dependence: Default::default(),
+            coverage: Default::default(),
         };
         assert!(results.violations.is_empty());
         assert!(results.suppressed.is_empty());

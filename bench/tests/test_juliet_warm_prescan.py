@@ -27,6 +27,10 @@ class TestWarmPrescanSettings(unittest.TestCase):
         sets = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--set"]
         self.assertEqual(sets, list(JULIET_SETTING_OVERRIDES))
 
+    def test_warm_pass_accepts_its_deliberately_empty_target(self):
+        # Without the flag the empty target is an incomplete scan, exit 3.
+        self.assertIn("--allow-empty", self._warm_cmd("default"))
+
     def test_warm_pass_and_shard_share_one_settings_list(self):
         self.assertEqual(runner._settings_args("default")[:2],
                          ["--profile", "default"])

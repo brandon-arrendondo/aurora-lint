@@ -41,6 +41,12 @@ class TestParseFailures(unittest.TestCase):
     def test_a_clean_log_has_none(self):
         self.assertEqual(parse_failures("Total violations: 3 (0 suppressed)\n"), [])
 
+    def test_a_scan_that_selected_no_files_says_so(self):
+        f = parse_failures("Error: nothing to scan: the path holds no C source\n")
+        self.assertEqual(len(f), 1)
+        self.assertEqual(f[0]["stage"], "selection")
+        self.assertEqual(f[0]["message"], "the path holds no C source")
+
     def test_summary(self):
         self.assertEqual(
             summary(parse_failures(LOG)),

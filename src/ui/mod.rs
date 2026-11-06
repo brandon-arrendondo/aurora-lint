@@ -2443,6 +2443,7 @@ impl TerminalUI {
             Default::default(),
             Default::default(),
             &[],
+            None,
         )
     }
 

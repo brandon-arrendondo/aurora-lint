@@ -10681,3 +10681,285 @@ fn flp00_takes_a_header_macro_for_zero_only_where_every_build_includes_it_first(
     .collect();
     assert_eq!(found, expected);
 }
+
+// -- how much a scan covered: an empty selection is not a clean result --
+
+/// Scan `path` under the MSC04-C manifest, exporting SARIF; return the exit
+/// code, stdout, stderr and the report's one run.
+fn coverage_scan(path: &Path, extra: &[&str]) -> (i32, String, String, serde_json::Value) {
+    let out_dir = tempfile::tempdir().unwrap();
+    let out = out_dir.path().join("out.sarif");
+    let output = scrub_git_env(&mut Command::new(aurora_lint_bin()))
+        .arg(path)
+        .args(["-m", manifest_msc04().to_str().unwrap()])
+        .args(["-e", out.to_str().unwrap()])
+        .args(extra)
+        .output()
+        .expect("failed to execute aurora-lint");
+    let sarif: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    (
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+        sarif["runs"][0].clone(),
+    )
+}
+
+/// Long enough for the input guard to tell what it is, and refuse it.
+fn elf_blob() -> Vec<u8> {
+    [b"\x7fELF\x02\x01\x01\0".as_slice(), &[0u8; 4096]].concat()
+}
+
+/// Text enough to pass the input guard, with a NUL the parser then skips it for.
+const NUL_STREWN: &str = "int a;\0int b;\n";
+
+/// The level of the run's empty-selection notification, if it has one.
+fn empty_selection_level(run: &serde_json::Value) -> Option<String> {
+    run["invocations"][0]["toolExecutionNotifications"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["descriptor"]["id"] == "aurora-lint/empty-selection")
+        .map(|n| n["level"].as_str().unwrap().to_string())
+}
+
+fn assert_refused_as_empty(code: i32, stdout: &str, stderr: &str, run: &serde_json::Value) {
+    assert_eq!(code, 3, "stderr: {stderr}");
+    assert!(stderr.contains("Error: nothing to scan"), "{stderr}");
+    assert!(stdout.contains("Files scanned: 0"), "{stdout}");
+    assert_eq!(run["properties"]["aurora-lint/filesScanned"], 0);
+    assert_eq!(run["invocations"][0]["executionSuccessful"], false);
+    assert_eq!(empty_selection_level(run).as_deref(), Some("error"));
+}
+
+#[test]
+fn a_directory_with_no_files_is_an_incomplete_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    let (code, stdout, stderr, run) = coverage_scan(dir.path(), &[]);
+    assert_refused_as_empty(code, &stdout, &stderr, &run);
+}
+
+#[test]
+fn a_directory_with_no_c_files_is_an_incomplete_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("readme.md"), "hi\n").unwrap();
+    let (code, stdout, stderr, run) = coverage_scan(dir.path(), &[]);
+    assert_refused_as_empty(code, &stdout, &stderr, &run);
+}
+
+#[test]
+fn excluding_every_file_is_an_incomplete_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.c"), "int a;\n").unwrap();
+    for flag in ["--exclude-all", "--report-exclude"] {
+        let (code, stdout, stderr, run) = coverage_scan(dir.path(), &[flag, "**"]);
+        assert_refused_as_empty(code, &stdout, &stderr, &run);
+    }
+}
+
+#[test]
+fn an_empty_selection_exits_three_under_a_fail_on_threshold_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let (code, _, _, _) = coverage_scan(dir.path(), &["--fail-on-violation"]);
+    assert_eq!(code, 3);
+}
+
+#[test]
+fn allow_empty_accepts_an_empty_selection_and_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let (code, stdout, stderr, run) = coverage_scan(dir.path(), &["--allow-empty"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stderr.contains("Note: nothing to scan"), "{stderr}");
+    assert!(stdout.contains("Files scanned: 0"), "{stdout}");
+    assert_eq!(run["properties"]["aurora-lint/filesScanned"], 0);
+    assert_eq!(run["invocations"][0]["executionSuccessful"], true);
+    assert_eq!(empty_selection_level(&run).as_deref(), Some("note"));
+}
+
+#[test]
+fn allow_empty_changes_nothing_about_a_scan_with_files() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.c"), "void f(void) {\n    f();\n}\n").unwrap();
+    let (code, stdout, stderr, run) =
+        coverage_scan(dir.path(), &["--allow-empty", "--fail-on-violation"]);
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(!stderr.contains("nothing to scan"), "{stderr}");
+    assert!(stdout.contains("Files scanned: 1"), "{stdout}");
+    assert_eq!(empty_selection_level(&run), None);
+}
+
+#[test]
+fn a_clean_scan_counts_its_files_including_empty_ones_and_headers() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.c"), "int a;\n").unwrap();
+    std::fs::write(dir.path().join("b.h"), "extern int a;\n").unwrap();
+    std::fs::write(dir.path().join("empty.c"), "").unwrap();
+    std::fs::write(dir.path().join("readme.md"), "hi\n").unwrap();
+    let (code, stdout, stderr, run) = coverage_scan(dir.path(), &[]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("Files scanned: 3\n"), "{stdout}");
+    assert_eq!(run["properties"]["aurora-lint/filesScanned"], 3);
+    assert_eq!(run["invocations"][0]["executionSuccessful"], true);
+    assert_eq!(empty_selection_level(&run), None);
+}
+
+#[test]
+fn a_refused_file_is_selected_but_not_scanned() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.c"), "int a;\n").unwrap();
+    std::fs::write(dir.path().join("blob.c"), elf_blob()).unwrap();
+    let (code, stdout, stderr, run) = coverage_scan(dir.path(), &[]);
+    assert_eq!(code, 3, "stderr: {stderr}");
+    assert!(
+        stdout.contains("Files scanned: 1 (1 more selected but failed or skipped)"),
+        "{stdout}"
+    );
+    assert!(!stderr.contains("nothing to scan"), "{stderr}");
+    assert_eq!(run["properties"]["aurora-lint/filesScanned"], 1);
+    assert_eq!(empty_selection_level(&run), None);
+}
+
+#[test]
+fn every_selected_file_refused_is_not_an_empty_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("blob.c"), elf_blob()).unwrap();
+    // --allow-empty is about a selection with nothing in it, not a scan that
+    // failed on all it selected.
+    let (code, stdout, stderr, run) = coverage_scan(dir.path(), &["--allow-empty"]);
+    assert_eq!(code, 3, "stderr: {stderr}");
+    assert!(
+        stdout.contains("Files scanned: 0 (1 more selected but failed or skipped)"),
+        "{stdout}"
+    );
+    assert_eq!(empty_selection_level(&run), None);
+}
+
+#[test]
+fn a_file_skipped_as_not_c_is_not_counted_and_does_not_fail_the_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.c"), "int a;\n").unwrap();
+    std::fs::write(dir.path().join("nul.c"), NUL_STREWN).unwrap();
+    std::fs::write(dir.path().join("wrapper.h"), CPP_HEADER).unwrap();
+    let (code, stdout, stderr, run) = coverage_scan(dir.path(), &[]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("Files scanned: 1 (2 more selected but failed or skipped)"),
+        "{stdout}"
+    );
+    assert_eq!(run["properties"]["aurora-lint/filesScanned"], 1);
+    assert_eq!(empty_selection_level(&run), None);
+}
+
+#[test]
+fn a_tree_of_nothing_but_skipped_files_scanned_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("nul.c"), NUL_STREWN).unwrap();
+    std::fs::write(dir.path().join("wrapper.h"), CPP_HEADER).unwrap();
+    let (code, _, stderr, run) = coverage_scan(dir.path(), &[]);
+    assert_eq!(code, 3, "stderr: {stderr}");
+    assert!(stderr.contains("Error: nothing to scan"), "{stderr}");
+    assert_eq!(run["properties"]["aurora-lint/filesScanned"], 0);
+    assert_eq!(empty_selection_level(&run).as_deref(), Some("error"));
+
+    let (code, _, stderr, run) = coverage_scan(dir.path(), &["--allow-empty"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(empty_selection_level(&run).as_deref(), Some("note"));
+}
+
+#[test]
+fn a_diff_with_no_changed_c_file_is_complete_and_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    branch_repo(&repo);
+    let (code, stdout, stderr, run) = coverage_scan(&repo, &["--diff"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(!stderr.contains("nothing to scan"), "{stderr}");
+    assert!(stdout.contains("Files scanned: 0"), "{stdout}");
+    assert_eq!(run["invocations"][0]["executionSuccessful"], true);
+    assert_eq!(empty_selection_level(&run).as_deref(), Some("note"));
+}
+
+#[test]
+fn a_diff_of_a_tree_with_nothing_to_select_is_an_incomplete_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    branch_repo(&repo);
+
+    // Every C file excluded: the exclusion, not the change, emptied it.
+    let (code, stdout, stderr, run) = coverage_scan(&repo, &["--diff", "--exclude-all", "**"]);
+    assert_refused_as_empty(code, &stdout, &stderr, &run);
+
+    let (code, _, stderr, run) =
+        coverage_scan(&repo, &["--diff", "--exclude-all", "**", "--allow-empty"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(empty_selection_level(&run).as_deref(), Some("note"));
+}
+
+const CPP_HEADER: &str = "class A { public: int a; };\n";
+
+/// A committed repository holding only `files`.
+fn repo_of(dir: &Path, files: &[(&str, &str)]) -> PathBuf {
+    let repo = dir.join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git_in(&repo, &["init", "-b", "main"]);
+    git_in(&repo, &["config", "user.email", "test@test.com"]);
+    git_in(&repo, &["config", "user.name", "Test"]);
+    for (name, text) in files {
+        std::fs::write(repo.join(name), text).unwrap();
+    }
+    git_in(&repo, &["add", "."]);
+    git_in(&repo, &["commit", "-m", "initial"]);
+    repo
+}
+
+#[test]
+fn a_diff_agrees_with_a_full_scan_on_a_tree_of_only_skipped_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo_of(
+        dir.path(),
+        &[("wrapper.h", CPP_HEADER), ("nul.c", NUL_STREWN)],
+    );
+
+    let (full, _, stderr, _) = coverage_scan(&repo, &[]);
+    assert_eq!(full, 3, "stderr: {stderr}");
+
+    let (code, stdout, stderr, run) = coverage_scan(&repo, &["--diff"]);
+    assert_refused_as_empty(code, &stdout, &stderr, &run);
+    // It is not a tree where nothing changed, so it does not say that too.
+    assert!(!stdout.contains("no changed C files"), "{stdout}");
+
+    let (code, _, stderr, run) = coverage_scan(&repo, &["--diff", "--allow-empty"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(empty_selection_level(&run).as_deref(), Some("note"));
+}
+
+#[test]
+fn a_diff_of_a_tree_with_one_scannable_file_among_skipped_ones_is_complete() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo_of(
+        dir.path(),
+        &[("wrapper.h", CPP_HEADER), ("real.h", "int real(void);\n")],
+    );
+    let (code, stdout, stderr, run) = coverage_scan(&repo, &["--diff"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("no changed C files"), "{stdout}");
+    assert_eq!(run["invocations"][0]["executionSuccessful"], true);
+    assert_eq!(empty_selection_level(&run).as_deref(), Some("note"));
+}
+
+#[test]
+fn a_diff_that_changed_only_a_skipped_file_is_complete() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo_of(
+        dir.path(),
+        &[("wrapper.h", CPP_HEADER), ("real.c", "int real;\n")],
+    );
+    std::fs::write(repo.join("wrapper.h"), format!("{CPP_HEADER}// more\n")).unwrap();
+    let (code, stdout, stderr, run) = coverage_scan(&repo, &["--diff"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.contains("no changed C files"), "{stdout}");
+    assert_eq!(empty_selection_level(&run).as_deref(), Some("note"));
+}

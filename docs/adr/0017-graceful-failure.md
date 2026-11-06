@@ -116,7 +116,7 @@ Before this decision, a failure anywhere ended the scan.
    | 0 | Clean, or no finding at or over the `--fail-on-*` threshold. |
    | 1 | A finding at or over a `--fail-on-*` threshold. |
    | 2 | The scan could not run: usage or configuration error. |
-   | 3 | The scan completed but is incomplete. |
+   | 3 | The scan completed but is incomplete, or selected no files. |
 
    - 3 outranks 1, and is returned with or without `--fail-on-*`. A partial
      scan never exits 0 or 1.
@@ -173,6 +173,39 @@ Before this decision, a failure anywhere ended the scan.
    per-process memory budget is not implemented. The one-at-a-time rule for
    huge files is the bound until it is.
 
+10. **A scan that selected no files is incomplete.** A count of zero findings
+    over zero files shows nothing about the code, and reads exactly like a
+    clean result, so a wrong path or an over-broad exclusion would pass a CI
+    gate on every run.
+    - A selection with no files in it exits 3, reports on stderr, and writes a
+      SARIF `error` notification with `executionSuccessful: false`.
+    - `--allow-empty` accepts it where it is expected: exit 0 and a SARIF
+      `note`. It covers only an empty selection. A file that was selected and
+      refused or failed is reported as above, flag or no flag.
+    - The selection is what remains after the user's exclusions. Excluded files
+      are not failed files, but excluding all of them is an empty selection.
+    - A diff-only scan of a tree with C files in it, none of them changed, is
+      complete: exit 0, a SARIF `note`. A pull request that touches only
+      documentation is the ordinary case, and failing it would make `--diff`
+      unusable as a gate. A diff-only scan where the whole tree would select
+      nothing, or nothing but files it skips, is an empty selection like any
+      other.
+    - An empty source file is a selected file. It is scanned and counted.
+    - A file skipped as not being C (NUL bytes in no text layout, a header
+      written in C++) is not counted as scanned. On its own that does not make
+      a scan incomplete, but a selection with nothing else in it is empty.
+      For a NUL-bearing file this conflicts with decision 9 and is not settled
+      here. The input guard passes a file with few NULs, the parser then skips
+      it with a warning, and the scan can exit 0 with that file unanalysed,
+      even with `--allow-empty` on a tree of nothing else, while the same file
+      with more NULs is refused and exits 3. Resolving it means checking the
+      corpora first, since exit 3 would leave any scan containing such a file
+      unscored.
+    - The text summary and the SARIF both give the number of files scanned
+      (`aurora-lint/filesScanned`), since a SARIF `artifacts` array lists only
+      the files a result points into. The JSON findings export stays a bare
+      array, so there the exit status carries it.
+
 ## Consequences
 
 - A contained crash is still a bug and is still fixed at its cause:
@@ -181,6 +214,9 @@ Before this decision, a failure anywhere ended the scan.
 - A benchmark scan that exits 3 is **not scored**. Its precision and recall
   would treat a crashed rule as a rule that chose not to report. The bench
   runner marks it INCOMPLETE and records what failed in the scan's sidecar.
+- A job that scans a tree which may legitimately hold no C files must pass
+  `--allow-empty`. So must a pass that scans an empty directory to run only
+  the prescan.
 - CI that treats any nonzero status as failure needs no change. CI that
   checks for exactly 1 must learn 3. The recommended CI handling is in
   [Error handling and exit codes](../error-handling.rst).

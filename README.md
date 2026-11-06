@@ -398,7 +398,7 @@ generated [option list](docs/options.rst).
 aurora-lint . --diff-base origin/main --min-severity Medium --fail-on-severity High --export results.sarif
 ```
 
-Exit codes: `0` = success, `1` = violations found (with `--fail-on-*`), `2` = the scan could not run (including a `--diff` PATH that is not a repository root), `3` = the scan is incomplete (part of the analysis crashed or ran out of its budget, or an input file was skipped; reported on stderr and in SARIF). See [Error handling and exit codes](docs/error-handling.rst).
+Exit codes: `0` = success, `1` = violations found (with `--fail-on-*`), `2` = the scan could not run (including a `--diff` PATH that is not a repository root), `3` = the scan is incomplete (part of the analysis crashed or ran out of its budget, an input file was skipped, or no files were selected, which `--allow-empty` accepts; reported on stderr and in SARIF). See [Error handling and exit codes](docs/error-handling.rst).
 
 Ready-to-use workflow examples for [GitHub Actions and Azure DevOps](docs/cicd-integration.rst) are in the Developer Guide.
 

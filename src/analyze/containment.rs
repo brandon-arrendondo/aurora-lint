@@ -407,6 +407,29 @@ pub fn add_not_converged(counts: &NotConverged) {
 static NOT_CONVERGED: OnceLock<Mutex<std::collections::BTreeMap<&'static str, u64>>> =
     OnceLock::new();
 
+/// The files this scan skipped because they turned out not to be C.
+static SKIPPED: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+
+/// Record that `file` was selected and then not analysed because it is not C:
+/// NUL bytes in no text layout, or a header written in C++. Not a failure, so
+/// no finding's absence is at stake, but the file was not scanned.
+pub fn note_skipped(file: &str) {
+    SKIPPED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(file.to_string());
+}
+
+/// The files [`note_skipped`] has recorded since the last call.
+pub fn take_skipped() -> std::collections::HashSet<String> {
+    SKIPPED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+        .unwrap_or_default()
+}
+
 /// Each [`not_converged`] analysis and how many times it stopped short in
 /// this process, sorted; the counts reset.
 pub fn take_not_converged() -> Vec<(String, u64)> {

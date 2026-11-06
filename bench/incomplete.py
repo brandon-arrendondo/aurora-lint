@@ -22,13 +22,15 @@ _FAILURE = re.compile(
 )
 _ABANDONED = re.compile(r"^Error: rule abandoned: (?P<rule>\S+):")
 _SKIPPED = re.compile(r"^Error: input skipped \((?P<cause>[^)]*)\): (?P<file>.+?): (?P<message>.*)$")
+_EMPTY = re.compile(r"^Error: nothing to scan: (?P<message>.*)$")
 
 
 def parse_failures(text: str) -> list[dict]:
     """Every failure and abandoned rule `text` (a scan's stderr or log)
     reports, in order: dicts with `stage` (rule/file/prescan/abandoned),
     `cause`, `rule`, `file`, `message`, `location`. Stage `input` is a file
-    skipped before parsing (too large, or not source text)."""
+    skipped before parsing (too large, or not source text); stage `selection`
+    is a scan that selected no files at all."""
     out = []
     for line in text.splitlines():
         m = _FAILURE.match(line)
@@ -47,6 +49,11 @@ def parse_failures(text: str) -> list[dict]:
         if m:
             out.append({"stage": "abandoned", "cause": None, "rule": m["rule"],
                         "file": None, "message": None, "location": None})
+            continue
+        m = _EMPTY.match(line)
+        if m:
+            out.append({"stage": "selection", "cause": "nothing to scan", "rule": None,
+                        "file": None, "message": m["message"], "location": None})
     return out
 
 

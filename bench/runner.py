@@ -229,6 +229,9 @@ def _warm_prescan(cwe_dir_name: str, cwe_dir_str: str, manifest: str,
             # cache, and the export needs a real extension to pick a format.
             "-e", os.path.join(report_dir, "warm.json"),
             "-j", "1",
+            # The empty target is deliberate; without this it is an
+            # incomplete scan.
+            "--allow-empty",
         ]
         proc = subprocess.run(cmd, capture_output=True, timeout=3600)
         duration_s = round(time.monotonic() - start_time, 1)
@@ -261,6 +264,14 @@ def _warm_prescan(cwe_dir_name: str, cwe_dir_str: str, manifest: str,
         except OSError:
             pass
         shutil.rmtree(report_dir, ignore_errors=True)
+
+
+def _holds_only_cpp_variants(submission_dir: Path) -> bool:
+    """Whether a submission has .cpp files and no .c file. An unsplit CWE keeps
+    its files in sNN, so this looks under it."""
+    def holds(pattern: str) -> bool:
+        return next(submission_dir.rglob(pattern), None) is not None
+    return holds("*.cpp") and not holds("*.c")
 
 
 def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
@@ -301,6 +312,11 @@ def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
         else:
             cmd.extend(_prescan_args(str(cwe_dir), compile_db, deps_includes))
         cmd.extend(["-e", report_path, "-j", "1"])
+        if _holds_only_cpp_variants(shard_dir):
+            # Such a submission has nothing to scan by construction. Any other
+            # submission that selects nothing, an empty one included, is still
+            # incomplete.
+            cmd.append("--allow-empty")
         proc = subprocess.run(cmd, capture_output=True, timeout=3600)
         duration_s = round(time.monotonic() - start_time, 1)
 
