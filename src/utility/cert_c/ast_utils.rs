@@ -250,7 +250,9 @@ pub fn top_level_items<'a>(root: Node<'a>) -> TopLevelItems<'a> {
 /// the built program, since which arm compiles is a configuration this
 /// analysis does not know (ADR-0010), and a lookup that took the first
 /// would turn a guess into a bound a rule reports from. An `ERROR` is not a
-/// configuration choice, so its items are always the file's.
+/// configuration choice, so its items are always the file's. A lookup for a
+/// name in an arm also reads that arm's own items, this way, from the arm
+/// ([`file_scope_binder_seen_from`]).
 pub fn top_level_items_outside_arms<'a>(root: Node<'a>) -> TopLevelItems<'a> {
     #[cfg(test)]
     TOP_LEVEL_WALKS.with(|n| n.set(n.get() + 1));
@@ -275,17 +277,33 @@ impl<'a> TopLevelItems<'a> {
 
     /// Whether this walk looks through a node of this kind.
     fn is_transparent(&self, kind: &str) -> bool {
-        kind == "ERROR"
-            || (self.arms
-                && matches!(
-                    kind,
-                    "preproc_if"
-                        | "preproc_ifdef"
-                        | "preproc_elif"
-                        | "preproc_elifdef"
-                        | "preproc_else"
-                ))
+        kind == "ERROR" || (self.arms && is_conditional_arm(kind))
     }
+}
+
+/// Whether a node of this kind is an arm of a preprocessor conditional.
+fn is_conditional_arm(kind: &str) -> bool {
+    matches!(
+        kind,
+        "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef" | "preproc_else"
+    )
+}
+
+/// Whether the file-scope item `item` sits in an `#if` arm rather than
+/// directly in the file (looking through parser `ERROR` nodes): an item
+/// [`top_level_items_outside_arms`] does not yield. `false` inside a
+/// function, where an arm does not make a declaration file scope.
+pub fn in_a_file_scope_arm(item: &Node) -> bool {
+    for ancestor in ancestors(item) {
+        match ancestor.kind() {
+            "translation_unit" | "function_definition" => return false,
+            kind if is_conditional_arm(kind) => {
+                return find_containing_function(&ancestor).is_none();
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 impl<'a> Iterator for TopLevelItems<'a> {
@@ -431,9 +449,10 @@ pub fn find_enclosing_declaration_for_identifier_in<'a>(
 /// resolving each identifier of a long function is quadratic in its length.
 ///
 /// The file-scope `declaration`s outside conditional arms are read once
-/// too: a name no block or parameter binds is looked up among them, and
-/// walking the translation unit for each such identifier is quadratic in a
-/// file whose top level holds thousands of `#ifdef` groups.
+/// too, and those directly in each arm around an identifier: a name no block
+/// or parameter binds is looked up among them, and walking the translation
+/// unit for each such identifier is quadratic in a file whose top level
+/// holds thousands of `#ifdef` groups.
 ///
 /// Keyed by node id, so one value serves one tree and must not outlive it.
 /// The `_in` resolvers here give the answers the free functions of the same
@@ -465,8 +484,8 @@ pub struct ScopeDeclarations<'a> {
 }
 
 /// A tree's [`NodeIndex`] and, for every node, the nearest declaration
-/// scope or function definition at or above it: the only ancestors a
-/// resolution reads. Built once per tree; share it among the
+/// scope, function definition or conditional arm at or above it: the only
+/// ancestors a resolution reads. Built once per tree; share it among the
 /// [`ScopeDeclarations`] of one file with [`ScopeDeclarations::over`].
 pub struct ScopeIndex<'a> {
     nodes: NodeIndex<'a>,
@@ -493,9 +512,16 @@ impl<'a> ScopeIndex<'a> {
 }
 
 /// Whether a resolution reads `node` among an identifier's ancestors:
-/// [`scope_chain_declaration`] reads the declaration scopes, and
-/// [`containing_function_on_path`] the function definitions.
+/// [`scope_chain_declaration`] reads the declaration scopes,
+/// [`containing_function_on_path`] the function definitions, and
+/// [`arms_on_path`] the conditional arms.
 fn read_by_resolution(node: &Node) -> bool {
+    encloses_with_a_scope(node) || is_conditional_arm(node.kind())
+}
+
+/// Whether a name used under `node` is outside the file scope's own items:
+/// `node` is a declaration scope or a function definition.
+fn encloses_with_a_scope(node: &Node) -> bool {
     is_declaration_scope(node) || node.kind() == "function_definition"
 }
 
@@ -745,9 +771,9 @@ impl<'a> ScopeDeclarations<'a> {
         declarations
     }
 
-    /// The items among [`top_level_items_outside_arms`] of the translation
-    /// unit `top` that can bind a name ([`binds_at_file_scope`]), in its
-    /// order.
+    /// The items among [`top_level_items_outside_arms`] of `top`, the
+    /// translation unit or a conditional arm at file scope, that can bind a
+    /// name ([`binds_at_file_scope`]), in its order.
     fn globals(&self, top: &Node<'a>) -> std::rc::Rc<Binders<'a>> {
         if let Some(known) = self.globals.borrow().get(&top.id()) {
             return known.clone();
@@ -1774,6 +1800,67 @@ fn file_scope_binder<'a>(
     misparsed
 }
 
+/// The conditional arms around a name at file scope, from `path`, its
+/// ancestors outermost first: the arms whose own items the name can see,
+/// which are the ones on its way up to the translation unit. A conditional
+/// the name is in the `#elif`/`#else` of holds another arm's items, not its
+/// own, so it is left out; no arm in a scope or function counts, since the
+/// scope lookup reads those as the scope's.
+fn arms_on_path<'a>(path: impl Iterator<Item = Node<'a>>) -> Vec<Node<'a>> {
+    let mut arms = Vec::new();
+    let mut path = path.peekable();
+    while let Some(node) = path.next() {
+        if encloses_with_a_scope(&node) {
+            break;
+        }
+        if !is_conditional_arm(node.kind()) {
+            continue;
+        }
+        let leaves_through_alternative = node
+            .child_by_field_name("alternative")
+            .is_some_and(|alt| path.peek().is_some_and(|next| next.id() == alt.id()));
+        if !leaves_through_alternative {
+            arms.push(node);
+        }
+    }
+    arms
+}
+
+/// [`file_scope_binder`] over what a name at `ident_start` can see at file
+/// scope: `outside`, the file's items outside any arm, and `in_arms`, the
+/// items of the arms around it ([`arms_on_path`]), in source order so the
+/// first declaration wins wherever it stands.
+///
+/// An item in an arm counts only before the name, since a declaration binds
+/// from its own point on. `outside` is taken whole, as it was before arms
+/// were read: narrowing it is a change of its own to every lookup in a file
+/// with no conditional at all.
+///
+/// No other arm is read: which of two arms compiles is a configuration this
+/// analysis does not know (ADR-0010), but a name in one arm is compiled with
+/// that arm's own declarations in every configuration that compiles it.
+fn file_scope_binder_seen_from<'a>(
+    outside: impl Iterator<Item = Node<'a>>,
+    in_arms: impl Iterator<Item = Node<'a>>,
+    ident_start: usize,
+    name: &str,
+    source: &str,
+) -> Option<Node<'a>> {
+    let mut items: Vec<Node<'a>> = in_arms
+        .filter(|item| {
+            item.start_byte() < ident_start
+                && binds_at_file_scope(item)
+                && declaration_binds_name(item, name, source)
+        })
+        .collect();
+    if items.is_empty() {
+        return file_scope_binder(outside, name, source);
+    }
+    items.extend(outside);
+    items.sort_by_key(Node::start_byte);
+    file_scope_binder(items.into_iter(), name, source)
+}
+
 /// Whether `name` names a type at `node` by a `typedef` in this file: the
 /// nearest binding of `name` that precedes `node`, in the innermost
 /// enclosing block that has one, out to file scope, is a `type_definition`
@@ -2459,9 +2546,10 @@ pub fn declaration_type_spelling(decl: &Node, declarator: &Node, source: &str) -
 /// Fallback for file-scope (global) declarations, which
 /// `find_enclosing_declaration_for_identifier` intentionally does not
 /// resolve to (it only walks enclosing `compound_statement` blocks).
-/// Restricted to the file's [`top_level_items_outside_arms`] so it can't
-/// cross into an unrelated function body, nor pick one of two `#if` arms'
-/// declarations.
+/// Restricted to the file's [`top_level_items_outside_arms`] and the arms
+/// around the identifier ([`file_scope_binder_seen_from`]) so it can't cross
+/// into an unrelated function body, nor pick one of two `#if` arms'
+/// declarations for a name outside them.
 ///
 /// This generalizes a scan that MSC05-C, MSC15-C, and CON34-C each
 /// hand-rolled independently (an earlier fix item #3) as a type- or
@@ -2475,7 +2563,16 @@ pub fn find_global_declaration_for_identifier<'a>(
     while let Some(p) = top.parent() {
         top = p;
     }
-    file_scope_binder(top_level_items_outside_arms(top), name, source)
+    let path: Vec<Node<'a>> = ancestors(ident_node).collect();
+    let arms = arms_on_path(path.into_iter().rev());
+    file_scope_binder_seen_from(
+        top_level_items_outside_arms(top),
+        arms.iter()
+            .flat_map(|arm| top_level_items_outside_arms(*arm)),
+        ident_node.start_byte(),
+        name,
+        source,
+    )
 }
 
 /// Where an identifier use resolves to its binding declaration/parameter.
@@ -2562,8 +2659,19 @@ fn binding_on_path<'a>(
     // The climbing version's translation unit is the topmost ancestor.
     let top = std::iter::once(*root).chain(path.iter().copied()).next()?;
     let globals = declarations.globals(&top);
-    file_scope_binder(globals.may_bind(name, source).iter().copied(), name, source)
-        .map(IdentifierBinding::Global)
+    let arms: Vec<_> = arms_on_path(path.iter().copied())
+        .iter()
+        .map(|arm| declarations.globals(arm))
+        .collect();
+    file_scope_binder_seen_from(
+        globals.may_bind(name, source).iter().copied(),
+        arms.iter()
+            .flat_map(|arm| arm.may_bind(name, source).iter().copied()),
+        ident_node.start_byte(),
+        name,
+        source,
+    )
+    .map(IdentifierBinding::Global)
 }
 
 /// The innermost `function_definition` on `root` + `path`, as
@@ -5397,6 +5505,134 @@ mod tests {
                 && get_node_text(&n, &source).starts_with("int f(void)")),
             "the ERROR's items are still the file's"
         );
+    }
+
+    /// What every route to the file-scope lookup binds the use of `x` in
+    /// `code` to, as the text of the declaration; the routes must agree. The
+    /// use is the one occurrence of `x` that is not a declarator.
+    fn file_scope_binding_of_use_of_x(code: &str) -> Option<String> {
+        let (tree, source) = parse_c_code(code);
+        let root = tree.root_node();
+        let used = query::find_descendants_of_kind(root, "identifier")
+            .into_iter()
+            .find(|i| {
+                get_node_text(i, &source) == "x"
+                    && i.parent().is_some_and(|p| {
+                        !matches!(
+                            p.kind(),
+                            "array_declarator" | "init_declarator" | "declaration"
+                        )
+                    })
+            })
+            .expect("a use of x");
+        let id = |b: Option<IdentifierBinding>| match b {
+            Some(IdentifierBinding::Global(d)) => Some(d.id()),
+            Some(_) => panic!("x is bound at file scope or not at all: {code}"),
+            None => None,
+        };
+        let free = id(resolve_identifier_binding(&used, "x", &source));
+        let indexed = ScopeDeclarations::indexed(root);
+        // Twice: the first answer scans, the second reads the name's index.
+        for _ in 0..2 {
+            assert_eq!(
+                id(indexed.resolve_identifier_binding(&used, "x", &source)),
+                free,
+                "indexed: {code}"
+            );
+        }
+        let cached = ScopeDeclarations::default();
+        for _ in 0..2 {
+            assert_eq!(
+                id(cached.resolve_identifier_binding(&used, "x", &source)),
+                free,
+                "descent: {code}"
+            );
+        }
+        assert_eq!(
+            id(resolve_identifier_binding_climbing(&used, "x", &source)),
+            free,
+            "climb: {code}"
+        );
+        assert_eq!(
+            find_global_declaration_for_identifier(&used, "x", &source).map(|d| d.id()),
+            free,
+            "global lookup: {code}"
+        );
+        assert_eq!(
+            resolve_identifier_declarator(&used, "x", &source).map(|(d, _)| d.id()),
+            free,
+            "declarator: {code}"
+        );
+        query::find_descendants_of_kind(root, "declaration")
+            .into_iter()
+            .find(|d| Some(d.id()) == free)
+            .map(|d| get_node_text(&d, &source).to_string())
+    }
+
+    #[test]
+    fn a_name_sees_the_file_scope_declarations_of_the_arms_around_it() {
+        for (code, want) in [
+            // An include guard.
+            (
+                "#ifndef G\n#define G\nchar x[4];\nint f(void) { return x[1]; }\n#endif\n",
+                "char x[4];",
+            ),
+            // Every arm out to the file scope, nested.
+            (
+                "#ifdef A\nchar x[4];\n#ifdef B\nint f(void) { return x[1]; }\n#endif\n#endif\n",
+                "char x[4];",
+            ),
+            // The arm the name is in, with a sibling arm declaring it too.
+            (
+                "#ifdef A\nchar x[4];\n#else\nchar x[8];\nint f(void) { return x[1]; }\n#endif\n",
+                "char x[8];",
+            ),
+            (
+                "#if A\nchar x[4];\n#elif B\nchar x[6];\nint f(void) { return x[1]; }\n#else\nchar x[8];\n#endif\n",
+                "char x[6];",
+            ),
+            // The enclosing conditional's own #if arm, entered through its
+            // #else, is still the arm around the inner one.
+            (
+                "#ifdef A\nchar x[4];\n#ifdef B\nchar y;\n#else\nint f(void) { return x[1]; }\n#endif\n#endif\n",
+                "char x[4];",
+            ),
+            // A use at file scope, not in a function.
+            ("#ifdef A\nint x;\nint y = sizeof(x);\n#endif\n", "int x;"),
+            // In source order with the file scope: the first declaration.
+            (
+                "extern char x[];\n#ifdef A\nchar x[4];\nint f(void) { return x[1]; }\n#endif\n",
+                "extern char x[];",
+            ),
+            (
+                "#ifdef A\nchar x[4];\nint f(void) { return x[1]; }\n#endif\nchar x[8];\n",
+                "char x[4];",
+            ),
+        ] {
+            assert_eq!(file_scope_binding_of_use_of_x(code).as_deref(), Some(want), "{code}");
+        }
+    }
+
+    #[test]
+    fn a_name_does_not_see_declarations_of_arms_it_is_not_in() {
+        for code in [
+            // A sibling arm, entered or left through the alternative.
+            "#ifdef A\nchar x[4];\n#else\nint f(void) { return x[1]; }\n#endif\n",
+            "#if A\nchar x[4];\n#elif B\nint f(void) { return x[1]; }\n#endif\n",
+            "#if A\nchar x[4];\n#elif B\nchar y;\n#else\nint f(void) { return x[1]; }\n#endif\n",
+            "#ifdef A\nint f(void) { return x[1]; }\n#else\nchar x[4];\n#endif\n",
+            // An arm the name is past, or a nested one beside it.
+            "#ifdef A\nchar x[4];\n#endif\nint f(void) { return x[1]; }\n",
+            "#ifdef A\n#ifdef B\nchar x[4];\n#endif\nint f(void) { return x[1]; }\n#endif\n",
+            // A declaration after the name binds nothing yet.
+            "#ifdef A\nint f(void) { return x[1]; }\nchar x[4];\n#endif\n",
+            // An outer arm's later declaration, with the name in a nested one.
+            "#ifdef A\n#ifdef B\nint f(void) { return x[1]; }\n#endif\nchar x[4];\n#endif\n",
+            // The conditional's condition reads no declaration of its arm.
+            "#if x\nchar x[4];\n#endif\n",
+        ] {
+            assert_eq!(file_scope_binding_of_use_of_x(code), None, "{code}");
+        }
     }
 
     #[test]

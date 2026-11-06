@@ -326,6 +326,7 @@ pub fn forget_function_facts() {
     FUNCTION_FACTS.with(|memo| memo.borrow_mut().forget());
     FILE_SCOPE_FACTS.with(|memo| *memo.borrow_mut() = None);
     crate::analyze::address_taken::forget_function_facts();
+    crate::analyze::const_eval::forget_arm_constants();
 }
 
 #[cfg(test)]

@@ -1519,10 +1519,76 @@ fn collect_preproc_defs_rec(
     }
 }
 
+/// Which file-scope declarations the constant table reads as constants.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConstantDeclaration {
+    /// `static const int NAME = VALUE;` and `const int NAME = VALUE;`.
+    Const,
+    /// `static int NAME = VALUE;` (no `const`), a constant only while
+    /// nothing in the file writes it ([`file_static_never_written`]).
+    Static,
+}
+
+/// The `NAME = literal` pairs of `decl`, a `declaration`, when it has the
+/// shape `kind` names; empty otherwise. A `volatile` object may change
+/// unseen (C11 6.7.3p7) and is never a constant. `const` and `static` are
+/// read as tokens: `static int gs_constant = 40;` is not const.
+fn literal_initializers(
+    decl: &Node,
+    source: &str,
+    kind: ConstantDeclaration,
+) -> Vec<(String, String)> {
+    let decl_text = decl.utf8_text(source.as_bytes()).unwrap_or("");
+    if decl.kind() != "declaration" || contains_token(decl_text, "volatile") {
+        return Vec::new();
+    }
+    let shaped = match kind {
+        ConstantDeclaration::Const => {
+            contains_token(decl_text, "const")
+                && (decl_text.contains("int")
+                    || decl_text.contains("long")
+                    || decl_text.contains("short")
+                    || decl_text.contains("char")
+                    || decl_text.contains("_Bool"))
+        }
+        ConstantDeclaration::Static => {
+            contains_token(decl_text, "static")
+                && !contains_token(decl_text, "const")
+                && (decl_text.contains("int")
+                    || decl_text.contains("long")
+                    || decl_text.contains("short")
+                    || decl_text.contains("_Bool"))
+        }
+    };
+    if !shaped {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for gc in decl.named_child_nodes() {
+        if gc.kind() != "init_declarator" {
+            continue;
+        }
+        let mut name = None;
+        let mut value = None;
+        for ggc in gc.named_child_nodes() {
+            if ggc.kind() == "identifier" && name.is_none() {
+                name = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+            } else if ggc.kind() == "number_literal" && name.is_some() {
+                value = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+            }
+        }
+        if let (Some(n), Some(v)) = (name, value) {
+            out.push((n, v));
+        }
+    }
+    out
+}
+
 /// Collect file-scope `static const int NAME = VALUE;` and `const int NAME = VALUE;`
 /// declarations. These behave as compile-time constants in C. Declarations
 /// inside a parser `ERROR` count (ADR-0008); ones in an `#if` arm do not, and
-/// one on a line the file proves dead is skipped.
+/// one on a line the file proves dead is skipped. A use the resolver binds
+/// to one in an arm reads it through [`arm_constant_initializer`].
 fn collect_static_const_defs(
     root: &Node,
     source: &str,
@@ -1530,43 +1596,14 @@ fn collect_static_const_defs(
     defs: &mut Vec<(String, String)>,
 ) {
     for child in ast_utils::top_level_items_outside_arms(*root) {
-        if child.kind() != "declaration" || dead.contains_node(&child) {
+        if dead.contains_node(&child) {
             continue;
         }
-        let decl_text = child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-        // Must contain "const" and an integer/bool type; a volatile object
-        // may change unseen (C11 6.7.3p7) and is never a constant.
-        if !decl_text.contains("const") || contains_token(&decl_text, "volatile") {
-            continue;
-        }
-        // Check for integer type keywords
-        let has_int_type = decl_text.contains("int")
-            || decl_text.contains("long")
-            || decl_text.contains("short")
-            || decl_text.contains("char")
-            || decl_text.contains("_Bool");
-        if !has_int_type {
-            continue;
-        }
-        // Extract init_declarator children for `NAME = VALUE`
-        for gc in child.named_child_nodes() {
-            if gc.kind() != "init_declarator" {
-                continue;
-            }
-            // Look for identifier and value
-            let mut name = None;
-            let mut value = None;
-            for ggc in gc.named_child_nodes() {
-                if ggc.kind() == "identifier" && name.is_none() {
-                    name = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
-                } else if ggc.kind() == "number_literal" && name.is_some() {
-                    value = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
-                }
-            }
-            if let (Some(n), Some(v)) = (name, value) {
-                defs.push((n, v));
-            }
-        }
+        defs.extend(literal_initializers(
+            &child,
+            source,
+            ConstantDeclaration::Const,
+        ));
     }
 }
 
@@ -1579,55 +1616,164 @@ fn collect_non_const_static_defs(
     dead: &DeadRegions,
     defs: &mut Vec<(String, String)>,
 ) {
-    let mut candidates: Vec<(String, String, usize)> = Vec::new();
-
+    let mut candidates: Vec<(String, String)> = Vec::new();
     for child in ast_utils::top_level_items_outside_arms(*root) {
-        if child.kind() != "declaration" || dead.contains_node(&child) {
+        if dead.contains_node(&child) {
             continue;
         }
-        let decl_text = child.utf8_text(source.as_bytes()).unwrap_or("");
-        // Must have `static` but NOT `const` (const handled by collect_static_const_defs),
-        // and not `volatile`, which may change unseen (C11 6.7.3p7).
-        if !decl_text.contains("static")
-            || decl_text.contains("const")
-            || contains_token(decl_text, "volatile")
-        {
-            continue;
-        }
-        let has_int_type = decl_text.contains("int")
-            || decl_text.contains("long")
-            || decl_text.contains("short")
-            || decl_text.contains("_Bool");
-        if !has_int_type {
-            continue;
-        }
-        let decl_end = child.end_byte();
-
-        for gc in child.named_child_nodes() {
-            if gc.kind() != "init_declarator" {
-                continue;
-            }
-            let mut name = None;
-            let mut value = None;
-            for ggc in gc.named_child_nodes() {
-                if ggc.kind() == "identifier" && name.is_none() {
-                    name = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
-                } else if ggc.kind() == "number_literal" && name.is_some() {
-                    value = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
-                }
-            }
-            if let (Some(n), Some(v)) = (name, value) {
-                candidates.push((n, v, decl_end));
-            }
-        }
+        candidates.extend(literal_initializers(
+            &child,
+            source,
+            ConstantDeclaration::Static,
+        ));
     }
-
     let function_macros = function_macro_names(source);
-    for (name, value, _decl_end) in candidates {
+    for (name, value) in candidates {
         if file_static_never_written_among(root, source, &name, &function_macros) {
             defs.push((name, value));
         }
     }
+}
+
+/// What one file's `#if` arms declare as constants, read once per file for
+/// [`arm_constant_initializer`].
+struct ArmConstantFacts {
+    /// The names some file-scope declaration in an arm gives a constant's
+    /// shape ([`literal_initializers`]). Only these are resolved: the
+    /// folder asks about every identifier it meets.
+    names: HashSet<String>,
+    /// [`function_macro_names`] of the file, read at the first `static`
+    /// asked about.
+    function_macros: Option<std::rc::Rc<HashSet<String>>>,
+    /// [`file_static_never_written_among`] per `static` asked about.
+    unwritten: HashMap<String, bool>,
+}
+
+thread_local! {
+    /// [`ArmConstantFacts`] per source buffer (address, length) asked about
+    /// on this thread: the file, and a few snippets parsed on their own.
+    static ARM_CONSTANTS: std::cell::RefCell<HashMap<(usize, usize), ArmConstantFacts>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Buffers [`ARM_CONSTANTS`] keeps before it starts afresh.
+const ARM_CONSTANT_BUFFERS: usize = 16;
+
+/// The names a file-scope declaration in an `#if` arm of `root` gives a
+/// constant's shape.
+fn arm_constant_names(root: &Node, source: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for item in ast_utils::top_level_items(*root) {
+        if item.kind() != "declaration" || !ast_utils::in_a_file_scope_arm(&item) {
+            continue;
+        }
+        for kind in [ConstantDeclaration::Const, ConstantDeclaration::Static] {
+            names.extend(
+                literal_initializers(&item, source, kind)
+                    .into_iter()
+                    .map(|(n, _)| n),
+            );
+        }
+    }
+    names
+}
+
+/// Run `f` on the [`ArmConstantFacts`] of the file holding `ident`, reading
+/// them first if this buffer has not been asked about. Forgotten before
+/// each file is parsed ([`forget_arm_constants`]), since a buffer's address
+/// and length do not identify its text.
+fn with_arm_constants<R>(
+    ident: &Node,
+    source: &str,
+    f: impl FnOnce(&mut ArmConstantFacts) -> R,
+) -> R {
+    let key = (source.as_ptr() as usize, source.len());
+    ARM_CONSTANTS.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if !memo.contains_key(&key) && memo.len() >= ARM_CONSTANT_BUFFERS {
+            memo.clear();
+        }
+        let facts = memo.entry(key).or_insert_with(|| ArmConstantFacts {
+            names: arm_constant_names(&ast_utils::tree_root(ident), source),
+            function_macros: None,
+            unwritten: HashMap::new(),
+        });
+        f(facts)
+    })
+}
+
+/// The initializer of the file-scope constant `ident` names when the
+/// resolver binds it to a declaration in an `#if` arm, which the constant
+/// table leaves out ([`collect_static_const_defs`]): the declaration has
+/// the table's shape, and a `static` one is never written. The binding
+/// reads only the arms around the use, never a sibling arm (ADR-0010), so
+/// the use compiles with this declaration whenever it compiles at all.
+/// `None` for any other identifier.
+fn arm_constant_initializer(ident: &Node, source: &str) -> Option<String> {
+    let name = ast_utils::get_node_text(ident, source);
+    if !with_arm_constants(ident, source, |facts| facts.names.contains(name)) {
+        return None;
+    }
+    let Some(ast_utils::IdentifierBinding::Global(decl)) =
+        ast_utils::resolve_identifier_binding(ident, name, source)
+    else {
+        return None;
+    };
+    if !ast_utils::in_a_file_scope_arm(&decl) {
+        return None;
+    }
+    let named = |kind| {
+        literal_initializers(&decl, source, kind)
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v)
+    };
+    if let Some(value) = named(ConstantDeclaration::Const) {
+        return Some(value);
+    }
+    let value = named(ConstantDeclaration::Static)?;
+    arm_static_never_written(ident, source, name).then_some(value)
+}
+
+/// [`file_static_never_written`] for the file holding `ident`, read once per
+/// name and file: it resolves every occurrence of the name, so asking it at
+/// each use would cost the square of the uses. The file's function-like
+/// macro names are read once too.
+fn arm_static_never_written(ident: &Node, source: &str, name: &str) -> bool {
+    let (known, function_macros) = with_arm_constants(ident, source, |facts| {
+        let known = facts.unwritten.get(name).copied();
+        let macros = facts
+            .function_macros
+            .get_or_insert_with(|| std::rc::Rc::new(function_macro_names(source)))
+            .clone();
+        (known, macros)
+    });
+    if let Some(answer) = known {
+        return answer;
+    }
+    // Asked outside the memo's borrow: the walk resolves names, and nothing
+    // it calls may find the memo borrowed.
+    let root = ast_utils::tree_root(ident);
+    let answer = file_static_never_written_among(&root, source, name, &function_macros);
+    with_arm_constants(ident, source, |facts| {
+        facts.unwritten.insert(name.to_string(), answer);
+    });
+    answer
+}
+
+/// Forget what [`arm_constant_initializer`] remembers on this thread; the
+/// parser calls it through `nonzero_facts::forget_function_facts` before
+/// each file.
+pub fn forget_arm_constants() {
+    ARM_CONSTANTS.with(|memo| memo.borrow_mut().clear());
+}
+
+/// The value of the file-scope constant `ident` names from inside the `#if`
+/// arm that declares it ([`arm_constant_initializer`]); its initializer is
+/// a literal. `None` for any other identifier.
+fn arm_constant_value(ident: &Node, source: &str) -> Option<i64> {
+    let text = arm_constant_initializer(ident, source)?;
+    parse_integer_literal(strip_integer_suffix(text.trim()))
 }
 
 /// Whether nothing in the translation unit `root` can change the file-scope
@@ -2460,9 +2606,15 @@ fn try_evaluate_expr_uncached(
             let text = node.utf8_text(source.as_bytes()).ok()?;
             parse_char_literal(text.trim()).map(|c| c as i64)
         }
+        // A file-scope constant of the `#if` arm around the use is not in
+        // the table, which leaves arms out; its value comes from the
+        // declaration the name binds to.
         "identifier" => {
             let name = node.utf8_text(source.as_bytes()).ok()?;
-            macros.get(name).copied()
+            macros
+                .get(name)
+                .copied()
+                .or_else(|| arm_constant_value(node, source))
         }
         "parenthesized_expression" => {
             let inner = node.child(1)?; // skip '('
@@ -2742,7 +2894,16 @@ pub fn is_compile_time_constant_expr(
             // enumerator in a header outside the scan root) both land here.
             // It cannot be a local whose range we simply failed to compute,
             // which is the case that matters.
-            ast_utils::resolve_identifier_binding(node, name, source).is_none()
+            //
+            // A file-scope constant in the `#if` arm around the use is one
+            // too, though the constant table leaves arms out.
+            match ast_utils::resolve_identifier_binding(node, name, source) {
+                None => true,
+                Some(ast_utils::IdentifierBinding::Global(_)) => {
+                    arm_constant_initializer(node, source).is_some()
+                }
+                Some(_) => false,
+            }
         }
         _ => false,
     }

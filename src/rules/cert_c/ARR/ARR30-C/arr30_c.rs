@@ -1548,7 +1548,6 @@ impl Arr30C {
         };
         let name = get_node_text(&array, source);
         let Some((declaration, declarator)) = resolve_identifier_declarator(&array, name, source)
-            .or_else(|| Self::declared_in_arm_holding(subscript, name, source))
         else {
             return true;
         };
@@ -1582,55 +1581,6 @@ impl Arr30C {
             n = p.parent();
         }
         true
-    }
-
-    /// The declaration of `name` before `node`, and its declarator,
-    /// directly in a preprocessor arm holding `node`: a file-scope object
-    /// inside an include guard, which the scope resolver does not look
-    /// into. Climbing out of a conditional's `#elif`/`#else` arm, the
-    /// conditional's own declarations are another arm's, and are skipped.
-    fn declared_in_arm_holding<'a>(
-        node: &Node<'a>,
-        name: &str,
-        source: &str,
-    ) -> Option<(Node<'a>, Node<'a>)> {
-        let mut from = *node;
-        let mut n = node.parent();
-        while let Some(arm) = n {
-            let from_alternative = arm
-                .child_by_field_name("alternative")
-                .is_some_and(|alt| alt.id() == from.id());
-            if arm.kind().starts_with("preproc_") && !from_alternative {
-                let mut cursor = arm.walk();
-                for declaration in arm
-                    .named_children(&mut cursor)
-                    .filter(|c| c.kind() == "declaration")
-                    .filter(|c| c.start_byte() < node.start_byte())
-                {
-                    let mut decls = declaration.walk();
-                    let found = declaration
-                        .children_by_field_name("declarator", &mut decls)
-                        .find(|d| {
-                            let mut inner = *d;
-                            while let Some(next) = inner.child_by_field_name("declarator") {
-                                inner = next;
-                            }
-                            inner.kind() == "identifier" && get_node_text(&inner, source) == name
-                        });
-                    if let Some(declarator) = found {
-                        let declarator = if declarator.kind() == "init_declarator" {
-                            declarator.child_by_field_name("declarator")?
-                        } else {
-                            declarator
-                        };
-                        return Some((declaration, declarator));
-                    }
-                }
-            }
-            from = arm;
-            n = arm.parent();
-        }
-        None
     }
 
     /// True when the identifier starting at byte `at` is the declarator of

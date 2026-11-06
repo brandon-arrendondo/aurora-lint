@@ -87,8 +87,8 @@ use crate::analyze::points_to::lvalue_of;
 use crate::manifest::Severity;
 use crate::settings::threads::ThreadOpKind;
 use crate::utility::cert_c::ast_utils::{
-    declaration_is_thread_local, get_identifier_from_declarator, get_node_text,
-    resolve_identifier_binding, resolve_identifier_declarator, IdentifierBinding,
+    declaration_is_thread_local, find_containing_function, get_identifier_from_declarator,
+    get_node_text, resolve_identifier_binding, resolve_identifier_declarator, IdentifierBinding,
 };
 use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::thread_api::{self, ProjectFunctions};
@@ -903,7 +903,9 @@ fn proven_pointees(
         .filter(|c| c.kind() == "storage_class_specifier")
         .map(|c| get_node_text(&c, source))
         .collect();
-    let file_scope = scope.kind() == "translation_unit";
+    // Inside no function is file scope, in an `#if` arm too: the scope
+    // itself is then the arm, which holds every occurrence that binds here.
+    let file_scope = find_containing_function(decl).is_none();
     if storage.contains(&"extern") || (file_scope && !storage.contains(&"static")) {
         return None;
     }

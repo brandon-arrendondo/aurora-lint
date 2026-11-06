@@ -1089,10 +1089,9 @@ impl GlobalTracker {
                 });
                 // A file-scope declaration is never automatic; the binding
                 // fallback reaches one only when no local or parameter binds
-                // the name.
-                let file_scope = decl
-                    .parent()
-                    .is_some_and(|p| p.kind() == "translation_unit");
+                // the name. One in an `#if` arm is file scope as well: it
+                // is inside no function.
+                let file_scope = ast_utils::find_containing_function(&decl).is_none();
                 (!static_or_extern && !file_scope).then_some(declarator)
             }
         }

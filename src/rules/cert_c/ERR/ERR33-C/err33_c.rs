@@ -59,7 +59,8 @@ use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::Severity;
 use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::ast_utils::{
-    get_identifier_from_declarator, get_node_text, resolve_identifier_declarator,
+    find_containing_function, get_identifier_from_declarator, get_node_text,
+    resolve_identifier_declarator,
 };
 use crate::utility::cert_c::expr_type::TypeEnv;
 use crate::utility::cert_c::result_checks;
@@ -1523,10 +1524,8 @@ fn binds_no_local_object(ident: &Node, name: &str, source: &str) -> bool {
             let is_extern = decl.children(&mut cursor).any(|c| {
                 c.kind() == "storage_class_specifier" && get_node_text(&c, source) == "extern"
             });
-            is_extern
-                && decl
-                    .parent()
-                    .is_some_and(|p| p.kind() == "translation_unit")
+            // File scope is inside no function, in an `#if` arm too.
+            is_extern && find_containing_function(&decl).is_none()
         }
     }
 }
