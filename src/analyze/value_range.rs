@@ -9,13 +9,14 @@
 //! Follows the same forward-dataflow pattern as `null_state.rs`.
 #![allow(dead_code)]
 
-use super::address_taken::{store_base, AddressTakenLocals, LocalId};
+use super::address_taken::{function_locals, store_base, AddressTakenLocals, LocalId};
 use super::cfg::{BasicBlock, BlockId, CfgEdge, FunctionCfg};
 use super::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
 use super::dataflow::{find_node_at_range, StatementLookup};
 use super::function_summary::FunctionSummary;
 use super::shadowed_names::ShadowedNames;
 use crate::analyze::context::SummaryLookup;
+use crate::utility::cert_c::nonzero_facts::{self, FileScopeFacts};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -99,6 +100,9 @@ pub struct RangeAnalysisResult {
     /// Which locals a store through a pointer or a call may write, for the
     /// intra-block replay to apply as the analysis did.
     aliases: Arc<AddressTakenLocals>,
+    /// Which file-scope objects a call or a store through a pointer may
+    /// write, for the replay likewise.
+    file_scope: Arc<FileScopeWrites>,
     /// The names the function declares more than once, whose ranges are
     /// kept per declaration: what turns the state's keys into the names in
     /// scope at a point.
@@ -392,6 +396,7 @@ fn apply_range_transfer(
     summaries: &(impl SummaryLookup + ?Sized),
     local_types: &HashMap<String, VarType>,
     aliases: &AddressTakenLocals,
+    file_scope: &FileScopeWrites,
     names: &ShadowedNames,
 ) -> RangeMap {
     let mut state = entry.clone();
@@ -411,6 +416,7 @@ fn apply_range_transfer(
             &mut state,
             local_types,
             aliases,
+            file_scope,
             names,
         );
     }
@@ -426,6 +432,7 @@ fn process_statement_for_ranges(
     state: &mut RangeMap,
     local_types: &HashMap<String, VarType>,
     aliases: &AddressTakenLocals,
+    file_scope: &FileScopeWrites,
     names: &ShadowedNames,
 ) {
     // A block before the statement that has ended took its own variables
@@ -436,6 +443,7 @@ fn process_statement_for_ranges(
     // `&var` it receives, wherever in the statement the call sits. Idempotent,
     // so the bare-call and opaque-region paths below doing it again is fine.
     widen_address_taken_call_args(node, source, state, names);
+    file_scope.widen_written(node, source, state);
     if !aliases.is_empty() {
         apply_pointer_writes(node, source, macros, state, aliases, names);
     }
@@ -1022,6 +1030,78 @@ fn process_call_arg_widening_range(
     }
 }
 
+/// The file-scope objects a statement may write without naming them, as
+/// [`FileScopeFacts`] reads the file: a call to a function that is not a
+/// library function may write any of them, and once the address of one is
+/// taken anywhere in the file, any call and any store or step through a
+/// pointer may write it. Kept per function, with the keys of the function's
+/// own locals that are plain names, which are no file-scope object's.
+#[derive(Debug, Default)]
+pub(crate) struct FileScopeWrites {
+    facts: Arc<FileScopeFacts>,
+    local_keys: HashSet<String>,
+}
+
+impl FileScopeWrites {
+    fn of_function(func: &Node, source: &str, names: &ShadowedNames) -> Self {
+        let local_keys = function_locals(func, source)
+            .into_iter()
+            .map(|(id, name)| names.key_of_local(id, &name).into_owned())
+            .collect();
+        FileScopeWrites {
+            facts: nonzero_facts::file_scope_facts(func, source),
+            local_keys,
+        }
+    }
+
+    /// Whether the state's `key` is a file-scope object's that something
+    /// may write: a plain name that is no local of the function and no
+    /// `const` object of the file.
+    fn writable(&self, key: &str) -> bool {
+        !key.is_empty()
+            && !key.starts_with(|c: char| c.is_ascii_digit())
+            && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !self.local_keys.contains(key)
+            && !self.facts.constant.contains(key)
+    }
+
+    /// Widen every file-scope object `node` may write without naming it to
+    /// its type's range, before the statement's own effect.
+    fn widen_written(&self, node: &Node, source: &str, state: &mut RangeMap) {
+        if !state.keys().any(|k| self.writable(k)) {
+            return;
+        }
+        let (by_name, through_pointer) = self.facts.writes_under(node, source);
+        if !by_name && !through_pointer {
+            return;
+        }
+        let written: Vec<String> = state
+            .keys()
+            .filter(|k| self.writable(k) && (by_name || self.facts.addressed.contains(*k)))
+            .cloned()
+            .collect();
+        for key in written {
+            let var_type = state.get(&key).and_then(|c| c.var_type.clone());
+            widen_to_type(state, &key, var_type);
+        }
+    }
+}
+
+/// Whether `lvalue` is `*p` (under any parentheses): a store to the whole
+/// object `p` points at, not an element or a member of it.
+fn is_dereference(lvalue: &Node) -> bool {
+    let mut n = *lvalue;
+    while n.kind() == "parenthesized_expression" {
+        match n.named_child(0) {
+            Some(inner) => n = inner,
+            None => return false,
+        }
+    }
+    n.kind() == "pointer_expression"
+        && n.child_by_field_name("operator")
+            .is_some_and(|op| op.kind() == "*")
+}
+
 /// Apply every write `node` makes through a pointer to the locals it may
 /// reach ([`AddressTakenLocals`]), before the statement's own effect.
 ///
@@ -1050,6 +1130,12 @@ fn apply_pointer_writes(
             ) {
                 if let Some(base) = store_base(&left) {
                     let plain = get_assignment_operator(node, source) == "=";
+                    // `*q = v` through a pointer that holds one local's
+                    // address and nothing else replaces that local's value;
+                    // through one that may point elsewhere, it may not.
+                    let sole = (plain && is_dereference(&left))
+                        .then(|| aliases.sole_store_target(&base, source))
+                        .flatten();
                     let stored = if plain {
                         let var_ranges =
                             extract_var_ranges_from_state(state, names, right.start_byte());
@@ -1072,7 +1158,11 @@ fn apply_pointer_writes(
                                     ),
                                     None => r,
                                 };
-                                let range = join_range(&cur.range, &r);
+                                let range = if sole == Some(local) {
+                                    r
+                                } else {
+                                    join_range(&cur.range, &r)
+                                };
                                 state.insert(target, TypedRange { range, var_type });
                             }
                             _ => widen_to_type(state, &target, var_type),
@@ -1732,6 +1822,7 @@ fn analyze_value_ranges_capped(
     let names = Arc::new(ShadowedNames::of_function(func_node, source));
     let initial_state = build_initial_state(func_node, source, macros, summaries, &names);
     let aliases = AddressTakenLocals::of_function(func_node, source);
+    let file_scope = Arc::new(FileScopeWrites::of_function(func_node, source, &names));
 
     // Collect types for uninitialized local declarations (e.g. `int data;`).
     // These are NOT added to the initial state (would cause stale entry ranges),
@@ -1760,6 +1851,7 @@ fn analyze_value_ranges_capped(
         summaries,
         &local_types,
         &aliases,
+        &file_scope,
         &names,
     );
     exit_ranges.insert(cfg.entry, entry_exit);
@@ -1866,6 +1958,7 @@ fn analyze_value_ranges_capped(
             summaries,
             &local_types,
             &aliases,
+            &file_scope,
             &names,
         );
 
@@ -1894,7 +1987,15 @@ fn analyze_value_ranges_capped(
     for block in &cfg.blocks {
         let entry = entry_ranges.get(&block.id).cloned().unwrap_or_default();
         let checkpoints = build_block_checkpoints(
-            &entry, block, &body, source, macros, replay, &aliases, &names,
+            &entry,
+            block,
+            &body,
+            source,
+            macros,
+            replay,
+            &aliases,
+            &file_scope,
+            &names,
         );
         block_checkpoints.insert(block.id, checkpoints);
         for &(start, end) in &block.statements {
@@ -1910,6 +2011,7 @@ fn analyze_value_ranges_capped(
         block_checkpoints,
         statement_index,
         aliases,
+        file_scope,
         names,
     }
 }
@@ -1923,6 +2025,7 @@ fn empty_range_result() -> RangeAnalysisResult {
         block_checkpoints: HashMap::new(),
         statement_index: Vec::new(),
         aliases: Arc::default(),
+        file_scope: Arc::default(),
         names: Arc::default(),
     }
 }
@@ -2104,6 +2207,7 @@ pub fn get_var_range_at(
                 &mut state,
                 &empty_types,
                 &result.aliases,
+                &result.file_scope,
                 &result.names,
             );
         }
@@ -2145,6 +2249,7 @@ pub fn eval_expr_range_at(
                 &mut state,
                 &empty_types,
                 &result.aliases,
+                &result.file_scope,
                 &result.names,
             );
         }
@@ -2291,6 +2396,7 @@ fn build_block_checkpoints(
     macros: &MacroConstantMap,
     replay_summaries: &HashMap<String, FunctionSummary>,
     aliases: &AddressTakenLocals,
+    file_scope: &FileScopeWrites,
     names: &ShadowedNames,
 ) -> BlockCheckpoints {
     let mut state = entry.clone();
@@ -2313,6 +2419,7 @@ fn build_block_checkpoints(
                 &mut state,
                 &empty_types,
                 aliases,
+                file_scope,
                 names,
             );
         }
@@ -3709,6 +3816,7 @@ void f(int x) {
                     &mut state,
                     &empty_types,
                     &result.aliases,
+                    &result.file_scope,
                     &result.names,
                 );
             }

@@ -345,6 +345,33 @@ impl AddressTakenLocals {
         out
     }
 
+    /// The one local a store through `base` writes whenever it runs:
+    /// every value `base` may hold is that local's address. None for a
+    /// pointer that may also hold another local's address, or a value from
+    /// where this function cannot see.
+    pub fn sole_store_target(&self, base: &Node, source: &str) -> Option<LocalId> {
+        let mut out = HashSet::new();
+        for s in self.sources(base, source) {
+            match s {
+                Source::AddrOf(local) => {
+                    out.insert(local);
+                }
+                Source::Name(pointer) => {
+                    if self.opaque.contains(&pointer) {
+                        return None;
+                    }
+                    out.extend(self.targets.get(&pointer)?.iter().copied());
+                }
+                Source::Opaque => return None,
+            }
+        }
+        let mut targets = out.into_iter();
+        match (targets.next(), targets.next()) {
+            (Some(local), None) => Some(local),
+            _ => None,
+        }
+    }
+
     /// The locals a callee handed `arg` may write through it: the locals a
     /// pointer the argument computes may point into. `&x` itself counts.
     pub fn argument_targets(&self, arg: &Node, source: &str) -> HashSet<LocalId> {

@@ -22,6 +22,7 @@ use super::std_functions;
 use crate::analyze::address_taken::{
     store_base, AddressTakenLocals, FunctionKey, FunctionMemo, LocalId,
 };
+use crate::analyze::init_state::addressed_object_root;
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -208,9 +209,14 @@ fn pointer_write_between(
 /// address escaped or went to a call that may keep it, anything at all.
 ///
 /// The stretch is the one [`fact_reaches`] reads: from the end of `origin`
-/// to `site`, plus every loop holding `site` but not `origin`. A name that
-/// is no local of the function holding `site` is not this question's, and
-/// the answer is no.
+/// to `site`, plus every loop holding `site` but not `origin`.
+///
+/// A file-scope object is written by more than this function: any call to
+/// a function that is not a library function may write it by name, and
+/// once its address is taken anywhere in the file, any call or store
+/// through a pointer may write it ([`FileScopeFacts`]). A name that is
+/// neither a local nor a file-scope object is not this question's, and the
+/// answer is no.
 ///
 /// For a resolver that takes a local's value from its last assignment
 /// (`int s = 3; int *q = &s; *q = v; 1 << s` shifts by `v`, not 3).
@@ -223,16 +229,27 @@ pub fn pointer_write_reaches(
     let Some(func) = ast_utils::find_containing_function(site) else {
         return false;
     };
+    let Some((_, declarator)) = ast_utils::resolve_identifier_declarator(site, name, source) else {
+        return false;
+    };
     let function = FunctionFacts::of_function(&func, source);
     let facts = &function.facts;
+    let Some(local) = facts.local_declared_by(&declarator) else {
+        if ast_utils::find_containing_function(&declarator).is_some() {
+            return false;
+        }
+        let file = file_scope_facts(&func, source);
+        return !file.constant.contains(name)
+            && file.written_in(
+                &Between::after(origin, site, source),
+                &func,
+                file.addressed.contains(name),
+                source,
+            );
+    };
     if facts.is_empty() && function.retained.is_empty() {
         return false;
     }
-    let Some(local) = ast_utils::resolve_identifier_declarator(site, name, source)
-        .and_then(|(_, declarator)| facts.local_declared_by(&declarator))
-    else {
-        return false;
-    };
     if facts.has_escaped(local) || function.retained.contains(&local) {
         return true;
     }
@@ -303,6 +320,7 @@ thread_local! {
 /// next: `CParser` calls it before parsing each file ([`FunctionMemo`]).
 pub fn forget_function_facts() {
     FUNCTION_FACTS.with(|memo| memo.borrow_mut().forget());
+    FILE_SCOPE_FACTS.with(|memo| *memo.borrow_mut() = None);
     crate::analyze::address_taken::forget_function_facts();
 }
 
@@ -387,6 +405,173 @@ fn defined_functions(root: &Node, source: &str) -> HashSet<String> {
         }
     }
     out
+}
+
+/// What the whole file says about its file-scope objects, for telling
+/// what may write one: built once per file however many functions ask.
+#[derive(Debug, Default)]
+pub struct FileScopeFacts {
+    /// The file-scope objects some `&` in the file takes the address of
+    /// (or of an element or member), by name: once it is taken, a store
+    /// through any pointer, or any call, may write the object.
+    pub addressed: HashSet<String>,
+    /// The `const` file-scope objects, by name, which nothing writes.
+    pub constant: HashSet<String>,
+    /// The functions the file defines.
+    defined: HashSet<String>,
+}
+
+impl FileScopeFacts {
+    fn of_file(root: &Node, source: &str) -> Self {
+        let addressed = query::find_descendants_of_kind(*root, "pointer_expression")
+            .into_iter()
+            .filter(|n| {
+                n.child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "&")
+            })
+            .filter_map(|n| addressed_object_root(&n.child_by_field_name("argument")?))
+            .filter_map(|ident| {
+                let name = ast_utils::get_node_text(&ident, source);
+                let local = ast_utils::resolve_identifier_declarator(&ident, name, source)
+                    .is_some_and(|(_, d)| ast_utils::find_containing_function(&d).is_some());
+                (!local).then(|| name.to_string())
+            })
+            .collect();
+        let mut constant = HashSet::new();
+        let mut stack = vec![*root];
+        while let Some(node) = stack.pop() {
+            for child in node.named_child_nodes() {
+                match child.kind() {
+                    "declaration" => {
+                        let is_const = child.named_child_nodes().any(|q| {
+                            q.kind() == "type_qualifier"
+                                && ast_utils::get_node_text(&q, source) == "const"
+                        });
+                        if !is_const {
+                            continue;
+                        }
+                        let mut cursor = child.walk();
+                        for d in child.children_by_field_name("declarator", &mut cursor) {
+                            let d = if d.kind() == "init_declarator" {
+                                d.child_by_field_name("declarator").unwrap_or(d)
+                            } else {
+                                d
+                            };
+                            if d.kind() == "identifier" {
+                                constant.insert(ast_utils::get_node_text(&d, source).to_string());
+                            }
+                        }
+                    }
+                    "function_definition" => {}
+                    _ => stack.push(child),
+                }
+            }
+        }
+        FileScopeFacts {
+            addressed,
+            constant,
+            defined: defined_functions(root, source),
+        }
+    }
+
+    /// Whether `call` calls a library function the file does not define,
+    /// which writes no file-scope object of the file by name.
+    pub fn is_library_call(&self, call: &Node, source: &str) -> bool {
+        call.child_by_field_name("function").is_some_and(|f| {
+            f.kind() == "identifier"
+                && library_function(ast_utils::get_node_text(&f, source), &self.defined)
+        })
+    }
+
+    /// Whether a call, store or step under `node` may write a file-scope
+    /// object: `(by name, through a pointer)`. A call to a function that is
+    /// not a library function may write any by name; any call, and any
+    /// store or step through a pointer, may write one whose address is
+    /// taken.
+    pub fn writes_under(&self, node: &Node, source: &str) -> (bool, bool) {
+        let mut by_name = false;
+        let mut through_pointer = false;
+        let mut stack = vec![*node];
+        while let Some(n) = stack.pop() {
+            match n.kind() {
+                "call_expression" => {
+                    through_pointer = true;
+                    by_name |= !self.is_library_call(&n, source);
+                }
+                "assignment_expression" => {
+                    through_pointer |= n
+                        .child_by_field_name("left")
+                        .and_then(|l| store_base(&l))
+                        .is_some();
+                }
+                "update_expression" => {
+                    through_pointer |= n
+                        .child_by_field_name("argument")
+                        .and_then(|a| store_base(&a))
+                        .is_some();
+                }
+                _ => {}
+            }
+            if by_name {
+                break;
+            }
+            stack.extend(n.named_child_nodes());
+        }
+        (by_name, through_pointer)
+    }
+
+    /// Whether something in `between` may write a file-scope object whose
+    /// address is taken (`addressed`) or not.
+    fn written_in(&self, between: &Between, func: &Node, addressed: bool, source: &str) -> bool {
+        query::find_first_descendant(*func, |n| {
+            between.holds(&n)
+                && match n.kind() {
+                    "call_expression" => addressed || !self.is_library_call(&n, source),
+                    "assignment_expression" => {
+                        addressed
+                            && n.child_by_field_name("left")
+                                .and_then(|l| store_base(&l))
+                                .is_some()
+                    }
+                    "update_expression" => {
+                        addressed
+                            && n.child_by_field_name("argument")
+                                .and_then(|a| store_base(&a))
+                                .is_some()
+                    }
+                    _ => false,
+                }
+        })
+        .is_some()
+    }
+}
+
+/// A file's identity for [`FILE_SCOPE_FACTS`]: its tree root's id and its
+/// source buffer's address and length.
+type FileKey = (usize, usize, usize);
+
+thread_local! {
+    /// The [`FileScopeFacts`] of the file last asked about on this thread.
+    static FILE_SCOPE_FACTS: RefCell<Option<(FileKey, Arc<FileScopeFacts>)>> =
+        const { RefCell::new(None) };
+}
+
+/// The [`FileScopeFacts`] of the file `node` is in, built once per file
+/// ([`forget_function_facts`] forgets them with the function facts).
+pub fn file_scope_facts(node: &Node, source: &str) -> Arc<FileScopeFacts> {
+    let root = ast_utils::tree_root(node);
+    let key: FileKey = (root.id(), source.as_ptr() as usize, source.len());
+    if let Some(facts) = FILE_SCOPE_FACTS.with(|memo| {
+        memo.borrow()
+            .as_ref()
+            .filter(|(k, _)| *k == key)
+            .map(|(_, f)| Arc::clone(f))
+    }) {
+        return facts;
+    }
+    let facts = Arc::new(FileScopeFacts::of_file(&root, source));
+    FILE_SCOPE_FACTS.with(|memo| *memo.borrow_mut() = Some((key, Arc::clone(&facts))));
+    facts
 }
 
 /// A call's argument expressions.
