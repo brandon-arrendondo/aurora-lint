@@ -23,8 +23,11 @@ use crate::rules::cert_c::int_provenance;
 use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::ast_utils::{self, get_node_text, is_function_parameter};
 use crate::utility::cert_c::data_model::IntWidth;
+use crate::utility::cert_c::data_model::Rank;
 use crate::utility::cert_c::declarator_utils;
+use crate::utility::cert_c::expr_type::{self, CType, Sign};
 use crate::utility::cert_c::guard_dominance;
+use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -639,48 +642,117 @@ fn may_be_narrower(to: IntWidth, from: IntWidth) -> bool {
 /// See [`get_type_width`]'s floating-type branch.
 const FLOAT_AS_INTEGER_WIDTH: u32 = 65;
 
-// Signed integer types
-const SIGNED_TYPES: &[&str] = &[
-    "signed",
-    "int",
-    "signed int",
-    "short",
-    "signed short",
-    "long",
-    "signed long",
-    "long long",
-    "signed long long",
-    "signed char",
+/// Signed integer aliases, matched by their whole name.
+const SIGNED_ALIASES: &[&str] = &[
     "int8_t",
     "int16_t",
     "int32_t",
     "int64_t",
-    "signed long int",
-    "signed short int",
-    "ssize_t",
-    "ptrdiff_t",
+    "int_least8_t",
+    "int_least16_t",
+    "int_least32_t",
+    "int_least64_t",
+    "int_fast8_t",
+    "int_fast16_t",
+    "int_fast32_t",
+    "int_fast64_t",
     "intptr_t",
     "intmax_t",
+    "ssize_t",
+    "ptrdiff_t",
+    "__int8",
+    "__int16",
+    "__int32",
+    "__int64",
+    // The Win32 SDK's signed integer typedef names.
+    "INT",
+    "LONG",
+    "SHORT",
+    "INT8",
+    "INT16",
+    "INT32",
+    "INT64",
+    "LONGLONG",
+    "LONG_PTR",
+    "INT_PTR",
+    "SSIZE_T",
 ];
 
-// Unsigned integer types
-const UNSIGNED_TYPES: &[&str] = &[
-    "unsigned",
-    "unsigned int",
-    "unsigned short",
-    "unsigned long",
-    "unsigned long long",
-    "unsigned char",
+/// Unsigned integer aliases, matched by their whole name (the Win32 SDK's
+/// are [`ast_utils::is_win32_unsigned_typedef`]'s).
+const UNSIGNED_ALIASES: &[&str] = &[
     "uint8_t",
     "uint16_t",
     "uint32_t",
     "uint64_t",
-    "size_t",
-    "unsigned long int",
-    "unsigned short int",
+    "uint_least8_t",
+    "uint_least16_t",
+    "uint_least32_t",
+    "uint_least64_t",
+    "uint_fast8_t",
+    "uint_fast16_t",
+    "uint_fast32_t",
+    "uint_fast64_t",
     "uintptr_t",
     "uintmax_t",
+    "size_t",
 ];
+
+/// The words of a type spelling that say what type it is: without
+/// qualifiers, storage classes or parentheses.
+fn type_core(type_str: &str) -> String {
+    type_str
+        .replace(['(', ')'], " ")
+        .split_whitespace()
+        .filter(|w| {
+            !matches!(
+                *w,
+                "const"
+                    | "volatile"
+                    | "restrict"
+                    | "__restrict"
+                    | "__restrict__"
+                    | "static"
+                    | "extern"
+                    | "register"
+                    | "auto"
+                    | "inline"
+                    | "__inline"
+                    | "__inline__"
+                    | "__extension__"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The signedness a type spelling states by itself: `Some(true)` for a
+/// signed integer type, `Some(false)` for an unsigned one, `None` for plain
+/// `char`, a pointer, a non-integer, or a name that is not a known alias.
+fn spelled_signedness(type_str: &str) -> Option<bool> {
+    let core = type_core(type_str);
+    if core.is_empty() || core.contains(['*', '[']) {
+        return None;
+    }
+    let words: Vec<&str> = core.split_whitespace().collect();
+    if words.contains(&"unsigned") {
+        return Some(false);
+    }
+    let integer_word = |w: &&str| matches!(*w, "signed" | "int" | "short" | "long");
+    if words.contains(&"signed") && words.iter().all(|w| integer_word(w) || *w == "char") {
+        return Some(true);
+    }
+    if words.iter().all(integer_word) {
+        return Some(true);
+    }
+    if SIGNED_ALIASES.contains(&core.as_str()) {
+        return Some(true);
+    }
+    if UNSIGNED_ALIASES.contains(&core.as_str()) || ast_utils::is_win32_unsigned_typedef(&core) {
+        return Some(false);
+    }
+    None
+}
 
 // Types ranked by size (smallest to largest) for narrowing detection
 const NARROW_TYPES: &[&str] = &["char", "signed char", "unsigned char", "int8_t", "uint8_t"];
@@ -1809,6 +1881,9 @@ impl Int31C {
         if self.rhs_has_narrowing_cast_to(&rhs_node, source, lhs_width_type) {
             return;
         }
+        if self.bitwise_store_fits(node, &rhs_node, source, &lhs_type) {
+            return;
+        }
 
         // VRA suppression: if RHS value provably fits in LHS type, suppress
         let lhs_signed = self.is_signed_type(&lhs_type);
@@ -1861,6 +1936,79 @@ impl Int31C {
         (rhs.kind() == "identifier")
             .then(|| var_types.get(get_node_text(&rhs, source).trim()).cloned())
             .flatten()
+    }
+
+    /// Whether the value a bitwise store leaves in `target_type` fits it by
+    /// its operands. `a & b` lies between 0 and any operand that is not
+    /// negative, so one operand the target holds bounds it; `a | b` and
+    /// `a ^ b` need both. A compound `x &= m` has `x` as its left operand,
+    /// so an unsigned `x` bounds what is stored back into it.
+    fn bitwise_store_fits(&self, store: &Node, rhs: &Node, source: &str, target: &str) -> bool {
+        let compound = store
+            .child_by_field_name("operator")
+            .map(|op| op.kind())
+            .and_then(|op| op.strip_suffix('='))
+            .filter(|op| !op.is_empty());
+        match (compound, store.child_by_field_name("left")) {
+            (Some(op), Some(left)) => self.bitwise_fits(op, &[left, *rhs], source, target),
+            _ => self.operand_fits(rhs, source, target),
+        }
+    }
+
+    /// [`Self::bitwise_store_fits`] for the operator `op` on `operands`.
+    fn bitwise_fits(&self, op: &str, operands: &[Node], source: &str, target: &str) -> bool {
+        match op {
+            "&" => operands
+                .iter()
+                .any(|o| self.operand_fits(o, source, target)),
+            "|" | "^" => operands
+                .iter()
+                .all(|o| self.operand_fits(o, source, target)),
+            _ => false,
+        }
+    }
+
+    /// Whether `operand` is a value that is never negative and that
+    /// `target` holds: a non-negative constant inside it, a value of an
+    /// unsigned type no wider than it (and narrower on every implementation,
+    /// for a target that may be signed), or a bitwise result of such.
+    fn operand_fits(&self, operand: &Node, source: &str, target: &str) -> bool {
+        let operand = unwrap_parenthesized(*operand);
+        if operand.kind() == "binary_expression" {
+            return match (
+                operand.child_by_field_name("operator"),
+                operand.child_by_field_name("left"),
+                operand.child_by_field_name("right"),
+            ) {
+                (Some(op), Some(left), Some(right)) => {
+                    self.bitwise_fits(op.kind(), &[left, right], source, target)
+                }
+                _ => false,
+            };
+        }
+        if let Some(value) = self.constant_value(&operand, source) {
+            return value >= 0 && !self.constant_changes_value(value, target);
+        }
+        let Some(spelling) = operand_type_spelling(&operand, source) else {
+            return false;
+        };
+        if !self.is_unsigned_type(&spelling) {
+            return false;
+        }
+        let (Some(from), Some(to)) = (
+            self.get_type_width_resolved(&spelling),
+            self.get_type_width_resolved(target),
+        ) else {
+            return false;
+        };
+        if may_be_narrower(to, from) {
+            return false;
+        }
+        let target_unsigned = match self.plain_char_signedness(target) {
+            Some(declared) => declared == Some(false),
+            None => self.is_unsigned_type(target),
+        };
+        target_unsigned || from.max.is_some_and(|bits| bits < to.min)
     }
 
     /// Infer the bit-width of the RHS expression.
@@ -1961,9 +2109,32 @@ impl Int31C {
             return None;
         }
         let macros = self.current_macros.borrow();
-        const_eval::try_evaluate_range(&node, source, &macros, &Default::default())
+        let value = const_eval::try_evaluate_range(&node, source, &macros, &Default::default())
             .filter(|r| r.min == r.max)
-            .map(|r| r.min)
+            .map(|r| r.min)?;
+        if value >= 0 {
+            return Some(value);
+        }
+        // An unsigned constant (`~0U`, `0U - 1`) is its value modulo the
+        // type's width, unknown where the data model leaves that open.
+        let model = self.data_model.get();
+        let typedefs = self.typedef_types.borrow();
+        let (fields, aliases) = (HashMap::new(), HashMap::new());
+        let env = expr_type::TypeEnv::new(&typedefs, &fields, &fields, &aliases, model);
+        let bits = match expr_type::expr_type(&node, source, &env) {
+            Some(CType::Int {
+                sign: Sign::Unsigned,
+                rank,
+            }) => model.exact_width(rank),
+            Some(CType::IntOfWidth {
+                sign: Sign::Unsigned,
+                max_bits,
+                ..
+            }) => max_bits,
+            _ => return Some(value),
+        };
+        bits.filter(|&b| b < 63)
+            .map(|b| value.rem_euclid(1i64 << b))
     }
 
     /// Whether converting the constant `value` to `target_type` changes it.
@@ -2088,54 +2259,34 @@ impl Int31C {
         }
     }
 
+    /// Whether `type_str` names a signed integer type: its specifier words,
+    /// a signed alias by its whole name (`ssize_t`, `int32_t`), or a typedef
+    /// whose chain ends at one. A name is never matched as a substring of
+    /// another, so `uint32_t` is not `int` and `ssize_t` is not `size_t`.
     fn is_signed_type(&self, type_str: &str) -> bool {
-        let normalized = type_str.to_lowercase();
-
-        // First check if it's explicitly unsigned - if so, not signed
-        // This catches "unsigned int", "unsigned long", etc.
-        if normalized.contains("unsigned") {
-            return false;
-        }
-
-        // Also bail out for unsigned stdint types (uint32_t contains "int" as substring)
-        if self.is_unsigned_type(type_str) {
-            return false;
-        }
-
-        // Check for explicit signed types
-        for t in SIGNED_TYPES {
-            if normalized.contains(&t.to_lowercase()) {
-                return true;
-            }
-        }
-
-        // Plain "int" without unsigned qualifier is signed
-        if normalized == "int" || normalized.ends_with(" int") {
-            return true;
-        }
-        false
+        self.integer_signedness(type_str) == Some(true)
     }
 
+    /// Whether `type_str` names an unsigned integer type, as
+    /// [`Self::is_signed_type`] reads it.
     fn is_unsigned_type(&self, type_str: &str) -> bool {
-        let normalized = type_str.to_lowercase();
+        self.integer_signedness(type_str) == Some(false)
+    }
 
-        // Must explicitly contain "unsigned"
-        if normalized.contains("unsigned") {
-            return true;
+    /// `Some(true)` for a signed integer type, `Some(false)` for an unsigned
+    /// one, `None` for plain `char`, a pointer, or a name it does not know.
+    fn integer_signedness(&self, type_str: &str) -> Option<bool> {
+        if let Some(signed) = spelled_signedness(type_str) {
+            return Some(signed);
         }
-
-        // Check for unsigned types by name (size_t, uint8_t, etc.)
-        for t in UNSIGNED_TYPES {
-            let t_lower = t.to_lowercase();
-            // Only match if the type doesn't also match a signed pattern
-            if normalized.contains(&t_lower)
-                && !t_lower.contains("signed")
-                && (t_lower.starts_with("u") || t_lower.contains("size"))
-            {
-                return true;
-            }
+        let core = type_core(type_str);
+        let typedefs = self.typedef_types.borrow();
+        let resolved =
+            crate::utility::cert_c::overflow_helpers::resolve_typedef_chain(&core, &typedefs);
+        if resolved == core {
+            return None;
         }
-        false
+        spelled_signedness(&resolved)
     }
 
     fn is_narrow_type(&self, type_str: &str) -> bool {
@@ -2244,7 +2395,7 @@ impl Int31C {
         if operand.kind() != "identifier" {
             return false;
         }
-        let var = get_node_text(&operand, source).trim();
+        let var = Object::of(&operand, source);
         let (Some(source_width), Some(target_width)) = (
             self.get_type_width_resolved(source_type),
             self.get_type_width_resolved(target_type),
@@ -2264,8 +2415,7 @@ impl Int31C {
         readings.iter().all(|&target_signed| {
             self.guards_prove_fit_as(
                 site,
-                &operand,
-                var,
+                &var,
                 source,
                 source_width,
                 target_width,
@@ -2280,8 +2430,7 @@ impl Int31C {
     fn guards_prove_fit_as(
         &self,
         site: &Node,
-        _operand: &Node,
-        var: &str,
+        var: &Object,
         source: &str,
         source_width: IntWidth,
         target_width: IntWidth,
@@ -2320,13 +2469,7 @@ impl Int31C {
             let Some(truth) = branch else {
                 continue;
             };
-            if written_between(
-                &function,
-                var,
-                condition.end_byte(),
-                site.start_byte(),
-                source,
-            ) {
+            if written_between(&function, var, condition.end_byte(), site, source) {
                 continue;
             }
             bounds = bounds.or(self.condition_bounds(&condition, var, truth, &target, source));
@@ -2341,7 +2484,7 @@ impl Int31C {
     fn condition_bounds(
         &self,
         condition: &Node,
-        var: &str,
+        var: &Object,
         truth: bool,
         target: &Target,
         source: &str,
@@ -2375,25 +2518,100 @@ impl Int31C {
                         .condition_bounds(&left, var, false, target, source)
                         .or(self.condition_bounds(&right, var, false, target, source)),
                     "<" | "<=" | ">" | ">=" | "==" | "!=" => {
-                        let is_var = |n: &Node| {
-                            let n = unwrap_parenthesized(*n);
-                            n.kind() == "identifier" && get_node_text(&n, source).trim() == var
-                        };
-                        let (op, bound) = if is_var(&left) {
-                            (op.kind(), right)
+                        let is_var = |n: &Node| var.is(n, source);
+                        let (op, occurrence, bound) = if is_var(&left) {
+                            (op.kind(), left, right)
                         } else if is_var(&right) {
-                            (flip_comparison(op.kind()), left)
+                            (flip_comparison(op.kind()), right, left)
                         } else {
                             return Bounds::default();
                         };
                         let op = if truth { op } else { negate_comparison(op) };
-                        self.comparison_bounds(op, &bound, target, source)
+                        let bounds = self.comparison_bounds(op, &bound, target, source);
+                        let below = matches!(op, "<" | "<=");
+                        // Compared as unsigned, a negative value reads as a
+                        // large one: `x < B` then also says `x` is not
+                        // negative, and `x >= B` or `x == B` says nothing.
+                        match self.compared_as_unsigned(&occurrence, &bound, source) {
+                            Some(false) => bounds,
+                            Some(true) => Bounds {
+                                lower: below,
+                                upper: below && bounds.upper,
+                            },
+                            None => Bounds {
+                                lower: false,
+                                upper: below && bounds.upper,
+                            },
+                        }
                     }
                     _ => Bounds::default(),
                 }
             }
             _ => Bounds::default(),
         }
+    }
+
+    /// Whether comparing `occurrence`, a signed variable, with `bound`
+    /// converts it to unsigned (C11 6.3.1.8): `Some(true)` when the bound is
+    /// an unsigned type at least as wide as both `int` and the variable on
+    /// every implementation, `Some(false)` when the comparison is signed
+    /// (an unsigned variable, a bound not known to be unsigned, or one that
+    /// promotes to `int`), and `None` when the data model leaves it open.
+    fn compared_as_unsigned(&self, occurrence: &Node, bound: &Node, source: &str) -> Option<bool> {
+        let Some(var_type) = operand_type_spelling(occurrence, source) else {
+            return Some(false);
+        };
+        if !self.is_signed_type(&var_type) {
+            return Some(false);
+        }
+        let Some(bound_type) = self.bound_type_spelling(bound, source) else {
+            return Some(false);
+        };
+        if !self.is_unsigned_type(&bound_type) {
+            return Some(false);
+        }
+        let (Some(bound_width), Some(var_width), Some(int_width)) = (
+            self.get_type_width_resolved(&bound_type),
+            self.get_type_width_resolved(&var_type),
+            self.get_type_width_resolved("int"),
+        ) else {
+            return None;
+        };
+        if bound_width.max.is_some_and(|bits| bits < int_width.min) {
+            return Some(false);
+        }
+        if !may_be_narrower(bound_width, var_width) && !may_be_narrower(bound_width, int_width) {
+            return Some(true);
+        }
+        None
+    }
+
+    /// The type of a comparison's bound, as spelled: a limit macro's type,
+    /// an integer constant's type (an unsigned suffix, or a hexadecimal
+    /// value past `int`), or what [`operand_type_spelling`] reads.
+    fn bound_type_spelling(&self, bound: &Node, source: &str) -> Option<String> {
+        let bound = unwrap_parenthesized(*bound);
+        let text = get_node_text(&bound, source).trim();
+        if let Some((_, ty, _)) = LIMIT_MACROS.iter().find(|(name, _, _)| *name == text) {
+            return Some(ty.to_string());
+        }
+        if bound.kind() == "number_literal" {
+            let (sign, rank) = match expr_type::number_literal_type(text, self.data_model.get())? {
+                CType::Int { sign, rank } => (sign, rank),
+                _ => return None,
+            };
+            let rank = match rank {
+                Rank::Int => "int",
+                Rank::Long => "long",
+                Rank::LongLong => "long long",
+                _ => return None,
+            };
+            return Some(match sign {
+                Sign::Unsigned => format!("unsigned {rank}"),
+                _ => rank.to_string(),
+            });
+        }
+        operand_type_spelling(&bound, source)
     }
 
     /// What `var OP bound`, known true, says about `var` against `target`.
@@ -2480,6 +2698,33 @@ fn unwrap_parenthesized(mut node: Node) -> Node {
     node
 }
 
+/// The type `operand` has before any promotion, as spelled: the type the
+/// declaration an identifier resolves to gives it there (ADR-0006), a cast's
+/// type, or the type POSIX fixes for a byte-order call's result.
+fn operand_type_spelling(operand: &Node, source: &str) -> Option<String> {
+    let operand = unwrap_parenthesized(*operand);
+    match operand.kind() {
+        "identifier" => ast_utils::resolve_identifier_declared_type(
+            &operand,
+            get_node_text(&operand, source).trim(),
+            source,
+        ),
+        "cast_expression" => operand
+            .child_by_field_name("type")
+            .map(|t| get_node_text(&t, source).to_string()),
+        "call_expression" => {
+            let callee = operand.child_by_field_name("function")?;
+            (callee.kind() == "identifier")
+                .then(|| {
+                    std_functions::byte_order_return_type(get_node_text(&callee, source).trim())
+                })
+                .flatten()
+                .map(str::to_string)
+        }
+        _ => None,
+    }
+}
+
 /// The comparison `b OP a` means as `a OP' b`.
 fn flip_comparison(op: &str) -> &str {
     match op {
@@ -2503,22 +2748,70 @@ fn negate_comparison(op: &str) -> &str {
     }
 }
 
-/// Whether `function` writes `var` (an assignment to it, `++`/`--`, or its
-/// address taken) anywhere in `[from, to)`.
-fn written_between(function: &Node, var: &str, from: usize, to: usize, source: &str) -> bool {
+/// One object a conversion reads, as the declaration its occurrence
+/// resolves to: another occurrence is the same object only when it resolves
+/// to the same declaration, so an inner `x` that hides the guarded one is
+/// not it (ADR-0006).
+struct Object<'s> {
+    name: &'s str,
+    declarator: Option<usize>,
+}
+
+impl<'s> Object<'s> {
+    /// The object the identifier `ident` names.
+    fn of(ident: &Node, source: &'s str) -> Self {
+        let name = get_node_text(ident, source).trim();
+        Object {
+            name,
+            declarator: Self::binding(ident, name, source),
+        }
+    }
+
+    fn binding(ident: &Node, name: &str, source: &str) -> Option<usize> {
+        ast_utils::resolve_identifier_declarator(ident, name, source).map(|(_, d)| d.id())
+    }
+
+    /// Whether `node`, through any parentheses, is an occurrence of this
+    /// object.
+    fn is(&self, node: &Node, source: &str) -> bool {
+        let node = unwrap_parenthesized(*node);
+        node.kind() == "identifier"
+            && get_node_text(&node, source).trim() == self.name
+            && Self::binding(&node, self.name, source) == self.declarator
+    }
+}
+
+/// Whether `function` writes `var` (an assignment to it, `++`/`--`, its
+/// address taken, or a declaration initializing it) where the write reaches
+/// `site` from a condition ending at `from`: anywhere from `from` to `site`,
+/// and, for a loop around `site` that begins after `from`, anywhere in the
+/// loop, since a write after `site` reaches it on the next iteration.
+fn written_between(function: &Node, var: &Object, from: usize, site: &Node, source: &str) -> bool {
+    let mut to = site.start_byte();
+    let mut ancestor = site.parent();
+    while let Some(a) = ancestor {
+        if a.start_byte() < from {
+            break;
+        }
+        if matches!(
+            a.kind(),
+            "while_statement" | "for_statement" | "do_statement"
+        ) {
+            to = to.max(a.end_byte());
+        }
+        ancestor = a.parent();
+    }
     if from >= to {
         return false;
     }
-    let names = |n: Option<Node>| {
-        n.map(unwrap_parenthesized)
-            .is_some_and(|n| n.kind() == "identifier" && get_node_text(&n, source).trim() == var)
-    };
+    let names = |n: Option<Node>| n.is_some_and(|n| var.is(&n, source));
     query::find_descendants_of_kinds(
         *function,
         &[
             "assignment_expression",
             "update_expression",
             "pointer_expression",
+            "init_declarator",
         ],
     )
     .into_iter()
@@ -2526,6 +2819,7 @@ fn written_between(function: &Node, var: &str, from: usize, to: usize, source: &
     .any(|n| match n.kind() {
         "assignment_expression" => names(n.child_by_field_name("left")),
         "update_expression" => names(n.child_by_field_name("argument")),
+        "init_declarator" => names(n.child_by_field_name("declarator")),
         _ => {
             n.child_by_field_name("operator")
                 .is_some_and(|op| op.kind() == "&")

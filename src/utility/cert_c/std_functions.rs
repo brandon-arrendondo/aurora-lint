@@ -503,6 +503,19 @@ pub fn is_full_range_return_function(name: &str) -> bool {
 
 /// Standard C functions declared to return `size_t`.
 ///
+/// The return type POSIX gives a byte-order conversion function
+/// (`<arpa/inet.h>`): `uint16_t` for `htons`/`ntohs`, `uint32_t` for
+/// `htonl`/`ntohl`. Declared in a system header the scan does not read, so
+/// without this a `uint16_t t = ntohs(v) & ~MASK;` has no operand type to
+/// bound the result by.
+pub fn byte_order_return_type(name: &str) -> Option<&'static str> {
+    match name {
+        "htons" | "ntohs" => Some("uint16_t"),
+        "htonl" | "ntohl" => Some("uint32_t"),
+        _ => None,
+    }
+}
+
 /// The integer-hazard rules type a call operand from the file's own
 /// prototypes (`overflow_helpers::collect_function_return_types`); a
 /// standard function is declared in a system header the scan does not read,
