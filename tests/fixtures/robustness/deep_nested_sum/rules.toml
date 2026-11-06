@@ -1,0 +1,17 @@
+[metadata]
+name = "Rules that type or walk a long sum"
+version = "1.0.0"
+description = "FLP03-C once typed a sum's operators recursively and overflowed a debug build's scan stack on these inputs; INT30-C, INT32-C and INT34-C walk the same sum"
+cert_version = "2016"
+
+[rules.cert_c.FLP03-C]
+enabled = true
+
+[rules.cert_c.INT30-C]
+enabled = true
+
+[rules.cert_c.INT32-C]
+enabled = true
+
+[rules.cert_c.INT34-C]
+enabled = true
