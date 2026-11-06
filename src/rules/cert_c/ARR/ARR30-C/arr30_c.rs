@@ -1533,9 +1533,8 @@ impl Arr30C {
     /// another preprocessor arm: it is declared inside a conditional arm
     /// within its scope that does not also hold the subscript, or it takes
     /// its size from a typedef name, which an arm may define with another
-    /// size. An
-    /// array that is not a name, or whose declaration is not found, counts
-    /// as true.
+    /// size. An array that is not a name, or whose declaration is not
+    /// found, counts as true.
     fn array_declared_in_preprocessor_arm(subscript: &Node, source: &str) -> bool {
         let mut array = subscript.child_by_field_name("argument");
         while let Some(inner) = array
@@ -1561,8 +1560,13 @@ impl Arr30C {
         {
             return true;
         }
+        // A conditional's span takes in its `#elif`/`#else` arms, which
+        // are not the arm its own declarations are in.
         let holds_subscript = |p: &Node| {
-            p.start_byte() <= subscript.start_byte() && p.end_byte() >= subscript.end_byte()
+            spans(p, subscript)
+                && !p
+                    .child_by_field_name("alternative")
+                    .is_some_and(|alt| spans(&alt, subscript))
         };
         let mut n = declarator.parent();
         while let Some(p) = n {
@@ -1580,21 +1584,28 @@ impl Arr30C {
         true
     }
 
-    /// The declaration of `name`, and its declarator, directly in a
-    /// preprocessor arm holding `node`: a file-scope object inside an
-    /// include guard, which the scope resolver does not look into.
+    /// The declaration of `name` before `node`, and its declarator,
+    /// directly in a preprocessor arm holding `node`: a file-scope object
+    /// inside an include guard, which the scope resolver does not look
+    /// into. Climbing out of a conditional's `#elif`/`#else` arm, the
+    /// conditional's own declarations are another arm's, and are skipped.
     fn declared_in_arm_holding<'a>(
         node: &Node<'a>,
         name: &str,
         source: &str,
     ) -> Option<(Node<'a>, Node<'a>)> {
+        let mut from = *node;
         let mut n = node.parent();
         while let Some(arm) = n {
-            if arm.kind().starts_with("preproc_") {
+            let from_alternative = arm
+                .child_by_field_name("alternative")
+                .is_some_and(|alt| alt.id() == from.id());
+            if arm.kind().starts_with("preproc_") && !from_alternative {
                 let mut cursor = arm.walk();
                 for declaration in arm
                     .named_children(&mut cursor)
                     .filter(|c| c.kind() == "declaration")
+                    .filter(|c| c.start_byte() < node.start_byte())
                 {
                     let mut decls = declaration.walk();
                     let found = declaration
@@ -1616,6 +1627,7 @@ impl Arr30C {
                     }
                 }
             }
+            from = arm;
             n = arm.parent();
         }
         None
@@ -8683,4 +8695,9 @@ fn find_param_list_node<'a>(node: &Node<'a>) -> Option<Node<'a>> {
         }
     }
     None
+}
+
+/// Whether `outer` spans `inner` in the source.
+fn spans(outer: &Node, inner: &Node) -> bool {
+    outer.start_byte() <= inner.start_byte() && outer.end_byte() >= inner.end_byte()
 }
