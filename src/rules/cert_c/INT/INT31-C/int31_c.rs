@@ -1681,8 +1681,23 @@ impl Int31C {
             });
         }
 
-        // Narrowing conversion (wide to narrow)
-        if self.is_wide_type(&source_type) && self.is_narrow_type(&target_clean) {
+        // Narrowing conversion (wide to narrow): into a character type, or
+        // between two types of one signedness where the target may be the
+        // narrower (`(int)` of an `ssize_t`). A change of signedness is
+        // reported above.
+        let same_sign_narrowing = self
+            .integer_signedness(&source_type)
+            .is_some_and(|s| self.integer_signedness(&target_clean) == Some(s))
+            && matches!(
+                (
+                    self.get_type_width_resolved(&source_type),
+                    self.get_type_width_resolved(&target_clean),
+                ),
+                (Some(from), Some(to)) if may_be_narrower(to, from)
+            );
+        if (self.is_wide_type(&source_type) && self.is_narrow_type(&target_clean))
+            || same_sign_narrowing
+        {
             // Suppress where the value provably fits the target.
             if self.cast_proved_safe(
                 node,
