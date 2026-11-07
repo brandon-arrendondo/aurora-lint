@@ -10084,11 +10084,24 @@ fn cwe272_macro_masks_and_roots_come_from_the_file_and_its_includes() {
     }
 }
 
+/// How long one scan of [`cwe272_cyclic_and_fanned_out_macros_finish_quickly`]
+/// may run before it is taken to never end. It is a hang guard, not a time
+/// bound: each case takes under a second, and the largest about 4 s in a
+/// debug build alone, 8 s inside this suite and 32 s beside five busy
+/// threads per core, so only a walk that does not end reaches it. A walk that expands every combination of a cycle or fan
+/// does not end: twelve levels of six alternatives are 6^12 paths.
+const MACRO_WALK_HANG_LIMIT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// CWE-272 reads a mask or root key through macros whose definitions name
 /// each other in a cycle, fan out into many `#if` alternatives at every
-/// level, or define one name in many conditionals, in time linear in the
-/// definitions: each finishes well inside the bound, and a cycle that never reaches a write or a privileged key accuses
-/// nothing.
+/// level, or define one name in many conditionals: a cycle that never
+/// reaches a write or a privileged key accuses nothing. Each scan must end
+/// ([`MACRO_WALK_HANG_LIMIT`]), and the file of many conditionals must cost
+/// about linear time: 8x the conditionals may take at most 24x the time, a
+/// ratio rather than a time, so a slow or loaded machine does not fail it.
+/// It takes 7x to 10x, most of it the scan's own work rather than the
+/// rule's; rereading the file's macros at every call, quadratic in the
+/// conditionals, takes about 38x.
 #[test]
 fn cwe272_cyclic_and_fanned_out_macros_finish_quickly() {
     const HEAD: &str = "typedef void *HKEY; typedef long LONG; typedef unsigned long DWORD;\n\
@@ -10112,12 +10125,49 @@ fn cwe272_cyclic_and_fanned_out_macros_finish_quickly() {
         fan.push_str("#endif\n");
     }
     // One name defined in many conditionals, used after each.
-    let mut conditional = String::new();
-    for i in 0..1500 {
-        conditional.push_str(&format!(
-            "#ifdef Z{i}\n#define M K{i}\n#endif\nvoid g{i}(void) {{ use(M); }}\n"
-        ));
-    }
+    let conditional = |n: usize| {
+        let mut source = String::new();
+        for i in 0..n {
+            source.push_str(&format!(
+                "#ifdef Z{i}\n#define M K{i}\n#endif\nvoid g{i}(void) {{ use(M); }}\n"
+            ));
+        }
+        format!("{source}#ifdef W\n#define M KEY_WRITE\n#endif\n")
+    };
+    // The time to scan `macros` then `body`, and whether it reported.
+    let scan = |macros: &str, body: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.c"), format!("{HEAD}{macros}{body}")).unwrap();
+        let out = dir.path().join("out.json");
+        let mut child = Command::new(aurora_lint_bin())
+            .args([
+                dir.path().to_str().unwrap(),
+                "--rules",
+                "CWE-272",
+                "-e",
+                out.to_str().unwrap(),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if started.elapsed() > MACRO_WALK_HANG_LIMIT {
+                child.kill().unwrap();
+                panic!("no answer in {MACRO_WALK_HANG_LIMIT:?} for:\n{macros}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let elapsed = started.elapsed();
+        assert!(matches!(status.code(), Some(0 | 1)), "{status}:\n{macros}");
+        let found: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        (elapsed, !found.is_empty())
+    };
     let cases = [
         (
             "#ifdef X\n#define A B\n#else\n#define A (B)\n#endif\n\
@@ -10150,44 +10200,29 @@ fn cwe272_cyclic_and_fanned_out_macros_finish_quickly() {
             call("HKEY_LOCAL_MACHINE", "X0"),
             true,
         ),
-        (
-            format!("{conditional}#ifdef W\n#define M KEY_WRITE\n#endif\n"),
-            call("HKEY_LOCAL_MACHINE", "M"),
-            true,
-        ),
     ];
     for (macros, body, reports) in cases {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.c"), format!("{HEAD}{macros}{body}")).unwrap();
-        let out = dir.path().join("out.json");
-        let mut child = Command::new(aurora_lint_bin())
-            .args([
-                dir.path().to_str().unwrap(),
-                "--rules",
-                "CWE-272",
-                "-e",
-                out.to_str().unwrap(),
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let started = std::time::Instant::now();
-        let status = loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                break status;
-            }
-            if started.elapsed() > std::time::Duration::from_secs(30) {
-                child.kill().unwrap();
-                panic!("no answer in 30 s for:\n{macros}");
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        };
-        assert!(matches!(status.code(), Some(0 | 1)), "{macros}");
-        let found: Vec<serde_json::Value> =
-            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
-        assert_eq!(!found.is_empty(), reports, "{macros}");
+        assert_eq!(scan(&macros, &body).1, reports, "{macros}");
     }
+    // The faster of two runs at each size, taken in turn, so neither one
+    // fast outlier nor a burst of load during one run decides the ratio.
+    let body = call("HKEY_LOCAL_MACHINE", "M");
+    let (small, large) = (conditional(188), conditional(1500));
+    let mut times = [std::time::Duration::MAX; 2];
+    for _ in 0..2 {
+        for (i, macros) in [&small, &large].into_iter().enumerate() {
+            let (elapsed, reported) = scan(macros, &body);
+            assert!(reported, "{macros}");
+            times[i] = times[i].min(elapsed);
+        }
+    }
+    let ratio = times[1].as_secs_f64() / times[0].as_secs_f64();
+    assert!(
+        ratio < 24.0,
+        "8x the conditionals took {ratio:.1}x the time ({:.2?} -> {:.2?})",
+        times[0],
+        times[1]
+    );
 }
 
 /// Scan `dir` as a whole project and return each finding as
