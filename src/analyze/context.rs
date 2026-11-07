@@ -75,6 +75,36 @@ pub struct IncludeReport {
     /// sorted: the system headers whose declarations and macros the scan
     /// folded in.
     pub outside_headers: Vec<String>,
+    /// Excluded files a live `#include` reached that could not be read as
+    /// source, one per real file, sorted. Not a failure: the user left them
+    /// out (ADR-0017 decision 9). But a readable one would have been read
+    /// for its declarations, so the includer was analysed without them.
+    pub excluded_refused: Vec<ExcludedRefusal>,
+}
+
+/// An excluded file an `#include` reached, refused as input:
+/// [`IncludeReport::excluded_refused`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub struct ExcludedRefusal {
+    /// The file, at the path the include found it.
+    pub path: String,
+    /// The first file whose live include reached it at an excluded path.
+    pub includer: String,
+    /// Why it was refused, in a word ([`crate::analyze::containment::Cause::word`]).
+    pub cause: String,
+    /// What the refusal found.
+    pub detail: String,
+}
+
+impl ExcludedRefusal {
+    /// The one stderr line, and the SARIF note's text.
+    pub fn render(&self) -> String {
+        format!(
+            "excluded input not read as source ({}): {}: {}; {} includes it and was \
+             analysed without its declarations",
+            self.cause, self.path, self.detail, self.includer
+        )
+    }
 }
 
 /// Whether an `#include` spelling names a header that lives in the
@@ -278,13 +308,46 @@ impl IncludeReport {
         unresolved.sort();
         let mut outside_headers: Vec<String> = self.outside_headers.iter().map(shown).collect();
         outside_headers.sort();
+        let mut excluded_refused: Vec<ExcludedRefusal> = self
+            .excluded_refused
+            .iter()
+            .map(|e| ExcludedRefusal {
+                path: shown(&e.path),
+                includer: shown(&e.includer),
+                ..e.clone()
+            })
+            .collect();
+        excluded_refused.sort();
         Self {
             // In search order, which is meaning: never re-sorted.
             search_paths: self.search_paths.iter().map(shown).collect(),
             forced_includes: self.forced_includes.iter().map(shown).collect(),
             unresolved,
             outside_headers,
+            excluded_refused,
         }
+    }
+
+    /// This report without the excluded refusals of files `failures` already
+    /// reports as refused: a file the scan itself selected, under
+    /// `--prescan-exclude`, is a failure, and one line says so.
+    pub fn without_reported(
+        mut self,
+        failures: &[crate::analyze::containment::ScanFailure],
+    ) -> Self {
+        let real = |p: &str| {
+            std::path::Path::new(p)
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::PathBuf::from(p))
+        };
+        let reported: HashSet<std::path::PathBuf> = failures
+            .iter()
+            .filter(|f| f.stage == crate::analyze::containment::Stage::Input)
+            .map(|f| real(&f.file))
+            .collect();
+        self.excluded_refused
+            .retain(|e| !reported.contains(&real(&e.path)));
+        self
     }
 
     /// The `--report-headers` JSON: this report, each outside header given
@@ -313,6 +376,7 @@ impl IncludeReport {
             "forced_includes": self.forced_includes,
             "unresolved": self.unresolved,
             "outside_headers": outside,
+            "excluded_refused": self.excluded_refused,
             "refused": refused
                 .iter()
                 .filter(|f| f.stage == crate::analyze::containment::Stage::Input)
@@ -1671,7 +1735,7 @@ pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
 /// to a serialized field of [`ProjectContext`] (or of a type it holds), or to
 /// what such a field means: the cache header carries it, so an old cache is
 /// refused instead of misread.
-const PRESCAN_CACHE_FORMAT: u32 = 76;
+const PRESCAN_CACHE_FORMAT: u32 = 79;
 
 /// The header a prescan cache file starts with: a magic, the layout version
 /// and the aurora-lint version that wrote it.
@@ -2158,6 +2222,12 @@ mod tests {
                 project_header: true,
             }],
             outside_headers: vec![format!("{p}/inc/b.h"), "/usr/include/stdio.h".to_string()],
+            excluded_refused: vec![ExcludedRefusal {
+                path: format!("{p}/inc/nul.h"),
+                includer: format!("{p}/a.c"),
+                cause: "not source text".to_string(),
+                detail: "holds 1 NUL byte(s)".to_string(),
+            }],
         }
         .relative_to(&proj);
         assert_eq!(report.search_paths, ["inc", "/usr/include"]);
@@ -2165,6 +2235,8 @@ mod tests {
         assert_eq!(report.unresolved[0].includer, "inc/a.h");
         // Re-sorted once rewritten.
         assert_eq!(report.outside_headers, ["/usr/include/stdio.h", "inc/b.h"]);
+        assert_eq!(report.excluded_refused[0].path, "inc/nul.h");
+        assert_eq!(report.excluded_refused[0].includer, "a.c");
     }
 
     #[test]

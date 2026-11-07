@@ -10972,6 +10972,99 @@ fn refusal_lines(stderr: &str) -> usize {
     stderr.matches("Error: input skipped").count()
 }
 
+/// The non-failing notes for excluded included files a scan's stderr holds.
+fn excluded_notes(stderr: &str) -> Vec<&str> {
+    stderr
+        .lines()
+        .filter(|l| l.starts_with("Note: excluded input not read as source"))
+        .collect()
+}
+
+/// The SARIF notes for excluded included files in `run`'s invocation.
+fn sarif_excluded_notes(run: &serde_json::Value) -> Vec<serde_json::Value> {
+    run["invocations"][0]["toolExecutionNotifications"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["descriptor"]["id"] == "aurora-lint/excluded-input-not-read")
+        .cloned()
+        .collect()
+}
+
+/// An excluded file an `#include` reaches that is not source makes no
+/// failure, but one note, on stderr and in SARIF, names it and the file
+/// analysed without its declarations, under each preset; however many files
+/// include it.
+#[test]
+fn an_excluded_refused_include_gets_one_note_naming_its_includer() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("gen")).unwrap();
+    std::fs::write(dir.path().join("a.c"), "#include \"gen/nul.h\"\nint a;\n").unwrap();
+    std::fs::write(dir.path().join("b.c"), "#include \"./gen/nul.h\"\nint b;\n").unwrap();
+    std::fs::write(dir.path().join("gen/nul.h"), NUL_STREWN).unwrap();
+    for preset in ["default", "strict"] {
+        let (code, _, stderr, run) = coverage_scan_in(
+            Some(dir.path()),
+            Path::new("."),
+            &["-d", ".", "--profile", preset, "--exclude-all", "gen/*"],
+        );
+        assert_eq!(code, 0, "{preset}: stderr: {stderr}");
+        assert_eq!(refusal_lines(&stderr), 0, "{preset}: {stderr}");
+        let notes = excluded_notes(&stderr);
+        assert_eq!(notes.len(), 1, "{preset}: {stderr}");
+        assert!(
+            notes[0].contains("(not source text): gen/nul.h: holds")
+                && ["a.c", "b.c"].iter().any(|f| notes[0].ends_with(&format!(
+                    "; {f} includes it and was analysed without its declarations"
+                ))),
+            "{preset}: {}",
+            notes[0]
+        );
+        assert_eq!(run["invocations"][0]["executionSuccessful"], true);
+        let sarif = sarif_excluded_notes(&run);
+        assert_eq!(sarif.len(), 1, "{preset}: {run}");
+        assert_eq!(sarif[0]["level"], "note");
+        assert_eq!(
+            sarif[0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "gen/nul.h"
+        );
+        assert_eq!(
+            format!("Note: {}", sarif[0]["message"]["text"].as_str().unwrap()),
+            notes[0]
+        );
+    }
+}
+
+/// A file only a dead arm reaches gets no note: no compiled file includes
+/// it, so no analysis lacks its declarations. A live include of it as well
+/// gets the one note.
+#[test]
+fn a_file_only_a_dead_arm_reaches_gets_no_excluded_note() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("gen")).unwrap();
+    std::fs::write(
+        dir.path().join("a.c"),
+        "#if 0\n#include \"gen/nul.inc\"\n#endif\nint a;\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("gen/nul.inc"), NUL_STREWN).unwrap();
+    let root = dir.path().to_str().unwrap();
+    for preset in ["default", "strict"] {
+        let (code, _, stderr, run) = coverage_scan(
+            dir.path(),
+            &["-d", root, "--profile", preset, "--exclude-all", "gen/*"],
+        );
+        assert_eq!(code, 0, "{preset}: stderr: {stderr}");
+        assert!(excluded_notes(&stderr).is_empty(), "{preset}: {stderr}");
+        assert!(sarif_excluded_notes(&run).is_empty(), "{preset}");
+    }
+    std::fs::write(dir.path().join("b.c"), "#include \"gen/nul.inc\"\nint b;\n").unwrap();
+    let (code, _, stderr, run) = coverage_scan(dir.path(), &["-d", root, "--exclude-all", "gen/*"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(excluded_notes(&stderr).len(), 1, "{stderr}");
+    assert_eq!(sarif_excluded_notes(&run).len(), 1);
+}
+
 /// The user's exclusions reach a file an `#include` names: `--exclude-all`
 /// over the included file leaves its refusal unreported, as the refusal's
 /// own note advises, and the scan is complete.

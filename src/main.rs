@@ -1185,7 +1185,6 @@ fn run() -> Result<i32> {
     // output shows finding paths, so a report does not depend on where the
     // tree is checked out. A header the scan refused is named by the path it
     // was found at, under an absolute `-I` too.
-    let include_report = results.include_report.relative_to(&cwd);
     let shown = analyze::context::ShownPaths::under(&cwd);
     let failures: Vec<_> = results
         .failures
@@ -1195,12 +1194,21 @@ fn run() -> Result<i32> {
             f
         })
         .collect();
+    let include_report = results
+        .include_report
+        .relative_to(&cwd)
+        .without_reported(&failures);
 
     // Headers the scan could not find change what rules can see, so they are
     // loud: one stderr line whenever a live #include did not resolve, every
     // row with -v, all of it (with each outside header's hash) on request.
     if let Some(line) = include_report.summary_line() {
         eprintln!("{line}");
+    }
+    // An excluded file an #include reached but that is not source: the scan
+    // is complete, yet the includer's analysis lacks what it declares.
+    for refusal in &include_report.excluded_refused {
+        eprintln!("Note: {}", refusal.render());
     }
     if verbosity >= 1 {
         eprint!("{}", include_report.render_verbose());

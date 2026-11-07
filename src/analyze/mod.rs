@@ -897,6 +897,11 @@ fn include_report_split<'a>(
     );
     report.unresolved.sort();
     report.unresolved.dedup();
+    report
+        .excluded_refused
+        .extend(outside.include_report.excluded_refused.iter().cloned());
+    report.excluded_refused.sort();
+    report.excluded_refused.dedup_by(|a, b| a.path == b.path);
     std::sync::Arc::new(report)
 }
 

@@ -8170,6 +8170,9 @@ struct HeldRefusals {
     /// Headers read only through dead arms so far, by the spelling their own
     /// includes name them with, to their real paths.
     dead_reached: HashMap<Arc<str>, PathBuf>,
+    /// For a file a live include reached at an excluded path, the first
+    /// such includer: a refusal still held at the end is a note.
+    excluded_by: HashMap<PathBuf, Arc<str>>,
 }
 
 /// How one `#include` reached a file: [`HeldRefusals::reach`].
@@ -8211,6 +8214,11 @@ impl HeldRefusals {
     ) -> Reach {
         let dead_parent = includer.and_then(|i| self.dead_reached.get(i)).cloned();
         let dead = in_dead_arm || dead_parent.is_some();
+        if let Some(includer) = includer.filter(|_| excluded && !dead) {
+            self.excluded_by
+                .entry(canonical.to_path_buf())
+                .or_insert_with(|| Arc::from(includer));
+        }
         if let Some(parent) = dead_parent.filter(|_| !in_dead_arm && !excluded) {
             self.through
                 .entry(parent)
@@ -8241,6 +8249,29 @@ impl HeldRefusals {
         if reach.quiet {
             self.hold(canonical, failures, reported);
         }
+    }
+
+    /// The refusals still held of files a live include reached at an
+    /// excluded path, as notes, one per real file. A file only dead arms
+    /// reach gets none: no compiled file includes it, so no analysis lacks
+    /// its declarations.
+    fn excluded_notes(&self) -> Vec<super::context::ExcludedRefusal> {
+        let mut notes: Vec<_> = self
+            .held
+            .iter()
+            .filter_map(|(canonical, refusals)| {
+                let includer = self.excluded_by.get(canonical)?;
+                let refusal = refusals.first()?;
+                Some(super::context::ExcludedRefusal {
+                    path: refusal.file.clone(),
+                    includer: includer.to_string(),
+                    cause: refusal.cause.word().to_string(),
+                    detail: refusal.message.clone(),
+                })
+            })
+            .collect();
+        notes.sort();
+        notes
     }
 
     /// Report what is held for `canonical`, now that a live, in-scope
@@ -8535,6 +8566,7 @@ pub fn resolve_includes_scoped(
     }
 
     origins.finish(context);
+    Arc::make_mut(&mut context.include_report).excluded_refused = held.excluded_notes();
 
     walk_beyond_search_path(
         context,
