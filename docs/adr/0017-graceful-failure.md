@@ -164,7 +164,14 @@ Before this decision, a failure anywhere ended the scan.
    `input`, exit 3, a SARIF notification. That holds for a header read only
    for its declarations and macros as well, since leaving it out changes
    what the scanned files' findings rest on. Files the user excluded never get
-   that far and are not reported. Files over 8 MiB are analysed one at a
+   that far and are not reported. An excluded file an `#include` reaches is
+   still read for its facts, as part of the includer's translation unit, but
+   if it is refused, the refusal is not reported: the user asked for it to be
+   left out. The same holds for a file reached only by an `#include` in an
+   arm its own file proves is never compiled, which is part of no build. A
+   live include of the same file from a path not excluded reports it after
+   all. A refusal is reported once per file, however many paths or passes
+   reached it. Files over 8 MiB are analysed one at a
    time, however many `--jobs` there are, so several huge inputs cannot be
    in memory together.
 

@@ -638,6 +638,7 @@ pub fn analyze_project(
         failures.dedup();
         let skipped = containment::take_skipped();
         let coverage = ScanCoverage::of(&c_files, &skipped, &failures, tree_has_scannable_file)?;
+        containment::one_refusal_per_file(&mut failures);
 
         if let Some(reporter) = progress {
             reporter.report_complete(violations.len());
@@ -756,6 +757,7 @@ pub fn analyze_project(
     failures.dedup();
     let skipped = containment::take_skipped();
     let coverage = ScanCoverage::of(&c_files, &skipped, &failures, tree_has_scannable_file)?;
+    containment::one_refusal_per_file(&mut failures);
 
     // Report completion
     if let Some(reporter) = progress {
@@ -1497,17 +1499,14 @@ fn sort_for_deterministic_output(
     });
 }
 
-/// Whether a scan would have nothing to analyse in this file: the parser
-/// refuses it as not source text, or it is a header written in C++, which
-/// [`analyze_one_file`] skips as not being C.
+/// Whether a scan would have nothing to analyse in this file: it is a header
+/// written in C++, which [`analyze_one_file`] skips as not being C. A file
+/// that cannot be read as source is not skipped: it is a selected file, and
+/// the scan refuses it (ADR-0017 decision 9).
 fn skipped_as_not_c(file_path: &str) -> bool {
-    match crate::parser::read_source_or_transcode(file_path) {
-        Ok(source) => {
-            crate::files::is_c_header(file_path)
-                && lang_parsing_substrate::looks_like_cpp(source.as_bytes())
-        }
-        Err(_) => true,
-    }
+    crate::files::is_c_header(file_path)
+        && crate::parser::read_source_or_transcode(file_path)
+            .is_ok_and(|source| lang_parsing_substrate::looks_like_cpp(source.as_bytes()))
 }
 
 /// Parse and run all enabled rules over a single file, partitioning findings

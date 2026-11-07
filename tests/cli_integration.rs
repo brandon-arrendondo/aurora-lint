@@ -10687,9 +10687,23 @@ fn flp00_takes_a_header_macro_for_zero_only_where_every_build_includes_it_first(
 /// Scan `path` under the MSC04-C manifest, exporting SARIF; return the exit
 /// code, stdout, stderr and the report's one run.
 fn coverage_scan(path: &Path, extra: &[&str]) -> (i32, String, String, serde_json::Value) {
+    coverage_scan_in(None, path, extra)
+}
+
+/// [`coverage_scan`] run from `cwd`, so that `path` and `extra` may be
+/// relative to it.
+fn coverage_scan_in(
+    cwd: Option<&Path>,
+    path: &Path,
+    extra: &[&str],
+) -> (i32, String, String, serde_json::Value) {
     let out_dir = tempfile::tempdir().unwrap();
     let out = out_dir.path().join("out.sarif");
-    let output = scrub_git_env(&mut Command::new(aurora_lint_bin()))
+    let mut command = Command::new(aurora_lint_bin());
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let output = scrub_git_env(&mut command)
         .arg(path)
         .args(["-m", manifest_msc04().to_str().unwrap()])
         .args(["-e", out.to_str().unwrap()])
@@ -10915,6 +10929,174 @@ fn a_header_with_a_few_nul_bytes_read_for_its_declarations_is_refused() {
         "{stderr}"
     );
     assert!(stdout.contains("Files scanned: 1"), "{stdout}");
+    assert_eq!(run["invocations"][0]["executionSuccessful"], false);
+}
+
+/// How many input refusals stderr reports.
+fn refusal_lines(stderr: &str) -> usize {
+    stderr.matches("Error: input skipped").count()
+}
+
+/// The user's exclusions reach a file an `#include` names: `--exclude-all`
+/// over the included file leaves its refusal unreported, as the refusal's
+/// own note advises, and the scan is complete.
+#[test]
+fn an_excluded_file_an_include_reaches_is_not_reported_when_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("gen")).unwrap();
+    std::fs::write(dir.path().join("a.c"), "#include \"gen/nul.h\"\nint a;\n").unwrap();
+    std::fs::write(dir.path().join("gen/nul.h"), NUL_STREWN).unwrap();
+    let root = dir.path().to_str().unwrap();
+
+    let (code, _, stderr, _) = coverage_scan(dir.path(), &["-d", root]);
+    assert_eq!(code, 3, "stderr: {stderr}");
+    assert_eq!(refusal_lines(&stderr), 1, "{stderr}");
+
+    for glob in ["gen/*", "gen/**"] {
+        let (code, stdout, stderr, run) =
+            coverage_scan(dir.path(), &["-d", root, "--exclude-all", glob]);
+        assert_eq!(code, 0, "{glob}: stderr: {stderr}");
+        assert_eq!(refusal_lines(&stderr), 0, "{glob}: {stderr}");
+        assert!(stdout.contains("Files scanned: 1\n"), "{glob}: {stdout}");
+        assert_eq!(run["invocations"][0]["executionSuccessful"], true);
+    }
+}
+
+/// A header outside the tree, found on a `-I` path, is excluded by an
+/// absolute glob, from the prescan alone or from everything.
+#[test]
+fn an_excluded_header_on_an_include_path_is_not_reported_when_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let inc = dir.path().join("inc");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::create_dir(&inc).unwrap();
+    std::fs::write(src.join("a.c"), "#include \"nul.h\"\nint a;\n").unwrap();
+    std::fs::write(inc.join("nul.h"), NUL_STREWN).unwrap();
+    let inc_dir = inc.to_str().unwrap();
+    let glob = format!("{inc_dir}/**");
+    for flag in ["--prescan-exclude", "--exclude-all"] {
+        let (code, stdout, stderr, run) =
+            coverage_scan(&src, &["-I", inc_dir, flag, glob.as_str()]);
+        assert_eq!(code, 0, "{flag}: stderr: {stderr}");
+        assert_eq!(refusal_lines(&stderr), 0, "{flag}: {stderr}");
+        assert!(stdout.contains("Files scanned: 1\n"), "{flag}: {stdout}");
+        assert_eq!(run["invocations"][0]["executionSuccessful"], true);
+    }
+}
+
+/// An `#include` in an arm its own file proves is never compiled is part of
+/// no build, so a file only it reaches is not reported when refused.
+#[test]
+fn a_file_only_a_dead_arm_includes_is_not_reported_when_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("a.c"),
+        "#if 0\n#include \"table.inc\"\n#endif\nint a;\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("table.inc"), NUL_STREWN).unwrap();
+    let (code, stdout, stderr, run) = coverage_scan(dir.path(), &[]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(refusal_lines(&stderr), 0, "{stderr}");
+    assert!(stdout.contains("Files scanned: 1\n"), "{stdout}");
+    assert_eq!(run["invocations"][0]["executionSuccessful"], true);
+}
+
+/// A live include of the same file, from any file, makes the refusal count
+/// again, whichever include is reached first, and it is reported once.
+#[test]
+fn a_file_a_dead_arm_and_a_live_include_both_reach_is_reported_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let dead = "#if 0\n#include \"table.inc\"\n#endif\nint a;\n";
+    let live = "#include \"table.inc\"\nint b;\n";
+    for (first, second) in [(dead, live), (live, dead)] {
+        std::fs::write(dir.path().join("a.c"), first).unwrap();
+        std::fs::write(dir.path().join("b.c"), second).unwrap();
+        std::fs::write(dir.path().join("table.inc"), NUL_STREWN).unwrap();
+        let (code, _, stderr, run) = coverage_scan(dir.path(), &[]);
+        assert_eq!(code, 3, "stderr: {stderr}");
+        assert_eq!(refusal_lines(&stderr), 1, "{stderr}");
+        assert!(
+            stderr.contains("table.inc: holds 1 NUL byte(s)"),
+            "{stderr}"
+        );
+        assert_eq!(run["invocations"][0]["executionSuccessful"], false);
+    }
+}
+
+/// The prescan and the scan each check a refused file, under their own
+/// spelling of its path; it is reported once, in text and in SARIF.
+#[test]
+fn a_file_the_prescan_and_the_scan_both_refuse_is_reported_once() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.c"), "int a;\n").unwrap();
+    std::fs::write(dir.path().join("blob.c"), elf_blob()).unwrap();
+    std::fs::write(dir.path().join("nul.c"), NUL_STREWN).unwrap();
+    let (code, stdout, stderr, run) =
+        coverage_scan_in(Some(dir.path()), Path::new("."), &["-d", "."]);
+    assert_eq!(code, 3, "stderr: {stderr}");
+    assert_eq!(refusal_lines(&stderr), 2, "{stderr}");
+    assert!(
+        stdout.contains("Files scanned: 1 (2 more selected but failed or skipped)"),
+        "{stdout}"
+    );
+    let notes = run["invocations"][0]["toolExecutionNotifications"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        notes
+            .iter()
+            .filter(|n| n["descriptor"]["id"] == "aurora-lint/incomplete/input")
+            .count(),
+        2,
+        "{notes:?}"
+    );
+}
+
+/// A symlink to a refused file is a second selected path to the same bytes:
+/// both paths are counted as selected, and the refusal is reported once.
+#[cfg(unix)]
+#[test]
+fn a_refused_file_and_a_symlink_to_it_are_reported_once() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.c"), "int a;\n").unwrap();
+    std::fs::write(dir.path().join("nul.h"), NUL_STREWN).unwrap();
+    std::os::unix::fs::symlink("nul.h", dir.path().join("alias.h")).unwrap();
+    for extra in [&[][..], &["-d", "."][..]] {
+        let (code, stdout, stderr, _) = coverage_scan_in(Some(dir.path()), Path::new("."), extra);
+        assert_eq!(code, 3, "{extra:?}: stderr: {stderr}");
+        assert_eq!(refusal_lines(&stderr), 1, "{extra:?}: {stderr}");
+        assert!(
+            stdout.contains("Files scanned: 1 (2 more selected but failed or skipped)"),
+            "{extra:?}: {stdout}"
+        );
+    }
+}
+
+/// A refused file is a selected file, not one skipped as not being C: a
+/// tree of nothing else is not an empty selection, in a full scan or in a
+/// diff with nothing changed, and the refusal alone makes it incomplete.
+#[test]
+fn a_tree_of_one_refused_file_is_not_an_empty_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo_of(dir.path(), &[("nul.c", NUL_STREWN)]);
+
+    let (code, stdout, stderr, run) = coverage_scan(&repo, &[]);
+    assert_eq!(code, 3, "stderr: {stderr}");
+    assert!(!stderr.contains("nothing to scan"), "{stderr}");
+    assert_eq!(refusal_lines(&stderr), 1, "{stderr}");
+    assert!(
+        stdout.contains("Files scanned: 0 (1 more selected but failed or skipped)"),
+        "{stdout}"
+    );
+    assert_eq!(empty_selection_level(&run), None);
+
+    let (code, stdout, stderr, run) = coverage_scan(&repo, &["--diff"]);
+    assert_eq!(code, 3, "stderr: {stderr}");
+    assert!(!stderr.contains("nothing to scan"), "{stderr}");
+    assert!(stdout.contains("no changed C files"), "{stdout}");
+    assert_eq!(refusal_lines(&stderr), 1, "{stderr}");
     assert_eq!(run["invocations"][0]["executionSuccessful"], false);
 }
 
