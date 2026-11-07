@@ -10962,6 +10962,57 @@ fn an_excluded_file_an_include_reaches_is_not_reported_when_refused() {
     }
 }
 
+/// An include spelled with `..` that leaves the excluded tree names a file
+/// the user did not exclude: its refusal is reported.
+#[test]
+fn a_file_an_include_climbs_out_of_an_excluded_tree_to_is_reported_when_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("gen")).unwrap();
+    std::fs::create_dir(dir.path().join("other")).unwrap();
+    std::fs::write(dir.path().join("a.c"), "#include \"gen/a.h\"\nint a;\n").unwrap();
+    std::fs::write(
+        dir.path().join("gen/a.h"),
+        "#include \"../other/b.inc\"\n#include \"../c.inc\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("other/b.inc"), NUL_STREWN).unwrap();
+    std::fs::write(dir.path().join("c.inc"), NUL_STREWN).unwrap();
+    let root = dir.path().to_str().unwrap();
+    for glob in ["gen/*", "gen/**"] {
+        let (code, _, stderr, run) =
+            coverage_scan(dir.path(), &["-d", root, "--exclude-all", glob]);
+        assert_eq!(code, 3, "{glob}: stderr: {stderr}");
+        assert_eq!(refusal_lines(&stderr), 2, "{glob}: {stderr}");
+        assert!(stderr.contains("b.inc: holds"), "{glob}: {stderr}");
+        assert!(stderr.contains("c.inc: holds"), "{glob}: {stderr}");
+        assert_eq!(run["invocations"][0]["executionSuccessful"], false);
+    }
+}
+
+/// An include spelled with `..` that climbs into the excluded tree names an
+/// excluded file: its refusal is not reported.
+#[test]
+fn a_file_an_include_climbs_into_an_excluded_tree_to_is_not_reported_when_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("gen")).unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("src/a.c"),
+        "#include \"../gen/nul.h\"\nint a;\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("gen/nul.h"), NUL_STREWN).unwrap();
+    let root = dir.path().to_str().unwrap();
+    for glob in ["gen/*", "gen/**"] {
+        let (code, stdout, stderr, run) =
+            coverage_scan(dir.path(), &["-d", root, "--exclude-all", glob]);
+        assert_eq!(code, 0, "{glob}: stderr: {stderr}");
+        assert_eq!(refusal_lines(&stderr), 0, "{glob}: {stderr}");
+        assert!(stdout.contains("Files scanned: 1\n"), "{glob}: {stdout}");
+        assert_eq!(run["invocations"][0]["executionSuccessful"], true);
+    }
+}
+
 /// A header outside the tree, found on a `-I` path, is excluded by an
 /// absolute glob, from the prescan alone or from everything.
 #[test]
@@ -11001,6 +11052,50 @@ fn a_file_only_a_dead_arm_includes_is_not_reported_when_refused() {
     assert_eq!(refusal_lines(&stderr), 0, "{stderr}");
     assert!(stdout.contains("Files scanned: 1\n"), "{stdout}");
     assert_eq!(run["invocations"][0]["executionSuccessful"], true);
+}
+
+/// A header only a dead arm includes is part of no build, and neither is
+/// what it includes, however deep.
+#[test]
+fn a_file_only_a_dead_arm_reaches_through_headers_is_not_reported_when_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("a.c"),
+        "#if 0\n#include \"a.inc\"\n#endif\nint a;\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("a.inc"), "#include \"b.inc\"\n").unwrap();
+    std::fs::write(dir.path().join("b.inc"), "#include \"c.inc\"\n").unwrap();
+    std::fs::write(dir.path().join("c.inc"), NUL_STREWN).unwrap();
+    let (code, stdout, stderr, run) = coverage_scan(dir.path(), &[]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(refusal_lines(&stderr), 0, "{stderr}");
+    assert!(stdout.contains("Files scanned: 1\n"), "{stdout}");
+    assert_eq!(run["invocations"][0]["executionSuccessful"], true);
+}
+
+/// A live include of a header a dead arm reached first reports what that
+/// header includes, at any depth, once; so does a live include of a file
+/// deeper down.
+#[test]
+fn a_file_under_a_header_a_dead_arm_and_a_live_include_reach_is_reported_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let dead = "#if 0\n#include \"a.inc\"\n#endif\nint a;\n";
+    std::fs::write(dir.path().join("a.inc"), "#include \"b.inc\"\n").unwrap();
+    std::fs::write(dir.path().join("b.inc"), "#include \"c.inc\"\n").unwrap();
+    std::fs::write(dir.path().join("c.inc"), NUL_STREWN).unwrap();
+    for live in ["a.inc", "b.inc", "c.inc"] {
+        let live = format!("#include \"{live}\"\nint b;\n");
+        for (first, second) in [(dead, live.as_str()), (live.as_str(), dead)] {
+            std::fs::write(dir.path().join("a.c"), first).unwrap();
+            std::fs::write(dir.path().join("b.c"), second).unwrap();
+            let (code, _, stderr, run) = coverage_scan(dir.path(), &[]);
+            assert_eq!(code, 3, "{live}: stderr: {stderr}");
+            assert_eq!(refusal_lines(&stderr), 1, "{live}: {stderr}");
+            assert!(stderr.contains("c.inc: holds"), "{live}: {stderr}");
+            assert_eq!(run["invocations"][0]["executionSuccessful"], false);
+        }
+    }
 }
 
 /// A live include of the same file, from any file, makes the refusal count

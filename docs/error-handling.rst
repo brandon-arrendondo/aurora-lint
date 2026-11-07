@@ -131,9 +131,10 @@ The same checks apply to a header a scanned file includes, which is read
 only for its declarations and macros: leaving one out changes what the
 scanned files' findings rest on. Two kinds of included file are not
 reported when refused: one under ``--exclude-all`` or ``--prescan-exclude``
-(an absolute glob reaches a header on a ``-I`` path outside the tree), and
-one reached only by an ``#include`` inside ``#if 0`` or another arm its file
-never compiles. Either is still reported if some other file includes it
+(an absolute glob reaches a header on a ``-I`` path outside the tree; an
+include spelled with ``..`` is matched as the path it names), and one reached
+only by an ``#include`` inside ``#if 0`` or another arm its file never
+compiles, directly or through the headers that include brings in. Either is still reported if some other file includes it
 live, from a path that is not excluded. A refused file is reported once,
 however many paths or passes reached it.
 

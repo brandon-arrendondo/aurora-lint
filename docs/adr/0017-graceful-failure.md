@@ -167,8 +167,10 @@ Before this decision, a failure anywhere ended the scan.
    that far and are not reported. An excluded file an `#include` reaches is
    still read for its facts, as part of the includer's translation unit, but
    if it is refused, the refusal is not reported: the user asked for it to be
-   left out. The same holds for a file reached only by an `#include` in an
-   arm its own file proves is never compiled, which is part of no build. A
+   left out, and its path is matched with `.` and `..` resolved. The same
+   holds for a file reached only by an `#include` in an arm its own file
+   proves is never compiled, or through headers only such an include
+   reaches, which is part of no build. A
    live include of the same file from a path not excluded reports it after
    all. A refusal is reported once per file, however many paths or passes
    reached it. Files over 8 MiB are analysed one at a
