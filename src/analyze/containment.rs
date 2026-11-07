@@ -161,6 +161,23 @@ pub struct ScanFailure {
     pub location: Option<String>,
 }
 
+/// Keep one input refusal per real file. The prescan and the scan each check
+/// a file, under whatever spelling reached them (`./a.c`, `a.c`, a symlink to
+/// it), and a refusal is about the file's bytes, so the second says nothing
+/// new. Order is kept; the first spelling stands. A file whose real path
+/// cannot be found is compared as spelled.
+pub fn one_refusal_per_file(failures: &mut Vec<ScanFailure>) {
+    let mut seen = std::collections::HashSet::new();
+    failures.retain(|f| {
+        f.stage != Stage::Input
+            || seen.insert(
+                std::path::Path::new(&f.file)
+                    .canonicalize()
+                    .unwrap_or_else(|_| std::path::PathBuf::from(&f.file)),
+            )
+    });
+}
+
 impl ScanFailure {
     /// Place a [`Failure`].
     pub fn new(stage: Stage, file: &str, rule_id: Option<&str>, failure: Failure) -> Self {

@@ -8116,6 +8116,41 @@ fn read_header_for_facts(
     None
 }
 
+/// Refusals of included files that no reach so far has made part of the
+/// scan: every `#include` that reached the file was in a dead arm, or found
+/// it at a path the user excluded from the prescan. A refused file adds no
+/// facts whether or not its refusal is reported; it is not reported here,
+/// because the user asked for the file to be left out, or no build includes
+/// it (ADR-0017 decision 9). A later live, in-scope include of the same real
+/// file reports it after all. A crash while reading it is aurora-lint's bug
+/// and is reported either way.
+#[derive(Default)]
+struct HeldRefusals(HashMap<PathBuf, Vec<ScanFailure>>);
+
+impl HeldRefusals {
+    /// Move the input refusals `failures` gained past `reported` into the
+    /// holding, under the file's real path.
+    fn hold(&mut self, canonical: PathBuf, failures: &mut Vec<ScanFailure>, reported: usize) {
+        let mut i = reported;
+        while i < failures.len() {
+            if failures[i].stage == containment::Stage::Input {
+                let refusal = failures.remove(i);
+                self.0.entry(canonical.clone()).or_default().push(refusal);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Report what is held for `canonical`, now that a live, in-scope
+    /// include reached it.
+    fn release(&mut self, canonical: &Path, failures: &mut Vec<ScanFailure>) {
+        if let Some(refusals) = self.0.remove(canonical) {
+            failures.extend(refusals);
+        }
+    }
+}
+
 /// [`resolve_includes`] with the prescan scope: `scoped_out(path, root)` is
 /// true for a project file the scan leaves out ([`is_scoped_out`]), which then
 /// can't stand for a header an include names.
@@ -8149,6 +8184,7 @@ pub fn resolve_includes_scoped(
 
     let mut parser = CParser::new()?;
     let mut resolved_set: HashSet<PathBuf> = HashSet::new();
+    let mut held = HeldRefusals::default();
 
     // Queue of includes to resolve — supports transitive includes.
     let mut queue: Vec<PendingInclude> = Vec::new();
@@ -8264,7 +8300,13 @@ pub fn resolve_includes_scoped(
                     header_key.clone(),
                 );
             }
+            // An include in a dead arm, or one that finds an excluded path:
+            // a refusal from it is held back (see `HeldRefusals`).
+            let quiet = in_dead_arm || project_roots.iter().any(|r| scoped_out(&resolved, r));
             if resolved_set.contains(&canonical) {
+                if !quiet {
+                    held.release(&canonical, &mut context.prescan_failures);
+                }
                 continue;
             }
             let outside_project = origins.is_outside(&canonical);
@@ -8273,9 +8315,10 @@ pub fn resolve_includes_scoped(
                     .outside_headers
                     .push(header_key.clone());
             }
-            resolved_set.insert(canonical);
+            resolved_set.insert(canonical.clone());
 
             let header_path = resolved.to_string_lossy().to_string();
+            let reported = context.prescan_failures.len();
             let parsed = read_header_for_facts(
                 &mut parser,
                 &resolved,
@@ -8283,6 +8326,9 @@ pub fn resolve_includes_scoped(
                 &header_key,
                 &mut context.prescan_failures,
             );
+            if quiet {
+                held.hold(canonical, &mut context.prescan_failures, reported);
+            }
             if let Some((htree, hsource)) = parsed {
                 let root = htree.root_node();
                 collect_function_names(
@@ -8324,79 +8370,15 @@ pub fn resolve_includes_scoped(
                         .or_default()
                         .extend(names);
                 }
-                // Collect struct field types from resolved headers
-                collect_struct_tables(
+                collect_header_tables(
+                    context,
                     &root,
                     &hsource,
-                    Arc::make_mut(&mut context.struct_field_types),
-                    Arc::make_mut(&mut context.struct_field_shapes),
-                );
-                collect_packed_structs(
-                    &root,
-                    &hsource,
-                    Arc::make_mut(&mut context.packed_structs),
+                    &header_path,
+                    &header_key,
                     &mut packed_struct_candidates,
-                );
-                crate::utility::cert_c::ast_utils::collect_packed_macro_names(
-                    &hsource,
                     &mut packed_macro_names,
                 );
-                crate::utility::cert_c::ast_utils::collect_defined_macro_names(
-                    &hsource,
-                    Arc::make_mut(&mut context.defined_macro_names),
-                );
-                crate::utility::cert_c::ast_utils::collect_undefined_macro_names(
-                    &hsource,
-                    Arc::make_mut(&mut context.undefined_macro_names),
-                );
-                crate::analyze::macro_expand::collect_function_macro_names(
-                    &hsource,
-                    Arc::make_mut(&mut context.function_macro_names),
-                );
-                crate::utility::cert_c::ast_utils::collect_static_macro_names(
-                    &hsource,
-                    Arc::make_mut(&mut context.static_macro_names),
-                );
-                crate::analyze::macro_expand::collect_macro_operand_params(
-                    &hsource,
-                    Arc::make_mut(&mut context.macro_operand_params),
-                );
-                crate::analyze::macro_expand::merge_function_macro_arms(
-                    Arc::make_mut(&mut context.function_macro_arms),
-                    crate::analyze::macro_expand::collect_conditioned_macro_arms(&root, &hsource),
-                    &header_key,
-                );
-                crate::utility::cert_c::ast_utils::collect_unused_attribute_macro_names(
-                    &hsource,
-                    Arc::make_mut(&mut context.unused_attribute_macros),
-                );
-                // A header outside the scanned set is read once, so its
-                // attribute macros are those known when it is reached.
-                crate::analyze::noreturn::collect_attribute_noreturn_macro_names(
-                    &hsource,
-                    Arc::make_mut(&mut context.attribute_noreturn_macros),
-                );
-                crate::analyze::noreturn::collect_keyword_noreturn_macro_names(
-                    &hsource,
-                    Arc::make_mut(&mut context.keyword_noreturn_macros),
-                );
-                let header_candidates = crate::analyze::noreturn::collect_attribute_candidates(
-                    &root,
-                    &hsource,
-                    &crate::analyze::noreturn::raw_text_or(&header_path, &hsource),
-                );
-                let header_keyword_names = crate::analyze::noreturn::keyword_noreturn_declared_in(
-                    &header_candidates,
-                    &context.keyword_noreturn_macros,
-                );
-                Arc::make_mut(&mut context.keyword_noreturn_functions).extend(header_keyword_names);
-                let header_attribute_names =
-                    crate::analyze::noreturn::attribute_noreturn_declared_in(
-                        &header_candidates,
-                        &context.attribute_noreturn_macros,
-                    );
-                Arc::make_mut(&mut context.attribute_noreturn_functions)
-                    .extend(header_attribute_names);
 
                 // Enqueue transitive includes from this header
                 let header_dir = resolved.parent().map(|p| p.to_path_buf());
@@ -8421,48 +8403,22 @@ pub fn resolve_includes_scoped(
                 }
             }
         } else {
-            // It may name a header the prescan read under a search path this
-            // run lacks, and a closure that drops it would drop that
-            // header's definitions. Not from a dead arm, which no build
-            // compiles; the report below still records that row.
-            if !in_dead_arm {
-                add_include_edge(
-                    context,
-                    &mut includer_real_paths,
-                    includer.as_ref(),
-                    format!("{}{include_path}", super::context::UNRESOLVED_INCLUDE),
-                );
-            }
-            let (includer_outside, project_header) = unresolved.record(
+            record_unresolved_include(
                 context,
+                &mut includer_real_paths,
+                &mut unresolved,
                 &origins,
-                include_path.clone(),
-                source_dir,
-                includer.as_ref(),
-                in_dead_arm,
+                PendingInclude {
+                    path: include_path,
+                    source_dir,
+                    includer,
+                    in_dead_arm,
+                    line,
+                    form,
+                },
                 project_roots,
                 lookup,
                 scoped_out,
-            );
-            // Every includer gets its row, so the report names each file a
-            // missing header was meant for.
-            Arc::make_mut(&mut context.include_report).unresolved.push(
-                super::context::UnresolvedInclude {
-                    spelling: include_path,
-                    form,
-                    includer: includer
-                        .as_ref()
-                        .map(|i| {
-                            includer_real_paths.get(i).cloned().unwrap_or_else(|| {
-                                crate::analyze::compile_commands::real_path(Path::new(&**i))
-                            })
-                        })
-                        .unwrap_or_default(),
-                    line,
-                    in_dead_arm,
-                    includer_outside_project: includer_outside,
-                    project_header,
-                },
             );
         }
     }
@@ -8581,6 +8537,154 @@ pub fn resolve_includes_scoped(
     }
 
     Ok(())
+}
+
+/// An `#include` no search path resolves: its edge, unless in a dead arm,
+/// and its row in the include report.
+#[allow(clippy::too_many_arguments)]
+fn record_unresolved_include(
+    context: &mut super::context::ProjectContext,
+    includer_real_paths: &mut HashMap<Arc<str>, String>,
+    unresolved: &mut UnresolvedIncludes,
+    origins: &MacroOrigins,
+    pending: PendingInclude,
+    project_roots: &[String],
+    lookup: &HeaderLookup,
+    scoped_out: &dyn Fn(&Path, &str) -> bool,
+) {
+    let PendingInclude {
+        path: include_path,
+        source_dir,
+        includer,
+        in_dead_arm,
+        line,
+        form,
+    } = pending;
+    // It may name a header the prescan read under a search path this
+    // run lacks, and a closure that drops it would drop that
+    // header's definitions. Not from a dead arm, which no build
+    // compiles; the report below still records that row.
+    if !in_dead_arm {
+        add_include_edge(
+            context,
+            includer_real_paths,
+            includer.as_ref(),
+            format!("{}{include_path}", super::context::UNRESOLVED_INCLUDE),
+        );
+    }
+    let (includer_outside, project_header) = unresolved.record(
+        context,
+        origins,
+        include_path.clone(),
+        source_dir,
+        includer.as_ref(),
+        in_dead_arm,
+        project_roots,
+        lookup,
+        scoped_out,
+    );
+    // Every includer gets its row, so the report names each file a
+    // missing header was meant for.
+    Arc::make_mut(&mut context.include_report)
+        .unresolved
+        .push(super::context::UnresolvedInclude {
+            spelling: include_path,
+            form,
+            includer: includer
+                .as_ref()
+                .map(|i| {
+                    includer_real_paths.get(i).cloned().unwrap_or_else(|| {
+                        crate::analyze::compile_commands::real_path(Path::new(&**i))
+                    })
+                })
+                .unwrap_or_default(),
+            line,
+            in_dead_arm,
+            includer_outside_project: includer_outside,
+            project_header,
+        });
+}
+
+/// Fold an included header's struct tables, macro-name tables and noreturn
+/// declarations into `context`. `packed_struct_candidates` and
+/// `packed_macro_names` are settled once every header is read.
+fn collect_header_tables(
+    context: &mut super::context::ProjectContext,
+    root: &tree_sitter::Node,
+    hsource: &str,
+    header_path: &str,
+    header_key: &str,
+    packed_struct_candidates: &mut Vec<(String, String)>,
+    packed_macro_names: &mut HashSet<String>,
+) {
+    // Collect struct field types from resolved headers
+    collect_struct_tables(
+        root,
+        hsource,
+        Arc::make_mut(&mut context.struct_field_types),
+        Arc::make_mut(&mut context.struct_field_shapes),
+    );
+    collect_packed_structs(
+        root,
+        hsource,
+        Arc::make_mut(&mut context.packed_structs),
+        packed_struct_candidates,
+    );
+    crate::utility::cert_c::ast_utils::collect_packed_macro_names(hsource, packed_macro_names);
+    crate::utility::cert_c::ast_utils::collect_defined_macro_names(
+        hsource,
+        Arc::make_mut(&mut context.defined_macro_names),
+    );
+    crate::utility::cert_c::ast_utils::collect_undefined_macro_names(
+        hsource,
+        Arc::make_mut(&mut context.undefined_macro_names),
+    );
+    crate::analyze::macro_expand::collect_function_macro_names(
+        hsource,
+        Arc::make_mut(&mut context.function_macro_names),
+    );
+    crate::utility::cert_c::ast_utils::collect_static_macro_names(
+        hsource,
+        Arc::make_mut(&mut context.static_macro_names),
+    );
+    crate::analyze::macro_expand::collect_macro_operand_params(
+        hsource,
+        Arc::make_mut(&mut context.macro_operand_params),
+    );
+    crate::analyze::macro_expand::merge_function_macro_arms(
+        Arc::make_mut(&mut context.function_macro_arms),
+        crate::analyze::macro_expand::collect_conditioned_macro_arms(root, hsource),
+        header_key,
+    );
+    crate::utility::cert_c::ast_utils::collect_unused_attribute_macro_names(
+        hsource,
+        Arc::make_mut(&mut context.unused_attribute_macros),
+    );
+    // A header outside the scanned set is read once, so its
+    // attribute macros are those known when it is reached.
+    crate::analyze::noreturn::collect_attribute_noreturn_macro_names(
+        hsource,
+        Arc::make_mut(&mut context.attribute_noreturn_macros),
+    );
+    crate::analyze::noreturn::collect_keyword_noreturn_macro_names(
+        hsource,
+        Arc::make_mut(&mut context.keyword_noreturn_macros),
+    );
+    let header_candidates = crate::analyze::noreturn::collect_attribute_candidates(
+        root,
+        hsource,
+        &crate::analyze::noreturn::raw_text_or(header_path, hsource),
+    );
+    let header_keyword_names = crate::analyze::noreturn::keyword_noreturn_declared_in(
+        &header_candidates,
+        &context.keyword_noreturn_macros,
+    );
+    Arc::make_mut(&mut context.keyword_noreturn_functions).extend(header_keyword_names);
+    let header_attribute_names = crate::analyze::noreturn::attribute_noreturn_declared_in(
+        &header_candidates,
+        &context.attribute_noreturn_macros,
+    );
+    Arc::make_mut(&mut context.attribute_noreturn_functions).extend(header_attribute_names);
 }
 
 /// File `to` in `include_edges` under the real path of `includer`, or under
