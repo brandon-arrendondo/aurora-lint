@@ -619,16 +619,22 @@ pub fn prescan_directories(
 
 /// Whether `ignore` leaves `path` out of the prescan. The globs are relative
 /// to the scanned `root`; a file outside it (from a `-d` directory elsewhere)
-/// is matched relative to `base`, the directory it was found under.
+/// is matched relative to `base`, the directory it was found under. The path
+/// is matched as written with `.` and `..` resolved, so an include spelled
+/// `gen/../other/b.h` is `other/b.h` and `src/../gen/a.h` is `gen/a.h`.
 pub fn is_scoped_out(
     ignore: &lang_parsing_substrate::PathIgnore,
     root: &str,
     base: &str,
     path: &Path,
 ) -> bool {
-    let text = path.to_string_lossy().replace('\\', "/");
+    let text = lexically_normal(&path.to_string_lossy());
     let relative = |prefix: &str| {
-        let prefix = prefix.replace('\\', "/");
+        let prefix = lexically_normal(prefix);
+        if prefix == "." {
+            return (!text.starts_with('/') && !text.starts_with("../") && text != "..")
+                .then(|| text.clone());
+        }
         let prefix = prefix.trim_end_matches('/');
         text.strip_prefix(prefix)
             .filter(|rest| rest.starts_with('/'))
@@ -638,6 +644,36 @@ pub fn is_scoped_out(
         .or_else(|| relative(base))
         .unwrap_or_else(|| text.clone());
     ignore.is_ignored(Path::new(&rel))
+}
+
+/// `path` with `/` separators and its `.` and `..` components resolved from
+/// the text alone, without the file system: `a/./b/../c` is `a/c`. A `..` that
+/// climbs past the start of a relative path is kept, and one past the root of
+/// an absolute path or a drive is dropped. An empty result is `.`.
+fn lexically_normal(path: &str) -> String {
+    let text = path.replace('\\', "/");
+    let absolute = text.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for part in text.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => match parts.last() {
+                Some(&last) if last != ".." && !last.ends_with(':') => {
+                    parts.pop();
+                }
+                Some(&last) if last.ends_with(':') => {}
+                None if absolute => {}
+                _ => parts.push(".."),
+            },
+            _ => parts.push(part),
+        }
+    }
+    let joined = parts.join("/");
+    match (absolute, joined.is_empty()) {
+        (true, _) => format!("/{joined}"),
+        (false, true) => ".".to_string(),
+        (false, false) => joined,
+    }
 }
 
 /// Whether the macro-constants key `key` belongs to a name in `statics`. A
@@ -8117,15 +8153,33 @@ fn read_header_for_facts(
 }
 
 /// Refusals of included files that no reach so far has made part of the
-/// scan: every `#include` that reached the file was in a dead arm, or found
-/// it at a path the user excluded from the prescan. A refused file adds no
+/// scan: every `#include` that reached the file was in a dead arm, or in a
+/// file only dead arms reach, or found it at a path the user excluded from
+/// the prescan. A refused file adds no
 /// facts whether or not its refusal is reported; it is not reported here,
 /// because the user asked for the file to be left out, or no build includes
 /// it (ADR-0017 decision 9). A later live, in-scope include of the same real
 /// file reports it after all. A crash while reading it is aurora-lint's bug
 /// and is reported either way.
 #[derive(Default)]
-struct HeldRefusals(HashMap<PathBuf, Vec<ScanFailure>>);
+struct HeldRefusals {
+    held: HashMap<PathBuf, Vec<ScanFailure>>,
+    /// The files a held file's own live includes reached: they are quiet only
+    /// because it is, so a live reach of it releases them too.
+    through: HashMap<PathBuf, Vec<PathBuf>>,
+    /// Headers read only through dead arms so far, by the spelling their own
+    /// includes name them with, to their real paths.
+    dead_reached: HashMap<Arc<str>, PathBuf>,
+}
+
+/// How one `#include` reached a file: [`HeldRefusals::reach`].
+#[derive(Clone, Copy)]
+struct Reach {
+    /// In a dead arm, or in a file only dead arms reach.
+    dead: bool,
+    /// Dead, or at an excluded path: a refusal of the file is held.
+    quiet: bool,
+}
 
 impl HeldRefusals {
     /// Move the input refusals `failures` gained past `reported` into the
@@ -8135,18 +8189,69 @@ impl HeldRefusals {
         while i < failures.len() {
             if failures[i].stage == containment::Stage::Input {
                 let refusal = failures.remove(i);
-                self.0.entry(canonical.clone()).or_default().push(refusal);
+                self.held
+                    .entry(canonical.clone())
+                    .or_default()
+                    .push(refusal);
             } else {
                 i += 1;
             }
         }
     }
 
+    /// How an include from `includer` reached the real file `canonical`. One
+    /// that is quiet only because its includer is dead is recorded, so that a
+    /// live reach of the includer releases it ([`Self::release`]).
+    fn reach(
+        &mut self,
+        includer: Option<&str>,
+        in_dead_arm: bool,
+        excluded: bool,
+        canonical: &Path,
+    ) -> Reach {
+        let dead_parent = includer.and_then(|i| self.dead_reached.get(i)).cloned();
+        let dead = in_dead_arm || dead_parent.is_some();
+        if let Some(parent) = dead_parent.filter(|_| !in_dead_arm && !excluded) {
+            self.through
+                .entry(parent)
+                .or_default()
+                .push(canonical.to_path_buf());
+        }
+        Reach {
+            dead,
+            quiet: dead || excluded,
+        }
+    }
+
+    /// After the first read of `canonical`, spelled `header_path`: hold what
+    /// it was refused for if `reach` is quiet, and if dead, make the files it
+    /// includes dead too.
+    fn after_read(
+        &mut self,
+        reach: Reach,
+        header_path: &str,
+        canonical: PathBuf,
+        failures: &mut Vec<ScanFailure>,
+        reported: usize,
+    ) {
+        if reach.dead {
+            self.dead_reached
+                .insert(Arc::from(header_path), canonical.clone());
+        }
+        if reach.quiet {
+            self.hold(canonical, failures, reported);
+        }
+    }
+
     /// Report what is held for `canonical`, now that a live, in-scope
-    /// include reached it.
+    /// include reached it, and for each file it holds quiet ([`Self::link`]).
     fn release(&mut self, canonical: &Path, failures: &mut Vec<ScanFailure>) {
-        if let Some(refusals) = self.0.remove(canonical) {
-            failures.extend(refusals);
+        let mut pending = vec![canonical.to_path_buf()];
+        while let Some(file) = pending.pop() {
+            if let Some(refusals) = self.held.remove(&file) {
+                failures.extend(refusals);
+            }
+            pending.extend(self.through.remove(&file).unwrap_or_default());
         }
     }
 }
@@ -8300,11 +8405,13 @@ pub fn resolve_includes_scoped(
                     header_key.clone(),
                 );
             }
-            // An include in a dead arm, or one that finds an excluded path:
-            // a refusal from it is held back (see `HeldRefusals`).
-            let quiet = in_dead_arm || project_roots.iter().any(|r| scoped_out(&resolved, r));
+            // An include in a dead arm, or in a file only dead arms reach, or
+            // one that finds an excluded path: a refusal from it is held back
+            // (see `HeldRefusals`).
+            let excluded = project_roots.iter().any(|r| scoped_out(&resolved, r));
+            let reach = held.reach(includer.as_deref(), in_dead_arm, excluded, &canonical);
             if resolved_set.contains(&canonical) {
-                if !quiet {
+                if !reach.quiet {
                     held.release(&canonical, &mut context.prescan_failures);
                 }
                 continue;
@@ -8326,9 +8433,13 @@ pub fn resolve_includes_scoped(
                 &header_key,
                 &mut context.prescan_failures,
             );
-            if quiet {
-                held.hold(canonical, &mut context.prescan_failures, reported);
-            }
+            held.after_read(
+                reach,
+                &header_path,
+                canonical,
+                &mut context.prescan_failures,
+                reported,
+            );
             if let Some((htree, hsource)) = parsed {
                 let root = htree.root_node();
                 collect_function_names(
@@ -9297,6 +9408,34 @@ pub(crate) fn is_missing_project_header(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lexically_normal_resolves_dot_and_dot_dot_from_the_text() {
+        for (path, normal) in [
+            ("gen/../other/b.inc", "other/b.inc"),
+            ("./src/../gen/a.h", "gen/a.h"),
+            ("a/./b//c/", "a/b/c"),
+            ("../x/../../y", "../../y"),
+            ("/../a/..", "/"),
+            ("C:/../a", "C:/a"),
+            ("a\\..\\b", "b"),
+            ("a/..", "."),
+            (".", "."),
+        ] {
+            assert_eq!(lexically_normal(path), normal, "{path}");
+        }
+    }
+
+    #[test]
+    fn is_scoped_out_matches_the_path_with_dot_dot_resolved() {
+        let ignore = lang_parsing_substrate::PathIgnore::new(["gen/**"]).unwrap();
+        let out = |root: &str, path: &str| is_scoped_out(&ignore, root, root, Path::new(path));
+        assert!(!out("/r", "/r/gen/../other/b.inc"));
+        assert!(out("/r", "/r/src/../gen/a.h"));
+        assert!(out(".", "./src/../gen/a.h"));
+        assert!(!out(".", "./gen/../a.h"));
+        assert!(out("./r/", "r/gen/x.h"));
+    }
 
     fn parse_c(code: &str) -> (tree_sitter::Tree, String) {
         let mut parser = tree_sitter::Parser::new();
