@@ -151,8 +151,8 @@ still exits <code class="docutils literal notranslate"><span class="pre">2</span
 <section id="a-scan-that-selected-no-files">
 <h2>A scan that selected no files<a class="headerlink" href="#a-scan-that-selected-no-files" title="Link to this heading"></a></h2>
 <p>A path with no <code class="docutils literal notranslate"><span class="pre">.c</span></code> or <code class="docutils literal notranslate"><span class="pre">.h</span></code> file under it, or one where the exclusions
-removed them all, scans nothing. So does a tree whose only such files are skipped
-as not being C: NUL bytes in no text layout, or a header written in C++. Scanning nothing shows nothing about the code,
+removed them all, scans nothing. So does a tree whose only such files are
+headers written in C++, which are skipped as not being C. Scanning nothing shows nothing about the code,
 so it exits <code class="docutils literal notranslate"><span class="pre">3</span></code> rather than reading as a clean result:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Files scanned: 0
 Total violations: 0 (0 suppressed)
@@ -210,6 +210,9 @@ ordinary source.</p></li>
 PE, Mach-O, zip, gzip, xz, 7z, zstd, tar, PDF, an image, and so on), or
 its first 8 KiB has too many NUL, control or invalid-UTF-8 bytes to be
 text. This is a heuristic, tuned so that real C source is never refused.
+A file with only a few NUL bytes passes that check, and is refused when
+it is read instead: aurora-lint does not read a file with a NUL byte
+outside a UTF-16 layout, even one a compiler accepts with a warning.
 A path that is not a regular readable file (a FIFO, a device) is refused
 the same way, since reading it could block.
 Files with a UTF-16 byte-order mark are text and are read normally, and
