@@ -232,7 +232,28 @@ Raising it far past the default can crash the scan.</p></li>
 </ul>
 <p>The same checks apply to a header a scanned file includes, which is read
 only for its declarations and macros: leaving one out changes what the
-scanned files’ findings rest on.</p>
+scanned files’ findings rest on. Two kinds of included file are not
+reported as failures when refused:</p>
+<ul>
+<li><p>one under <code class="docutils literal notranslate"><span class="pre">--exclude-all</span></code> or <code class="docutils literal notranslate"><span class="pre">--prescan-exclude</span></code>. An absolute glob
+reaches a header on a <code class="docutils literal notranslate"><span class="pre">-I</span></code> path outside the tree, and an include spelled
+with <code class="docutils literal notranslate"><span class="pre">..</span></code> is matched as the path it names. The scan prints a note
+instead, which does not change the exit status, once per file, on stderr
+and in SARIF (<code class="docutils literal notranslate"><span class="pre">aurora-lint/excluded-input-not-read</span></code>, level <code class="docutils literal notranslate"><span class="pre">note</span></code>):</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Note: excluded input not read as source (not source text): gen/nul.h: holds 1 NUL byte(s), in no UTF-16 layout; a.c includes it and was analysed without its declarations
+</pre></div>
+</div>
+<p>When several files include it, the note names the first and counts the
+rest (<code class="docutils literal notranslate"><span class="pre">a.c</span> <span class="pre">and</span> <span class="pre">2</span> <span class="pre">other</span> <span class="pre">file(s)</span> <span class="pre">include</span> <span class="pre">it</span></code>); SARIF lists them all in
+<code class="docutils literal notranslate"><span class="pre">properties.includers</span></code>.</p>
+</li>
+<li><p>one reached only by an <code class="docutils literal notranslate"><span class="pre">#include</span></code> inside <code class="docutils literal notranslate"><span class="pre">#if</span> <span class="pre">0</span></code> or another arm its
+file never compiles, directly or through the headers that include brings
+in. No note is printed: no compiled file includes it.</p></li>
+</ul>
+<p>Either is reported as a failure if some other file includes it live, from a
+path that is not excluded. A refused file is reported once, however many
+paths or passes reached it.</p>
 <p>A refused file is <strong>skipped and reported</strong>, never analysed, and the scan
 exits <code class="docutils literal notranslate"><span class="pre">3</span></code>:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Error: input skipped (not source text): build/blob.c: looks like binary data (Elf, application/x-executable)
