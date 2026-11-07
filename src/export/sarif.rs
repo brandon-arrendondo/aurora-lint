@@ -257,6 +257,25 @@ fn invocation(
             ) },
         })
     }));
+    // An excluded file an `#include` reached that is not source: a `note`,
+    // since the user left it out, but the includer was analysed without it.
+    notifications.extend(
+        headers
+            .report
+            .into_iter()
+            .flat_map(|r| &r.excluded_refused)
+            .map(|e| {
+                serde_json::json!({
+                    "level": "note",
+                    "descriptor": { "id": "aurora-lint/excluded-input-not-read" },
+                    "message": { "text": e.render() },
+                    "locations": [{
+                        "physicalLocation": { "artifactLocation": { "uri": e.path } }
+                    }],
+                    "properties": { "cause": e.cause, "includer": e.includer },
+                })
+            }),
+    );
     if let Some(summary) = headers.report.and_then(|r| r.summary_line()) {
         notifications.push(serde_json::json!({
             "level": "note",

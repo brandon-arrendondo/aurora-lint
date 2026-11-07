@@ -164,15 +164,24 @@ Before this decision, a failure anywhere ended the scan.
    `input`, exit 3, a SARIF notification. That holds for a header read only
    for its declarations and macros as well, since leaving it out changes
    what the scanned files' findings rest on. Files the user excluded never get
-   that far and are not reported. An excluded file an `#include` reaches is
-   still read for its facts, as part of the includer's translation unit, but
-   if it is refused, the refusal is not reported: the user asked for it to be
-   left out, and its path is matched with `.` and `..` resolved. The same
-   holds for a file reached only by an `#include` in an arm its own file
+   that far and are not reported. That holds for an excluded file an
+   `#include` reaches too: it is still read for its facts, as part of the
+   includer's translation unit, but if it is refused, the refusal is not a
+   failure, because the user asked for it to be left out. Its path is matched
+   with `.` and `..` resolved. Since a readable one would have supplied
+   declarations, the scan prints a note instead, on stderr and in SARIF at
+   level `note`, once per file: it was not read as source, and the file that
+   includes it was analysed without its declarations. A live include of the
+   same file from a path not excluded reports it as a failure after all.
+
+   Brandon's 2026-11-07 ruling adds a second exemption, beyond the user's
+   exclusions: a file reached only by an `#include` in an arm its own file
    proves is never compiled, or through headers only such an include
-   reaches, which is part of no build. A
-   live include of the same file from a path not excluded reports it after
-   all. A refusal is reported once per file, however many paths or passes
+   reaches, is part of no build, so its refusal is not reported either, and
+   no note is printed, since no compiled file includes it. A live include of
+   it reports it as above.
+
+   A refusal is reported once per file, however many paths or passes
    reached it. Files over 8 MiB are analysed one at a
    time, however many `--jobs` there are, so several huge inputs cannot be
    in memory together.
