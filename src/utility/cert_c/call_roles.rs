@@ -113,6 +113,12 @@ pub fn is_allocator_call(name: &str) -> bool {
         || crate::utility::cert_c::thread_api::profile_allocator(name).is_some()
 }
 
+/// A library call whose result is a file descriptor, released by `close`
+/// rather than `free`, and which MEM31-C tracks through its name shape.
+pub fn is_descriptor_acquirer(name: &str) -> bool {
+    matches!(name, "epoll_create" | "timerfd_create" | "memfd_create")
+}
+
 /// The standard allocator contract a call to `name` follows: a standard
 /// allocator's own, or the one a project declaration names. A consumer
 /// that reads size arguments or treats `realloc`'s release of its first

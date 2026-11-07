@@ -75,6 +75,64 @@ fn released_argument_name(arg: Node, source: &str) -> Option<(String, bool)> {
     }
 }
 
+/// Whether a tracked spelling can mean only one object: an index that can
+/// change between two uses makes `a[i]` a different element at each.
+fn names_one_object(name: &str) -> bool {
+    name.split('[').skip(1).all(|after| {
+        after
+            .split(']')
+            .next()
+            .is_some_and(|index| index.trim().parse::<u64>().is_ok())
+    })
+}
+
+/// The variable a tracked spelling is reached through: `s` of `s->a[0].b`.
+fn spelled_root(name: &str) -> Option<&str> {
+    let start = name.find(|c: char| c.is_alphabetic() || c == '_')?;
+    let rest = &name[start..];
+    let end = rest
+        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+/// The first occurrence of the variable `name` in `node`.
+fn first_identifier_named<'t>(node: &Node<'t>, name: &str, source: &str) -> Option<Node<'t>> {
+    let mut stack = vec![*node];
+    while let Some(current) = stack.pop() {
+        if current.kind() == "identifier" && ast_utils::get_node_text(&current, source) == name {
+            return Some(current);
+        }
+        let mut children: Vec<_> = current.child_nodes().collect();
+        children.reverse();
+        stack.extend(children);
+    }
+    None
+}
+
+/// The occurrence of the variable `root` that the allocation at `site` is
+/// assigned or initialized into.
+fn allocation_target<'t>(
+    block: &Node<'t>,
+    site: tree_sitter::Point,
+    root: &str,
+    source: &str,
+) -> Option<Node<'t>> {
+    let mut node = block.descendant_for_point_range(site, site)?;
+    while node.id() != block.id() {
+        let target = match node.kind() {
+            "assignment_expression" => node.child_by_field_name("left"),
+            "init_declarator" => node.child_by_field_name("declarator"),
+            _ => None,
+        };
+        if let Some(target) = target {
+            return first_identifier_named(&target, root, source);
+        }
+        node = node.parent()?;
+    }
+    None
+}
+
 fn strip_call_argument(arg: Node) -> Option<(Node, bool)> {
     let peel = peel_casts_and_parens;
     let node = peel(arg);
@@ -316,6 +374,8 @@ impl CertRule for Mem31C {
             facts: OnceCell::new(),
             typedefs: OnceCell::new(),
         };
+        let close_is_defined_macro = OnceCell::new();
+        let close_never_an_object = OnceCell::new();
         for func in query::find_descendants_of_kind(*node, "function_definition") {
             if overflow_helpers::enclosing_function_definition(&func).is_some() {
                 continue;
@@ -331,6 +391,8 @@ impl CertRule for Mem31C {
                 &conditional_macros,
             );
             analyzer.realloc_in_one_build = Some(&realloc_in_one_build);
+            analyzer.close_is_defined_macro = Some(&close_is_defined_macro);
+            analyzer.close_never_an_object = Some(&close_never_an_object);
             analyzer.operand_types = Some(&operand_types);
             analyzer.current_function = Some(func);
             analyzer.analyze_function(&func, source, &mut violations);
@@ -376,6 +438,11 @@ struct MemoryLeakAnalyzer<'a> {
     escaped_memory: HashSet<String>,
     // Track variables known to be NULL in current scope (from NULL checks)
     null_variables: HashSet<String>,
+    // Names whose mark in `null_variables` came from a success test whose
+    // branch jumps away (see `after_true_branch`). That mark says the name
+    // is empty on the code below the test, which stops being true once an
+    // allocation there fills it again, so the allocation clears it.
+    success_test_marks: HashSet<String>,
     // Collect double-free violations during analysis
     double_free_violations: Vec<RuleViolation>,
     // Calls, in the function being walked, that handed a tracked allocation
@@ -519,6 +586,14 @@ struct MemoryLeakAnalyzer<'a> {
     // Aliases that are `realloc` in some builds only: a call through one
     // allocates and may release its argument, but does not prove it did.
     realloc_in_one_build: Option<&'a HashSet<String>>,
+    // Whether the file `#define`s `close`, asked on the first tracked
+    // `close` and shared by every function of the file, so a file of many
+    // closes scans its source once rather than once per call.
+    close_is_defined_macro: Option<&'a OnceCell<bool>>,
+    // Whether the file spells `close` only as a callee or as the name a
+    // prototype declares, so no object of that name exists anywhere in it.
+    // Shared by every function of the file like `close_is_defined_macro`.
+    close_never_an_object: Option<&'a OnceCell<bool>>,
     // What types the operand of an ordering test (`ResultTest`); `None` reads
     // every such operand as unresolved.
     operand_types: Option<&'a OperandTypes<'a>>,
@@ -527,6 +602,12 @@ struct MemoryLeakAnalyzer<'a> {
     variable_types: OnceCell<HashMap<String, String>>,
     // The function being analyzed, which `variable_types` is read from.
     current_function: Option<Node<'a>>,
+    // Whether `close` names an object in this function, kept from its first
+    // tracked `close` when the function spells `close` only as the callee of
+    // a call: nothing in it can then declare the name, so every call
+    // resolves it as the first did, and resolving it once per call walked
+    // every statement before each of them.
+    close_names_object: OnceCell<Option<bool>>,
     // Where a call through one of `realloc_in_one_build` released each
     // variable, so a double free it causes says so rather than naming a
     // jump.
@@ -884,6 +965,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             unaccusable_frees: HashSet::new(),
             escaped_memory: HashSet::new(),
             null_variables: HashSet::new(),
+            success_test_marks: HashSet::new(),
             double_free_violations: Vec::new(),
             deallocator_candidates: Vec::new(),
             leak_violations: Vec::new(),
@@ -915,9 +997,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             macro_aliases,
             conditional_macros,
             realloc_in_one_build: None,
+            close_is_defined_macro: None,
+            close_never_an_object: None,
             operand_types: None,
             variable_types: OnceCell::new(),
             current_function: None,
+            close_names_object: OnceCell::new(),
             released_in_one_build: HashMap::new(),
             released_by_some_definition: HashMap::new(),
             realloc_in_some_builds: HashSet::new(),
@@ -1044,6 +1129,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             self.goto_unaccusable.clear();
             self.maybe_freed.clear();
             self.discarded_label_frees.clear();
+            self.success_test_marks.clear();
             self.collect_label_frees(&body, source);
 
             // Main pass: collect all memory operations and detect double-frees
@@ -1977,6 +2063,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     else_clause,
                     truthiness_var,
                     non_null_check_var,
+                    source,
                     &mut stack,
                 ),
                 Frame::AfterElseBranch {
@@ -2553,6 +2640,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         else_clause: Option<Node<'n>>,
         truthiness_var: Option<String>,
         non_null_check_var: Option<String>,
+        source: &str,
         stack: &mut Vec<Frame<'n>>,
     ) {
         let true_state = LeakBranchState::fork(self);
@@ -2611,8 +2699,166 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             if true_leaves {
                 self.allocated_memory = saved_allocated;
                 self.escaped_memory = saved_escaped;
+                // Only the failed test reaches the code below, as only it
+                // reaches an else arm: after `if (p != NULL) { ...; return
+                // 0; }` the name holds nothing to leak, when the test speaks
+                // for the block (`success_test_settles`). A branch that
+                // returned settled the block there, reporting it if it leaked,
+                // so the record goes and the sweep does not report it again.
+                // One that jumps takes the block on to its target, where the
+                // sweep is still what reports a leak.
+                let Some(last) = if_node
+                    .child_by_field_name("consequence")
+                    .and_then(|branch| Self::last_statement_of(&branch))
+                else {
+                    return;
+                };
+                let returned = last.kind() == "return_statement";
+                for var_name in [truthiness_var, non_null_check_var].into_iter().flatten() {
+                    if (!returned && self.null_variables.contains(&var_name))
+                        || !self.success_test_settles(&if_node, &last, &var_name, source)
+                    {
+                        continue;
+                    }
+                    if returned {
+                        self.allocated_memory.remove(&var_name);
+                    } else {
+                        self.success_test_marks.insert(var_name.clone());
+                        self.null_variables.insert(var_name);
+                    }
+                }
             }
         }
+    }
+
+    /// Whether the code below an else-less `if`, whose branch ends at `last`,
+    /// is reached only with `name` empty. The test has to speak for the block
+    /// the record is about, on every path from the allocation to that code:
+    ///
+    /// - The allocation sits before the `if`, inside the block holding it, so
+    ///   no path skips the `if` by way of an enclosing `if`, an `else` or a
+    ///   loop that ran no times.
+    /// - No jump lies between them, and the name is not reassigned there, so
+    ///   the test is reached and tests what was allocated.
+    /// - The tested spelling is the binding allocated into, and no index
+    ///   that can change makes it another element.
+    /// - Nothing in the branch but its last statement leaves it, so what the
+    ///   branch holds cannot reach the code below some other way.
+    fn success_test_settles(&self, if_node: &Node, last: &Node, name: &str, source: &str) -> bool {
+        let Some(record) = self.allocated_memory.get(name) else {
+            return false;
+        };
+        let Some(block) = if_node.parent() else {
+            return false;
+        };
+        let site = tree_sitter::Point {
+            row: record.line.saturating_sub(1),
+            column: record.column.saturating_sub(1),
+        };
+        let (Some(root), Some(consequence), Some(condition)) = (
+            spelled_root(name),
+            if_node.child_by_field_name("consequence"),
+            if_node.child_by_field_name("condition"),
+        ) else {
+            return false;
+        };
+        if !names_one_object(name) {
+            return false;
+        }
+        let Some(target) = allocation_target(&block, site, root, source) else {
+            return false;
+        };
+        let Some(tested) = first_identifier_named(&condition, root, source) else {
+            return false;
+        };
+        let binding = |node: &Node| {
+            ast_utils::resolve_identifier_declarator(node, root, source)
+                .map(|(_, declarator)| declarator.id())
+        };
+        binding(&target) == binding(&tested)
+            && !self.span_loses_the_block(&block, site, if_node, name, root, source)
+            && !self.may_leave(&consequence, last, source)
+    }
+
+    /// Whether, between the allocation at `site` and `if_node`, a jump can
+    /// skip the test or the name stops holding what was allocated. A `break`
+    /// that stays inside the span counts too, which only withholds the reading.
+    fn span_loses_the_block(
+        &self,
+        block: &Node,
+        site: tree_sitter::Point,
+        if_node: &Node,
+        name: &str,
+        root: &str,
+        source: &str,
+    ) -> bool {
+        let names_it = |node: Option<Node>| {
+            node.map(|n| ast_utils::get_node_text(&n, source))
+                .is_some_and(|text| text == name || text == root)
+        };
+        let mut stack = vec![*block];
+        while let Some(node) = stack.pop() {
+            if node.end_position() <= site || node.start_byte() >= if_node.start_byte() {
+                continue;
+            }
+            let holds_site = node.start_position() <= site && site < node.end_position();
+            let loses = match node.kind() {
+                "goto_statement" | "break_statement" | "continue_statement" => true,
+                "call_expression" => self.call_may_jump(&node, source),
+                "assignment_expression" => {
+                    !holds_site && names_it(node.child_by_field_name("left"))
+                }
+                "update_expression" => names_it(node.child_by_field_name("argument")),
+                "pointer_expression" => {
+                    node.child_by_field_name("operator")
+                        .is_some_and(|op| op.kind() == "&")
+                        && names_it(node.child_by_field_name("argument"))
+                }
+                _ => false,
+            };
+            if loses {
+                return true;
+            }
+            stack.extend(node.child_nodes());
+        }
+        false
+    }
+
+    /// Whether anything in `branch` but its last statement leaves it. A
+    /// `break` or `continue` a loop or switch inside the branch consumes
+    /// stays in it.
+    fn may_leave(&self, branch: &Node, last: &Node, source: &str) -> bool {
+        let mut stack = vec![(*branch, false, false)];
+        while let Some((node, in_loop, in_switch)) = stack.pop() {
+            let kind = node.kind();
+            let leaves = node.id() != last.id()
+                && match kind {
+                    "goto_statement" => true,
+                    "continue_statement" => !in_loop,
+                    "break_statement" => !in_loop && !in_switch,
+                    "call_expression" => self.call_may_jump(&node, source),
+                    _ => false,
+                };
+            if leaves {
+                return true;
+            }
+            let in_loop =
+                in_loop || matches!(kind, "for_statement" | "while_statement" | "do_statement");
+            let in_switch = in_switch || kind == "switch_statement";
+            stack.extend(node.child_nodes().map(|c| (c, in_loop, in_switch)));
+        }
+        false
+    }
+
+    fn call_may_jump(&self, call: &Node, source: &str) -> bool {
+        call.child_by_field_name("function")
+            .filter(|function| function.kind() == "identifier")
+            .is_some_and(|function| {
+                macro_expand::macro_may_jump(
+                    self.function_macros,
+                    ast_utils::get_node_text(&function, source),
+                )
+            })
     }
 
     fn switch_next_case<'n>(
@@ -2807,6 +3053,19 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 .retain(|k, _| !pre.allocated.contains_key(k) || other.allocated.contains_key(k));
             self.escaped_memory.extend(other.escaped.iter().cloned());
         }
+        // A success test's mark speaks only for the path below that test, so
+        // the union above must not carry it onto a path out that still holds
+        // the block: `while (more) { p = malloc(n); if (p) { use(p); break; }
+        // } return 0;` leaves by the `break` with `p` live, and the mark from
+        // the fall-through hid its leak at the return. It survives where
+        // every path out either carries it or holds no block under the name.
+        let marks = &self.success_test_marks;
+        self.null_variables.retain(|name| {
+            !marks.contains(name)
+                || live.iter().all(|l| {
+                    l.state.null_variables.contains(name) || !l.allocated.contains_key(name)
+                })
+        });
     }
 
     /// `for (;;)`, `while (1)`, `while (true)`: a loop only a `break`,
@@ -3329,12 +3588,21 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         {
             return;
         }
-        let Some((stored, false)) = strip_call_argument(*right) else {
+        let Some((stored, false)) = released_argument_name(*right, source) else {
             return;
         };
-        let stored = ast_utils::get_node_text_owned(&stored, source);
-        if self.allocated_memory.contains_key(&stored) {
+        if names_one_object(&stored) && self.allocated_memory.contains_key(&stored) {
             self.mark_escaped_with_aliases(&stored);
+        }
+    }
+
+    /// A fresh allocation into `name` ends what a success test said about it:
+    /// after `if (p) { free(p); goto out; } p = malloc(n); return 1;` the
+    /// name holds the new block at the return, and the mark the test left
+    /// would hide its leak. Marks from anywhere else are left alone.
+    fn clear_success_test_mark(&mut self, name: &str) {
+        if self.success_test_marks.remove(name) {
+            self.null_variables.remove(name);
         }
     }
 
@@ -3390,6 +3658,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         .unwrap_or_else(|| var_name.clone());
                     let pos = right.start_position();
                     let alloc_type = self.get_allocation_type(&right, source);
+                    self.clear_success_test_mark(&var_name);
                     self.track_allocation_guarded(
                         var_name,
                         guard_name,
@@ -3458,6 +3727,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // ... and borrowed status: a fresh allocation IS this
                 // function's own, whatever this name held before.
                 self.borrowed_locals.remove(&var_name);
+                self.clear_success_test_mark(&var_name);
 
                 let pos = right.start_position();
                 let alloc_type = self.get_allocation_type(&right, source);
@@ -3659,10 +3929,113 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 .is_some_and(|names| names.contains(spelled));
             self.process_realloc_call(node, source, in_one_build);
         } else {
+            self.process_library_close(node, source, &func_name);
             self.note_deallocator_candidate(node, source, &func_name);
             self.process_freeing_callee(node, source, &func_name);
             self.process_storing_callee(node, source, &func_name);
             self.process_reobtaining_callee(node, source, &func_name);
+        }
+    }
+
+    /// The library's `close` releases the descriptor it is handed. A
+    /// descriptor reaches the allocation records from an acquirer such as
+    /// `epoll_create`, under a field or element it was stored in, and only a
+    /// record from one of those is released: `close(p)` on a `malloc` block
+    /// frees nothing, whatever `close` is here. It is no deallocator, so a
+    /// second `close` is not read as a double free. A `close` the project
+    /// defines is read by its summary instead, and neither a macro of that
+    /// name nor an object such as a function pointer is this call.
+    fn process_library_close(&mut self, node: &Node, source: &str, func_name: &str) {
+        if func_name != "close" {
+            return;
+        }
+        let Some((name, false)) = Self::call_args(*node)
+            .next()
+            .and_then(|arg| released_argument_name(arg, source))
+        else {
+            return;
+        };
+        let holds_descriptor = self
+            .allocated_memory
+            .get(&name)
+            .is_some_and(|record| call_roles::is_descriptor_acquirer(&record.alloc_type));
+        if !holds_descriptor || !names_one_object(&name) || self.freed_memory.contains_key(&name) {
+            return;
+        }
+        let Some(function) = node.child_by_field_name("function") else {
+            return;
+        };
+        if function.kind() != "identifier"
+            || ast_utils::get_node_text(&function, source) != func_name
+            || self.function_macros.contains_key(func_name)
+            || self.macro_aliases.contains_key(func_name)
+            || self.conditional_macros.contains(func_name)
+            || self.close_is_defined_macro.map_or_else(
+                || ast_utils::is_defined_macro_name(func_name, source),
+                |cell| *cell.get_or_init(|| ast_utils::is_defined_macro_name(func_name, source)),
+            )
+            || self.summary_at(func_name, site_of(node, source)).is_some()
+            || self.close_names_object(&function, func_name, source)
+        {
+            return;
+        }
+        let pos = node.start_position();
+        self.mark_freed_with_aliases(&name, (pos.row + 1, pos.column + 1));
+    }
+
+    /// Whether the identifier `function`, the callee of a `close` call,
+    /// resolves to an object such as a function pointer.
+    ///
+    /// Resolving it walks every declaration in scope before the call, file
+    /// scope included, so doing that at every call was quadratic in a file
+    /// of many functions or a function of many closes. Only a declaration
+    /// can make the name an object, so where the name is spelled nowhere but
+    /// as a callee, the answer is shared: across the file when it is not
+    /// even declared there except by a prototype, else across the function,
+    /// from its first call.
+    fn close_names_object(&self, function: &Node, func_name: &str, source: &str) -> bool {
+        let resolve = || {
+            ast_utils::resolve_identifier_declarator(function, func_name, source)
+                .is_some_and(|(_, declarator)| expr_type::declarator_shape(&declarator) != "(")
+        };
+        let callee = |id: &Node| {
+            id.parent().is_some_and(|parent| {
+                parent.kind() == "call_expression"
+                    && parent.child_by_field_name("function") == Some(*id)
+            })
+        };
+        let prototype_name = |id: &Node| {
+            id.parent().is_some_and(|parent| {
+                parent.kind() == "function_declarator"
+                    && parent.child_by_field_name("declarator") == Some(*id)
+                    && parent.parent().is_some_and(|outer| {
+                        matches!(outer.kind(), "declaration" | "function_definition")
+                    })
+            })
+        };
+        let spelled_only = |scope: Node, allowed: &dyn Fn(&Node) -> bool| {
+            query::find_descendants_of_kind(scope, "identifier")
+                .into_iter()
+                .all(|id| ast_utils::get_node_text(&id, source) != func_name || allowed(&id))
+        };
+        if let Some(cell) = self.close_never_an_object {
+            let mut root = *function;
+            while let Some(parent) = root.parent() {
+                root = parent;
+            }
+            if *cell.get_or_init(|| spelled_only(root, &|id| callee(id) || prototype_name(id))) {
+                return false;
+            }
+        }
+        let Some(func) = self.current_function else {
+            return resolve();
+        };
+        match *self
+            .close_names_object
+            .get_or_init(|| spelled_only(func, &callee).then(resolve))
+        {
+            Some(names_object) => names_object,
+            None => resolve(),
         }
     }
 
@@ -4490,11 +4863,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
             return;
         }
-        let Some((returned, false)) = strip_call_argument(*expr) else {
+        let Some((var_name, false)) = released_argument_name(*expr, source) else {
             return;
         };
-        let var_name = ast_utils::get_node_text_owned(&returned, source);
-        if self.allocated_memory.contains_key(&var_name) {
+        if names_one_object(&var_name) && self.allocated_memory.contains_key(&var_name) {
             self.mark_escaped_with_aliases(&var_name);
         }
     }
@@ -4701,6 +5073,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     ) {
                         return Some(ast_utils::get_node_text_owned(&arg, source));
                     }
+                    // `!(fd >= 0)` is true when the success test is false.
+                    if arg.kind() == "parenthesized_expression" {
+                        return self.non_null_check_variable_in(&arg, source);
+                    }
                 }
             }
         }
@@ -4711,51 +5087,72 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// Returns the variable name if it's a non-NULL check
     /// For `if (ptr != NULL) { ... } else { ... }`, ptr is NOT NULL in true branch, NULL in else
     fn get_non_null_check_variable(&self, if_node: &Node, source: &str) -> Option<String> {
-        // Look for the condition node
-        if let Some(condition) = if_node.child_by_field_name("condition") {
-            // Handle parenthesized expression
-            let cond = if condition.kind() == "parenthesized_expression" {
-                condition.child(1)?
-            } else {
-                condition
-            };
+        let condition = if_node.child_by_field_name("condition")?;
+        self.non_null_check_variable_in(&condition, source)
+    }
 
-            // Look for binary_expression with != NULL
-            if cond.kind() == "binary_expression" {
-                let op_text = cond
+    /// The variable `condition` proves NULL when it is false: `p != NULL`, a
+    /// success test, or the negation of a test that proves it NULL when true
+    /// (`!(p == NULL)`, `!!p`). The negation of an `&&` proves nothing about
+    /// either operand, so it is not read.
+    fn non_null_check_variable_in(&self, condition: &Node, source: &str) -> Option<String> {
+        // Handle parenthesized expression
+        let cond = if condition.kind() == "parenthesized_expression" {
+            condition.child(1)?
+        } else {
+            *condition
+        };
+
+        if cond.kind() == "unary_expression" {
+            let op = cond.child_by_field_name("operator")?;
+            if ast_utils::get_node_text(&op, source) != "!" {
+                return None;
+            }
+            let negated = peel_casts_and_parens(cond.child_by_field_name("argument")?);
+            let is_conjunction = negated.kind() == "binary_expression"
+                && negated
                     .child_by_field_name("operator")
-                    .map(|op| ast_utils::get_node_text_owned(&op, source))
-                    .unwrap_or_default();
+                    .is_some_and(|op| op.kind() == "&&");
+            if is_conjunction {
+                return None;
+            }
+            return self.null_check_variable_in(&negated, source);
+        }
 
-                if let Some(tested) = self.negative_result_test(&cond, source, ResultTest::Success)
-                {
-                    return Some(tested);
-                }
+        // Look for binary_expression with != NULL
+        if cond.kind() == "binary_expression" {
+            let op_text = cond
+                .child_by_field_name("operator")
+                .map(|op| ast_utils::get_node_text_owned(&op, source))
+                .unwrap_or_default();
 
-                // Handle != (var is NOT NULL in true branch, NULL in else branch)
-                if op_text == "!=" {
-                    let left = cond.child_by_field_name("left")?;
-                    let right = cond.child_by_field_name("right")?;
+            if let Some(tested) = self.negative_result_test(&cond, source, ResultTest::Success) {
+                return Some(tested);
+            }
 
-                    let left_text = ast_utils::get_node_text_owned(&left, source);
-                    let right_text = ast_utils::get_node_text_owned(&right, source);
+            // Handle != (var is NOT NULL in true branch, NULL in else branch)
+            if op_text == "!=" {
+                let left = cond.child_by_field_name("left")?;
+                let right = cond.child_by_field_name("right")?;
 
-                    // Check for var != NULL or NULL != var
-                    if right_text == "NULL" || right_text == "0" || right.kind() == "null" {
-                        if matches!(
-                            left.kind(),
-                            "identifier" | "field_expression" | "subscript_expression"
-                        ) {
-                            return Some(left_text);
-                        }
+                let left_text = ast_utils::get_node_text_owned(&left, source);
+                let right_text = ast_utils::get_node_text_owned(&right, source);
+
+                // Check for var != NULL or NULL != var
+                if right_text == "NULL" || right_text == "0" || right.kind() == "null" {
+                    if matches!(
+                        left.kind(),
+                        "identifier" | "field_expression" | "subscript_expression"
+                    ) {
+                        return Some(left_text);
                     }
-                    if left_text == "NULL" || left_text == "0" || left.kind() == "null" {
-                        if matches!(
-                            right.kind(),
-                            "identifier" | "field_expression" | "subscript_expression"
-                        ) {
-                            return Some(right_text);
-                        }
+                }
+                if left_text == "NULL" || left_text == "0" || left.kind() == "null" {
+                    if matches!(
+                        right.kind(),
+                        "identifier" | "field_expression" | "subscript_expression"
+                    ) {
+                        return Some(right_text);
                     }
                 }
             }
