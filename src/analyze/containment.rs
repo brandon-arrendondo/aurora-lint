@@ -95,28 +95,51 @@ pub enum Stage {
     Rule,
 }
 
-/// Why a unit of work did not finish.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Why a unit of work did not finish. Serialized as its [`Cause::token`].
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum Cause {
     /// It panicked: a bug.
+    #[serde(rename = "crash")]
     Panic,
     /// It reached its step budget: a runaway, or input far beyond anything
     /// measured.
+    #[serde(rename = "step-limit")]
     StepLimit,
     /// It ran past its time limit.
+    #[serde(rename = "time-limit")]
     TimeLimit,
     /// An analysis reached one of its own iteration caps, past which its
     /// results are not converged ([`cap_reached`]).
+    #[serde(rename = "analysis-cap")]
     Cap,
     /// The file is over `--max-file-size`.
+    #[serde(rename = "too-large")]
     TooLarge,
     /// The file is not source text (a binary format, NUL bytes).
+    #[serde(rename = "not-source-text")]
     NotText,
     /// The file's syntax tree nests deeper than the scan can walk.
+    #[serde(rename = "too-deep")]
     TooDeep,
 }
 
 impl Cause {
+    /// The cause as SARIF's `properties.cause` gives it, one token a
+    /// consumer can key on: `crash`, `not-source-text`, ...
+    pub fn token(self) -> &'static str {
+        match self {
+            Cause::Panic => "crash",
+            Cause::StepLimit => "step-limit",
+            Cause::TimeLimit => "time-limit",
+            Cause::Cap => "analysis-cap",
+            Cause::TooLarge => "too-large",
+            Cause::NotText => "not-source-text",
+            Cause::TooDeep => "too-deep",
+        }
+    }
+
     /// The short cause word a report gives: `crashed`, `time limit`, `too
     /// deep`, ...
     pub fn word(self) -> &'static str {
@@ -716,6 +739,24 @@ impl Escalation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cause_serializes_as_its_sarif_token() {
+        for cause in [
+            Cause::Panic,
+            Cause::StepLimit,
+            Cause::TimeLimit,
+            Cause::Cap,
+            Cause::TooLarge,
+            Cause::NotText,
+            Cause::TooDeep,
+        ] {
+            assert_eq!(
+                serde_json::to_value(cause).unwrap(),
+                serde_json::json!(cause.token())
+            );
+        }
+    }
 
     #[test]
     fn a_value_passes_through() {

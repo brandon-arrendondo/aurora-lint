@@ -21,7 +21,7 @@ use crate::utility::cert_c::node_children::NodeChildren;
 use anyhow::Result;
 use lang_parsing_substrate::query;
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tree_sitter::Node;
@@ -8170,9 +8170,9 @@ struct HeldRefusals {
     /// Headers read only through dead arms so far, by the spelling their own
     /// includes name them with, to their real paths.
     dead_reached: HashMap<Arc<str>, PathBuf>,
-    /// For a file a live include reached at an excluded path, the first
-    /// such includer: a refusal still held at the end is a note.
-    excluded_by: HashMap<PathBuf, Arc<str>>,
+    /// For a file a live include reached at an excluded path, every such
+    /// includer: a refusal still held at the end is a note.
+    excluded_by: HashMap<PathBuf, BTreeSet<Arc<str>>>,
 }
 
 /// How one `#include` reached a file: [`HeldRefusals::reach`].
@@ -8217,7 +8217,8 @@ impl HeldRefusals {
         if let Some(includer) = includer.filter(|_| excluded && !dead) {
             self.excluded_by
                 .entry(canonical.to_path_buf())
-                .or_insert_with(|| Arc::from(includer));
+                .or_default()
+                .insert(Arc::from(includer));
         }
         if let Some(parent) = dead_parent.filter(|_| !in_dead_arm && !excluded) {
             self.through
@@ -8260,12 +8261,12 @@ impl HeldRefusals {
             .held
             .iter()
             .filter_map(|(canonical, refusals)| {
-                let includer = self.excluded_by.get(canonical)?;
+                let includers = self.excluded_by.get(canonical)?;
                 let refusal = refusals.first()?;
                 Some(super::context::ExcludedRefusal {
                     path: refusal.file.clone(),
-                    includer: includer.to_string(),
-                    cause: refusal.cause.word().to_string(),
+                    includers: includers.iter().map(|i| i.to_string()).collect(),
+                    cause: refusal.cause,
                     detail: refusal.message.clone(),
                 })
             })

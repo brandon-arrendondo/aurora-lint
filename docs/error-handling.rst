@@ -142,6 +142,10 @@ reported as failures when refused:
 
      Note: excluded input not read as source (not source text): gen/nul.h: holds 1 NUL byte(s), in no UTF-16 layout; a.c includes it and was analysed without its declarations
 
+  When several files include it, the note names the first and counts the
+  rest (``a.c and 2 other file(s) include it``); SARIF lists them all in
+  ``properties.includers``.
+
 - one reached only by an ``#include`` inside ``#if 0`` or another arm its
   file never compiles, directly or through the headers that include brings
   in. No note is printed: no compiled file includes it.

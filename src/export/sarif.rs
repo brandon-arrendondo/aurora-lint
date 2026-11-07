@@ -174,7 +174,7 @@ fn invocation(
     headers: super::Headers<'_>,
     coverage: Option<super::Coverage>,
 ) -> serde_json::Value {
-    use crate::analyze::containment::{Cause, Stage};
+    use crate::analyze::containment::Stage;
     use crate::analyze::EmptySelection;
     let empty_selection = |level: &str, text: &str| {
         serde_json::json!({
@@ -193,15 +193,7 @@ fn invocation(
                 Stage::File => "file",
                 Stage::Rule => "rule",
             };
-            let cause = match f.cause {
-                Cause::Panic => "crash",
-                Cause::StepLimit => "step-limit",
-                Cause::TimeLimit => "time-limit",
-                Cause::Cap => "analysis-cap",
-                Cause::TooLarge => "too-large",
-                Cause::NotText => "not-source-text",
-                Cause::TooDeep => "too-deep",
-            };
+            let cause = f.cause.token();
             let mut n = serde_json::json!({
                 "level": "error",
                 "descriptor": { "id": format!("aurora-lint/incomplete/{stage}") },
@@ -272,7 +264,7 @@ fn invocation(
                     "locations": [{
                         "physicalLocation": { "artifactLocation": { "uri": e.path } }
                     }],
-                    "properties": { "cause": e.cause, "includer": e.includer },
+                    "properties": { "cause": e.cause.token(), "includers": e.includers },
                 })
             }),
     );

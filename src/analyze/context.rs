@@ -88,21 +88,29 @@ pub struct IncludeReport {
 pub struct ExcludedRefusal {
     /// The file, at the path the include found it.
     pub path: String,
-    /// The first file whose live include reached it at an excluded path.
-    pub includer: String,
-    /// Why it was refused, in a word ([`crate::analyze::containment::Cause::word`]).
-    pub cause: String,
+    /// Every file whose live include reached it at an excluded path, sorted.
+    pub includers: Vec<String>,
+    /// Why it was refused.
+    pub cause: crate::analyze::containment::Cause,
     /// What the refusal found.
     pub detail: String,
 }
 
 impl ExcludedRefusal {
     /// The one stderr line, and the SARIF note's text.
+    /// The first includer is named and the rest counted.
     pub fn render(&self) -> String {
+        let first = self.includers.first().map_or("", String::as_str);
+        let who = match self.includers.len() {
+            0 | 1 => format!("{first} includes it and was"),
+            n => format!("{first} and {} other file(s) include it and were", n - 1),
+        };
         format!(
-            "excluded input not read as source ({}): {}: {}; {} includes it and was \
-             analysed without its declarations",
-            self.cause, self.path, self.detail, self.includer
+            "excluded input not read as source ({}): {}: {}; {who} analysed without its \
+             declarations",
+            self.cause.word(),
+            self.path,
+            self.detail
         )
     }
 }
@@ -311,10 +319,15 @@ impl IncludeReport {
         let mut excluded_refused: Vec<ExcludedRefusal> = self
             .excluded_refused
             .iter()
-            .map(|e| ExcludedRefusal {
-                path: shown(&e.path),
-                includer: shown(&e.includer),
-                ..e.clone()
+            .map(|e| {
+                let mut includers: Vec<String> = e.includers.iter().map(shown).collect();
+                includers.sort();
+                includers.dedup();
+                ExcludedRefusal {
+                    path: shown(&e.path),
+                    includers,
+                    ..e.clone()
+                }
             })
             .collect();
         excluded_refused.sort();
@@ -2224,8 +2237,8 @@ mod tests {
             outside_headers: vec![format!("{p}/inc/b.h"), "/usr/include/stdio.h".to_string()],
             excluded_refused: vec![ExcludedRefusal {
                 path: format!("{p}/inc/nul.h"),
-                includer: format!("{p}/a.c"),
-                cause: "not source text".to_string(),
+                includers: vec![format!("{p}/b.c"), format!("{p}/a.c")],
+                cause: crate::analyze::containment::Cause::NotText,
                 detail: "holds 1 NUL byte(s)".to_string(),
             }],
         }
@@ -2236,7 +2249,7 @@ mod tests {
         // Re-sorted once rewritten.
         assert_eq!(report.outside_headers, ["/usr/include/stdio.h", "inc/b.h"]);
         assert_eq!(report.excluded_refused[0].path, "inc/nul.h");
-        assert_eq!(report.excluded_refused[0].includer, "a.c");
+        assert_eq!(report.excluded_refused[0].includers, ["a.c", "b.c"]);
     }
 
     #[test]

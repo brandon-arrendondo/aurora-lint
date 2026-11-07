@@ -10992,11 +10992,11 @@ fn sarif_excluded_notes(run: &serde_json::Value) -> Vec<serde_json::Value> {
 }
 
 /// An excluded file an `#include` reaches that is not source makes no
-/// failure, but one note, on stderr and in SARIF, names it and the file
-/// analysed without its declarations, under each preset; however many files
-/// include it.
+/// failure, but one note, on stderr and in SARIF, names it and accounts for
+/// every file analysed without its declarations, under each preset. Its
+/// SARIF cause is the token a refusal that fails the scan carries.
 #[test]
-fn an_excluded_refused_include_gets_one_note_naming_its_includer() {
+fn an_excluded_refused_include_gets_one_note_counting_its_includers() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("gen")).unwrap();
     std::fs::write(dir.path().join("a.c"), "#include \"gen/nul.h\"\nint a;\n").unwrap();
@@ -11014,9 +11014,10 @@ fn an_excluded_refused_include_gets_one_note_naming_its_includer() {
         assert_eq!(notes.len(), 1, "{preset}: {stderr}");
         assert!(
             notes[0].contains("(not source text): gen/nul.h: holds")
-                && ["a.c", "b.c"].iter().any(|f| notes[0].ends_with(&format!(
-                    "; {f} includes it and was analysed without its declarations"
-                ))),
+                && notes[0].ends_with(
+                    "; a.c and 1 other file(s) include it and were analysed without its \
+                     declarations"
+                ),
             "{preset}: {}",
             notes[0]
         );
@@ -11032,7 +11033,27 @@ fn an_excluded_refused_include_gets_one_note_naming_its_includer() {
             format!("Note: {}", sarif[0]["message"]["text"].as_str().unwrap()),
             notes[0]
         );
+        assert_eq!(sarif[0]["properties"]["cause"], "not-source-text");
+        assert_eq!(
+            sarif[0]["properties"]["includers"],
+            serde_json::json!(["a.c", "b.c"])
+        );
     }
+
+    // One includer is named alone.
+    std::fs::remove_file(dir.path().join("b.c")).unwrap();
+    let (_, _, stderr, _) = coverage_scan_in(
+        Some(dir.path()),
+        Path::new("."),
+        &["-d", ".", "--exclude-all", "gen/*"],
+    );
+    let notes = excluded_notes(&stderr);
+    assert_eq!(notes.len(), 1, "{stderr}");
+    assert!(
+        notes[0].ends_with("; a.c includes it and was analysed without its declarations"),
+        "{}",
+        notes[0]
+    );
 }
 
 /// A file only a dead arm reaches gets no note: no compiled file includes
