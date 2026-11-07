@@ -360,11 +360,12 @@ are recorded per translation unit, but the rules read one project-wide
 answer (see <a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a>); the configuration holds for the whole
 project and wins a disagreement, which the scan reports. Each declared
 fact’s source (<code class="docutils literal notranslate"><span class="pre">cli</span></code>, <code class="docutils literal notranslate"><span class="pre">config</span></code> or <code class="docutils literal notranslate"><span class="pre">compile</span> <span class="pre">database</span></code>) is part of
-the settings hash. When a fact is unknown, no exemption that depends on it
-applies, except that the default preset assumes POSIX with no edition.
-Under <code class="docutils literal notranslate"><span class="pre">strict</span></code> and <code class="docutils literal notranslate"><span class="pre">pedantic</span></code> the scan names the missing
-<code class="docutils literal notranslate"><span class="pre">posix_version</span></code> and the enabled rules whose exemption waits on it
-(<code class="docutils literal notranslate"><span class="pre">--check-config</span></code> warns the same way).</p>
+the settings hash. When a fact is unknown, nothing that depends on it is
+credited: no exemption that rests on it applies, and no finding only it
+gives grounds for is reported. The default preset is the exception: it
+assumes POSIX with no edition. Under <code class="docutils literal notranslate"><span class="pre">strict</span></code> and <code class="docutils literal notranslate"><span class="pre">pedantic</span></code> the scan
+names the missing <code class="docutils literal notranslate"><span class="pre">posix_version</span></code> and the enabled rules whose reading
+waits on it (<code class="docutils literal notranslate"><span class="pre">--check-config</span></code> warns the same way).</p>
 <ul class="simple">
 <li><p>Set with <code class="docutils literal notranslate"><span class="pre">[environment]</span></code> keys, <code class="docutils literal notranslate"><span class="pre">--libc</span></code>, or <code class="docutils literal notranslate"><span class="pre">--set</span> <span class="pre">c_standard=c99</span></code>
 (also <code class="docutils literal notranslate"><span class="pre">posix_version</span></code>, <code class="docutils literal notranslate"><span class="pre">libc_version</span></code>), or with a compile database</p></li>

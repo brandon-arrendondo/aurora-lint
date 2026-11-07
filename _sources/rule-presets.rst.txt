@@ -936,11 +936,11 @@ behind a departure.
      - 
      - FIO45-C/2026-10-07/1, FIO45-C/2026-10-07/3, FIO45-C/2026-10-07/ex2, FIO45-C/2026-10-07/presets
    * - FIO46-C
-     - as_written
+     - widened
      - as_written
      - as_written
      - 
-     - P/coincide
+     - FIO46-C/2026-10-07/presets, FIO46-C/2026-11-06/descriptor
    * - FIO47-C
      - as_written
      - as_written

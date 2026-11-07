@@ -26,6 +26,15 @@ The summary gains a ``Files scanned: N`` line above ``Total violations``, and th
 SARIF run's ``properties`` gain ``aurora-lint/filesScanned``. Neither replaces
 anything.
 
+A second ``close()`` of a descriptor
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+FIO46-C now reports a second ``close(fd)`` on a path from a first, with ``fd``
+not assigned between, where POSIX holds. The default preset assumes POSIX, so it
+reports these unless the project declares ``posix_version = "none"``. Strict and
+pedantic report them only when POSIX is declared. A suppression of FIO46-C for a
+double ``fclose()`` is unaffected.
+
 From 0.6.0 to 0.7.0
 -------------------
 

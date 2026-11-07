@@ -261,11 +261,12 @@ Toolchain
    answer (see :doc:`configuration`); the configuration holds for the whole
    project and wins a disagreement, which the scan reports. Each declared
    fact's source (``cli``, ``config`` or ``compile database``) is part of
-   the settings hash. When a fact is unknown, no exemption that depends on it
-   applies, except that the default preset assumes POSIX with no edition.
-   Under ``strict`` and ``pedantic`` the scan names the missing
-   ``posix_version`` and the enabled rules whose exemption waits on it
-   (``--check-config`` warns the same way).
+   the settings hash. When a fact is unknown, nothing that depends on it is
+   credited: no exemption that rests on it applies, and no finding only it
+   gives grounds for is reported. The default preset is the exception: it
+   assumes POSIX with no edition. Under ``strict`` and ``pedantic`` the scan
+   names the missing ``posix_version`` and the enabled rules whose reading
+   waits on it (``--check-config`` warns the same way).
 
    - Set with ``[environment]`` keys, ``--libc``, or ``--set c_standard=c99``
      (also ``posix_version``, ``libc_version``), or with a compile database

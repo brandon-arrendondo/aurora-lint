@@ -192,8 +192,7 @@ only ISO C: both trust the ISO C library unless a <code class="docutils literal 
 strict applies a POSIX contract or exemption only when <code class="docutils literal notranslate"><span class="pre">posix_version</span></code> is
 declared, in the configuration or by a compile database passed with
 <code class="docutils literal notranslate"><span class="pre">--compile-commands</span></code> (see <em>Declaring the platform</em> below). A strict scan with
-neither names the missing fact and the enabled rules whose exemption waits on
-it. The <strong>pedantic</strong> preset is the pedantic policy on a hosted
+neither names the missing fact and the enabled rules whose reading waits on it. The <strong>pedantic</strong> preset is the pedantic policy on a hosted
 environment that trusts only a declared library: small targets often link a
 reduced one, so a full ISO C library is not assumed. With no <code class="docutils literal notranslate"><span class="pre">libc</span></code>
 declared, a pedantic scan trusts no library contract and says so on stderr,
@@ -321,13 +320,15 @@ withholds that type rather than taking an exemption, which is why
 <p>The settings record where each declared fact came from (<code class="docutils literal notranslate"><span class="pre">cli</span></code>, <code class="docutils literal notranslate"><span class="pre">config</span></code> or
 <code class="docutils literal notranslate"><span class="pre">compile</span> <span class="pre">database</span></code>), and that source is part of the settings hash; a scan
 with no declaration and no compile database hashes as it always did.</p>
-<p>When a fact is unknown, no exemption that depends on it applies. The default
-preset is the one exception: it assumes POSIX, with no edition, because most
-code runs on a POSIX system. <code class="docutils literal notranslate"><span class="pre">strict</span></code> and <code class="docutils literal notranslate"><span class="pre">pedantic</span></code> do not, so a
-<code class="docutils literal notranslate"><span class="pre">--strict</span></code> scan of POSIX code that declares nothing reports the findings the
-POSIX exemptions would have withheld. Declare <code class="docutils literal notranslate"><span class="pre">posix_version</span></code>, or pass a
-compile database that defines <code class="docutils literal notranslate"><span class="pre">_POSIX_C_SOURCE</span></code> for every unit, to restore
-them.</p>
+<p>When a fact is unknown, nothing that depends on it is credited: no exemption
+that rests on it applies, and no finding only it gives grounds for is reported.
+The default preset is the one exception: it assumes POSIX, with no edition,
+because most code runs on a POSIX system. <code class="docutils literal notranslate"><span class="pre">strict</span></code> and <code class="docutils literal notranslate"><span class="pre">pedantic</span></code> do not, so
+a <code class="docutils literal notranslate"><span class="pre">--strict</span></code> scan of POSIX code that declares nothing reports the findings the
+POSIX exemptions would have withheld, and omits the ones only POSIX gives grounds
+for, such as FIO46-C’s second <code class="docutils literal notranslate"><span class="pre">close()</span></code> of a descriptor. Declare
+<code class="docutils literal notranslate"><span class="pre">posix_version</span></code>, or pass a compile database that defines <code class="docutils literal notranslate"><span class="pre">_POSIX_C_SOURCE</span></code>
+for every unit, to get both.</p>
 <p>Some facts no other declaration implies. Whether a handler installed with
 <code class="docutils literal notranslate"><span class="pre">signal()</span></code> stays installed while it runs is implementation-defined in C11
 (7.14.1.1p3) and in POSIX.1-2024’s <code class="docutils literal notranslate"><span class="pre">signal()</span></code> alike, so neither a declared
