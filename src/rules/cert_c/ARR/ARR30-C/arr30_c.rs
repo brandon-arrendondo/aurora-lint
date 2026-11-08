@@ -49,6 +49,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::{collect_param_names, extract_function_name};
 use crate::analyze::macro_expand::{collect_function_macros, FunctionMacro};
 use crate::analyze::name_writes::{NameScope, ProjectNameTables};
+use crate::analyze::preproc_arms;
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
@@ -56,15 +57,18 @@ use crate::settings::IntFacts;
 use lang_parsing_substrate::query;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 use tree_sitter::Node;
 
 // Import shared utility functions
 use crate::utility::cert_c::ast_utils::{
-    declares_static, find_containing_for_loop, find_containing_function,
-    find_containing_if_statement, find_enclosing_declaration_for_identifier,
+    declaration_declarator_for, declares_static, file_scope_declarations, find_containing_for_loop,
+    find_containing_function, find_containing_if_statement,
+    find_enclosing_declaration_for_identifier, find_enclosing_declaration_where,
     find_identifier_in_declarator, get_identifier_from_declarator, get_node_text,
-    is_address_of_expression, resolve_identifier_declarator, static_macro_names_in_scope,
+    is_address_of_expression, is_declaration_scope, resolve_identifier_declarator,
+    static_macro_names_in_scope, tree_root,
 };
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::guard_dominance::{
@@ -72,6 +76,9 @@ use crate::utility::cert_c::guard_dominance::{
 };
 use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::nonzero_facts;
+
+/// Byte ranges of nodes, kept where a node's lifetime cannot be.
+type ByteRanges = Vec<(usize, usize)>;
 
 pub struct Arr30C {
     /// Macros any scanned file defines as `static`
@@ -151,6 +158,20 @@ pub struct Arr30C {
     /// `buffer_in_scope_at` can size a re-resolved declaration identically
     /// without every caller threading the table through. Cleared per file.
     cached_file_constants: RefCell<HashMap<String, i64>>,
+    /// `find_preproc_conflicted_arrays` of the file being scanned; set per
+    /// file.
+    preproc_conflicted_arrays: RefCell<HashSet<String>>,
+    /// The file-scope declarations of a name, as byte ranges, read once per
+    /// name per file: an access to a guarded global asks at every use.
+    file_scope_declarations: RefCell<HashMap<String, Rc<ByteRanges>>>,
+    /// Every file-scope declaration, as byte ranges, under each identifier
+    /// it holds, read once per file: a file of many guarded globals asks
+    /// about each name once, and walking the file per name is quadratic.
+    file_scope_by_identifier: RefCell<Option<HashMap<String, ByteRanges>>>,
+    /// A function's local declarations of a name, as byte ranges, keyed by
+    /// the function's start and the name, read once per file: a name only a
+    /// struct member sizes is looked for at every use.
+    local_declarations: RefCell<HashMap<(usize, String), Rc<ByteRanges>>>,
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
     data_model: Cell<IntFacts>,
@@ -346,14 +367,19 @@ impl CertRule for Arr30C {
             // how accesses inside `#ifdef CHECKPOINT_PROFILER` came to be
             // reported against the `#else` branch's much larger array. Treat
             // the size as unknown rather than claim the wrong one.
-            for name in self.find_preproc_conflicted_arrays(node, source) {
-                if let Some(buf) = buffer_info.get_mut(&name) {
+            let conflicted = self.find_preproc_conflicted_arrays(node, source);
+            for name in &conflicted {
+                if let Some(buf) = buffer_info.get_mut(name) {
                     buf.size = BufferSize::Unknown;
                 }
-                if let Some(buf) = self.global_scope_buffers.borrow_mut().get_mut(&name) {
+                if let Some(buf) = self.global_scope_buffers.borrow_mut().get_mut(name) {
                     buf.size = BufferSize::Unknown;
                 }
             }
+            *self.preproc_conflicted_arrays.borrow_mut() = conflicted;
+            self.file_scope_declarations.borrow_mut().clear();
+            *self.file_scope_by_identifier.borrow_mut() = None;
+            self.local_declarations.borrow_mut().clear();
 
             // Collect macro/enum/const constants for loop bound resolution
             let macro_constants = self.collect_constants(node, source);
@@ -394,6 +420,10 @@ impl Arr30C {
             null_sentinel_macros: RefCell::new(HashSet::new()),
             cached_typedefs: RefCell::new(HashMap::new()),
             cached_file_constants: RefCell::new(HashMap::new()),
+            preproc_conflicted_arrays: RefCell::new(HashSet::new()),
+            file_scope_declarations: RefCell::new(HashMap::new()),
+            file_scope_by_identifier: RefCell::new(None),
+            local_declarations: RefCell::new(HashMap::new()),
             data_model: Cell::new(IntFacts::default()),
         }
     }
@@ -1184,9 +1214,30 @@ impl Arr30C {
         if occurrence.kind() != "identifier" {
             return entry.cloned();
         }
-        let Some((decl, declarator)) = resolve_identifier_declarator(occurrence, name, source)
+        let found = resolve_identifier_declarator(occurrence, name, source);
+        // Nothing sized under this name: no declaration to look further for.
+        if found.is_none() && entry.is_none() {
+            return None;
+        }
+        // A file-scope array of different sizes in exclusive arms claims no
+        // bound, and a local that took its place in the map changes nothing.
+        if found.is_none() && self.preproc_conflicted_arrays.borrow().contains(name) {
+            return entry
+                .filter(|e| matches!(e.size, BufferSize::Unknown))
+                .cloned();
+        }
+        let Some((decl, declarator)) = self.binding_in_this_arm(found, occurrence, name, source)
         else {
-            return entry.cloned();
+            // A local of this name declared later, or in a block the access
+            // is not in, is not what the access names: the object is one the
+            // file does not show, of a size it does not say. Nor is a
+            // declaration in an arm the access never compiles with.
+            return entry
+                .filter(|e| {
+                    !self.names_local_out_of_scope(e, occurrence, name, source)
+                        && !self.entry_in_arm_apart(e, occurrence, name, source)
+                })
+                .cloned();
         };
         // A declarator left behind by a mis-parsed initializer (the GNU
         // register-asm form) cannot size a buffer here either.
@@ -1195,7 +1246,16 @@ impl Arr30C {
         }
         let decl_line = decl.start_position().row + 1;
         if let Some(e) = entry {
-            if e.allocation_line == decl_line {
+            // Two declarations on one line share this line number, so an
+            // array is the entry's only if the sizes agree too.
+            let other_size = declarator.kind() == "array_declarator"
+                && self
+                    .extract_buffer_from_array_declarator(&declarator, source)
+                    .is_some_and(|own| match (&own.size, &e.size) {
+                        (BufferSize::Static(a), BufferSize::Static(b)) => a != b,
+                        _ => false,
+                    });
+            if e.allocation_line == decl_line && !other_size {
                 return Some(e.clone());
             }
         }
@@ -1221,6 +1281,177 @@ impl Arr30C {
         }
         let scope_end = scope.end_position().row + 1;
         (e.allocation_line >= decl_line && e.allocation_line <= scope_end).then(|| e.clone())
+    }
+
+    /// The declaration `name` binds to at `occurrence`, given what the scope
+    /// resolver `found` there (ADR-0006), once two gaps in that answer are
+    /// closed. A declaration in an arm no configuration compiles with the
+    /// occurrence does not bind it (ADR-0010), so the next one out does. And
+    /// a file-scope object inside a conditional, an include guard's
+    /// included, is one the resolver's file-scope lookup does not see.
+    fn binding_in_this_arm<'a>(
+        &self,
+        found: Option<(Node<'a>, Node<'a>)>,
+        occurrence: &Node<'a>,
+        name: &str,
+        source: &str,
+    ) -> Option<(Node<'a>, Node<'a>)> {
+        let compiles_here =
+            |d: &Node<'a>| !preproc_arms::never_compile_together(d, occurrence, source);
+        let local = match found {
+            Some(binding) if compiles_here(&binding.0) => return Some(binding),
+            Some(_) => find_enclosing_declaration_where(occurrence, name, source, &compiles_here),
+            None => None,
+        };
+        let decl = local.or_else(|| {
+            let visible = self.file_scope_declarations_of(occurrence, name, source);
+            let usable: Vec<&Node<'a>> = visible
+                .iter()
+                .filter(|d| d.start_byte() < occurrence.start_byte() && compiles_here(d))
+                .collect();
+            // `int buf[8]; extern int buf[];` is one array, of 8: a later
+            // declaration that states no size takes none away.
+            usable
+                .iter()
+                .rev()
+                .find(|d| Self::states_array_size(d, name, source))
+                .or(usable.last())
+                .map(|d| **d)
+        })?;
+        let declarator = declaration_declarator_for(&decl, name, source)?;
+        Some((decl, declarator))
+    }
+
+    /// The file-scope declarations of `name`, in source order, inside
+    /// conditionals or not.
+    fn file_scope_declarations_of<'a>(
+        &self,
+        occurrence: &Node<'a>,
+        name: &str,
+        source: &str,
+    ) -> Vec<Node<'a>> {
+        let root = tree_root(occurrence);
+        let ranges = self
+            .file_scope_declarations
+            .borrow_mut()
+            .entry(name.to_string())
+            .or_insert_with(|| {
+                let mut index = self.file_scope_by_identifier.borrow_mut();
+                let index = index.get_or_insert_with(|| Self::index_by_identifier(&root, source));
+                Rc::new(
+                    index
+                        .get(name)
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .filter(|&(start, end)| {
+                            root.descendant_for_byte_range(start, end).is_some_and(|d| {
+                                declaration_declarator_for(&d, name, source).is_some()
+                            })
+                        })
+                        .collect(),
+                )
+            })
+            .clone();
+        ranges
+            .iter()
+            .filter_map(|&(start, end)| root.descendant_for_byte_range(start, end))
+            .collect()
+    }
+
+    /// The file-scope declarations under `root`, as byte ranges in source
+    /// order, under each identifier each one holds.
+    fn index_by_identifier(root: &Node, source: &str) -> HashMap<String, ByteRanges> {
+        let mut index: HashMap<String, ByteRanges> = HashMap::new();
+        for decl in file_scope_declarations(root, source) {
+            let range = (decl.start_byte(), decl.end_byte());
+            // A misread declaration can hold its name as a type name.
+            let mut names: Vec<&str> = query::find_descendants_of_kind(decl, "identifier")
+                .iter()
+                .chain(query::find_descendants_of_kind(decl, "type_identifier").iter())
+                .map(|n| get_node_text(n, source))
+                .collect();
+            names.sort_unstable();
+            names.dedup();
+            for name in names {
+                index.entry(name.to_string()).or_default().push(range);
+            }
+        }
+        index
+    }
+
+    /// True when `decl` declares `name` an array with a size written.
+    fn states_array_size(decl: &Node, name: &str, source: &str) -> bool {
+        declaration_declarator_for(decl, name, source).is_some_and(|declarator| {
+            declarator.kind() == "array_declarator"
+                && declarator.child_by_field_name("size").is_some()
+        })
+    }
+
+    /// True when `entry` is the size of a file-scope declaration of `name` in
+    /// an arm no configuration compiles with `occurrence`.
+    fn entry_in_arm_apart(
+        &self,
+        entry: &BufferInfo,
+        occurrence: &Node,
+        name: &str,
+        source: &str,
+    ) -> bool {
+        self.file_scope_declarations_of(occurrence, name, source)
+            .iter()
+            .any(|d| {
+                d.start_position().row + 1 == entry.allocation_line
+                    && preproc_arms::never_compile_together(d, occurrence, source)
+            })
+    }
+
+    /// True when `entry` is the size of a local declaration of `name` in the
+    /// function holding `occurrence` whose scope does not reach it: a later
+    /// declaration, or one in a `for` or a block the occurrence is not in. An
+    /// entry from anything else, an allocation assigned to the name say, is
+    /// not this question's to answer.
+    fn names_local_out_of_scope(
+        &self,
+        entry: &BufferInfo,
+        occurrence: &Node,
+        name: &str,
+        source: &str,
+    ) -> bool {
+        let Some(func) = find_containing_function(occurrence) else {
+            return false;
+        };
+        let ranges = self
+            .local_declarations
+            .borrow_mut()
+            .entry((func.start_byte(), name.to_string()))
+            .or_insert_with(|| {
+                Rc::new(
+                    query::find_descendants_of_kind(func, "declaration")
+                        .into_iter()
+                        .filter(|decl| declaration_declarator_for(decl, name, source).is_some())
+                        .map(|decl| (decl.start_byte(), decl.end_byte()))
+                        .collect(),
+                )
+            })
+            .clone();
+        let mut declared = false;
+        for decl in ranges
+            .iter()
+            .filter_map(|&(start, end)| func.descendant_for_byte_range(start, end))
+        {
+            if decl.start_position().row + 1 != entry.allocation_line {
+                continue;
+            }
+            declared = true;
+            let reaches = decl.start_byte() < occurrence.start_byte()
+                && !preproc_arms::never_compile_together(&decl, occurrence, source)
+                && query::find_ancestor(decl, |n| is_declaration_scope(&n))
+                    .is_some_and(|scope| spans(&scope, occurrence));
+            if reaches {
+                return false;
+            }
+        }
+        declared
     }
 
     /// The `idx`-th argument of call expression `call` when it is a bare
@@ -1268,7 +1499,7 @@ impl Arr30C {
         }
 
         // Try to evaluate as expression
-        if let Some(eval_val) = self.evaluate_index_expression(index_text, source) {
+        if let Some(eval_val) = self.evaluate_index_expression(index_text, &index_node, source) {
             return Some(IndexValue::Expression(
                 index_text.to_string(),
                 Some(eval_val),
@@ -1292,12 +1523,17 @@ impl Arr30C {
     }
 
     /// Evaluate compile-time constant index expressions
-    fn evaluate_index_expression(&self, expr: &str, source: &str) -> Option<isize> {
+    fn evaluate_index_expression(
+        &self,
+        expr: &str,
+        index_node: &Node,
+        source: &str,
+    ) -> Option<isize> {
         let expr = expr.trim();
 
         // Pattern 1: sizeof(var) - N
         if expr.contains("sizeof") && expr.contains('-') {
-            return self.evaluate_sizeof_expression(expr, source);
+            return self.evaluate_sizeof_expression(expr, index_node, source);
         }
 
         // Pattern 2: Simple arithmetic with constants (e.g., "10 - 1")
@@ -1309,7 +1545,12 @@ impl Arr30C {
     }
 
     /// Evaluate sizeof expressions like "sizeof(buffer) - 1"
-    fn evaluate_sizeof_expression(&self, expr: &str, source: &str) -> Option<isize> {
+    fn evaluate_sizeof_expression(
+        &self,
+        expr: &str,
+        index_node: &Node,
+        source: &str,
+    ) -> Option<isize> {
         // Extract sizeof target and arithmetic operation
         let re = regex::Regex::new(r"sizeof\s*\(\s*(\w+)\s*\)\s*(-|\+)\s*(\d+)").ok()?;
         let caps = re.captures(expr)?;
@@ -1318,8 +1559,7 @@ impl Arr30C {
         let op = caps.get(2)?.as_str();
         let operand: usize = caps.get(3)?.as_str().parse().ok()?;
 
-        // Find the buffer size by searching for declaration in source
-        if let Some(size) = self.find_array_size_in_source(var_name, source) {
+        if let Some(size) = self.sizeof_operand_size(index_node, var_name, source) {
             match op {
                 "-" if operand <= size => {
                     return Some((size - operand) as isize);
@@ -1332,17 +1572,32 @@ impl Arr30C {
         None
     }
 
-    /// Find array size from source code for a given variable name
-    fn find_array_size_in_source(&self, var_name: &str, source: &str) -> Option<usize> {
-        // Look for declarations like: type var_name[SIZE];
-        let pattern = format!(r"\b{}\s*\[\s*(\d+)\s*\]", regex::escape(var_name));
-        let re = regex::Regex::new(&pattern).ok()?;
-
-        if let Some(caps) = re.captures(source) {
-            return caps.get(1)?.as_str().parse().ok();
+    /// The size of the array `var_name` names in `sizeof(var_name)` inside
+    /// `index_node`, from the declaration that occurrence binds to (ADR-0006),
+    /// when that declares a literal size. tree-sitter reads a parenthesized
+    /// operand as a type name as readily as an expression.
+    fn sizeof_operand_size(
+        &self,
+        index_node: &Node,
+        var_name: &str,
+        source: &str,
+    ) -> Option<usize> {
+        let operand = query::find_first_descendant(*index_node, |n| {
+            matches!(n.kind(), "identifier" | "type_identifier")
+                && get_node_text(&n, source) == var_name
+        })?;
+        let found = resolve_identifier_declarator(&operand, var_name, source);
+        let (_, declarator) = self.binding_in_this_arm(found, &operand, var_name, source)?;
+        if declarator.kind() != "array_declarator" {
+            return None;
         }
-
-        None
+        match self
+            .extract_buffer_from_array_declarator(&declarator, source)?
+            .size
+        {
+            BufferSize::Static(size) => Some(size),
+            _ => None,
+        }
     }
 
     /// Check if expression contains arithmetic operators

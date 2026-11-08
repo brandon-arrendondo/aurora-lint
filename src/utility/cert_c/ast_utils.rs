@@ -1024,6 +1024,76 @@ pub fn find_enclosing_declaration_where<'a>(
     None
 }
 
+/// The last file-scope declaration of `name` before `ident_node` that `keep`
+/// accepts, looking through preprocessor conditionals, which the scope
+/// resolver's file-scope lookup does not look into. Walks the file's top
+/// level, so it is for a lookup the resolver has already failed.
+pub fn file_scope_declaration_where<'a>(
+    ident_node: &Node<'a>,
+    name: &str,
+    source: &str,
+    keep: &dyn Fn(&Node<'a>) -> bool,
+) -> Option<Node<'a>> {
+    file_scope_declarations_of_name(&tree_root(ident_node), name, source)
+        .into_iter()
+        .filter(|declaration| {
+            declaration.start_byte() < ident_node.start_byte() && keep(declaration)
+        })
+        .max_by_key(|declaration| declaration.start_byte())
+}
+
+/// Every file-scope declaration of `name` under `root`, in source order,
+/// inside conditionals or not, and inside an `extern "C" { ... }` block: a
+/// header's `#ifdef __cplusplus` wrapper puts the whole file in one. For a
+/// caller asking at many uses of one name, which keeps the answer instead of
+/// walking the file each time.
+pub fn file_scope_declarations_of_name<'a>(
+    root: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Vec<Node<'a>> {
+    let mut declarations = file_scope_declarations(root, source);
+    declarations.retain(|declaration| declaration_binds_name(declaration, name, source));
+    declarations
+}
+
+/// Every file-scope declaration under `root`, of any name, in source order,
+/// as [`file_scope_declarations_of_name`] reads them: for a caller asking
+/// about many names, which reads the file once and keeps the answer.
+pub fn file_scope_declarations<'a>(root: &Node<'a>, source: &str) -> Vec<Node<'a>> {
+    let mut scopes = vec![*root];
+    collect_linkage_bodies(root, &mut scopes);
+    let mut declarations = Vec::new();
+    for scope in &scopes {
+        collect_declarations_transparent_to_preproc(scope, source, &mut declarations);
+    }
+    declarations.sort_by_key(|declaration| declaration.start_byte());
+    declarations
+}
+
+/// The bodies of the `extern "C"` blocks reachable from `scope` through
+/// preprocessor conditionals and other such blocks.
+fn collect_linkage_bodies<'a>(scope: &Node<'a>, out: &mut Vec<Node<'a>>) {
+    let mut cursor = scope.walk();
+    for child in scope.children(&mut cursor) {
+        match child.kind() {
+            "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_else" => {
+                collect_linkage_bodies(&child, out);
+            }
+            "linkage_specification" => {
+                if let Some(body) = child
+                    .child_by_field_name("body")
+                    .filter(|body| body.kind() == "declaration_list")
+                {
+                    out.push(body);
+                    collect_linkage_bodies(&body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// True if `node` opens one of the scopes
 /// [`find_enclosing_declaration_for_identifier`] searches.
 pub fn is_declaration_scope(node: &Node) -> bool {
