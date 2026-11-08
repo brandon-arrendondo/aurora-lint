@@ -1252,7 +1252,7 @@ fn global_location(decl: &Node, name: &str, source: &str) -> Loc {
 /// holding `decl`, when each declares it directly and the group ends in an
 /// `#else`: then one of them binds the name in every configuration. `None`
 /// when some configuration may leave it undeclared.
-fn declarations_in_every_arm<'t>(
+pub(crate) fn declarations_in_every_arm<'t>(
     decl: &Node<'t>,
     name: &str,
     source: &str,

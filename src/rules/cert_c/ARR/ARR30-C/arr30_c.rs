@@ -47,9 +47,12 @@ use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{self, VarRangeMap};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::{collect_param_names, extract_function_name};
+use crate::analyze::init_state::{file_proven_dead_lines, starts_in_dead_lines};
 use crate::analyze::macro_expand::{collect_function_macros, FunctionMacro};
 use crate::analyze::name_writes::{NameScope, ProjectNameTables};
+use crate::analyze::noreturn;
 use crate::analyze::preproc_arms;
+use crate::analyze::side_effects;
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::Severity;
@@ -63,12 +66,12 @@ use tree_sitter::Node;
 
 // Import shared utility functions
 use crate::utility::cert_c::ast_utils::{
-    declaration_declarator_for, declares_static, file_scope_declarations, find_containing_for_loop,
-    find_containing_function, find_containing_if_statement,
-    find_enclosing_declaration_for_identifier, find_enclosing_declaration_where,
-    find_identifier_in_declarator, get_identifier_from_declarator, get_node_text,
-    is_address_of_expression, is_declaration_scope, resolve_identifier_declarator,
-    static_macro_names_in_scope, tree_root,
+    declaration_declarator_for, declares_static, file_scope_declaration_where,
+    file_scope_declarations, find_containing_for_loop, find_containing_function,
+    find_containing_if_statement, find_enclosing_declaration_for_identifier,
+    find_enclosing_declaration_where, find_identifier_in_declarator, find_parameter_declaration,
+    get_identifier_from_declarator, get_node_text, is_address_of_expression, is_declaration_scope,
+    resolve_identifier_declarator, static_macro_names_in_scope, tree_root,
 };
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::guard_dominance::{
@@ -76,6 +79,61 @@ use crate::utility::cert_c::guard_dominance::{
 };
 use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::nonzero_facts;
+
+/// A constant store to an index: its byte span and value.
+type StoreValue = (usize, usize, isize);
+
+/// A constant store to an index, as [`Arr30C::index_read_across_arms`] reads
+/// it.
+struct ArmStore<'t> {
+    ident: Node<'t>,
+    /// The arms enclosing it that do not hold the access, outermost first.
+    arms: Vec<preproc_arms::EnclosingArm<'t>>,
+    /// Whether it may not run on the way to the access.
+    conditional: bool,
+    value: StoreValue,
+}
+
+/// What a constant index holds at an access, read across preprocessor arms.
+enum ArmRead {
+    /// No arm apart from the access decides it.
+    NotArms,
+    /// Some configuration leaves a value this reading cannot say: the index
+    /// is a variable.
+    Unknown,
+    /// What the arms leave depends on something this reading does not follow,
+    /// so it claims nothing about the index, as a value or as a variable.
+    Declined,
+    /// One value per way through the arms, in source order, each value once.
+    Values(Vec<StoreValue>),
+}
+
+/// What [`Arr30C::try_resolve_variable_to_constant`] makes of an index.
+enum ResolvedIndex {
+    Constant(isize),
+    /// Nothing known: a variable index.
+    Variable,
+    /// See [`ArmRead::Declined`].
+    Declined,
+}
+
+/// What a jump after a store does to it.
+#[derive(Clone, Copy, PartialEq)]
+enum StoreJump {
+    /// `return`, `goto` or a call that never returns: not on the way to the
+    /// access this store is apart from.
+    Leaves,
+    /// `break` or `continue`: may or may not reach the access.
+    Loops,
+}
+
+/// Which arms of one chain can compile at all.
+struct ChainLiveness {
+    /// One per arm, the `#if`'s first.
+    live: Vec<bool>,
+    /// The file proves the opening arm is always taken.
+    opening_taken: bool,
+}
 
 /// Byte ranges of nodes, kept where a node's lifetime cannot be.
 type ByteRanges = Vec<(usize, usize)>;
@@ -1512,14 +1570,12 @@ impl Arr30C {
         }
 
         // Try to resolve variable to a constant value via simple constant propagation
-        if let Some(const_val) =
-            self.try_resolve_variable_to_constant(index_text, &index_node, node, source)
-        {
-            return Some(IndexValue::Constant(const_val));
+        match self.try_resolve_variable_to_constant(index_text, &index_node, node, source) {
+            ResolvedIndex::Constant(value) => Some(IndexValue::Constant(value)),
+            ResolvedIndex::Declined => Some(IndexValue::Unknown),
+            // It's a simple variable
+            ResolvedIndex::Variable => Some(IndexValue::Variable(index_text.to_string())),
         }
-
-        // It's a simple variable
-        Some(IndexValue::Variable(index_text.to_string()))
     }
 
     /// Evaluate compile-time constant index expressions
@@ -1612,20 +1668,22 @@ impl Arr30C {
         index_node: &Node,
         current_node: &Node,
         source: &str,
-    ) -> Option<isize> {
+    ) -> ResolvedIndex {
         // Check if this variable is a loop counter - if so, don't resolve to constant
         // Loop counters change value during execution
         if let Some(for_node) = find_containing_for_loop(current_node) {
             if let Some(loop_var) = self.extract_loop_index_variable(&for_node, source) {
                 if loop_var == var_name {
                     // This is a loop counter - don't resolve to its initial value
-                    return None;
+                    return ResolvedIndex::Variable;
                 }
             }
         }
 
         // Find enclosing function
-        let func_node = find_containing_function(current_node)?;
+        let Some(func_node) = find_containing_function(current_node) else {
+            return ResolvedIndex::Variable;
+        };
 
         // Search for assignments to var_name within this function
         // Look for pattern: var_name = constant_literal
@@ -1637,12 +1695,16 @@ impl Arr30C {
         // clamp `if (datalen >= 1024) datalen = 1024 - 1;` then reported
         // `data[datalen]` as a constant index one past the end).
         let pattern = format!(r"\b{}\s*=\s*(-?\d+)\s*;", regex::escape(var_name));
-        let re = regex::Regex::new(&pattern).ok()?;
+        let Ok(re) = regex::Regex::new(&pattern) else {
+            return ResolvedIndex::Variable;
+        };
 
         // Check for non-constant assignments (e.g., var = func_call(...), var = other_var)
         // Pattern: var_name = <something> but exclude comparison operators (==, !=, <=, >=)
         let any_assign_pattern = format!(r"\b{}\s*=[^=!<>]", regex::escape(var_name));
-        let any_assign_re = regex::Regex::new(&any_assign_pattern).ok()?;
+        let Ok(any_assign_re) = regex::Regex::new(&any_assign_pattern) else {
+            return ResolvedIndex::Variable;
+        };
 
         // Only the assignments to the object the index names count: an
         // inner block's `int i = 2;` is a different `i` from the outer one,
@@ -1667,55 +1729,646 @@ impl Arr30C {
         // initialization is overwritten by a known-good value); one
         // assignment resolves to itself.
         if total_assign_count > 1 && constant_assigns.len() != total_assign_count {
-            return None;
+            return ResolvedIndex::Variable;
         }
-        // Declarations in alternative preprocessor arms are not in sequence:
-        // any arm may be the one built. Unless a later plain assignment
-        // overwrites them, arms that disagree take the value furthest out
-        // of range (the most negative, else the largest), so an
-        // out-of-bounds arm is reported and arms all in bounds stay silent.
-        // An array declared inside an arm pairs with that arm's index, which
-        // the pick cannot see, so it keeps the last arm's value.
-        let declares = |c: &regex::Captures| {
-            c.get(0)
-                .is_some_and(|m| Self::declares_at(&func_node, func_node.start_byte() + m.start()))
-        };
-        let declarations = any_assign_re
-            .find_iter(func_text)
-            .filter(|m| binds(m.start()))
-            .filter(|m| Self::declares_at(&func_node, func_node.start_byte() + m.start()))
-            .count();
-        let last = constant_assigns.last()?;
         let value = |c: &regex::Captures| c.get(1).and_then(|v| v.as_str().parse::<isize>().ok());
-        let caps = if declarations > 1
-            && declares(last)
-            && !Self::array_declared_in_preprocessor_arm(current_node, source)
-        {
-            let arms: Vec<(&regex::Captures, isize)> = constant_assigns
-                .iter()
-                .filter(|c| declares(c))
-                .filter_map(|c| Some((c, value(c)?)))
-                .collect();
-            let min = arms.iter().min_by_key(|(_, v)| *v).copied()?;
-            let max = arms.iter().max_by_key(|(_, v)| *v).copied()?;
-            if min.1 < 0 {
-                min.0
-            } else {
-                max.0
+        let stores: Vec<StoreValue> = constant_assigns
+            .iter()
+            .filter_map(|c| {
+                let whole = c.get(0)?;
+                let start = func_node.start_byte();
+                Some((start + whole.start(), start + whole.end(), value(c)?))
+            })
+            .collect();
+        let origin = match Self::index_read_across_arms(
+            &func_node,
+            index_node,
+            current_node,
+            var_name,
+            &stores,
+            source,
+        ) {
+            // A last store too large to read says nothing, not the one before.
+            ArmRead::NotArms => stores
+                .last()
+                .copied()
+                .filter(|_| stores.len() == constant_assigns.len()),
+            ArmRead::Unknown => return ResolvedIndex::Variable,
+            ArmRead::Declined => return ResolvedIndex::Declined,
+            // Any arm may be the one built, so arms that disagree take the
+            // value furthest out of range (the most negative, else the
+            // largest): an out-of-bounds arm is reported and arms all in
+            // bounds stay silent. An array declared inside an arm pairs with
+            // that arm's index, which the pick cannot see, so it keeps the
+            // last arm's value.
+            ArmRead::Values(values) => {
+                let min = values.iter().min_by_key(|v| v.2).copied();
+                let max = values.iter().max_by_key(|v| v.2).copied();
+                if Self::array_declared_in_preprocessor_arm(current_node, source) {
+                    values.last().copied()
+                } else if min.is_some_and(|m| m.2 < 0) {
+                    min
+                } else {
+                    max
+                }
             }
-        } else {
-            last
         };
-        let whole = caps.get(0)?;
-        let origin = (
-            func_node.start_byte() + whole.start(),
-            func_node.start_byte() + whole.end(),
-        );
+        let Some(origin) = origin else {
+            return ResolvedIndex::Variable;
+        };
         // `int i = 0; int *q = &i; *q = n;` leaves `i` holding `n`.
-        if nonzero_facts::pointer_write_reaches(var_name, origin, current_node, source) {
-            return None;
+        if nonzero_facts::pointer_write_reaches(
+            var_name,
+            (origin.0, origin.1),
+            current_node,
+            source,
+        ) {
+            return ResolvedIndex::Variable;
         }
-        caps.get(1)?.as_str().parse::<isize>().ok()
+        ResolvedIndex::Constant(origin.2)
+    }
+
+    /// What a constant index holds at `access` when preprocessor arms decide
+    /// it (ADR-0010: arms are alternatives, each compilable configuration
+    /// counts, and an arm the file proves dead is none). `stores` are the
+    /// constant assignments to the object the index names, as `(start, end,
+    /// value)` in source order. These are no store here: one in an arm the
+    /// access never compiles with or that is dead, one the code jumps away
+    /// from before the access, and one after the access, unless a loop holds
+    /// both, when it may run first. `NotArms` when no store sits in an arm
+    /// that does not hold the access.
+    fn index_read_across_arms<'a>(
+        func_node: &Node<'a>,
+        index_node: &Node<'a>,
+        access: &Node<'a>,
+        var_name: &str,
+        stores: &[StoreValue],
+        source: &'a str,
+    ) -> ArmRead {
+        let read = Self::arm_stores(func_node, access, var_name, stores, source);
+        if read.iter().all(|store| store.arms.is_empty()) {
+            return ArmRead::NotArms;
+        }
+        let compiled = Self::compiled_stores(&read, access, source);
+        if Self::read_is_declined(&compiled, func_node, access, var_name, source) {
+            return ArmRead::Declined;
+        }
+        let kept: Vec<&ArmStore> = compiled
+            .into_iter()
+            .filter(|store| {
+                (store.ident.start_byte() < access.start_byte() || store.conditional)
+                    && !matches!(
+                        Self::jump_after_store(&store.ident, access, source),
+                        Some(StoreJump::Leaves)
+                    )
+            })
+            .collect();
+        let incoming = match Self::value_where_no_arm_declares(
+            func_node, index_node, access, var_name, source,
+        ) {
+            Ok(values) => values,
+            Err(()) => return ArmRead::Unknown,
+        };
+        let values = Self::join_arm_stores(&kept, 0, incoming, source);
+        if values.is_empty() {
+            ArmRead::Unknown
+        } else {
+            ArmRead::Values(values)
+        }
+    }
+
+    /// `read` without the stores no configuration compiles with `access`.
+    fn compiled_stores<'r, 'a>(
+        read: &'r [ArmStore<'a>],
+        access: &Node<'a>,
+        source: &str,
+    ) -> Vec<&'r ArmStore<'a>> {
+        let dead = file_proven_dead_lines(source);
+        read.iter()
+            .filter(|store| {
+                !preproc_arms::never_compile_together(&store.ident, access, source)
+                    && !starts_in_dead_lines(&store.ident, &dead)
+            })
+            .collect()
+    }
+
+    /// True when the fold cannot say what the arms leave, because the code
+    /// between them and the access may narrow or rewrite the index on some
+    /// path, or two chains ask about one macro and so are not independent. The
+    /// fold is no flow analysis, so it declines rather than report a value
+    /// that may not survive.
+    fn read_is_declined(
+        stores: &[&ArmStore],
+        func_node: &Node,
+        access: &Node,
+        var_name: &str,
+        source: &str,
+    ) -> bool {
+        if stores
+            .iter()
+            .any(|s| Self::jump_after_store(&s.ident, access, source) == Some(StoreJump::Loops))
+        {
+            return true;
+        }
+        // One store that may not run leaves the value before it standing on
+        // the path that skips it. Any more, and they may answer one another.
+        let branching: Vec<&&ArmStore> = stores.iter().filter(|s| s.conditional).collect();
+        if branching.len() > 1
+            || branching
+                .iter()
+                .any(|s| Self::store_in_two_way_branch(&s.ident, access))
+        {
+            return true;
+        }
+        Self::index_tested_before(func_node, access, var_name, source)
+            || Self::chains_share_a_macro(stores, func_node, access, source)
+    }
+
+    /// True when the store at `ident` sits in a `switch` or an `if` with an
+    /// `else`, apart from `access`: the other way may write or leave.
+    fn store_in_two_way_branch(ident: &Node, access: &Node) -> bool {
+        std::iter::successors(ident.parent(), |n| n.parent())
+            .take_while(|n| n.kind() != "function_definition" && !spans(n, access))
+            .any(|n| match n.kind() {
+                "switch_statement" => true,
+                "if_statement" => n.child_by_field_name("alternative").is_some(),
+                _ => false,
+            })
+    }
+
+    /// True when something before `access`, or holding it, tests the index, or
+    /// may change it unseen: a branch condition, an assertion's argument, or
+    /// its address taken.
+    fn index_tested_before(func_node: &Node, access: &Node, var_name: &str, source: &str) -> bool {
+        let names_index = |node: &Node| {
+            query::find_first_descendant(*node, |n| {
+                n.kind() == "identifier" && get_node_text(&n, source) == var_name
+            })
+            .is_some()
+        };
+        query::find_first_descendant(*func_node, |n| {
+            if n.start_byte() >= access.start_byte() {
+                return false;
+            }
+            match n.kind() {
+                "if_statement"
+                | "while_statement"
+                | "do_statement"
+                | "for_statement"
+                | "switch_statement"
+                | "conditional_expression" => n
+                    .child_by_field_name("condition")
+                    .is_some_and(|c| names_index(&c)),
+                "call_expression" => n.child_by_field_name("arguments").is_some_and(|args| {
+                    query::find_first_descendant(args, |a| {
+                        (a.kind() == "binary_expression"
+                            && a.child_by_field_name("operator").is_some_and(|op| {
+                                matches!(
+                                    get_node_text(&op, source),
+                                    "<" | "<=" | ">" | ">=" | "==" | "!="
+                                )
+                            })
+                            && names_index(&a))
+                            || (is_address_of_expression(&a, source) && names_index(&a))
+                    })
+                    .is_some()
+                }),
+                _ => false,
+            }
+        })
+        .is_some()
+    }
+
+    /// True when a chain holding one of `stores` reads a macro that another
+    /// chain before `access` reads too, and that other one holds a store, a
+    /// jump or the access: the fold reads the first chain's arms as independent
+    /// of the other's. A chain holding the access and opened by the same
+    /// directive is [`preproc_arms::never_compile_together`]'s, already applied.
+    /// Also true when the file sets a macro the chain reads and does not prove
+    /// which arm that picks: `#define A 1` above `#if A` has one answer, which
+    /// this does not evaluate.
+    fn chains_share_a_macro(
+        stores: &[&ArmStore],
+        func_node: &Node,
+        access: &Node,
+        source: &str,
+    ) -> bool {
+        let mut store_chains: Vec<Node> = Vec::new();
+        for store in stores {
+            for arm in &store.arms {
+                if !store_chains.iter().any(|h| h.id() == arm.head.id()) {
+                    store_chains.push(arm.head);
+                }
+            }
+        }
+        let holding = preproc_arms::enclosing_arms(access);
+        let directive = |head: &Node| {
+            let end = head
+                .child_by_field_name("condition")
+                .or_else(|| head.child_by_field_name("name"))
+                .map_or(head.start_byte(), |c| c.end_byte());
+            source.get(head.start_byte()..end).map(str::to_string)
+        };
+        let others = query::find_descendants_of_kinds(*func_node, &["preproc_if", "preproc_ifdef"]);
+        store_chains.iter().any(|chain| {
+            let proven = Self::chain_liveness(chain, source);
+            let decided = proven.opening_taken || !proven.live.first().copied().unwrap_or(true);
+            let set_above = !decided && preproc_arms::chain_reads_macro_set_above(chain, source);
+            let against_store_or_jump = others.iter().any(|other| {
+                other.id() != chain.id()
+                    && other.start_byte() < access.start_byte()
+                    && preproc_arms::chains_read_one_macro(chain, other, source)
+                    && (store_chains.iter().any(|h| h.id() == other.id())
+                        || Self::chain_holds_jump(other, source))
+            });
+            set_above
+                || against_store_or_jump
+                || holding.iter().any(|arm| {
+                    arm.head.id() != chain.id()
+                        && preproc_arms::chains_read_one_macro(chain, &arm.head, source)
+                        && directive(chain) != directive(&arm.head)
+                })
+        })
+    }
+
+    /// True when an arm of the chain opened by `head` leaves the flow.
+    fn chain_holds_jump(head: &Node, source: &str) -> bool {
+        Self::chain_arm_nodes(head)
+            .iter()
+            .any(|arm| Self::arm_leaves(arm, source))
+    }
+
+    /// The arm nodes of the chain opened by `head`, the `#if`'s first.
+    fn chain_arm_nodes<'t>(head: &Node<'t>) -> Vec<Node<'t>> {
+        std::iter::successors(Some(*head), |arm| arm.child_by_field_name("alternative")).collect()
+    }
+
+    /// The children of arm `arm` that belong to it: not its condition, and not
+    /// the arms after it.
+    fn arm_statements<'t>(arm: &Node<'t>) -> Vec<Node<'t>> {
+        let skip = ["condition", "name", "alternative"]
+            .map(|field| arm.child_by_field_name(field).map(|n| n.id()));
+        let mut cursor = arm.walk();
+        arm.named_children(&mut cursor)
+            .filter(|child| !skip.contains(&Some(child.id())))
+            .collect()
+    }
+
+    /// How a statement ends the flow, if it does.
+    fn statement_jump(statement: &Node, source: &str) -> Option<StoreJump> {
+        match statement.kind() {
+            "return_statement" | "goto_statement" => Some(StoreJump::Leaves),
+            "break_statement" | "continue_statement" => Some(StoreJump::Loops),
+            "expression_statement" => statement
+                .named_child(0)
+                .filter(|call| {
+                    call.kind() == "call_expression"
+                        && noreturn::calls_stdlib_noreturn(call, source, None)
+                })
+                .map(|_| StoreJump::Leaves),
+            _ => None,
+        }
+    }
+
+    /// True when the flow never comes out of the end of `arm`: a statement of
+    /// its own jumps, or a chain of its own with an `#else` does in every arm.
+    fn arm_leaves(arm: &Node, source: &str) -> bool {
+        Self::arm_statements(arm).iter().any(|statement| {
+            if Self::statement_jump(statement, source).is_some() {
+                return true;
+            }
+            Self::chain_leaves_in_every_arm(statement, source)
+        })
+    }
+
+    /// True when `statement` is a chain with an `#else` whose every arm
+    /// leaves the flow.
+    fn chain_leaves_in_every_arm(statement: &Node, source: &str) -> bool {
+        if !matches!(statement.kind(), "preproc_if" | "preproc_ifdef") {
+            return false;
+        }
+        let arms = Self::chain_arm_nodes(statement);
+        arms.last().is_some_and(|a| a.kind() == "preproc_else")
+            && arms.iter().all(|a| Self::arm_leaves(a, source))
+    }
+
+    /// What ends the flow after the store at `ident`, on the way out to the
+    /// block that holds `access`: a statement after it in its own block or arm,
+    /// or in one around it that does not hold the access.
+    fn jump_after_store(ident: &Node, access: &Node, source: &str) -> Option<StoreJump> {
+        let mut from = *ident;
+        while let Some(parent) = from.parent() {
+            if parent.kind() == "function_definition" || spans(&parent, access) {
+                return None;
+            }
+            let mut cursor = parent.walk();
+            let jump = parent
+                .named_children(&mut cursor)
+                .filter(|sibling| sibling.start_byte() >= from.end_byte())
+                .find_map(|sibling| {
+                    Self::statement_jump(&sibling, source).or_else(|| {
+                        Self::chain_leaves_in_every_arm(&sibling, source)
+                            .then_some(StoreJump::Leaves)
+                    })
+                });
+            if jump.is_some() {
+                return jump;
+            }
+            from = parent;
+        }
+        None
+    }
+
+    /// `stores` read for [`Self::join_arm_stores`]: each store's identifier,
+    /// the arms enclosing it that do not hold `access`, and whether it may
+    /// not run on the way to `access`.
+    fn arm_stores<'a>(
+        func_node: &Node<'a>,
+        access: &Node<'a>,
+        var_name: &str,
+        stores: &[StoreValue],
+        source: &str,
+    ) -> Vec<ArmStore<'a>> {
+        let holding = preproc_arms::enclosing_arms(access);
+        stores
+            .iter()
+            .filter_map(|&(start, end, value)| {
+                let ident = func_node.descendant_for_byte_range(start, start + var_name.len())?;
+                let arms = preproc_arms::enclosing_arms(&ident)
+                    .into_iter()
+                    .filter(|arm| {
+                        !holding
+                            .iter()
+                            .any(|h| h.head.id() == arm.head.id() && h.index == arm.index)
+                    })
+                    .collect();
+                let conditional = Self::store_may_not_run(&ident, access, source) || {
+                    ident.start_byte() >= access.start_byte()
+                        && Self::loop_holds_both(&ident, access)
+                };
+                Some(ArmStore {
+                    ident,
+                    arms,
+                    conditional,
+                    value: (start, end, value),
+                })
+            })
+            .collect()
+    }
+
+    /// True when control flow that does not also hold `access` decides
+    /// whether the store at `ident` runs.
+    fn store_may_not_run(ident: &Node, access: &Node, source: &str) -> bool {
+        std::iter::successors(ident.parent(), |n| n.parent())
+            .take_while(|n| n.kind() != "function_definition")
+            .any(|n| {
+                let branches = match n.kind() {
+                    "if_statement"
+                    | "while_statement"
+                    | "do_statement"
+                    | "for_statement"
+                    | "switch_statement"
+                    | "conditional_expression" => true,
+                    "binary_expression" => n
+                        .child_by_field_name("operator")
+                        .is_some_and(|op| matches!(get_node_text(&op, source), "&&" | "||")),
+                    _ => false,
+                };
+                branches && !spans(&n, access)
+            })
+    }
+
+    /// True when one loop holds both nodes.
+    fn loop_holds_both(a: &Node, b: &Node) -> bool {
+        std::iter::successors(a.parent(), |n| n.parent()).any(|n| {
+            matches!(
+                n.kind(),
+                "while_statement" | "do_statement" | "for_statement"
+            ) && spans(&n, b)
+        })
+    }
+
+    /// What the index holds in a configuration where no arm declares it: an
+    /// outer `int i = 9;` past `#if A int i = 1; #endif`. Empty when every
+    /// configuration declares it in an arm, or no outer object exists, which
+    /// is a configuration that does not compile. `Err` when the outer object
+    /// holds what this reading cannot say: a parameter, a file-scope object,
+    /// or a store of something other than a constant.
+    fn value_where_no_arm_declares<'a>(
+        func_node: &Node<'a>,
+        index_node: &Node<'a>,
+        access: &Node<'a>,
+        var_name: &str,
+        source: &'a str,
+    ) -> Result<Vec<StoreValue>, ()> {
+        if index_node.kind() != "identifier" {
+            return Ok(Vec::new());
+        }
+        let Some((decl, declarator)) = resolve_identifier_declarator(index_node, var_name, source)
+        else {
+            return Ok(Vec::new());
+        };
+        let holding = preproc_arms::enclosing_arms(access);
+        let in_arm_apart = preproc_arms::enclosing_arms(&decl).iter().any(|arm| {
+            !holding
+                .iter()
+                .any(|h| h.head.id() == arm.head.id() && h.index == arm.index)
+        });
+        if !in_arm_apart
+            || side_effects::declarations_in_every_arm(&decl, var_name, source).is_some()
+        {
+            return Ok(Vec::new());
+        }
+        let inner_scope = Self::declaring_scope(&declarator);
+        let outer = find_enclosing_declaration_where(index_node, var_name, source, &|d| {
+            query::find_ancestor(*d, |n| is_declaration_scope(&n)).map(|s| s.id()) != inner_scope
+        });
+        let Some(outer) = outer else {
+            let elsewhere = find_parameter_declaration(func_node, var_name, source).is_some()
+                || file_scope_declaration_where(index_node, var_name, source, &|_| true).is_some();
+            return if elsewhere { Err(()) } else { Ok(Vec::new()) };
+        };
+        let outer_declarator = declaration_declarator_for(&outer, var_name, source).ok_or(())?;
+        let binds = Self::binds_to_declarator(func_node, outer_declarator, var_name, source);
+        let func_text = &source[func_node.start_byte()..func_node.end_byte()];
+        let escaped = regex::escape(var_name);
+        let any = regex::Regex::new(&format!(r"\b{escaped}\s*=[^=!<>]")).map_err(|_| ())?;
+        let constant =
+            regex::Regex::new(&format!(r"\b{escaped}\s*=\s*(-?\d+)\s*;")).map_err(|_| ())?;
+        let start = func_node.start_byte();
+        let before = |at: usize| start + at < index_node.start_byte() && binds(start + at);
+        let assigned = any
+            .find_iter(func_text)
+            .filter(|m| before(m.start()))
+            .count();
+        let stores: Vec<StoreValue> = constant
+            .captures_iter(func_text)
+            .filter_map(|c| {
+                let whole = c.get(0)?;
+                let value = c.get(1)?.as_str().parse::<isize>().ok()?;
+                before(whole.start()).then_some((start + whole.start(), start + whole.end(), value))
+            })
+            .collect();
+        if assigned != stores.len() {
+            return Err(());
+        }
+        let read = Self::arm_stores(func_node, access, var_name, &stores, source);
+        let kept = Self::compiled_stores(&read, access, source);
+        Ok(Self::join_arm_stores(&kept, 0, Vec::new(), source))
+    }
+
+    /// The values `stores` can leave, given those `incoming`. A store outside
+    /// any further arm replaces them, or joins them if it may not run. A
+    /// chain's arms each start from what came in and their results join,
+    /// along with what came in when some configuration passes through with
+    /// no store: a live arm with none that does not jump away, or no `#else`.
+    /// Each value is kept once, its last store, so what the fold holds is
+    /// bounded by the distinct values and not by the ways through the arms.
+    fn join_arm_stores(
+        stores: &[&ArmStore],
+        level: usize,
+        incoming: Vec<StoreValue>,
+        source: &str,
+    ) -> Vec<StoreValue> {
+        let mut state = incoming;
+        let mut at = 0;
+        while at < stores.len() {
+            let store = stores[at];
+            let Some(arm) = store.arms.get(level) else {
+                if !store.conditional {
+                    state.clear();
+                }
+                state.push(store.value);
+                Self::keep_last_of_each_value(&mut state);
+                at += 1;
+                continue;
+            };
+            let head = arm.head;
+            let run = stores[at..]
+                .iter()
+                .take_while(|s| s.arms.get(level).is_some_and(|a| a.head.id() == head.id()))
+                .count();
+            let mut indices: Vec<u32> = stores[at..at + run]
+                .iter()
+                .map(|s| s.arms[level].index)
+                .collect();
+            indices.dedup();
+            let liveness = Self::chain_liveness(&head, source);
+            let is_live = |index: u32| liveness.live.get(index as usize).copied().unwrap_or(true);
+            let mut joined =
+                if Self::chain_lets_incoming_through(&head, &indices, &liveness, source) {
+                    state.clone()
+                } else {
+                    Vec::new()
+                };
+            for index in indices.into_iter().filter(|&i| is_live(i)) {
+                let in_arm: Vec<&ArmStore> = stores[at..at + run]
+                    .iter()
+                    .filter(|s| s.arms[level].index == index)
+                    .copied()
+                    .collect();
+                joined.extend(Self::join_arm_stores(
+                    &in_arm,
+                    level + 1,
+                    state.clone(),
+                    source,
+                ));
+            }
+            Self::keep_last_of_each_value(&mut joined);
+            state = joined;
+            at += run;
+        }
+        state
+    }
+
+    /// Drop all but the last store of each value, keeping their order.
+    fn keep_last_of_each_value(values: &mut Vec<StoreValue>) {
+        let mut seen = HashSet::new();
+        values.reverse();
+        values.retain(|value| seen.insert(value.2));
+        values.reverse();
+    }
+
+    /// Which arms of the chain opened by `head` can compile. The file proves
+    /// the opening arm dead or always taken only from what comes before it
+    /// (ADR-0010), so the question is asked of that text with an `#else` added,
+    /// which the scanner needs in order to name the arm it rules out. A literal
+    /// non-zero `#if` is taken as well, which the scanner does not read.
+    fn chain_liveness(head: &Node, source: &str) -> ChainLiveness {
+        let arms = Self::chain_arm_nodes(head);
+        let dead = file_proven_dead_lines(source);
+        let arm_dead = |arm: &Node| {
+            let first_line = arm.start_position().row + 2;
+            dead.iter()
+                .any(|&(s, e)| first_line >= s && first_line <= e)
+        };
+        let condition = head
+            .child_by_field_name("condition")
+            .or_else(|| head.child_by_field_name("name"));
+        let literal_true = condition
+            .filter(|c| c.kind() == "number_literal")
+            .and_then(|c| get_node_text(&c, source).parse::<i64>().ok())
+            .is_some_and(|v| v != 0);
+        let (opening_dead, opening_taken) = if literal_true {
+            (false, true)
+        } else {
+            Self::opening_arm_proven(head, condition.as_ref(), source)
+        };
+        let live = arms
+            .iter()
+            .enumerate()
+            .map(|(index, arm)| {
+                if index == 0 {
+                    !opening_dead
+                } else {
+                    !opening_taken && !arm_dead(arm)
+                }
+            })
+            .collect();
+        ChainLiveness {
+            live,
+            opening_taken,
+        }
+    }
+
+    /// `(dead, taken)` for the opening arm of the chain at `head`.
+    fn opening_arm_proven(head: &Node, condition: Option<&Node>, source: &str) -> (bool, bool) {
+        let Some(condition) = condition else {
+            return (false, false);
+        };
+        let Some(prefix) = source.get(..condition.end_byte()) else {
+            return (false, false);
+        };
+        let opening_line = head.start_position().row + 1;
+        let extra_lines = prefix[head.start_byte()..].matches('\n').count();
+        let probe = format!("{prefix}\nx\n#else\ny\n#endif\n");
+        let (then_line, else_line) = (
+            opening_line + extra_lines + 1,
+            opening_line + extra_lines + 3,
+        );
+        let dead = file_proven_dead_lines(&probe);
+        let holds = |line: usize| dead.iter().any(|&(s, e)| line >= s && line <= e);
+        (holds(then_line), holds(else_line))
+    }
+
+    /// True when a configuration gets through the chain opened by `head` with
+    /// what came in: nothing the arms in `stored` do applies to it, and it
+    /// does not jump away.
+    fn chain_lets_incoming_through(
+        head: &Node,
+        stored: &[u32],
+        liveness: &ChainLiveness,
+        source: &str,
+    ) -> bool {
+        let arms = Self::chain_arm_nodes(head);
+        let covers =
+            liveness.opening_taken || arms.last().is_some_and(|a| a.kind() == "preproc_else");
+        !covers
+            || arms.iter().enumerate().any(|(index, arm)| {
+                liveness.live[index]
+                    && !stored.contains(&(index as u32))
+                    && !Self::arm_leaves(arm, source)
+            })
     }
 
     /// True when `func_node` steps or compound-assigns (`i++`, `(i)--`,
@@ -1745,9 +2398,7 @@ impl Arr30C {
     /// by declarator (ADR-0006). The occurrence that declares an object is
     /// its own declarator; any other is resolved at its own position. None
     /// when the index is not a bare identifier or its declarator cannot be
-    /// found, so the caller keeps every occurrence. A declaration of the
-    /// same name directly in the same scope is an alternative preprocessor
-    /// arm, and counts as the same object.
+    /// found, so the caller keeps every occurrence.
     #[allow(clippy::type_complexity)]
     fn assignment_binding_filter<'a>(
         func_node: &Node<'a>,
@@ -1759,9 +2410,22 @@ impl Arr30C {
             return None;
         }
         let (_, used) = resolve_identifier_declarator(index_node, var_name, source)?;
+        Some(Self::binds_to_declarator(func_node, used, var_name, source))
+    }
+
+    /// A test of whether the name `var_name` starting at a byte offset inside
+    /// `func_node` names the object `used` declares. A declaration of the
+    /// same name directly in the same scope is an alternative preprocessor
+    /// arm, and counts as the same object.
+    fn binds_to_declarator<'a>(
+        func_node: &Node<'a>,
+        used: Node<'a>,
+        var_name: &str,
+        source: &'a str,
+    ) -> Box<dyn Fn(usize) -> bool + 'a> {
         let func = *func_node;
         let name = var_name.to_string();
-        Some(Box::new(move |at: usize| {
+        Box::new(move |at: usize| {
             let Some(ident) = func.descendant_for_byte_range(at, at + name.len()) else {
                 return false;
             };
@@ -1781,7 +2445,7 @@ impl Arr30C {
             declarator.is_some_and(|d| {
                 d.id() == used.id() || Self::declaring_scope(&d) == Self::declaring_scope(&used)
             })
-        }))
+        })
     }
 
     /// True when the array `subscript` indexes may have another size in
@@ -1836,23 +2500,6 @@ impl Arr30C {
             n = p.parent();
         }
         true
-    }
-
-    /// True when the identifier starting at byte `at` is the declarator of
-    /// an `init_declarator`.
-    fn declares_at(func_node: &Node, at: usize) -> bool {
-        func_node
-            .descendant_for_byte_range(at, at + 1)
-            .filter(|n| n.kind() == "identifier")
-            .and_then(|ident| {
-                let p = ident.parent()?;
-                Some(
-                    p.kind() == "init_declarator"
-                        && p.child_by_field_name("declarator")
-                            .is_some_and(|d| d.id() == ident.id()),
-                )
-            })
-            .unwrap_or(false)
     }
 
     /// The id of the scope a declarator declares its name in. Two
