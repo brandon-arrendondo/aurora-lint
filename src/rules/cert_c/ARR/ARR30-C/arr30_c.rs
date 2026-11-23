@@ -74,6 +74,7 @@ use crate::utility::cert_c::ast_utils::{
     resolve_identifier_declarator, static_macro_names_in_scope, tree_root,
 };
 use crate::utility::cert_c::call_roles;
+use crate::utility::cert_c::data_model::{Fact, Rank};
 use crate::utility::cert_c::guard_dominance::{
     self, collect_call_arg_guards, has_dominating_comparison, ComparisonKind,
 };
@@ -94,18 +95,23 @@ struct ArmStore<'t> {
     value: StoreValue,
 }
 
-/// What a constant index holds at an access, read across preprocessor arms.
+/// What a constant index holds at an access, read from the stores that reach
+/// it, across preprocessor arms where they decide it.
 enum ArmRead {
-    /// No arm apart from the access decides it.
-    NotArms,
     /// Some configuration leaves a value this reading cannot say: the index
     /// is a variable.
     Unknown,
-    /// What the arms leave depends on something this reading does not follow,
-    /// so it claims nothing about the index, as a value or as a variable.
-    Declined,
-    /// One value per way through the arms, in source order, each value once.
-    Values(Vec<StoreValue>),
+    /// One value per way to the access, in source order, each value once.
+    /// `declined` when what the stores leave depends on something the fold
+    /// does not follow, so that it claims no value, unless the value range at
+    /// the access holds only one.
+    Values {
+        values: Vec<StoreValue>,
+        declined: bool,
+        /// Some store, or the index's declaration, sits in an arm apart from
+        /// the access.
+        across_arms: bool,
+    },
 }
 
 /// What [`Arr30C::try_resolve_variable_to_constant`] makes of an index.
@@ -113,7 +119,8 @@ enum ResolvedIndex {
     Constant(isize),
     /// Nothing known: a variable index.
     Variable,
-    /// See [`ArmRead::Declined`].
+    /// The fold declined across arms, and it claims nothing about the
+    /// index, as a value or as a variable (see [`ArmRead::Values`]).
     Declined,
 }
 
@@ -219,6 +226,10 @@ pub struct Arr30C {
     /// `find_preproc_conflicted_arrays` of the file being scanned; set per
     /// file.
     preproc_conflicted_arrays: RefCell<HashSet<String>>,
+    /// The `(name, line)` of each struct or union member array in the
+    /// file-scope buffer map: a size for an access through a member only.
+    /// Set per file.
+    member_array_entries: RefCell<HashSet<(String, usize)>>,
     /// The file-scope declarations of a name, as byte ranges, read once per
     /// name per file: an access to a guarded global asks at every use.
     file_scope_declarations: RefCell<HashMap<String, Rc<ByteRanges>>>,
@@ -479,6 +490,7 @@ impl Arr30C {
             cached_typedefs: RefCell::new(HashMap::new()),
             cached_file_constants: RefCell::new(HashMap::new()),
             preproc_conflicted_arrays: RefCell::new(HashSet::new()),
+            member_array_entries: RefCell::new(HashSet::new()),
             file_scope_declarations: RefCell::new(HashMap::new()),
             file_scope_by_identifier: RefCell::new(None),
             local_declarations: RefCell::new(HashMap::new()),
@@ -602,6 +614,10 @@ impl Arr30C {
             &macros,
             &mut buffers,
         );
+        *self.member_array_entries.borrow_mut() = buffers
+            .values()
+            .map(|b| (b.name.clone(), b.allocation_line))
+            .collect();
 
         // `include_function_bodies = false`: do not descend into any
         // function_definition's body here.
@@ -1289,10 +1305,15 @@ impl Arr30C {
             // A local of this name declared later, or in a block the access
             // is not in, is not what the access names: the object is one the
             // file does not show, of a size it does not say. Nor is a
-            // declaration in an arm the access never compiles with.
+            // declaration in an arm the access never compiles with, nor a
+            // struct member, which a bare name never names.
             return entry
                 .filter(|e| {
-                    !self.names_local_out_of_scope(e, occurrence, name, source)
+                    !self
+                        .member_array_entries
+                        .borrow()
+                        .contains(&(e.name.clone(), e.allocation_line))
+                        && !self.names_local_out_of_scope(e, occurrence, name, source)
                         && !self.entry_in_arm_apart(e, occurrence, name, source)
                 })
                 .cloned();
@@ -1608,7 +1629,8 @@ impl Arr30C {
         source: &str,
     ) -> Option<isize> {
         // Extract sizeof target and arithmetic operation
-        let re = regex::Regex::new(r"sizeof\s*\(\s*(\w+)\s*\)\s*(-|\+)\s*(\d+)").ok()?;
+        // The whole index, so `i + sizeof(buf) - 1` is not read as its tail.
+        let re = regex::Regex::new(r"^sizeof\s*\(\s*(\w+)\s*\)\s*(-|\+)\s*(\d+)$").ok()?;
         let caps = re.captures(expr)?;
 
         let var_name = caps.get(1)?.as_str();
@@ -1628,10 +1650,14 @@ impl Arr30C {
         None
     }
 
-    /// The size of the array `var_name` names in `sizeof(var_name)` inside
-    /// `index_node`, from the declaration that occurrence binds to (ADR-0006),
-    /// when that declares a literal size. tree-sitter reads a parenthesized
-    /// operand as a type name as readily as an expression.
+    /// `sizeof(var_name)` inside `index_node`, in bytes, when `var_name` binds
+    /// (ADR-0006) to an array declared with a literal size of one dimension
+    /// whose element size the data model fixes (ADR-0011). That is the
+    /// element count only for a `char` array: `int buf[8]` has a `sizeof` of
+    /// 32 on lp64 and none under ISO C's widths. A parameter declared as an
+    /// array is a pointer (C11 6.7.6.3p7), so its `sizeof` is no array's.
+    /// tree-sitter reads a parenthesized operand as a type name as readily as
+    /// an expression.
     fn sizeof_operand_size(
         &self,
         index_node: &Node,
@@ -1643,17 +1669,33 @@ impl Arr30C {
                 && get_node_text(&n, source) == var_name
         })?;
         let found = resolve_identifier_declarator(&operand, var_name, source);
-        let (_, declarator) = self.binding_in_this_arm(found, &operand, var_name, source)?;
-        if declarator.kind() != "array_declarator" {
+        let (decl, declarator) = self.binding_in_this_arm(found, &operand, var_name, source)?;
+        if decl.kind() != "declaration"
+            || declarator.kind() != "array_declarator"
+            || declarator
+                .child_by_field_name("declarator")
+                .is_none_or(|inner| inner.kind() != "identifier")
+        {
             return None;
         }
-        match self
+        let count = match self
             .extract_buffer_from_array_declarator(&declarator, source)?
             .size
         {
-            BufferSize::Static(size) => Some(size),
-            _ => None,
-        }
+            BufferSize::Static(size) => size,
+            _ => return None,
+        };
+        let element = decl.child_by_field_name("type")?;
+        let (_, width) = self
+            .data_model
+            .get()
+            .spelled_width(&get_node_text(&element, source))?;
+        let element_bytes = if width.rank == Some(Rank::Char) {
+            1
+        } else {
+            width.max? / self.data_model.get().get(Fact::CharBits)?
+        };
+        count.checked_mul(element_bytes as usize)
     }
 
     /// Check if expression contains arithmetic operators
@@ -1740,7 +1782,11 @@ impl Arr30C {
                 Some((start + whole.start(), start + whole.end(), value(c)?))
             })
             .collect();
-        let origin = match Self::index_read_across_arms(
+        // A store too large to read says nothing, and nor do the others.
+        if stores.len() != constant_assigns.len() {
+            return ResolvedIndex::Variable;
+        }
+        let (values, declined, across_arms) = match Self::index_read_across_arms(
             &func_node,
             index_node,
             current_node,
@@ -1748,33 +1794,48 @@ impl Arr30C {
             &stores,
             source,
         ) {
-            // A last store too large to read says nothing, not the one before.
-            ArmRead::NotArms => stores
-                .last()
-                .copied()
-                .filter(|_| stores.len() == constant_assigns.len()),
             ArmRead::Unknown => return ResolvedIndex::Variable,
-            ArmRead::Declined => return ResolvedIndex::Declined,
-            // Any arm may be the one built, so arms that disagree take the
-            // value furthest out of range (the most negative, else the
-            // largest): an out-of-bounds arm is reported and arms all in
-            // bounds stay silent. An array declared inside an arm pairs with
-            // that arm's index, which the pick cannot see, so it keeps the
-            // last arm's value.
-            ArmRead::Values(values) => {
-                let min = values.iter().min_by_key(|v| v.2).copied();
-                let max = values.iter().max_by_key(|v| v.2).copied();
-                if Self::array_declared_in_preprocessor_arm(current_node, source) {
-                    values.last().copied()
-                } else if min.is_some_and(|m| m.2 < 0) {
-                    min
-                } else {
-                    max
+            ArmRead::Values {
+                values,
+                declined,
+                across_arms,
+            } => (values, declined, across_arms),
+        };
+        let range = self.index_range_at(&func_node, index_node, current_node, var_name, source);
+        let within: Vec<StoreValue> = match range {
+            Some(r) => values
+                .iter()
+                .filter(|v| (r.min..=r.max).contains(&(v.2 as i64)))
+                .copied()
+                .collect(),
+            None => values.clone(),
+        };
+        let only = range
+            .filter(|r| r.min == r.max)
+            .and_then(|r| within.last().copied().filter(|v| v.2 as i64 == r.min));
+        let origin = match only {
+            Some(origin) => origin,
+            // Where no arm decides it, the index the fold cannot follow is
+            // the variable it is, judged by its range at the access.
+            None if declined && !across_arms => return ResolvedIndex::Variable,
+            None if declined => return ResolvedIndex::Declined,
+            // An array declared inside an arm pairs with that arm's index,
+            // which the pick cannot see, so it keeps the last arm's value.
+            None if Self::array_declared_in_preprocessor_arm(current_node, source) => {
+                match values.last() {
+                    Some(&last) => last,
+                    None => return ResolvedIndex::Variable,
                 }
             }
-        };
-        let Some(origin) = origin else {
-            return ResolvedIndex::Variable;
+            // A range that holds no store's value is one a step moved past
+            // them, which `stepped_constant_as_variable` reads from here.
+            None => {
+                match Self::furthest_out_of_range(if within.is_empty() { &values } else { &within })
+                {
+                    Some(origin) => origin,
+                    None => return ResolvedIndex::Variable,
+                }
+            }
         };
         // `int i = 0; int *q = &i; *q = n;` leaves `i` holding `n`.
         if nonzero_facts::pointer_write_reaches(
@@ -1788,15 +1849,15 @@ impl Arr30C {
         ResolvedIndex::Constant(origin.2)
     }
 
-    /// What a constant index holds at `access` when preprocessor arms decide
-    /// it (ADR-0010: arms are alternatives, each compilable configuration
-    /// counts, and an arm the file proves dead is none). `stores` are the
-    /// constant assignments to the object the index names, as `(start, end,
-    /// value)` in source order. These are no store here: one in an arm the
-    /// access never compiles with or that is dead, one the code jumps away
-    /// from before the access, and one after the access, unless a loop holds
-    /// both, when it may run first. `NotArms` when no store sits in an arm
-    /// that does not hold the access.
+    /// What a constant index holds at `access`: the values of the stores that
+    /// reach it, across preprocessor arms where they decide it (ADR-0010: arms
+    /// are alternatives, each compilable configuration counts, and an arm the
+    /// file proves dead is none). `stores` are the constant assignments to the
+    /// object the index names, as `(start, end, value)` in source order. These
+    /// are no store here: one in an arm the access never compiles with or
+    /// that is dead, one the code jumps away from before the access, and one
+    /// after the access, unless a loop holds both, when it may run first. A
+    /// store that may not run joins the value before it.
     fn index_read_across_arms<'a>(
         func_node: &Node<'a>,
         index_node: &Node<'a>,
@@ -1806,13 +1867,15 @@ impl Arr30C {
         source: &'a str,
     ) -> ArmRead {
         let read = Self::arm_stores(func_node, access, var_name, stores, source);
-        if read.iter().all(|store| store.arms.is_empty()) {
-            return ArmRead::NotArms;
-        }
-        let compiled = Self::compiled_stores(&read, access, source);
-        if Self::read_is_declined(&compiled, func_node, access, var_name, source) {
-            return ArmRead::Declined;
-        }
+        let across_arms = read.iter().any(|store| !store.arms.is_empty())
+            || Self::index_declared_apart(index_node, access, var_name, source);
+        // A store in no arm apart from the access compiles whenever it does.
+        let compiled = if !across_arms {
+            read.iter().collect()
+        } else {
+            Self::compiled_stores(&read, access, source)
+        };
+        let declined = Self::read_is_declined(&compiled, func_node, access, var_name, source);
         let kept: Vec<&ArmStore> = compiled
             .into_iter()
             .filter(|store| {
@@ -1833,8 +1896,86 @@ impl Arr30C {
         if values.is_empty() {
             ArmRead::Unknown
         } else {
-            ArmRead::Values(values)
+            ArmRead::Values {
+                values,
+                declined,
+                across_arms,
+            }
         }
+    }
+
+    /// True when the declaration `index_node` binds to sits in an arm apart
+    /// from `access`.
+    fn index_declared_apart(
+        index_node: &Node,
+        access: &Node,
+        var_name: &str,
+        source: &str,
+    ) -> bool {
+        resolve_identifier_declarator(index_node, var_name, source)
+            .is_some_and(|(decl, _)| Self::in_arm_apart(&decl, access))
+    }
+
+    /// True when `node` sits in an arm that does not hold `access`.
+    fn in_arm_apart(node: &Node, access: &Node) -> bool {
+        let holding = preproc_arms::enclosing_arms(access);
+        preproc_arms::enclosing_arms(node).iter().any(|arm| {
+            !holding
+                .iter()
+                .any(|h| h.head.id() == arm.head.id() && h.index == arm.index)
+        })
+    }
+
+    /// Of the values that may reach an access, the one furthest out of range
+    /// (the most negative, else the largest): any one may be the value at the
+    /// access, so one out of bounds is reported and values all in bounds stay
+    /// silent.
+    fn furthest_out_of_range(values: &[StoreValue]) -> Option<StoreValue> {
+        let min = values.iter().min_by_key(|v| v.2).copied();
+        if min.is_some_and(|m| m.2 < 0) {
+            min
+        } else {
+            values.iter().max_by_key(|v| v.2).copied()
+        }
+    }
+
+    /// The value range of the index at `access`, when it speaks for every
+    /// configuration: the declaration the index binds to, and every other
+    /// declaration of its name in the function, compile whenever the access
+    /// does. The range then holds every value the index may have there, so a
+    /// store's value outside it does not reach (`if (0) i = 9;`), and a range
+    /// of one value is the index on every way. A wider range says no more: it
+    /// joins what correlated tests leave, does not know that a checking macro
+    /// stops and reads two chains on one macro as independent, so it does
+    /// not stand in for a fold that declined. An index declared in an arm
+    /// apart from the access is one the range, kept per declaration, reads in
+    /// a single arm.
+    fn index_range_at(
+        &self,
+        func_node: &Node,
+        index_node: &Node,
+        access: &Node,
+        var_name: &str,
+        source: &str,
+    ) -> Option<const_eval::ValueRange> {
+        let constants = self.cached_file_constants.borrow();
+        let range = self
+            .vra_var_ranges_at(access, source, &constants)?
+            .get(var_name)
+            .copied()?;
+        let apart = |node: &Node| Self::in_arm_apart(node, access);
+        let (bound, _) = resolve_identifier_declarator(index_node, var_name, source)?;
+        if apart(&bound) {
+            return None;
+        }
+        let has_directives = source
+            .get(func_node.start_byte()..func_node.end_byte())
+            .is_some_and(|text| text.contains('#'));
+        let declared_apart = has_directives
+            && query::find_descendants_of_kind(*func_node, "declaration")
+                .iter()
+                .any(|d| declaration_declarator_for(d, var_name, source).is_some() && apart(d));
+        (!declared_apart).then_some(range)
     }
 
     /// `read` without the stores no configuration compiles with `access`.
@@ -2168,13 +2309,7 @@ impl Arr30C {
         else {
             return Ok(Vec::new());
         };
-        let holding = preproc_arms::enclosing_arms(access);
-        let in_arm_apart = preproc_arms::enclosing_arms(&decl).iter().any(|arm| {
-            !holding
-                .iter()
-                .any(|h| h.head.id() == arm.head.id() && h.index == arm.index)
-        });
-        if !in_arm_apart
+        if !Self::in_arm_apart(&decl, access)
             || side_effects::declarations_in_every_arm(&decl, var_name, source).is_some()
         {
             return Ok(Vec::new());
