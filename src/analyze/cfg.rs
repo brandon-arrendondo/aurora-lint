@@ -464,7 +464,14 @@ impl CfgBuilder {
         let body_block = self.new_block();
         let exit_block = self.new_block();
 
-        self.add_edge(header_block, body_block, CfgEdge::TrueBranch);
+        // `while (0)` never enters its body. The body is still built, so a
+        // label in it stays a `goto` target, but nothing else reaches it, and
+        // its end goes back to the condition as a plain fallthrough: control
+        // that arrived by `goto` tests the condition once and leaves. No back
+        // edge, since no pass follows another.
+        if const_val != Some(false) {
+            self.add_edge(header_block, body_block, CfgEdge::TrueBranch);
+        }
         // Skip FalseBranch for while(1) — the loop never exits via condition.
         // Exit is only reachable via break edges from the body.
         if const_val != Some(true) {
@@ -478,7 +485,12 @@ impl CfgBuilder {
         if let Some(body) = node.child_by_field_name("body") {
             self.process_statement(&body, source);
         }
-        self.add_edge(self.current_block, header_block, CfgEdge::BackEdge);
+        let back = if const_val == Some(false) {
+            CfgEdge::Fallthrough
+        } else {
+            CfgEdge::BackEdge
+        };
+        self.add_edge(self.current_block, header_block, back);
         self.loop_stack.pop();
         self.break_stack.pop();
 
@@ -511,9 +523,27 @@ impl CfgBuilder {
         let update_block = self.new_block();
         let exit_block = self.new_block();
 
-        self.add_edge(header_block, body_block, CfgEdge::TrueBranch);
+        // A counted loop whose start, bound and step decide its trips, and
+        // whose counter nothing else writes, runs its body exactly once
+        // (`for (k = 0; k < 1; k++)`) or never (`k < 0`). Once: the first
+        // test is true, so the header only enters the body, and the update
+        // leaves the loop instead of going back. Never: as `while (0)`.
+        let trips = for_trip_count(node, source, &self.constants);
+        let enters = match trips {
+            Some(ForTrips::Zero) => false,
+            Some(ForTrips::One) => true,
+            None => const_val != Some(false),
+        };
+        let can_skip = match trips {
+            Some(ForTrips::Zero) => true,
+            Some(ForTrips::One) => false,
+            None => const_val != Some(true),
+        };
+        if enters {
+            self.add_edge(header_block, body_block, CfgEdge::TrueBranch);
+        }
         // Skip FalseBranch for for(;;) or for(;1;) — loop only exits via break
-        if const_val != Some(true) {
+        if can_skip {
             self.add_edge(header_block, exit_block, CfgEdge::FalseBranch);
         }
 
@@ -533,7 +563,11 @@ impl CfgBuilder {
         if let Some(update) = node.child_by_field_name("update") {
             self.add_statement(update.start_byte(), update.end_byte());
         }
-        self.add_edge(update_block, header_block, CfgEdge::BackEdge);
+        match trips {
+            Some(ForTrips::One) => self.add_edge(update_block, exit_block, CfgEdge::Fallthrough),
+            Some(ForTrips::Zero) => self.add_edge(update_block, header_block, CfgEdge::Fallthrough),
+            None => self.add_edge(update_block, header_block, CfgEdge::BackEdge),
+        }
 
         self.current_block = exit_block;
     }
@@ -567,14 +601,21 @@ impl CfgBuilder {
         }
         self.current_block = cond_block;
 
-        if let Some(condition) = node.child_by_field_name("condition") {
+        let const_val = if let Some(condition) = node.child_by_field_name("condition") {
             self.add_statement(condition.start_byte(), condition.end_byte());
             if let Some(block) = self.blocks.get_mut(cond_block) {
                 block.condition_range = Some((condition.start_byte(), condition.end_byte()));
             }
-        }
+            evaluate_constant_condition(&condition, source, &self.constants)
+        } else {
+            None
+        };
 
-        self.add_edge(cond_block, body_block, CfgEdge::BackEdge);
+        // `do { ... } while (0)`, the statement-macro idiom, runs its body
+        // once: no back edge, so no pass sees what an earlier one did.
+        if const_val != Some(false) {
+            self.add_edge(cond_block, body_block, CfgEdge::BackEdge);
+        }
         self.add_edge(cond_block, exit_block, CfgEdge::FalseBranch);
 
         self.current_block = exit_block;
@@ -1024,6 +1065,266 @@ fn resolve_constant_operand(
         }
         _ => None,
     }
+}
+
+/// How many times a `for` loop's body runs, where the loop header alone
+/// decides it. See [`for_trip_count`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForTrips {
+    Zero,
+    One,
+}
+
+/// The trips of `for (k = c0; k OP c1; k += step)` when they are zero or
+/// one: `c0` and `c1` constants (literals, or file-scope constants as the
+/// other conditions read them), the update `k++`, `++k`, `k--`, `--k`,
+/// `k += c` or `k -= c`, and the test true at `c0` but false at
+/// `c0 + step` (one trip) or false at `c0` (none). The counter must be a
+/// plain automatic local or parameter, neither `static`, `volatile` nor
+/// `bool`, whose address is never taken in the function and which the body
+/// and the condition never assign, step or hand to a call (a macro may
+/// assign its argument). For one trip, `c0` and `c0 + step` must lie in
+/// 0..=127, which every integer type holds, and the body must have no label
+/// a `goto` could enter it by. The write and address tests are spelling
+/// matches, so a shadowing local only costs the answer. Anything else is
+/// `None`: the loop keeps its back edge.
+fn for_trip_count(node: &Node, source: &str, constants: &MacroConstantMap) -> Option<ForTrips> {
+    use crate::utility::cert_c::ast_utils::{resolve_identifier_binding, IdentifierBinding};
+    use lang_parsing_substrate::query;
+    let text = |n: &Node| n.utf8_text(source.as_bytes()).ok();
+    let init = node.child_by_field_name("initializer")?;
+    let (name, start) = match init.kind() {
+        "declaration" => {
+            let mut cursor = init.walk();
+            let declarators: Vec<Node> = init
+                .children_by_field_name("declarator", &mut cursor)
+                .collect();
+            let [decl] = declarators.as_slice() else {
+                return None;
+            };
+            if decl.kind() != "init_declarator" {
+                return None;
+            }
+            let id = decl.child_by_field_name("declarator")?;
+            let value = decl.child_by_field_name("value")?;
+            if id.kind() != "identifier" {
+                return None;
+            }
+            (
+                text(&id)?,
+                resolve_constant_operand(&unwrap_parens_cfg(&value), source, constants)?,
+            )
+        }
+        "assignment_expression" => {
+            if text(&init.child_by_field_name("operator")?)? != "=" {
+                return None;
+            }
+            let left = init.child_by_field_name("left")?;
+            let right = init.child_by_field_name("right")?;
+            if left.kind() != "identifier" {
+                return None;
+            }
+            (
+                text(&left)?,
+                resolve_constant_operand(&unwrap_parens_cfg(&right), source, constants)?,
+            )
+        }
+        _ => return None,
+    };
+
+    let condition_node = node.child_by_field_name("condition")?;
+    let condition = unwrap_parens_cfg(&condition_node);
+    if condition.kind() != "binary_expression" {
+        return None;
+    }
+    let left_node = condition.child_by_field_name("left")?;
+    let right_node = condition.child_by_field_name("right")?;
+    let left = unwrap_parens_cfg(&left_node);
+    let right = unwrap_parens_cfg(&right_node);
+    let op = text(&condition.child_by_field_name("operator")?)?.trim();
+    let (counter, bound, op) = if left.kind() == "identifier" && text(&left)? == name {
+        (
+            left,
+            resolve_constant_operand(&right, source, constants)?,
+            op,
+        )
+    } else if right.kind() == "identifier" && text(&right)? == name {
+        let flipped = match op {
+            "<" => ">",
+            ">" => "<",
+            "<=" => ">=",
+            ">=" => "<=",
+            other => other,
+        };
+        (
+            right,
+            resolve_constant_operand(&left, source, constants)?,
+            flipped,
+        )
+    } else {
+        return None;
+    };
+    let holds = |v: i64| -> Option<bool> {
+        Some(match op {
+            "<" => v < bound,
+            "<=" => v <= bound,
+            ">" => v > bound,
+            ">=" => v >= bound,
+            "!=" => v != bound,
+            "==" => v == bound,
+            _ => return None,
+        })
+    };
+
+    let update_node = node.child_by_field_name("update")?;
+    let update = unwrap_parens_cfg(&update_node);
+    let step: i64 = match update.kind() {
+        "update_expression" => {
+            let arg = update.child_by_field_name("argument")?;
+            if arg.kind() != "identifier" || text(&arg)? != name {
+                return None;
+            }
+            if text(&update.child_by_field_name("operator")?)? == "++" {
+                1
+            } else {
+                -1
+            }
+        }
+        "assignment_expression" => {
+            let target = update.child_by_field_name("left")?;
+            if target.kind() != "identifier" || text(&target)? != name {
+                return None;
+            }
+            let by = resolve_constant_operand(
+                &unwrap_parens_cfg(&update.child_by_field_name("right")?),
+                source,
+                constants,
+            )?;
+            match text(&update.child_by_field_name("operator")?)? {
+                "+=" => by,
+                "-=" => by.checked_neg()?,
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+
+    // The counter is an automatic object only this loop header writes, and
+    // not a `bool`, which `k++` leaves at 1 rather than stepping.
+    let is_bool = |t: &str| t.contains("bool") || t.contains("_Bool");
+    match resolve_identifier_binding(&counter, name, source)? {
+        IdentifierBinding::Parameter(ty) => {
+            if ty.contains("volatile") || is_bool(&ty) {
+                return None;
+            }
+        }
+        IdentifierBinding::Local(decl) => {
+            let mut cursor = decl.walk();
+            let qualified = decl.children(&mut cursor).any(|c| match c.kind() {
+                "storage_class_specifier" => true,
+                "type_qualifier" => text(&c).is_some_and(|t| t.trim() == "volatile"),
+                _ => false,
+            });
+            let boolean = decl
+                .child_by_field_name("type")
+                .and_then(|t| text(&t))
+                .is_some_and(is_bool);
+            if qualified || boolean {
+                return None;
+            }
+        }
+        IdentifierBinding::Global(_) => return None,
+    }
+    let function = {
+        let mut n = *node;
+        while n.kind() != "function_definition" {
+            n = n.parent()?;
+        }
+        n
+    };
+    if address_of_name(&function, name, source) {
+        return None;
+    }
+    let body = node.child_by_field_name("body")?;
+    if writes_name(&body, name, source) || writes_name(&condition, name, source) {
+        return None;
+    }
+    // A label in the body can be entered by a `goto` with the counter at any
+    // value, after which the update need not leave the loop.
+    if !query::find_descendants_of_kind(body, "labeled_statement").is_empty() {
+        return None;
+    }
+
+    if !holds(start)? {
+        return Some(ForTrips::Zero);
+    }
+    // Both values the counter takes must be ones every integer type holds,
+    // so the step neither wraps (`unsigned char k = 255; k < 256; k++`) nor
+    // is converted on the way back into the counter.
+    let next = start.checked_add(step)?;
+    if !(0..=127).contains(&start) || !(0..=127).contains(&next) {
+        return None;
+    }
+    if !holds(next)? {
+        return Some(ForTrips::One);
+    }
+    None
+}
+
+/// Every identifier spelled `name` under `node`, the node itself included.
+fn named_identifiers<'a>(node: &Node<'a>, name: &str, source: &str, out: &mut Vec<Node<'a>>) {
+    if node.kind() == "identifier" && node.utf8_text(source.as_bytes()).ok() == Some(name) {
+        out.push(*node);
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        named_identifiers(&child, name, source, out);
+    }
+}
+
+/// The nearest ancestor of `ident` that is not a parenthesized expression,
+/// with the node directly under it.
+fn through_parens<'a>(ident: &Node<'a>) -> Option<(Node<'a>, Node<'a>)> {
+    let mut child = *ident;
+    let mut parent = child.parent()?;
+    while parent.kind() == "parenthesized_expression" {
+        child = parent;
+        parent = child.parent()?;
+    }
+    Some((parent, child))
+}
+
+/// Whether `&name` (through parentheses) appears anywhere under `node`.
+fn address_of_name(node: &Node, name: &str, source: &str) -> bool {
+    let mut found = Vec::new();
+    named_identifiers(node, name, source, &mut found);
+    found.iter().any(|ident| {
+        through_parens(ident).is_some_and(|(parent, _)| {
+            parent.kind() == "pointer_expression"
+                && parent
+                    .child_by_field_name("operator")
+                    .and_then(|o| o.utf8_text(source.as_bytes()).ok())
+                    == Some("&")
+        })
+    })
+}
+
+/// Whether anything under `node` assigns `name`, steps it, or hands it to a
+/// call as an argument of its own (a function-like macro may assign it).
+fn writes_name(node: &Node, name: &str, source: &str) -> bool {
+    let mut found = Vec::new();
+    named_identifiers(node, name, source, &mut found);
+    found.iter().any(|ident| {
+        let Some((parent, child)) = through_parens(ident) else {
+            return false;
+        };
+        match parent.kind() {
+            "assignment_expression" => parent.child_by_field_name("left") == Some(child),
+            "update_expression" => true,
+            "argument_list" => true,
+            _ => false,
+        }
+    })
 }
 
 /// Unwrap parenthesized_expression nodes for CFG condition evaluation.
@@ -1534,5 +1835,106 @@ mod tests {
             "the switch's break leaves the switch, not the do loop: {:?}",
             cfg.edges
         );
+    }
+
+    fn has_back_edge(code: &str) -> bool {
+        let cfg = parse_and_build_cfg(code).unwrap();
+        cfg.edges.iter().any(|(_, _, e)| *e == CfgEdge::BackEdge)
+    }
+
+    /// Whether the block holding `stmt` is reachable from the entry.
+    fn reaches(code: &str, stmt: &str) -> bool {
+        let cfg = parse_and_build_cfg(code).unwrap();
+        let target = block_with_statement(&cfg, code, stmt);
+        let mut seen = HashSet::from([cfg.entry]);
+        let mut work = vec![cfg.entry];
+        while let Some(b) = work.pop() {
+            for (succ, _) in cfg.successors(b) {
+                if seen.insert(succ) {
+                    work.push(succ);
+                }
+            }
+        }
+        seen.contains(&target)
+    }
+
+    /// `do { ... } while (0)` runs its body once: no pass follows another.
+    #[test]
+    fn a_do_while_zero_has_no_back_edge() {
+        assert!(!has_back_edge(
+            "void f(int fd) { do { g(fd); } while (0); }"
+        ));
+        assert!(has_back_edge(
+            "void f(int fd, int a) { do { g(fd); } while (a); }"
+        ));
+    }
+
+    /// `while (0)` never enters its body, and the loop has no back edge,
+    /// while a label in the body is still a `goto` target.
+    #[test]
+    fn a_while_zero_body_is_dead() {
+        let code = "void f(int fd) { while (0) { g(fd); } h(fd); }";
+        assert!(!has_back_edge(code));
+        assert!(!reaches(code, "g(fd);"));
+        assert!(reaches(code, "h(fd);"));
+        let jumped = "void f(int fd) { goto in; while (0) { in: g(fd); } h(fd); }";
+        assert!(reaches(jumped, "g(fd);"));
+        assert!(!has_back_edge(jumped));
+    }
+
+    /// A counted `for` that its header proves runs once has no back edge
+    /// and cannot skip its body; one that never runs has a dead body.
+    #[test]
+    fn a_for_its_header_proves_single_pass_has_no_back_edge() {
+        let once = "void f(int fd) { int k; for (k = 0; k < 1; k++) { g(fd); } }";
+        assert!(!has_back_edge(once));
+        assert!(reaches(once, "g(fd);"));
+        let cfg = parse_and_build_cfg(once).unwrap();
+        let header = block_with_condition(&cfg, once, "k < 1");
+        assert!(
+            !cfg.successors(header)
+                .iter()
+                .any(|(_, e)| **e == CfgEdge::FalseBranch),
+            "the first test is true: {:?}",
+            cfg.edges
+        );
+        for code in [
+            "void f(int fd) { for (int k = 0; k < 1; k++) { g(fd); } }",
+            "void f(int fd) { for (int k = 0; 1 > k; ++k) { g(fd); } }",
+            "void f(int fd) { for (int k = 3; k >= 3; k--) { g(fd); } }",
+            "void f(int fd) { for (int k = 0; k != 4; k += 4) { g(fd); } }",
+        ] {
+            assert!(!has_back_edge(code), "{code}");
+        }
+        let never = "void f(int fd) { for (int k = 0; k < 0; k++) { g(fd); } h(fd); }";
+        assert!(!has_back_edge(never));
+        assert!(!reaches(never, "g(fd);"));
+        assert!(reaches(never, "h(fd);"));
+    }
+
+    /// A loop the header does not bound to one pass keeps its back edge:
+    /// a second trip, a counter the body writes or hands to a call, one
+    /// whose address is taken, a `static`, `volatile`, `bool` or file-scope
+    /// counter, a bound that is not constant, a value a narrow type may wrap,
+    /// a label a `goto` may enter the body by.
+    #[test]
+    fn a_for_not_proved_single_pass_keeps_its_back_edge() {
+        for code in [
+            "void f(int fd) { for (int k = 0; k < 2; k++) { g(fd); } }",
+            "void f(int fd) { for (int k = 0; k < 1; k++) { g(fd); k--; } }",
+            "void f(int fd) { for (int k = 0; k < 1; k++) { g(fd); k = 0; } }",
+            "void f(int fd) { for (int k = 0; k < 1; k++) { RESET(k); } }",
+            "void f(int fd) { int k; int *p = &k; for (k = 0; k < 1; k++) { *p = 0; } }",
+            "void f(int fd) { static int k; for (k = 0; k < 1; k++) { g(fd); } }",
+            "int k; void f(int fd) { for (k = 0; k < 1; k++) { g(fd); } }",
+            "void f(int fd, int n) { for (int k = 0; k < n; k++) { g(fd); } }",
+            "void f(int fd) { for (int k = 0; k++ < 1; k++) { g(fd); } }",
+            "void f(int fd) { for (_Bool k = 1; k < 2; k++) { g(fd); } }",
+            "void f(int fd) { for (unsigned char k = 255; k < 256; k++) { g(fd); } }",
+            "void f(int fd) { for (int k = 0; k < 1; k++) { in: g(fd); } goto in; }",
+            "void f(int fd) { volatile int k; for (k = 0; k < 1; k++) { g(fd); } }",
+        ] {
+            assert!(has_back_edge(code), "{code}");
+        }
     }
 }
