@@ -5,17 +5,21 @@
 //! from what its names resolve to, never from how they are spelled.
 //!
 //! An integer constant expression is built from integer and character
-//! constants, enumerators, `sizeof` and `_Alignof` of a type that is not
-//! variably modified, casts, and operators over those. A name bound to an
-//! object is not one, `const` or not: `const int k = 4; int a[k];` declares
-//! a variable-length array. A macro is read through its replacement list,
+//! constants, enumerators, `sizeof` and `_Alignof` of a type or expression
+//! that is not variably modified, casts to integer types, and operators
+//! over those. A name bound to an object is not one, `const` or not:
+//! `const int k = 4; int a[k];` declares a variable-length array. A name
+//! means what its innermost declaration in scope makes it (C11 6.2.1p4), so
+//! an enumerator in a block hides an object of the same name outside it,
+//! and the other way round. A macro is read through its replacement list,
 //! which is tested the same way where the macro is used, so
 //! `#define TOP ((unsigned long)ki_end)` is not a constant and
 //! `#define N (2 * slots)` is one when `slots` is an enumerator there.
 //!
 //! The answer has three values. A name that nothing in reach declares or
 //! defines (a header the scan did not read, say) is [`Constness::Unknown`],
-//! and each caller says which way that falls for it.
+//! as is an expression too large to read in the work budget, and each
+//! caller says which way that falls for it.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
@@ -28,7 +32,7 @@ use tree_sitter::{Node, Tree};
 use crate::analyze::check_macros::{collect_macro_definitions, MacroDefinition};
 use crate::analyze::context::ProjectContext;
 use crate::utility::cert_c::ast_utils::{
-    enumerator_in_scope, get_node_text, resolve_identifier_declarator, typedef_definition_in_scope,
+    get_node_text, tree_root, typedef_definition_in_scope, ScopeDeclarations,
 };
 use crate::utility::cert_c::declarator_utils::{
     inner_declarator, typedef_declarators, TypedefShape,
@@ -40,11 +44,14 @@ use crate::utility::cert_c::expr_type::is_standard_typedef_name;
 pub enum Constness {
     /// It is one in every build that defines the names it uses.
     Constant,
-    /// It is not: it reads an object, calls a function, or takes the size
-    /// of a variably modified type. Also the answer past the work budget.
+    /// It is not: it reads an object, calls a function, casts to a type
+    /// that is not an integer type, or takes the size of a variably
+    /// modified type or expression.
     NotConstant,
     /// It uses a name nothing in reach declares or defines, or a macro whose
-    /// replacement list does not read as an expression.
+    /// replacement list does not read as an expression. Also the answer for
+    /// an expression the work budget or the depth cap stopped short of,
+    /// unless what was read already shows it is not constant.
     Unknown,
 }
 
@@ -75,6 +82,9 @@ impl Constness {
 pub struct ProjectTables {
     definitions: Arc<HashMap<String, Vec<MacroDefinition>>>,
     typedefs: Arc<HashMap<String, String>>,
+    /// Every live definition of each typedef name: the aliased type's text
+    /// for a scalar typedef, empty for any other.
+    typedef_arms: Arc<HashMap<String, Vec<String>>>,
     struct_aliases: Arc<HashMap<String, String>>,
     structs: Arc<HashMap<String, HashMap<String, String>>>,
     /// Every function the scanned files define, and every one a scanned
@@ -89,6 +99,7 @@ impl ProjectTables {
         Self {
             definitions: context.macro_definitions.clone(),
             typedefs: context.typedef_types.clone(),
+            typedef_arms: context.typedef_arms.clone(),
             struct_aliases: context.struct_typedef_aliases.clone(),
             structs: context.struct_field_types.clone(),
             functions: Arc::new(context.call_graph.keys().cloned().collect()),
@@ -100,7 +111,8 @@ impl ProjectTables {
 /// The most steps one expression may take to be shown constant. A size whose
 /// `sizeof` operands name arrays sized the same way is re-read once per
 /// reference, which doubles per level when each level names two; past the
-/// budget the expression is not shown constant.
+/// budget the expression is unknown, unless what was read already shows it
+/// is not constant.
 const WORK: usize = 4096;
 
 /// How deep the test follows operands, typedefs and macros.
@@ -114,6 +126,16 @@ struct FileTables {
     /// block. Only a block can declare a variably modified type, so only
     /// those names need the scoped lookup, whose cost grows with the file.
     typedefs: HashMap<String, bool>,
+    /// Each enumerator the tree declares, by name, in its order.
+    enumerators: HashMap<String, Vec<EnumeratorSite>>,
+}
+
+/// Where an enumerator is declared: its start, and the block or translation
+/// unit whose scope it has.
+struct EnumeratorSite {
+    start: usize,
+    scope_start: usize,
+    scope_end: usize,
 }
 
 /// A macro's replacement list, parsed as the initializer of a declaration.
@@ -127,6 +149,9 @@ pub struct ConstantExpressions<'a, 'p> {
     root: Node<'a>,
     source: &'a str,
     project: &'p ProjectTables,
+    /// The file's scopes, read once for every name the test resolves: a
+    /// lookup costs the scopes around the name, not the whole tree.
+    scopes: ScopeDeclarations<'a>,
     file: OnceCell<FileTables>,
     /// Each replacement list read so far, by its text; `None` when it does
     /// not parse as an expression.
@@ -156,6 +181,7 @@ impl<'a, 'p> ConstantExpressions<'a, 'p> {
             root,
             source,
             project,
+            scopes: ScopeDeclarations::indexed(tree_root(&root)),
             file: OnceCell::new(),
             bodies: RefCell::new(HashMap::new()),
             expanding: RefCell::new(Vec::new()),
@@ -188,7 +214,7 @@ impl<'a, 'p> ConstantExpressions<'a, 'p> {
     ) -> Constness {
         if depth > DEPTH || self.work_left.get() == 0 {
             self.cut_short.set(true);
-            return Constness::NotConstant;
+            return Constness::Unknown;
         }
         self.work_left.set(self.work_left.get() - 1);
         let operand = |child: Node<'e>| self.expression(child, src, anchor, depth + 1);
@@ -208,13 +234,24 @@ impl<'a, 'p> ConstantExpressions<'a, 'p> {
             "parenthesized_expression" => {
                 expr.named_child(0).map_or(Constness::NotConstant, operand)
             }
-            // A floating constant may be the immediate operand of a cast
-            // (C11 6.6p6).
-            "cast_expression" => match expr.child_by_field_name("value") {
-                Some(value) if value.kind() == "number_literal" => Constness::Constant,
-                Some(value) => operand(value),
-                None => Constness::NotConstant,
-            },
+            // A cast belongs only when it converts to an integer type, and
+            // then a floating constant may be its immediate operand (C11
+            // 6.6p6).
+            "cast_expression" => {
+                let target = expr
+                    .child_by_field_name("type")
+                    .map_or(Constness::Unknown, |ty| {
+                        self.cast_target(ty, src, anchor, depth)
+                    });
+                if target == Constness::NotConstant {
+                    return target;
+                }
+                match expr.child_by_field_name("value") {
+                    Some(value) if value.kind() == "number_literal" => target,
+                    Some(value) => target.and(operand(value)),
+                    None => Constness::NotConstant,
+                }
+            }
             "unary_expression" => {
                 let operator = expr
                     .child_by_field_name("operator")
@@ -257,10 +294,10 @@ impl<'a, 'p> ConstantExpressions<'a, 'p> {
     /// constant, an enumerator is, and a macro is what its replacement list
     /// is.
     fn name(&self, name: &str, anchor: Node<'a>, depth: usize) -> Constness {
-        if resolve_identifier_declarator(&anchor, name, self.source).is_some() {
+        if self.object(anchor, name).is_some() {
             return Constness::NotConstant;
         }
-        if enumerator_in_scope(&anchor, name, self.source) {
+        if self.enumerator_rank(anchor, name).is_some() {
             return Constness::Constant;
         }
         self.macro_constness(name, anchor, depth)
@@ -334,7 +371,7 @@ impl<'a, 'p> ConstantExpressions<'a, 'p> {
             self.project.functions.contains(name) || self.project.header_functions.contains(name);
         if function
             || self.expanding.borrow().iter().any(|n| n == name)
-            || resolve_identifier_declarator(&anchor, name, self.source).is_some()
+            || self.object(anchor, name).is_some()
         {
             return Constness::NotConstant;
         }
@@ -426,24 +463,213 @@ impl<'a, 'p> ConstantExpressions<'a, 'p> {
         }
         match inner.kind() {
             "string_literal" | "concatenated_string" | "field_expression" => Constness::Constant,
-            "identifier" => {
-                let name = get_node_text(&inner, src);
-                match self.block_typedef_in_scope(anchor, name) {
-                    Some(definition) => self.fixed_size_typedef(definition, name, depth),
-                    None if self.names_header_type(anchor, name) => Constness::Constant,
-                    None if is_standard_typedef_name(name)
-                        && resolve_identifier_declarator(&anchor, name, self.source).is_none() =>
-                    {
-                        Constness::Constant
+            "identifier" => self.sizeof_name(get_node_text(&inner, src), anchor, depth),
+            _ => self.sizeof_expression(inner, src, anchor, depth),
+        }
+    }
+
+    /// `sizeof` of the name `name` where `anchor` is: of a typedef, an
+    /// enumerator, an object or a macro.
+    fn sizeof_name(&self, name: &str, anchor: Node<'a>, depth: usize) -> Constness {
+        match self.block_typedef_in_scope(anchor, name) {
+            Some(definition) => self.fixed_size_typedef(definition, name, depth),
+            None if self.names_header_type(anchor, name) => Constness::Constant,
+            None if self.object(anchor, name).is_some() => {
+                self.names_fixed_size_object(anchor, name, depth)
+            }
+            None if is_standard_typedef_name(name)
+                || self.enumerator_rank(anchor, name).is_some() =>
+            {
+                Constness::Constant
+            }
+            None => self.sizeof_unresolved_name(name, anchor, depth),
+        }
+    }
+
+    /// `sizeof` of an expression that is not a lone name, `*p` or `m[i]`.
+    /// Its type is variably modified only when it is derived from a name or
+    /// a type name that is (C11 6.7.6p3), so it is constant when every name
+    /// it reads has a constant `sizeof` and every type it names has a
+    /// constant size. A member is never variably modified (C11 6.7.2.1p9),
+    /// a called function's type is not, nor is the result of an inner
+    /// `sizeof`, so none of those is read.
+    fn sizeof_expression<'e>(
+        &self,
+        operand: Node<'e>,
+        src: &str,
+        anchor: Node<'a>,
+        depth: usize,
+    ) -> Constness {
+        let mut constness = Constness::Constant;
+        let mut pending = vec![operand];
+        while let Some(node) = pending.pop() {
+            if constness == Constness::NotConstant {
+                break;
+            }
+            if depth > DEPTH || self.work_left.get() == 0 {
+                self.cut_short.set(true);
+                return constness.and(Constness::Unknown);
+            }
+            self.work_left.set(self.work_left.get() - 1);
+            match node.kind() {
+                "identifier" => {
+                    let callee = node.parent().is_some_and(|call| {
+                        call.kind() == "call_expression"
+                            && call
+                                .child_by_field_name("function")
+                                .is_some_and(|f| f.id() == node.id())
+                    });
+                    if !callee {
+                        let name = get_node_text(&node, src);
+                        constness = constness.and(self.sizeof_name(name, anchor, depth + 1));
                     }
-                    None if resolve_identifier_declarator(&anchor, name, self.source).is_some() => {
-                        self.names_fixed_size_object(anchor, name, depth)
-                    }
-                    None => self.sizeof_unresolved_name(name, anchor, depth),
+                }
+                "type_descriptor" => {
+                    constness = constness.and(self.fixed_size_type(node, src, anchor, depth + 1));
+                }
+                "field_expression"
+                | "sizeof_expression"
+                | "alignof_expression"
+                | "offsetof_expression"
+                | "string_literal"
+                | "concatenated_string"
+                | "number_literal"
+                | "char_literal"
+                | "comment" => {}
+                _ => {
+                    let mut cursor = node.walk();
+                    pending.extend(node.named_children(&mut cursor));
                 }
             }
-            _ => Constness::NotConstant,
         }
+        constness
+    }
+
+    /// Whether a cast to the type `descriptor` names may stand in an integer
+    /// constant expression: an integer type is constant, any other type is
+    /// not (C11 6.6p6). A pointer, array or function type is never one.
+    fn cast_target<'e>(
+        &self,
+        descriptor: Node<'e>,
+        src: &str,
+        anchor: Node<'a>,
+        depth: usize,
+    ) -> Constness {
+        if descriptor.child_by_field_name("declarator").is_some() {
+            return Constness::NotConstant;
+        }
+        descriptor
+            .child_by_field_name("type")
+            .map_or(Constness::Unknown, |ty| {
+                self.integer_specifier(ty, src, anchor, depth)
+            })
+    }
+
+    /// Whether a type specifier names an integer type.
+    fn integer_specifier<'e>(
+        &self,
+        specifier: Node<'e>,
+        src: &str,
+        anchor: Node<'a>,
+        depth: usize,
+    ) -> Constness {
+        if depth > DEPTH {
+            self.cut_short.set(true);
+            return Constness::Unknown;
+        }
+        match specifier.kind() {
+            // tree-sitter reads the standard typedef names, `size_t` and
+            // `uint8_t` among them, as primitive types: such a name is looked
+            // up as any other type name is.
+            "primitive_type" | "sized_type_specifier" => {
+                match integer_type_text(get_node_text(&specifier, src)) {
+                    Ok(constness) => constness,
+                    Err(name) => self.integer_type_name(name, anchor, depth + 1),
+                }
+            }
+            "enum_specifier" => Constness::Constant,
+            "struct_specifier" | "union_specifier" => Constness::NotConstant,
+            "type_identifier" => {
+                self.integer_type_name(get_node_text(&specifier, src), anchor, depth + 1)
+            }
+            _ => Constness::Unknown,
+        }
+    }
+
+    /// Whether the name `name`, as the type of a cast, names an integer
+    /// type where `anchor` is: through the typedef of this file in scope,
+    /// a standard typedef, the project's typedefs, or an object-like macro
+    /// whose replacement list is a type. tree-sitter reads `(n) - 1` as a
+    /// cast of `-1` to `n` when it cannot tell, so a name none of those
+    /// makes a type is read as the name in parentheses.
+    fn integer_type_name(&self, name: &str, anchor: Node<'a>, depth: usize) -> Constness {
+        if depth > DEPTH {
+            self.cut_short.set(true);
+            return Constness::Unknown;
+        }
+        if self.file().typedefs.contains_key(name) && self.object(anchor, name).is_none() {
+            if let Some(definition) = typedef_definition_in_scope(&anchor, name, self.source) {
+                let derived = typedef_declarators(&definition).into_iter().any(|d| {
+                    TypedefShape::of(&d, self.source).name.as_deref() == Some(name)
+                        && d.kind() != "type_identifier"
+                });
+                if derived {
+                    return Constness::NotConstant;
+                }
+                return definition
+                    .child_by_field_name("type")
+                    .map_or(Constness::Unknown, |ty| {
+                        self.integer_specifier(ty, self.source, anchor, depth)
+                    });
+            }
+        }
+        if is_standard_typedef_name(name) && self.object(anchor, name).is_none() {
+            return standard_typedef_is_integer(name);
+        }
+        let arms: Vec<String> = match self.project.typedef_arms.get(name) {
+            Some(arms) if !arms.is_empty() => arms.clone(),
+            _ => self
+                .project
+                .typedefs
+                .get(name)
+                .cloned()
+                .into_iter()
+                .collect(),
+        };
+        if !arms.is_empty() && self.object(anchor, name).is_none() {
+            return arms
+                .iter()
+                .map(|text| match integer_type_text(text) {
+                    Ok(constness) => constness,
+                    Err(inner) if inner != name => self.integer_type_name(inner, anchor, depth + 1),
+                    Err(_) => Constness::Unknown,
+                })
+                .fold(Constness::Constant, Constness::and);
+        }
+        if self.project.struct_aliases.contains_key(name) && self.object(anchor, name).is_none() {
+            return Constness::NotConstant;
+        }
+        let macro_types: Option<Vec<Constness>> = {
+            let file = self.file();
+            file.definitions
+                .get(name)
+                .filter(|defs| !defs.is_empty())
+                .or_else(|| self.project.definitions.get(name))
+                .map(|defs| {
+                    defs.iter()
+                        .filter_map(|def| match def {
+                            MacroDefinition::Object { body } => integer_type_text(body).ok(),
+                            _ => None,
+                        })
+                        .collect()
+                })
+        };
+        if let Some(types) = macro_types.filter(|t| !t.is_empty()) {
+            if !self.expanding.borrow().iter().any(|n| n == name) {
+                return types.into_iter().fold(Constness::Constant, Constness::and);
+            }
+        }
+        self.name(name, anchor, depth)
     }
 
     /// `sizeof` of a name nothing in this file declares. An object-like
@@ -582,9 +808,7 @@ impl<'a, 'p> ConstantExpressions<'a, 'p> {
     /// to be one: a macro can declare a variable-length array the file's
     /// declarations do not show (ADR-0006).
     fn names_fixed_size_object(&self, anchor: Node<'a>, name: &str, depth: usize) -> Constness {
-        let Some((declaration, declarator)) =
-            resolve_identifier_declarator(&anchor, name, self.source)
-        else {
+        let Some((declaration, declarator)) = self.object(anchor, name) else {
             return Constness::NotConstant;
         };
         if let Some(&known) = self
@@ -627,7 +851,7 @@ impl<'a, 'p> ConstantExpressions<'a, 'p> {
             || self.project.typedefs.contains_key(name)
             || self.project.struct_aliases.contains_key(name)
             || self.project.structs.contains_key(name))
-            && resolve_identifier_declarator(&anchor, name, self.source).is_none()
+            && self.object(anchor, name).is_none()
             && !file.definitions.contains_key(name)
             && !self.project.definitions.contains_key(name)
     }
@@ -650,7 +874,7 @@ impl<'a, 'p> ConstantExpressions<'a, 'p> {
             if ty.kind() == "type_identifier" {
                 let name = get_node_text(&ty, src);
                 if self.block_typedef_in_scope(anchor, name).is_none()
-                    && resolve_identifier_declarator(&anchor, name, self.source).is_some()
+                    && self.object(anchor, name).is_some()
                 {
                     return self.names_fixed_size_object(anchor, name, depth);
                 }
@@ -678,7 +902,7 @@ impl<'a, 'p> ConstantExpressions<'a, 'p> {
     ) -> Constness {
         if depth > DEPTH {
             self.cut_short.set(true);
-            return Constness::NotConstant;
+            return Constness::Unknown;
         }
         if specifier.kind() != "type_identifier" {
             return Constness::Constant;
@@ -737,6 +961,33 @@ impl<'a, 'p> ConstantExpressions<'a, 'p> {
             .fold(Constness::Constant, Constness::and)
     }
 
+    /// The declaration and declarator of the object `name` names where
+    /// `anchor` is, unless an enumerator of that name hides it there: one
+    /// declared in a scope inside the object's, or later in the same scope.
+    fn object(&self, anchor: Node<'a>, name: &str) -> Option<(Node<'a>, Node<'a>)> {
+        let found = self
+            .scopes
+            .resolve_identifier_declarator(&anchor, name, self.source)?;
+        match self.enumerator_rank(anchor, name) {
+            Some(enumerator) if enumerator > declaration_rank(&found.0) => None,
+            _ => Some(found),
+        }
+    }
+
+    /// Where the innermost enumerator `name` in scope at `anchor` is
+    /// declared, as the start of its scope and then its own start: `None`
+    /// when no enumerator of that name is in scope there.
+    fn enumerator_rank(&self, anchor: Node<'a>, name: &str) -> Option<(usize, usize)> {
+        let before = anchor.start_byte();
+        self.file()
+            .enumerators
+            .get(name)?
+            .iter()
+            .filter(|e| e.start < before && e.scope_start <= before && before < e.scope_end)
+            .map(|e| (e.scope_start, e.start))
+            .max()
+    }
+
     fn file(&self) -> &FileTables {
         self.file.get_or_init(|| {
             let mut typedefs = HashMap::new();
@@ -749,9 +1000,29 @@ impl<'a, 'p> ConstantExpressions<'a, 'p> {
                     }
                 }
             }
+            let mut enumerators: HashMap<String, Vec<EnumeratorSite>> = HashMap::new();
+            for enumerator in query::find_descendants_of_kind(tree_root(&self.root), "enumerator") {
+                let Some(name) = enumerator.child_by_field_name("name") else {
+                    continue;
+                };
+                let Some(scope) = std::iter::successors(enumerator.parent(), Node::parent)
+                    .find(|a| matches!(a.kind(), "compound_statement" | "translation_unit"))
+                else {
+                    continue;
+                };
+                enumerators
+                    .entry(get_node_text(&name, self.source).to_string())
+                    .or_default()
+                    .push(EnumeratorSite {
+                        start: enumerator.start_byte(),
+                        scope_start: scope.start_byte(),
+                        scope_end: scope.end_byte(),
+                    });
+            }
             FileTables {
                 definitions: collect_macro_definitions(self.source),
                 typedefs,
+                enumerators,
             }
         })
     }
@@ -782,6 +1053,95 @@ pub fn in_block_scope(node: &Node) -> bool {
         }
     }
     false
+}
+
+/// Where `declaration` declares its name, for ranking against an
+/// enumerator: the start of the scope it has (a block, a `for` statement, a
+/// function's parameter list, or the translation unit), then its own start.
+fn declaration_rank(declaration: &Node) -> (usize, usize) {
+    let scope = std::iter::successors(declaration.parent(), Node::parent)
+        .find(|a| {
+            matches!(
+                a.kind(),
+                "compound_statement" | "for_statement" | "function_definition" | "translation_unit"
+            )
+        })
+        .map_or(0, |scope| scope.start_byte());
+    (scope, declaration.start_byte())
+}
+
+/// Whether the text of a type, a scalar typedef's or a macro's, names an
+/// integer type: `Ok` with the answer when its words say, or `Err` with the
+/// one type name it is spelled as (`word_t`), to be looked up in turn. Empty
+/// text, a typedef that is not scalar (an enumeration, say), is unknown.
+fn integer_type_text(text: &str) -> Result<Constness, &str> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(Constness::Unknown);
+    }
+    if text.contains(['*', '[', '(']) {
+        return Ok(Constness::NotConstant);
+    }
+    let mut integer = false;
+    let mut named = None;
+    for word in text.split_whitespace() {
+        match word {
+            "char" | "short" | "int" | "long" | "signed" | "unsigned" | "_Bool" | "bool"
+            | "__int8" | "__int16" | "__int32" | "__int64" | "__int128" | "__signed__"
+            | "__unsigned__" => integer = true,
+            "const" | "volatile" | "restrict" | "__restrict" | "__extension__" => {}
+            "float" | "double" | "void" | "_Complex" | "struct" | "union" => {
+                return Ok(Constness::NotConstant)
+            }
+            "enum" => return Ok(Constness::Constant),
+            other
+                if named.is_none()
+                    && other
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    && other.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') =>
+            {
+                named = Some(other)
+            }
+            _ => return Ok(Constness::Unknown),
+        }
+    }
+    match (integer, named) {
+        (true, None) => Ok(Constness::Constant),
+        (false, Some(name)) => Err(name),
+        _ => Ok(Constness::Unknown),
+    }
+}
+
+/// Whether the standard typedef `name` ([`is_standard_typedef_name`]) is an
+/// integer type: the size, pointer-difference, character and exact, least
+/// and fast width types are; `float_t` and `double_t` are floating; the
+/// others are structures, arrays or types the standard leaves open.
+fn standard_typedef_is_integer(name: &str) -> Constness {
+    let width_type = (name.starts_with("int") || name.starts_with("uint")) && name.ends_with("_t");
+    if width_type
+        || matches!(
+            name,
+            "size_t"
+                | "rsize_t"
+                | "ssize_t"
+                | "ptrdiff_t"
+                | "wchar_t"
+                | "wint_t"
+                | "char16_t"
+                | "char32_t"
+                | "bool"
+                | "sig_atomic_t"
+                | "errno_t"
+        )
+    {
+        Constness::Constant
+    } else if matches!(name, "float_t" | "double_t") {
+        Constness::NotConstant
+    } else {
+        Constness::Unknown
+    }
 }
 
 /// A function-like macro's replacement list with each parameter replaced by
