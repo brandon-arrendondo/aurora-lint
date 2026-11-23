@@ -1,0 +1,115 @@
+/*
+ * Rule: MEM31-C
+ * Source: custom
+ * Status: PASS - Should NOT trigger MEM31-C violation
+ * Description: A block allocated inside an `if` condition and then freed,
+ * returned, released at a cleanup label or handed over is disposed of, as
+ * it is when the allocation is a statement of its own. The test of the
+ * assignment is the allocation's failure test, so the branch it guards
+ * returns with nothing acquired. Of `A || B`, the last disjunct's variable
+ * was never filled in the branch, so a branch that frees only the first
+ * leaks nothing. realloc's result tested in the condition leaves the old
+ * block with the caller, who frees it on failure.
+ */
+
+#include <stdlib.h>
+
+extern int epoll_create(int size);
+extern int close(int fd);
+void use(void *);
+
+struct state {
+    int fd;
+};
+
+int freed(void)
+{
+    char *p;
+    if ((p = malloc(8)) == NULL)
+        return -1;
+    use(p);
+    free(p);
+    return 0;
+}
+
+char *returned(void)
+{
+    char *p;
+    if ((p = malloc(8)) == NULL)
+        return NULL;
+    use(p);
+    return p;
+}
+
+int released_at_the_label(void)
+{
+    char *p;
+    int rc = -1;
+    if ((p = malloc(8)) == NULL)
+        goto out;
+    use(p);
+    rc = 0;
+    free(p);
+out:
+    return rc;
+}
+
+int freed_in_the_success_arm(void)
+{
+    char *p;
+    if ((p = malloc(8)) != NULL) {
+        use(p);
+        free(p);
+    }
+    return 0;
+}
+
+int truthiness(void)
+{
+    char *p;
+    if ((p = malloc(8))) {
+        use(p);
+        free(p);
+    }
+    return 0;
+}
+
+int both_disjuncts(void)
+{
+    char *p, *q;
+    if ((p = malloc(8)) == NULL || (q = malloc(8)) == NULL) {
+        free(p);
+        return -1;
+    }
+    free(p);
+    free(q);
+    return 0;
+}
+
+int realloc_result(char **out)
+{
+    char *b = malloc(4), *t;
+    if (!b)
+        return -1;
+    if ((t = realloc(b, 16)) == NULL) {
+        free(b);
+        return -1;
+    }
+    b = t;
+    *out = b;
+    return 0;
+}
+
+int descriptor_closed(void)
+{
+    struct state *state = malloc(sizeof(struct state));
+    if (!state)
+        return -1;
+    if ((state->fd = epoll_create(1024)) < 0) {
+        free(state);
+        return -1;
+    }
+    close(state->fd);
+    free(state);
+    return 0;
+}

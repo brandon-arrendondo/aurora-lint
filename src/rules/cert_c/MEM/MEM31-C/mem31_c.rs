@@ -2466,9 +2466,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
     fn visit_if_statement<'n>(&mut self, n: Node<'n>, source: &str, stack: &mut Vec<Frame<'n>>) {
         // The condition runs to completion before either branch is taken, so
-        // its calls are processed here, into the pre-fork state.
+        // its calls and assignments are processed here, into the pre-fork
+        // state.
         if let Some(condition) = n.child_by_field_name("condition") {
-            self.process_nested_calls(&condition, source);
+            self.process_condition(&condition, source);
         }
 
         let saved_state = LeakBranchState::fork(self);
@@ -4142,6 +4143,63 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// Allocation calls in general are NOT skipped -- a function can
     /// allocate AND take ownership of an argument in one call, as curl's
     /// `hash_elem_create(key, len, p, dtor)` does.
+    /// An `if` condition, which runs before either branch is taken. Its
+    /// calls are `process_nested_calls`'s, as anywhere else; an assignment
+    /// in it binds what it stores just as the statement would, so
+    /// `if ((p = malloc(n)) == NULL) return -1;` allocates into `p` exactly
+    /// as `p = malloc(n); if (p == NULL) return -1;` does. Only the
+    /// condition-as-statement arm of `visit` ever reached `process_assignment`,
+    /// so a block allocated inside the test was never tracked, and leaked
+    /// unreported on every later path.
+    ///
+    /// The parts are taken in evaluation order -- the value an assignment
+    /// stores before the assignment, the arguments of a call before the call
+    /// -- because a later operand can be the one that disposes of the block:
+    /// `if ((p = make()) && !take(p))` hands `p` over after it is bound. A
+    /// condition with no assignment in it is processed as it always was.
+    fn process_condition(&mut self, condition: &Node, source: &str) {
+        let assigns = !query::find_descendants(*condition, |n| n.kind() == "assignment_expression")
+            .is_empty();
+        if !assigns {
+            self.process_nested_calls(condition, source);
+            return;
+        }
+        let mut pending = vec![(*condition, false)];
+        while let Some((node, children_done)) = pending.pop() {
+            match node.kind() {
+                "assignment_expression" if children_done => {
+                    self.process_assignment(&node, source);
+                }
+                "assignment_expression" => {
+                    // Same order as the statement arm of `visit`: the value,
+                    // then the binding. The left operand is a place, not a
+                    // value, and that arm reads no calls in it either.
+                    pending.push((node, true));
+                    if let Some(right) = node.child_by_field_name("right") {
+                        pending.push((right, false));
+                    }
+                }
+                "call_expression" if children_done => {
+                    let reallocates = node
+                        .child_by_field_name("function")
+                        .map(|f| self.callee_name(&f, source))
+                        .is_some_and(|name| self.reallocates(&name, site_of(&node, source)));
+                    if !reallocates {
+                        self.process_call(&node, source);
+                    }
+                }
+                _ => {
+                    if node.kind() == "call_expression" {
+                        pending.push((node, true));
+                    }
+                    let mut children: Vec<Node> = node.child_nodes().collect();
+                    children.reverse();
+                    pending.extend(children.into_iter().map(|child| (child, false)));
+                }
+            }
+        }
+    }
+
     fn process_nested_calls(&mut self, expr: &Node, source: &str) {
         let calls: Vec<Node> = query::find_descendants(*expr, |n| n.kind() == "call_expression")
             .into_iter()
@@ -4881,6 +4939,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             } else {
                 condition
             };
+            // `if ((p = malloc(n)))` tests `p`.
+            let cond = tested_operand(cond);
 
             // Plain identifier or field_expression as condition means truthiness check
             // if (ptr) { ... } else { /* ptr is NULL here */ }
@@ -4916,8 +4976,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     fn negative_result_test(&self, cond: &Node, source: &str, want: ResultTest) -> Option<String> {
         let op = cond.child_by_field_name("operator")?;
         let op = ast_utils::get_node_text_owned(&op, source);
-        let left = cond.child_by_field_name("left")?;
-        let right = cond.child_by_field_name("right")?;
+        // `(fd = open(path, O_RDONLY)) < 0` tests `fd`.
+        let left = tested_operand(cond.child_by_field_name("left")?);
+        let right = tested_operand(cond.child_by_field_name("right")?);
         // Read `CONST op x` as `x op' CONST`.
         let (tested, constant, op) = if is_tested_operand(&left) {
             (left, right, op.as_str())
@@ -5025,14 +5086,28 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     .or_else(|| self.null_check_variable_in(&right, source));
             }
 
+            // `if ((p = malloc(a)) == NULL || (q = malloc(b)) == NULL)`: the
+            // true branch is taken when `p` failed, with `q` never assigned,
+            // or when `q` failed, with `p` holding a block. Only the last
+            // disjunct's variable is empty on every way in, and only when
+            // that disjunct is what gave it its value: a test of a variable
+            // assigned earlier proves nothing when an earlier disjunct is
+            // what held. `p` is a real leak there unless the branch frees it.
+            if op_text == "||" {
+                let right = cond.child_by_field_name("right")?;
+                return self
+                    .null_check_variable_in(&right, source)
+                    .filter(|tested| assigns_to(&right, tested, source));
+            }
+
             if let Some(tested) = self.negative_result_test(&cond, source, ResultTest::Failure) {
                 return Some(tested);
             }
 
             // Only handle == (var is NULL in true branch)
             if op_text == "==" {
-                let left = cond.child_by_field_name("left")?;
-                let right = cond.child_by_field_name("right")?;
+                let left = tested_operand(cond.child_by_field_name("left")?);
+                let right = tested_operand(cond.child_by_field_name("right")?);
 
                 let left_text = ast_utils::get_node_text_owned(&left, source);
                 let right_text = ast_utils::get_node_text_owned(&right, source);
@@ -5066,7 +5141,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 .unwrap_or_default();
 
             if op_text == "!" {
-                if let Some(arg) = cond.child_by_field_name("argument") {
+                // `!(p = malloc(n))` tests `p`.
+                if let Some(arg) = cond.child_by_field_name("argument").map(tested_operand) {
                     if matches!(
                         arg.kind(),
                         "identifier" | "field_expression" | "subscript_expression"
@@ -5132,8 +5208,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
             // Handle != (var is NOT NULL in true branch, NULL in else branch)
             if op_text == "!=" {
-                let left = cond.child_by_field_name("left")?;
-                let right = cond.child_by_field_name("right")?;
+                let left = tested_operand(cond.child_by_field_name("left")?);
+                let right = tested_operand(cond.child_by_field_name("right")?);
 
                 let left_text = ast_utils::get_node_text_owned(&left, source);
                 let right_text = ast_utils::get_node_text_owned(&right, source);
@@ -5933,4 +6009,40 @@ fn is_tested_operand(node: &Node) -> bool {
         node.kind(),
         "identifier" | "field_expression" | "subscript_expression"
     )
+}
+
+/// The object a test of `node` reads. The value of a plain assignment is
+/// what it stored into its left operand, so `(p = malloc(n)) == NULL` tests
+/// `p` and `(st->fd = epoll_create(1)) < 0` tests `st->fd`, through any
+/// parentheses. Anything that is not an assignment is returned unchanged,
+/// parentheses included.
+fn tested_operand(node: Node) -> Node {
+    let mut inner = node;
+    while inner.kind() == "parenthesized_expression" {
+        match inner.named_child(0) {
+            Some(child) => inner = child,
+            None => return node,
+        }
+    }
+    let plain = inner
+        .child_by_field_name("operator")
+        .is_some_and(|op| op.kind() == "=");
+    if inner.kind() == "assignment_expression" && plain {
+        if let Some(left) = inner.child_by_field_name("left") {
+            return tested_operand(left);
+        }
+    }
+    node
+}
+
+/// Whether `expr` assigns to the object spelled `name` with a plain `=`.
+fn assigns_to(expr: &Node, name: &str, source: &str) -> bool {
+    query::find_descendants(*expr, |n| n.kind() == "assignment_expression")
+        .into_iter()
+        .any(|assignment| {
+            is_plain_assignment(&assignment, source)
+                && assignment
+                    .child_by_field_name("left")
+                    .is_some_and(|left| ast_utils::get_node_text(&left, source) == name)
+        })
 }
