@@ -149,6 +149,74 @@ pub fn object_pointer_declarator<'a>(declarator: &Node<'a>) -> Option<Node<'a>> 
     }
 }
 
+/// Whether the object `declarator` declares is itself `const`, `decl` being
+/// the `declaration` (or `type_definition`) it belongs to: a `const` on the
+/// pointer nearest the name (`char *const p`), or, when the object's type
+/// comes from the specifiers, a `const` among them (`static const int t[4]`,
+/// `int const k`, an array's elements carrying its qualifier) or a typedef
+/// in scope that names a const type (`typedef const int cint; cint k;`).
+/// Constness belongs to each declarator: `const char *s` is a writable
+/// pointer, and `static const int k = 1, *p;` declares one const object and
+/// one writable pointer. A function, or a typedef this file does not define
+/// (a header's), is not known to be const.
+pub fn declares_const_object(decl: &Node, declarator: &Node, source: &str) -> bool {
+    const_object_within(decl, declarator, source, 8)
+}
+
+fn const_object_within(decl: &Node, declarator: &Node, source: &str, depth: usize) -> bool {
+    if depth == 0 || declares_function(declarator) {
+        return false;
+    }
+    match nearest_pointer_derivation(declarator) {
+        Some(Some(pointer)) => return typedef_has_const_qualifier(&pointer),
+        // A chain this does not read may hide a pointer: not known const
+        None => return false,
+        Some(None) => {}
+    }
+    if typedef_has_const_qualifier(decl) {
+        return true;
+    }
+    let Some(type_name) = decl
+        .child_by_field_name("type")
+        .filter(|t| t.kind() == "type_identifier")
+    else {
+        return false;
+    };
+    let name = &source[type_name.byte_range()];
+    let Some(typedef) =
+        crate::utility::cert_c::ast_utils::typedef_definition_in_scope(&type_name, name, source)
+    else {
+        return false;
+    };
+    typedef_declarators(&typedef)
+        .into_iter()
+        .find(|d| TypedefShape::of(d, source).name.as_deref() == Some(name))
+        .is_some_and(|d| const_object_within(&typedef, &d, source, depth - 1))
+}
+
+/// [`object_pointer_declarator`] for a declarator chain ending in either an
+/// object's `identifier` or a typedef's `type_identifier`: `Some(None)` when
+/// the name is reached with no pointer nearer it, so the specifiers give the
+/// type, and `None` when the chain holds something this does not read.
+fn nearest_pointer_derivation<'a>(declarator: &Node<'a>) -> Option<Option<Node<'a>>> {
+    let mut d = *declarator;
+    let mut nearest: Option<Node<'a>> = None;
+    loop {
+        match d.kind() {
+            "identifier" | "type_identifier" => {
+                return Some(nearest.filter(|n| n.kind() == "pointer_declarator"))
+            }
+            "pointer_declarator" | "function_declarator" => nearest = Some(d),
+            "array_declarator" | "parenthesized_declarator" | "attributed_declarator" => {}
+            _ => return None,
+        }
+        match inner_declarator(&d) {
+            Some(inner) if inner.id() != d.id() => d = inner,
+            _ => return None,
+        }
+    }
+}
+
 /// Whether `id` is the name a declaration declares rather than a use of a
 /// name: the identifier at the end of a declarator chain of a `declaration`,
 /// `parameter_declaration`, `field_declaration`, `type_definition` or

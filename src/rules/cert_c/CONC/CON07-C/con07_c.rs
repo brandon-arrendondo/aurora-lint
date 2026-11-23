@@ -67,6 +67,10 @@
 //! - Check for functions that read multiple static variables without synchronization
 //! - Look for functions that perform operations on static variables without mutex locks
 //! - Check for absence of atomic operations or mutex locks
+//! - A `const` object (`static const int table[]`, `char *const p`) is never
+//!   written, so no other thread's access can interleave with a change to
+//!   it: it is not one of the shared variables an operation is on, judged
+//!   per declarator by declaration (a `const char *s` is a writable pointer).
 //! - A compound operation through a pointer (`(*p)++`, `p[i] += n`,
 //!   `p->n++`) is judged by what the pointer points at, not by where the
 //!   pointer itself is stored: a thread-local pointer into a shared array
@@ -90,6 +94,7 @@ use crate::utility::cert_c::ast_utils::{
     declaration_is_thread_local, find_containing_function, get_identifier_from_declarator,
     get_node_text, resolve_identifier_binding, resolve_identifier_declarator, IdentifierBinding,
 };
+use crate::utility::cert_c::declarator_utils::declares_const_object;
 use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::thread_api::{self, ProjectFunctions};
 use lang_parsing_substrate::query;
@@ -254,13 +259,15 @@ impl Con07C {
                             // Case: static int a = 0;
                             if let Some(declarator) = child.child_by_field_name("declarator") {
                                 let name = get_identifier_from_declarator(&declarator, source);
-                                if !name.is_empty() {
+                                if !name.is_empty()
+                                    && !declares_const_object(&decl_node, &declarator, source)
+                                {
                                     var_names.push(name);
                                 }
                             }
                         }
-                        "identifier" => {
-                            // Case: static int a;  (no initializer)
+                        // Case: static int a;  (no initializer)
+                        "identifier" if !declares_const_object(&decl_node, &child, source) => {
                             var_names.push(get_node_text(&child, source).to_string());
                         }
                         _ => {}
@@ -1089,7 +1096,10 @@ fn shared_object_addressed(value: &Node, source: &str) -> Option<String> {
     }
     let name = get_node_text(&object, source);
     let (decl, declarator) = resolve_identifier_declarator(&object, name, source)?;
-    if decl.kind() != "declaration" || !declaration_is_shared(&decl, source) {
+    if decl.kind() != "declaration"
+        || !declaration_is_shared(&decl, source)
+        || declares_const_object(&decl, &declarator, source)
+    {
         return None;
     }
     let mut derivations = pointer_derivations(&declarator).into_iter();
