@@ -114,7 +114,11 @@ strict and pedantic presets credit it only when it is declared:
 ``iec_60559_sqrt = true`` under ``[environment.overrides]``, ``--set
 iec_60559_sqrt=true``, or ``libc = "glibc"`` or ``"musl"``. Only ``sqrt`` of
 an integer constant converted to ``double`` is credited, never ``sqrt`` of a
-variable. See :doc:`options`.
+variable. See :doc:`options`. Under strict or pedantic with no data model
+declared, ``abs`` of a ``short`` or a ``signed char`` that nothing has bounded
+is not credited either: ISO C lets either type be as wide as ``abs``'s ``int``
+parameter, so it may hold ``INT_MIN``, whose absolute value is undefined.
+Declare the data model (``--data-model lp64``) to credit it.
 
 A preset may decline a rule rather than run a reading it cannot state in
 closed form (``not_enforced`` in :doc:`rule-presets`). A scan under that preset

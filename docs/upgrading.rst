@@ -33,11 +33,13 @@ INT31-C, INT08-C, INT32-C and the other rules that read value ranges now credit
 an absolute-value guard, ``abs(x) <= 181`` (or ``labs``, ``llabs``, ``<``),
 under every preset, strict and pedantic included, so a strict job may see
 findings it reported before go away. The guard counts only when ``abs`` is the
-library's (no ``#define`` of it in the scanned files or their headers, and no
-definition or object of that name), and only when ``x`` cannot hold the
-parameter type's most negative value, whose absolute value is undefined: under
-ISO C's widths alone, with no data model declared, that holds only for a
-variable an earlier test has already bounded.
+library's (no ``#define`` of it in any scanned file or header, in any
+``#if`` branch, and no definition or object of that name), and only when ``x``
+cannot hold the parameter type's most negative value, whose absolute value is
+undefined: under ISO C's widths alone, with no data model declared, that holds
+only for a variable an earlier test has already bounded. A 64-bit unsigned
+``x`` never counts through ``labs`` or ``llabs``, since its values above
+``LLONG_MAX`` convert to negative ones.
 
 A bound written ``(long)sqrt((double)SHRT_MAX)`` is credited too, where the
 new environment option ``iec_60559_sqrt`` holds: under the default preset on a

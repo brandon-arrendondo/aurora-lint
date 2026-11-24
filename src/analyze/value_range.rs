@@ -1325,7 +1325,7 @@ fn apply_range_edge_refinement(
     source: &str,
     macros: &MacroConstantMap,
     names: &ShadowedNames,
-    library: &LibraryCalls,
+    library: &LibraryCalls<'_>,
 ) -> Option<RangeMap> {
     let mut state = pred_exit.clone();
 
@@ -1373,7 +1373,7 @@ fn parse_range_conditions(
     macros: &MacroConstantMap,
     state: &RangeMap,
     names: &ShadowedNames,
-    library: &LibraryCalls,
+    library: &LibraryCalls<'_>,
 ) -> Vec<RangeConditionInfo> {
     match node.kind() {
         "parenthesized_expression" => {
@@ -1477,7 +1477,7 @@ fn parse_comparison_condition(
     macros: &MacroConstantMap,
     state: &RangeMap,
     names: &ShadowedNames,
-    library: &LibraryCalls,
+    library: &LibraryCalls<'_>,
 ) -> Vec<RangeConditionInfo> {
     let left = match node.child_by_field_name("left") {
         Some(n) => n,
@@ -1534,7 +1534,7 @@ fn parse_comparison_condition(
         // truncates `0.5 * 400` to 0.
         let Some(bound) =
             truncated_square_root(&bound_side, source, macros, library).or_else(|| {
-                integer_valued(&bound_side, source, library)
+                free_of_floating(&bound_side, source, library)
                     .then(|| {
                         const_eval::try_evaluate_range(&bound_side, source, macros, &var_ranges)
                     })
@@ -1587,19 +1587,81 @@ const ABSOLUTE_VALUE_FUNCTIONS: [(&str, &str); 3] =
 /// object of that name, a pointer to a function among them (ADR-0006).
 /// `sqrt` is credited only where the environment makes it the correctly
 /// rounded binary64 square root (`iec_60559_sqrt`). Built once per file.
-pub(crate) struct LibraryCalls {
+pub(crate) struct LibraryCalls<'a> {
     absolute_value: Vec<(&'static str, &'static str)>,
     sqrt: bool,
     /// The integer facts the types a guard converts through are read with.
     facts: crate::settings::IntFacts,
+    /// The types the file sees, which typedef names, enumerations and any
+    /// order of type specifiers are read through ([`expr_type`]); `None`
+    /// credits nothing that needs a type.
+    ///
+    /// [`expr_type`]: crate::utility::cert_c::expr_type::expr_type
+    types: Option<crate::utility::cert_c::expr_type::TypeEnv<'a>>,
+    /// The integer constant expression test for the file, built on first
+    /// use from `constant_tables`.
+    constants: Option<ConstantReader<'a>>,
 }
 
-impl LibraryCalls {
+/// What a `sqrt` operand's integer constant expression test is built
+/// from, and the test once built: only a file with a `sqrt` guard pays
+/// for it.
+struct ConstantReader<'a> {
+    root: Node<'a>,
+    source: &'a str,
+    project: Option<&'a crate::analyze::context::ProjectContext>,
+    tables: &'a std::cell::OnceCell<crate::utility::cert_c::constant_expression::ProjectTables>,
+    test: std::cell::OnceCell<
+        crate::utility::cert_c::constant_expression::ConstantExpressions<'a, 'a>,
+    >,
+}
+
+impl<'a> ConstantReader<'a> {
+    /// Whether `node` may be an integer constant expression (C11 6.6p6):
+    /// not when the test finds it is not one. A name nothing in the file or
+    /// project defines is unknown to the test, as `<limits.h>`'s `SHRT_MAX`
+    /// is; the constant evaluator reads such a name only from the data
+    /// model's own limits.
+    fn may_be_integer_constant(&self, node: &Node) -> bool {
+        use crate::utility::cert_c::constant_expression::{
+            ConstantExpressions, Constness, ProjectTables,
+        };
+        // The same node, reached from the root the test holds.
+        let mut found = self
+            .root
+            .descendant_for_byte_range(node.start_byte(), node.end_byte());
+        while let Some(n) = found {
+            if n.kind_id() == node.kind_id() && n.byte_range() == node.byte_range() {
+                break;
+            }
+            found = n.parent().filter(|p| p.byte_range() == node.byte_range());
+        }
+        let Some(node) = found else {
+            return false;
+        };
+        let test = self.test.get_or_init(|| {
+            let tables = self.tables.get_or_init(|| {
+                self.project
+                    .map(ProjectTables::from_context)
+                    .unwrap_or_default()
+            });
+            ConstantExpressions::new(self.root, self.source, tables)
+        });
+        test.integer_constant_expression(&node) != Constness::NotConstant
+    }
+}
+
+impl<'a> LibraryCalls<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn of_file(
-        root: &Node,
-        source: &str,
+        root: &Node<'a>,
+        source: &'a str,
         summaries: &(impl SummaryLookup + ?Sized),
-        project: Option<&crate::analyze::context::ProjectContext>,
+        project: Option<&'a crate::analyze::context::ProjectContext>,
+        visible: &'a crate::analyze::context::VisibleTypes,
+        constant_tables: &'a std::cell::OnceCell<
+            crate::utility::cert_c::constant_expression::ProjectTables,
+        >,
         facts: crate::settings::IntFacts,
         iec_60559_sqrt: bool,
     ) -> Self {
@@ -1624,6 +1686,16 @@ impl LibraryCalls {
             absolute_value,
             sqrt: iec_60559_sqrt && library_name("sqrt"),
             facts,
+            types: Some(crate::utility::cert_c::expr_type::TypeEnv::visible(
+                visible, facts,
+            )),
+            constants: Some(ConstantReader {
+                root: *root,
+                source,
+                project,
+                tables: constant_tables,
+                test: std::cell::OnceCell::new(),
+            }),
         }
     }
 
@@ -1633,6 +1705,8 @@ impl LibraryCalls {
             absolute_value: Vec::new(),
             sqrt: false,
             facts,
+            types: None,
+            constants: None,
         }
     }
 
@@ -1660,7 +1734,54 @@ impl LibraryCalls {
         if canonical == "char" {
             return None;
         }
-        self.facts.spelled_width(&canonical)
+        self.facts.spelled_width(&canonical).or_else(|| {
+            let ty = crate::utility::cert_c::expr_type::classify_spelling(
+                &canonical,
+                self.types.as_ref()?,
+            )?;
+            self.integer_width(&ty)
+        })
+    }
+
+    /// The signedness (`true` for unsigned) and width of the integer type
+    /// `ty`, under these facts. Plain `char`, an enumeration (whose
+    /// compatible type is the implementation's) and any other type are
+    /// `None`.
+    fn integer_width(
+        &self,
+        ty: &crate::utility::cert_c::expr_type::CType,
+    ) -> Option<(bool, crate::utility::cert_c::data_model::IntWidth)> {
+        use crate::utility::cert_c::expr_type::{CType, Sign};
+        let unsigned = |sign: &Sign| match sign {
+            Sign::Signed => Some(false),
+            Sign::Unsigned => Some(true),
+            Sign::PlainChar => None,
+        };
+        match ty {
+            CType::Int { sign, rank } => Some((unsigned(sign)?, self.facts.width_of(*rank))),
+            CType::IntOfWidth {
+                sign,
+                min_bits,
+                max_bits,
+            } => Some((
+                unsigned(sign)?,
+                crate::utility::cert_c::data_model::IntWidth {
+                    rank: None,
+                    min: *min_bits,
+                    max: *max_bits,
+                },
+            )),
+            _ => None,
+        }
+    }
+
+    /// The type of the expression `node`, when the file's types say.
+    fn expression_type(
+        &self,
+        node: &Node,
+        source: &str,
+    ) -> Option<crate::utility::cert_c::expr_type::CType> {
+        crate::utility::cert_c::expr_type::expr_type(node, source, self.types.as_ref()?)
     }
 
     /// The values every implementation's integer type `spelling` holds, from
@@ -1708,14 +1829,16 @@ impl LibraryCalls {
 /// variable's (C11 6.2.5p8) or holds every value the variable may have
 /// here; the function's parameter type must hold every one of them in the
 /// symmetric range, since `abs` of the most negative value is undefined
-/// (C11 7.22.6.1p2) and an `int` of full range may hold it. Only then is
+/// (C11 7.22.6.1p2) and an `int` of full range may hold it. A conversion
+/// from an unsigned type to a signed one along the way must keep every
+/// value of the unsigned type ([`keeps_every_value`]). Only then is
 /// `abs(v) <= B` the same as `-B <= v <= B`.
 fn absolute_value_operand(
     call: &Node,
     source: &str,
     state: &RangeMap,
     names: &ShadowedNames,
-    library: &LibraryCalls,
+    library: &LibraryCalls<'_>,
 ) -> Option<String> {
     let call = peel_parentheses(*call)?;
     if call.kind() != "call_expression" {
@@ -1749,16 +1872,23 @@ fn absolute_value_operand(
     if !holds(parameter) {
         return None;
     }
+    let declared = library
+        .expression_type(&arg, source)
+        .and_then(|ty| library.integer_width(&ty));
+    // Each conversion, from the variable's type through the casts, innermost
+    // first, to the parameter's.
+    let mut from = declared;
+    for to in casts.iter().rev().map(String::as_str).chain([parameter]) {
+        let to = library.integer_type(to);
+        if !keeps_every_value(from, to, range) {
+            return None;
+        }
+        from = to;
+    }
     // The variable's own signed type, when it has one: a signed type's
     // values are a subrange of those of every signed type of greater or
     // equal rank, whatever widths the facts leave open.
-    let declared_rank = crate::utility::cert_c::ast_utils::resolve_identifier_declarator(
-        &arg,
-        &get_text(&arg, source),
-        source,
-    )
-    .and_then(|(decl, _)| declaration_int_spelling(&decl, source))
-    .and_then(|(signed, spelling)| signed.then(|| library.signed_rank(&spelling)).flatten());
+    let declared_rank = declared.and_then(|(unsigned, width)| (!unsigned).then_some(width.rank)?);
     casts
         .iter()
         .all(|ty| {
@@ -1770,6 +1900,31 @@ fn absolute_value_operand(
         .then_some(var_name)
 }
 
+/// Whether converting a value from the integer type `from` to the integer
+/// type `to` keeps it whenever `to` can represent it, so that `holds` may
+/// judge the conversion by the variable's range alone. The range caps a
+/// 64-bit unsigned type at `i64::MAX`, so the values above that a
+/// conversion to a signed type would change (C11 6.3.1.3p3:
+/// `ULLONG_MAX` is -1 on two's-complement targets, and `llabs` of it 1)
+/// are not in it: such a conversion is read only when `from` is
+/// unsigned with a fixed width below the least `to` may have. An unsigned
+/// `to` is judged by `holds` itself, a value of a signed `from` is in the
+/// range as it is, and a `from` of no known signedness (plain `char`, an
+/// enumeration, an unresolved type) only when the range stops below the
+/// cap. A `to` that is not an integer type keeps nothing.
+fn keeps_every_value(
+    from: Option<(bool, crate::utility::cert_c::data_model::IntWidth)>,
+    to: Option<(bool, crate::utility::cert_c::data_model::IntWidth)>,
+    range: ValueRange,
+) -> bool {
+    match (from, to) {
+        (_, None) => false,
+        (_, Some((true, _))) | (Some((false, _)), _) => true,
+        (Some((true, from)), Some((false, to))) => from.max.is_some_and(|bits| bits < to.min),
+        (None, Some((false, _))) => range.max < i64::MAX,
+    }
+}
+
 /// `node` with its enclosing parentheses removed.
 fn peel_parentheses(mut node: Node) -> Option<Node> {
     while node.kind() == "parenthesized_expression" {
@@ -1778,60 +1933,33 @@ fn peel_parentheses(mut node: Node) -> Option<Node> {
     Some(node)
 }
 
-/// Whether `node` is integer-valued throughout, as an integer constant
-/// expression's operands are (C11 6.6p6): no floating constant, no cast to
-/// a type other than an integer type, and no variable of any other type.
-/// The constant evaluator truncates a floating constant to an integer, so
-/// `0.5 * 400` would read as 0; a bound written that way is not read.
-fn integer_valued(node: &Node, source: &str, library: &LibraryCalls) -> bool {
+/// Whether no part of `node` has a floating type: no floating constant,
+/// no cast to a floating type and no object of one, whatever typedef or
+/// specifier order spells it ([`LibraryCalls::expression_type`]). The
+/// constant evaluator truncates a floating constant to an integer, so
+/// `0.5 * 400` would read as 0; a bound written that way is not read. The
+/// operand of `sizeof` is not evaluated (C11 6.5.3.4p2), so it is not read
+/// either. A part of unknown type passes: a floating object-like macro is
+/// one the evaluator does not read at all.
+fn free_of_floating(node: &Node, source: &str, library: &LibraryCalls<'_>) -> bool {
+    if library.types.is_none() {
+        return false;
+    }
     let mut stack = vec![*node];
     while let Some(n) = stack.pop() {
-        match n.kind() {
-            "number_literal" if is_floating_literal(&get_text(&n, source)) => return false,
-            "cast_expression" => {
-                let Some(ty) = n.child_by_field_name("type") else {
-                    return false;
-                };
-                if library.integer_type(&get_text(&ty, source)).is_none()
-                    && get_text(&ty, source).split_whitespace().ne(["char"])
-                {
-                    return false;
-                }
-                if let Some(value) = n.child_by_field_name("value") {
-                    stack.push(value);
-                }
-                continue;
-            }
-            "identifier" => {
-                let declared = crate::utility::cert_c::ast_utils::resolve_identifier_declarator(
-                    &n,
-                    &get_text(&n, source),
-                    source,
-                );
-                if let Some((decl, _)) = declared {
-                    if declaration_int_spelling(&decl, source).is_none() {
-                        return false;
-                    }
-                }
-            }
-            _ => {}
+        if library
+            .expression_type(&n, source)
+            .is_some_and(|ty| ty.is_float())
+        {
+            return false;
+        }
+        if matches!(n.kind(), "sizeof_expression" | "alignof_expression") {
+            continue;
         }
         let mut cursor = n.walk();
         stack.extend(n.named_children(&mut cursor));
     }
     true
-}
-
-/// Whether the text of a `number_literal` is a floating constant (C11
-/// 6.4.4.2): a decimal one with a `.` or an exponent, or a hexadecimal one
-/// with a `.` or a binary exponent.
-fn is_floating_literal(text: &str) -> bool {
-    let t = text.trim().to_ascii_lowercase();
-    if t.starts_with("0x") {
-        t.contains('.') || t.contains('p')
-    } else {
-        t.contains('.') || t.contains('e')
-    }
 }
 
 /// The one argument of `call`, whose callee `callee` resolves where it
@@ -1871,7 +1999,7 @@ const EXACT_DOUBLE_INTEGER_MAX: i64 = 1 << 53;
 /// The value of `node` when it is `(T)sqrt((double)C)`: an integer type
 /// `T` that holds the result, the library's `sqrt` where the environment
 /// makes it correctly rounded ([`LibraryCalls`]), and an integer constant
-/// expression `C` (C11 6.6p6, so no floating constant: [`integer_valued`])
+/// expression `C` (C11 6.6p6, so no floating constant: [`free_of_floating`])
 /// from 0 to 2^53, which converts to double exactly. The result is then the
 /// correctly rounded square root of `C` (C11 F.10.4.5), which the scan
 /// computes the same way, truncated toward zero by the cast (C11
@@ -1880,7 +2008,7 @@ fn truncated_square_root(
     node: &Node,
     source: &str,
     macros: &MacroConstantMap,
-    library: &LibraryCalls,
+    library: &LibraryCalls<'_>,
 ) -> Option<ValueRange> {
     if !library.sqrt {
         return None;
@@ -1905,7 +2033,11 @@ fn truncated_square_root(
         return None;
     }
     let operand = to_double.child_by_field_name("value")?;
-    if !integer_valued(&operand, source, library) {
+    let constant_expression = library
+        .constants
+        .as_ref()
+        .is_some_and(|test| test.may_be_integer_constant(&operand));
+    if !constant_expression || !free_of_floating(&operand, source, library) {
         return None;
     }
     let constant = const_eval::try_evaluate_range(&operand, source, macros, &VarRangeMap::new())?;
@@ -2191,7 +2323,7 @@ pub(crate) fn analyze_value_ranges_with_replay(
     macros: &MacroConstantMap,
     summaries: &(impl SummaryLookup + ?Sized),
     replay: &Arc<HashMap<String, FunctionSummary>>,
-    library: &LibraryCalls,
+    library: &LibraryCalls<'_>,
 ) -> RangeAnalysisResult {
     let max_iterations = 500 * cfg.blocks.len();
     analyze_value_ranges_capped(
@@ -2238,7 +2370,7 @@ fn analyze_value_ranges_capped(
     summaries: &(impl SummaryLookup + ?Sized),
     replay: &Arc<HashMap<String, FunctionSummary>>,
     max_iterations: usize,
-    library: &LibraryCalls,
+    library: &LibraryCalls<'_>,
 ) -> RangeAnalysisResult {
     // Skip VRA for very large functions to bound worst-case runtime.
     if cfg.blocks.len() > VRA_BLOCK_LIMIT {
@@ -2516,7 +2648,7 @@ fn join_predecessor_entry(
     macros: &MacroConstantMap,
     exit_ranges: &HashMap<BlockId, RangeMap>,
     names: &ShadowedNames,
-    library: &LibraryCalls,
+    library: &LibraryCalls<'_>,
 ) -> Option<RangeMap> {
     let preds = cfg.predecessors(block_id);
     let mut new_entry = RangeMap::new();

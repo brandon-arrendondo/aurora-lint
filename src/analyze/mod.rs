@@ -2156,6 +2156,7 @@ pub(crate) fn build_file_analysis(
     let mut function_cfgs: HashMap<usize, cfg::FunctionCfg> = HashMap::new();
     collect_function_cfgs(root_node, source, &mut function_cfgs, &context.settings);
 
+    let visible_types = context::VisibleTypes::for_file(context, file_path, root_node, source);
     let vra_results = compute_vra_if_needed(
         needs_vra,
         &function_cfgs,
@@ -2164,6 +2165,7 @@ pub(crate) fn build_file_analysis(
         &context.function_summaries,
         &context.macro_constants,
         Some(context),
+        Some(&visible_types),
         context.settings.facts,
         context.settings.flag("iec_60559_sqrt"),
         crate::files::is_c_header(file_path),
@@ -2173,7 +2175,7 @@ pub(crate) fn build_file_analysis(
     FileAnalysis {
         function_cfgs: Arc::new(function_cfgs),
         vra_results: Arc::new(vra_results),
-        visible_types: context::VisibleTypes::for_file(context, file_path, root_node, source),
+        visible_types,
         file_path: file_path.to_path_buf(),
     }
 }
@@ -2184,6 +2186,7 @@ pub(crate) fn build_file_analysis(
 /// `src/rules/cert_c/integration/` can build the same VRA state the real
 /// scan does -- a rule whose FP suppression depends on value ranges is
 /// otherwise untestable from a `.c` fixture.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compute_vra_if_needed(
     needs_vra: bool,
     function_cfgs: &HashMap<usize, cfg::FunctionCfg>,
@@ -2192,6 +2195,7 @@ pub(crate) fn compute_vra_if_needed(
     prescan_summaries: &(impl crate::analyze::context::SummaryLookup + ?Sized),
     project_macros: &const_eval::MacroConstantMap,
     project: Option<&context::ProjectContext>,
+    visible_types: Option<&context::VisibleTypes>,
     data_model: crate::settings::IntFacts,
     iec_60559_sqrt: bool,
     in_header: bool,
@@ -2309,11 +2313,22 @@ pub(crate) fn compute_vra_if_needed(
     // Every function of the file replays calls against the same summaries,
     // so their return-range-only form is built once here.
     let replay = value_range::replay_summaries_of(&summaries);
+    let no_types;
+    let visible_types = match visible_types {
+        Some(types) => types,
+        None => {
+            no_types = context::VisibleTypes::default();
+            &no_types
+        }
+    };
+    let constant_tables = std::cell::OnceCell::new();
     let library = value_range::LibraryCalls::of_file(
         root_node,
         source,
         &summaries,
         project,
+        visible_types,
+        &constant_tables,
         data_model,
         iec_60559_sqrt,
     );
@@ -2630,6 +2645,7 @@ mod tests {
             &summaries,
             &const_eval::MacroConstantMap::new(),
             None,
+            None,
             Default::default(),
             false,
             false,
@@ -2651,6 +2667,7 @@ mod tests {
             &source,
             &summaries,
             &const_eval::MacroConstantMap::new(),
+            None,
             None,
             Default::default(),
             false,
