@@ -188,6 +188,14 @@ Environment contracts
    - Oracle tag: ``contract:library_macros_evaluate_once``
    - Basis: C11 7.1.4p1: "Any invocation of a library function that is implemented as a macro shall expand to code that evaluates each of its arguments exactly once". The standard's own exceptions (the stream argument of getc, putc, getwc and putwc, and assert) stay unsafe.
 
+``iec_60559_sqrt``
+   double is IEC 60559 binary64 and sqrt is correctly rounded. Then a guard bound written as an integer cast of sqrt of an integer constant, (long)sqrt((double)SHRT_MAX), has the value the scan computes, and the guard bounds what it compares. sqrt of a variable is never credited. Assumed by the default preset for a hosted target, as LP64 is; the strict and pedantic presets hold it only when it is declared, or when libc is glibc or musl.
+
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
+   - Scope: contract
+   - Oracle tag: ``contract:iec_60559_sqrt``
+   - Basis: C11 Annex F: F.2 makes double binary64, and F.10.4.5 makes sqrt the IEC 60559 square root, which is correctly rounded. Without Annex F (__STDC_IEC_559__ undefined) the accuracy of sqrt is implementation-defined (C11 5.2.4.2.2p6), so the bound is not known. A double converted to an integer type is truncated toward zero (C11 6.3.1.4p1).
+
 ``main_argv_guarantees``
    main's argc is nonnegative, argv[argc] is a null pointer, and argv[0..argc) point to strings.
 

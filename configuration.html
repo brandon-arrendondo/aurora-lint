@@ -209,6 +209,19 @@ does for the library. A declared data model, or one a compile database states,
 always wins, and a freestanding target is never assumed to be LP64. The scan’s
 summary, its SARIF settings and <code class="docutils literal notranslate"><span class="pre">--check-config</span></code> name the data model in force
 and where it came from.</p>
+<p>The floating point of the target is assumed the same way. The default preset
+assumes, for a hosted target, that <code class="docutils literal notranslate"><span class="pre">double</span></code> is IEC 60559 binary64 and
+<code class="docutils literal notranslate"><span class="pre">sqrt</span></code> is correctly rounded (C11 Annex F), so a guard such as
+<code class="docutils literal notranslate"><span class="pre">abs((long)x)</span> <span class="pre">&lt;=</span> <span class="pre">(long)sqrt((double)SHRT_MAX)</span></code> bounds <code class="docutils literal notranslate"><span class="pre">x</span></code> to -181..181. The
+strict and pedantic presets credit it only when it is declared:
+<code class="docutils literal notranslate"><span class="pre">iec_60559_sqrt</span> <span class="pre">=</span> <span class="pre">true</span></code> under <code class="docutils literal notranslate"><span class="pre">[environment.overrides]</span></code>, <code class="docutils literal notranslate"><span class="pre">--set</span>
+<span class="pre">iec_60559_sqrt=true</span></code>, or <code class="docutils literal notranslate"><span class="pre">libc</span> <span class="pre">=</span> <span class="pre">&quot;glibc&quot;</span></code> or <code class="docutils literal notranslate"><span class="pre">&quot;musl&quot;</span></code>. Only <code class="docutils literal notranslate"><span class="pre">sqrt</span></code> of
+an integer constant converted to <code class="docutils literal notranslate"><span class="pre">double</span></code> is credited, never <code class="docutils literal notranslate"><span class="pre">sqrt</span></code> of a
+variable. See <a class="reference internal" href="options.html"><span class="doc">Policy and Environment Options</span></a>. Under strict or pedantic with no data model
+declared, <code class="docutils literal notranslate"><span class="pre">abs</span></code> of a <code class="docutils literal notranslate"><span class="pre">short</span></code> or a <code class="docutils literal notranslate"><span class="pre">signed</span> <span class="pre">char</span></code> that nothing has bounded
+is not credited either: ISO C lets either type be as wide as <code class="docutils literal notranslate"><span class="pre">abs</span></code>’s <code class="docutils literal notranslate"><span class="pre">int</span></code>
+parameter, so it may hold <code class="docutils literal notranslate"><span class="pre">INT_MIN</span></code>, whose absolute value is undefined.
+Declare the data model (<code class="docutils literal notranslate"><span class="pre">--data-model</span> <span class="pre">lp64</span></code>) to credit it.</p>
 <p>A preset may decline a rule rather than run a reading it cannot state in
 closed form (<code class="docutils literal notranslate"><span class="pre">not_enforced</span></code> in <a class="reference internal" href="rule-presets.html"><span class="doc">Rule readings by preset</span></a>). A scan under that preset
 does not run the rule, whatever the manifest enables: its summary lists each declined

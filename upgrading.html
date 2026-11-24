@@ -55,6 +55,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#from-0-7-0-to-the-next-release">From 0.7.0 to the next release</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#a-scan-that-selects-no-files">A scan that selects no files</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#text-and-sarif-output">Text and SARIF output</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#guards-through-abs-and-sqrt">Guards through <code class="docutils literal notranslate"><span class="pre">abs</span></code> and <code class="docutils literal notranslate"><span class="pre">sqrt</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="#a-second-close-of-a-descriptor">A second <code class="docutils literal notranslate"><span class="pre">close()</span></code> of a descriptor</a></li>
 </ul>
 </li>
@@ -135,6 +136,25 @@ where no C file changed still exits <code class="docutils literal notranslate"><
 <p>The summary gains a <code class="docutils literal notranslate"><span class="pre">Files</span> <span class="pre">scanned:</span> <span class="pre">N</span></code> line above <code class="docutils literal notranslate"><span class="pre">Total</span> <span class="pre">violations</span></code>, and the
 SARIF run’s <code class="docutils literal notranslate"><span class="pre">properties</span></code> gain <code class="docutils literal notranslate"><span class="pre">aurora-lint/filesScanned</span></code>. Neither replaces
 anything.</p>
+</section>
+<section id="guards-through-abs-and-sqrt">
+<h3>Guards through <code class="docutils literal notranslate"><span class="pre">abs</span></code> and <code class="docutils literal notranslate"><span class="pre">sqrt</span></code><a class="headerlink" href="#guards-through-abs-and-sqrt" title="Link to this heading"></a></h3>
+<p>INT31-C, INT08-C, INT32-C and the other rules that read value ranges now credit
+an absolute-value guard, <code class="docutils literal notranslate"><span class="pre">abs(x)</span> <span class="pre">&lt;=</span> <span class="pre">181</span></code> (or <code class="docutils literal notranslate"><span class="pre">labs</span></code>, <code class="docutils literal notranslate"><span class="pre">llabs</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;</span></code>),
+under every preset, strict and pedantic included, so a strict job may see
+findings it reported before go away. The guard counts only when <code class="docutils literal notranslate"><span class="pre">abs</span></code> is the
+library’s (no <code class="docutils literal notranslate"><span class="pre">#define</span></code> of it in any scanned file or header, in any
+<code class="docutils literal notranslate"><span class="pre">#if</span></code> branch, and no definition or object of that name), and only when <code class="docutils literal notranslate"><span class="pre">x</span></code>
+cannot hold the parameter type’s most negative value, whose absolute value is
+undefined: under ISO C’s widths alone, with no data model declared, that holds
+only for a variable an earlier test has already bounded. A 64-bit unsigned
+<code class="docutils literal notranslate"><span class="pre">x</span></code> never counts through <code class="docutils literal notranslate"><span class="pre">labs</span></code> or <code class="docutils literal notranslate"><span class="pre">llabs</span></code>, since its values above
+<code class="docutils literal notranslate"><span class="pre">LLONG_MAX</span></code> convert to negative ones.</p>
+<p>A bound written <code class="docutils literal notranslate"><span class="pre">(long)sqrt((double)SHRT_MAX)</span></code> is credited too, where the
+new environment option <code class="docutils literal notranslate"><span class="pre">iec_60559_sqrt</span></code> holds: under the default preset on a
+hosted target, or under strict and pedantic when it is declared, or when
+<code class="docutils literal notranslate"><span class="pre">libc</span></code> is <code class="docutils literal notranslate"><span class="pre">glibc</span></code> or <code class="docutils literal notranslate"><span class="pre">musl</span></code>. A manifest that sets the option is refused
+by 0.7.0, which does not know it.</p>
 </section>
 <section id="a-second-close-of-a-descriptor">
 <h3>A second <code class="docutils literal notranslate"><span class="pre">close()</span></code> of a descriptor<a class="headerlink" href="#a-second-close-of-a-descriptor" title="Link to this heading"></a></h3>
