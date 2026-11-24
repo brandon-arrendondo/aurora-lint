@@ -7,6 +7,7 @@
 
 use super::const_eval::MacroConstantMap;
 use super::noreturn;
+use crate::utility::cert_c::ast_utils::{IdentifierBinding, ScopeDeclarations};
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -159,9 +160,9 @@ struct CfgBuilder {
     macro_jumps: HashMap<String, MacroJump>,
     /// See [`FunctionCfg::macro_jump_blocks`].
     macro_jump_blocks: Vec<(BlockId, (usize, usize))>,
-    /// The names whose address the function takes anywhere (`&name`),
-    /// read once, by the first counted loop that asks.
-    addressed_names: Option<HashSet<String>>,
+    /// The trips of each `for` its header bounds to zero or one, by the
+    /// loop's node id ([`counted_loop_trips`]).
+    loop_trips: HashMap<usize, ForTrips>,
 }
 
 impl CfgBuilder {
@@ -192,7 +193,7 @@ impl CfgBuilder {
             noreturn_names,
             macro_jumps,
             macro_jump_blocks: Vec::new(),
-            addressed_names: None,
+            loop_trips: HashMap::new(),
         }
     }
 
@@ -539,7 +540,7 @@ impl CfgBuilder {
         // test is true, so the header only enters the body, and the update
         // leaves the loop instead of going back. Never: as `while (0)`,
         // including the entry a `case` label of an outer switch keeps.
-        let trips = for_trip_count(node, source, &self.constants, &mut self.addressed_names);
+        let trips = self.loop_trips.get(&node.id()).copied();
         let enters = match trips {
             Some(ForTrips::Zero) => false,
             Some(ForTrips::One) => true,
@@ -1062,7 +1063,7 @@ fn file_scope_constant(
     source: &str,
     constants: &MacroConstantMap,
 ) -> Option<i64> {
-    use crate::utility::cert_c::ast_utils::{resolve_identifier_binding, IdentifierBinding};
+    use crate::utility::cert_c::ast_utils::resolve_identifier_binding;
     let value = *constants.get(name)?;
     match resolve_identifier_binding(ident, name, source) {
         Some(IdentifierBinding::Local(_)) | Some(IdentifierBinding::Parameter(_)) => None,
@@ -1094,6 +1095,36 @@ fn resolve_constant_operand(
 enum ForTrips {
     Zero,
     One,
+}
+
+/// The trips of every `for` in `func` that [`for_trip_count`] bounds to
+/// zero or one, by node id. One pass over the function shares the work the
+/// loops have in common: the function's `&name` set is read once, and the
+/// counters resolve through one [`ScopeDeclarations`] for the function,
+/// which reads each scope's declarations once, so a block of thousands of
+/// such loops does not read the statements before each loop again.
+fn counted_loop_trips<'a>(
+    func: &Node<'a>,
+    source: &str,
+    constants: &MacroConstantMap,
+) -> HashMap<usize, ForTrips> {
+    let mut out = HashMap::new();
+    let fors = lang_parsing_substrate::query::find_descendants_of_kind(*func, "for_statement");
+    if fors.is_empty() {
+        return out;
+    }
+    let mut addressed = None;
+    let scopes = ScopeDeclarations::default();
+    let mut resolve = |ident: &Node<'a>, name: &str| -> Option<IdentifierBinding<'a>> {
+        scopes.resolve_identifier_binding(ident, name, source)
+    };
+    for node in fors {
+        if let Some(trips) = for_trip_count(&node, source, constants, &mut addressed, &mut resolve)
+        {
+            out.insert(node.id(), trips);
+        }
+    }
+    out
 }
 
 /// The trips of `for (k = c0; k OP c1; k += step)` when they are zero or
@@ -1131,14 +1162,15 @@ enum ForTrips {
 ///
 /// The write and address tests match by spelling, so a shadowing local
 /// only costs the answer. Anything else is `None`: the loop keeps its back
-/// edge. `addressed` holds the function's `&name` set once read.
-fn for_trip_count(
-    node: &Node,
+/// edge. `addressed` holds the function's `&name` set once read, and
+/// `resolve` finds the declaration a counter occurrence binds to.
+fn for_trip_count<'a>(
+    node: &Node<'a>,
     source: &str,
     constants: &MacroConstantMap,
     addressed: &mut Option<HashSet<String>>,
+    resolve: &mut dyn FnMut(&Node<'a>, &str) -> Option<IdentifierBinding<'a>>,
 ) -> Option<ForTrips> {
-    use crate::utility::cert_c::ast_utils::{resolve_identifier_binding, IdentifierBinding};
     let text = |n: &Node| n.utf8_text(source.as_bytes()).ok();
     let init = node.child_by_field_name("initializer")?;
     let (name, start_node) = match init.kind() {
@@ -1271,7 +1303,7 @@ fn for_trip_count(
 
     // The counter is an automatic object only this loop header writes, and
     // not a `bool`, which `k++` leaves at 1 rather than stepping.
-    match resolve_identifier_binding(&counter, name, source)? {
+    match resolve(&counter, name)? {
         IdentifierBinding::Parameter(ty) => {
             if !counter_type_is_plain(&ty, &counter, source, 0) {
                 return None;
@@ -1596,7 +1628,7 @@ impl FileMacros {
 }
 
 /// Unwrap parenthesized_expression nodes for CFG condition evaluation.
-fn unwrap_parens_cfg<'a>(node: &'a Node<'a>) -> Node<'a> {
+fn unwrap_parens_cfg<'t>(node: &Node<'t>) -> Node<'t> {
     let mut n = *node;
     while n.kind() == "parenthesized_expression" {
         if let Some(inner) = n.child(1) {
@@ -1672,6 +1704,7 @@ pub fn build_function_cfg_full(
         noreturn_names.clone(),
         macro_jumps.clone(),
     );
+    builder.loop_trips = counted_loop_trips(func_node, source, constants);
     builder.build_from_compound_statement(&body, source);
     Some(builder.build())
 }
