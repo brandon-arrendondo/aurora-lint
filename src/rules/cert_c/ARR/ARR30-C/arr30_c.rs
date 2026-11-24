@@ -43,12 +43,18 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::buffer_size::{self, BufferInfo, BufferSize};
-use crate::analyze::cfg::FunctionCfg;
+use crate::analyze::cfg::{BlockId, FunctionCfg};
 use crate::analyze::const_eval::{self, VarRangeMap};
-use crate::analyze::context::ProjectContext;
+use crate::analyze::context::{IncludeClosure, ProjectContext};
+use crate::analyze::dataflow::{
+    compute_reaching_definitions, Definition, DefinitionKind, ReachingDefs,
+};
 use crate::analyze::function_summary::{collect_param_names, extract_function_name};
 use crate::analyze::init_state::{file_proven_dead_lines, starts_in_dead_lines};
-use crate::analyze::macro_expand::{collect_function_macros, expand_invocation, FunctionMacro};
+use crate::analyze::macro_expand::{
+    self as macro_expand, collect_function_macro_arms, collect_function_macros, FunctionMacro,
+    MacroArm, ProjectMacroArm,
+};
 use crate::analyze::name_writes::{NameScope, ProjectNameTables};
 use crate::analyze::noreturn;
 use crate::analyze::preproc_arms;
@@ -114,6 +120,65 @@ enum ArmRead {
     },
 }
 
+/// [`IndexReach`] per (function start, index declarator start); `None` where
+/// the graph cannot say.
+type IndexReachCache = HashMap<(usize, usize), Option<Rc<IndexReach>>>;
+
+/// The writes to one index object in one function, and which of them reach
+/// each block over the function's control-flow graph: goto and label edges,
+/// `continue`, loop back edges and `switch` cases included, which no reading
+/// of the syntax alone follows.
+struct IndexReach {
+    /// The byte offset of each write, in source order; definition `i` of
+    /// `reaching` is write `i`. The value on entry of a parameter or a
+    /// file-scope object is a write at the function's own start.
+    writes: Vec<usize>,
+    reaching: ReachingDefs,
+    /// Every statement of the graph: `(start, end, block, index in block)`.
+    statements: Vec<(usize, usize, BlockId, usize)>,
+}
+
+impl IndexReach {
+    /// The innermost statement of the graph holding the byte `at`.
+    fn locate(&self, at: usize) -> Option<(BlockId, usize)> {
+        self.statements
+            .iter()
+            .filter(|(start, end, _, _)| *start <= at && at < *end)
+            .min_by_key(|(start, end, _, _)| end - start)
+            .map(|&(_, _, block, index)| (block, index))
+    }
+
+    /// The writes that may be the last before the byte `at`: the last one
+    /// earlier in its own block, else every one reaching the block. `None`
+    /// when `at` lies in no statement of the graph.
+    fn reaching_at(&self, at: usize) -> Option<Vec<usize>> {
+        let (block, index) = self.locate(at)?;
+        let earlier = self
+            .reaching
+            .definitions
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| {
+                d.block_id == block
+                    && (d.statement_index < index
+                        || (d.statement_index == index && d.byte_offset < at))
+            })
+            .max_by_key(|(_, d)| (d.statement_index, d.byte_offset))
+            .map(|(i, _)| i);
+        let mut ids: Vec<usize> = match earlier {
+            Some(i) => vec![i],
+            None => self
+                .reaching
+                .reaching_in
+                .get(&block)
+                .map(|set| set.iter().copied().collect())
+                .unwrap_or_default(),
+        };
+        ids.sort_unstable();
+        Some(ids.into_iter().map(|i| self.writes[i]).collect())
+    }
+}
+
 /// What [`Arr30C::try_resolve_variable_to_constant`] makes of an index.
 enum ResolvedIndex {
     Constant(isize),
@@ -152,12 +217,26 @@ pub struct Arr30C {
     /// The scan's macro definitions and function names, which classify the
     /// names a body uses when asking whether it writes a parameter.
     project_names: RefCell<Option<ProjectNameTables>>,
-    /// The scan's function-like macros (`ProjectContext::function_macros`)
-    /// and this file's own, which win for a name the file defines: a
+    /// Every arm of every function-like macro, the scan's
+    /// (`ProjectContext::function_macro_arms`, with the files making each)
+    /// and this file's own, which stand for a name the file defines: a
     /// guard's bound spelled through one (`idx < ARRAY_SIZE(tbl)`) is read
-    /// through its expansion.
-    project_function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
-    file_function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    /// only when every arm in force is the element-count idiom.
+    project_macro_arms: RefCell<Arc<HashMap<String, Vec<ProjectMacroArm>>>>,
+    file_macro_arms: RefCell<HashMap<String, Vec<MacroArm>>>,
+    /// The resolved include graph (`ProjectContext::include_edges`), the
+    /// scanned file's path, and its include closure, walked once per file:
+    /// which headers' macro arms can be in force here.
+    include_edges: RefCell<Arc<HashMap<String, Vec<String>>>>,
+    file_path: RefCell<Option<std::path::PathBuf>>,
+    include_closure: RefCell<Option<Option<IncludeClosure>>>,
+    /// Per (function, index declarator): the writes to the index object and
+    /// the definitions reaching each block over the function's CFG. Cleared
+    /// per file.
+    index_reach_cache: RefCell<IndexReachCache>,
+    /// Per (function, index name): where the index is first tested before
+    /// any access. Cleared per file.
+    index_test_site_cache: RefCell<HashMap<(usize, String), Option<usize>>>,
     /// Those plus the file being scanned's own; set per file.
     static_macros: RefCell<HashSet<String>>,
     function_cfgs: RefCell<Arc<HashMap<usize, FunctionCfg>>>,
@@ -363,7 +442,8 @@ impl CertRule for Arr30C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_static_macros.borrow_mut() = context.static_macro_names.clone();
         *self.project_names.borrow_mut() = Some(ProjectNameTables::of(context));
-        *self.project_function_macros.borrow_mut() = Arc::clone(&context.function_macros);
+        *self.project_macro_arms.borrow_mut() = Arc::clone(&context.function_macro_arms);
+        *self.include_edges.borrow_mut() = Arc::clone(&context.include_edges);
         *self.macro_constants.borrow_mut() = context.macro_constants.clone();
         *self.project_validated_params.borrow_mut() = context
             .function_summaries
@@ -375,6 +455,11 @@ impl CertRule for Arr30C {
 
     fn needs_vra(&self) -> bool {
         true
+    }
+
+    fn set_file_path(&self, path: &std::path::Path) {
+        *self.file_path.borrow_mut() = Some(path.to_path_buf());
+        *self.include_closure.borrow_mut() = None;
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -408,7 +493,9 @@ impl CertRule for Arr30C {
             // extractor. Same per-file scope; deletes a duplicate of the engine
             // used by MEM30/EXP33/DCL31.
             let function_macros = collect_function_macros(node, source);
-            *self.file_function_macros.borrow_mut() = function_macros.clone();
+            *self.file_macro_arms.borrow_mut() = collect_function_macro_arms(source);
+            self.index_reach_cache.borrow_mut().clear();
+            self.index_test_site_cache.borrow_mut().clear();
             let flexible_array_structs = self.find_flexible_array_structs(node, source);
 
             // An earlier fix: a C99/struct-hack flexible array member's *declared*
@@ -483,8 +570,13 @@ impl Arr30C {
         Self {
             project_static_macros: RefCell::new(Arc::new(HashSet::new())),
             project_names: RefCell::new(None),
-            project_function_macros: RefCell::default(),
-            file_function_macros: RefCell::default(),
+            project_macro_arms: RefCell::default(),
+            file_macro_arms: RefCell::default(),
+            include_edges: RefCell::default(),
+            file_path: RefCell::default(),
+            include_closure: RefCell::default(),
+            index_reach_cache: RefCell::default(),
+            index_test_site_cache: RefCell::default(),
             static_macros: RefCell::new(HashSet::new()),
             function_cfgs: RefCell::new(Arc::default()),
             vra_results: RefCell::new(Arc::default()),
@@ -1796,22 +1888,48 @@ impl Arr30C {
         if stores.len() != constant_assigns.len() {
             return ResolvedIndex::Variable;
         }
-        let (values, declined, across_arms) = match Self::index_read_across_arms(
+        let flow = self.index_read_over_flow(
             &func_node,
             index_node,
             current_node,
             var_name,
             &stores,
             source,
-        ) {
-            ArmRead::Unknown => return ResolvedIndex::Variable,
-            ArmRead::Values {
+        );
+        let (values, declined, across_arms) = match flow {
+            Some(None) => return ResolvedIndex::Variable,
+            // The graph follows every path; what it cannot follow is a test
+            // of the index on the way, which the value range reads.
+            Some(Some(values)) => (
                 values,
-                declined,
-                across_arms,
-            } => (values, declined, across_arms),
+                self.index_tested_before_cached(&func_node, current_node, var_name, source),
+                false,
+            ),
+            None => match Self::index_read_across_arms(
+                &func_node,
+                index_node,
+                current_node,
+                var_name,
+                &stores,
+                source,
+            ) {
+                ArmRead::Unknown => return ResolvedIndex::Variable,
+                ArmRead::Values {
+                    values,
+                    declined,
+                    across_arms,
+                } => (values, declined, across_arms),
+            },
         };
-        let range = self.index_range_at(&func_node, index_node, current_node, var_name, source);
+        // One value, undeclined, is the answer whatever the range says: a
+        // range without it leaves it the furthest out, and one holding only
+        // it confirms it. The replay costs a walk per access.
+        let single = !declined && values.iter().all(|v| v.2 == values[0].2);
+        let range = if single {
+            None
+        } else {
+            self.index_range_at(&func_node, index_node, current_node, var_name, source)
+        };
         let within: Vec<StoreValue> = match range {
             Some(r) => values
                 .iter()
@@ -1857,6 +1975,162 @@ impl Arr30C {
             return ResolvedIndex::Variable;
         }
         ResolvedIndex::Constant(origin.2)
+    }
+
+    /// The writes to the object `index_node` names, over `func_node`'s
+    /// control-flow graph, built once per (function, declaration). `None`
+    /// when there is no graph, the index is no name, its declaration is
+    /// `static` in the function (its value survives the calls, which the
+    /// graph does not model), or a write lies in no statement of the graph.
+    fn index_reach(
+        &self,
+        func_node: &Node,
+        index_node: &Node,
+        var_name: &str,
+        source: &str,
+    ) -> Option<Rc<IndexReach>> {
+        if index_node.kind() != "identifier" {
+            return None;
+        }
+        let (decl, used) = resolve_identifier_declarator(index_node, var_name, source)?;
+        let key = (func_node.start_byte(), used.start_byte());
+        if let Some(hit) = self.index_reach_cache.borrow().get(&key) {
+            return hit.clone();
+        }
+        let built = self
+            .build_index_reach(func_node, &decl, used, var_name, source)
+            .map(Rc::new);
+        self.index_reach_cache
+            .borrow_mut()
+            .insert(key, built.clone());
+        built
+    }
+
+    fn build_index_reach<'a>(
+        &self,
+        func_node: &Node<'a>,
+        decl: &Node<'a>,
+        used: Node<'a>,
+        var_name: &str,
+        source: &'a str,
+    ) -> Option<IndexReach> {
+        let cfgs = self.function_cfgs.borrow();
+        let cfg = cfgs.get(&func_node.start_byte())?;
+        let body = func_node.child_by_field_name("body")?;
+        let local = spans(&body, &used);
+        if local
+            && decl.children(&mut decl.walk()).any(|c| {
+                c.kind() == "storage_class_specifier" && get_node_text(&c, source) == "static"
+            })
+        {
+            return None;
+        }
+        let binds = Self::binds_to_declarator(func_node, used, var_name, source);
+        let names_index = |n: &Node| {
+            n.kind() == "identifier"
+                && get_node_text(n, source) == var_name
+                && binds(n.start_byte())
+        };
+        let mut writes: Vec<usize> = Vec::new();
+        if !local {
+            writes.push(func_node.start_byte());
+        }
+        for n in query::find_descendants(body, |n| {
+            matches!(
+                n.kind(),
+                "assignment_expression" | "update_expression" | "init_declarator" | "declaration"
+            )
+        }) {
+            let target = match n.kind() {
+                "assignment_expression" => n.child_by_field_name("left"),
+                "update_expression" => n.child_by_field_name("argument"),
+                "init_declarator" => n.child_by_field_name("declarator"),
+                // `int i;` declares the object with no value: a write of an
+                // unknown one.
+                _ => n
+                    .children_by_field_name("declarator", &mut n.walk())
+                    .find(|d| d.kind() == "identifier"),
+            };
+            if let Some(target) = target.map(|t| guard_dominance::strip_arg_wrappers(&t)) {
+                if names_index(&target) {
+                    writes.push(target.start_byte());
+                }
+            }
+        }
+        writes.sort_unstable();
+        writes.dedup();
+        let mut statements = Vec::new();
+        for block in &cfg.blocks {
+            for (index, &(start, end)) in block.statements.iter().enumerate() {
+                statements.push((start, end, block.id, index));
+            }
+        }
+        let mut reach = IndexReach {
+            writes,
+            reaching: ReachingDefs {
+                definitions: Vec::new(),
+                reaching_in: HashMap::new(),
+                reaching_out: HashMap::new(),
+            },
+            statements,
+        };
+        let mut definitions = Vec::with_capacity(reach.writes.len());
+        for &at in &reach.writes {
+            let (block_id, statement_index) = if at == func_node.start_byte() && !local {
+                (cfg.entry, 0)
+            } else {
+                reach.locate(at)?
+            };
+            definitions.push(Definition {
+                variable: var_name.to_string(),
+                block_id,
+                statement_index,
+                kind: DefinitionKind::Assignment,
+                byte_offset: at,
+            });
+        }
+        reach.reaching = compute_reaching_definitions(cfg, definitions);
+        Some(reach)
+    }
+
+    /// The constant values that may reach the read `index_node` at `access`,
+    /// over the control-flow graph, where no store of the index and not its
+    /// declaration sits in a preprocessor arm apart from the access (the
+    /// graph takes every arm for a path; ADR-0010 makes them alternatives,
+    /// which [`Self::index_read_across_arms`] reads). `Some(None)` when some
+    /// write that may reach is no constant store, so the index is a
+    /// variable; `None` when the graph cannot say.
+    fn index_read_over_flow(
+        &self,
+        func_node: &Node,
+        index_node: &Node,
+        access: &Node,
+        var_name: &str,
+        stores: &[StoreValue],
+        source: &str,
+    ) -> Option<Option<Vec<StoreValue>>> {
+        let apart = Self::index_declared_apart(index_node, access, var_name, source)
+            || stores.iter().any(|s| {
+                func_node
+                    .descendant_for_byte_range(s.0, s.0 + var_name.len())
+                    .is_some_and(|n| Self::in_arm_apart(&n, access))
+            });
+        if apart {
+            return None;
+        }
+        let reach = self.index_reach(func_node, index_node, var_name, source)?;
+        let writes = reach.reaching_at(index_node.start_byte())?;
+        if writes.is_empty() {
+            return None;
+        }
+        let mut values = Vec::with_capacity(writes.len());
+        for at in writes {
+            match stores.iter().find(|s| s.0 == at) {
+                Some(&store) => values.push(store),
+                None => return Some(None),
+            }
+        }
+        Some(Some(values))
     }
 
     /// What a constant index holds at `access`: the values of the stores that
@@ -2051,43 +2325,73 @@ impl Arr30C {
     /// may change it unseen: a branch condition, an assertion's argument, or
     /// its address taken.
     fn index_tested_before(func_node: &Node, access: &Node, var_name: &str, source: &str) -> bool {
+        Self::index_test_sites(func_node, var_name, source)
+            .first()
+            .is_some_and(|&at| at < access.start_byte())
+    }
+
+    /// [`Self::index_tested_before`] with the function's test sites of the
+    /// index read once per (function, name) and file.
+    fn index_tested_before_cached(
+        &self,
+        func_node: &Node,
+        access: &Node,
+        var_name: &str,
+        source: &str,
+    ) -> bool {
+        let key = (func_node.start_byte(), var_name.to_string());
+        let first = *self
+            .index_test_site_cache
+            .borrow_mut()
+            .entry(key)
+            .or_insert_with(|| {
+                Self::index_test_sites(func_node, var_name, source)
+                    .first()
+                    .copied()
+            });
+        first.is_some_and(|at| at < access.start_byte())
+    }
+
+    /// The start of every place in `func_node` that tests the index
+    /// `var_name` or takes its address, in source order: what
+    /// [`Self::index_tested_before`] looks for before an access.
+    fn index_test_sites(func_node: &Node, var_name: &str, source: &str) -> Vec<usize> {
         let names_index = |node: &Node| {
             query::find_first_descendant(*node, |n| {
                 n.kind() == "identifier" && get_node_text(&n, source) == var_name
             })
             .is_some()
         };
-        query::find_first_descendant(*func_node, |n| {
-            if n.start_byte() >= access.start_byte() {
-                return false;
-            }
-            match n.kind() {
-                "if_statement"
-                | "while_statement"
-                | "do_statement"
-                | "for_statement"
-                | "switch_statement"
-                | "conditional_expression" => n
-                    .child_by_field_name("condition")
-                    .is_some_and(|c| names_index(&c)),
-                "call_expression" => n.child_by_field_name("arguments").is_some_and(|args| {
-                    query::find_first_descendant(args, |a| {
-                        (a.kind() == "binary_expression"
-                            && a.child_by_field_name("operator").is_some_and(|op| {
-                                matches!(
-                                    get_node_text(&op, source),
-                                    "<" | "<=" | ">" | ">=" | "==" | "!="
-                                )
-                            })
-                            && names_index(&a))
-                            || (is_address_of_expression(&a, source) && names_index(&a))
-                    })
-                    .is_some()
-                }),
-                _ => false,
-            }
+        let mut sites: Vec<usize> = query::find_descendants(*func_node, |n| match n.kind() {
+            "if_statement"
+            | "while_statement"
+            | "do_statement"
+            | "for_statement"
+            | "switch_statement"
+            | "conditional_expression" => n
+                .child_by_field_name("condition")
+                .is_some_and(|c| names_index(&c)),
+            "call_expression" => n.child_by_field_name("arguments").is_some_and(|args| {
+                query::find_first_descendant(args, |a| {
+                    (a.kind() == "binary_expression"
+                        && a.child_by_field_name("operator").is_some_and(|op| {
+                            matches!(
+                                get_node_text(&op, source),
+                                "<" | "<=" | ">" | ">=" | "==" | "!="
+                            )
+                        })
+                        && names_index(&a))
+                        || (is_address_of_expression(&a, source) && names_index(&a))
+                })
+                .is_some()
+            }),
+            _ => false,
         })
-        .is_some()
+        .into_iter()
+        .map(|n| n.start_byte())
+        .collect();
+        sites.sort_unstable();
+        sites
     }
 
     /// True when a chain holding one of `stores` reads a macro that another
@@ -4716,7 +5020,9 @@ impl Arr30C {
         buffer_info: &BufferInfo,
         macro_constants: &HashMap<String, i64>,
     ) -> bool {
-        if Self::access_element_bytes(node, &buffer_info.name, source) != Some(1) {
+        if Self::access_element_bytes(node, &buffer_info.name, source) != Some(1)
+            || Self::pointer_moved_since_allocation(node, buffer_info, source)
+        {
             return false;
         }
         let Some(bytes) = Self::constant_sum(size, macro_constants).filter(|&b| b > 0) else {
@@ -4730,6 +5036,51 @@ impl Arr30C {
             bytes as usize,
             macro_constants,
         )
+    }
+
+    /// Whether the pointer an access subscripts may have been moved or
+    /// rebound since the allocation its size comes from: a write to it
+    /// (`p += 40`, `p++`, `p = q`) after the allocation's line and before the
+    /// access, or anywhere in a loop that holds the access. A write before
+    /// the allocation (`char *p = NULL;`) and the allocation itself do not.
+    fn pointer_moved_since_allocation(node: &Node, buffer_info: &BufferInfo, source: &str) -> bool {
+        let Some(array) = node.child(0).filter(|a| a.kind() == "identifier") else {
+            return true;
+        };
+        let name = &buffer_info.name;
+        let Some(func) = find_containing_function(node) else {
+            return true;
+        };
+        let Some((_, used)) = resolve_identifier_declarator(&array, name, source) else {
+            return true;
+        };
+        let binds = Self::binds_to_declarator(&func, used, name, source);
+        let loops: Vec<Node> = std::iter::successors(node.parent(), |n| n.parent())
+            .take_while(|n| n.id() != func.id())
+            .filter(|n| {
+                matches!(
+                    n.kind(),
+                    "for_statement" | "while_statement" | "do_statement"
+                )
+            })
+            .collect();
+        query::find_descendants(func, |n| {
+            matches!(n.kind(), "assignment_expression" | "update_expression")
+        })
+        .into_iter()
+        .filter_map(|n| {
+            let field = if n.kind() == "update_expression" {
+                "argument"
+            } else {
+                "left"
+            };
+            n.child_by_field_name(field)
+                .map(|t| guard_dominance::strip_arg_wrappers(&t))
+        })
+        .filter(|t| t.kind() == "identifier" && get_node_text(t, source) == name.as_str())
+        .filter(|t| binds(t.start_byte()))
+        .filter(|t| t.start_position().row + 1 > buffer_info.allocation_line)
+        .any(|t| t.start_byte() < node.start_byte() || loops.iter().any(|l| spans(l, &t)))
     }
 
     /// The value of `text` when it is a sum of integer literals and named
@@ -4766,12 +5117,41 @@ impl Arr30C {
 
     /// The width in bytes of one element of the array or pointer an access
     /// subscripts, read off the declaration its identifier resolves to.
+    /// The type specifier gives the element's width only when the name is
+    /// one pointer or one array level over it: `char **v` has pointer
+    /// elements, and `char b[2][3]` rows of three.
     fn access_element_bytes(node: &Node, buffer_name: &str, source: &str) -> Option<usize> {
         let array = node.child(0).filter(|array| array.kind() == "identifier")?;
-        let (decl, _) = resolve_identifier_declarator(&array, buffer_name, source)?;
+        let (decl, declarator) = resolve_identifier_declarator(&array, buffer_name, source)?;
+        if Self::declarator_levels(declarator)?.len() != 1 {
+            return None;
+        }
         let ty = get_node_text(&decl.child_by_field_name("type")?, source);
         buffer_size::sizeof_type_bytes(ty.trim())
             .or_else(|| Self::one_byte_typedef(ty.trim()).then_some(1))
+    }
+
+    /// The pointer and array levels a declarator puts over its type,
+    /// outermost first and parentheses dropped, so the last is the name's own
+    /// kind: `*p[4]` is `[pointer, array]`, an array of pointers, and
+    /// `(*p)[8]` is `[array, pointer]`, a pointer to an array. `None` for a
+    /// function declarator or anything else that is no object's.
+    fn declarator_levels(declarator: Node) -> Option<Vec<&'static str>> {
+        let mut levels = Vec::new();
+        let mut d = declarator;
+        loop {
+            match d.kind() {
+                "identifier" => return Some(levels),
+                "pointer_declarator" => levels.push("pointer"),
+                "array_declarator" => levels.push("array"),
+                "init_declarator" | "parenthesized_declarator" | "attributed_declarator" => {}
+                _ => return None,
+            }
+            d = d.child_by_field_name("declarator").or_else(|| {
+                d.named_children(&mut d.walk())
+                    .find(|c| c.kind().ends_with("declarator") || c.kind() == "identifier")
+            })?;
+        }
     }
 
     /// Bounds check for statically/dynamically-calculated fixed-size buffers.
@@ -4877,10 +5257,21 @@ impl Arr30C {
         // `has_proper_bounds_check` below already handles (e.g. Juliet's
         // `goodB2G` variant); it just falls through exactly as before this
         // check existed.
-        let alias_safe = self
-            .resolve_value_of_identifier_at(var, node, source, 0)
-            .map(|v| v >= 0 && (v as usize) < effective_size)
-            .unwrap_or(false);
+        // It reads one assignment, so it says nothing where several writes
+        // may reach the access: `int i = 0; if (c) i = 7; else i = 8;` is no
+        // proof that `i` is 0.
+        let several_reach = node
+            .child_by_field_name("index")
+            .filter(|i| i.kind() == "identifier")
+            .zip(find_containing_function(node))
+            .and_then(|(index, func)| self.index_reach(&func, &index, var, source))
+            .and_then(|reach| reach.reaching_at(node.child_by_field_name("index")?.start_byte()))
+            .is_some_and(|writes| writes.len() > 1);
+        let alias_safe = !several_reach
+            && self
+                .resolve_value_of_identifier_at(var, node, source, 0)
+                .map(|v| v >= 0 && (v as usize) < effective_size)
+                .unwrap_or(false);
         if alias_safe {
             return false;
         }
@@ -5108,14 +5499,9 @@ impl Arr30C {
                 let measures_pointer = |o: &Node| {
                     resolve_identifier_declarator(o, buffer_name, source).is_some_and(
                         |(decl, declarator)| {
-                            let declarator = match declarator.kind() {
-                                "init_declarator" => declarator
-                                    .child_by_field_name("declarator")
-                                    .unwrap_or(declarator),
-                                _ => declarator,
-                            };
                             decl.kind() == "parameter_declaration"
-                                || declarator.kind() == "pointer_declarator"
+                                || Self::declarator_levels(declarator)
+                                    .is_some_and(|l| l.last() == Some(&"pointer"))
                         },
                     )
                 };
@@ -5164,14 +5550,14 @@ impl Arr30C {
         }
     }
 
-    /// A function-like macro call whose expansion is the element-count idiom
-    /// `sizeof(X) / sizeof((X)[0])` (`ARRAY_SIZE(tbl)`), with `X` one of its
-    /// arguments: the count of elements `X` declares. `X` is an array name,
-    /// or one subscripted (`tbl[k]` counts `tbl`'s second dimension),
-    /// resolved by its declaration at the call, never by its spelling
-    /// (ADR-0006); a parameter or a pointer is `None`, since `sizeof` then
-    /// measures a pointer and the quotient is no count. The file's own
-    /// definition of the macro wins over the project's.
+    /// A function-like macro call whose every definition in force is the
+    /// element-count idiom `sizeof(X) / sizeof((X)[0])` (`ARRAY_SIZE(tbl)`)
+    /// over one parameter `X`: the count of elements the argument passed as
+    /// `X` declares. That argument is an array name, or one subscripted
+    /// (`tbl[k]` counts `tbl`'s second dimension), resolved by its
+    /// declaration at the call, never by its spelling (ADR-0006); a
+    /// parameter or a pointer is `None`, since `sizeof` then measures a
+    /// pointer and the quotient is no count.
     fn element_count_macro_bound(
         &self,
         call: &Node,
@@ -5188,22 +5574,8 @@ impl Arr30C {
             .named_children(&mut call.walk())
             .filter(|a| a.kind() != "comment")
             .collect();
-        let args: Vec<String> = arg_nodes
-            .iter()
-            .map(|a| get_node_text(a, source).to_string())
-            .collect();
-        let expansion = {
-            let file = self.file_function_macros.borrow();
-            if file.contains_key(name) {
-                expand_invocation(&file, name, &args)
-            } else {
-                expand_invocation(&self.project_function_macros.borrow(), name, &args)
-            }
-        }?;
-        let counted = Self::element_count_operand(&expansion)?;
-        let operand = arg_nodes
-            .iter()
-            .find(|a| Self::bare_text(get_node_text(a, source)) == counted)?;
+        let position = self.element_count_macro_position(name)?;
+        let operand = arg_nodes.get(position)?;
         let mut root = guard_dominance::strip_arg_wrappers(operand);
         let mut depth = 0;
         while root.kind() == "subscript_expression" {
@@ -5234,6 +5606,59 @@ impl Arr30C {
         sizes.reverse();
         let size = (*sizes.get(depth)?)?;
         const_eval::try_evaluate_expr(&size, source, macro_constants).filter(|&n| n > 0)
+    }
+
+    /// The parameter position of `X` when every definition of the macro
+    /// `name` that can be in force here is `sizeof(X) / sizeof((X)[0])`:
+    /// this file's own arms when it defines the name (each `#ifdef` arm and
+    /// each definition after an `#undef` counts), else the project's arms
+    /// the file's include closure reaches (ADR-0010: arms are alternatives,
+    /// so one arm spelling another quotient, `(sizeof(a))`, leaves no count
+    /// to credit). A variadic definition, or arms over different
+    /// parameters, is `None`.
+    fn element_count_macro_position(&self, name: &str) -> Option<usize> {
+        let local = self.file_macro_arms.borrow().get(name).cloned();
+        let arms = match local {
+            Some(arms) if !arms.is_empty() => arms,
+            _ => {
+                let table = Arc::clone(&self.project_macro_arms.borrow());
+                if !table.contains_key(name) {
+                    return None;
+                }
+                let closure = self.include_closure();
+                macro_expand::reachable_arms(&table, name, closure.as_ref())
+            }
+        };
+        if arms.is_empty() {
+            return None;
+        }
+        let mut position = None;
+        for arm in &arms {
+            if arm.variadic.is_some() {
+                return None;
+            }
+            let counted = Self::element_count_operand(&arm.body)?;
+            let at = arm.params.iter().position(|p| *p == counted)?;
+            if position.is_some_and(|p| p != at) {
+                return None;
+            }
+            position = Some(at);
+        }
+        position
+    }
+
+    /// This file's include closure, walked once per file; `None` when the
+    /// file or its edges are unknown, when every arm counts.
+    fn include_closure(&self) -> Option<IncludeClosure> {
+        if self.include_closure.borrow().is_none() {
+            let closure = self
+                .file_path
+                .borrow()
+                .as_deref()
+                .and_then(|path| IncludeClosure::of(&self.include_edges.borrow(), path));
+            *self.include_closure.borrow_mut() = Some(closure);
+        }
+        self.include_closure.borrow().clone().flatten()
     }
 
     /// The `X` of an expansion `sizeof(X) / sizeof((X)[0])`, white space
@@ -8686,7 +9111,32 @@ impl Arr30C {
                     }
                     j += 1;
                 }
+                // `sizeof (a)[i]` is `sizeof((a)[i])`: a postfix subscript
+                // after the parentheses is still the operand.
                 i = j + 1;
+                loop {
+                    let rest = &body[i.min(body.len())..];
+                    let skipped = rest.len() - rest.trim_start().len();
+                    if !rest.trim_start().starts_with('[') {
+                        break;
+                    }
+                    let mut k = i + skipped;
+                    let mut depth = 0i32;
+                    while k < bytes.len() {
+                        match bytes[k] {
+                            b'[' => depth += 1,
+                            b']' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        k += 1;
+                    }
+                    i = k + 1;
+                }
                 continue;
             }
             if bytes[i] == b'[' {

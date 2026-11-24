@@ -1330,6 +1330,30 @@ that path and the loop's exit sees the state every `continue` carries.
 (`build_function_cfg[_with_constants]`), then walk `FunctionCfg`'s
 blocks/edges directly, or hand it to `value_range.rs`'s VRA machinery.
 
+### `src/analyze/dataflow.rs`
+**Problem solved:** which definitions of a variable may reach each block of
+a function, over its `FunctionCfg`: goto and label edges, `continue`, loop
+back edges and `switch` cases are all paths, which no reading of the syntax
+(store before access, store in a branch) follows. Reach for it before
+writing a "last assignment before X" or "may this store survive to X" walk.
+
+| Function | Signature | Description |
+|---|---|---|
+| `compute_reaching_definitions` | `(cfg: &FunctionCfg, definitions: Vec<Definition>) -> ReachingDefs` | The standard iterative reaching-definitions fixpoint over `cfg`. A definition is `{ variable, block_id, statement_index, kind, byte_offset }`; within a block, a later one in `definitions` kills an earlier one of the same `variable`, so list each block's in execution (source) order. `ReachingDefs::reaching_in[block]` is the set of definition indices that reach the block's entry. |
+| `extract_definitions` | `(cfg, func_node, source) -> Vec<Definition>` | Definitions by name for the null and free rules: parameters, declarations, plain and compound assignments, `free` calls. It records no `++`/`--` and no assignment nested in another, and keys by spelling, so a caller that needs every write to one object (ADR-0006) builds its own list and passes it to `compute_reaching_definitions`. |
+| `ReachingDefs::defs_reaching_block` | `(&self, block_id, var_name) -> Vec<&Definition>` | The definitions of `var_name` reaching a block's entry. |
+
+**Wiring pattern:** locate a byte offset in the graph by the innermost
+`BasicBlock::statements` range holding it (conditions and `for`
+initializer/update clauses are statements of their own blocks). What
+reaches a point inside a block is the last definition earlier in the same
+block, else everything in `reaching_in`. ARR30-C does this for a constant
+index (`Arr30C::index_reach`): its definitions are every write to the
+index's declarator, by `binds_to_declarator`, plus one at the entry block
+for a parameter's or a file-scope object's value on entry. It keeps its
+preprocessor-arm fold for a store in an arm apart from the access, since
+the graph takes every arm for a path (ADR-0010 makes them alternatives).
+
 ### `src/analyze/noreturn.rs`
 **Problem solved:** which calls never return, under the run's
 `stdlib_noreturn` and `trust_noreturn_keyword` settings, with the callee
