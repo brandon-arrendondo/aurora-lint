@@ -1339,20 +1339,26 @@ writing a "last assignment before X" or "may this store survive to X" walk.
 
 | Function | Signature | Description |
 |---|---|---|
-| `compute_reaching_definitions` | `(cfg: &FunctionCfg, definitions: Vec<Definition>) -> ReachingDefs` | The standard iterative reaching-definitions fixpoint over `cfg`. A definition is `{ variable, block_id, statement_index, kind, byte_offset }`; within a block, a later one in `definitions` kills an earlier one of the same `variable`, so list each block's in execution (source) order. `ReachingDefs::reaching_in[block]` is the set of definition indices that reach the block's entry. |
+| `compute_reaching_definitions` | `(cfg: &FunctionCfg, definitions: Vec<Definition>) -> ReachingDefs` | The standard iterative reaching-definitions fixpoint over `cfg`. A definition is `{ variable, block_id, statement_index, kind, byte_offset }`; within a block, a later one in `definitions` kills an earlier one of the same `variable`, so list each block's in execution (source) order. `ReachingDefs::reaching_in[block]` is the set of definition indices that reach the block's entry. Linear in the graph per pass: it indexes the edges by block once. |
 | `extract_definitions` | `(cfg, func_node, source) -> Vec<Definition>` | Definitions by name for the null and free rules: parameters, declarations, plain and compound assignments, `free` calls. It records no `++`/`--` and no assignment nested in another, and keys by spelling, so a caller that needs every write to one object (ADR-0006) builds its own list and passes it to `compute_reaching_definitions`. |
 | `ReachingDefs::defs_reaching_block` | `(&self, block_id, var_name) -> Vec<&Definition>` | The definitions of `var_name` reaching a block's entry. |
 
 **Wiring pattern:** locate a byte offset in the graph by the innermost
-`BasicBlock::statements` range holding it (conditions and `for`
-initializer/update clauses are statements of their own blocks). What
-reaches a point inside a block is the last definition earlier in the same
-block, else everything in `reaching_in`. ARR30-C does this for a constant
-index (`Arr30C::index_reach`): its definitions are every write to the
-index's declarator, by `binds_to_declarator`, plus one at the entry block
-for a parameter's or a file-scope object's value on entry. It keeps its
-preprocessor-arm fold for a store in an arm apart from the access, since
-the graph takes every arm for a path (ADR-0010 makes them alternatives).
+`BasicBlock::statements` range holding it. A condition and a loop's
+clauses are statements of their own, separate from the body; an `if`
+condition and a `for` initializer join the block before them, and only a
+loop's header and update clause start blocks of their own. What reaches a
+point inside a block is the last definition earlier in the same block,
+else everything in `reaching_in`. ARR30-C does this once per function for
+every object a subscript names (`Arr30C::function_reach`), solving all of
+them in one fixpoint by giving each object's definitions its own
+`variable` key (name and declaring scope, ADR-0006). Its definitions are
+every write to the object, plus one at the entry block for a value on
+entry: a parameter's or a file-scope object's, which is unknown, and a
+`static` local's, which is its initializer or any write of the function,
+from an earlier call. It keeps its preprocessor-arm fold for a store in an
+arm apart from the access, since the graph takes every arm for a path
+(ADR-0010 makes them alternatives).
 
 ### `src/analyze/noreturn.rs`
 **Problem solved:** which calls never return, under the run's

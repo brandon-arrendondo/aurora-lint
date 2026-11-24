@@ -208,6 +208,16 @@ pub fn compute_reaching_definitions(
         .saturating_mul(definitions.len().saturating_add(1))
         .saturating_add(cfg.blocks.len());
 
+    // The edges by block, once: `FunctionCfg::predecessors` and
+    // `successors` scan every edge per call, which over the worklist is
+    // quadratic in the graph's size.
+    let mut predecessors: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
+    let mut successors: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
+    for &(from, to, _) in &cfg.edges {
+        predecessors.entry(to).or_default().push(from);
+        successors.entry(from).or_default().push(to);
+    }
+
     let mut worklist: VecDeque<BlockId> = cfg.blocks.iter().map(|b| b.id).collect();
     // Mirrors `worklist`'s membership. A linear `worklist.contains()` per
     // successor push is quadratic in block count, which the old cap hid by
@@ -226,8 +236,8 @@ pub fn compute_reaching_definitions(
 
         // reaching_in[B] = union of reaching_out[P] for all predecessors P
         let mut new_in = HashSet::new();
-        for (pred_id, _) in cfg.predecessors(block_id) {
-            if let Some(pred_out) = reaching_out.get(&pred_id) {
+        for pred_id in predecessors.get(&block_id).into_iter().flatten() {
+            if let Some(pred_out) = reaching_out.get(pred_id) {
                 new_in.extend(pred_out.iter());
             }
         }
@@ -246,7 +256,7 @@ pub fn compute_reaching_definitions(
             reaching_in.insert(block_id, new_in);
 
             // Add successors to worklist
-            for (succ_id, _) in cfg.successors(block_id) {
+            for &succ_id in successors.get(&block_id).into_iter().flatten() {
                 if queued.insert(succ_id) {
                     worklist.push_back(succ_id);
                 }

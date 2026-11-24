@@ -11492,3 +11492,77 @@ fn a_header_defining_abs_or_sqrt_as_a_macro_withdraws_the_guard() {
     let (found, stderr) = scan("#define ABS_OK 1\n");
     assert_eq!(found, 0, "no macro; stderr: {stderr}");
 }
+
+/// Scan `files` written into a fresh tree with ARR30-C alone; the sorted
+/// "file:line" keys of its findings.
+fn arr30_tree_scan(files: &[(&str, &str)]) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, text) in files {
+        std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    let manifest = dir.path().join("manifest.toml");
+    std::fs::write(
+        &manifest,
+        "[metadata]\nname = \"t\"\nversion = \"1.0.0\"\ndescription = \"t\"\n\
+         cert_version = \"2016\"\n\n[rules.cert_c.ARR30-C]\nenabled = true\n",
+    )
+    .unwrap();
+    let out = dir.path().join("out.json");
+    let (code, _, stderr) = run_aurora_lint(&[
+        dir.path().to_str().unwrap(),
+        "-m",
+        manifest.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert!(code == 0 || code == 1, "stderr: {stderr}");
+    let findings: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let mut keys: Vec<String> = findings
+        .iter()
+        .map(|v| {
+            let file = v["file"].as_str().unwrap().replace('\\', "/");
+            let name = file.rsplit('/').next().unwrap().to_string();
+            format!("{name}:{}", v["line"])
+        })
+        .collect();
+    keys.sort();
+    keys
+}
+
+const ARR30_COUNT_USE: &str = "extern int next(void);\n\
+int tbl[8];\n\
+int f(void)\n\
+{\n\
+    unsigned i = next();\n\
+    if (i >= ARRAY_SIZE(tbl))\n\
+        return 0;\n\
+    return tbl[i];\n\
+}\n";
+
+/// A guard through a count macro is credited by the definitions the file's
+/// includes reach: a header elsewhere in the tree spelling a byte count
+/// does not reach `counted.c`, and the one `bytes.c` includes is in force
+/// although the file's own `#ifndef` fallback spells the element count.
+#[test]
+fn arr30_count_macro_reads_the_definitions_the_includes_reach() {
+    let keys = arr30_tree_scan(&[
+        (
+            "count.h",
+            "#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))\n",
+        ),
+        ("bytes.h", "#define ARRAY_SIZE(a) (sizeof(a))\n"),
+        (
+            "counted.c",
+            &format!("#include \"count.h\"\n{ARR30_COUNT_USE}"),
+        ),
+        (
+            "bytes.c",
+            &format!(
+                "#include \"bytes.h\"\n#ifndef ARRAY_SIZE\n\
+                 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))\n#endif\n{ARR30_COUNT_USE}"
+            ),
+        ),
+    ]);
+    assert_eq!(keys, vec!["bytes.c:12".to_string()]);
+}
