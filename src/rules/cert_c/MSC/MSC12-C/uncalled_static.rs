@@ -1100,11 +1100,16 @@ fn pasting_macros<'d>(defines: &[&'d Define]) -> HashSet<&'d str> {
     }
 }
 
-/// Whether a `##` in the body has a parameter for an operand.
+/// Whether a `##` in the body has a parameter for an operand. A `##`
+/// after a comma (`fmt, ##__VA_ARGS__`, `fmt, ##args`) is GNU's way of
+/// dropping the comma when no variadic argument is passed, not a paste.
 fn pastes_a_parameter(define: &Define) -> bool {
     let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
     define.body.match_indices("##").any(|(at, _)| {
         let left = define.body[..at].trim_end();
+        if left.ends_with(',') {
+            return false;
+        }
         let left_word: String = left
             .chars()
             .rev()
