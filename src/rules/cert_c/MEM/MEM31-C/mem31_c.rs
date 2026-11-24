@@ -153,17 +153,19 @@ fn strip_call_argument(arg: Node) -> Option<(Node, bool)> {
     if node.kind() == "identifier" {
         return Some((node, false));
     }
-    if node.kind() == "pointer_expression" {
-        let op = node.child_by_field_name("operator")?;
-        if op.kind() != "&" {
-            return None;
-        }
-        let inner = peel(node.child_by_field_name("argument")?);
-        if inner.kind() == "identifier" {
-            return Some((inner, true));
-        }
+    let inner = address_of_operand(node)?;
+    (inner.kind() == "identifier").then_some((inner, true))
+}
+
+/// What `&x` takes the address of, through casts and parentheses: `x` of
+/// `&x` and `&(x)`. `None` for anything that is not an address-of, and in
+/// particular for a dereference, since `*pp` is spelled with the same
+/// `pointer_expression` node and hands over what `pp` points to, not `pp`.
+fn address_of_operand(node: Node) -> Option<Node> {
+    if node.kind() != "pointer_expression" || node.child_by_field_name("operator")?.kind() != "&" {
+        return None;
     }
-    None
+    Some(peel_casts_and_parens(node.child_by_field_name("argument")?))
 }
 
 /// A plain `=` assignment, as opposed to a compound one (`+=`, `>>=`, ...).
@@ -1997,7 +1999,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             // `crypto_ec_key_deinit` as `(struct
                             // crypto_ec_key *) pkey`.
                             let arg = peel_casts_and_parens(arg);
-                            let through_address_of = arg.kind() == "pointer_expression";
+                            // Only `&var` names `var` by address; `*pp`
+                            // hands over what `pp` points to.
+                            let address_of = address_of_operand(arg);
+                            let through_address_of = address_of.is_some();
                             if declared.is_some_and(|k| func_name != "free" && k != this_param_idx)
                             {
                                 continue;
@@ -2015,13 +2020,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             // `&var` reaches a deallocator that nulls its
                             // out-parameter -- same spelling the walk
                             // accepts.
-                            let inner = if through_address_of {
-                                arg.child_by_field_name("argument")
-                                    .map(peel_casts_and_parens)
-                            } else {
-                                Some(arg)
-                            };
-                            if let Some(object) = inner.and_then(released_object) {
+                            if let Some(object) = released_object(address_of.unwrap_or(arg)) {
                                 freed_vars.insert(ast_utils::get_node_text_owned(&object, source));
                             }
                         }
