@@ -106,8 +106,8 @@ use crate::manifest::Severity;
 use crate::settings::threads::ThreadOpKind;
 use crate::utility::cert_c::ast_utils::{
     ancestors, declaration_is_thread_local, find_containing_function, get_node_text,
-    resolve_identifier_binding, resolve_identifier_declarator, typedef_definition_in_scope,
-    IdentifierBinding,
+    is_in_unevaluated_operand, resolve_identifier_binding, resolve_identifier_declarator,
+    typedef_definition_in_scope, IdentifierBinding,
 };
 use crate::utility::cert_c::declarator_utils::{
     declares_atomic_object, declares_const_object, declares_function, declares_pointer_to_atomic,
@@ -605,12 +605,14 @@ impl Con07C {
             if !whole {
                 return is_compound_assignment(&n, &target, source);
             }
-            // `x = x OP expr`: two accesses, atomic object or not
+            // `x = x OP expr`: two accesses, atomic object or not. A `sizeof`
+            // operand is never evaluated: `p = malloc(sizeof *p)` reads nothing
             n.child_by_field_name("right").is_some_and(|right| {
                 query::find_descendants_of_kind(right, "identifier")
                     .into_iter()
                     .any(|id| {
                         get_node_text(&id, source) == var_name
+                            && !is_in_unevaluated_operand(&id, source)
                             && static_vars.resolves(&id, var_name, source)
                     })
             })
@@ -959,7 +961,8 @@ fn macro_body_tokens(root: &Node, source: &str) -> HashSet<String> {
 }
 
 /// Whether the assignment `op` to `left` reads what it writes: a compound
-/// operator, or `=` with the same location on the right (`*p = *p + 1`).
+/// operator, or `=` with the same location on the right (`*p = *p + 1`),
+/// outside a `sizeof` or other operand C never evaluates.
 fn is_compound_assignment(op: &Node, left: &Node, source: &str) -> bool {
     let operator = op
         .child_by_field_name("operator")
@@ -977,6 +980,7 @@ fn is_compound_assignment(op: &Node, left: &Node, source: &str) -> bool {
             n.kind(),
             "pointer_expression" | "subscript_expression" | "field_expression"
         ) && lvalue_of(&n, source).as_ref() == Some(&target)
+            && !is_in_unevaluated_operand(&n, source)
     })
     .is_some()
 }
