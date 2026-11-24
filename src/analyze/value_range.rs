@@ -1530,6 +1530,14 @@ fn parse_comparison_condition(
     // both sides. The false edge says only that `v` is outside an interval,
     // which a single range cannot hold, so it narrows nothing.
     for (call, bound_side, op) in [(left, right, op.as_str()), (right, left, reversed(&op))] {
+        if !matches!(op, "<=" | "<") {
+            continue;
+        }
+        // The call side first: reading the bound types every part of it,
+        // which is wasted on a comparison with no library `abs` in it.
+        let Some(var_name) = absolute_value_operand(&call, source, state, names, library) else {
+            continue;
+        };
         // A bound with a floating operand is not read: the evaluator
         // truncates `0.5 * 400` to 0.
         let Some(bound) =
@@ -1551,13 +1559,11 @@ fn parse_comparison_condition(
         if magnitude < 0 {
             continue;
         }
-        if let Some(var_name) = absolute_value_operand(&call, source, state, names, library) {
-            results.push(RangeConditionInfo {
-                var_name,
-                true_range: Some(ValueRange::new(-magnitude, magnitude)),
-                false_range: None,
-            });
-        }
+        results.push(RangeConditionInfo {
+            var_name,
+            true_range: Some(ValueRange::new(-magnitude, magnitude)),
+            false_range: None,
+        });
     }
 
     results
@@ -1626,7 +1632,9 @@ impl<'a> ConstantReader<'a> {
         use crate::utility::cert_c::constant_expression::{
             ConstantExpressions, Constness, ProjectTables,
         };
-        // The same node, reached from the root the test holds.
+        // The same node, reached from the root the test holds: the test is
+        // typed by that tree's lifetime, which the caller's node need not
+        // share, so it is found again by its byte range and kind.
         let mut found = self
             .root
             .descendant_for_byte_range(node.start_byte(), node.end_byte());

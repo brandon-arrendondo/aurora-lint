@@ -37,9 +37,19 @@ library's (no ``#define`` of it in any scanned file or header, in any
 ``#if`` branch, and no definition or object of that name), and only when ``x``
 cannot hold the parameter type's most negative value, whose absolute value is
 undefined: under ISO C's widths alone, with no data model declared, that holds
-only for a variable an earlier test has already bounded. A 64-bit unsigned
-``x`` never counts through ``labs`` or ``llabs``, since its values above
-``LLONG_MAX`` convert to negative ones.
+only for a variable an earlier test has already bounded.
+
+An unsigned ``x``, or a cast of one to a signed type, counts only when its type
+is narrower than the signed type on every implementation the data model
+allows. So:
+
+- ``labs`` of an ``unsigned int`` counts on LP64, but not on ILP32 or LLP64.
+- ``abs((int)u)`` of an ``unsigned int`` never counts.
+- Under strict or pedantic with no data model declared, no unsigned ``x``
+  counts, not even an ``unsigned char``: ISO C sets no upper bound on
+  ``CHAR_BIT``.
+- A 64-bit unsigned ``x`` never counts through ``labs`` or ``llabs``, since
+  its values above ``LLONG_MAX`` convert to negative ones.
 
 A bound written ``(long)sqrt((double)SHRT_MAX)`` is credited too, where the
 new environment option ``iec_60559_sqrt`` holds: under the default preset on a
