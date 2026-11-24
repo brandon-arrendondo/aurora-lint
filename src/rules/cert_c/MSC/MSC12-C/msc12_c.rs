@@ -57,8 +57,11 @@ pub struct Msc12C {
     // project, whose bodies may call a static by name.
     file_path: RefCell<String>,
     included_c_paths: RefCell<Arc<HashSet<String>>>,
+    header_static_prototypes: RefCell<Arc<HashSet<String>>>,
     function_summaries: RefCell<Option<ScopedTable<FunctionSummary>>>,
     macro_definitions: RefCell<Arc<HashMap<String, Vec<MacroDefinition>>>>,
+    function_macro_arms:
+        RefCell<Arc<HashMap<String, Vec<crate::analyze::macro_expand::ProjectMacroArm>>>>,
 }
 
 impl Msc12C {
@@ -69,8 +72,10 @@ impl Msc12C {
             file_scope_volatiles: RefCell::new(HashSet::new()),
             file_path: RefCell::new(String::new()),
             included_c_paths: RefCell::new(Arc::new(HashSet::new())),
+            header_static_prototypes: RefCell::new(Arc::new(HashSet::new())),
             function_summaries: RefCell::new(None),
             macro_definitions: RefCell::new(Arc::new(HashMap::new())),
+            function_macro_arms: RefCell::new(Arc::new(HashMap::new())),
         }
     }
 
@@ -95,8 +100,14 @@ impl Msc12C {
     ///   it, outside comments and strings: somewhere the parse does not read
     ///   as code (a `#define` body, a `#pragma`) names it.
     ///
-    /// A header's statics, and those of a `.c` file another file
-    /// `#include`s, belong to each includer too, so neither file is judged.
+    /// A header's statics, those of a `.c` file that `#include`s another
+    /// `.c` file (whose code may call them), and those of a `.c` file another
+    /// file `#include`s or that defines no external function (a piece of a
+    /// bundle some other file includes), belong to each includer too, so
+    /// neither file is judged;
+    /// nor is a static a header prototypes, which that header shares with
+    /// every file including it (seL4 builds its kernel as one translation
+    /// unit and calls such a static from other `.c` files).
     /// A `static inline` function is not judged either: like the empty one
     /// `check_empty_function` passes over, it is the shape of a
     /// configuration shim kept for call sites another build compiles, and no
@@ -127,21 +138,50 @@ impl Msc12C {
                 Some((d, ident, name))
             })
             .collect();
-        if definitions.is_empty() {
+        // A `.c` file that defines no function with external linkage has no
+        // entry point of its own: it is a piece another file `#include`s
+        // (curl builds its tests from bundles generated to include them),
+        // whose statics that file calls.
+        if definitions.is_empty()
+            || uncalled_static::includes_c_file(root, source, &dead)
+            || uncalled_static::file_scope_definitions(root)
+                .iter()
+                .all(|d| ast_utils::declaration_has_storage_class(d, "static", source))
+        {
             return;
         }
         let names: HashSet<&str> = definitions.iter().map(|(_, _, n)| n.as_str()).collect();
         let uses = uncalled_static::FileUses::of(root, source, &names, &dead);
-        let blanked = uncalled_static::blank_comments_and_strings(source);
-        for (definition, ident, name) in &definitions {
-            if uses.live.contains(name.as_str())
-                || uses.retained.contains(name.as_str())
-                || uncalled_static::text_occurrences(&blanked, name)
-                    > uses.occurrences.get(name.as_str()).copied().unwrap_or(0)
+        let candidates: Vec<_> = definitions
+            .iter()
+            .filter(|(_, _, name)| {
+                !uses.live.contains(name.as_str())
+                    && !uses.retained.contains(name.as_str())
+                    && !self.address_escapes(name)
+                    && !self
+                        .header_static_prototypes
+                        .borrow()
+                        .contains(name.as_str())
+                    && !self
+                        .header_declared_functions
+                        .borrow()
+                        .contains(name.as_str())
+            })
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        // The text as written: the parse repair blanks a preprocessor arm a
+        // construct is split across (an initializer whose entries differ by
+        // `#ifdef`), and with it any use there. Same length and offsets.
+        let raw = crate::analyze::noreturn::raw_text_or(&path, source);
+        let blanked = uncalled_static::blank_comments_and_strings(&raw);
+        for (definition, ident, name) in candidates {
+            if uncalled_static::text_occurrences(&blanked, name)
+                > uses.occurrences.get(name.as_str()).copied().unwrap_or(0)
                 || uncalled_static::pasted_in_file(&blanked, name)
-                || self.address_escapes(name)
                 || self.project_macro_spells(name)
-                || uncalled_static::definition_is_retained(definition, source)
+                || uncalled_static::definition_is_retained(definition, &raw)
             {
                 continue;
             }
@@ -172,9 +212,12 @@ impl Msc12C {
     }
 
     /// Whether some `#define` in the project spells `name` in its
-    /// replacement list, or is one this module cannot read (`##`, variadic).
+    /// replacement list, or may paste it with `##` (`fn_##name`, read from
+    /// the function-like definitions' raw bodies, which keep the pasting and
+    /// variadic ones the normalized table leaves opaque).
     fn project_macro_spells(&self, name: &str) -> bool {
-        self.macro_definitions
+        let spelled = self
+            .macro_definitions
             .borrow()
             .values()
             .flatten()
@@ -183,7 +226,17 @@ impl Msc12C {
                     uncalled_static::text_occurrences(body, name) > 0
                 }
                 MacroDefinition::Opaque => false,
-            })
+            });
+        spelled
+            || self
+                .function_macro_arms
+                .borrow()
+                .values()
+                .flatten()
+                .any(|a| {
+                    uncalled_static::text_occurrences(&a.arm.body, name) > 0
+                        || uncalled_static::pastes(&a.arm.body, name, &a.arm.params)
+                })
     }
 
     /// True if `name` is a known `#define` macro — either textually present
@@ -2067,8 +2120,10 @@ impl CertRule for Msc12C {
         *self.cross_file_macro_names.borrow_mut() = context.defined_macro_names.clone();
         *self.header_declared_functions.borrow_mut() = context.header_declared_functions.clone();
         *self.included_c_paths.borrow_mut() = Arc::clone(&context.included_c_paths);
+        *self.header_static_prototypes.borrow_mut() = Arc::clone(&context.header_static_prototypes);
         *self.function_summaries.borrow_mut() = Some(context.function_summaries.clone());
         *self.macro_definitions.borrow_mut() = Arc::clone(&context.macro_definitions);
+        *self.function_macro_arms.borrow_mut() = Arc::clone(&context.function_macro_arms);
     }
 
     fn set_file_path(&self, path: &std::path::Path) {
@@ -2179,6 +2234,22 @@ mod uncalled_static {
     use std::collections::{HashMap, HashSet};
     use tree_sitter::Node;
 
+    /// Whether the file `#include`s a `.c` file in an arm the file does not
+    /// prove dead: that file's code is part of this translation unit and may
+    /// call this file's statics (mbedtls's `psa_constant_names.c` includes
+    /// the generated `psa_constant_names_generated.c` that calls its own).
+    pub(super) fn includes_c_file(root: &Node, source: &str, dead: &[(usize, usize)]) -> bool {
+        lang_parsing_substrate::query::find_descendants_of_kind(*root, "preproc_include")
+            .iter()
+            .filter(|i| !crate::analyze::init_state::starts_in_dead_lines(i, dead))
+            .filter_map(|i| i.child_by_field_name("path"))
+            .filter_map(|p| p.utf8_text(source.as_bytes()).ok())
+            .any(|p| {
+                let p = p.trim_matches(|c| matches!(c, '"' | '<' | '>'));
+                crate::files::is_c_translation_unit(p)
+            })
+    }
+
     /// Every function definition outside any function body: those at file
     /// scope, through `#if` arms and other wrappers.
     pub(super) fn file_scope_definitions<'a>(root: &Node<'a>) -> Vec<Node<'a>> {
@@ -2267,10 +2338,19 @@ mod uncalled_static {
                     continue;
                 };
                 *uses.occurrences.entry(name).or_default() += 1;
-                if kind != "identifier" || uses.live.contains(name) {
+                // A member or a label lives in a namespace of its own. A type
+                // name cannot share the function's file-scope name, so one
+                // spelled like it is the parse misreading a use of it.
+                if !matches!(kind, "identifier" | "type_identifier") || uses.live.contains(name) {
                     continue;
                 }
-                if let Some(declaration) = declared_function(&node) {
+                // A prototype or a definition names the function without using
+                // it. A "prototype" in a block is the parse misreading a call
+                // (`f(x);` after a macro it cannot expand), so it falls through
+                // to resolution, where it reads as a use.
+                if let Some(declaration) = declared_function(&node)
+                    .filter(|d| d.kind() == "function_definition" || !in_block(d))
+                {
                     if super::uncalled_static::definition_is_retained(&declaration, source) {
                         uses.retained.insert(name);
                     }
@@ -2281,11 +2361,31 @@ mod uncalled_static {
                 {
                     continue;
                 }
-                match scopes.resolve_identifier_binding(&node, name, source) {
-                    Some(IdentifierBinding::Local(_)) | Some(IdentifierBinding::Parameter(_)) => {}
-                    _ => {
+                if kind == "type_identifier" {
+                    uses.live.insert(name);
+                    continue;
+                }
+                // A parameter a definition declares hides the function in that
+                // body. A prototype's parameter names nothing outside it, so a
+                // "prototype" parameter spelled like the function is the parse
+                // misreading a call that passes it by name: a code-generating
+                // macro at file scope (`ph_gen(, heap, T, link, cmp_fn)`), or
+                // `atexit(fn);` after a macro the parse cannot expand.
+                if let Some(definition_parameter) = parameter_of_definition(&node) {
+                    if !definition_parameter {
                         uses.live.insert(name);
                     }
+                    continue;
+                }
+                let shadowed = match scopes.resolve_identifier_binding(&node, name, source) {
+                    Some(IdentifierBinding::Parameter(_)) => true,
+                    Some(IdentifierBinding::Local(decl)) => {
+                        declares_block_object(&decl, name, source)
+                    }
+                    _ => false,
+                };
+                if !shadowed {
+                    uses.live.insert(name);
                 }
             }
             uses
@@ -2322,6 +2422,105 @@ mod uncalled_static {
                 _ => return None,
             }
         }
+    }
+
+    /// Whether `node` lies inside a block.
+    fn in_block(node: &Node) -> bool {
+        let mut n = *node;
+        while let Some(parent) = n.parent() {
+            if parent.kind() == "compound_statement" {
+                return true;
+            }
+            n = parent;
+        }
+        false
+    }
+
+    /// Whether `decl`, the declaration an occurrence of `name` resolves to,
+    /// declares an object of that name in a block, hiding the function. The
+    /// resolver also answers with a file-scope prototype, and a prototype in a
+    /// block names the file-scope function: neither hides it.
+    fn declares_block_object(decl: &Node, name: &str, source: &str) -> bool {
+        if !in_block(decl) {
+            return false;
+        }
+        let mut cursor = decl.walk();
+        let declarators: Vec<Node> = decl
+            .children_by_field_name("declarator", &mut cursor)
+            .collect();
+        !declarators.iter().any(|d| {
+            let mut stack = vec![*d];
+            let mut function = false;
+            while let Some(x) = stack.pop() {
+                match x.kind() {
+                    "function_declarator" => {
+                        function = true;
+                        if let Some(inner) = x.child_by_field_name("declarator") {
+                            stack.push(inner);
+                        }
+                    }
+                    "identifier" => {
+                        return function && x.utf8_text(source.as_bytes()).ok() == Some(name);
+                    }
+                    "pointer_declarator"
+                    | "parenthesized_declarator"
+                    | "init_declarator"
+                    | "attributed_declarator"
+                    | "array_declarator" => {
+                        if let Some(inner) = x
+                            .child_by_field_name("declarator")
+                            .or_else(|| x.named_child(0))
+                        {
+                            stack.push(inner);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            false
+        })
+    }
+
+    /// When `ident` is the name a parameter declaration declares: whether
+    /// that parameter list is a function definition's, rather than a
+    /// prototype's. `None` when `ident` declares no parameter.
+    fn parameter_of_definition(ident: &Node) -> Option<bool> {
+        let mut n = *ident;
+        let mut parameter = None;
+        while let Some(parent) = n.parent() {
+            match parent.kind() {
+                "pointer_declarator"
+                | "parenthesized_declarator"
+                | "array_declarator"
+                | "attributed_declarator"
+                | "function_declarator"
+                    if parameter.is_none() =>
+                {
+                    n = parent;
+                }
+                "parameter_declaration" if parameter.is_none() => {
+                    if parent.child_by_field_name("declarator") != Some(n) {
+                        return None;
+                    }
+                    parameter = Some(parent);
+                    n = parent;
+                }
+                "parameter_list"
+                | "function_declarator"
+                | "pointer_declarator"
+                | "parenthesized_declarator"
+                | "attributed_declarator"
+                    if parameter.is_some() =>
+                {
+                    n = parent;
+                }
+                "function_definition" if parameter.is_some() => {
+                    return Some(parent.child_by_field_name("declarator") == Some(n));
+                }
+                _ => return parameter.map(|_| false),
+            }
+        }
+        parameter.map(|_| false)
     }
 
     /// Whether `node` is inside an attribute (`__attribute__((alias("f")))`,
@@ -2420,9 +2619,19 @@ mod uncalled_static {
             .count()
     }
 
-    /// Whether a `#define` in `blanked` pastes with `##` a fragment that
-    /// `name` begins or ends with, so an expansion may spell it.
+    /// Whether `text` (a file with its comments and strings blanked, or a
+    /// replacement list) pastes with `##` a fragment that `name` begins or
+    /// ends with, so an expansion may spell it.
     pub(super) fn pasted_in_file(blanked: &str, name: &str) -> bool {
+        pastes(blanked, name, &[])
+    }
+
+    /// [`pasted_in_file`] over one replacement list, where a fragment that is
+    /// one of the macro's `params` is its argument, not text the name could
+    /// begin or end with.
+    pub(super) fn pastes(text: &str, name: &str, params: &[String]) -> bool {
+        let literal = |w: &str| !w.is_empty() && !params.iter().any(|p| p == w);
+        let blanked = text;
         let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
         blanked.match_indices("##").any(|(at, _)| {
             let left = blanked[..at].trim_end();
@@ -2437,8 +2646,8 @@ mod uncalled_static {
             };
             let right = blanked[at + 2..].trim_start();
             let right_word: String = right.chars().take_while(|c| ident(*c)).collect();
-            (!left_word.is_empty() && name.starts_with(&left_word))
-                || (!right_word.is_empty() && name.ends_with(&right_word))
+            (literal(&left_word) && name.starts_with(&left_word))
+                || (literal(&right_word) && name.ends_with(&right_word))
         })
     }
 }

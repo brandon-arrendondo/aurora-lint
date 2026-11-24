@@ -31,6 +31,9 @@ use walkdir::WalkDir;
 struct FilePrescanResult {
     known_functions: HashSet<String>,
     header_declared_functions: HashSet<String>,
+    /// Functions this header prototypes `static`: shared with every file
+    /// that includes it ([`ProjectContext::header_static_prototypes`]).
+    header_static_prototypes: HashSet<String>,
     function_summaries: HashMap<String, FunctionSummary>,
     call_graph: HashMap<String, HashSet<String>>,
     ambiguous_call_targets: HashSet<String>,
@@ -205,6 +208,7 @@ impl FilePrescanResult {
         Self {
             known_functions: HashSet::new(),
             header_declared_functions: HashSet::new(),
+            header_static_prototypes: HashSet::new(),
             function_summaries: HashMap::new(),
             call_graph: HashMap::new(),
             ambiguous_call_targets: HashSet::new(),
@@ -355,6 +359,7 @@ fn process_file(
 
         if is_header {
             collect_header_declarations(&root, &source, &mut result.header_declared_functions);
+            collect_header_static_prototypes(&root, &source, &mut result.header_static_prototypes);
         }
 
         let file_macros = const_eval::collect_macro_constants(&root, &source, model);
@@ -894,6 +899,7 @@ fn prescan_file_list(
     // Phase 3: merge results sequentially
     let mut known_functions: HashSet<String> = HashSet::new();
     let mut header_declared_functions: HashSet<String> = HashSet::new();
+    let mut header_static_prototypes: HashSet<String> = HashSet::new();
     let mut function_summaries: HashMap<String, FunctionSummary> = HashMap::new();
     let mut call_graph: HashMap<String, HashSet<String>> = HashMap::new();
     let mut scoped_call_graph: HashMap<String, HashSet<String>> = HashMap::new();
@@ -1035,6 +1041,7 @@ fn prescan_file_list(
         }
         known_functions.extend(r.known_functions);
         header_declared_functions.extend(r.header_declared_functions);
+        header_static_prototypes.extend(r.header_static_prototypes);
 
         if let Some(path) = &r.source_path {
             file_functions
@@ -1864,6 +1871,7 @@ fn prescan_file_list(
         volatile_typedefs: Arc::new(volatile_typedefs),
         known_functions: Arc::new(known_functions),
         header_declared_functions: Arc::new(header_declared_functions),
+        header_static_prototypes: Arc::new(header_static_prototypes),
         function_summaries: function_summaries.into(),
         scoped_names_by_file: Arc::new(scoped_names_by_file),
         call_graph: Arc::new(call_graph),
@@ -2067,6 +2075,31 @@ fn collect_header_declarations(node: &Node, source: &str, names: &mut HashSet<St
                 || kind == "declaration_list" =>
             {
                 collect_header_declarations(&child, source, names);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The functions a header prototypes `static`, at file scope and through
+/// preprocessor arms, as [`collect_header_declarations`] reads the
+/// non-static ones. A header that prototypes a static shares it with every
+/// file that includes it: seL4's kernel, built as one translation unit,
+/// calls a static of one `.c` file from others through such a prototype.
+fn collect_header_static_prototypes(node: &Node, source: &str, names: &mut HashSet<String>) {
+    for child in node.child_nodes() {
+        match child.kind() {
+            "declaration" if has_static_specifier(&child, source) => {
+                if let Some(name) = extract_function_name_from_declaration(&child, source) {
+                    names.insert(name);
+                }
+            }
+            kind if kind.starts_with("preproc_")
+                || kind == "linkage_specification"
+                || kind == "declaration_list"
+                || kind == "ERROR" =>
+            {
+                collect_header_static_prototypes(&child, source, names);
             }
             _ => {}
         }
@@ -14123,6 +14156,33 @@ void caller(char *other) {
         assert!(ctx.included_c_paths.contains(&real(&a.join("impl.c"))));
         assert!(!ctx.included_c_paths.contains(&real(&b.join("impl.c"))));
         assert!(!ctx.included_c_paths.contains(&real(&a.join("main.c"))));
+    }
+
+    /// A header's `static` prototypes are recorded apart from its external
+    /// ones, through preprocessor arms; a `.c` file's are not.
+    #[test]
+    fn a_header_static_prototype_is_recorded() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("timer.h"),
+            "#ifdef ARM\nstatic void save_timer(int *v);\n#endif\nvoid exported(void);\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("timer.c"),
+            "static void local_only(void);\nstatic void save_timer(int *v) { (void)v; }\n",
+        )
+        .unwrap();
+        let ctx = prescan_directories(
+            &[tmp.path().to_string_lossy().to_string()],
+            None,
+            &|_, _| false,
+            Default::default(),
+        )
+        .unwrap();
+        assert!(ctx.header_static_prototypes.contains("save_timer"));
+        assert!(!ctx.header_static_prototypes.contains("exported"));
+        assert!(!ctx.header_static_prototypes.contains("local_only"));
     }
 
     fn prescan_one(dir_name: &str, code: &str) -> ProjectContext {
