@@ -48,7 +48,7 @@ use crate::analyze::const_eval::{self, VarRangeMap};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::{collect_param_names, extract_function_name};
 use crate::analyze::init_state::{file_proven_dead_lines, starts_in_dead_lines};
-use crate::analyze::macro_expand::{collect_function_macros, FunctionMacro};
+use crate::analyze::macro_expand::{collect_function_macros, expand_invocation, FunctionMacro};
 use crate::analyze::name_writes::{NameScope, ProjectNameTables};
 use crate::analyze::noreturn;
 use crate::analyze::preproc_arms;
@@ -152,6 +152,12 @@ pub struct Arr30C {
     /// The scan's macro definitions and function names, which classify the
     /// names a body uses when asking whether it writes a parameter.
     project_names: RefCell<Option<ProjectNameTables>>,
+    /// The scan's function-like macros (`ProjectContext::function_macros`)
+    /// and this file's own, which win for a name the file defines: a
+    /// guard's bound spelled through one (`idx < ARRAY_SIZE(tbl)`) is read
+    /// through its expansion.
+    project_function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
+    file_function_macros: RefCell<HashMap<String, FunctionMacro>>,
     /// Those plus the file being scanned's own; set per file.
     static_macros: RefCell<HashSet<String>>,
     function_cfgs: RefCell<Arc<HashMap<usize, FunctionCfg>>>,
@@ -357,6 +363,7 @@ impl CertRule for Arr30C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_static_macros.borrow_mut() = context.static_macro_names.clone();
         *self.project_names.borrow_mut() = Some(ProjectNameTables::of(context));
+        *self.project_function_macros.borrow_mut() = Arc::clone(&context.function_macros);
         *self.macro_constants.borrow_mut() = context.macro_constants.clone();
         *self.project_validated_params.borrow_mut() = context
             .function_summaries
@@ -401,6 +408,7 @@ impl CertRule for Arr30C {
             // extractor. Same per-file scope; deletes a duplicate of the engine
             // used by MEM30/EXP33/DCL31.
             let function_macros = collect_function_macros(node, source);
+            *self.file_function_macros.borrow_mut() = function_macros.clone();
             let flexible_array_structs = self.find_flexible_array_structs(node, source);
 
             // An earlier fix: a C99/struct-hack flexible array member's *declared*
@@ -475,6 +483,8 @@ impl Arr30C {
         Self {
             project_static_macros: RefCell::new(Arc::new(HashSet::new())),
             project_names: RefCell::new(None),
+            project_function_macros: RefCell::default(),
+            file_function_macros: RefCell::default(),
             static_macros: RefCell::new(HashSet::new()),
             function_cfgs: RefCell::new(Arc::default()),
             vra_results: RefCell::new(Arc::default()),
@@ -3716,9 +3726,25 @@ impl Arr30C {
                                         IndexValue::Expression(expr, None) => {
                                             self.check_expression_bounds(expr, *size)
                                         }
-                                        IndexValue::Variable(_var) => {
-                                            // Check for bounds validation
-                                            !self.has_proper_bounds_check(
+                                        // The inner index is judged as a
+                                        // one-dimensional one is: proven by
+                                        // VRA or by a guard already passed,
+                                        // as well as by an enclosing check.
+                                        IndexValue::Variable(var) => {
+                                            !self.vra_proves_index_in_bounds(
+                                                node,
+                                                source,
+                                                var,
+                                                *size,
+                                                macro_constants,
+                                            ) && !self.is_bounded_by_dominating_guard(
+                                                var,
+                                                node,
+                                                source,
+                                                inner_buffer,
+                                                *size,
+                                                macro_constants,
+                                            ) && !self.has_proper_bounds_check(
                                                 node,
                                                 source,
                                                 *size,
@@ -4652,7 +4678,19 @@ impl Arr30C {
                     buffer_name,
                 ),
             BufferSize::Symbolic(size_var) => self.is_symbolic_size_violation(index, size_var),
-            BufferSize::Dynamic(_) => match index {
+            BufferSize::Dynamic(size) => match index {
+                IndexValue::Variable(var)
+                    if self.dynamic_size_bounds_index(
+                        node,
+                        source,
+                        var,
+                        size,
+                        buffer_info,
+                        macro_constants,
+                    ) =>
+                {
+                    false
+                }
                 IndexValue::Variable(_) | IndexValue::Expression(_, None) => {
                     !self.has_dynamic_bounds_check(node, source)
                 }
@@ -4660,6 +4698,80 @@ impl Arr30C {
             },
             BufferSize::Unknown => false,
         }
+    }
+
+    /// Whether a guard that dominates the access bounds `var` by a byte
+    /// buffer's allocated size, when that size is a constant the macros
+    /// spell (`malloc(SC_MAX_ARG_LENGTH + 1)` against `arg_len <
+    /// SC_MAX_ARG_LENGTH`). The bytes count elements only where an element
+    /// is one byte, read off the pointer's declaration at the access
+    /// (ADR-0006). A size with a variable in it is left alone: the variable
+    /// may change between the allocation and the guard.
+    fn dynamic_size_bounds_index(
+        &self,
+        node: &Node,
+        source: &str,
+        var: &str,
+        size: &str,
+        buffer_info: &BufferInfo,
+        macro_constants: &HashMap<String, i64>,
+    ) -> bool {
+        if Self::access_element_bytes(node, &buffer_info.name, source) != Some(1) {
+            return false;
+        }
+        let Some(bytes) = Self::constant_sum(size, macro_constants).filter(|&b| b > 0) else {
+            return false;
+        };
+        self.is_bounded_by_dominating_guard(
+            var,
+            node,
+            source,
+            buffer_info,
+            bytes as usize,
+            macro_constants,
+        )
+    }
+
+    /// The value of `text` when it is a sum of integer literals and named
+    /// constants (`SC_MAX_ARG_LENGTH + 1`), parenthesized or not; `None` for
+    /// any other expression.
+    fn constant_sum(text: &str, macro_constants: &HashMap<String, i64>) -> Option<i64> {
+        Self::bare_text(text)
+            .split('+')
+            .try_fold(0i64, |sum, term| {
+                let term = Self::bare_text(term);
+                let value = if term.starts_with(|c: char| c.is_ascii_digit()) {
+                    Self::parse_c_integer(&term)?
+                } else if term.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    *macro_constants.get(&term)?
+                } else {
+                    return None;
+                };
+                sum.checked_add(value)
+            })
+    }
+
+    /// A decimal or hexadecimal integer literal, with any `u`/`l` suffix.
+    fn parse_c_integer(text: &str) -> Option<i64> {
+        let digits = text.trim_end_matches(['u', 'U', 'l', 'L']);
+        match digits
+            .strip_prefix("0x")
+            .or_else(|| digits.strip_prefix("0X"))
+        {
+            Some(hex) => i64::from_str_radix(hex, 16).ok(),
+            None if digits.len() > 1 && digits.starts_with('0') => None,
+            None => digits.parse().ok(),
+        }
+    }
+
+    /// The width in bytes of one element of the array or pointer an access
+    /// subscripts, read off the declaration its identifier resolves to.
+    fn access_element_bytes(node: &Node, buffer_name: &str, source: &str) -> Option<usize> {
+        let array = node.child(0).filter(|array| array.kind() == "identifier")?;
+        let (decl, _) = resolve_identifier_declarator(&array, buffer_name, source)?;
+        let ty = get_node_text(&decl.child_by_field_name("type")?, source);
+        buffer_size::sizeof_type_bytes(ty.trim())
+            .or_else(|| Self::one_byte_typedef(ty.trim()).then_some(1))
     }
 
     /// Bounds check for statically/dynamically-calculated fixed-size buffers.
@@ -4699,24 +4811,18 @@ impl Arr30C {
         }
     }
 
-    /// Bounds check for a bare-variable index into a fixed-size buffer: VRA
-    /// proof, recursive-modification heuristic, then parameter/general
-    /// bounds-check fallbacks.
-    fn is_fixed_size_variable_index_violation(
+    /// VRA's proof that `var` is in `[0, effective_size)` at the access.
+    /// Where VRA keeps no state (a block unreachable under the entry facts),
+    /// an index parameter the body never writes still has its entry range.
+    fn vra_proves_index_in_bounds(
         &self,
         node: &Node,
         source: &str,
         var: &str,
-        buffer_info: &BufferInfo,
         effective_size: usize,
         macro_constants: &HashMap<String, i64>,
-        buffer_name: &str,
     ) -> bool {
-        // VRA suppression: if VRA proves index in [0, size-1], safe. Where VRA
-        // keeps no state (a block unreachable under the entry facts), an
-        // index parameter the body never writes still has its entry range.
-        let vra_safe = self
-            .vra_var_ranges_at(node, source, macro_constants)
+        self.vra_var_ranges_at(node, source, macro_constants)
             .and_then(|ranges| ranges.get(var).copied())
             .or_else(|| {
                 let ident = node
@@ -4739,7 +4845,24 @@ impl Arr30C {
                 )
             })
             .map(|range| range.min >= 0 && (range.max as usize) < effective_size)
-            .unwrap_or(false);
+            .unwrap_or(false)
+    }
+
+    /// Bounds check for a bare-variable index into a fixed-size buffer: VRA
+    /// proof, recursive-modification heuristic, then parameter/general
+    /// bounds-check fallbacks.
+    fn is_fixed_size_variable_index_violation(
+        &self,
+        node: &Node,
+        source: &str,
+        var: &str,
+        buffer_info: &BufferInfo,
+        effective_size: usize,
+        macro_constants: &HashMap<String, i64>,
+        buffer_name: &str,
+    ) -> bool {
+        let vra_safe =
+            self.vra_proves_index_in_bounds(node, source, var, effective_size, macro_constants);
         if vra_safe {
             return false;
         }
@@ -4869,15 +4992,7 @@ impl Arr30C {
         // The array extractor records no element type, so read it off the
         // buffer's own declaration -- resolved from the subscript's array
         // identifier, never from the name alone (ADR-0006).
-        let elem_bytes = node
-            .child(0)
-            .filter(|array| array.kind() == "identifier")
-            .and_then(|array| {
-                let (decl, _) = resolve_identifier_declarator(&array, &buffer_info.name, source)?;
-                let ty = get_node_text(&decl.child_by_field_name("type")?, source);
-                buffer_size::sizeof_type_bytes(ty.trim())
-                    .or_else(|| Self::one_byte_typedef(ty.trim()).then_some(1))
-            });
+        let elem_bytes = Self::access_element_bytes(node, &buffer_info.name, source);
         let eval = |n: &Node| {
             self.guard_bound_value(
                 n,
@@ -4988,8 +5103,26 @@ impl Arr30C {
                 let operand = n
                     .child_by_field_name("value")
                     .map(|v| guard_dominance::strip_arg_wrappers(&v));
+                // A pointer's or a parameter's `sizeof` measures the pointer,
+                // whatever it points at.
+                let measures_pointer = |o: &Node| {
+                    resolve_identifier_declarator(o, buffer_name, source).is_some_and(
+                        |(decl, declarator)| {
+                            let declarator = match declarator.kind() {
+                                "init_declarator" => declarator
+                                    .child_by_field_name("declarator")
+                                    .unwrap_or(declarator),
+                                _ => declarator,
+                            };
+                            decl.kind() == "parameter_declaration"
+                                || declarator.kind() == "pointer_declarator"
+                        },
+                    )
+                };
                 if operand.is_some_and(|o| {
-                    o.kind() == "identifier" && get_node_text(&o, source) == buffer_name
+                    o.kind() == "identifier"
+                        && get_node_text(&o, source) == buffer_name
+                        && !measures_pointer(&o)
                 }) {
                     // `res < sizeof(buf)` bounds an INDEX only when a byte is
                     // an element; on `int buf[N]` it says `res < 4N`.
@@ -5024,8 +5157,143 @@ impl Arr30C {
                     _ => None,
                 }
             }
+            "call_expression" => self
+                .element_count_macro_bound(&n, source, macro_constants)
+                .or_else(|| const_eval::try_evaluate_expr(&n, source, macro_constants)),
             _ => const_eval::try_evaluate_expr(&n, source, macro_constants),
         }
+    }
+
+    /// A function-like macro call whose expansion is the element-count idiom
+    /// `sizeof(X) / sizeof((X)[0])` (`ARRAY_SIZE(tbl)`), with `X` one of its
+    /// arguments: the count of elements `X` declares. `X` is an array name,
+    /// or one subscripted (`tbl[k]` counts `tbl`'s second dimension),
+    /// resolved by its declaration at the call, never by its spelling
+    /// (ADR-0006); a parameter or a pointer is `None`, since `sizeof` then
+    /// measures a pointer and the quotient is no count. The file's own
+    /// definition of the macro wins over the project's.
+    fn element_count_macro_bound(
+        &self,
+        call: &Node,
+        source: &str,
+        macro_constants: &HashMap<String, i64>,
+    ) -> Option<i64> {
+        let callee = call.child_by_field_name("function")?;
+        if callee.kind() != "identifier" {
+            return None;
+        }
+        let name = get_node_text(&callee, source);
+        let arg_nodes: Vec<Node> = call
+            .child_by_field_name("arguments")?
+            .named_children(&mut call.walk())
+            .filter(|a| a.kind() != "comment")
+            .collect();
+        let args: Vec<String> = arg_nodes
+            .iter()
+            .map(|a| get_node_text(a, source).to_string())
+            .collect();
+        let expansion = {
+            let file = self.file_function_macros.borrow();
+            if file.contains_key(name) {
+                expand_invocation(&file, name, &args)
+            } else {
+                expand_invocation(&self.project_function_macros.borrow(), name, &args)
+            }
+        }?;
+        let counted = Self::element_count_operand(&expansion)?;
+        let operand = arg_nodes
+            .iter()
+            .find(|a| Self::bare_text(get_node_text(a, source)) == counted)?;
+        let mut root = guard_dominance::strip_arg_wrappers(operand);
+        let mut depth = 0;
+        while root.kind() == "subscript_expression" {
+            root = guard_dominance::strip_arg_wrappers(&root.child_by_field_name("argument")?);
+            depth += 1;
+        }
+        if root.kind() != "identifier" {
+            return None;
+        }
+        let (decl, mut declarator) =
+            resolve_identifier_declarator(&root, get_node_text(&root, source), source)?;
+        if decl.kind() != "declaration" {
+            return None;
+        }
+        if declarator.kind() == "init_declarator" {
+            declarator = declarator.child_by_field_name("declarator")?;
+        }
+        // `T a[5][4]` nests as `(a[5])[4]`: the outermost declarator is the
+        // last dimension.
+        let mut sizes = Vec::new();
+        while declarator.kind() == "array_declarator" {
+            sizes.push(declarator.child_by_field_name("size"));
+            declarator = declarator.child_by_field_name("declarator")?;
+        }
+        if declarator.kind() != "identifier" {
+            return None;
+        }
+        sizes.reverse();
+        let size = (*sizes.get(depth)?)?;
+        const_eval::try_evaluate_expr(&size, source, macro_constants).filter(|&n| n > 0)
+    }
+
+    /// The `X` of an expansion `sizeof(X) / sizeof((X)[0])`, white space
+    /// and the parentheses around each part dropped; `None` for any other
+    /// shape.
+    fn element_count_operand(expansion: &str) -> Option<String> {
+        let text = Self::bare_text(expansion);
+        let mut depth = 0i32;
+        let mut slash = None;
+        for (i, c) in text.char_indices() {
+            match c {
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth -= 1,
+                '/' if depth == 0 => {
+                    if slash.is_some() {
+                        return None;
+                    }
+                    slash = Some(i);
+                }
+                _ => {}
+            }
+        }
+        let slash = slash?;
+        let sizeof_operand = |part: &str| {
+            part.strip_prefix("sizeof")
+                .filter(|rest| rest.starts_with('('))
+                .map(Self::bare_text)
+                .filter(|o| !o.is_empty())
+        };
+        let counted = sizeof_operand(&text[..slash])?;
+        let element = sizeof_operand(&text[slash + 1..])?;
+        let first = element.strip_suffix("[0]").map(Self::bare_text)?;
+        (first == counted).then_some(counted)
+    }
+
+    /// `text` without white space or the parentheses that wrap all of it.
+    fn bare_text(text: &str) -> String {
+        let mut t: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+        while t.starts_with('(') && t.ends_with(')') && Self::wraps_whole(&t) {
+            t = t[1..t.len() - 1].to_string();
+        }
+        t
+    }
+
+    /// Whether the `(` opening `t` is closed by its last character.
+    fn wraps_whole(t: &str) -> bool {
+        let mut depth = 0i32;
+        for (i, c) in t.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return i == t.len() - 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     /// Whether anything writes `var` between a guard and the access it is
@@ -8379,6 +8647,56 @@ impl Arr30C {
         violations
     }
 
+    /// Whether a macro body subscripts anything where the subscript is
+    /// evaluated: a `[` outside every `sizeof(...)` operand. `ARRAY_SIZE(a)`'s
+    /// `sizeof(a) / sizeof((a)[0])` reads no element.
+    fn subscripts_outside_sizeof(body: &str) -> bool {
+        let bytes = body.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if !body.is_char_boundary(i) {
+                i += 1;
+                continue;
+            }
+            let after_sizeof = body[i..].starts_with("sizeof")
+                && !body[..i].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                && !body[i + 6..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_');
+            if after_sizeof {
+                let rest = body[i + 6..].trim_start();
+                if !rest.starts_with('(') {
+                    // `sizeof x[0]`: an unparenthesized operand runs to the
+                    // end of its unary expression, which a text scan cannot
+                    // bound; count its subscript as evaluated.
+                    i += 6;
+                    continue;
+                }
+                let open = body.len() - rest.len();
+                let mut depth = 0i32;
+                let mut j = open;
+                while j < bytes.len() {
+                    match bytes[j] {
+                        b'(' => depth += 1,
+                        b')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                i = j + 1;
+                continue;
+            }
+            if bytes[i] == b'[' {
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+
     /// Check for macro invocations that might involve array access
     /// Since macros are not expanded, we flag them for manual review if they:
     /// 1. Match a known function-like macro definition
@@ -8399,7 +8717,7 @@ impl Arr30C {
             // Check if this matches a known function-like macro
             if let Some(macro_info) = function_macros.get(func_name) {
                 // Check if the macro body contains array subscript syntax
-                if macro_info.body.contains('[') && macro_info.body.contains(']') {
+                if Self::subscripts_outside_sizeof(&macro_info.body) {
                     // Get the arguments to see if any are tracked buffers
                     if let Some(args) = self.get_function_arguments(node, source) {
                         let mut involves_buffer = false;
