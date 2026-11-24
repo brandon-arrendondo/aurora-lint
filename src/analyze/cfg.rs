@@ -1099,8 +1099,10 @@ enum ForTrips {
 
 /// The trips of every `for` in `func` that [`for_trip_count`] bounds to
 /// zero or one, by node id. One pass over the function shares the work the
-/// loops have in common: the function's `&name` set is read once, and the
-/// counters resolve through one [`ScopeDeclarations`] for the function,
+/// loops have in common: the function's `&name` set and the file's
+/// `#define`s ([`FileMacros`]) are each read once, the first time a loop's
+/// header bounds it to zero or one trips, and the counters resolve through
+/// one [`ScopeDeclarations`] for the function,
 /// which reads each scope's declarations once, so a block of thousands of
 /// such loops does not read the statements before each loop again.
 fn counted_loop_trips<'a>(
@@ -1114,13 +1116,20 @@ fn counted_loop_trips<'a>(
         return out;
     }
     let mut addressed = None;
+    let mut macros = None;
     let scopes = ScopeDeclarations::default();
     let mut resolve = |ident: &Node<'a>, name: &str| -> Option<IdentifierBinding<'a>> {
         scopes.resolve_identifier_binding(ident, name, source)
     };
     for node in fors {
-        if let Some(trips) = for_trip_count(&node, source, constants, &mut addressed, &mut resolve)
-        {
+        if let Some(trips) = for_trip_count(
+            &node,
+            source,
+            constants,
+            &mut addressed,
+            &mut macros,
+            &mut resolve,
+        ) {
             out.insert(node.id(), trips);
         }
     }
@@ -1162,13 +1171,15 @@ fn counted_loop_trips<'a>(
 ///
 /// The write and address tests match by spelling, so a shadowing local
 /// only costs the answer. Anything else is `None`: the loop keeps its back
-/// edge. `addressed` holds the function's `&name` set once read, and
+/// edge. `addressed` and `macros` hold the function's `&name` set and the
+/// file's `#define`s once read, and
 /// `resolve` finds the declaration a counter occurrence binds to.
 fn for_trip_count<'a>(
     node: &Node<'a>,
     source: &str,
     constants: &MacroConstantMap,
     addressed: &mut Option<HashSet<String>>,
+    macros: &mut Option<FileMacros>,
     resolve: &mut dyn FnMut(&Node<'a>, &str) -> Option<IdentifierBinding<'a>>,
 ) -> Option<ForTrips> {
     let text = |n: &Node| n.utf8_text(source.as_bytes()).ok();
@@ -1288,10 +1299,10 @@ fn for_trip_count<'a>(
         return None;
     };
 
-    if node.has_error() {
+    if node.has_error() || header_spans_a_blanked_line(node, source) {
         return None;
     }
-    let macros = FileMacros::of(source);
+    let macros = macros.get_or_insert_with(|| FileMacros::read(source));
     let operands = [Some(start_node), Some(bound_node), step_node];
     if operands.iter().flatten().any(|operand| {
         let mut names = Vec::new();
@@ -1304,8 +1315,13 @@ fn for_trip_count<'a>(
     // The counter is an automatic object only this loop header writes, and
     // not a `bool`, which `k++` leaves at 1 rather than stepping.
     match resolve(&counter, name)? {
-        IdentifierBinding::Parameter(ty) => {
-            if !counter_type_is_plain(&ty, &counter, source, 0) {
+        IdentifierBinding::Parameter(declaration) => {
+            // The parameter's whole declaration text: its name is no type.
+            let ty: Vec<&str> = declaration
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|w| !w.is_empty() && *w != name)
+                .collect();
+            if !counter_type_is_plain(&ty.join(" "), &counter, source, 0) {
                 return None;
             }
         }
@@ -1470,6 +1486,30 @@ fn addressed_names(node: &Node, source: &str, out: &mut HashSet<String>) {
     }
 }
 
+/// Whether a whole line between a `for`'s keyword and its body's start is
+/// blank. The pre-parse repairs blank, byte for byte, the directive lines of
+/// an `#if` chain and the arms they drop: two headers in `#ifdef`/`#else`
+/// arms sharing the body after `#endif` keep only the last header, and a
+/// bound chosen by `#ifdef` inside the header keeps one arm's value. The
+/// header that is left decides nothing for the configurations whose arm was
+/// dropped, and a blank line inside a header, or between it and its body, is
+/// otherwise next to unknown.
+fn header_spans_a_blanked_line(node: &Node, source: &str) -> bool {
+    let Some(body) = node.child_by_field_name("body") else {
+        return false;
+    };
+    let Some(span) = source.get(node.start_byte()..body.start_byte()) else {
+        return false;
+    };
+    let lines: Vec<&str> = span.split('\n').collect();
+    // The first piece is the rest of the `for` line, the last the start of
+    // the body's line; only the whole lines between them count.
+    lines.len() > 2
+        && lines[1..lines.len() - 1]
+            .iter()
+            .any(|l| l.trim().is_empty())
+}
+
 /// Every identifier spelled `name` under `node`, the node itself included.
 fn named_identifiers<'a>(node: &Node<'a>, name: &str, source: &str, out: &mut Vec<Node<'a>>) {
     if node.kind() == "identifier" && node.utf8_text(source.as_bytes()).ok() == Some(name) {
@@ -1522,30 +1562,10 @@ struct FileMacros {
     by_name: HashMap<String, Vec<(String, HashSet<String>)>>,
 }
 
-type FileMacrosMemo = Option<((usize, usize), std::rc::Rc<FileMacros>)>;
-
-thread_local! {
-    /// [`FileMacros::of`] for the source last asked about on this thread.
-    static FILE_MACROS: std::cell::RefCell<FileMacrosMemo> = const { std::cell::RefCell::new(None) };
-}
-
 impl FileMacros {
-    /// The macros `source` defines, read once per source buffer per thread.
-    fn of(source: &str) -> std::rc::Rc<FileMacros> {
-        let key = (source.as_ptr() as usize, source.len());
-        if let Some(found) = FILE_MACROS.with(|memo| {
-            memo.borrow()
-                .as_ref()
-                .filter(|(k, _)| *k == key)
-                .map(|(_, m)| std::rc::Rc::clone(m))
-        }) {
-            return found;
-        }
-        let read = std::rc::Rc::new(Self::read(source));
-        FILE_MACROS.with(|memo| *memo.borrow_mut() = Some((key, std::rc::Rc::clone(&read))));
-        read
-    }
-
+    /// The macros `source` defines. Read once per function that needs them
+    /// ([`counted_loop_trips`]); never kept past that function's CFG, so no
+    /// later source can be answered with this one's.
     fn read(source: &str) -> FileMacros {
         let words = |t: &str| -> Vec<String> {
             t.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
@@ -1610,14 +1630,23 @@ impl FileMacros {
     }
 
     /// Whether an identifier under `node` names a macro some definition of
-    /// which spells `counter` outside its parameters.
+    /// which spells `counter` outside its parameters, directly or through
+    /// another macro it names (`#define RST() RST_INNER`, `#define RST_INNER
+    /// k = 0`). Only this file's `#define`s are read: a writer an included
+    /// header defines is not seen.
     fn any_used_spells(&self, node: &Node, counter: &str, source: &str) -> bool {
-        let writers: HashSet<&str> = self
-            .by_name
-            .iter()
-            .filter(|(_, defs)| defs.iter().any(|(_, spells)| spells.contains(counter)))
-            .map(|(n, _)| n.as_str())
-            .collect();
+        let mut writers: HashSet<&str> = HashSet::new();
+        let mut spelled: Vec<&str> = vec![counter];
+        while let Some(name) = spelled.pop() {
+            for (macro_name, defs) in &self.by_name {
+                if !writers.contains(macro_name.as_str())
+                    && defs.iter().any(|(_, spells)| spells.contains(name))
+                {
+                    writers.insert(macro_name.as_str());
+                    spelled.push(macro_name.as_str());
+                }
+            }
+        }
         if writers.is_empty() {
             return false;
         }
@@ -2367,5 +2396,58 @@ mod tests {
         assert!(!has_back_edge(code));
         assert!(!reaches(code, "g(p);"));
         assert!(reaches(code, "h(p);"));
+    }
+
+    /// The file's `#define`s are read for each CFG from that CFG's own
+    /// source: two sources of one length, built one after the other on one
+    /// thread, each answer by their own macros.
+    #[test]
+    fn each_source_answers_by_its_own_macros() {
+        let writes_x = "#define RESET_X x = 0\nvoid f(int *p) { int k, x; for (k = 0; k < 1; k++) { g(p); RESET_X; } }";
+        let writes_k = "#define RESET_K k = 0\nvoid f(int *p) { int k, x; for (k = 0; k < 1; k++) { g(p); RESET_K; } }";
+        assert_eq!(writes_x.len(), writes_k.len());
+        for _ in 0..3 {
+            assert!(!has_back_edge(writes_x));
+            assert!(has_back_edge(writes_k));
+        }
+        // The same text in reused buffers of one length.
+        let mut buffer = String::with_capacity(writes_k.len());
+        for code in [writes_x, writes_k, writes_x, writes_k] {
+            buffer.clear();
+            buffer.push_str(code);
+            assert_eq!(has_back_edge(&buffer), code == writes_k, "{code}");
+        }
+    }
+
+    /// A writer macro one macro deeper still writes the counter.
+    #[test]
+    fn a_macro_that_names_a_writer_macro_writes_the_counter() {
+        let code = "#define RST_INNER k = 0\n#define RST() RST_INNER\nvoid f(int *p) { int k; for (k = 0; k < 1; k++) { g(p); RST(); } }";
+        assert!(has_back_edge(code));
+    }
+
+    /// A parameter counter qualifies as a local does.
+    #[test]
+    fn a_parameter_counter_can_bound_one_pass() {
+        assert!(!has_back_edge(
+            "void f(int *p, int k) { for (k = 0; k < 1; k++) { g(p); } }"
+        ));
+        assert!(has_back_edge(
+            "void f(int *p, volatile int k) { for (k = 0; k < 1; k++) { g(p); } }"
+        ));
+    }
+
+    /// What the pre-parse repair leaves of a header the preprocessor
+    /// chooses: blank lines where the directives and the dropped arm were,
+    /// inside the header or between it and its body. Such a header decides
+    /// nothing; one with no blank line there still does.
+    #[test]
+    fn a_header_the_repair_has_cut_decides_nothing() {
+        let shared = "void f(int *p)\n{\n    int k;\n           \n                           \n     \n    for (k = 0; k < 1; k++)\n      \n    { g(p); }\n}\n";
+        assert!(has_back_edge(shared));
+        let bound = "void f(int *p)\n{\n    int k;\n    for (k = 0; k <\n           \n    1\n     \n    ; k++) { g(p); }\n}\n";
+        assert!(has_back_edge(bound));
+        let whole = "void f(int *p)\n{\n    int k;\n\n    for (k = 0; k < 1; k++)\n    {\n        g(p);\n    }\n}\n";
+        assert!(!has_back_edge(whole));
     }
 }
