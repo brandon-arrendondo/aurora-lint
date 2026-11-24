@@ -875,12 +875,6 @@ pub struct ProjectContext {
     /// A function with a header prototype is public API and should not be
     /// flagged by DCL15-C/DCL19-C as needing `static`.
     pub header_declared_functions: Arc<HashSet<String>>,
-    /// Functions a scanned header prototypes `static`. A header that does
-    /// shares the static with every file including it (a one-translation-unit
-    /// build such as seL4's calls it from other `.c` files), so its callers
-    /// are not its defining file's alone.
-    #[serde(default)]
-    pub header_static_prototypes: Arc<HashSet<String>>,
     /// Function summaries computed during prescan for inter-procedural analysis.
     pub function_summaries: ScopedTable<FunctionSummary>,
     /// Call graph: maps function name to the set of functions it calls.
@@ -1134,6 +1128,13 @@ pub struct ProjectContext {
     /// its address are not its own file's alone.
     #[serde(default)]
     pub included_c_paths: Arc<HashSet<String>>,
+    /// The real paths of the scanned files that are not `.c` files. An
+    /// `#include` spelling that resolved to no file on the search path may
+    /// still name one of these ([`IncludeClosure::may_include`]): the
+    /// headers a file's translation unit may see when it was scanned with
+    /// `-d` and no `-I`.
+    #[serde(default)]
+    pub scanned_header_paths: Arc<HashSet<String>>,
     /// What `#include` resolution could and could not see
     /// ([`IncludeReport`]); empty when no search path was given.
     #[serde(default)]

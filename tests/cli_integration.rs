@@ -11802,3 +11802,75 @@ fn a_parse_budget_of_zero_reads_what_the_default_refuses() {
     assert!(!stderr.contains("over parse budget"), "{stderr}");
     assert_ne!(code, 3, "{stderr}");
 }
+
+/// MSC12-C's uncalled-static findings of a scan, as (file name, message).
+fn msc12_uncalled(args: &[&str]) -> Vec<(String, String)> {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("out.json");
+    let mut all: Vec<&str> = args.to_vec();
+    all.extend(["--rules", "MSC12-C", "-e", out.to_str().unwrap()]);
+    let (_, _, stderr) = run_aurora_lint(&all);
+    let content = std::fs::read_to_string(&out)
+        .unwrap_or_else(|_| panic!("no JSON output; stderr: {stderr}"));
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    violations
+        .iter()
+        .filter_map(|v| {
+            let message = v["message"].as_str()?.to_string();
+            (message.contains("never called") || message.contains("used only by")).then(|| {
+                let file = v["file"].as_str().unwrap_or("");
+                let name = std::path::Path::new(file)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                (name, message)
+            })
+        })
+        .collect()
+}
+
+/// A static that a file the includer pulls in names is used there: an
+/// X-macro list included into an initializer, as a `.def` file or a scanned
+/// header, and a template header whose code calls the includer's static.
+#[test]
+fn msc12_a_static_named_by_an_included_file_is_not_uncalled() {
+    for dir in [
+        "msc12_uncalled_xmacro_def",
+        "msc12_uncalled_xmacro_h",
+        "msc12_uncalled_template_header",
+    ] {
+        let found = msc12_uncalled(&[fixtures().join(dir).to_str().unwrap()]);
+        assert!(found.is_empty(), "{dir}: {found:?}");
+    }
+}
+
+/// A header that prototypes a static shares it with the files that include
+/// it (a one-translation-unit build calls it from others), whether the
+/// header is scanned with `-d` and reached by an `<angle>` spelling, or found
+/// only on a `-I` search path.
+#[test]
+fn msc12_a_static_a_reached_header_prototypes_is_not_uncalled() {
+    let root = fixtures().join("msc12_uncalled_header_prototype");
+    let src = root.join("src");
+    let include = root.join("include");
+    for extra in ["-I", "-d"] {
+        let found = msc12_uncalled(&[src.to_str().unwrap(), extra, include.to_str().unwrap()]);
+        assert!(found.is_empty(), "{extra}: {found:?}");
+    }
+}
+
+/// What another translation unit does, or a header nothing includes, is no
+/// use of a static: a parameter of another file spelled like it, or a macro
+/// in an unincluded header that calls it, leaves it uncalled.
+#[test]
+fn msc12_a_name_outside_the_translation_unit_does_not_use_a_static() {
+    for (dir, name) in [
+        ("msc12_uncalled_pooled_value", "'helper'"),
+        ("msc12_uncalled_macro_elsewhere", "'cleanup'"),
+    ] {
+        let found = msc12_uncalled(&[fixtures().join(dir).to_str().unwrap()]);
+        assert_eq!(found.len(), 1, "{dir}: {found:?}");
+        assert_eq!(found[0].0, "a.c", "{dir}: {found:?}");
+        assert!(found[0].1.contains(name), "{dir}: {found:?}");
+    }
+}
