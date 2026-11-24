@@ -153,7 +153,9 @@ pub(super) fn check(
     let raw = crate::analyze::noreturn::raw_text_or(path, source);
     let blanked = blank_comments_and_strings(&raw);
     let own_defines = defines(&blanked);
-    let unknown_macro_arguments = unknown_macro_arguments(&blanked, &own_defines, tables);
+    let declared = declared_names(root, source);
+    let unknown_macro_arguments =
+        unknown_macro_arguments(&blanked, &own_defines, tables, &declared);
 
     // Live without a caller: what runs or may run whatever this file's
     // statics do.
@@ -889,20 +891,68 @@ const NOT_MACROS: [&str; 18] = [
     "static_assert",
 ];
 
-/// The bare-identifier arguments of every invocation, in `blanked`, of a
+/// The names the file declares: every identifier a declarator declares
+/// (objects, functions, parameters, typedefs), wherever it is.
+fn declared_names<'s>(root: &Node, source: &'s str) -> HashSet<&'s str> {
+    let mut out = HashSet::new();
+    let mut stack = vec![*root];
+    while let Some(node) = stack.pop() {
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
+        if node.kind() != "identifier" {
+            continue;
+        }
+        let declares = node.parent().is_some_and(|p| {
+            matches!(
+                p.kind(),
+                "init_declarator"
+                    | "parameter_declaration"
+                    | "pointer_declarator"
+                    | "array_declarator"
+                    | "function_declarator"
+                    | "parenthesized_declarator"
+                    | "declaration"
+                    | "type_definition"
+            ) && p.child_by_field_name("declarator") == Some(node)
+        });
+        if declares {
+            if let Ok(text) = node.utf8_text(source.as_bytes()) {
+                out.insert(text);
+            }
+        }
+    }
+    out
+}
+
+/// The bare-identifier arguments of the invocations, in `blanked`, of a
 /// function-like name that nothing the scan read defines or declares: a
 /// macro from a header the scan cannot see, whose expansion may paste its
 /// arguments into names (`G_DEFINE_TYPE(Foo, foo, G_TYPE_OBJECT)` defines and
-/// uses `foo_init`).
+/// uses `foo_init`). At file scope, where such generators are invoked, every
+/// such argument; in a function body, where an unknown name is far more
+/// often a library function, only an argument that names nothing the file
+/// declares (`snprintf(buf, n, fmt, name)` passes the local `name`).
 fn unknown_macro_arguments<'b>(
     blanked: &'b str,
     own_defines: &[Define],
     tables: &ProjectTables,
+    declared: &HashSet<&str>,
 ) -> Vec<&'b str> {
     let own: HashSet<&str> = own_defines.iter().map(|d| d.name.as_str()).collect();
     let bytes = blanked.as_bytes();
     let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     let mut out = Vec::new();
+    // Brace depth before each byte: 0 at file scope.
+    let mut depth_at = vec![0usize; bytes.len() + 1];
+    let mut braces = 0usize;
+    for (k, &b) in bytes.iter().enumerate() {
+        match b {
+            b'{' => braces += 1,
+            b'}' => braces = braces.saturating_sub(1),
+            _ => {}
+        }
+        depth_at[k + 1] = braces;
+    }
     let mut i = 0;
     while i < bytes.len() {
         if !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') || (i > 0 && ident(bytes[i - 1])) {
@@ -940,6 +990,7 @@ fn unknown_macro_arguments<'b>(
                     if !arg.is_empty()
                         && arg.bytes().all(ident)
                         && !arg.as_bytes()[0].is_ascii_digit()
+                        && (depth_at[start] == 0 || !declared.contains(arg))
                     {
                         out.push(arg);
                     }
