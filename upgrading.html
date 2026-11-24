@@ -147,9 +147,19 @@ library’s (no <code class="docutils literal notranslate"><span class="pre">#de
 <code class="docutils literal notranslate"><span class="pre">#if</span></code> branch, and no definition or object of that name), and only when <code class="docutils literal notranslate"><span class="pre">x</span></code>
 cannot hold the parameter type’s most negative value, whose absolute value is
 undefined: under ISO C’s widths alone, with no data model declared, that holds
-only for a variable an earlier test has already bounded. A 64-bit unsigned
-<code class="docutils literal notranslate"><span class="pre">x</span></code> never counts through <code class="docutils literal notranslate"><span class="pre">labs</span></code> or <code class="docutils literal notranslate"><span class="pre">llabs</span></code>, since its values above
-<code class="docutils literal notranslate"><span class="pre">LLONG_MAX</span></code> convert to negative ones.</p>
+only for a variable an earlier test has already bounded.</p>
+<p>An unsigned <code class="docutils literal notranslate"><span class="pre">x</span></code>, or a cast of one to a signed type, counts only when its type
+is narrower than the signed type on every implementation the data model
+allows. So:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">labs</span></code> of an <code class="docutils literal notranslate"><span class="pre">unsigned</span> <span class="pre">int</span></code> counts on LP64, but not on ILP32 or LLP64.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">abs((int)u)</span></code> of an <code class="docutils literal notranslate"><span class="pre">unsigned</span> <span class="pre">int</span></code> never counts.</p></li>
+<li><p>Under strict or pedantic with no data model declared, no unsigned <code class="docutils literal notranslate"><span class="pre">x</span></code>
+counts, not even an <code class="docutils literal notranslate"><span class="pre">unsigned</span> <span class="pre">char</span></code>: ISO C sets no upper bound on
+<code class="docutils literal notranslate"><span class="pre">CHAR_BIT</span></code>.</p></li>
+<li><p>A 64-bit unsigned <code class="docutils literal notranslate"><span class="pre">x</span></code> never counts through <code class="docutils literal notranslate"><span class="pre">labs</span></code> or <code class="docutils literal notranslate"><span class="pre">llabs</span></code>, since
+its values above <code class="docutils literal notranslate"><span class="pre">LLONG_MAX</span></code> convert to negative ones.</p></li>
+</ul>
 <p>A bound written <code class="docutils literal notranslate"><span class="pre">(long)sqrt((double)SHRT_MAX)</span></code> is credited too, where the
 new environment option <code class="docutils literal notranslate"><span class="pre">iec_60559_sqrt</span></code> holds: under the default preset on a
 hosted target, or under strict and pedantic when it is declared, or when
