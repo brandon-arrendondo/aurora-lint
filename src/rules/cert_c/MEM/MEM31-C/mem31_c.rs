@@ -5087,8 +5087,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// or either conjunct of an `&&` -- both hold in the true branch, so
     /// `if (!proxy && !strequal(...))` is as much a NULL check on `proxy`
     /// as `if (!proxy)`. Only this true-branch reading distributes over
-    /// `&&`; the non-NULL and truthiness checks say what holds in the
-    /// ELSE branch, and `!(a && b)` proves nothing about either operand.
+    /// `&&`. The non-NULL and truthiness checks say what holds in the ELSE
+    /// branch, where an `&&` proves only its last conjunct's variable empty,
+    /// and only when that conjunct assigned it (`non_null_check_variable_in`).
+    /// `!(a && b)` is true exactly there, so the `!` arm below reads it
+    /// through that check and gets the same answer.
     fn null_check_variable_in(&self, condition: &Node, source: &str) -> Option<String> {
         // Handle parenthesized expression
         let cond = if condition.kind() == "parenthesized_expression" {
@@ -5212,9 +5215,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     }
 
     /// The variable `condition` proves NULL when it is false: `p != NULL`, a
-    /// success test, or the negation of a test that proves it NULL when true
-    /// (`!(p == NULL)`, `!!p`). The negation of an `&&` proves nothing about
-    /// either operand, so it is not read.
+    /// success test, the last conjunct of an `&&` when that conjunct assigned
+    /// it (`(p = malloc(a)) && (q = malloc(b))` is false with `q` empty
+    /// whichever conjunct failed), or the negation of a test that proves it
+    /// NULL when true (`!(p == NULL)`, `!!p`). The negation of an `&&` is
+    /// false only when both conjuncts hold, which proves neither operand
+    /// NULL, so it is not read.
     fn non_null_check_variable_in(&self, condition: &Node, source: &str) -> Option<String> {
         // Handle parenthesized expression
         let cond = if condition.kind() == "parenthesized_expression" {
@@ -6104,7 +6110,11 @@ fn tested_operand(node: Node) -> Node {
 /// an occurrence refers to. It is sound here because both spellings come
 /// from one expression: `name` is what a test inside `expr` reads, and an
 /// assignment in the same expression cannot sit in a different scope, so the
-/// same spelling there is the same object.
+/// same spelling there is the same object. The one exception is a GNU
+/// statement expression, `({ char *p = ...; p = x; })`, whose block can
+/// declare a `p` of its own. An assignment to that inner `p` would satisfy
+/// this check for the outer one. A condition that opens a scope inside its
+/// own test is rare enough that this is accepted rather than resolved.
 fn assigns_to(expr: &Node, name: &str, source: &str) -> bool {
     query::find_descendants(*expr, |n| n.kind() == "assignment_expression")
         .into_iter()

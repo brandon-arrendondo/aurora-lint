@@ -14,7 +14,12 @@
  * is enough. A comma condition tests its last operand, and `c ? A : 0` tests
  * what `A` does. `p = q = malloc(n)` binds as the statement does. A block
  * handed over by a later operand of the same condition stays handed over:
- * the condition is read in evaluation order.
+ * the condition is read in evaluation order. A comma condition's last
+ * operand is read by the success and truthiness tests too, and `c ? 0 : B`
+ * tests what `B` does. An assignment inside a call's arguments is not a
+ * binding of the condition, as it is not of a statement, so a block handed
+ * to the call that way is the call's. `!(A && B)` is the else path of
+ * `A && B`.
  */
 
 #include <stdlib.h>
@@ -185,5 +190,63 @@ int handed_over_after_it_is_bound(struct holder *hd)
     char *p;
     if ((p = malloc(8)) == NULL || !keep(hd, p))
         return -1;
+    return 0;
+}
+
+int comma_condition_success_arm(void)
+{
+    char *p;
+    if ((p = malloc(8)), p != NULL) {
+        use(p);
+        free(p);
+        return 0;
+    }
+    return -1;
+}
+
+int comma_condition_truthiness(void)
+{
+    char *p;
+    if ((p = malloc(8)), p) {
+        use(p);
+        free(p);
+        return 0;
+    }
+    return -1;
+}
+
+int conditional_with_a_false_consequence(int c)
+{
+    char *p = NULL;
+    if (c ? 0 : (p = malloc(8)) == NULL)
+        return -1;
+    free(p);
+    return 0;
+}
+
+int handed_over_in_a_call_argument(struct holder *hd)
+{
+    char *p;
+    if (keep(hd, (p = malloc(8))) == 0)
+        return -1;
+    return 0;
+}
+
+int handed_over_in_a_call_argument_statement(struct holder *hd)
+{
+    char *p;
+    keep(hd, (p = malloc(8)));
+    return 0;
+}
+
+int negated_conjunction(void)
+{
+    char *p, *q;
+    if (!((p = malloc(8)) && (q = malloc(8)))) {
+        free(p);
+        return -1;
+    }
+    free(p);
+    free(q);
     return 0;
 }
