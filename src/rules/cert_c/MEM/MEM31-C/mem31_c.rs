@@ -35,12 +35,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
 
-/// Reduce a call argument to the variable it names, reporting whether it was
-/// named by address.
-///
-/// `p` yields `(p, false)`; `&p` and `(void **)&p` yield `(p, true)`.
-/// Parentheses and casts are transparent. Anything else — a field, a
-/// subscript, a nested call — yields `None`.
 /// `arg` with every enclosing parenthesis and cast removed: the expression
 /// a call actually hands over, since `(struct crypto_ec_key *) pkey` names
 /// `pkey` and nothing else.
@@ -64,8 +58,8 @@ fn peel_casts_and_parens(mut n: Node) -> Node {
 /// else. `None` for anything else.
 ///
 /// Every reader of a released argument goes through this one: the walk's
-/// `free` and freeing-macro readers, the label pre-scan, and
-/// [`released_argument_name`]. When the walk read the argument's own node
+/// `free`, freeing-macro and `realloc` readers, the loop-over-an-array free
+/// pattern, the label pre-scan, and [`released_argument_name`]. When the walk read the argument's own node
 /// kind and the pre-scan peeled casts, a cast free was credited on every
 /// path through a cleanup label and on none that reached it any other way.
 fn released_object(arg: Node) -> Option<Node> {
@@ -147,6 +141,12 @@ fn allocation_target<'t>(
     None
 }
 
+/// Reduce a call argument to the variable it names, reporting whether it was
+/// named by address.
+///
+/// `p` yields `(p, false)`; `&p` and `(void **)&p` yield `(p, true)`.
+/// Parentheses and casts are transparent. Anything else — a field, a
+/// subscript, a nested call — yields `None`.
 fn strip_call_argument(arg: Node) -> Option<(Node, bool)> {
     let peel = peel_casts_and_parens;
     let node = peel(arg);
@@ -1424,12 +1424,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 let callee = self.callee_name(&n.child_by_field_name("function")?, source);
                 let k = call_roles::frees_argument(&callee)?;
                 Self::call_args(n).enumerate().position(|(i, arg)| {
-                    (callee == "free" || i == k) && arg.kind() == "subscript_expression"
+                    (callee == "free" || i == k)
+                        && released_object(arg)
+                            .is_some_and(|object| object.kind() == "subscript_expression")
                 })
             };
             let call = query::find_first_descendant(*node, |n| freed_subscript(n).is_some())?;
             let arg = Self::call_args(call).nth(freed_subscript(call)?)?;
-            let base = arg.child_by_field_name("argument")?;
+            let base = released_object(arg)?.child_by_field_name("argument")?;
             let pos = call.start_position();
             Some((
                 ast_utils::get_node_text_owned(&base, source),
@@ -4697,8 +4699,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
         for arg in arguments.child_nodes() {
             if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
-                if arg_count == 0 && arg.kind() == "identifier" {
-                    first_arg = ast_utils::get_node_text_owned(&arg, source);
+                // Keyed by variable only, as a cast is transparent:
+                // `realloc((void *) p, 0)` releases `p`.
+                if let Some(object) = (arg_count == 0)
+                    .then(|| released_object(arg))
+                    .flatten()
+                    .filter(|object| object.kind() == "identifier")
+                {
+                    first_arg = ast_utils::get_node_text_owned(&object, source);
                 }
                 arg_count += 1;
             }

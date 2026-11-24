@@ -4,8 +4,9 @@
  * Status: FAIL - Should trigger MEM31-C violation
  * Description: Reading `free((void *) p)` as a release of `p` credits only
  * the paths that reach it. A return before the cleanup label still leaks
- * the block, and freeing it twice through casts is still a double free.
- * Expect: count=3
+ * the block, and freeing it twice through casts is still a double free,
+ * as is freeing a block `realloc((void *) p, 0)` already released.
+ * Expect: count=4
  */
 
 #include <stdlib.h>
@@ -47,4 +48,12 @@ int success_path_keeps_it(int key)
 error:
     free((void *) q);
     return -1;
+}
+
+void freed_after_a_cast_realloc_to_zero(void)
+{
+    char *p = malloc(8);
+    use(p);
+    realloc((void *) p, 0);
+    free(p); /* Expect: here */
 }

@@ -5,7 +5,8 @@
  * Description: A cast hands `free` the same block, so `free((void *) p)`
  * releases `p` as `free(p)` does: in a straight line, at a cleanup label the
  * function falls through into, at a label whose frees sit under the same
- * `#ifdef` as the allocations, and through a freeing macro. A const pointer
+ * `#ifdef` as the allocations, through a freeing macro, and by a `realloc`
+ * to size zero. A const pointer
  * freed through a cast to `void *` is the usual case.
  */
 
@@ -101,4 +102,11 @@ int released_at_the_label_through_a_macro(int skip)
 out:
     RELEASE((void *) p);
     return 0;
+}
+
+void released_by_a_cast_realloc_to_zero(void)
+{
+    char *p = malloc(8);
+    use(p);
+    realloc((void *) p, 0);
 }
