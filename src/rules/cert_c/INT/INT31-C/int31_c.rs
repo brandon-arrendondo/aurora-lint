@@ -654,7 +654,9 @@ fn may_be_narrower(to: IntWidth, from: IntWidth) -> bool {
 /// See [`get_type_width`]'s floating-type branch.
 const FLOAT_AS_INTEGER_WIDTH: u32 = 65;
 
-/// Signed integer aliases, matched by their whole name.
+/// Signed integer aliases, matched by their whole name. A vendor name
+/// among them (`LONG`) answers only where no typedef in reach defines it
+/// ([`Int31C::integer_signedness`]).
 const SIGNED_ALIASES: &[&str] = &[
     "int8_t",
     "int16_t",
@@ -764,6 +766,18 @@ fn spelled_signedness(type_str: &str) -> Option<bool> {
         return Some(false);
     }
     None
+}
+
+/// Whether a type name is one a program may not define for itself: a
+/// standard library or POSIX typedef name, or an identifier C reserves to
+/// the implementation (`__int64`, `_Float16`).
+fn is_reserved_type_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let reserved = chars.next() == Some('_')
+        && chars
+            .next()
+            .is_some_and(|c| c == '_' || c.is_ascii_uppercase());
+    reserved || expr_type::is_standard_typedef_name(name)
 }
 
 // Types ranked by size (smallest to largest) for narrowing detection
@@ -2338,22 +2352,42 @@ impl Int31C {
         reading: &mut Vec<String>,
         known: &mut HashMap<String, Option<bool>>,
     ) -> Option<bool> {
-        if let Some(signed) = spelled_signedness(type_str) {
-            return Some(signed);
-        }
         let core = type_core(type_str);
-        if core.is_empty() || core.contains(['*', '[', ' ']) || reading.contains(&core) {
+        let single_name = !core.is_empty() && !core.contains(['*', '[', ' ']);
+        // The file's own typedef of a name, else the project's, says what
+        // it is before any vendor vocabulary does: `typedef unsigned LONG;`
+        // is unsigned whatever `<windows.h>` makes `LONG`. A name the
+        // standard or the implementation reserves (`size_t`, `int32_t`,
+        // `__int64`) keeps its fixed meaning, since a program may not
+        // redefine it and a library header spells it through builtins no
+        // scan reads (`typedef __SIZE_TYPE__ size_t;`).
+        let arms = if single_name && !is_reserved_type_name(&core) {
+            self.file_typedef_arms
+                .borrow()
+                .get(&core)
+                .cloned()
+                .or_else(|| self.project_typedef_arms.borrow().get(&core).cloned())
+        } else {
+            None
+        };
+        if arms.is_none() {
+            if let Some(signed) = spelled_signedness(type_str) {
+                return Some(signed);
+            }
+        }
+        if !single_name || reading.contains(&core) {
             return None;
         }
         if let Some(&answer) = known.get(&core) {
             return answer;
         }
-        let arms = self
-            .file_typedef_arms
-            .borrow()
-            .get(&core)
-            .cloned()
-            .or_else(|| self.project_typedef_arms.borrow().get(&core).cloned());
+        let arms = arms.or_else(|| {
+            self.file_typedef_arms
+                .borrow()
+                .get(&core)
+                .cloned()
+                .or_else(|| self.project_typedef_arms.borrow().get(&core).cloned())
+        });
         let definitions: Vec<String> = match arms {
             Some(arms) => arms,
             None => self
