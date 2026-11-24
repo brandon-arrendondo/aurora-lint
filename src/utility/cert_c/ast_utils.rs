@@ -2141,10 +2141,17 @@ impl FileTypedefs {
     }
 
     fn build(root: &Node, source: &str) -> Self {
-        use crate::utility::cert_c::declarator_utils::{typedef_declarators, TypedefShape};
+        use crate::utility::cert_c::declarator_utils::{
+            typedef_declarators, typedef_head_was_swallowed, TypedefShape,
+        };
         #[cfg(test)]
         count_typedef_work(|w| w.builds += 1);
+        // A typedef whose head the parse swallowed declares none of the names
+        // after it: they are a parameter list's, not types.
         let typedef_names = |item: &Node| -> Vec<String> {
+            if typedef_head_was_swallowed(item) {
+                return Vec::new();
+            }
             typedef_declarators(item)
                 .iter()
                 .filter_map(|d| TypedefShape::of(d, source).name)
@@ -5357,6 +5364,41 @@ mod tests {
         // parameter is not taken for one either.
         let unknown = "void f(void)\n{\n    LONG (*g)(HKEY);\n    g(0);\n}\n";
         assert_eq!(last_occurrence_is_local(unknown, "g"), None);
+    }
+
+    #[test]
+    fn a_typedef_whose_head_the_parse_swallowed_is_in_scope_for_no_name() {
+        // Cut down from miniaudio: the unknown `WINAPI` sends the parse into
+        // recovery, which takes the typedef's head into an ERROR and reads
+        // the rest as `typedef const char *lpSubKey, ulOptions, samDesired`
+        // in the function's block.
+        let code = "typedef unsigned short WORD;\n\
+                    void g(void)\n\
+                    {\n\
+                    typedef LONG (WINAPI * PFN)(HKEY hKey, const char* lpSubKey, DWORD ulOptions, DWORD samDesired, HKEY* phkResult);\n\
+                    x = 1;\n\
+                    }\n";
+        let (tree, src) = parse_c_code(code);
+        let typedef = query::find_descendants_of_kind(tree.root_node(), "type_definition")
+            .into_iter()
+            .last()
+            .unwrap();
+        assert!(
+            crate::utility::cert_c::declarator_utils::typedef_head_was_swallowed(&typedef),
+            "the fixture no longer reproduces the recovery"
+        );
+        let after = tree
+            .root_node()
+            .descendant_for_byte_range(src.find("x = 1").unwrap(), src.find("x = 1").unwrap())
+            .unwrap();
+        for name in ["DWORD", "ulOptions", "samDesired", "lpSubKey", "phkResult"] {
+            assert!(
+                typedef_definition_in_scope(&after, name, &src).is_none(),
+                "{name}"
+            );
+        }
+        // A whole typedef in the same file still is.
+        assert!(typedef_definition_in_scope(&after, "WORD", &src).is_some());
     }
 
     #[test]

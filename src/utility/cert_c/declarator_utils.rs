@@ -1,6 +1,7 @@
 // Declarator utilities for CERT C rules
 // This module provides reusable functions for analyzing C declarators (arrays, pointers, function pointers)
 
+use crate::utility::cert_c::node_children::NodeChildren;
 use tree_sitter::Node;
 
 // ============================================================================
@@ -853,6 +854,30 @@ impl TypedefShape {
             }
         }
     }
+}
+
+/// Whether the parser swallowed the head of this `type_definition` into an
+/// ERROR, so that its `type` and `declarator` fields are not the typedef's
+/// at all. In miniaudio's
+/// `typedef LONG (WINAPI * PFN)(HKEY hKey, const char* lpSubKey, DWORD ulOptions, DWORD samDesired, ...);`
+/// the unknown `WINAPI` sends the parse into recovery, which takes
+/// everything up to `hKey,` as an ERROR and ends the typedef at an invented
+/// `;`, leaving `typedef const char *lpSubKey, ulOptions, DWORD`: read as
+/// written, that makes `DWORD` a name for `char`.
+///
+/// Only an ERROR before the `type` field counts. A repair after the type
+/// leaves it as written: seL4's
+/// `typedef seL4_CapRights_t seL4_CapRights SEL4_DEPRECATED("...");` needs
+/// a repair only after its name, and still binds that name correctly, so it
+/// is no reason to drop the fact.
+pub fn typedef_head_was_swallowed(type_definition: &Node) -> bool {
+    let Some(ty) = type_definition.child_by_field_name("type") else {
+        return false;
+    };
+    type_definition
+        .child_nodes()
+        .take_while(|c| c.id() != ty.id())
+        .any(|c| c.is_error())
 }
 
 /// The names a `type_definition` binds to a pointer type in DCL05-C's sense:

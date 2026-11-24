@@ -8261,7 +8261,11 @@ fn collect_from_typedef(
         // First, collect under the struct's own name (if it has one)
         collect_from_struct_specifier(&spec, source, struct_field_types, shapes);
 
-        // Then, also register under the typedef alias
+        // Then, also register under the typedef alias -- unless the parse
+        // swallowed the typedef's head, when the struct body it holds is
+        // still a struct but the names after it are not this typedef's.
+        let typedef_name =
+            typedef_name.filter(|_| !declarator_utils::typedef_head_was_swallowed(node));
         if let Some(alias) = typedef_name {
             if !alias.is_empty() {
                 if let Some(body) = spec.child_by_field_name("body") {
@@ -8323,6 +8327,9 @@ fn collect_from_struct_tag_typedef(
     source: &str,
     struct_typedef_aliases: &mut HashMap<String, String>,
 ) {
+    if declarator_utils::typedef_head_was_swallowed(node) {
+        return;
+    }
     let Some(type_node) = node.child_by_field_name("type") else {
         return;
     };
@@ -8461,7 +8468,10 @@ fn collect_typedef_arms_rec(
 ) {
     for child in node.child_nodes() {
         match child.kind() {
-            "type_definition" if !dead.contains_node(&child) => {
+            "type_definition"
+                if !dead.contains_node(&child)
+                    && !declarator_utils::typedef_head_was_swallowed(&child) =>
+            {
                 let simple = child.child_by_field_name("type").filter(|t| {
                     matches!(
                         t.kind(),
@@ -8508,7 +8518,7 @@ fn collect_typedef_arms_rec(
 fn collect_function_pointer_typedef_names(node: &Node, source: &str, names: &mut HashSet<String>) {
     for child in node.child_nodes() {
         match child.kind() {
-            "type_definition" => {
+            "type_definition" if !declarator_utils::typedef_head_was_swallowed(&child) => {
                 if let Some(declarator) = child.child_by_field_name("declarator") {
                     if crate::utility::cert_c::declarator_utils::is_function_declarator(&declarator)
                     {
@@ -8552,7 +8562,7 @@ fn collect_function_pointer_typedef_names(node: &Node, source: &str, names: &mut
 fn collect_function_typedef_names(node: &Node, source: &str, names: &mut HashSet<String>) {
     for child in node.child_nodes() {
         match child.kind() {
-            "type_definition" => {
+            "type_definition" if !declarator_utils::typedef_head_was_swallowed(&child) => {
                 let mut cursor = child.walk();
                 for declarator in child.children_by_field_name("declarator", &mut cursor) {
                     if crate::utility::cert_c::declarator_utils::declares_function(&declarator) {
@@ -8629,6 +8639,9 @@ fn collect_from_simple_typedef(
     source: &str,
     typedef_types: &mut HashMap<String, String>,
 ) {
+    if declarator_utils::typedef_head_was_swallowed(node) {
+        return;
+    }
     let Some(type_node) = node.child_by_field_name("type") else {
         return;
     };
@@ -8693,6 +8706,11 @@ pub(crate) fn collect_packed_structs(
                         typedef_name =
                             Some(gc.utf8_text(source.as_bytes()).unwrap_or("").to_string());
                     }
+                }
+                // A swallowed head leaves the struct a struct, but the
+                // names after it are not this typedef's.
+                if declarator_utils::typedef_head_was_swallowed(&child) {
+                    typedef_name = None;
                 }
                 if let Some(spec) = struct_spec {
                     let names: Vec<String> = spec
@@ -10686,6 +10704,74 @@ mod tests {
         // A name only the dead platform defines is absent, not misresolved.
         assert!(!ctx.typedef_types.contains_key("DWORD_ALIAS"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_typedef_whose_head_the_parse_swallowed_names_no_type() {
+        // Cut down from miniaudio: the unknown `WINAPI` sends the parse of
+        // the last typedef into recovery, which takes its head into an ERROR
+        // and ends it at an invented `;` as
+        // `typedef const char *lpSubKey, ulOptions, DWORD`. Read as written,
+        // `ulOptions` and `DWORD` become names for `char` in every file.
+        let swallowed = r#"    static MA_INLINE ma_uint16 __stdcall ma_atomic_fetch_sub_explicit_16(volatile ma_uint16* dst, ma_uint16 src, ma_atomic_memory_order order)
+    {
+        #if defined(MA_ATOMIC_IS_LOCK_FREE_16)
+            ma_uint16 result = 0;
+                    if (order == ma_atomic_memory_order_relaxed) {
+            {
+            #endif
+            {
+                {
+typedef LONG    (WINAPI * MA_PFN_RegOpenKeyExA)(HKEY hKey, const char* lpSubKey, DWORD ulOptions, DWORD samDesired, HKEY* phkResult);
+"#;
+        // The same recovery with a struct for the parameter's type: the
+        // struct keeps its tag and fields, but the names after it are not
+        // aliases of it, and `__attribute__((packed))` makes none of them
+        // packed.
+        let last = "typedef LONG    (WINAPI * MA_PFN_RegOpenKeyExA)";
+        let head = &swallowed[..swallowed.find(last).unwrap()];
+        let with_struct = format!(
+            "{head}{last}(HKEY hKey, struct tagKey {{ int a; }} * lpSubKey, DWORD ulOptions, DWORD samDesired, HKEY* phkResult);\n"
+        );
+        let with_packed = format!(
+            "{head}typedef LONG    (WINAPI * MA_PFN_X)(HKEY hKey, struct tagPacked {{ int a; }} __attribute__((packed)) lpSubKey, DWORD ulOptions);\n"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("swallowed.h"), swallowed).unwrap();
+        std::fs::write(dir.path().join("with_struct.h"), with_struct).unwrap();
+        std::fs::write(dir.path().join("with_packed.h"), with_packed).unwrap();
+        std::fs::write(
+            dir.path().join("kept.h"),
+            "typedef unsigned short WORD;\n\
+             typedef WORD DWORD64 DEPRECATED(\"use QWORD\");\n",
+        )
+        .unwrap();
+        let ctx = prescan_directories(
+            &[dir.path().to_string_lossy().to_string()],
+            None,
+            &|_, _| false,
+            Default::default(),
+        )
+        .unwrap();
+        for name in ["DWORD", "ulOptions", "samDesired", "lpSubKey", "phkResult"] {
+            assert!(!ctx.typedef_types.contains_key(name), "{name}");
+            assert!(!ctx.typedef_arms.contains_key(name), "{name}");
+            assert!(!ctx.struct_field_types.contains_key(name), "{name}");
+            assert!(!ctx.struct_typedef_aliases.contains_key(name), "{name}");
+            assert!(!ctx.packed_structs.contains(name), "{name}");
+            assert!(!ctx.pointer_typedef_names.contains(name), "{name}");
+        }
+        assert!(ctx.struct_field_types.contains_key("tagKey"));
+        // A typedef read whole, or repaired only after its name, still
+        // names its type.
+        assert_eq!(
+            ctx.typedef_types.get("WORD").map(String::as_str),
+            Some("unsigned short")
+        );
+        assert_eq!(
+            ctx.typedef_types.get("DWORD64").map(String::as_str),
+            Some("WORD")
+        );
     }
 
     // -- function summary merging across variants --
