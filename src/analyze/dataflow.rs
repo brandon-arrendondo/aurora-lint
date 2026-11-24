@@ -26,6 +26,11 @@ pub enum DefinitionKind {
     FreeCall,
     /// Assignment from a function that may return NULL (malloc, etc.).
     NullableCall,
+    /// A write that may not run although its statement does: under the
+    /// right operand of `&&` or `||`, or an arm of `?:`. It reaches like any
+    /// other, but kills nothing, since the graph does not split
+    /// expressions.
+    MayAssignment,
 }
 
 /// A single variable definition at a specific point in the program.
@@ -137,6 +142,11 @@ fn compute_gen_kill(
             // Process definitions in order within the block
             for &def_idx in defs_in_block {
                 let def = &definitions[def_idx];
+                // A write that may not run kills nothing.
+                if def.kind == DefinitionKind::MayAssignment {
+                    block_gen.insert(def_idx);
+                    continue;
+                }
                 // This definition kills all other definitions of the same variable
                 if let Some(other_defs) = var_defs.get(def.variable.as_str()) {
                     for &other_idx in other_defs {
@@ -150,14 +160,26 @@ fn compute_gen_kill(
                 block_gen.insert(def_idx);
             }
 
-            // Remove earlier defs in same block that are overridden by later defs
+            // Remove earlier defs in same block that are overridden by later
+            // defs: the last one that surely runs, and the ones that may
+            // run after it, survive the block.
             let mut last_def_per_var: HashMap<&str, usize> = HashMap::new();
-            for &def_idx in defs_in_block {
-                last_def_per_var.insert(&definitions[def_idx].variable, def_idx);
+            for (position, &def_idx) in defs_in_block.iter().enumerate() {
+                if definitions[def_idx].kind != DefinitionKind::MayAssignment {
+                    last_def_per_var.insert(&definitions[def_idx].variable, position);
+                }
             }
+            let position_of: HashMap<usize, usize> = defs_in_block
+                .iter()
+                .enumerate()
+                .map(|(position, &def_idx)| (def_idx, position))
+                .collect();
             block_gen.retain(|idx| {
                 let var = &definitions[*idx].variable;
-                last_def_per_var.get(var.as_str()) == Some(idx)
+                match last_def_per_var.get(var.as_str()) {
+                    Some(&last) => position_of[idx] >= last,
+                    None => true,
+                }
             });
         }
     }

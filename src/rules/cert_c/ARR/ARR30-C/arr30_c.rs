@@ -129,8 +129,9 @@ type FunctionReachCache = HashMap<usize, Option<Rc<FunctionReach>>>;
 type ObjectKey = (String, Option<usize>);
 
 /// Per object: what it holds on entry, and its writes as (byte, whether it
-/// is the object's own declaration).
-type ObjectWrites = HashMap<ObjectKey, (EntryValue, Vec<(usize, bool)>)>;
+/// is the object's own declaration, whether it may not run although its
+/// statement does).
+type ObjectWrites = HashMap<ObjectKey, (EntryValue, Vec<(usize, bool, bool)>)>;
 
 /// What an object holds when its function is entered.
 #[derive(Clone)]
@@ -210,7 +211,7 @@ impl FunctionReach {
             None => Vec::new(),
             Some(variable) => {
                 let defs = &self.reaching.definitions;
-                let earlier = self
+                let mut earlier: Vec<usize> = self
                     .defs_by_block
                     .get(&block)
                     .into_iter()
@@ -222,19 +223,34 @@ impl FunctionReach {
                             && (d.statement_index < index
                                 || (d.statement_index == index && d.byte_offset < at))
                     })
-                    .max_by_key(|&i| (defs[i].statement_index, defs[i].byte_offset));
-                match earlier {
-                    Some(i) => vec![i],
-                    None => self
-                        .reaching
-                        .reaching_in
-                        .get(&block)
-                        .into_iter()
-                        .flatten()
-                        .copied()
-                        .filter(|&i| defs[i].variable == variable)
-                        .collect(),
+                    .collect();
+                earlier.sort_by_key(|&i| {
+                    std::cmp::Reverse((defs[i].statement_index, defs[i].byte_offset))
+                });
+                // Back from `at` to the last write in the block that surely
+                // runs, with every one that may run after it; with none,
+                // what reaches the block too.
+                let mut ids = Vec::new();
+                let mut definite = false;
+                for i in earlier {
+                    ids.push(i);
+                    if defs[i].kind != DefinitionKind::MayAssignment {
+                        definite = true;
+                        break;
+                    }
                 }
+                if !definite {
+                    ids.extend(
+                        self.reaching
+                            .reaching_in
+                            .get(&block)
+                            .into_iter()
+                            .flatten()
+                            .copied()
+                            .filter(|&i| defs[i].variable == variable),
+                    );
+                }
+                ids
             }
         };
         let mut writes = Vec::new();
@@ -2150,6 +2166,44 @@ impl Arr30C {
         built
     }
 
+    /// Whether the write to `target` may not run although its statement
+    /// does: it lies in the right operand of `&&` or `||`, or an arm of
+    /// `?:`, within its expression.
+    fn evaluated_conditionally(target: &Node) -> bool {
+        let mut child = *target;
+        while let Some(parent) = child.parent() {
+            let is = |field: &str| {
+                parent
+                    .child_by_field_name(field)
+                    .is_some_and(|f| f.id() == child.id())
+            };
+            match parent.kind() {
+                "binary_expression"
+                    if parent
+                        .child_by_field_name("operator")
+                        .is_some_and(|o| matches!(o.kind(), "&&" | "||"))
+                        && is("right") =>
+                {
+                    return true;
+                }
+                "conditional_expression" if is("consequence") || is("alternative") => {
+                    return true;
+                }
+                kind if kind.ends_with("_statement")
+                    || matches!(
+                        kind,
+                        "declaration" | "compound_statement" | "function_definition"
+                    ) =>
+                {
+                    return false;
+                }
+                _ => {}
+            }
+            child = parent;
+        }
+        false
+    }
+
     /// Records the write `node` makes to `target`, when a subscript of the
     /// function names it, under the object it binds to.
     fn record_write(
@@ -2181,7 +2235,11 @@ impl Arr30C {
             .entry(key)
             .or_insert_with(|| (Self::entry_value(body, &decl, &used, source), Vec::new()))
             .1
-            .push((target.start_byte(), declares));
+            .push((
+                target.start_byte(),
+                declares,
+                Self::evaluated_conditionally(&target),
+            ));
     }
 
     /// One walk of the body for the writes of every object a subscript in
@@ -2249,11 +2307,15 @@ impl Arr30C {
             writes.sort_unstable();
             writes.dedup();
             let variable = format!("{}#{:?}", key.0, key.1);
-            let def = |block_id, statement_index, byte_offset| Definition {
+            let def = |block_id, statement_index, byte_offset, may: bool| Definition {
                 variable: variable.clone(),
                 block_id,
                 statement_index,
-                kind: DefinitionKind::Assignment,
+                kind: if may {
+                    DefinitionKind::MayAssignment
+                } else {
+                    DefinitionKind::Assignment
+                },
                 byte_offset,
             };
             // A `static` local's own declaration runs once, before the
@@ -2269,11 +2331,15 @@ impl Arr30C {
             };
             let mut defs = Vec::with_capacity(writes.len() + 1);
             if !matches!(entry, EntryValue::Unset) {
-                defs.push(def(cfg.entry, 0, reach.entry));
+                defs.push(def(cfg.entry, 0, reach.entry, false));
             }
             let located: Option<Vec<Definition>> = writes
                 .iter()
-                .map(|&(at, _)| reach.locate(at).map(|(block, index)| def(block, index, at)))
+                .map(|&(at, _, may)| {
+                    reach
+                        .locate(at)
+                        .map(|(block, index)| def(block, index, at, may))
+                })
                 .collect();
             match located {
                 Some(located) => {

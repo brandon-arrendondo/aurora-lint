@@ -1339,7 +1339,7 @@ writing a "last assignment before X" or "may this store survive to X" walk.
 
 | Function | Signature | Description |
 |---|---|---|
-| `compute_reaching_definitions` | `(cfg: &FunctionCfg, definitions: Vec<Definition>) -> ReachingDefs` | The standard iterative reaching-definitions fixpoint over `cfg`. A definition is `{ variable, block_id, statement_index, kind, byte_offset }`; within a block, a later one in `definitions` kills an earlier one of the same `variable`, so list each block's in execution (source) order. `ReachingDefs::reaching_in[block]` is the set of definition indices that reach the block's entry. Linear in the graph per pass: it indexes the edges by block once. |
+| `compute_reaching_definitions` | `(cfg: &FunctionCfg, definitions: Vec<Definition>) -> ReachingDefs` | The standard iterative reaching-definitions fixpoint over `cfg`. A definition is `{ variable, block_id, statement_index, kind, byte_offset }`; within a block, a later one in `definitions` kills an earlier one of the same `variable`, so list each block's in execution (source) order. `ReachingDefs::reaching_in[block]` is the set of definition indices that reach the block's entry. Linear in the graph per pass: it indexes the edges by block once. A `MayAssignment` definition kills nothing. |
 | `extract_definitions` | `(cfg, func_node, source) -> Vec<Definition>` | Definitions by name for the null and free rules: parameters, declarations, plain and compound assignments, `free` calls. It records no `++`/`--` and no assignment nested in another, and keys by spelling, so a caller that needs every write to one object (ADR-0006) builds its own list and passes it to `compute_reaching_definitions`. |
 | `ReachingDefs::defs_reaching_block` | `(&self, block_id, var_name) -> Vec<&Definition>` | The definitions of `var_name` reaching a block's entry. |
 
@@ -1356,7 +1356,11 @@ them in one fixpoint by giving each object's definitions its own
 every write to the object, plus one at the entry block for a value on
 entry: a parameter's or a file-scope object's, which is unknown, and a
 `static` local's, which is its initializer or any write of the function,
-from an earlier call. It keeps its preprocessor-arm fold for a store in an
+from an earlier call. The graph does not split expressions, so a write
+under the right operand of `&&` or `||`, or an arm of `?:`, is a
+`DefinitionKind::MayAssignment`: it reaches, but kills nothing, and
+`compute_reaching_definitions` keeps the definitions before it alive
+through its block. It keeps its preprocessor-arm fold for a store in an
 arm apart from the access, since the graph takes every arm for a path
 (ADR-0010 makes them alternatives).
 
