@@ -159,6 +159,9 @@ struct CfgBuilder {
     macro_jumps: HashMap<String, MacroJump>,
     /// See [`FunctionCfg::macro_jump_blocks`].
     macro_jump_blocks: Vec<(BlockId, (usize, usize))>,
+    /// The names whose address the function takes anywhere (`&name`),
+    /// read once, by the first counted loop that asks.
+    addressed_names: Option<HashSet<String>>,
 }
 
 impl CfgBuilder {
@@ -189,6 +192,7 @@ impl CfgBuilder {
             noreturn_names,
             macro_jumps,
             macro_jump_blocks: Vec::new(),
+            addressed_names: None,
         }
     }
 
@@ -468,8 +472,14 @@ impl CfgBuilder {
         // label in it stays a `goto` target, but nothing else reaches it, and
         // its end goes back to the condition as a plain fallthrough: control
         // that arrived by `goto` tests the condition once and leaves. No back
-        // edge, since no pass follows another.
-        if const_val != Some(false) {
+        // edge, since no pass follows another. A `case` label of a switch
+        // around the loop is an entry this CFG does not wire (the switch
+        // dispatches only to its own arms), so such a body keeps the entry
+        // edge it reaches that label by.
+        let body_node = node.child_by_field_name("body");
+        let dead_body =
+            const_val == Some(false) && !body_node.is_some_and(|b| case_enters_from_outside(&b));
+        if !dead_body {
             self.add_edge(header_block, body_block, CfgEdge::TrueBranch);
         }
         // Skip FalseBranch for while(1) — the loop never exits via condition.
@@ -482,7 +492,7 @@ impl CfgBuilder {
         self.loop_stack.push((Some(header_block), exit_block));
         self.break_stack.push(exit_block);
         self.current_block = body_block;
-        if let Some(body) = node.child_by_field_name("body") {
+        if let Some(body) = body_node {
             self.process_statement(&body, source);
         }
         let back = if const_val == Some(false) {
@@ -527,12 +537,18 @@ impl CfgBuilder {
         // whose counter nothing else writes, runs its body exactly once
         // (`for (k = 0; k < 1; k++)`) or never (`k < 0`). Once: the first
         // test is true, so the header only enters the body, and the update
-        // leaves the loop instead of going back. Never: as `while (0)`.
-        let trips = for_trip_count(node, source, &self.constants);
+        // leaves the loop instead of going back. Never: as `while (0)`,
+        // including the entry a `case` label of an outer switch keeps.
+        let trips = for_trip_count(node, source, &self.constants, &mut self.addressed_names);
         let enters = match trips {
             Some(ForTrips::Zero) => false,
             Some(ForTrips::One) => true,
-            None => const_val != Some(false),
+            None => {
+                const_val != Some(false)
+                    || node
+                        .child_by_field_name("body")
+                        .is_some_and(|b| case_enters_from_outside(&b))
+            }
         };
         let can_skip = match trips {
             Some(ForTrips::Zero) => true,
@@ -563,9 +579,14 @@ impl CfgBuilder {
         if let Some(update) = node.child_by_field_name("update") {
             self.add_statement(update.start_byte(), update.end_byte());
         }
+        // A loop that never passes twice goes back to its test as a plain
+        // fallthrough, as `while (0)` does.
         match trips {
             Some(ForTrips::One) => self.add_edge(update_block, exit_block, CfgEdge::Fallthrough),
             Some(ForTrips::Zero) => self.add_edge(update_block, header_block, CfgEdge::Fallthrough),
+            None if const_val == Some(false) => {
+                self.add_edge(update_block, header_block, CfgEdge::Fallthrough)
+            }
             None => self.add_edge(update_block, header_block, CfgEdge::BackEdge),
         }
 
@@ -1076,24 +1097,51 @@ enum ForTrips {
 }
 
 /// The trips of `for (k = c0; k OP c1; k += step)` when they are zero or
-/// one: `c0` and `c1` constants (literals, or file-scope constants as the
-/// other conditions read them), the update `k++`, `++k`, `k--`, `--k`,
-/// `k += c` or `k -= c`, and the test true at `c0` but false at
-/// `c0 + step` (one trip) or false at `c0` (none). The counter must be a
-/// plain automatic local or parameter, neither `static`, `volatile` nor
-/// `bool`, whose address is never taken in the function and which the body
-/// and the condition never assign, step or hand to a call (a macro may
-/// assign its argument). For one trip, `c0` and `c0 + step` must lie in
-/// 0..=127, which every integer type holds, and the body must have no label
-/// a `goto` could enter it by. The write and address tests are spelling
-/// matches, so a shadowing local only costs the answer. Anything else is
-/// `None`: the loop keeps its back edge.
-fn for_trip_count(node: &Node, source: &str, constants: &MacroConstantMap) -> Option<ForTrips> {
+/// one: `c0`, `c1` and `step` constants (literals, or file-scope constants
+/// as the other conditions read them), the update `k++`, `++k`, `k--`,
+/// `--k`, `k += c` or `k -= c`, and the test false at `c0` (none) or true
+/// at `c0` and false at `c0 + step` (one). `c0`, `c0 + step` and `c1` must
+/// all lie in 0..=127, which every integer type holds, so each comparison
+/// means in the counter's type what it means here: no wrap on the step
+/// (`unsigned char k = 255; k < 256; k++`), no out-of-range start
+/// (`unsigned char k = 256`), and no negative bound an unsigned comparison
+/// would turn huge (`unsigned k; k < -1`).
+///
+/// The trip test comes first, so a loop that runs more than once costs only
+/// its header. Then the loop must be one this answer holds for:
+///
+/// - The `for` parsed whole: two `for` headers in `#if` arms sharing one
+///   body parse with an error or a missing body in the subtree.
+/// - Every macro named among the constants has one definition in this file,
+///   or definitions that agree: arms that define it differently give the
+///   loop a different bound in another configuration (ADR-0010).
+/// - The counter is a plain automatic local or parameter, neither `static`,
+///   `volatile` nor a boolean (`k++` leaves a `bool` at 1), its type read
+///   through the typedefs this file defines. A typedef the file does not
+///   define, other than a standard one (`size_t`, `uint8_t`), declines. The
+///   boolean test matches any type name spelling `bool` (`gboolean`,
+///   `boolean_t`), which only costs an answer.
+/// - The function never takes the counter's address.
+/// - The body and the update never assign, step, or hand the counter to a
+///   call (a function-like macro may assign its argument) or to an `asm`
+///   output, and use no macro whose definition in this file spells the
+///   counter (`#define RESET_K k = 0`).
+/// - No label, and no `case` or `default` of a switch around the loop, is
+///   in the body: control that enters there finds the counter at any value.
+///
+/// The write and address tests match by spelling, so a shadowing local
+/// only costs the answer. Anything else is `None`: the loop keeps its back
+/// edge. `addressed` holds the function's `&name` set once read.
+fn for_trip_count(
+    node: &Node,
+    source: &str,
+    constants: &MacroConstantMap,
+    addressed: &mut Option<HashSet<String>>,
+) -> Option<ForTrips> {
     use crate::utility::cert_c::ast_utils::{resolve_identifier_binding, IdentifierBinding};
-    use lang_parsing_substrate::query;
     let text = |n: &Node| n.utf8_text(source.as_bytes()).ok();
     let init = node.child_by_field_name("initializer")?;
-    let (name, start) = match init.kind() {
+    let (name, start_node) = match init.kind() {
         "declaration" => {
             let mut cursor = init.walk();
             let declarators: Vec<Node> = init
@@ -1106,31 +1154,25 @@ fn for_trip_count(node: &Node, source: &str, constants: &MacroConstantMap) -> Op
                 return None;
             }
             let id = decl.child_by_field_name("declarator")?;
-            let value = decl.child_by_field_name("value")?;
             if id.kind() != "identifier" {
                 return None;
             }
-            (
-                text(&id)?,
-                resolve_constant_operand(&unwrap_parens_cfg(&value), source, constants)?,
-            )
+            (text(&id)?, decl.child_by_field_name("value")?)
         }
         "assignment_expression" => {
             if text(&init.child_by_field_name("operator")?)? != "=" {
                 return None;
             }
             let left = init.child_by_field_name("left")?;
-            let right = init.child_by_field_name("right")?;
             if left.kind() != "identifier" {
                 return None;
             }
-            (
-                text(&left)?,
-                resolve_constant_operand(&unwrap_parens_cfg(&right), source, constants)?,
-            )
+            (text(&left)?, init.child_by_field_name("right")?)
         }
         _ => return None,
     };
+    let start_node = unwrap_parens_cfg(&start_node);
+    let start = resolve_constant_operand(&start_node, source, constants)?;
 
     let condition_node = node.child_by_field_name("condition")?;
     let condition = unwrap_parens_cfg(&condition_node);
@@ -1142,12 +1184,8 @@ fn for_trip_count(node: &Node, source: &str, constants: &MacroConstantMap) -> Op
     let left = unwrap_parens_cfg(&left_node);
     let right = unwrap_parens_cfg(&right_node);
     let op = text(&condition.child_by_field_name("operator")?)?.trim();
-    let (counter, bound, op) = if left.kind() == "identifier" && text(&left)? == name {
-        (
-            left,
-            resolve_constant_operand(&right, source, constants)?,
-            op,
-        )
+    let (counter, bound_node, op) = if left.kind() == "identifier" && text(&left)? == name {
+        (left, right, op)
     } else if right.kind() == "identifier" && text(&right)? == name {
         let flipped = match op {
             "<" => ">",
@@ -1156,14 +1194,11 @@ fn for_trip_count(node: &Node, source: &str, constants: &MacroConstantMap) -> Op
             ">=" => "<=",
             other => other,
         };
-        (
-            right,
-            resolve_constant_operand(&left, source, constants)?,
-            flipped,
-        )
+        (right, left, flipped)
     } else {
         return None;
     };
+    let bound = resolve_constant_operand(&bound_node, source, constants)?;
     let holds = |v: i64| -> Option<bool> {
         Some(match op {
             "<" => v < bound,
@@ -1178,16 +1213,17 @@ fn for_trip_count(node: &Node, source: &str, constants: &MacroConstantMap) -> Op
 
     let update_node = node.child_by_field_name("update")?;
     let update = unwrap_parens_cfg(&update_node);
-    let step: i64 = match update.kind() {
+    let update_right = update.child_by_field_name("right");
+    let (step, step_node): (i64, Option<Node>) = match update.kind() {
         "update_expression" => {
             let arg = update.child_by_field_name("argument")?;
             if arg.kind() != "identifier" || text(&arg)? != name {
                 return None;
             }
             if text(&update.child_by_field_name("operator")?)? == "++" {
-                1
+                (1, None)
             } else {
-                -1
+                (-1, None)
             }
         }
         "assignment_expression" => {
@@ -1195,26 +1231,49 @@ fn for_trip_count(node: &Node, source: &str, constants: &MacroConstantMap) -> Op
             if target.kind() != "identifier" || text(&target)? != name {
                 return None;
             }
-            let by = resolve_constant_operand(
-                &unwrap_parens_cfg(&update.child_by_field_name("right")?),
-                source,
-                constants,
-            )?;
+            let by_node = unwrap_parens_cfg(update_right.as_ref()?);
+            let by = resolve_constant_operand(&by_node, source, constants)?;
             match text(&update.child_by_field_name("operator")?)? {
-                "+=" => by,
-                "-=" => by.checked_neg()?,
+                "+=" => (by, Some(by_node)),
+                "-=" => (by.checked_neg()?, Some(by_node)),
                 _ => return None,
             }
         }
         _ => return None,
     };
 
+    // Every value the header compares must be one every integer type holds,
+    // before either answer is given.
+    let next = start.checked_add(step)?;
+    if ![start, next, bound].iter().all(|v| (0..=127).contains(v)) {
+        return None;
+    }
+    let trips = if !holds(start)? {
+        ForTrips::Zero
+    } else if !holds(next)? {
+        ForTrips::One
+    } else {
+        return None;
+    };
+
+    if node.has_error() {
+        return None;
+    }
+    let macros = FileMacros::of(source);
+    let operands = [Some(start_node), Some(bound_node), step_node];
+    if operands.iter().flatten().any(|operand| {
+        let mut names = Vec::new();
+        identifier_texts(operand, source, &mut names);
+        names.iter().any(|n| macros.defined_differently(n))
+    }) {
+        return None;
+    }
+
     // The counter is an automatic object only this loop header writes, and
     // not a `bool`, which `k++` leaves at 1 rather than stepping.
-    let is_bool = |t: &str| t.contains("bool") || t.contains("_Bool");
     match resolve_identifier_binding(&counter, name, source)? {
         IdentifierBinding::Parameter(ty) => {
-            if ty.contains("volatile") || is_bool(&ty) {
+            if !counter_type_is_plain(&ty, &counter, source, 0) {
                 return None;
             }
         }
@@ -1225,50 +1284,158 @@ fn for_trip_count(node: &Node, source: &str, constants: &MacroConstantMap) -> Op
                 "type_qualifier" => text(&c).is_some_and(|t| t.trim() == "volatile"),
                 _ => false,
             });
-            let boolean = decl
+            let plain = decl
                 .child_by_field_name("type")
                 .and_then(|t| text(&t))
-                .is_some_and(is_bool);
-            if qualified || boolean {
+                .is_some_and(|t| counter_type_is_plain(t, &counter, source, 0));
+            if qualified || !plain {
                 return None;
             }
         }
         IdentifierBinding::Global(_) => return None,
     }
-    let function = {
-        let mut n = *node;
-        while n.kind() != "function_definition" {
-            n = n.parent()?;
+    if addressed.is_none() {
+        let mut function = *node;
+        while function.kind() != "function_definition" {
+            function = function.parent()?;
         }
-        n
-    };
-    if address_of_name(&function, name, source) {
+        let mut names = HashSet::new();
+        addressed_names(&function, source, &mut names);
+        *addressed = Some(names);
+    }
+    if addressed.as_ref().is_some_and(|names| names.contains(name)) {
         return None;
     }
     let body = node.child_by_field_name("body")?;
-    if writes_name(&body, name, source) || writes_name(&condition, name, source) {
+    if writes_name(&body, name, source) || macros.any_used_spells(&body, name, source) {
         return None;
     }
-    // A label in the body can be entered by a `goto` with the counter at any
-    // value, after which the update need not leave the loop.
-    if !query::find_descendants_of_kind(body, "labeled_statement").is_empty() {
+    if contains_label(&body) || case_enters_from_outside(&body) {
         return None;
     }
+    Some(trips)
+}
 
-    if !holds(start)? {
-        return Some(ForTrips::Zero);
+/// Whether a `labeled_statement` lies anywhere under `node`.
+fn contains_label(node: &Node) -> bool {
+    !lang_parsing_substrate::query::find_descendants_of_kind(*node, "labeled_statement").is_empty()
+}
+
+/// Whether `body` holds a `case` or `default` label of a switch outside it:
+/// one reached from `body` without passing a `switch` that `body` itself
+/// contains. A switch may enter the middle of a loop that way (Duff's
+/// device), with the loop's counter at any value.
+fn case_enters_from_outside(body: &Node) -> bool {
+    lang_parsing_substrate::query::find_descendants_of_kind(*body, "case_statement")
+        .iter()
+        .any(|case| {
+            let mut n = *case;
+            while let Some(parent) = n.parent() {
+                if parent.id() == body.id() {
+                    return true;
+                }
+                if parent.kind() == "switch_statement" {
+                    return false;
+                }
+                n = parent;
+            }
+            true
+        })
+}
+
+/// Whether a counter declared with type `spelled` is a plain integer: no
+/// `volatile`, not a boolean, and every type name in it one this file's
+/// typedefs (read at `at`) or the standard library define as such. A
+/// typedef the file does not define, other than a standard name, is not
+/// known to be plain.
+fn counter_type_is_plain(spelled: &str, at: &Node, source: &str, depth: usize) -> bool {
+    use crate::utility::cert_c::ast_utils::typedef_definition_in_scope;
+    use crate::utility::cert_c::expr_type::is_standard_typedef_name;
+    if depth > 8 {
+        return false;
     }
-    // Both values the counter takes must be ones every integer type holds,
-    // so the step neither wraps (`unsigned char k = 255; k < 256; k++`) nor
-    // is converted on the way back into the counter.
-    let next = start.checked_add(step)?;
-    if !(0..=127).contains(&start) || !(0..=127).contains(&next) {
-        return None;
+    let words = spelled
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty());
+    for word in words {
+        if word == "volatile" || word.contains("bool") || word.contains("Bool") {
+            return false;
+        }
+        let keyword = matches!(
+            word,
+            "const"
+                | "register"
+                | "auto"
+                | "signed"
+                | "unsigned"
+                | "char"
+                | "short"
+                | "int"
+                | "long"
+                | "float"
+                | "double"
+                | "restrict"
+                | "__restrict"
+        );
+        if keyword || is_standard_typedef_name(word) {
+            continue;
+        }
+        let Some(definition) = typedef_definition_in_scope(at, word, source) else {
+            return false;
+        };
+        // The typedef's own specifiers and qualifiers, not the names it
+        // declares.
+        let ty = definition.child_by_field_name("type");
+        let mut cursor = definition.walk();
+        let spec: Vec<&str> = definition
+            .children(&mut cursor)
+            .filter(|c| ty == Some(*c) || c.kind() == "type_qualifier")
+            .filter_map(|c| c.utf8_text(source.as_bytes()).ok())
+            .collect();
+        if spec.is_empty()
+            || !counter_type_is_plain(&spec.join(" "), &definition, source, depth + 1)
+        {
+            return false;
+        }
     }
-    if !holds(next)? {
-        return Some(ForTrips::One);
+    true
+}
+
+/// The text of every identifier under `node`, the node itself included.
+fn identifier_texts(node: &Node, source: &str, out: &mut Vec<String>) {
+    if node.kind() == "identifier" {
+        if let Ok(t) = node.utf8_text(source.as_bytes()) {
+            out.push(t.to_string());
+        }
     }
-    None
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        identifier_texts(&child, source, out);
+    }
+}
+
+/// Every name `&name` (through parentheses) takes the address of under
+/// `node`.
+fn addressed_names(node: &Node, source: &str, out: &mut HashSet<String>) {
+    if node.kind() == "pointer_expression"
+        && node
+            .child_by_field_name("operator")
+            .and_then(|o| o.utf8_text(source.as_bytes()).ok())
+            == Some("&")
+    {
+        if let Some(arg) = node.child_by_field_name("argument") {
+            let arg = unwrap_parens_cfg(&arg);
+            if arg.kind() == "identifier" {
+                if let Ok(t) = arg.utf8_text(source.as_bytes()) {
+                    out.insert(t.to_string());
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        addressed_names(&child, source, out);
+    }
 }
 
 /// Every identifier spelled `name` under `node`, the node itself included.
@@ -1294,23 +1461,9 @@ fn through_parens<'a>(ident: &Node<'a>) -> Option<(Node<'a>, Node<'a>)> {
     Some((parent, child))
 }
 
-/// Whether `&name` (through parentheses) appears anywhere under `node`.
-fn address_of_name(node: &Node, name: &str, source: &str) -> bool {
-    let mut found = Vec::new();
-    named_identifiers(node, name, source, &mut found);
-    found.iter().any(|ident| {
-        through_parens(ident).is_some_and(|(parent, _)| {
-            parent.kind() == "pointer_expression"
-                && parent
-                    .child_by_field_name("operator")
-                    .and_then(|o| o.utf8_text(source.as_bytes()).ok())
-                    == Some("&")
-        })
-    })
-}
-
-/// Whether anything under `node` assigns `name`, steps it, or hands it to a
-/// call as an argument of its own (a function-like macro may assign it).
+/// Whether anything under `node` assigns `name`, steps it, hands it to a
+/// call as an argument of its own (a function-like macro may assign it), or
+/// names it as an `asm` output.
 fn writes_name(node: &Node, name: &str, source: &str) -> bool {
     let mut found = Vec::new();
     named_identifiers(node, name, source, &mut found);
@@ -1322,9 +1475,124 @@ fn writes_name(node: &Node, name: &str, source: &str) -> bool {
             "assignment_expression" => parent.child_by_field_name("left") == Some(child),
             "update_expression" => true,
             "argument_list" => true,
+            "gnu_asm_output_operand" => true,
             _ => false,
         }
     })
+}
+
+/// The `#define`s of one source file, read from its text by lines (a
+/// `\`-continued definition is one), so a definition in any `#if` arm is
+/// read, and one inside a dead arm only costs an answer.
+struct FileMacros {
+    /// Each macro's replacement lists, one per definition, with the
+    /// identifiers each spells apart from its parameters.
+    by_name: HashMap<String, Vec<(String, HashSet<String>)>>,
+}
+
+type FileMacrosMemo = Option<((usize, usize), std::rc::Rc<FileMacros>)>;
+
+thread_local! {
+    /// [`FileMacros::of`] for the source last asked about on this thread.
+    static FILE_MACROS: std::cell::RefCell<FileMacrosMemo> = const { std::cell::RefCell::new(None) };
+}
+
+impl FileMacros {
+    /// The macros `source` defines, read once per source buffer per thread.
+    fn of(source: &str) -> std::rc::Rc<FileMacros> {
+        let key = (source.as_ptr() as usize, source.len());
+        if let Some(found) = FILE_MACROS.with(|memo| {
+            memo.borrow()
+                .as_ref()
+                .filter(|(k, _)| *k == key)
+                .map(|(_, m)| std::rc::Rc::clone(m))
+        }) {
+            return found;
+        }
+        let read = std::rc::Rc::new(Self::read(source));
+        FILE_MACROS.with(|memo| *memo.borrow_mut() = Some((key, std::rc::Rc::clone(&read))));
+        read
+    }
+
+    fn read(source: &str) -> FileMacros {
+        let words = |t: &str| -> Vec<String> {
+            t.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|w| w.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_'))
+                .map(str::to_string)
+                .collect()
+        };
+        let mut by_name: HashMap<String, Vec<(String, HashSet<String>)>> = HashMap::new();
+        let mut lines = source.lines();
+        while let Some(line) = lines.next() {
+            let Some(rest) = line.trim_start().strip_prefix('#') else {
+                continue;
+            };
+            let Some(rest) = rest.trim_start().strip_prefix("define") else {
+                continue;
+            };
+            if !rest.starts_with([' ', '\t']) {
+                continue;
+            }
+            let mut logical = rest.trim_start().to_string();
+            while logical.ends_with('\\') {
+                logical.pop();
+                match lines.next() {
+                    Some(next) => {
+                        logical.push(' ');
+                        logical.push_str(next);
+                    }
+                    None => break,
+                }
+            }
+            let name_end = logical
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(logical.len());
+            let name = logical[..name_end].to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let after = &logical[name_end..];
+            let (params, replacement) = match after.strip_prefix('(') {
+                Some(list) => match list.find(')') {
+                    Some(close) => (words(&list[..close]), &list[close + 1..]),
+                    None => continue,
+                },
+                None => (Vec::new(), after),
+            };
+            let replacement = replacement.trim().to_string();
+            let spells = words(&replacement)
+                .into_iter()
+                .filter(|w| !params.contains(w))
+                .collect();
+            by_name.entry(name).or_default().push((replacement, spells));
+        }
+        FileMacros { by_name }
+    }
+
+    /// Whether `name` is a macro with two definitions whose replacement
+    /// lists differ.
+    fn defined_differently(&self, name: &str) -> bool {
+        self.by_name
+            .get(name)
+            .is_some_and(|defs| defs.iter().any(|(r, _)| *r != defs[0].0))
+    }
+
+    /// Whether an identifier under `node` names a macro some definition of
+    /// which spells `counter` outside its parameters.
+    fn any_used_spells(&self, node: &Node, counter: &str, source: &str) -> bool {
+        let writers: HashSet<&str> = self
+            .by_name
+            .iter()
+            .filter(|(_, defs)| defs.iter().any(|(_, spells)| spells.contains(counter)))
+            .map(|(n, _)| n.as_str())
+            .collect();
+        if writers.is_empty() {
+            return false;
+        }
+        let mut names = Vec::new();
+        identifier_texts(node, source, &mut names);
+        names.iter().any(|n| writers.contains(n.as_str()))
+    }
 }
 
 /// Unwrap parenthesized_expression nodes for CFG condition evaluation.
@@ -1936,5 +2204,135 @@ mod tests {
         ] {
             assert!(has_back_edge(code), "{code}");
         }
+    }
+
+    fn cfg_with(code: &str, constants: &[(&str, i64)]) -> FunctionCfg {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        let func = root
+            .children(&mut cursor)
+            .find(|c| c.kind() == "function_definition")
+            .unwrap();
+        let constants: MacroConstantMap =
+            constants.iter().map(|(n, v)| (n.to_string(), *v)).collect();
+        build_function_cfg_with_constants(&func, code, &constants).unwrap()
+    }
+
+    fn back_edges(cfg: &FunctionCfg) -> usize {
+        cfg.edges
+            .iter()
+            .filter(|(_, _, e)| *e == CfgEdge::BackEdge)
+            .count()
+    }
+
+    /// The header's constants decide the trips only where every value it
+    /// compares is one each integer type holds: a negative bound an
+    /// unsigned counter is compared against, or a start a narrow counter
+    /// wraps, leaves the loop as it was, body live and back edge kept.
+    #[test]
+    fn a_for_header_out_of_the_shared_range_decides_nothing() {
+        for code in [
+            "void f(int *p) { unsigned k; for (k = 0; k < -1; k++) { g(p); } }",
+            "void f(int *p) { unsigned k; for (k = 0; k < (-1); k++) { g(p); } }",
+            "void f(int *p) { unsigned k; for (k = 0; k < NEGC; k++) { g(p); } }",
+            "void f(int *p) { unsigned char k; for (k = 256; k < 1; k++) { g(p); } }",
+            "void f(int *p) { int k; for (k = 0; k > 5; k--) { g(p); } }",
+        ] {
+            let cfg = cfg_with(code, &[("NEGC", -1)]);
+            assert!(back_edges(&cfg) > 0, "{code}");
+            assert!(reaches(code, "g(p);"), "{code}");
+        }
+        // Inside the range the answers stand.
+        let never = "void f(int *p) { int k; for (k = 5; k < 3; k++) { g(p); } }";
+        assert!(!reaches(never, "g(p);"));
+        let once = "void f(int *p) { int k; for (k = 0; k < ONE; k++) { g(p); } }";
+        assert_eq!(back_edges(&cfg_with(once, &[("ONE", 1)])), 0);
+    }
+
+    /// A `case` label of a switch around the loop enters the body with the
+    /// counter at any value: a dead `while (0)` or `for` body stays
+    /// reachable through it, and a one-pass `for` keeps its back edge. A
+    /// switch inside the body owns its own labels and changes nothing.
+    #[test]
+    fn a_case_label_of_an_outer_switch_enters_the_loop_body() {
+        let while0 =
+            "void f(int *p, int x) { switch (x) { case 0: while (0) { case 1: g(p); } } h(p); }";
+        assert!(reaches(while0, "case 1: g(p);"));
+        assert!(!has_back_edge(while0));
+        let dead_for = "void f(int *p, int x) { int k = 0; switch (x) { case 0: for (k = 0; k < 0; k++) { case 1: g(p); } } h(p); }";
+        assert!(reaches(dead_for, "case 1: g(p);"));
+        let duff = "void f(int *p, int x) { int k = -5; switch (x) { case 0: for (k = 0; k < 1; k++) { case 1: g(p); } } }";
+        assert!(has_back_edge(duff));
+        let dflt = "void f(int *p, int x) { int k = -5; switch (x) { case 0: for (k = 0; k < 1; k++) { default: g(p); } } }";
+        assert!(has_back_edge(dflt));
+        // Its own switch's labels do not enter the loop from outside.
+        let own = "void f(int *p, int x) { int k; for (k = 0; k < 1; k++) { switch (x) { case 1: g(p); break; default: break; } } }";
+        assert!(!has_back_edge(own));
+        let own_dead = "void f(int *p, int x) { while (0) { switch (x) { case 1: g(p); } } h(p); }";
+        assert!(!reaches(own_dead, "g(p);"));
+        assert!(reaches(own_dead, "h(p);"));
+    }
+
+    /// A counter written where the body's own tree does not show it: by a
+    /// macro whose definition spells it, through a typedef that hides
+    /// `volatile` or `_Bool`, or as an `asm` output. Each loop runs more than
+    /// once, so each keeps its back edge. A macro that does not spell the
+    /// counter, and a typedef the file shows to be a plain integer, do not
+    /// cost the answer.
+    #[test]
+    fn a_counter_written_out_of_sight_keeps_the_back_edge() {
+        for code in [
+            "#define RESET_K k = 0\nvoid f(int *p) { int k; for (k = 0; k < 1; k++) { g(p); RESET_K; } }",
+            "#define BUMP() (k--)\nvoid f(int *p) { int k; for (k = 0; k < 1; k++) { g(p); BUMP(); } }",
+            "typedef volatile int vint;\nvoid f(int *p) { vint k; for (k = 0; k < 1; k++) { g(p); } }",
+            "typedef volatile int vint; typedef vint vv;\nvoid f(int *p) { vv k; for (k = 0; k < 1; k++) { g(p); } }",
+            "typedef _Bool flag_t;\nvoid f(int *p) { flag_t k; for (k = 1; k < 2; k++) { g(p); } }",
+            "typedef volatile int vint;\nvoid f(int *p, vint k) { for (k = 0; k < 1; k++) { g(p); } }",
+            "void f(int *p) { int k; for (k = 0; k < 1; k++) { g(p); __asm__ volatile (\"\" : \"=r\"(k)); } }",
+            "void f(int *p) { counter_t k; for (k = 0; k < 1; k++) { g(p); } }",
+        ] {
+            assert!(has_back_edge(code), "{code}");
+        }
+        for code in [
+            "#define LOG() g(p)\nvoid f(int *p) { int k; for (k = 0; k < 1; k++) { LOG(); } }",
+            "#define SET(k) ((k) = 0)\nvoid f(int *p) { int k, m; for (k = 0; k < 1; k++) { SET(m); } }",
+            "typedef int myint;\nvoid f(int *p) { myint k; for (k = 0; k < 1; k++) { g(p); } }",
+            "void f(int *p) { size_t k; for (k = 0; k < 1; k++) { g(p); } }",
+            "void f(int *p) { uint8_t k; for (k = 0; k < 1; k++) { g(p); } }",
+        ] {
+            assert!(!has_back_edge(code), "{code}");
+        }
+    }
+
+    /// A bound macro the file defines differently in two arms bounds the
+    /// loop differently in another configuration, so neither answer holds
+    /// for every build. Definitions that agree are one bound.
+    #[test]
+    fn a_bound_macro_defined_differently_across_arms_decides_nothing() {
+        let differ = "#if defined(A)\n#define M 1\n#else\n#define M 3\n#endif\nvoid f(int *p) { int k; for (k = 0; k < M; k++) { g(p); } }";
+        assert!(back_edges(&cfg_with(differ, &[("M", 1)])) > 0);
+        let agree = "#if defined(A)\n#define M 1\n#else\n#define M 1\n#endif\nvoid f(int *p) { int k; for (k = 0; k < M; k++) { g(p); } }";
+        assert_eq!(back_edges(&cfg_with(agree, &[("M", 1)])), 0);
+    }
+
+    /// Two `for` headers in `#ifdef`/`#else` arms sharing the body after
+    /// `#endif` parse with a missing body; neither header decides the trips.
+    #[test]
+    fn for_headers_in_preprocessor_arms_sharing_a_body_decide_nothing() {
+        let code = "void f(int *p)\n{\n    int k;\n#ifdef WIDE\n    for (k = 0; k < 4; k++)\n#else\n    for (k = 0; k < 1; k++)\n#endif\n    { g(p); }\n}\n";
+        assert_eq!(back_edges(&parse_and_build_cfg(code).unwrap()), 2);
+    }
+
+    /// A `for` whose condition is the constant 0 never passes twice: the
+    /// update goes back to the test without a back edge.
+    #[test]
+    fn a_for_with_a_false_condition_has_no_back_edge() {
+        let code = "void f(int *p) { int k; for (k = 0; 0; k++) { g(p); } h(p); }";
+        assert!(!has_back_edge(code));
+        assert!(!reaches(code, "g(p);"));
+        assert!(reaches(code, "h(p);"));
     }
 }
