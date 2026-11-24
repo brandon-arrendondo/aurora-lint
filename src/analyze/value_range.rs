@@ -1582,10 +1582,19 @@ fn reversed(op: &str) -> &str {
 
 /// The absolute-value functions of `<stdlib.h>` and the type of the
 /// parameter each takes (C11 7.22.6.1).
-const ABSOLUTE_VALUE_FUNCTIONS: [(&str, &str); 3] =
-    [("abs", "int"), ("labs", "long"), ("llabs", "long long")];
+use crate::utility::cert_c::absolute_value::{self, IntegerValues};
 
-/// Which of [`ABSOLUTE_VALUE_FUNCTIONS`], and `sqrt`, name the library's
+/// The spelling of a library absolute-value function's parameter type.
+fn parameter_spelling(rank: crate::utility::cert_c::data_model::Rank) -> &'static str {
+    use crate::utility::cert_c::data_model::Rank;
+    match rank {
+        Rank::Long => "long",
+        Rank::LongLong => "long long",
+        _ => "int",
+    }
+}
+
+/// Which of [`absolute_value::FUNCTIONS`], and `sqrt`, name the library's
 /// function in one file: none whose name the project defines (it has a
 /// summary), this file defines or declares `static`, or a `#define` in this
 /// file or in any scanned file or header makes a macro. A call still has to
@@ -1673,26 +1682,23 @@ impl<'a> LibraryCalls<'a> {
         facts: crate::settings::IntFacts,
         iec_60559_sqrt: bool,
     ) -> Self {
-        let is_candidate =
-            |name: &str| name == "sqrt" || ABSOLUTE_VALUE_FUNCTIONS.iter().any(|(f, _)| *f == name);
-        let redefined =
-            crate::analyze::noreturn::library_names_redefined_among(root, source, is_candidate);
-        let own_macros = crate::utility::cert_c::ast_utils::DefinedMacroNames::of(source);
-        let library_name = |name: &str| {
-            !summaries.contains_key(name)
-                && !redefined.contains(name)
-                && !own_macros.contains(name)
-                && !project.is_some_and(|p| {
-                    p.function_macro_names.contains(name) || p.defined_macro_names.contains(name)
-                })
-        };
-        let absolute_value = ABSOLUTE_VALUE_FUNCTIONS
+        let library = absolute_value::library_names(
+            root,
+            source,
+            &["abs", "labs", "llabs", "sqrt"],
+            |name| summaries.contains_key(name),
+            &project
+                .map(absolute_value::ProjectMacroNames::of)
+                .unwrap_or_default(),
+        );
+        let absolute_value = absolute_value::FUNCTIONS
             .into_iter()
-            .filter(|(name, _)| library_name(name))
+            .filter(|(name, _)| library.contains(name))
+            .map(|(name, rank)| (name, parameter_spelling(rank)))
             .collect();
         Self {
             absolute_value,
-            sqrt: iec_60559_sqrt && library_name("sqrt"),
+            sqrt: iec_60559_sqrt && library.contains(&"sqrt"),
             facts,
             types: Some(crate::utility::cert_c::expr_type::TypeEnv::visible(
                 visible, facts,
@@ -1730,10 +1736,7 @@ impl<'a> LibraryCalls<'a> {
     /// unsigned), under these facts ([`IntFacts::spelled_width`]). Plain
     /// `char`, whose signedness is the implementation's, is `None`, as is
     /// anything that is not an integer type.
-    fn integer_type(
-        &self,
-        spelling: &str,
-    ) -> Option<(bool, crate::utility::cert_c::data_model::IntWidth)> {
+    fn integer_type(&self, spelling: &str) -> Option<IntegerValues> {
         let words: Vec<&str> = spelling
             .split_whitespace()
             .filter(|w| !matches!(*w, "const" | "volatile"))
@@ -1742,13 +1745,19 @@ impl<'a> LibraryCalls<'a> {
         if canonical == "char" {
             return None;
         }
-        self.facts.spelled_width(&canonical).or_else(|| {
-            let ty = crate::utility::cert_c::expr_type::classify_spelling(
-                &canonical,
-                self.types.as_ref()?,
-            )?;
-            self.integer_width(&ty)
-        })
+        self.facts
+            .spelled_width(&canonical)
+            .map(|(unsigned, width)| IntegerValues {
+                signed: Some(!unsigned),
+                width,
+            })
+            .or_else(|| {
+                let ty = crate::utility::cert_c::expr_type::classify_spelling(
+                    &canonical,
+                    self.types.as_ref()?,
+                )?;
+                self.integer_width(&ty)
+            })
     }
 
     /// The signedness (`true` for unsigned) and width of the integer type
@@ -1758,29 +1767,8 @@ impl<'a> LibraryCalls<'a> {
     fn integer_width(
         &self,
         ty: &crate::utility::cert_c::expr_type::CType,
-    ) -> Option<(bool, crate::utility::cert_c::data_model::IntWidth)> {
-        use crate::utility::cert_c::expr_type::{CType, Sign};
-        let unsigned = |sign: &Sign| match sign {
-            Sign::Signed => Some(false),
-            Sign::Unsigned => Some(true),
-            Sign::PlainChar => None,
-        };
-        match ty {
-            CType::Int { sign, rank } => Some((unsigned(sign)?, self.facts.width_of(*rank))),
-            CType::IntOfWidth {
-                sign,
-                min_bits,
-                max_bits,
-            } => Some((
-                unsigned(sign)?,
-                crate::utility::cert_c::data_model::IntWidth {
-                    rank: None,
-                    min: *min_bits,
-                    max: *max_bits,
-                },
-            )),
-            _ => None,
-        }
+    ) -> Option<IntegerValues> {
+        IntegerValues::of(ty, self.facts).filter(|values| values.signed.is_some())
     }
 
     /// The type of the expression `node`, when the file's types say.
@@ -1798,9 +1786,9 @@ impl<'a> LibraryCalls<'a> {
     /// zero, so its most negative value, whose absolute value may not be
     /// representable (C11 7.22.6.1p2), is left out.
     fn symmetric_range(&self, spelling: &str) -> Option<ValueRange> {
-        let (unsigned, width) = self.integer_type(spelling)?;
-        let bits = width.min;
-        Some(if unsigned {
+        let values = self.integer_type(spelling)?;
+        let bits = values.width.min;
+        Some(if values.signed == Some(false) {
             ValueRange::new(
                 0,
                 if bits >= 63 {
@@ -1822,11 +1810,11 @@ impl<'a> LibraryCalls<'a> {
     /// The conversion rank of the signed integer type `spelling` (C11
     /// 6.3.1.1p1), when the facts fix it: `None` for an unsigned type.
     fn signed_rank(&self, spelling: &str) -> Option<crate::utility::cert_c::data_model::Rank> {
-        let (unsigned, width) = self.integer_type(spelling)?;
-        if unsigned {
+        let values = self.integer_type(spelling)?;
+        if values.signed != Some(true) {
             return None;
         }
-        width.rank
+        values.width.rank
     }
 }
 
@@ -1857,19 +1845,13 @@ fn absolute_value_operand(
         return None;
     }
     let parameter = library.absolute_value_parameter(&get_text(&callee, source))?;
-    let mut arg = sole_argument_of_function_call(&call, &callee, source)?;
-    let mut casts = Vec::new();
-    loop {
-        match arg.kind() {
-            "parenthesized_expression" => arg = arg.named_child(0)?,
-            "cast_expression" => {
-                let ty = arg.child_by_field_name("type")?;
-                casts.push(get_text(&ty, source));
-                arg = arg.child_by_field_name("value")?;
-            }
-            _ => break,
-        }
-    }
+    let (arg, cast_nodes) = absolute_value::peel_casts(
+        absolute_value::sole_argument_of_function_call(&call, &callee, source)?,
+    )?;
+    let casts = cast_nodes
+        .iter()
+        .map(|cast| Some(get_text(&cast.child_by_field_name("type")?, source)))
+        .collect::<Option<Vec<_>>>()?;
     let var_name = extract_simple_var(&arg, source, names)?;
     let range = state.get(&var_name)?.range;
     let holds = |ty: &str| {
@@ -1896,7 +1878,11 @@ fn absolute_value_operand(
     // The variable's own signed type, when it has one: a signed type's
     // values are a subrange of those of every signed type of greater or
     // equal rank, whatever widths the facts leave open.
-    let declared_rank = declared.and_then(|(unsigned, width)| (!unsigned).then_some(width.rank)?);
+    let declared_rank = declared.and_then(|values| {
+        (values.signed == Some(true))
+            .then_some(values.width.rank)
+            .flatten()
+    });
     casts
         .iter()
         .all(|ty| {
@@ -1921,15 +1907,18 @@ fn absolute_value_operand(
 /// enumeration, an unresolved type) only when the range stops below the
 /// cap. A `to` that is not an integer type keeps nothing.
 fn keeps_every_value(
-    from: Option<(bool, crate::utility::cert_c::data_model::IntWidth)>,
-    to: Option<(bool, crate::utility::cert_c::data_model::IntWidth)>,
+    from: Option<IntegerValues>,
+    to: Option<IntegerValues>,
     range: ValueRange,
 ) -> bool {
-    match (from, to) {
-        (_, None) => false,
-        (_, Some((true, _))) | (Some((false, _)), _) => true,
-        (Some((true, from)), Some((false, to))) => from.max.is_some_and(|bits| bits < to.min),
-        (None, Some((false, _))) => range.max < i64::MAX,
+    let Some(to) = to else {
+        return false;
+    };
+    match from {
+        _ if to.signed == Some(false) => true,
+        Some(from) if from.signed == Some(true) => true,
+        Some(from) => from.fit_in(to),
+        None => range.max < i64::MAX,
     }
 }
 
@@ -1970,36 +1959,6 @@ fn free_of_floating(node: &Node, source: &str, library: &LibraryCalls<'_>) -> bo
     true
 }
 
-/// The one argument of `call`, whose callee `callee` resolves where it
-/// stands to a function or to nothing the file declares, never to an
-/// object of that name, a pointer to a function included (ADR-0006).
-fn sole_argument_of_function_call<'t>(
-    call: &Node<'t>,
-    callee: &Node<'t>,
-    source: &str,
-) -> Option<Node<'t>> {
-    let bound_to_object = crate::utility::cert_c::ast_utils::resolve_identifier_declarator(
-        callee,
-        &get_text(callee, source),
-        source,
-    )
-    .is_some_and(|(_, declarator)| {
-        !crate::utility::cert_c::declarator_utils::declares_function(&declarator)
-    });
-    if bound_to_object {
-        return None;
-    }
-    let arguments = call.child_by_field_name("arguments")?;
-    let mut cursor = arguments.walk();
-    let mut args = arguments
-        .named_children(&mut cursor)
-        .filter(|n| n.kind() != "comment");
-    match (args.next(), args.next()) {
-        (Some(arg), None) => Some(arg),
-        _ => None,
-    }
-}
-
 /// The largest integer `c` whose conversion to double is exact, so that
 /// `sqrt((double)c)` is the root of `c` itself: 2^53.
 const EXACT_DOUBLE_INTEGER_MAX: i64 = 1 << 53;
@@ -2034,7 +1993,9 @@ fn truncated_square_root(
     if callee.kind() != "identifier" || get_text(&callee, source) != "sqrt" {
         return None;
     }
-    let to_double = peel_parentheses(sole_argument_of_function_call(&call, &callee, source)?)?;
+    let to_double = peel_parentheses(absolute_value::sole_argument_of_function_call(
+        &call, &callee, source,
+    )?)?;
     if to_double.kind() != "cast_expression"
         || get_text(&to_double.child_by_field_name("type")?, source).trim() != "double"
     {

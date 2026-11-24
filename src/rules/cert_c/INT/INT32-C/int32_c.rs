@@ -13,13 +13,12 @@ use crate::analyze::vra_access;
 use crate::manifest::Severity;
 use crate::rules::cert_c::int_provenance;
 use crate::settings::IntFacts;
+use crate::utility::cert_c::absolute_value;
 use crate::utility::cert_c::ast_utils::{
     self, get_node_text, get_sanitized_node_text, ScopeDeclarations,
 };
 use crate::utility::cert_c::data_model::{self, Rank};
-use crate::utility::cert_c::expr_type::{
-    self, integer_literal_width, CType, FileTypes, Sign, TypeEnv,
-};
+use crate::utility::cert_c::expr_type::{self, integer_literal_width, FileTypes, TypeEnv};
 use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
@@ -116,6 +115,11 @@ pub struct Int32C {
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
     data_model: Cell<IntFacts>,
+    /// Every name a scanned file or header defines as a macro.
+    project_macro_names: RefCell<absolute_value::ProjectMacroNames>,
+    /// Which of `abs`, `labs` and `llabs` still name the library's
+    /// function in the current file ([`absolute_value::library_names`]).
+    library_absolute_value: RefCell<Vec<&'static str>>,
 }
 
 impl Int32C {
@@ -141,6 +145,8 @@ impl Int32C {
             memo: ScopeMemo::default(),
             enclosing_declarations: RefCell::new(None),
             data_model: Cell::new(IntFacts::default()),
+            project_macro_names: RefCell::default(),
+            library_absolute_value: RefCell::default(),
         }
     }
 
@@ -423,6 +429,7 @@ impl CertRule for Int32C {
         *self.global_writers.borrow_mut() = context.global_writers.clone();
 
         *self.callers.borrow_mut() = context.callers.clone();
+        *self.project_macro_names.borrow_mut() = absolute_value::ProjectMacroNames::of(context);
     }
 
     fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
@@ -468,6 +475,13 @@ impl CertRule for Int32C {
         );
         *self.function_return_types.borrow_mut() =
             overflow_helpers::collect_function_return_types(node, source);
+        *self.library_absolute_value.borrow_mut() = absolute_value::library_names(
+            node,
+            source,
+            &["abs", "labs", "llabs"],
+            |name| self.function_summaries.borrow().contains_key(name),
+            &self.project_macro_names.borrow(),
+        );
 
         let visible = self.visible.borrow();
         let env = TypeEnv::visible(&visible, self.data_model.get()).in_tree(*node);
@@ -2140,9 +2154,17 @@ impl Int32C {
         // abs(INT_MIN), labs(LONG_MIN), llabs(LLONG_MIN) all cause overflow
         // because the absolute value of the minimum signed integer cannot be represented
 
+        // Only the library's function has the parameter type the rest reads:
+        // not a function the project defines under the name, a macro, or a
+        // pointer to a function called by it (ADR-0006).
+        let Some(argument) = self.library_absolute_value_argument(node, source, function_name)
+        else {
+            return;
+        };
+
         // Skip when the argument's type keeps it off the parameter's most
         // negative value, as `labs((long)int_value)` does on LP64.
-        if abs_argument_excludes_minimum(node, source, function_name, env) {
+        if abs_argument_excludes_minimum(argument, source, function_name, env) {
             return;
         }
 
@@ -2160,8 +2182,14 @@ impl Int32C {
                 rule_id: self.rule_id().to_string(),
                 severity: Severity::High,
                 message: format!(
-                    "{}() may overflow when called with most negative value (e.g., INT_MIN): '{}'",
-                    function_name, expr_text
+                    "{}() may overflow when called with most negative value ({}): '{}'",
+                    function_name,
+                    match function_name {
+                        "labs" => "LONG_MIN",
+                        "llabs" => "LLONG_MIN",
+                        _ => "INT_MIN",
+                    },
+                    expr_text
                 ),
                 file_path: String::new(),
                 line: start_point.row + 1,
@@ -2170,6 +2198,27 @@ impl Int32C {
             ..Default::default()
             });
         }
+    }
+
+    /// The one argument of `call`, a call of `function_name`, when that is
+    /// the library's absolute-value function in this file and the callee
+    /// resolves to no object where it stands.
+    fn library_absolute_value_argument<'t>(
+        &self,
+        call: &Node<'t>,
+        source: &str,
+        function_name: &str,
+    ) -> Option<Node<'t>> {
+        let callee = call.child_by_field_name("function")?;
+        if callee.kind() != "identifier"
+            || !self
+                .library_absolute_value
+                .borrow()
+                .contains(&function_name)
+        {
+            return None;
+        }
+        absolute_value::sole_argument_of_function_call(call, &callee, source)
     }
 
     /// Check if this node is inside a comparison that's part of a condition
@@ -4272,116 +4321,38 @@ fn is_simple_c_identifier(s: &str) -> bool {
         && s.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// What the values an integer conversion receives are known to be: those of
-/// an integer type, by its signedness (`None` for plain `char`, which may
-/// be either) and the widths the data model allows it.
-#[derive(Clone, Copy)]
-struct IntegerValues {
-    signed: Option<bool>,
-    min: u32,
-    max: Option<u32>,
-}
-
-impl IntegerValues {
-    /// The values of the integer type `ty` under `facts`; `None` for an
-    /// enumeration (whose compatible type is the implementation's), a type
-    /// that is not an integer type, or one not known.
-    fn of(ty: &CType, facts: IntFacts) -> Option<Self> {
-        let signed = |sign: &Sign| match sign {
-            Sign::Signed => Some(true),
-            Sign::Unsigned => Some(false),
-            Sign::PlainChar => None,
-        };
-        match ty {
-            CType::Int { sign, rank } => {
-                let width = facts.width_of(*rank);
-                Some(Self {
-                    signed: signed(sign),
-                    min: width.min,
-                    max: width.max,
-                })
-            }
-            CType::IntOfWidth {
-                sign,
-                min_bits,
-                max_bits,
-            } => Some(Self {
-                signed: signed(sign),
-                min: *min_bits,
-                max: *max_bits,
-            }),
-            _ => None,
-        }
-    }
-
-    /// Whether every one of these values is a value of `to` on every
-    /// implementation, so converting it to `to` keeps it (C11 6.3.1.3p1).
-    fn fit_in(self, to: Self) -> bool {
-        let Some(bits) = self.max else {
-            return false;
-        };
-        match (self.signed, to.signed) {
-            (Some(true), Some(true)) | (Some(false), Some(false)) => bits <= to.min,
-            (Some(false) | None, Some(true)) => bits < to.min,
-            _ => false,
-        }
-    }
-}
-
-/// Whether the argument of the call `call` of `abs`, `labs` or `llabs`
-/// (`function_name`) can never be the most negative value of the
-/// function's parameter type, `int`, `long` or `long long` (C11 7.22.6.1),
-/// whose absolute value is not representable. The argument converts to
-/// that type at the call whatever it was cast to, so `abs((long)x)` passes
-/// `x`'s value back to `int`, `INT_MIN` included: a cast helps only by what
-/// it lets through. The values are followed from the operand's type
-/// through each cast, innermost first: a cast that holds every value it
-/// receives keeps them, and one that does not may yield any value of its
-/// own type. They exclude the parameter's minimum when they all fit in a
-/// type narrower than the parameter on every implementation the data model
+/// Whether `argument`, the argument of a call of the library's `abs`,
+/// `labs` or `llabs` (`function_name`), can never be the most negative
+/// value of the function's parameter type, `int`, `long` or `long long`
+/// (C11 7.22.6.1), whose absolute value is not representable. The argument
+/// converts to that type at the call whatever it was cast to, so
+/// `abs((long)x)` passes `x`'s value back to `int`, `INT_MIN` included: a
+/// cast helps only by what it lets through. The values are followed from
+/// the operand's type through each cast, innermost first: a cast that
+/// holds every value it receives keeps them, and one that does not may
+/// yield any value of its own type
+/// ([`absolute_value::IntegerValues::fit_in`]). They exclude the
+/// parameter's minimum when the widest their type may be is below the
+/// narrowest the parameter may be, on every implementation the data model
 /// allows. An operand of no known type that no cast narrows is not known
 /// to exclude it.
 fn abs_argument_excludes_minimum(
-    call: &Node,
+    argument: Node,
     source: &str,
     function_name: &str,
     env: &TypeEnv,
 ) -> bool {
-    let parameter_rank = match function_name {
-        "abs" => Rank::Int,
-        "labs" => Rank::Long,
-        "llabs" => Rank::LongLong,
-        _ => return false,
-    };
-    let Some(arguments) = call.child_by_field_name("arguments") else {
+    let Some(parameter_rank) = absolute_value::parameter_rank(function_name) else {
         return false;
     };
-    let mut cursor = arguments.walk();
-    let mut named = arguments.named_children(&mut cursor);
-    let (Some(mut arg), None) = (named.next(), named.next()) else {
+    let Some((operand, casts)) = absolute_value::peel_casts(argument) else {
         return false;
     };
-    let mut casts = Vec::new();
-    loop {
-        match arg.kind() {
-            "parenthesized_expression" => match arg.named_child(0) {
-                Some(inner) => arg = inner,
-                None => return false,
-            },
-            "cast_expression" => {
-                casts.push(arg);
-                match arg.child_by_field_name("value") {
-                    Some(value) => arg = value,
-                    None => return false,
-                }
-            }
-            _ => break,
-        }
-    }
     let values_of = |node: &Node| {
-        expr_type::expr_type(node, source, env).and_then(|ty| IntegerValues::of(&ty, env.model))
+        expr_type::expr_type(node, source, env)
+            .and_then(|ty| absolute_value::IntegerValues::of(&ty, env.model))
     };
-    let mut values = values_of(&arg);
+    let mut values = values_of(&operand);
     for cast in casts.iter().rev() {
         let Some(to) = values_of(cast) else {
             return false;
@@ -4390,6 +4361,6 @@ fn abs_argument_excludes_minimum(
             values = Some(to);
         }
     }
-    let parameter = env.model.width_of(parameter_rank);
-    values.is_some_and(|v| v.max.is_some_and(|bits| bits < parameter.min))
+    let parameter = absolute_value::IntegerValues::signed_of_rank(parameter_rank, env.model);
+    values.is_some_and(|v| v.exclude_minimum_of(parameter))
 }

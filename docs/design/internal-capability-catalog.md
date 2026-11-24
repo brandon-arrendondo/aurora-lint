@@ -534,6 +534,19 @@ The integer widths a scan credits (`[environment] data_model`, ADR-0011). **Use 
 
 `Rank` (the conversion ranks, `Bool` lowest) lives here too; `expr_type` re-exports both.
 
+### `src/utility/cert_c/absolute_value.rs`
+
+The library's `abs`, `labs` and `llabs` (C11 7.22.6.1). **Reach for this** whenever a rule reads a call of one of them: which calls are the library's, and whether a value's type keeps the argument off the parameter's most negative value. INT32-C and the value-range guard reader (`value_range::absolute_value_operand`) share it.
+
+| Function | Signature | Description |
+|---|---|---|
+| `FUNCTIONS` / `parameter_rank` | `[(&str, Rank); 3]` / `(name: &str) -> Option<Rank>` | The three functions and their parameter types' ranks (`int`, `long`, `long long`). |
+| `library_names` | `(root, source, candidates: &[&'static str], defined_by_project: impl Fn(&str) -> bool, project: &ProjectMacroNames) -> Vec<&'static str>` | Which candidate names still name the library's function in a file: none the project defines (pass its summaries), none the file defines or declares `static`, none a `#define` makes a macro in the file or any scanned file or header. Build once per file. Works for any library name (the guard reader passes `sqrt` too). |
+| `ProjectMacroNames::of` | `(context: &ProjectContext) -> ProjectMacroNames` | The project's function-like and object-like macro names, for a rule to keep from `set_project_context`. |
+| `sole_argument_of_function_call` | `(call, callee, source) -> Option<Node>` | The call's one argument, comments skipped, when the callee resolves where it stands to a function or to nothing, never to an object of that name, a function pointer included (ADR-0006). |
+| `peel_casts` | `(arg: Node) -> Option<(Node, Vec<Node>)>` | The operand inside an argument's parentheses and casts, and the casts outermost first. |
+| `IntegerValues::of` / `fit_in` / `exclude_minimum_of` | `(ty: &CType, facts) -> Option<Self>` / `(self, to) -> bool` / `(self, parameter) -> bool` | An integer type's signedness (`None` for plain `char`) and `IntWidth`. `fit_in` is whether every value is one of `to` on every implementation the data model allows (C11 6.3.1.3p1): the widest these may be against the narrowest `to` may be. `exclude_minimum_of` is whether none can be the signed `parameter`'s minimum. |
+
 ### `src/utility/cert_c/constant_expression.rs`
 
 Whether an expression is an integer constant expression (C11 6.6), read from what its names resolve to and never from their spelling. **Reach for this** whenever a rule asks whether an array size makes a VLA, or whether a condition could be a static assertion.

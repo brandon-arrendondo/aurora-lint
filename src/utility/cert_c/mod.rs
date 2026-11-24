@@ -1,4 +1,7 @@
 // Utility modules for CERT C rules
+/// The library's `abs`, `labs` and `llabs`: which calls are of them, and
+/// whether a value's type keeps the argument off the parameter's minimum.
+pub mod absolute_value;
 /// Reusable functions for navigating and extracting information from the C AST.
 pub mod ast_utils;
 /// Which automatic object an expression addresses, and the automatic object a
