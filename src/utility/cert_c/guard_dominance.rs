@@ -1568,12 +1568,17 @@ fn comparison_excludes_zero(
 /// `c` and `>` proves `c + 1`. A true `||`, a false `&&`, a lower-bound test
 /// and an unresolved `c` prove no upper bound.
 ///
+/// `var` says whether an identifier occurrence is the variable asked about:
+/// [`binds_as`] decides it by the declaration the occurrence resolves to, so
+/// a test of a shadowed `d` in an outer block bounds nothing of the inner
+/// `d` (ADR-0006).
+///
 /// This says what the condition proved at the moment it was evaluated. Whether
 /// `var` still holds that value at the site is the caller's question -- see
 /// ARR30-C's reassignment check for the shape it takes.
 pub fn condition_upper_bound(
     condition: &Node,
-    var: &str,
+    var: &dyn Fn(&Node) -> bool,
     known_true: bool,
     source: &str,
     eval: &dyn Fn(&Node) -> Option<i64>,
@@ -1595,7 +1600,7 @@ pub fn condition_upper_bound(
                 ),
                 "&&" | "||" => None,
                 "==" | "<" | "<=" | ">" | ">=" => {
-                    comparison_upper_bound(op, &left, &right, var, known_true, source, eval)
+                    comparison_upper_bound(op, &left, &right, var, known_true, eval)
                 }
                 _ => None,
             }
@@ -1627,15 +1632,11 @@ fn comparison_upper_bound(
     op: &str,
     left: &Node,
     right: &Node,
-    var: &str,
+    var: &dyn Fn(&Node) -> bool,
     known_true: bool,
-    source: &str,
     eval: &dyn Fn(&Node) -> Option<i64>,
 ) -> Option<i64> {
-    let is_var = |n: &Node| {
-        let n = strip_arg_wrappers(n);
-        n.kind() == "identifier" && get_node_text(&n, source) == var
-    };
+    let is_var = |n: &Node| var(&strip_arg_wrappers(n));
     let (op, constant) = match (is_var(left), is_var(right)) {
         (true, false) => (op, right),
         (false, true) => (
@@ -1654,6 +1655,117 @@ fn comparison_upper_bound(
     match (op, known_true) {
         ("<", true) | (">=", false) => Some(c),
         ("<=", true) | ("==", true) | (">", false) => c.checked_add(1),
+        _ => None,
+    }
+}
+
+/// Whether an identifier occurrence names the same variable as `site`, an
+/// occurrence of it, as [`result_checks::same_lvalue`] decides: the same
+/// spelling resolving to the same declarator, or, where neither resolves (a
+/// name a macro or an unread header declares), the same spelling. One that
+/// resolves never matches one that does not. The predicate
+/// [`condition_upper_bound`] and [`condition_lower_bound`] take for `var`.
+///
+/// [`result_checks::same_lvalue`]: crate::utility::cert_c::result_checks::same_lvalue
+pub fn binds_as<'t>(site: &Node<'t>, source: &'t str) -> impl Fn(&Node) -> bool + 't {
+    let site = *site;
+    move |n: &Node| {
+        n.kind() == "identifier"
+            && crate::utility::cert_c::result_checks::same_lvalue(&site, n, source)
+    }
+}
+
+/// The inclusive lower bound that `condition`, known to have evaluated to
+/// `known_true`, proves for `var`: `Some(b)` means `var >= b` holds wherever
+/// that truth value does.
+///
+/// The mirror of [`condition_upper_bound`], decomposed the same way: a true
+/// `&&` or a false `||` makes each side a fact (the higher bound wins), `!`
+/// flips the truth, parentheses are transparent. A leaf is `var OP c`,
+/// either operand order, `c` resolved by `eval`. Known true, `>=` and `==`
+/// prove `c` and `>` proves `c + 1`; known false, `<` proves `c` and `<=`
+/// proves `c + 1`.
+///
+/// A cast is transparent to the upper-bound reading but not to this one:
+/// `(short) n > 0` says nothing of `n`'s sign. One kind of cast does prove a
+/// lower bound: where `unsigned_view` says the operand converts `var` to an
+/// unsigned type at least as wide as `var`'s own, any upper bound the leaf
+/// proves (`(unsigned) n < 10`) also proves `n >= 0`, since a negative `n`
+/// converts to a value above every bound a signed `n` could meet. The
+/// caller owns the width test: a narrower type wraps a negative value back
+/// into range (`(unsigned char) -250` is 6).
+pub fn condition_lower_bound(
+    condition: &Node,
+    var: &dyn Fn(&Node) -> bool,
+    known_true: bool,
+    source: &str,
+    eval: &dyn Fn(&Node) -> Option<i64>,
+    unsigned_view: &dyn Fn(&Node) -> bool,
+) -> Option<i64> {
+    let cond = unwrap_parens(condition);
+    let higher = |a: Option<i64>, b: Option<i64>| match (a, b) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, None) => a,
+        (None, b) => b,
+    };
+    match cond.kind() {
+        "binary_expression" => {
+            let op = cond.child_by_field_name("operator")?.kind();
+            let left = cond.child_by_field_name("left")?;
+            let right = cond.child_by_field_name("right")?;
+            let side = |n: &Node, truth: bool| {
+                condition_lower_bound(n, var, truth, source, eval, unsigned_view)
+            };
+            match op {
+                "&&" if known_true => higher(side(&left, true), side(&right, true)),
+                "||" if !known_true => higher(side(&left, false), side(&right, false)),
+                "&&" | "||" => None,
+                "==" | "<" | "<=" | ">" | ">=" => {
+                    let is_var = |n: &Node| var(&strip_parens(n));
+                    let (op, constant) = match (is_var(&left), is_var(&right)) {
+                        (true, false) => (op, right),
+                        (false, true) => (
+                            match op {
+                                "<" => ">",
+                                "<=" => ">=",
+                                ">" => "<",
+                                ">=" => "<=",
+                                other => other,
+                            },
+                            left,
+                        ),
+                        _ => {
+                            let unsigned_of_var = |n: &Node| {
+                                let n = strip_parens(n);
+                                unsigned_view(&n) && var(&strip_arg_wrappers(&n))
+                            };
+                            return (unsigned_of_var(&left) || unsigned_of_var(&right))
+                                .then(|| {
+                                    comparison_upper_bound(op, &left, &right, var, known_true, eval)
+                                })
+                                .flatten()
+                                .map(|_| 0);
+                        }
+                    };
+                    let c = eval(&constant)?;
+                    match (op, known_true) {
+                        (">=", true) | ("==", true) | ("<", false) => Some(c),
+                        (">", true) | ("<=", false) => c.checked_add(1),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        }
+        "unary_expression" => {
+            let is_not = cond
+                .child_by_field_name("operator")
+                .is_some_and(|o| o.kind() == "!");
+            let arg = cond.child_by_field_name("argument")?;
+            is_not
+                .then(|| condition_lower_bound(&arg, var, !known_true, source, eval, unsigned_view))
+                .flatten()
+        }
         _ => None,
     }
 }
@@ -3214,10 +3326,137 @@ mod tests {
             .expect("fixture has a sink() call");
         let macros = MacroConstantMap::new();
         let eval = |n: &Node| try_evaluate_expr(n, src, &macros);
+        let is_var = binds_as(&sink_argument(&site, var, src), src);
         dominating_conditions_with_branches(&site)
             .into_iter()
-            .filter_map(|(cond, branch)| condition_upper_bound(&cond, var, branch?, src, &eval))
+            .filter_map(|(cond, branch)| condition_upper_bound(&cond, &is_var, branch?, src, &eval))
             .min()
+    }
+
+    /// The occurrence of `var` among the `sink(` call's arguments.
+    fn sink_argument<'t>(site: &Node<'t>, var: &str, src: &str) -> Node<'t> {
+        query::find_first_descendant(*site, |n| {
+            n.kind() == "identifier" && get_node_text(&n, src) == var
+        })
+        .expect("sink() is passed the variable")
+    }
+
+    /// The inclusive lower bound `condition_lower_bound` proves for `var` at
+    /// the `sink(` call, from every dominating condition with a known
+    /// branch; a cast to `unsigned` is the only unsigned view.
+    fn lower_bound_at_sink(src: &str, var: &str) -> Option<i64> {
+        let tree = parse_c_code(src);
+        let site = query::find_descendants_of_kind(tree.root_node(), "call_expression")
+            .into_iter()
+            .find(|n| {
+                n.child_by_field_name("function")
+                    .is_some_and(|f| get_node_text(&f, src) == "sink")
+            })
+            .expect("fixture has a sink() call");
+        let macros = MacroConstantMap::new();
+        let eval = |n: &Node| try_evaluate_expr(n, src, &macros);
+        let unsigned_view = |n: &Node| {
+            n.kind() == "cast_expression"
+                && n.child_by_field_name("type")
+                    .is_some_and(|t| get_node_text(&t, src) == "unsigned")
+        };
+        let is_var = binds_as(&sink_argument(&site, var, src), src);
+        dominating_conditions_with_branches(&site)
+            .into_iter()
+            .filter_map(|(cond, branch)| {
+                condition_lower_bound(&cond, &is_var, branch?, src, &eval, &unsigned_view)
+            })
+            .max()
+    }
+
+    #[test]
+    fn lower_bound_true_conjunction_and_operand_order() {
+        assert_eq!(
+            lower_bound_at_sink("void f(int i) { if (i >= 0 && i < 10) sink(i); }", "i"),
+            Some(0)
+        );
+        assert_eq!(
+            lower_bound_at_sink("void f(int i) { if (2 < i) sink(i); }", "i"),
+            Some(3)
+        );
+        assert_eq!(
+            lower_bound_at_sink("void f(int i) { if (i == 4) sink(i); }", "i"),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn lower_bound_false_disjunction_and_negation() {
+        // The early return: past it both disjuncts are false.
+        assert_eq!(
+            lower_bound_at_sink(
+                "int f(int i) { if (i < 0 || i >= 10) return -1; sink(i); return 0; }",
+                "i"
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            lower_bound_at_sink("void f(int i) { if (!(i <= 1)) sink(i); }", "i"),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn lower_bound_proves_nothing_from_an_upper_bound_or_a_true_disjunction() {
+        assert_eq!(
+            lower_bound_at_sink("void f(int i) { if (i < 10) sink(i); }", "i"),
+            None
+        );
+        assert_eq!(
+            lower_bound_at_sink("void f(int i) { if (i >= 0 || i < 10) sink(i); }", "i"),
+            None
+        );
+        // A signed cast says nothing of the sign.
+        assert_eq!(
+            lower_bound_at_sink("void f(int i) { if ((short) i > 0) sink(i); }", "i"),
+            None
+        );
+    }
+
+    #[test]
+    fn lower_bound_from_an_unsigned_view_with_an_upper_bound() {
+        assert_eq!(
+            lower_bound_at_sink("void f(int i) { if ((unsigned) i < 10) sink(i); }", "i"),
+            Some(0)
+        );
+        // An unsigned view with no upper bound proves nothing.
+        assert_eq!(
+            lower_bound_at_sink("void f(int i) { if ((unsigned) i > 3) sink(i); }", "i"),
+            None
+        );
+    }
+
+    #[test]
+    fn bounds_of_a_shadowed_name_do_not_carry() {
+        // The outer test is of the outer `d`; the inner `d` is another object.
+        let src = "void f(int d, int e) { if (d >= 0 && d < 10) { int d = e; sink(d); } }";
+        assert_eq!(lower_bound_at_sink(src, "d"), None);
+        assert_eq!(upper_bound_at_sink(src, "d"), None);
+        // The same test with no inner declaration still bounds it.
+        let src = "void f(int d) { if (d >= 0 && d < 10) { sink(d); } }";
+        assert_eq!(lower_bound_at_sink(src, "d"), Some(0));
+        assert_eq!(upper_bound_at_sink(src, "d"), Some(10));
+    }
+
+    #[test]
+    fn binds_as_matches_spelling_only_where_neither_resolves() {
+        // `d` is a local of `f` and an undeclared name in `g`.
+        let src = "void f(void) { int d = 0; sink(d); } void g(void) { sink(d); sink(d); }";
+        let tree = parse_c_code(src);
+        let ds: Vec<_> = query::find_descendants_of_kind(tree.root_node(), "identifier")
+            .into_iter()
+            .filter(|n| get_node_text(n, src) == "d")
+            .collect();
+        let (local, in_g, also_in_g) = (ds[1], ds[2], ds[3]);
+        assert!(binds_as(&local, src)(&ds[0]));
+        assert!(!binds_as(&local, src)(&in_g));
+        assert!(!binds_as(&in_g, src)(&local));
+        assert!(binds_as(&in_g, src)(&also_in_g));
     }
 
     #[test]

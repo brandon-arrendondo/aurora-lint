@@ -819,7 +819,9 @@ thread_local! {
     static EXPANSION_PARSER: RefCell<Option<tree_sitter::Parser>> = const { RefCell::new(None) };
 }
 
-fn parse_expansion(text: &str) -> Option<tree_sitter::Tree> {
+/// Parse a macro expansion wrapped as a function body, on this thread's
+/// parser for expansions.
+pub(crate) fn parse_expansion(text: &str) -> Option<tree_sitter::Tree> {
     EXPANSION_PARSER.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {

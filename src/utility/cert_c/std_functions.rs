@@ -501,6 +501,37 @@ pub fn is_full_range_return_function(name: &str) -> bool {
     )
 }
 
+/// A standard function whose result may be negative although nothing about
+/// the call says so: the string-to-signed-integer parsers (`atoi`,
+/// `strtol`, ...; any value the text spells), the character readers that
+/// return `EOF` (`getchar`, `fgetc`, `getc`), and `mrand48`/`jrand48`,
+/// whose range is signed. Not `rand` and its kin, which return a value from
+/// zero, and not a function returning an unsigned type, `strtoul` or
+/// `ntohs`. ARR30-C reads a signed index holding one as one that may be
+/// negative.
+pub fn may_return_negative(name: &str) -> bool {
+    matches!(
+        name,
+        "atoi"
+            | "atol"
+            | "atoll"
+            | "strtol"
+            | "strtoll"
+            | "strtoimax"
+            | "wcstol"
+            | "wcstoll"
+            | "wcstoimax"
+            | "getchar"
+            | "getc"
+            | "fgetc"
+            | "getchar_unlocked"
+            | "getc_unlocked"
+            | "fgetc_unlocked"
+            | "mrand48"
+            | "jrand48"
+    )
+}
+
 /// Standard C functions declared to return `size_t`.
 ///
 /// The return type POSIX gives a byte-order conversion function

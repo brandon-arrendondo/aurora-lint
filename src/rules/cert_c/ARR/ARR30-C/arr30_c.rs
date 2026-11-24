@@ -432,6 +432,9 @@ pub struct Arr30C {
     /// The integer data model the settings credit: which limit macros and
     /// `sizeof` values are constants.
     data_model: Cell<IntFacts>,
+    /// The typedefs and struct fields this file sees, which type an index by
+    /// the declaration it resolves to.
+    visible_types: RefCell<crate::analyze::context::VisibleTypes>,
 }
 
 /// Represents an index value that can be constant or variable
@@ -516,6 +519,10 @@ impl CertRule for Arr30C {
 
     fn set_analysis_settings(&self, settings: &std::sync::Arc<crate::settings::AnalysisSettings>) {
         self.data_model.set(settings.facts);
+    }
+
+    fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
+        *self.visible_types.borrow_mut() = types.clone();
     }
 
     fn rule_id(&self) -> &'static str {
@@ -700,6 +707,7 @@ impl Arr30C {
             file_scope_by_identifier: RefCell::new(None),
             local_declarations: RefCell::new(HashMap::new()),
             data_model: Cell::new(IntFacts::default()),
+            visible_types: RefCell::default(),
         }
     }
 
@@ -1757,7 +1765,19 @@ impl Arr30C {
         source: &str,
         macro_constants: &HashMap<String, i64>,
     ) -> Option<IndexValue> {
-        let index_node = self.get_subscript_index(node)?;
+        let mut index_node = self.get_subscript_index(node)?;
+        // `buf[(i)]` indexes with `i`, whose declaration and writes the
+        // checks below read.
+        let mut bare = index_node;
+        while bare.kind() == "parenthesized_expression" {
+            match bare.named_child(0) {
+                Some(inner) => bare = inner,
+                None => break,
+            }
+        }
+        if bare.kind() == "identifier" {
+            index_node = bare;
+        }
         let index_text = &source[index_node.start_byte()..index_node.end_byte()];
 
         // Try to parse as simple constant (now supports negative indices)
@@ -2168,8 +2188,23 @@ impl Arr30C {
 
     /// Whether the write to `target` may not run although its statement
     /// does: it lies in the right operand of `&&` or `||`, or an arm of
-    /// `?:`, within its expression.
+    /// `?:`, or a `_Generic` association, within its expression; or under a
+    /// branch or loop of a GNU statement expression (`({ ... })`), whose
+    /// statements, and the blocks nested in them, are part of the expression
+    /// that holds them, so the walk goes on past them. A write in an operand that is never evaluated
+    /// is no write at all: see [`Self::in_unevaluated_operand`].
     fn evaluated_conditionally(target: &Node) -> bool {
+        // Some block enclosing `n` is a statement expression's body, before
+        // the function's own.
+        let in_statement_expression = |n: &Node| {
+            std::iter::successors(Some(*n), |b| b.parent())
+                .take_while(|b| b.kind() != "function_definition")
+                .any(|b| {
+                    b.kind() == "compound_statement"
+                        && b.parent()
+                            .is_some_and(|p| p.kind() == "parenthesized_expression")
+                })
+        };
         let mut child = *target;
         while let Some(parent) = child.parent() {
             let is = |field: &str| {
@@ -2189,13 +2224,50 @@ impl Arr30C {
                 "conditional_expression" if is("consequence") || is("alternative") => {
                     return true;
                 }
+                "generic_expression" => return true,
+                "if_statement" | "while_statement" | "for_statement" | "do_statement"
+                | "switch_statement"
+                    if in_statement_expression(&parent) =>
+                {
+                    return true;
+                }
+                kind if (kind.ends_with("_statement") || kind == "declaration")
+                    && in_statement_expression(&parent) => {}
                 kind if kind.ends_with("_statement")
-                    || matches!(
-                        kind,
-                        "declaration" | "compound_statement" | "function_definition"
-                    ) =>
+                    || matches!(kind, "declaration" | "function_definition") =>
                 {
                     return false;
+                }
+                _ => {}
+            }
+            child = parent;
+        }
+        false
+    }
+
+    /// Whether `target` lies in the operand of `sizeof` or `_Alignof`, or in
+    /// the controlling expression of `_Generic`, within its statement: never
+    /// evaluated (C11 6.5.3.4p2, 6.5.1.1p3), so a store there never happens.
+    /// The association `_Generic` selects is evaluated, and is one of several
+    /// that may be: [`Self::evaluated_conditionally`]'s. The operand of a
+    /// `sizeof` of a variable length array type is evaluated, but a store
+    /// inside an array declarator's size is not a shape code writes.
+    fn in_unevaluated_operand(target: &Node) -> bool {
+        let mut child = *target;
+        while let Some(parent) = child.parent() {
+            let kind = parent.kind();
+            if kind.ends_with("_statement") || matches!(kind, "declaration" | "function_definition")
+            {
+                return false;
+            }
+            match kind {
+                "sizeof_expression" | "alignof_expression" => return true,
+                "generic_expression"
+                    if parent
+                        .named_child(0)
+                        .is_some_and(|controlling| controlling.id() == child.id()) =>
+                {
+                    return true;
                 }
                 _ => {}
             }
@@ -2216,7 +2288,10 @@ impl Arr30C {
     ) {
         let target = guard_dominance::strip_arg_wrappers(&target);
         let name = get_node_text(&target, source);
-        if target.kind() != "identifier" || !subscripted.contains(name) {
+        if target.kind() != "identifier"
+            || !subscripted.contains(name)
+            || Self::in_unevaluated_operand(&target)
+        {
             return;
         }
         let declares = matches!(node.kind(), "init_declarator" | "declaration");
@@ -2238,8 +2313,42 @@ impl Arr30C {
             .push((
                 target.start_byte(),
                 declares,
-                Self::evaluated_conditionally(&target),
+                node.kind() == "call_expression" || Self::evaluated_conditionally(&target),
             ));
+    }
+
+    /// The objects a call to a scanf-family function stores converted input
+    /// in: each `&name` among its arguments, the name it addresses.
+    fn scanf_stored_objects<'t>(call: &Node<'t>, source: &str) -> Vec<Node<'t>> {
+        let stores = call
+            .child_by_field_name("function")
+            .filter(|f| f.kind() == "identifier")
+            .is_some_and(|f| call_roles::stores_through_scanf_arguments(get_node_text(&f, source)));
+        let Some(args) = call.child_by_field_name("arguments").filter(|_| stores) else {
+            return Vec::new();
+        };
+        args.named_children(&mut args.walk())
+            .filter_map(|a| {
+                let a = guard_dominance::strip_arg_wrappers(&a);
+                (a.kind() == "pointer_expression"
+                    && a.child_by_field_name("operator")
+                        .is_some_and(|o| o.kind() == "&"))
+                .then(|| a.child_by_field_name("argument"))
+                .flatten()
+            })
+            .collect()
+    }
+
+    /// Whether the write at `target`, an identifier, is a scanf-family
+    /// call's store: `target` is addressed by an argument of one.
+    fn is_scanf_store(target: &Node, source: &str) -> bool {
+        std::iter::successors(target.parent(), |p| p.parent())
+            .find(|p| p.kind() == "call_expression")
+            .is_some_and(|call| {
+                Self::scanf_stored_objects(&call, source)
+                    .iter()
+                    .any(|o| guard_dominance::strip_arg_wrappers(o).id() == target.id())
+            })
     }
 
     /// One walk of the body for the writes of every object a subscript in
@@ -2248,22 +2357,67 @@ impl Arr30C {
         let cfgs = self.function_cfgs.borrow();
         let cfg = cfgs.get(&func_node.start_byte())?;
         let body = func_node.child_by_field_name("body")?;
-        let subscripted: HashSet<&str> =
+        let mut subscripted: HashSet<&str> =
             query::find_descendants_of_kind(body, "subscript_expression")
                 .iter()
                 .flat_map(|s| query::find_descendants_of_kind(*s, "identifier"))
                 .map(|id| get_node_text(&id, source))
                 .collect();
+        // And the names copied into one (`int data = dataCopy;`), whose own
+        // writes are where the index's value comes from.
+        let copies: Vec<(&str, &str)> = query::find_descendants(body, |n| {
+            matches!(n.kind(), "assignment_expression" | "init_declarator")
+        })
+        .into_iter()
+        .filter_map(|n| {
+            let (target, value) = match n.kind() {
+                "init_declarator" => (
+                    n.child_by_field_name("declarator")
+                        .and_then(declared_name)?,
+                    n.child_by_field_name("value")?,
+                ),
+                _ => (
+                    n.child_by_field_name("left")?,
+                    n.child_by_field_name("right")?,
+                ),
+            };
+            let value = strip_parens_and_casts(value);
+            (target.kind() == "identifier" && value.kind() == "identifier").then(|| {
+                (
+                    get_node_text(&target, source),
+                    get_node_text(&value, source),
+                )
+            })
+        })
+        .collect();
+        for _ in 0..Self::NEGATIVE_ORIGIN_DEPTH {
+            let before = subscripted.len();
+            for &(target, value) in &copies {
+                if subscripted.contains(target) {
+                    subscripted.insert(value);
+                }
+            }
+            if subscripted.len() == before {
+                break;
+            }
+        }
         // Per object: what it holds on entry, and its writes as (byte, the
         // declaration's own initializer or bare declaration).
         let mut written = ObjectWrites::new();
         for n in query::find_descendants(body, |n| {
             matches!(
                 n.kind(),
-                "assignment_expression" | "update_expression" | "init_declarator" | "declaration"
+                "assignment_expression"
+                    | "update_expression"
+                    | "init_declarator"
+                    | "declaration"
+                    | "call_expression"
             )
         }) {
             let targets: Vec<Node> = match n.kind() {
+                // `scanf("%d", &i)` stores the input's value in `i`, or
+                // nothing when the input does not convert.
+                "call_expression" => Self::scanf_stored_objects(&n, source),
                 "assignment_expression" => n.child_by_field_name("left").into_iter().collect(),
                 "update_expression" => n.child_by_field_name("argument").into_iter().collect(),
                 "init_declarator" => n
@@ -5363,18 +5517,22 @@ impl Arr30C {
     /// Whether the index of the subscript `access` names an automatic local
     /// of `func`: no parameter, `static`, `extern` or file-scope object.
     fn automatic_local(func: &Node, access: &Node, var: &str, source: &str) -> bool {
+        Self::index_occurrence(access, var, source)
+            .is_some_and(|index| Self::names_automatic_local(func, &index, var, source))
+    }
+
+    /// Whether the occurrence `ident` of `name` in `func` resolves to an
+    /// automatic local of `func`.
+    fn names_automatic_local(func: &Node, ident: &Node, name: &str, source: &str) -> bool {
         let Some(body) = func.child_by_field_name("body") else {
             return false;
         };
-        access
-            .child_by_field_name("index")
-            .and_then(|index| resolve_identifier_declarator(&index, var, source))
-            .is_some_and(|(decl, used)| {
-                matches!(
-                    Self::entry_value(&body, &decl, &used, source),
-                    EntryValue::Unset
-                )
-            })
+        resolve_identifier_declarator(ident, name, source).is_some_and(|(decl, used)| {
+            matches!(
+                Self::entry_value(&body, &decl, &used, source),
+                EntryValue::Unset
+            )
+        })
     }
 
     /// Whether `&name` appears anywhere in `func`, through parentheses: a
@@ -5769,7 +5927,389 @@ impl Arr30C {
                 return !self.has_function_parameter_bounds_check(&func_node, var, source);
             }
         }
-        !self.has_proper_bounds_check(node, source, effective_size, macro_constants)
+        !(self.has_proper_bounds_check(node, source, effective_size, macro_constants)
+            && self.upper_guard_suffices(node, source, var, macro_constants))
+    }
+
+    /// Whether a guard that bounds the index `var` of the subscript `node`
+    /// from above bounds the access. A guard on the upper end alone (`if
+    /// (data < 10)`) leaves a signed index free to be negative, CERT
+    /// ARR30-C's own noncompliant case. So where the analysis sees how an
+    /// automatic local may come to be negative, the lower end must hold as
+    /// well. A field, global or parameter, written where this function cannot
+    /// see, and a local of no negative origin keep the upper guard's credit:
+    /// whether they can be negative is not decided here.
+    fn upper_guard_suffices(
+        &self,
+        node: &Node,
+        source: &str,
+        var: &str,
+        macro_constants: &HashMap<String, i64>,
+    ) -> bool {
+        let Some(func_node) = find_containing_function(node) else {
+            return true;
+        };
+        !Self::automatic_local(&func_node, node, var, source)
+            || !self.index_may_be_negative(&func_node, node, source, var, macro_constants)
+            || self.index_cannot_be_negative(node, source, var, macro_constants)
+    }
+
+    /// Whether the analysis sees a way for the automatic local `var`, the
+    /// index of `node`, to be negative there: a write that may reach the
+    /// access stores a value that may be negative by what it says
+    /// ([`Self::value_may_be_negative`]), or whatever the input says, as a
+    /// scanf-family call does through `&var`. An index of no such origin is
+    /// not judged here, as a field or parameter is not.
+    fn index_may_be_negative(
+        &self,
+        func_node: &Node,
+        node: &Node,
+        source: &str,
+        var: &str,
+        macro_constants: &HashMap<String, i64>,
+    ) -> bool {
+        Self::index_occurrence(node, var, source).is_some_and(|index| {
+            self.read_may_be_negative(func_node, &index, source, macro_constants, 0)
+        })
+    }
+
+    /// How many copies, `?:` arms and macro expansions
+    /// [`Self::value_may_be_negative`] follows before it gives up.
+    const NEGATIVE_ORIGIN_DEPTH: usize = 4;
+
+    /// Whether the read `ident` of an automatic local of `func_node` may see
+    /// a negative value: some write that may reach it is a scanf-family
+    /// call's store, or stores a value that may be negative.
+    fn read_may_be_negative(
+        &self,
+        func_node: &Node,
+        ident: &Node,
+        source: &str,
+        macro_constants: &HashMap<String, i64>,
+        depth: usize,
+    ) -> bool {
+        let name = get_node_text(ident, source);
+        if !Self::names_automatic_local(func_node, ident, name, source) {
+            return false;
+        }
+        let Some(reached) = self.reaching_writes(func_node, ident, name, source) else {
+            return false;
+        };
+        reached.writes.iter().any(|&at| {
+            let Some(target) = func_node.descendant_for_byte_range(at, at + name.len()) else {
+                return false;
+            };
+            if Self::is_scanf_store(&target, source) {
+                return true;
+            }
+            let Some(write) = target.parent() else {
+                return false;
+            };
+            let value = match write.kind() {
+                "init_declarator" => write.child_by_field_name("value"),
+                "assignment_expression"
+                    if write
+                        .child_by_field_name("operator")
+                        .is_some_and(|o| o.kind() == "=") =>
+                {
+                    write.child_by_field_name("right")
+                }
+                _ => None,
+            };
+            value.is_some_and(|v| {
+                self.value_may_be_negative(Some(func_node), &v, source, macro_constants, depth)
+            })
+        })
+    }
+
+    /// Whether the stored value `value` may be negative by what it says: a
+    /// negative constant; the negation of a call's result, or a difference
+    /// whose left operand may be negative (`-rnd() - 1`), where nothing
+    /// tested the result's sign first (a negated variable is left alone:
+    /// `if (w < 0) w = -w;` is the usual reason to write one);
+    /// a standard call that may return a negative value
+    /// (`std_functions::may_return_negative`: `atoi`, `strtol`, `getchar`);
+    /// a `?:` or comma expression one of whose results may be; a copy of an
+    /// automatic local whose own read may be (`int d = copy;`), within
+    /// `func_node`; or an invocation of a function-like macro one of whose
+    /// definitions in reach expands to such a value (Juliet's `RAND32()`,
+    /// whose second arm is `-URAND31() - 1`).
+    fn value_may_be_negative(
+        &self,
+        func_node: Option<&Node>,
+        value: &Node,
+        source: &str,
+        macro_constants: &HashMap<String, i64>,
+        depth: usize,
+    ) -> bool {
+        if depth > Self::NEGATIVE_ORIGIN_DEPTH {
+            return false;
+        }
+        let mut v = *value;
+        loop {
+            v = match v.kind() {
+                "parenthesized_expression" => match v.named_child(0) {
+                    Some(inner) => inner,
+                    None => break,
+                },
+                "cast_expression" => {
+                    if self.casts_to_narrow_unsigned(&v, source) {
+                        return false;
+                    }
+                    match v.child_by_field_name("value") {
+                        Some(inner) => inner,
+                        None => break,
+                    }
+                }
+                _ => break,
+            };
+        }
+        if let Some(c) = const_eval::try_evaluate_expr(&v, source, macro_constants) {
+            return c < 0;
+        }
+        let again = |n: &Node, depth: usize| {
+            self.value_may_be_negative(func_node, n, source, macro_constants, depth)
+        };
+        match v.kind() {
+            "conditional_expression" => ["consequence", "alternative"].iter().any(|f| {
+                v.child_by_field_name(f)
+                    .is_some_and(|arm| again(&arm, depth + 1))
+            }),
+            "comma_expression" => v
+                .child_by_field_name("right")
+                .is_some_and(|r| again(&r, depth)),
+            "unary_expression" => {
+                v.child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "-")
+                    && v.child_by_field_name("argument").is_some_and(|operand| {
+                        strip_parens_and_casts(operand).kind() == "call_expression"
+                    })
+            }
+            "binary_expression" => {
+                v.child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "-")
+                    && v.child_by_field_name("left")
+                        .is_some_and(|left| again(&left, depth))
+            }
+            "identifier" => func_node.is_some_and(|func| {
+                self.read_may_be_negative(func, &v, source, macro_constants, depth + 1)
+            }),
+            "call_expression" => {
+                let Some(callee) = v
+                    .child_by_field_name("function")
+                    .filter(|f| f.kind() == "identifier")
+                else {
+                    return false;
+                };
+                let name = get_node_text(&callee, source);
+                if crate::utility::cert_c::std_functions::may_return_negative(name) {
+                    return true;
+                }
+                let args: Vec<String> = v
+                    .child_by_field_name("arguments")
+                    .map(|a| {
+                        a.named_children(&mut a.walk())
+                            .filter(|n| n.kind() != "comment")
+                            .map(|n| get_node_text(&n, source).to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.macro_arms_in_reach(name).iter().any(|arm| {
+                    if arm.variadic.is_some() || arm.params.len() != args.len() {
+                        return false;
+                    }
+                    let table = HashMap::from([(
+                        name.to_string(),
+                        FunctionMacro {
+                            params: arm.params.clone(),
+                            body: arm.body.clone(),
+                            alternatives: Vec::new(),
+                        },
+                    )]);
+                    let Some(expanded) = macro_expand::expand_invocation(&table, name, &args)
+                    else {
+                        return false;
+                    };
+                    let text =
+                        format!("void __sqc_expansion(void) {{ __sqc_value = ({expanded}); }}");
+                    let Some(tree) = crate::analyze::init_state::parse_expansion(&text) else {
+                        return false;
+                    };
+                    query::find_descendants_of_kind(tree.root_node(), "assignment_expression")
+                        .first()
+                        .and_then(|a| a.child_by_field_name("right"))
+                        .is_some_and(|expansion| {
+                            self.value_may_be_negative(
+                                None,
+                                &expansion,
+                                &text,
+                                macro_constants,
+                                depth + 1,
+                            )
+                        })
+                })
+            }
+            _ => false,
+        }
+    }
+
+    /// The occurrence of the index `var` in the subscript `node`, its
+    /// parentheses dropped (`buf[(i)]`): what the index's declaration is
+    /// resolved from.
+    fn index_occurrence<'t>(node: &Node<'t>, var: &str, source: &str) -> Option<Node<'t>> {
+        let is = |n: &Node| n.kind() == "identifier" && get_node_text(n, source) == var;
+        node.child_by_field_name("index")
+            .map(|mut i| {
+                while i.kind() == "parenthesized_expression" {
+                    match i.named_child(0) {
+                        Some(inner) => i = inner,
+                        None => break,
+                    }
+                }
+                i
+            })
+            .filter(|i| is(i))
+            .or_else(|| query::find_first_descendant(*node, |n| is(&n)))
+    }
+
+    /// Whether an identifier occurrence is the index `var` of the subscript
+    /// `node`: the same declaration (ADR-0006), or the same spelling where
+    /// the subscript holds no occurrence of it to resolve from.
+    fn index_binding<'t>(
+        node: &Node<'t>,
+        var: &'t str,
+        source: &'t str,
+    ) -> Box<dyn Fn(&Node) -> bool + 't> {
+        match Self::index_occurrence(node, var, source) {
+            Some(site) => Box::new(guard_dominance::binds_as(&site, source)),
+            None => Box::new(move |n: &Node| {
+                n.kind() == "identifier" && get_node_text(n, source) == var
+            }),
+        }
+    }
+
+    /// Whether `var`, the index of the subscript `node`, cannot be negative
+    /// there: VRA's range for it at the access starts at zero or above, the
+    /// declaration it resolves to gives it an unsigned type, or a condition
+    /// already evaluated on the way to the access proves its lower end
+    /// (`data >= 0 && data < 10`, `(unsigned) data < 10`, an early
+    /// `if (data < 0) return;`) and nothing writes it in between. A view of
+    /// the index through a cast proves its lower end only when the cast is
+    /// to an unsigned type at least as wide as the index's own: `(unsigned
+    /// char) data < 10` holds for `data == -250`.
+    fn index_cannot_be_negative(
+        &self,
+        node: &Node,
+        source: &str,
+        var: &str,
+        macro_constants: &HashMap<String, i64>,
+    ) -> bool {
+        if self
+            .vra_var_ranges_at(node, source, macro_constants)
+            .and_then(|ranges| ranges.get(var).copied())
+            .is_some_and(|range| range.min >= 0)
+        {
+            return true;
+        }
+        let Some(index) = Self::index_occurrence(node, var, source) else {
+            return false;
+        };
+        let types = self.visible_types.borrow();
+        let model = self.data_model.get();
+        let env = crate::utility::cert_c::expr_type::TypeEnv::visible(&types, model);
+        let index_type = crate::utility::cert_c::expr_type::declared_type(&index, source, &env);
+        if index_type.as_ref().and_then(|t| t.is_unsigned()) == Some(true) {
+            return true;
+        }
+        let Some(func_node) = find_containing_function(node) else {
+            return false;
+        };
+        let index_width = index_type
+            .as_ref()
+            .and_then(|t| Self::integer_width(t, model));
+        let eval = |n: &Node| const_eval::try_evaluate_expr(n, source, macro_constants);
+        let unsigned_view = |n: &Node| {
+            n.kind() == "cast_expression"
+                && n.child_by_field_name("type").is_some_and(|t| {
+                    crate::utility::cert_c::expr_type::classify_spelling(
+                        &source[t.start_byte()..t.end_byte()],
+                        &env,
+                    )
+                    .filter(|ty| ty.is_unsigned() == Some(true))
+                    .and_then(|ty| Self::integer_width(&ty, model))
+                    .zip(index_width)
+                    .is_some_and(|(cast, index)| !cast.may_be_narrower_than(index))
+                })
+        };
+        let is_var = Self::index_binding(node, var, source);
+        guard_dominance::dominating_conditions_with_branches(node)
+            .into_iter()
+            .any(|(cond, branch)| {
+                let (Some(known_true), Some(guard)) = (branch, cond.parent()) else {
+                    return false;
+                };
+                guard_dominance::condition_lower_bound(
+                    &cond,
+                    &is_var,
+                    known_true,
+                    source,
+                    &eval,
+                    &unsigned_view,
+                )
+                .is_some_and(|low| low >= 0)
+                    && !self.var_reassigned_between(
+                        var,
+                        cond.end_byte(),
+                        &guard,
+                        node,
+                        &func_node,
+                        source,
+                    )
+            })
+    }
+
+    /// True when `cast` converts to an unsigned type every target makes
+    /// narrower than `int`: the value is then between zero and that type's
+    /// maximum, and promotes to a non-negative `int`
+    /// (`(unsigned char)getchar()`). A type that may be as wide as `int`
+    /// could wrap to a negative one when stored back.
+    fn casts_to_narrow_unsigned(&self, cast: &Node, source: &str) -> bool {
+        let Some(t) = cast.child_by_field_name("type") else {
+            return false;
+        };
+        let types = self.visible_types.borrow();
+        let model = self.data_model.get();
+        let env = crate::utility::cert_c::expr_type::TypeEnv::visible(&types, model);
+        let int_min = model
+            .width_of(crate::utility::cert_c::data_model::Rank::Int)
+            .min;
+        crate::utility::cert_c::expr_type::classify_spelling(
+            &source[t.start_byte()..t.end_byte()],
+            &env,
+        )
+        .filter(|ty| ty.is_unsigned() == Some(true))
+        .and_then(|ty| Self::integer_width(&ty, model))
+        .and_then(|w| w.max)
+        .is_some_and(|bits| bits < int_min)
+    }
+
+    /// An integer type's width as the data model knows it.
+    fn integer_width(
+        ty: &crate::utility::cert_c::expr_type::CType,
+        model: crate::utility::cert_c::data_model::IntFacts,
+    ) -> Option<crate::utility::cert_c::data_model::IntWidth> {
+        use crate::utility::cert_c::expr_type::CType;
+        match ty {
+            CType::Int { rank, .. } => Some(model.width_of(*rank)),
+            CType::IntOfWidth {
+                min_bits, max_bits, ..
+            } => Some(crate::utility::cert_c::data_model::IntWidth {
+                rank: None,
+                min: *min_bits,
+                max: *max_bits,
+            }),
+            _ => None,
+        }
     }
 
     /// True when a guard already evaluated by the time `node` runs proves
@@ -5831,6 +6371,7 @@ impl Arr30C {
                 macro_constants,
             )
         };
+        let is_var = Self::index_binding(node, var, source);
         for (cond, branch) in guard_dominance::dominating_conditions_with_branches(node) {
             let Some(guard) = cond.parent() else {
                 continue;
@@ -5839,11 +6380,13 @@ impl Arr30C {
             // reassignment would break it.
             let (bound, holds_from) = match branch {
                 Some(known_true) => (
-                    guard_dominance::condition_upper_bound(&cond, var, known_true, source, &eval),
+                    guard_dominance::condition_upper_bound(
+                        &cond, &is_var, known_true, source, &eval,
+                    ),
                     cond.end_byte(),
                 ),
                 None => (
-                    self.clamp_upper_bound(&guard, &cond, var, source, &eval),
+                    self.clamp_upper_bound(&guard, &cond, &is_var, source, &eval),
                     guard.end_byte(),
                 ),
             };
@@ -5854,7 +6397,7 @@ impl Arr30C {
                 continue;
             }
             if !self.var_reassigned_between(var, holds_from, &guard, node, &func_node, source) {
-                return true;
+                return self.upper_guard_suffices(node, source, var, macro_constants);
             }
         }
         false
@@ -5875,7 +6418,7 @@ impl Arr30C {
         &self,
         guard: &Node,
         cond: &Node,
-        var: &str,
+        is_var: &dyn Fn(&Node) -> bool,
         source: &str,
         eval: &dyn Fn(&Node) -> Option<i64>,
     ) -> Option<i64> {
@@ -5903,11 +6446,11 @@ impl Arr30C {
             return None;
         }
         let left = assign.child_by_field_name("left")?;
-        if left.kind() != "identifier" || get_node_text(&left, source) != var {
+        if !is_var(&left) {
             return None;
         }
         let assigned = eval(&assign.child_by_field_name("right")?)?;
-        let when_false = guard_dominance::condition_upper_bound(cond, var, false, source, eval)?;
+        let when_false = guard_dominance::condition_upper_bound(cond, is_var, false, source, eval)?;
         Some(when_false.max(assigned.checked_add(1)?))
     }
 
@@ -6057,17 +6600,7 @@ impl Arr30C {
     /// counts. A variadic definition, or arms over different parameters,
     /// is `None`.
     fn element_count_macro_position(&self, name: &str) -> Option<usize> {
-        let mut arms = self
-            .file_macro_arms
-            .borrow()
-            .get(name)
-            .cloned()
-            .unwrap_or_default();
-        let closure = self.include_closure();
-        if arms.is_empty() || closure.is_some() {
-            let table = Arc::clone(&self.project_macro_arms.borrow());
-            arms.extend(macro_expand::reachable_arms(&table, name, closure.as_ref()));
-        }
+        let arms = self.macro_arms_in_reach(name);
         if arms.is_empty() {
             return None;
         }
@@ -6084,6 +6617,26 @@ impl Arr30C {
             position = Some(at);
         }
         position
+    }
+
+    /// Every definition of the function-like macro `name` that can be in
+    /// force here: this file's own arms, and the project's arms the file's
+    /// include closure reaches. Where the closure is unknown, a file
+    /// defining the name answers alone, and otherwise every project arm
+    /// counts.
+    fn macro_arms_in_reach(&self, name: &str) -> Vec<MacroArm> {
+        let mut arms = self
+            .file_macro_arms
+            .borrow()
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+        let closure = self.include_closure();
+        if arms.is_empty() || closure.is_some() {
+            let table = Arc::clone(&self.project_macro_arms.borrow());
+            arms.extend(macro_expand::reachable_arms(&table, name, closure.as_ref()));
+        }
+        arms
     }
 
     /// This file's include closure, walked once per file; `None` when the

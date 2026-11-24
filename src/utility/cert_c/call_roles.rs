@@ -327,6 +327,25 @@ pub fn is_scanf_family(name: &str) -> bool {
     SCANF_FUNCS.contains(&name)
 }
 
+/// A scanf-family function whose variadic arguments are the objects it
+/// stores the converted input in: the narrow and wide forms, their Annex K
+/// `_s` forms, and the names glibc's headers redirect them to
+/// (`__isoc99_sscanf`, `__isoc23_sscanf`). The `v` forms are not here: they
+/// take a `va_list`, so no argument of the call names an object they store
+/// in. Unlike [`is_scanf_family`], which counts a format string's
+/// conversions, this asks only what a call may write.
+pub fn stores_through_scanf_arguments(name: &str) -> bool {
+    let base = name
+        .strip_prefix("__isoc99_")
+        .or_else(|| name.strip_prefix("__isoc23_"))
+        .unwrap_or(name);
+    let base = base.strip_suffix("_s").unwrap_or(base);
+    matches!(
+        base,
+        "scanf" | "fscanf" | "sscanf" | "wscanf" | "fwscanf" | "swscanf"
+    )
+}
+
 /// Either printf- or scanf-family: takes/uses a format string.
 pub fn is_format_function(name: &str) -> bool {
     is_printf_family(name) || is_scanf_family(name)
