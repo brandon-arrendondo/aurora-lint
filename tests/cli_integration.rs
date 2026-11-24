@@ -11456,3 +11456,39 @@ fn a_diff_that_changed_only_a_skipped_file_is_complete() {
     assert!(stdout.contains("no changed C files"), "{stdout}");
     assert_eq!(empty_selection_level(&run).as_deref(), Some("note"));
 }
+
+/// A guard through `abs` and `sqrt` that a header beside the scanned file
+/// `#define`s: what the macros expand to bounds nothing, so the square is
+/// reported; with the header defining neither, the guard is the library's
+/// and the square is not.
+#[test]
+fn a_header_defining_abs_or_sqrt_as_a_macro_withdraws_the_guard() {
+    const GUARDED: &str = "#include <limits.h>\n#include <math.h>\n#include <stdlib.h>\n\
+        #include \"hdr.h\"\n\
+        void printIntLine(int);\n\
+        void f(short data)\n{\n    \
+        if (abs(data) <= (long)sqrt((double)SHRT_MAX)) {\n        \
+        short result = data * data;\n        printIntLine(result);\n    }\n}\n";
+    let scan = |header: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("hdr.h"), header).unwrap();
+        let file = dir.path().join("guard.c");
+        std::fs::write(&file, GUARDED).unwrap();
+        let (_, stdout, stderr) = run_aurora_lint(&[
+            "--rules",
+            "INT31-C",
+            "--data-model",
+            "lp64",
+            "--set",
+            "iec_60559_sqrt=true",
+            file.to_str().unwrap(),
+        ]);
+        (stdout.matches("guard.c:9:").count(), stderr)
+    };
+    let (found, stderr) = scan("#define abs(x) (x)\n");
+    assert_eq!(found, 1, "abs macro; stderr: {stderr}");
+    let (found, stderr) = scan("#define sqrt(x) ((x) * 4.0)\n");
+    assert_eq!(found, 1, "sqrt macro; stderr: {stderr}");
+    let (found, stderr) = scan("#define ABS_OK 1\n");
+    assert_eq!(found, 0, "no macro; stderr: {stderr}");
+}

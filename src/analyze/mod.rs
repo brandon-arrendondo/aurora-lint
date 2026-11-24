@@ -2309,6 +2309,14 @@ pub(crate) fn compute_vra_if_needed(
     // Every function of the file replays calls against the same summaries,
     // so their return-range-only form is built once here.
     let replay = value_range::replay_summaries_of(&summaries);
+    let library = value_range::LibraryCalls::of_file(
+        root_node,
+        source,
+        &summaries,
+        project,
+        data_model,
+        iec_60559_sqrt,
+    );
     let functions = function_definitions_by_start(root_node);
     let mut results = HashMap::new();
     for (&start_byte, func_cfg) in function_cfgs {
@@ -2316,13 +2324,7 @@ pub(crate) fn compute_vra_if_needed(
             results.insert(
                 start_byte,
                 value_range::analyze_value_ranges_with_replay(
-                    func_cfg,
-                    &func_node,
-                    source,
-                    &macros,
-                    &summaries,
-                    &replay,
-                    iec_60559_sqrt,
+                    func_cfg, &func_node, source, &macros, &summaries, &replay, &library,
                 ),
             );
         }

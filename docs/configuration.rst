@@ -109,7 +109,7 @@ and where it came from.
 The floating point of the target is assumed the same way. The default preset
 assumes, for a hosted target, that ``double`` is IEC 60559 binary64 and
 ``sqrt`` is correctly rounded (C11 Annex F), so a guard such as
-``abs((long)x) <= (long)sqrt((double)SHRT_MAX)`` bounds ``x`` to 181. The
+``abs((long)x) <= (long)sqrt((double)SHRT_MAX)`` bounds ``x`` to -181..181. The
 strict and pedantic presets credit it only when it is declared:
 ``iec_60559_sqrt = true`` under ``[environment.overrides]``, ``--set
 iec_60559_sqrt=true``, or ``libc = "glibc"`` or ``"musl"``. Only ``sqrt`` of

@@ -26,16 +26,24 @@ The summary gains a ``Files scanned: N`` line above ``Total violations``, and th
 SARIF run's ``properties`` gain ``aurora-lint/filesScanned``. Neither replaces
 anything.
 
-A guard bounded through ``sqrt``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Guards through ``abs`` and ``sqrt``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-INT31-C, INT08-C and the other rules that read value ranges now credit a
-guard such as ``abs((long)x) <= (long)sqrt((double)SHRT_MAX)``, and no longer
-report the arithmetic it bounds, where the new environment option
-``iec_60559_sqrt`` holds: under the default preset on a hosted target, or
-under strict and pedantic when it is declared, or when ``libc`` is ``glibc``
-or ``musl``. A manifest that sets the option is refused by 0.7.0, which does
-not know it.
+INT31-C, INT08-C, INT32-C and the other rules that read value ranges now credit
+an absolute-value guard, ``abs(x) <= 181`` (or ``labs``, ``llabs``, ``<``),
+under every preset, strict and pedantic included, so a strict job may see
+findings it reported before go away. The guard counts only when ``abs`` is the
+library's (no ``#define`` of it in the scanned files or their headers, and no
+definition or object of that name), and only when ``x`` cannot hold the
+parameter type's most negative value, whose absolute value is undefined: under
+ISO C's widths alone, with no data model declared, that holds only for a
+variable an earlier test has already bounded.
+
+A bound written ``(long)sqrt((double)SHRT_MAX)`` is credited too, where the
+new environment option ``iec_60559_sqrt`` holds: under the default preset on a
+hosted target, or under strict and pedantic when it is declared, or when
+``libc`` is ``glibc`` or ``musl``. A manifest that sets the option is refused
+by 0.7.0, which does not know it.
 
 A second ``close()`` of a descriptor
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
