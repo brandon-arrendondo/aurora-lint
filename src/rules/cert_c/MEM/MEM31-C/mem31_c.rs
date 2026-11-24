@@ -58,18 +58,32 @@ fn peel_casts_and_parens(mut n: Node) -> Node {
     }
 }
 
-/// The name of the object a call argument hands over for release, as the
-/// walk keys it, and whether it is handed over by address: a variable
-/// (`p`), a field or element by value (`d.handles`, `x->handles`,
-/// `paths[i]`, spelled as `process_free_call` spells them), or `&var`. Casts
-/// and parentheses are transparent. `None` for anything else.
-fn released_argument_name(arg: Node, source: &str) -> Option<(String, bool)> {
+/// The object a call argument hands over by value: a variable (`p`), a
+/// field or an element (`d.handles`, `x->handles`, `paths[i]`), through any
+/// casts and parentheses, since `free((void *) p)` releases `p` and nothing
+/// else. `None` for anything else.
+///
+/// Every reader of a released argument goes through this one: the walk's
+/// `free` and freeing-macro readers, the label pre-scan, and
+/// [`released_argument_name`]. When the walk read the argument's own node
+/// kind and the pre-scan peeled casts, a cast free was credited on every
+/// path through a cleanup label and on none that reached it any other way.
+fn released_object(arg: Node) -> Option<Node> {
     let node = peel_casts_and_parens(arg);
-    match node.kind() {
-        "identifier" | "field_expression" | "subscript_expression" => {
-            Some((ast_utils::get_node_text_owned(&node, source), false))
-        }
-        _ => strip_call_argument(arg)
+    matches!(
+        node.kind(),
+        "identifier" | "field_expression" | "subscript_expression"
+    )
+    .then_some(node)
+}
+
+/// The name of the object a call argument hands over for release, as the
+/// walk keys it, and whether it is handed over by address: the
+/// [`released_object`] by value, or `&var`. `None` for anything else.
+fn released_argument_name(arg: Node, source: &str) -> Option<(String, bool)> {
+    match released_object(arg) {
+        Some(node) => Some((ast_utils::get_node_text_owned(&node, source), false)),
+        None => strip_call_argument(arg)
             .filter(|(_, by_address)| *by_address)
             .map(|(target, _)| (ast_utils::get_node_text_owned(&target, source), true)),
     }
@@ -1933,13 +1947,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             .filter(|a| !matches!(a.kind(), "," | "(" | ")"))
                             .collect();
                         for idx in macro_frees {
-                            if let Some(arg) = args.get(idx) {
-                                if matches!(
-                                    arg.kind(),
-                                    "identifier" | "field_expression" | "subscript_expression"
-                                ) {
-                                    freed_vars.insert(ast_utils::get_node_text_owned(arg, source));
-                                }
+                            if let Some(object) =
+                                args.get(idx).and_then(|arg| released_object(*arg))
+                            {
+                                freed_vars.insert(ast_utils::get_node_text_owned(&object, source));
                             }
                         }
                     }
@@ -2008,13 +2019,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             } else {
                                 Some(arg)
                             };
-                            let Some(inner) = inner else { continue };
-                            if matches!(
-                                inner.kind(),
-                                "identifier" | "field_expression" | "subscript_expression"
-                            ) {
-                                let var_name = ast_utils::get_node_text_owned(&inner, source);
-                                freed_vars.insert(var_name);
+                            if let Some(object) = inner.and_then(released_object) {
+                                freed_vars.insert(ast_utils::get_node_text_owned(&object, source));
                             }
                         }
                     }
@@ -4366,14 +4372,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             .collect();
         let free_pos = node.start_position();
         for idx in frees {
-            let Some(arg) = args.get(idx) else { continue };
-            if !matches!(
-                arg.kind(),
-                "identifier" | "field_expression" | "subscript_expression"
-            ) {
+            let Some(object) = args.get(idx).and_then(|arg| released_object(*arg)) else {
                 continue;
-            }
-            let var_name = ast_utils::get_node_text_owned(arg, source);
+            };
+            let var_name = ast_utils::get_node_text_owned(&object, source);
             let nulled = nulls.contains(&idx);
             if nulled {
                 self.maybe_freed.remove(&var_name);
@@ -4580,14 +4582,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             if only.is_some_and(|o| o != k) {
                 continue;
             }
-            // Handle identifiers, field expressions, and subscript expressions
-            let var_name = match arg.kind() {
-                "identifier" | "field_expression" | "subscript_expression" => {
-                    // For field/subscript expressions like "container->data" or "arr[i]"
-                    ast_utils::get_node_text_owned(&arg, source)
-                }
-                _ => continue,
+            let Some(object) = released_object(arg) else {
+                continue;
             };
+            let var_name = ast_utils::get_node_text_owned(&object, source);
 
             if var_name.is_empty() {
                 continue;
