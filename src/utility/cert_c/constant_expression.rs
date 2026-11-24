@@ -445,8 +445,10 @@ impl<'a, 'p> ConstantExpressions<'a, 'p> {
     /// literal has a fixed array type, and a struct member is never variably
     /// modified (C11 6.7.2.1); `sizeof(T)` for a typedef `T` in scope parses
     /// as a name in parentheses; a name of an object is constant when the
-    /// object is declared fixed-size. Any other operand, `*p` or `m[0]`, is
-    /// not shown to be.
+    /// object is declared fixed-size. Any other expression is read by
+    /// [`Self::sizeof_expression`]: `m[0]` and `*p` by what remains of the
+    /// object's declarator once the subscript or indirection takes its
+    /// innermost array or pointer off.
     fn sizeof_operand<'e>(
         &self,
         value: Node<'e>,
@@ -527,6 +529,12 @@ impl<'a, 'p> ConstantExpressions<'a, 'p> {
                 "type_descriptor" => {
                     constness = constness.and(self.fixed_size_type(node, src, anchor, depth + 1));
                 }
+                "subscript_expression" | "pointer_expression"
+                    if self.element_of_object(node, src, anchor, depth).is_some() =>
+                {
+                    let element = self.element_of_object(node, src, anchor, depth);
+                    constness = constness.and(element.unwrap_or(Constness::Unknown));
+                }
                 "field_expression"
                 | "sizeof_expression"
                 | "alignof_expression"
@@ -543,6 +551,72 @@ impl<'a, 'p> ConstantExpressions<'a, 'p> {
             }
         }
         constness
+    }
+
+    /// Whether the type of `m[i]`, `*p` or a nesting of them, over a name
+    /// `m` that resolves to an object here, is of constant size: each
+    /// subscript or `*` takes the innermost array or pointer off the
+    /// object's declarator (`int vla[n]` leaves `int`, `char (*p)[n]` leaves
+    /// `char [n]`), and what remains is read as an object's declarator is.
+    /// `None` when the expression is not that shape, the name is no object,
+    /// or the declarator has fewer arrays and pointers than are taken off.
+    fn element_of_object<'e>(
+        &self,
+        expr: Node<'e>,
+        src: &str,
+        anchor: Node<'a>,
+        depth: usize,
+    ) -> Option<Constness> {
+        let mut levels = 0;
+        let mut node = expr;
+        loop {
+            match node.kind() {
+                "parenthesized_expression" => node = node.named_child(0)?,
+                "subscript_expression" => {
+                    levels += 1;
+                    node = node.child_by_field_name("argument")?;
+                }
+                "pointer_expression" => {
+                    let operator = node.child_by_field_name("operator")?;
+                    if get_node_text(&operator, src) != "*" {
+                        return None;
+                    }
+                    levels += 1;
+                    node = node.child_by_field_name("argument")?;
+                }
+                "identifier" => break,
+                _ => return None,
+            }
+        }
+        let name = get_node_text(&node, src);
+        let (declaration, declarator) = self.object(anchor, name)?;
+        let derived: Vec<Node<'a>> = std::iter::successors(Some(declarator), inner_declarator)
+            .filter(|n| {
+                matches!(
+                    n.kind(),
+                    "array_declarator" | "pointer_declarator" | "function_declarator"
+                )
+            })
+            .collect();
+        if levels > derived.len() {
+            return None;
+        }
+        let (kept, taken) = derived.split_at(derived.len() - levels);
+        if taken.iter().any(|n| n.kind() == "function_declarator") {
+            return None;
+        }
+        let sizes = kept
+            .iter()
+            .filter(|n| n.kind() == "array_declarator")
+            .filter_map(|n| n.child_by_field_name("size"))
+            .map(|size| self.expression(size, self.source, declarator, depth + 1))
+            .fold(Constness::Constant, Constness::and);
+        let specifier = declaration
+            .child_by_field_name("type")
+            .map_or(Constness::Constant, |ty| {
+                self.fixed_size_specifier(ty, self.source, declarator, depth + 1)
+            });
+        Some(sizes.and(specifier))
     }
 
     /// Whether a cast to the type `descriptor` names may stand in an integer
@@ -607,21 +681,31 @@ impl<'a, 'p> ConstantExpressions<'a, 'p> {
             self.cut_short.set(true);
             return Constness::Unknown;
         }
-        if self.file().typedefs.contains_key(name) && self.object(anchor, name).is_none() {
-            if let Some(definition) = typedef_definition_in_scope(&anchor, name, self.source) {
-                let derived = typedef_declarators(&definition).into_iter().any(|d| {
-                    TypedefShape::of(&d, self.source).name.as_deref() == Some(name)
-                        && d.kind() != "type_identifier"
-                });
-                if derived {
-                    return Constness::NotConstant;
-                }
-                return definition
-                    .child_by_field_name("type")
-                    .map_or(Constness::Unknown, |ty| {
-                        self.integer_specifier(ty, self.source, anchor, depth)
-                    });
+        // A word that names a type itself (`__int64`), however it parsed.
+        if let Ok(constness) = integer_type_text(name) {
+            return constness;
+        }
+        // A typedef in a block of this file hides an object of that name
+        // outside it (C11 6.2.1p4), so it is asked first, as `sizeof_name`
+        // asks; one at file scope counts only when no object hides it.
+        let in_scope = self.block_typedef_in_scope(anchor, name).or_else(|| {
+            (self.file().typedefs.contains_key(name) && self.object(anchor, name).is_none())
+                .then(|| typedef_definition_in_scope(&anchor, name, self.source))
+                .flatten()
+        });
+        if let Some(definition) = in_scope {
+            let derived = typedef_declarators(&definition).into_iter().any(|d| {
+                TypedefShape::of(&d, self.source).name.as_deref() == Some(name)
+                    && d.kind() != "type_identifier"
+            });
+            if derived {
+                return Constness::NotConstant;
             }
+            return definition
+                .child_by_field_name("type")
+                .map_or(Constness::Unknown, |ty| {
+                    self.integer_specifier(ty, self.source, anchor, depth)
+                });
         }
         if is_standard_typedef_name(name) && self.object(anchor, name).is_none() {
             return standard_typedef_is_integer(name);
