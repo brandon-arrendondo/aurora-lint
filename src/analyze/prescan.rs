@@ -911,6 +911,7 @@ fn prescan_file_list(
     let mut struct_typedef_aliases: HashMap<String, String> = HashMap::new();
     let mut typedef_types: HashMap<String, String> = HashMap::new();
     let mut typedef_arms: HashMap<String, Vec<String>> = HashMap::new();
+    let mut typedef_arms_by_file: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
     let mut typedef_names_by_file: HashMap<String, HashSet<String>> = HashMap::new();
     let mut any_header_typedef_names: HashSet<String> = HashSet::new();
     let mut function_pointer_typedef_names: HashSet<String> = HashSet::new();
@@ -1249,12 +1250,15 @@ fn prescan_file_list(
         struct_field_shapes.extend(r.struct_field_shapes);
         struct_typedef_aliases.extend(r.struct_typedef_aliases);
         typedef_types.extend(r.typedef_types);
-        for (name, definitions) in r.typedef_arms {
-            let all = typedef_arms.entry(name).or_default();
-            all.extend(definitions);
-            all.sort();
-            all.dedup();
+        if !r.typedef_arms.is_empty() {
+            let file_arms = typedef_arms_by_file
+                .entry(crate::analyze::compile_commands::real_path(Path::new(
+                    &r.display_path,
+                )))
+                .or_default();
+            merge_typedef_arms(file_arms, r.typedef_arms.clone());
         }
+        merge_typedef_arms(&mut typedef_arms, r.typedef_arms);
         // A typedef in a .c file is visible only in that translation unit
         // (and one that #includes the file), which its closure decides.
         if !r.typedef_names.is_empty() {
@@ -1873,6 +1877,7 @@ fn prescan_file_list(
         struct_typedef_aliases: Arc::new(struct_typedef_aliases),
         typedef_types: Arc::new(typedef_types),
         typedef_arms: Arc::new(typedef_arms),
+        typedef_arms_by_file: Arc::new(typedef_arms_by_file),
         function_pointer_typedef_names: Arc::new(function_pointer_typedef_names),
         function_typedef_names: Arc::new(function_typedef_names),
         pointer_typedef_names: Arc::new(pointer_typedef_names),
@@ -8390,6 +8395,42 @@ fn collect_typedef_aliases_rec(
     }
 }
 
+/// The typedef arms of a header an `#include` resolved to, under its key in
+/// [`ProjectContext::typedef_arms_by_file`]. Only a header inside the
+/// project is recorded: the caller skips one outside it, since what an SDK
+/// or C library header defines is what the alias vocabulary models.
+fn record_header_typedef_arms(
+    context: &mut ProjectContext,
+    root: &Node,
+    source: &str,
+    header_key: &str,
+) {
+    let mut arms = HashMap::new();
+    collect_typedef_arms(root, source, &mut arms);
+    if arms.is_empty() {
+        return;
+    }
+    let file_arms = Arc::make_mut(&mut context.typedef_arms_by_file)
+        .entry(header_key.to_string())
+        .or_default();
+    merge_typedef_arms(file_arms, arms);
+}
+
+/// Adds `arms` to one file's typedef arms, each name's kept sorted and
+/// without repeats, so a header read again, or both scanned and resolved,
+/// adds nothing.
+fn merge_typedef_arms(
+    file_arms: &mut HashMap<String, Vec<String>>,
+    arms: impl IntoIterator<Item = (String, Vec<String>)>,
+) {
+    for (name, definitions) in arms {
+        let all = file_arms.entry(name).or_default();
+        all.extend(definitions);
+        all.sort();
+        all.dedup();
+    }
+}
+
 /// Every live definition of each typedef name, one entry per arm: the
 /// aliased type's text for a simple scalar typedef (`typedef long T;`,
 /// `typedef MACRO T;`), and an empty string for any other (a pointer,
@@ -8429,7 +8470,11 @@ fn collect_typedef_arms_rec(
                 });
                 let mut cursor = child.walk();
                 for declarator in child.children_by_field_name("declarator", &mut cursor) {
-                    let Some(name) = find_type_or_ident_in_declarator(&declarator, source) else {
+                    // The name the typedef defines, at the end of its
+                    // declarator chain: in `typedef BOOL (WINAPI *F)(DWORD);`
+                    // the first name in the subtree is a parameter's type.
+                    let Some(name) = declarator_utils::TypedefShape::of(&declarator, source).name
+                    else {
                         continue;
                     };
                     let aliased = match simple {
@@ -9572,6 +9617,13 @@ pub fn resolve_includes_scoped(
                     ),
                 );
 
+                // The environment's headers are what the vendor vocabulary
+                // models: their `#if` arms (an SDK's `#ifdef` pairs, a
+                // libc's `__off_t` chain) are no reading of a name to
+                // outrank it.
+                if !outside_project {
+                    record_header_typedef_arms(context, &root, &hsource, &header_key);
+                }
                 let names = crate::utility::cert_c::declarator_utils::typedef_names_declared(
                     &root, &hsource,
                 );

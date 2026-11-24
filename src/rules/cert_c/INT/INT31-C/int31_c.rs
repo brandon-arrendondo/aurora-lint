@@ -15,7 +15,7 @@ use crate::analyze::cfg::{self, FunctionCfg};
 use crate::analyze::check_macros::MacroDefinition;
 use crate::analyze::const_eval::{self, MacroConstantMap};
 use crate::analyze::context::SummaryLookup;
-use crate::analyze::context::{ProjectContext, ScopedTable};
+use crate::analyze::context::{IncludeClosure, ProjectContext, ScopedTable};
 use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
@@ -65,11 +65,23 @@ pub struct Int31C {
     /// Every `#define` of every name in the project, for a typedef chain
     /// that ends at an object-like macro (`typedef LUA_INTEGER lua_Integer;`).
     macro_definitions: RefCell<Arc<HashMap<String, Vec<MacroDefinition>>>>,
-    /// Every live definition of each typedef name: the project's, and this
-    /// file's own, which wins for a name it defines. A name's signedness is
-    /// what all of its definitions agree on.
-    project_typedef_arms: RefCell<Arc<HashMap<String, Vec<String>>>>,
+    /// Every live definition of each typedef name: this file's own, which
+    /// win for a name it defines, the project's (every scanned file's), and
+    /// per project file, of which only the files this translation unit can
+    /// include count against the vendor vocabulary. A name's signedness is
+    /// what all of its definitions read agree on.
     file_typedef_arms: RefCell<HashMap<String, Vec<String>>>,
+    project_typedef_arms: RefCell<Arc<HashMap<String, Vec<String>>>>,
+    typedef_arms_by_file: RefCell<Arc<TypedefArmsByFile>>,
+    /// Both layers of the include graph (`ProjectContext::include_edges` and
+    /// `include_edges_beyond_search_path`), the scanned file's path, its
+    /// include closure, walked once per file, and per vocabulary name the
+    /// project typedefs in reach.
+    include_edges: RefCell<Arc<HashMap<String, Vec<String>>>>,
+    include_edges_beyond: RefCell<Arc<HashMap<String, Vec<String>>>>,
+    file_path: RefCell<Option<std::path::PathBuf>>,
+    include_closure: RefCell<Option<Option<IncludeClosure>>>,
+    vocabulary_typedefs: RefCell<HashMap<String, Option<Vec<String>>>>,
     /// The integer data model the settings credit: how wide each side of a
     /// conversion is, or may be.
     data_model: Cell<IntFacts>,
@@ -89,8 +101,14 @@ impl Int31C {
             param_names_cache: RefCell::new(HashMap::new()),
             typedef_types: RefCell::new(Arc::new(HashMap::new())),
             macro_definitions: RefCell::default(),
-            project_typedef_arms: RefCell::default(),
             file_typedef_arms: RefCell::default(),
+            project_typedef_arms: RefCell::default(),
+            typedef_arms_by_file: RefCell::default(),
+            include_edges: RefCell::default(),
+            include_edges_beyond: RefCell::default(),
+            file_path: RefCell::default(),
+            include_closure: RefCell::default(),
+            vocabulary_typedefs: RefCell::default(),
             data_model: Cell::new(IntFacts::default()),
         }
     }
@@ -654,6 +672,9 @@ fn may_be_narrower(to: IntWidth, from: IntWidth) -> bool {
 /// See [`get_type_width`]'s floating-type branch.
 const FLOAT_AS_INTEGER_WIDTH: u32 = 65;
 
+/// Each file's typedef arms: file (real path) -> name -> its definitions.
+type TypedefArmsByFile = HashMap<String, HashMap<String, Vec<String>>>;
+
 /// Signed integer aliases, matched by their whole name. A vendor name
 /// among them (`LONG`) answers only where no typedef in reach defines it
 /// ([`Int31C::integer_signedness`]).
@@ -673,6 +694,8 @@ const SIGNED_ALIASES: &[&str] = &[
     "intptr_t",
     "intmax_t",
     "ssize_t",
+    // POSIX makes it a signed integer type (`<sys/types.h>`).
+    "off_t",
     "ptrdiff_t",
     "__int8",
     "__int16",
@@ -768,9 +791,21 @@ fn spelled_signedness(type_str: &str) -> Option<bool> {
     None
 }
 
-/// Whether a type name is one a program may not define for itself: a
-/// standard library or POSIX typedef name, or an identifier C reserves to
-/// the implementation (`__int64`, `_Float16`).
+/// Whether a type name is one the alias vocabulary knows (a Win32 SDK or
+/// POSIX typedef name such as `DWORD`, `LONG` or `off_t`) and a project may
+/// define otherwise: not a reserved one, which keeps its standard sign.
+fn is_vendor_vocabulary_name(name: &str) -> bool {
+    (SIGNED_ALIASES.contains(&name)
+        || UNSIGNED_ALIASES.contains(&name)
+        || ast_utils::is_win32_unsigned_typedef(name))
+        && !is_reserved_type_name(name)
+}
+
+/// Whether a type name keeps the sign the standard gives it whatever a
+/// typedef in reach says: a standard library or POSIX typedef name (C11
+/// 7.1.3 reserves those only where their header is included, but a header
+/// usually spells them through builtins no scan reads), or an identifier C
+/// reserves to the implementation (`__int64`, `_Float16`).
 fn is_reserved_type_name(name: &str) -> bool {
     let mut chars = name.chars();
     let reserved = chars.next() == Some('_')
@@ -860,8 +895,17 @@ impl CertRule for Int31C {
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
         *self.macro_definitions.borrow_mut() = context.macro_definitions.clone();
         *self.project_typedef_arms.borrow_mut() = context.typedef_arms.clone();
+        *self.typedef_arms_by_file.borrow_mut() = context.typedef_arms_by_file.clone();
+        *self.include_edges.borrow_mut() = context.include_edges.clone();
+        *self.include_edges_beyond.borrow_mut() = context.include_edges_beyond_search_path.clone();
 
         *self.callers.borrow_mut() = context.callers.clone();
+    }
+
+    fn set_file_path(&self, path: &std::path::Path) {
+        *self.file_path.borrow_mut() = Some(path.to_path_buf());
+        *self.include_closure.borrow_mut() = None;
+        self.vocabulary_typedefs.borrow_mut().clear();
     }
 
     fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
@@ -892,6 +936,8 @@ impl CertRule for Int31C {
         let mut file_arms = HashMap::new();
         crate::analyze::prescan::collect_typedef_arms(node, source, &mut file_arms);
         *self.file_typedef_arms.borrow_mut() = file_arms;
+        // The in-reach memo reads the file's arms, so it is reset with them.
+        self.vocabulary_typedefs.borrow_mut().clear();
         self.check_function(node, source, &mut violations);
         violations
     }
@@ -2354,23 +2400,18 @@ impl Int31C {
     ) -> Option<bool> {
         let core = type_core(type_str);
         let single_name = !core.is_empty() && !core.contains(['*', '[', ' ']);
-        // The file's own typedef of a name, else the project's, says what
-        // it is before any vendor vocabulary does: `typedef unsigned LONG;`
-        // is unsigned whatever `<windows.h>` makes `LONG`. A name the
-        // standard or the implementation reserves (`size_t`, `int32_t`,
-        // `__int64`) keeps its fixed meaning, since a program may not
-        // redefine it and a library header spells it through builtins no
-        // scan reads (`typedef __SIZE_TYPE__ size_t;`).
-        let arms = if single_name && !is_reserved_type_name(&core) {
-            self.file_typedef_arms
-                .borrow()
-                .get(&core)
-                .cloned()
-                .or_else(|| self.project_typedef_arms.borrow().get(&core).cloned())
+        // A project typedef in reach says what a vendor vocabulary name is
+        // before the vocabulary does: `typedef unsigned LONG;` is unsigned
+        // whatever `<windows.h>` makes `LONG`. A standard or implementation
+        // name (`size_t`, `int32_t`, `__int64`) keeps the sign the standard
+        // gives it, which a library header usually spells through builtins
+        // no scan reads (`typedef __SIZE_TYPE__ size_t;`).
+        let project_arms = if single_name && is_vendor_vocabulary_name(&core) {
+            self.project_typedefs_in_reach(&core)
         } else {
             None
         };
-        if arms.is_none() {
+        if project_arms.is_none() {
             if let Some(signed) = spelled_signedness(type_str) {
                 return Some(signed);
             }
@@ -2381,7 +2422,7 @@ impl Int31C {
         if let Some(&answer) = known.get(&core) {
             return answer;
         }
-        let arms = arms.or_else(|| {
+        let arms = project_arms.or_else(|| {
             self.file_typedef_arms
                 .borrow()
                 .get(&core)
@@ -2426,6 +2467,64 @@ impl Int31C {
         let answer = if answer { agreed } else { None };
         known.insert(core, answer);
         answer
+    }
+
+    /// The project's definitions of the vocabulary name `name` that this
+    /// translation unit can see, memoized per file: its own, else those of
+    /// the files its include closure holds, else those of the files it may
+    /// include (an `#include` resolved to no file, matched by its spelling's
+    /// suffix, or a computed one that may name any header). One unit cannot
+    /// define a typedef two ways (C11 6.7p3), so a definition it surely
+    /// includes is the one in force. `None` when the closure is unknown and
+    /// the file defines no such name, or nothing in reach does: the
+    /// vocabulary answers. The environment's headers are not read here
+    /// (ADR-0006).
+    fn project_typedefs_in_reach(&self, name: &str) -> Option<Vec<String>> {
+        if let Some(hit) = self.vocabulary_typedefs.borrow().get(name) {
+            return hit.clone();
+        }
+        let found = self.find_project_typedefs_in_reach(name);
+        self.vocabulary_typedefs
+            .borrow_mut()
+            .insert(name.to_string(), found.clone());
+        found
+    }
+
+    fn find_project_typedefs_in_reach(&self, name: &str) -> Option<Vec<String>> {
+        if let Some(own) = self.file_typedef_arms.borrow().get(name) {
+            return Some(own.clone());
+        }
+        let closure = self.include_closure()?;
+        let by_file = Arc::clone(&self.typedef_arms_by_file.borrow());
+        let collect = |admit: &dyn Fn(&str) -> bool| {
+            let mut arms: Vec<String> = by_file
+                .iter()
+                .filter(|(file, _)| admit(file))
+                .filter_map(|(_, m)| m.get(name))
+                .flatten()
+                .cloned()
+                .collect();
+            arms.sort();
+            arms.dedup();
+            (!arms.is_empty()).then_some(arms)
+        };
+        collect(&|file| closure.files.contains(file))
+            .or_else(|| collect(&|file| closure.may_include(file)))
+    }
+
+    /// This file's include closure, walked once per file.
+    fn include_closure(&self) -> Option<IncludeClosure> {
+        if self.include_closure.borrow().is_none() {
+            let closure = self.file_path.borrow().as_deref().and_then(|path| {
+                let edges = self.include_edges.borrow();
+                let beyond = self.include_edges_beyond.borrow();
+                let layers: [&HashMap<String, Vec<String>>; 2] = [&edges, &beyond];
+                IncludeClosure::of_layers(&layers, path)
+                    .or_else(|| IncludeClosure::of_forced_includes(&layers))
+            });
+            *self.include_closure.borrow_mut() = Some(closure);
+        }
+        self.include_closure.borrow().clone().flatten()
     }
 
     fn is_narrow_type(&self, type_str: &str) -> bool {

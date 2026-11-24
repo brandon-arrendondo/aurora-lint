@@ -11566,3 +11566,139 @@ fn arr30_count_macro_reads_the_definitions_the_includes_reach() {
     ]);
     assert_eq!(keys, vec!["bytes.c:12".to_string()]);
 }
+
+/// Scan the tree `files` (paths under a fresh directory's `proj/`, and
+/// under `env/`, outside the scan, for headers the environment supplies)
+/// with INT31-C alone and `extra` arguments; the sorted "file:line" keys of
+/// its findings.
+fn int31_tree_scan(files: &[(&str, &str)], extra: &[&str]) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, text) in files {
+        let path = dir.path().join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let project = dir.path().join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let env = dir.path().join("env");
+    let manifest = dir.path().join("manifest.toml");
+    std::fs::write(
+        &manifest,
+        "[metadata]\nname = \"t\"\nversion = \"1.0.0\"\ndescription = \"t\"\n\
+         cert_version = \"2016\"\n\n[rules.cert_c.INT31-C]\nenabled = true\n",
+    )
+    .unwrap();
+    let out = dir.path().join("out.json");
+    let mut args = vec![
+        project.to_str().unwrap().to_string(),
+        "-m".into(),
+        manifest.to_str().unwrap().to_string(),
+        "-e".into(),
+        out.to_str().unwrap().to_string(),
+    ];
+    for arg in extra {
+        args.push(arg.replace("{env}", env.to_str().unwrap()));
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (code, _, stderr) = run_aurora_lint(&args);
+    assert!(code == 0 || code == 1, "stderr: {stderr}");
+    let findings: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let mut keys: Vec<String> = findings
+        .iter()
+        .map(|v| {
+            let file = v["file"].as_str().unwrap().replace('\\', "/");
+            let name = file.rsplit('/').next().unwrap().to_string();
+            format!("{name}:{}", v["line"])
+        })
+        .collect();
+    keys.sort();
+    keys
+}
+
+/// A project's typedef of a vendor type name decides its sign only in a
+/// unit that can include it: a file elsewhere in the tree typing `DWORD`
+/// as `int` leaves the SDK's unsigned reading, and the header a unit does
+/// include answers before it, even past a computed `#include`.
+#[test]
+fn int31_a_vendor_type_name_reads_the_typedefs_the_unit_includes() {
+    let cast = "int f(DWORD v) { return (int)v; }\n";
+    let keys = int31_tree_scan(
+        &[
+            ("proj/other.c", "typedef int DWORD;\n"),
+            ("proj/unsigned.h", "typedef unsigned int DWORD;\n"),
+            ("proj/signed.h", "typedef int DWORD;\n"),
+            ("proj/cfg.h", "#include PLATFORM_H\n"),
+            ("proj/sdk.c", &format!("#include <windows.h>\n{cast}")),
+            ("proj/mine.c", &format!("#include \"unsigned.h\"\n{cast}")),
+            ("proj/int.c", &format!("#include \"signed.h\"\n{cast}")),
+            (
+                "proj/computed.c",
+                &format!("#include \"cfg.h\"\n#include \"unsigned.h\"\n{cast}"),
+            ),
+        ],
+        &[],
+    );
+    assert_eq!(keys, ["computed.c:3", "mine.c:2", "sdk.c:2"]);
+}
+
+/// A name the vocabulary does not know keeps the project's typedefs where
+/// the include graph cannot place them: an include resolved to no file
+/// without `-I`, and a file with no include at all.
+#[test]
+fn int31_a_project_typedef_counts_where_no_include_resolves_to_it() {
+    let keys = int31_tree_scan(
+        &[
+            ("proj/inc/t.h", "typedef unsigned int u32_t;\n"),
+            (
+                "proj/src/use.c",
+                "#include \"t.h\"\nint f(u32_t v) { return (int)v; }\n",
+            ),
+            ("proj/src/bare.c", "int g(u32_t v) { return (int)v; }\n"),
+        ],
+        &[],
+    );
+    assert_eq!(keys, ["bare.c:1", "use.c:2"]);
+}
+
+/// The environment's headers are what the vendor vocabulary models: an
+/// SDK's `#ifdef` pair typing `DWORD` and `ULONG` through each other, its
+/// `double ULONGLONG` arm, and a C library's `off_t` through an internal
+/// macro leave the vocabulary's reading.
+#[test]
+fn int31_environment_headers_do_not_outrank_the_vocabulary() {
+    let keys = int31_tree_scan(
+        &[
+            (
+                "env/windows.h",
+                "#include \"minwindef.h\"\n#include \"winsmcrd.h\"\n#include \"winnt.h\"\n",
+            ),
+            (
+                "env/minwindef.h",
+                "typedef unsigned long DWORD;\ntypedef unsigned long ULONG;\n",
+            ),
+            (
+                "env/winsmcrd.h",
+                "#ifdef _WINSCARD_H_\ntypedef DWORD ULONG;\n#else\ntypedef ULONG DWORD;\n#endif\n",
+            ),
+            (
+                "env/winnt.h",
+                "#if !defined(MIDL_PASS)\ntypedef unsigned __int64 ULONGLONG;\n\
+                 #else\ntypedef double ULONGLONG;\n#endif\n",
+            ),
+            (
+                "env/sys/types.h",
+                "typedef __OFF_T_TYPE __off_t;\ntypedef __off_t off_t;\n",
+            ),
+            (
+                "proj/use.c",
+                "#include <windows.h>\n#include <sys/types.h>\n\
+                 int f(DWORD v) { return (int)v; }\n\
+                 int g(ULONGLONG v) { return (int)v; }\n\
+                 unsigned h(off_t v) { return (unsigned)v; }\n",
+            ),
+        ],
+        &["-I", "{env}"],
+    );
+    assert_eq!(keys, ["use.c:3", "use.c:4", "use.c:5"]);
+}
