@@ -1000,6 +1000,7 @@ fn prescan_file_list(
     // are judged by its own names, its closure's uses of them. Answered one
     // file at a time inside the merge, from an index by name.
     let mut closure_index = ClosureIndex::new(&file_results, &ambiguous_statics);
+    let included_c_paths = std::mem::take(&mut closure_index.included_c_paths);
     let mut call_renames_by_file: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
 
     for (file_index, mut r) in file_results.into_iter().enumerate() {
@@ -1908,6 +1909,7 @@ fn prescan_file_list(
         include_edges: Arc::new(HashMap::new()),
         outside_configuration: None,
         include_edges_beyond_search_path: Arc::new(HashMap::new()),
+        included_c_paths: Arc::new(included_c_paths),
         unused_attribute_macros: Arc::new(unused_attribute_macros),
         attribute_noreturn_macros: Arc::new(attribute_noreturn_macros),
         attribute_noreturn_functions: Arc::new(attribute_noreturn_functions),
@@ -2542,6 +2544,9 @@ struct ClosureIndex {
     judged_statics_valued: HashMap<String, Vec<usize>>,
     /// The statics judged by their own file's names.
     judged_statics: HashSet<String>,
+    /// The real path of every scanned `.c` file another scanned file's live
+    /// `#include` reaches ([`ProjectContext::included_c_paths`]).
+    included_c_paths: HashSet<String>,
     /// One [`ClosureMemo`] per distinct set of relevant closure files, by
     /// [`closure_key`]; sets that share a key, by a coincidence a crafted
     /// tree can force, each keep their own.
@@ -2601,6 +2606,13 @@ impl ClosureIndex {
             .collect();
         let includes: Vec<&[String]> = results.iter().map(|r| r.live_includes.as_slice()).collect();
         let edges = scanned_include_edges(&files, &includes);
+        let included_c_paths: HashSet<String> = edges
+            .iter()
+            .flatten()
+            .filter_map(|&k| files[k])
+            .filter(|p| crate::files::is_c_translation_unit(p))
+            .map(crate::analyze::compile_commands::real_path)
+            .collect();
         let mut renames: HashMap<String, Vec<(usize, String)>> = HashMap::new();
         let mut undefs: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, r) in results.iter().enumerate() {
@@ -2661,6 +2673,7 @@ impl ClosureIndex {
             relevant,
             functions,
             judged_statics_valued,
+            included_c_paths,
         }
     }
 
@@ -14080,6 +14093,36 @@ void caller(char *other) {
         assert!(!good.callsite_param_taint_observed.contains(&0));
         assert!(!good.callsite_param_tainted.contains(&0));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `.c` file another file `#include`s is recorded by its path, so a
+    /// file of the same name in another directory, which nothing includes,
+    /// is not taken for it.
+    #[test]
+    fn an_included_c_file_is_recorded_by_its_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("impl.c"), "static int helper(void) { return 1; }\n").unwrap();
+        std::fs::write(
+            a.join("main.c"),
+            "#include \"impl.c\"\nint run(void) { return helper(); }\n",
+        )
+        .unwrap();
+        std::fs::write(b.join("impl.c"), "static int other(void) { return 2; }\n").unwrap();
+        let ctx = prescan_directories(
+            &[tmp.path().to_string_lossy().to_string()],
+            None,
+            &|_, _| false,
+            Default::default(),
+        )
+        .unwrap();
+        let real = |p: &Path| crate::analyze::compile_commands::real_path(p);
+        assert!(ctx.included_c_paths.contains(&real(&a.join("impl.c"))));
+        assert!(!ctx.included_c_paths.contains(&real(&b.join("impl.c"))));
+        assert!(!ctx.included_c_paths.contains(&real(&a.join("main.c"))));
     }
 
     fn prescan_one(dir_name: &str, code: &str) -> ProjectContext {

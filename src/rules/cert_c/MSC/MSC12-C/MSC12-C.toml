@@ -8,8 +8,9 @@ description = """
 The presence of code that has no effect or is never executed may indicate a logic
 error and may result in unexpected behavior. Such code includes statements whose
 value is discarded (e.g., a == b; used as a statement), redundant subexpressions
-in logical operators, duplicate conditions in if/else-if chains, and unconditional
-jump statements at the end of loops that would continue anyway.
+in logical operators, duplicate conditions in if/else-if chains, unconditional
+jump statements at the end of loops that would continue anyway, and static
+functions that nothing calls and whose address never escapes.
 """
 severity = "Low"
 likelihood = "Unlikely"

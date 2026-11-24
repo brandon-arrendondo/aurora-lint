@@ -1121,6 +1121,13 @@ pub struct ProjectContext {
     /// generated header if any of them does.
     #[serde(default)]
     pub include_edges_beyond_search_path: Arc<HashMap<String, Vec<String>>>,
+    /// The real paths (`compile_commands::real_path`) of the scanned `.c`
+    /// files another scanned file's live `#include` reaches, resolved among
+    /// the scanned files as the prescan's include closures are: a `static`
+    /// such a file defines is visible to each includer, so its callers and
+    /// its address are not its own file's alone.
+    #[serde(default)]
+    pub included_c_paths: Arc<HashSet<String>>,
     /// What `#include` resolution could and could not see
     /// ([`IncludeReport`]); empty when no search path was given.
     #[serde(default)]
@@ -1763,7 +1770,7 @@ pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
 /// to a serialized field of [`ProjectContext`] (or of a type it holds), or to
 /// what such a field means: the cache header carries it, so an old cache is
 /// refused instead of misread.
-const PRESCAN_CACHE_FORMAT: u32 = 86;
+const PRESCAN_CACHE_FORMAT: u32 = 87;
 
 /// The header a prescan cache file starts with: a magic, the layout version
 /// and the aurora-lint version that wrote it.
