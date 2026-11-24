@@ -170,30 +170,46 @@ pub(super) fn check(
             || text_occurrences(&blanked, name) > uses.occurrences.get(name).copied().unwrap_or(0)
             || own_defines.iter().any(|d| d.pastes(name))
             || unknown_macro_arguments.iter().any(|a| pasted_from(name, a))
-            || definition_is_retained(&s.definition, &raw, &blanked, &own_defines, tables)
-            || uses.prototypes.get(name).is_some_and(|ps| {
-                ps.iter()
-                    .any(|p| prototype_is_retained(p, &raw, &blanked, &own_defines, tables))
-            })
         {
             live.insert(name);
         }
     }
-    // What the include closure sees, read only when something is left.
+    // What the include closure sees, read only when something is left: its
+    // text, and its `#define`s beside the file's own, by which a keep-alive
+    // macro or a pasting macro a header defines is read for what it expands
+    // to rather than for its name.
     if statics
         .iter()
         .any(|s| s.judged && s.name.as_deref().is_some_and(|n| !live.contains(n)))
     {
-        match Closure::read(&real, &raw, &dead, tables) {
-            None => return,
-            Some(closure) => {
-                for s in &statics {
-                    if let Some(name) = s.name.as_deref() {
-                        if closure.names(name) {
-                            live.insert(name);
-                        }
-                    }
-                }
+        let Some(closure) = Closure::read(&real, &raw, &dead, tables) else {
+            return;
+        };
+        let all_defines: Vec<&Define> = own_defines
+            .iter()
+            .chain(closure.texts.iter().flat_map(|(_, d)| d.iter()))
+            .collect();
+        let pasting = pasting_macros(&all_defines);
+        let mut fragments = pasting_arguments(&blanked, &pasting);
+        for (text, _) in &closure.texts {
+            fragments.extend(pasting_arguments(text, &pasting));
+        }
+        for s in statics.iter().filter(|s| s.judged) {
+            let Some(name) = s.name.as_deref() else {
+                continue;
+            };
+            if live.contains(name) {
+                continue;
+            }
+            if closure.names(name)
+                || fragments.iter().any(|a| pasted_from(name, a))
+                || definition_is_retained(&s.definition, &raw, &blanked, &all_defines, tables)
+                || uses.prototypes.get(name).is_some_and(|ps| {
+                    ps.iter()
+                        .any(|p| prototype_is_retained(p, &raw, &blanked, &all_defines, tables))
+                })
+            {
+                live.insert(name);
             }
         }
     }
@@ -421,7 +437,7 @@ impl<'n, 't> FileUses<'n, 't> {
             if let Some(declaration) = declared_function(&node)
                 .filter(|d| d.kind() == "function_definition" || !in_block(d))
             {
-                if declaration.kind() == "declaration" {
+                if declaration.kind() != "function_definition" {
                     uses.prototypes.entry(name).or_default().push(declaration);
                 }
                 continue;
@@ -497,7 +513,10 @@ fn enclosing_function(node: &Node, source: &str) -> Enclosing {
 }
 
 /// The declaration or definition `ident` names a function in, when `ident`
-/// is the name a function declarator declares there.
+/// is the name a function declarator declares there. A file-scope `ERROR`
+/// that starts as a declaration does is a prototype the parse could not
+/// finish (`static int f(int v) MACRO;`, a macro it cannot expand after the
+/// parameter list).
 fn declared_function<'a>(ident: &Node<'a>) -> Option<Node<'a>> {
     let mut child = *ident;
     let mut parent = child.parent()?;
@@ -517,6 +536,7 @@ fn declared_function<'a>(ident: &Node<'a>) -> Option<Node<'a>> {
     loop {
         match n.kind() {
             "declaration" | "function_definition" => return Some(n),
+            "ERROR" if starts_as_file_scope_declaration(&n) => return Some(n),
             "pointer_declarator"
             | "function_declarator"
             | "init_declarator"
@@ -525,6 +545,26 @@ fn declared_function<'a>(ident: &Node<'a>) -> Option<Node<'a>> {
             _ => return None,
         }
     }
+}
+
+/// Whether `node` is a file-scope node whose first child is a storage class
+/// or a type, as a declaration's is.
+fn starts_as_file_scope_declaration(node: &Node) -> bool {
+    node.parent()
+        .is_some_and(|p| p.kind() == "translation_unit")
+        && node.child(0).is_some_and(|c| {
+            matches!(
+                c.kind(),
+                "storage_class_specifier"
+                    | "primitive_type"
+                    | "type_identifier"
+                    | "sized_type_specifier"
+                    | "struct_specifier"
+                    | "union_specifier"
+                    | "enum_specifier"
+                    | "type_qualifier"
+            )
+        })
 }
 
 /// Whether `node` lies inside a block.
@@ -689,14 +729,14 @@ fn attributes_keep(declaration: &Node, source: &str) -> bool {
 
 /// Whether a keep-alive attribute applies to the definition: written out,
 /// or through a macro its head names (`#define CONSTRUCTOR
-/// __attribute__((constructor))`), read from this file's `#define`s, or,
-/// for a macro nothing the scan read defines, from a name that spells one
-/// (`__attribute_used__`, `ATTRIBUTE_USED`).
+/// __attribute__((constructor))`), read from the `#define`s of the file and
+/// its include closure, or, for a macro none of them defines, from a name
+/// that spells one (`__attribute_used__`, `ATTRIBUTE_USED`).
 fn definition_is_retained(
     definition: &Node,
     raw: &str,
     blanked: &str,
-    own_defines: &[Define],
+    defines: &[&Define],
     tables: &ProjectTables,
 ) -> bool {
     if attributes_keep(definition, raw) {
@@ -704,8 +744,21 @@ fn definition_is_retained(
     }
     // The head as written, from the end of the item before the definition to
     // its name: the parse repair blanks a macro it cannot expand in front of a
-    // storage class, which leaves it outside the definition's node.
-    let start = definition.prev_sibling().map_or(0, |p| p.end_byte());
+    // storage class, which leaves it outside the definition's node. An item
+    // before it that does not end in `;` or `}` is part of the head: a
+    // function-like macro there (`MY_CTOR_PRIO(101) static void f(void)`)
+    // parses as an expression statement whose `;` is missing.
+    let start = definition.prev_sibling().map_or(0, |p| {
+        let text = raw
+            .get(p.start_byte()..p.end_byte())
+            .unwrap_or("")
+            .trim_end();
+        if text.ends_with(';') || text.ends_with('}') || p.kind().starts_with("preproc") {
+            p.end_byte()
+        } else {
+            p.start_byte()
+        }
+    });
     let end = defined_name(definition, raw)
         .map(|n| n.start_byte())
         .or_else(|| {
@@ -719,7 +772,7 @@ fn definition_is_retained(
     };
     identifiers(head)
         .into_iter()
-        .any(|word| KEEP_WORDS.contains(&word) || macro_keeps(word, own_defines, tables, 0))
+        .any(|word| KEEP_WORDS.contains(&word) || macro_keeps(word, defines, tables, 0))
 }
 
 /// Whether a keep-alive attribute applies to a prototype: written out, or
@@ -729,7 +782,7 @@ fn prototype_is_retained(
     prototype: &Node,
     raw: &str,
     blanked: &str,
-    own_defines: &[Define],
+    defines: &[&Define],
     tables: &ProjectTables,
 ) -> bool {
     if attributes_keep(prototype, raw) {
@@ -751,11 +804,16 @@ fn prototype_is_retained(
     }
     identifiers(&text)
         .into_iter()
-        .any(|word| KEEP_WORDS.contains(&word) || macro_keeps(word, own_defines, tables, 0))
+        .any(|word| KEEP_WORDS.contains(&word) || macro_keeps(word, defines, tables, 0))
 }
 
-fn macro_keeps(name: &str, own_defines: &[Define], tables: &ProjectTables, depth: usize) -> bool {
-    let bodies: Vec<&Define> = own_defines.iter().filter(|d| d.name == name).collect();
+/// Whether the macro `name` expands to a keep-alive attribute, by the bodies
+/// `defines` give it, followed through the macros a body names. A macro with
+/// no body there (its header unread) is judged by its name; one with a body
+/// by that body only, so `#define PG_USED_FOR_ASSERTS_ONLY
+/// __attribute__((unused))` keeps nothing.
+fn macro_keeps(name: &str, defines: &[&Define], tables: &ProjectTables, depth: usize) -> bool {
+    let bodies: Vec<&&Define> = defines.iter().filter(|d| d.name == name).collect();
     if bodies.is_empty() {
         if tables.macro_names.contains(name) {
             // Defined in another file: read its spelling as below.
@@ -774,7 +832,7 @@ fn macro_keeps(name: &str, own_defines: &[Define], tables: &ProjectTables, depth
             || (depth < 4
                 && identifiers(&d.body)
                     .into_iter()
-                    .any(|i| i != name && macro_keeps(i, own_defines, tables, depth + 1)))
+                    .any(|i| i != name && macro_keeps(i, defines, tables, depth + 1)))
     })
 }
 
@@ -978,31 +1036,139 @@ fn unknown_macro_arguments<'b>(
         {
             continue;
         }
-        // The arguments at depth one, up to the matching `)`.
-        let mut depth = 0usize;
-        let mut k = j;
-        let mut arg_start = j + 1;
-        while k < bytes.len() {
-            match bytes[k] {
-                b'(' => depth += 1,
-                b')' | b',' if depth == 1 => {
-                    let arg = blanked[arg_start..k].trim();
-                    if !arg.is_empty()
-                        && arg.bytes().all(ident)
-                        && !arg.as_bytes()[0].is_ascii_digit()
-                        && (depth_at[start] == 0 || !declared.contains(arg))
-                    {
-                        out.push(arg);
-                    }
-                    arg_start = k + 1;
-                    if bytes[k] == b')' {
-                        break;
-                    }
+        out.extend(
+            bare_arguments(blanked, j)
+                .into_iter()
+                .filter(|arg| depth_at[start] == 0 || !declared.contains(arg)),
+        );
+    }
+    out
+}
+
+/// The bare-identifier arguments of the invocation whose `(` is at byte
+/// `open` of `text`, at depth one, up to the matching `)`.
+fn bare_arguments(text: &str, open: usize) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut k = open;
+    let mut arg_start = open + 1;
+    while k < bytes.len() {
+        match bytes[k] {
+            b'(' => depth += 1,
+            b')' | b',' if depth == 1 => {
+                let arg = text[arg_start..k].trim();
+                if !arg.is_empty() && arg.bytes().all(ident) && !arg.as_bytes()[0].is_ascii_digit()
+                {
+                    out.push(arg);
                 }
-                b')' => depth -= 1,
-                _ => {}
+                arg_start = k + 1;
+                if bytes[k] == b')' {
+                    break;
+                }
             }
-            k += 1;
+            b')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        k += 1;
+    }
+    out
+}
+
+/// The function-like macros of `defines` that may paste an argument into a
+/// name: a body that pastes a parameter with `##` (`#define CAT(a, b)
+/// a##b`), or that hands a parameter to such a macro (`#define HANDLER(n)
+/// CAT(n, _handler)`), to a fixed point.
+fn pasting_macros<'d>(defines: &[&'d Define]) -> HashSet<&'d str> {
+    let mut out: HashSet<&str> = HashSet::new();
+    loop {
+        let before = out.len();
+        for d in defines.iter().filter(|d| !d.params.is_empty()) {
+            if out.contains(d.name.as_str()) {
+                continue;
+            }
+            let words = identifiers(&d.body);
+            let has_param = words.iter().any(|w| d.params.iter().any(|p| p == w));
+            if has_param && (pastes_a_parameter(d) || words.iter().any(|w| out.contains(w))) {
+                out.insert(d.name.as_str());
+            }
+        }
+        if out.len() == before {
+            return out;
+        }
+    }
+}
+
+/// Whether a `##` in the body has a parameter for an operand.
+fn pastes_a_parameter(define: &Define) -> bool {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    define.body.match_indices("##").any(|(at, _)| {
+        let left = define.body[..at].trim_end();
+        let left_word: String = left
+            .chars()
+            .rev()
+            .take_while(|c| ident(*c))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        let right_word: String = define.body[at + 2..]
+            .trim_start()
+            .chars()
+            .take_while(|c| ident(*c))
+            .collect();
+        define
+            .params
+            .iter()
+            .any(|p| *p == left_word || *p == right_word)
+    })
+}
+
+/// The bare-identifier arguments, in `text`, of every invocation of a
+/// macro in `pasting`: fragments its expansion may paste into a name.
+fn pasting_arguments<'t>(text: &'t str, pasting: &HashSet<&str>) -> Vec<&'t str> {
+    if pasting.is_empty() {
+        return Vec::new();
+    }
+    // A `#define`'s own parameter list, and the invocations in a body, are
+    // no invocations: only an expansion is.
+    let bytes = text.as_bytes();
+    let mut in_define = vec![false; bytes.len()];
+    let mut offset = 0;
+    let mut continued = false;
+    for line in text.split_inclusive('\n') {
+        let directive = line
+            .trim_start()
+            .strip_prefix('#')
+            .is_some_and(|r| r.trim_start().starts_with("define"));
+        if continued || directive {
+            in_define[offset..offset + line.len()].fill(true);
+        }
+        continued = (continued || directive) && line.trim_end().ends_with('\\');
+        offset += line.len();
+    }
+    let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') || (i > 0 && ident(bytes[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && ident(bytes[i]) {
+            i += 1;
+        }
+        if in_define[start] || !pasting.contains(&text[start..i]) {
+            continue;
+        }
+        let mut j = i;
+        while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+            j += 1;
+        }
+        if j < bytes.len() && bytes[j] == b'(' {
+            out.extend(bare_arguments(text, j));
         }
     }
     out

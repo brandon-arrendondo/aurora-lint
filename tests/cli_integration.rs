@@ -11874,3 +11874,29 @@ fn msc12_a_name_outside_the_translation_unit_does_not_use_a_static() {
         assert!(found[0].1.contains(name), "{dir}: {found:?}");
     }
 }
+
+/// A keep-alive macro a header defines is read for what it expands to, not
+/// for its name: `constructor` and `used` keep a function through it, written
+/// before the definition or as a function-like macro, and a macro that
+/// expands to `unused` keeps nothing, whatever its name spells.
+#[test]
+fn msc12_a_keep_alive_macro_from_a_header_is_read_by_its_body() {
+    let found = msc12_uncalled(&[fixtures()
+        .join("msc12_uncalled_keep_macro_in_header")
+        .to_str()
+        .unwrap()]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].1.contains("'check_it'"), "{found:?}");
+}
+
+/// A call whose name a header's pasting macro builds from its arguments is a
+/// call, directly or through a macro that hands an argument on to it, when
+/// the header is found on the include path.
+#[test]
+fn msc12_a_call_pasted_by_a_header_macro_is_a_call() {
+    let root = fixtures().join("msc12_uncalled_paste_macro_in_header");
+    let src = root.join("src");
+    let include = root.join("inc");
+    let found = msc12_uncalled(&[src.to_str().unwrap(), "-I", include.to_str().unwrap()]);
+    assert!(found.is_empty(), "{found:?}");
+}

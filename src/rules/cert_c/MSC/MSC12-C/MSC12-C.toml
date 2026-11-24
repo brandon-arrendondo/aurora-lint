@@ -10,7 +10,11 @@ error and may result in unexpected behavior. Such code includes statements whose
 value is discarded (e.g., a == b; used as a statement), redundant subexpressions
 in logical operators, duplicate conditions in if/else-if chains, unconditional
 jump statements at the end of loops that would continue anyway, and static
-functions that nothing calls and whose address never escapes.
+functions that nothing calls and whose address never escapes. A static's uses
+are read across its translation unit only as far as the scan finds its
+headers: a header the scan cannot resolve (no -I, -d or compile database
+names its directory) is not read, so a use there is not seen and the static
+may be reported as uncalled.
 """
 severity = "Low"
 likelihood = "Unlikely"
