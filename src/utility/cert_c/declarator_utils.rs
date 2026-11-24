@@ -167,8 +167,11 @@ pub fn declares_const_object(decl: &Node, declarator: &Node, source: &str) -> bo
 /// [`declares_const_object`] reads `const`: `_Atomic int n`, `_Atomic(int) n`,
 /// `int *_Atomic p`, `static _Atomic struct s v`, a typedef in scope that
 /// names an atomic type, and a `<stdatomic.h>` name such as `atomic_int` when
-/// no typedef of that name is in scope. `_Atomic int *p` is a plain pointer
-/// to an atomic object ([`declares_pointer_to_atomic`]).
+/// no typedef of that name is in scope and the file includes `<stdatomic.h>`
+/// before it ([`includes_system_header_before`]). An array's elements carry
+/// its qualifier, so `_Atomic int c[8]` is atomic, and a member declarator
+/// of a `field_declaration` is read the same way. `_Atomic int *p` is a
+/// plain pointer to an atomic object ([`declares_pointer_to_atomic`]).
 pub fn declares_atomic_object(decl: &Node, declarator: &Node, source: &str) -> bool {
     qualified_object_within(decl, declarator, source, "_Atomic", 8)
 }
@@ -196,6 +199,186 @@ pub fn declares_pointer_to_atomic(decl: &Node, declarator: &Node, source: &str) 
     }
     name.is_some_and(|n| n.kind() == "identifier")
         && specifiers_qualified(decl, source, "_Atomic", 8)
+}
+
+/// The definitions, with a body, of the structure or union type that
+/// `decl`'s specifiers name, `decl` being a `declaration`, `field_declaration`
+/// or `type_definition`: the specifier itself when it has a body
+/// (`static struct { int n; } g;`), the definitions of its tag that are
+/// visible at `decl` ([`record_definitions_in_scope`]), or those of the
+/// typedef in scope that the type names, followed to its own specifiers.
+/// The declarator's derivations are not read: a caller that needs the
+/// element type of an array, or rules out a pointer, checks them itself.
+/// Empty when no definition is in this file, as for a type a header
+/// defines.
+pub fn record_definitions_of<'a>(decl: &Node<'a>, source: &str) -> Vec<Node<'a>> {
+    let mut decl = *decl;
+    for _ in 0..8 {
+        let Some(ty) = decl.child_by_field_name("type") else {
+            return Vec::new();
+        };
+        match ty.kind() {
+            "struct_specifier" | "union_specifier" => {
+                if ty.child_by_field_name("body").is_some() {
+                    return vec![ty];
+                }
+                let Some(tag) = ty.child_by_field_name("name") else {
+                    return Vec::new();
+                };
+                return record_definitions_in_scope(
+                    &ty,
+                    ty.kind(),
+                    &source[tag.byte_range()],
+                    source,
+                );
+            }
+            "type_identifier" => {
+                let name = &source[ty.byte_range()];
+                let Some(typedef) = crate::utility::cert_c::ast_utils::typedef_definition_in_scope(
+                    &ty, name, source,
+                ) else {
+                    return Vec::new();
+                };
+                decl = typedef;
+            }
+            _ => return Vec::new(),
+        }
+    }
+    Vec::new()
+}
+
+/// The definitions, with a body, of the `kind` (`struct_specifier` or
+/// `union_specifier`) tagged `tag` that are visible at `site`: those in the
+/// innermost scope enclosing `site` that defines the tag before it, a block
+/// or the file. A tag defined inside another structure's body belongs to the
+/// scope around that structure (C11 6.2.1p4). Several are returned when the
+/// file defines the tag more than once in that scope, as in the arms of an
+/// `#if`; a caller that removes a finding should require all of them to
+/// agree. A bodiless `struct S;` in an inner block that redeclares the tag
+/// is not read.
+pub fn record_definitions_in_scope<'a>(
+    site: &Node<'a>,
+    kind: &str,
+    tag: &str,
+    source: &str,
+) -> Vec<Node<'a>> {
+    let mut root = *site;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    let encloses_site = |scope: &Node| {
+        scope.start_byte() <= site.start_byte() && site.end_byte() <= scope.end_byte()
+    };
+    // Each visible definition, with the start of the block it is in (0 for
+    // the file): the innermost such block encloses the others
+    let mut visible: Vec<(usize, Node<'a>)> = Vec::new();
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if n.start_byte() >= site.start_byte() {
+            continue;
+        }
+        let defines_tag = n.kind() == kind
+            && n.child_by_field_name("body").is_some()
+            && n.child_by_field_name("name")
+                .is_some_and(|t| &source[t.byte_range()] == tag);
+        if defines_tag {
+            let block = std::iter::successors(n.parent(), Node::parent)
+                .find(|p| p.kind() == "compound_statement");
+            match block {
+                None => visible.push((0, n)),
+                Some(b) if encloses_site(&b) => visible.push((b.start_byte() + 1, n)),
+                Some(_) => {}
+            }
+        }
+        // A definition in a block not enclosing `site` is not visible there
+        let opens_block = matches!(n.kind(), "compound_statement" | "function_definition");
+        if !opens_block || encloses_site(&n) {
+            let mut cursor = n.walk();
+            stack.extend(n.named_children(&mut cursor));
+        }
+    }
+    let Some(innermost) = visible.iter().map(|(scope, _)| *scope).max() else {
+        return Vec::new();
+    };
+    let mut found: Vec<Node<'a>> = visible
+        .into_iter()
+        .filter(|(scope, _)| *scope == innermost)
+        .map(|(_, n)| n)
+        .collect();
+    found.sort_by_key(Node::start_byte);
+    found
+}
+
+/// The declarations of the member `field` of the structure or union
+/// definition `record` (a `struct_specifier` or `union_specifier` with a
+/// body), each as its `field_declaration` and the declarator naming it,
+/// including one inside an `#if` arm and one reached through an anonymous
+/// structure or union member (C11 6.7.2.1p13). Several when the arms of an
+/// `#if` each declare it.
+pub fn member_declarations<'a>(
+    record: &Node<'a>,
+    field: &str,
+    source: &str,
+) -> Vec<(Node<'a>, Node<'a>)> {
+    let mut found = Vec::new();
+    let Some(body) = record.child_by_field_name("body") else {
+        return found;
+    };
+    let mut stack = vec![body];
+    while let Some(n) = stack.pop() {
+        let mut cursor = n.walk();
+        for child in n.named_children(&mut cursor) {
+            match child.kind() {
+                "field_declaration" => {
+                    let mut dc = child.walk();
+                    let declarators: Vec<Node<'a>> = child
+                        .children_by_field_name("declarator", &mut dc)
+                        .collect();
+                    if declarators.is_empty() {
+                        // An anonymous structure or union member
+                        if let Some(inner) = child.child_by_field_name("type").filter(|t| {
+                            matches!(t.kind(), "struct_specifier" | "union_specifier")
+                                && t.child_by_field_name("name").is_none()
+                        }) {
+                            found.extend(member_declarations(&inner, field, source));
+                        }
+                    }
+                    for d in declarators {
+                        if member_name(&d).is_some_and(|n| &source[n.byte_range()] == field) {
+                            found.push((child, d));
+                        }
+                    }
+                }
+                k if k.starts_with("preproc_") => stack.push(child),
+                _ => {}
+            }
+        }
+    }
+    found
+}
+
+/// The `field_identifier` a member declarator declares, through pointer,
+/// array, parenthesized and attributed declarators. `None` for a bit-field
+/// without a name and for a shape this does not read.
+fn member_name<'a>(declarator: &Node<'a>) -> Option<Node<'a>> {
+    let mut d = *declarator;
+    for _ in 0..16 {
+        if d.kind() == "field_identifier" {
+            return Some(d);
+        }
+        let next = d.child_by_field_name("declarator").or_else(|| {
+            let mut cursor = d.walk();
+            let inner = d
+                .named_children(&mut cursor)
+                .find(|c| c.kind().ends_with("declarator") || c.kind() == "field_identifier");
+            inner
+        })?;
+        if next.id() == d.id() {
+            return None;
+        }
+        d = next;
+    }
+    None
 }
 
 fn qualified_object_within(
@@ -233,12 +416,57 @@ fn specifiers_qualified(decl: &Node, source: &str, qualifier: &str, depth: usize
     let Some(typedef) =
         crate::utility::cert_c::ast_utils::typedef_definition_in_scope(&type_name, name, source)
     else {
-        return qualifier == "_Atomic" && is_stdatomic_type_name(name);
+        return qualifier == "_Atomic"
+            && is_stdatomic_type_name(name)
+            && includes_system_header_before(&type_name, "stdatomic.h", source);
     };
     typedef_declarators(&typedef)
         .into_iter()
         .find(|d| TypedefShape::of(d, source).name.as_deref() == Some(name))
         .is_some_and(|d| qualified_object_within(&typedef, &d, source, qualifier, depth - 1))
+}
+
+/// Whether the file includes the system header `header` (`#include
+/// <stdatomic.h>`) before `site`, in any preprocessor arm. The standard
+/// library's names mean what the standard says only where its header is in
+/// effect; a project's own compatibility header of the same names is not
+/// the library. A header the file reaches only through another header is
+/// not seen, so a caller that removes a finding on this answer stays
+/// conservative.
+pub fn includes_system_header_before(site: &Node, header: &str, source: &str) -> bool {
+    let mut root = *site;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    // Directives at file scope and in preprocessor arms, in file order
+    fn walk(n: &Node, site: &Node, header: &str, source: &str) -> Option<bool> {
+        let mut cursor = n.walk();
+        let children: Vec<Node> = n.named_children(&mut cursor).collect();
+        for child in children {
+            if child.start_byte() >= site.start_byte() {
+                return Some(false);
+            }
+            if child.kind() == "preproc_include" {
+                let names = child.child_by_field_name("path").is_some_and(|p| {
+                    p.kind() == "system_lib_string"
+                        && source[p.byte_range()]
+                            .trim_start_matches('<')
+                            .trim_end_matches('>')
+                            .trim()
+                            == header
+                });
+                if names {
+                    return Some(true);
+                }
+            } else if child.kind().starts_with("preproc_") {
+                if let Some(answer) = walk(&child, site, header, source) {
+                    return Some(answer);
+                }
+            }
+        }
+        None
+    }
+    walk(&root, site, header, source).unwrap_or(false)
 }
 
 /// Whether `name` is one of the atomic integer type names `<stdatomic.h>`
@@ -298,7 +526,7 @@ fn nearest_pointer_derivation<'a>(declarator: &Node<'a>) -> Option<Option<Node<'
     let mut nearest: Option<Node<'a>> = None;
     loop {
         match d.kind() {
-            "identifier" | "type_identifier" => {
+            "identifier" | "type_identifier" | "field_identifier" => {
                 return Some(nearest.filter(|n| n.kind() == "pointer_declarator"))
             }
             "pointer_declarator" | "function_declarator" => nearest = Some(d),

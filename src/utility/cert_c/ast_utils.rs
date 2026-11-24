@@ -3950,10 +3950,39 @@ pub fn is_in_sizeof(node: &Node) -> bool {
 /// An `assert(...)` argument is deliberately not one of them. In the debug
 /// configuration it is compiled and evaluated, so whatever a rule would say
 /// about the expression elsewhere it says there too (ADR-0010 D5).
+///
+/// The size of an array in a `sizeof` type name is evaluated when it makes a
+/// variable length array type (C11 6.5.3.4p2): `n` in `sizeof(char[n])` is
+/// read. A constant size reads no object either way, so any size expression
+/// of an array declarator inside a `sizeof` type name counts as evaluated.
+/// The `sizeof` of an expression (`sizeof *p`, `sizeof x`) stays unevaluated:
+/// only a VLA-typed operand is evaluated, and what that evaluates is the
+/// size, not the operand's name.
 pub fn is_in_unevaluated_operand(node: &Node, source: &str) -> bool {
     const TYPEOF: &[&str] = &["typeof", "__typeof__", "__typeof"];
+    // Whether the path so far runs through the size of an array declarator
+    let mut in_array_size = false;
+    let mut child = *node;
     for parent in ancestors(node) {
+        if matches!(
+            parent.kind(),
+            "array_declarator" | "abstract_array_declarator"
+        ) && parent.child_by_field_name("size") == Some(child)
+        {
+            in_array_size = true;
+        }
+        let from = child;
+        child = parent;
         match parent.kind() {
+            "sizeof_expression"
+                if in_array_size
+                    && from.kind() == "type_descriptor"
+                    && parent.child_by_field_name("type") == Some(from) =>
+            {
+                // `sizeof(char[n])`: `n` is evaluated, though an enclosing
+                // unevaluated operand may still hold the whole `sizeof`
+                in_array_size = false;
+            }
             "sizeof_expression" | "alignof_expression" | "offsetof_expression" => return true,
             "macro_type_specifier" | "call_expression" => {
                 let field = if parent.kind() == "call_expression" {

@@ -80,11 +80,13 @@
 //!   object. Each subscript must be of an array the object is declared as
 //!   (through its typedef); subscripting a pointer reaches its pointee, which
 //!   the next bullet judges.
-//! - `x++` or `x += n` on a whole `_Atomic` object (`_Atomic int`,
-//!   `atomic_int`), or through a pointer to one (`(*p)++`), is a single
-//!   atomic read-modify-write and is not reported. `x = x + 1` is two
-//!   accesses, and a member of an atomic structure is not atomic on its own,
-//!   so both still are.
+//! - `x++` or `x += n` on an `_Atomic` object is a single atomic
+//!   read-modify-write and is not reported: a whole atomic object
+//!   (`_Atomic int`, `atomic_int` with `<stdatomic.h>` included), an element
+//!   of an atomic array (`c[i]++`), a member this file's definition of the
+//!   structure declares atomic (`g.refs++`), or the pointee of a pointer to
+//!   one (`(*p)++`). `x = x + 1` is two accesses, and a member of an atomic
+//!   structure is not atomic on its own, so both still are.
 //! - A compound operation through a pointer (`(*p)++`, `p[i] += n`,
 //!   `p->n++`) is judged by what the pointer points at, not by where the
 //!   pointer itself is stored: a thread-local pointer into a shared array
@@ -111,7 +113,7 @@ use crate::utility::cert_c::ast_utils::{
 };
 use crate::utility::cert_c::declarator_utils::{
     declares_atomic_object, declares_const_object, declares_function, declares_pointer_to_atomic,
-    typedef_declarators, TypedefShape,
+    member_declarations, record_definitions_of, typedef_declarators, TypedefShape,
 };
 use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::thread_api::{self, ProjectFunctions};
@@ -590,17 +592,20 @@ impl Con07C {
             let Some(target) = target else {
                 return false;
             };
-            let Some((object, whole)) = shared_static_written(&target, source, static_vars) else {
+            let Some((object, steps)) = shared_static_written(&target, source, static_vars) else {
                 return false;
             };
+            let whole = steps.is_empty();
             if get_node_text(&object, source) != var_name {
                 return false;
             }
             if operator != Some("=") {
-                // A compound assignment or `++`/`--` of a whole `_Atomic`
-                // object is one atomic read-modify-write (C11 6.5.2.4p2,
-                // 6.5.16.2p3); a member of an atomic structure is not
-                return !(whole && is_atomic_object(&object, var_name, source));
+                // A compound assignment or `++`/`--` of an `_Atomic` object
+                // is one atomic read-modify-write (C11 6.5.2.4p2,
+                // 6.5.16.2p3): the whole object, an element of an atomic
+                // array or an atomic member. A member of an atomic
+                // structure is not one (6.5.2.3p5)
+                return !writes_atomic_part(&object, &steps, var_name, source);
             }
             if !whole {
                 return is_compound_assignment(&n, &target, source);
@@ -814,8 +819,9 @@ fn compound_writes_through_pointers(
     found
 }
 
-/// The shared object `target` writes, whole or in part, and whether it is
-/// the whole object: `x`, or `x[i]`, `x.f`, `x[i].f`, `x[i][j]`, through
+/// The shared object `target` writes, whole or in part, and the steps from
+/// the write to it, outermost first (none for the whole object): `x`, or
+/// `x[i]`, `x.f`, `x[i].f`, `x[i][j]`, through
 /// parentheses, `x` resolving by declaration to one of `static_vars`. Each
 /// subscript must be of an array `x` is declared as, through its typedef:
 /// subscripting a pointer writes its pointee, which
@@ -825,7 +831,7 @@ fn shared_static_written<'a>(
     target: &Node<'a>,
     source: &str,
     static_vars: &StaticVars,
-) -> Option<(Node<'a>, bool)> {
+) -> Option<(Node<'a>, Vec<Node<'a>>)> {
     let mut object = strip_parens_and_casts(*target);
     // Each step from `x` to the written location, outermost first
     let mut steps = Vec::new();
@@ -838,7 +844,7 @@ fn shared_static_written<'a>(
                     .is_some_and(|o| get_node_text(&o, source) == ".") => {}
             _ => break,
         }
-        steps.push(object.kind());
+        steps.push(object);
         object = strip_parens_and_casts(object.child_by_field_name("argument")?);
     }
     if object.kind() != "identifier" {
@@ -853,21 +859,77 @@ fn shared_static_written<'a>(
         let mut derivations = object_derivations(&decl, &declarator, source).into_iter();
         let mut in_member = false;
         for step in steps.iter().rev() {
-            if *step == "field_expression" {
+            if step.kind() == "field_expression" {
                 in_member = true;
             } else if in_member || derivations.next() != Some("array_declarator") {
                 return None;
             }
         }
     }
-    Some((object, steps.is_empty()))
+    Some((object, steps))
 }
 
-/// Whether the occurrence `object` of `name` names an `_Atomic` object, by
-/// its declaration.
-fn is_atomic_object(object: &Node, name: &str, source: &str) -> bool {
-    resolve_identifier_declarator(object, name, source)
-        .is_some_and(|(decl, declarator)| declares_atomic_object(&decl, &declarator, source))
+/// Whether the part of the shared object `object` that a write through
+/// `steps` reaches ([`shared_static_written`], outermost first) is itself an
+/// `_Atomic` object, by declaration: the whole object, an element of an
+/// atomic array (`_Atomic int c[8]; c[i]++`, through a typedef'd row too),
+/// or a member declared atomic in this file's definition of the structure
+/// (`struct S { atomic_int refs; }; static struct S g; g.refs++`, and
+/// `objs[i].refs` for an array of them). A member of an atomic structure is
+/// not atomic on its own (C11 6.5.2.3p5), nor is any member of a structure
+/// whose definition this file does not hold, or holds in `#if` arms that
+/// disagree.
+fn writes_atomic_part(object: &Node, steps: &[Node], name: &str, source: &str) -> bool {
+    let Some((decl, declarator)) = resolve_identifier_declarator(object, name, source) else {
+        return false;
+    };
+    let atomic = declares_atomic_object(&decl, &declarator, source);
+    // Innermost first: subscripts of the object's arrays, then members
+    let fields: Vec<&Node> = steps
+        .iter()
+        .rev()
+        .skip_while(|s| s.kind() == "subscript_expression")
+        .collect();
+    if fields.is_empty() {
+        // `shared_static_written` matched each subscript to an array
+        // derivation, so an element of an atomic array is atomic
+        return atomic;
+    }
+    let subscripts = steps.len() - fields.len();
+    if atomic || object_derivations(&decl, &declarator, source).len() != subscripts {
+        return false;
+    }
+    member_is_atomic(&decl, &fields, source)
+}
+
+/// Whether the member chain `fields` (innermost first, each a `.` access)
+/// of an object of the type `decl` names ends in an `_Atomic` member, no
+/// member before it atomic or derived, in every definition visible.
+fn member_is_atomic(decl: &Node, fields: &[&Node], source: &str) -> bool {
+    let Some((first, rest)) = fields.split_first() else {
+        return false;
+    };
+    let Some(field) = first.child_by_field_name("field") else {
+        return false;
+    };
+    let field = get_node_text(&field, source);
+    let records = record_definitions_of(decl, source);
+    !records.is_empty()
+        && records.iter().all(|record| {
+            let members = member_declarations(record, field, source);
+            !members.is_empty()
+                && members.iter().all(|(member, declarator)| {
+                    if !object_derivations(member, declarator, source).is_empty() {
+                        return false;
+                    }
+                    let atomic = declares_atomic_object(member, declarator, source);
+                    if rest.is_empty() {
+                        atomic
+                    } else {
+                        !atomic && member_is_atomic(member, rest, source)
+                    }
+                })
+        })
 }
 
 /// [`pointer_derivations`] of `declarator`, then of the typedef in scope
@@ -962,7 +1024,10 @@ fn macro_body_tokens(root: &Node, source: &str) -> HashSet<String> {
 
 /// Whether the assignment `op` to `left` reads what it writes: a compound
 /// operator, or `=` with the same location on the right (`*p = *p + 1`),
-/// outside a `sizeof` or other operand C never evaluates.
+/// outside a `sizeof` or other operand C never evaluates. The location is
+/// the object as a whole ([`lvalue_of`] drops subscripts), so a read of a
+/// different element counts: `a[i] = a[j] + 1` reads and writes the shared
+/// array `a`, as the rule treats any part of a shared object as the object.
 fn is_compound_assignment(op: &Node, left: &Node, source: &str) -> bool {
     let operator = op
         .child_by_field_name("operator")
@@ -1158,7 +1223,10 @@ fn pointer_derivations(declarator: &Node) -> Vec<&'static str> {
     let mut kinds = Vec::new();
     let mut node = *declarator;
     // A typedef's chain ends in the name it defines
-    while !matches!(node.kind(), "identifier" | "type_identifier") {
+    while !matches!(
+        node.kind(),
+        "identifier" | "type_identifier" | "field_identifier"
+    ) {
         let inner = if node.kind() == "parenthesized_declarator" {
             node.named_child(0)
         } else {
