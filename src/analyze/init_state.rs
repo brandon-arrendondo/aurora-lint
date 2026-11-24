@@ -1057,20 +1057,26 @@ fn find_operator_text<'a>(node: &Node, source: &'a str) -> &'a str {
 }
 
 /// Check if a subscript write should keep MallocUninitialized (partial init).
-/// Returns true if the write is inside a for-loop whose bound is less than
-/// the variable's allocation count.
-fn is_partial_init_write(alloc_count: usize, node: &Node, source: &str) -> bool {
+/// Returns true if the write `left` sits inside a for-loop whose bound is less
+/// than the variable's allocation count, unless every element offset it names
+/// is a compile-time constant. A constant offset (`data[0] = '\0'`, `*data`)
+/// writes the same element however many times the loop runs, so it is read as
+/// one write, the same as outside a loop: that write marks the buffer
+/// initialized, which drops a report on a buffer filled only at that element.
+/// Any other offset (`data[i]`, `data[m++]`, `*(data + i)`) is read as a
+/// partial fill, whatever variable it names.
+fn is_partial_init_write(alloc_count: usize, left: &Node, source: &str) -> bool {
     // Walk up AST to find enclosing for_statement
-    let mut current = node.parent();
+    let mut current = left.parent();
     while let Some(n) = current {
         if n.kind() == "for_statement" {
-            // Extract the condition (second child after the first ";")
-            if let Some(condition) = n.child_by_field_name("condition") {
-                if let Some(bound) = extract_for_upper_bound(&condition, source) {
-                    return bound < alloc_count;
-                }
-            }
-            return false; // in a for-loop but can't evaluate → safe default
+            let Some(condition) = n.child_by_field_name("condition") else {
+                return false; // in a for-loop but can't evaluate → safe default
+            };
+            let Some(bound) = extract_for_upper_bound(&condition, source) else {
+                return false;
+            };
+            return bound < alloc_count && !offsets_are_constant(left, source);
         }
         // Don't walk past function boundaries
         if n.kind() == "function_definition" {
@@ -1079,6 +1085,51 @@ fn is_partial_init_write(alloc_count: usize, node: &Node, source: &str) -> bool 
         current = n.parent();
     }
     false
+}
+
+/// Whether every element offset the lvalue `left` names evaluates to a
+/// compile-time constant: each subscript index, and the offset of a
+/// dereferenced pointer sum (`*(p + 1)`). A dereference of a bare pointer
+/// (`*p`) has offset zero.
+fn offsets_are_constant(left: &Node, source: &str) -> bool {
+    let empty = HashMap::new();
+    let constant = |n: &Node| const_eval::try_evaluate_expr(n, source, &empty).is_some();
+    let mut stack = vec![*left];
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            "subscript_expression" => {
+                if !n.child_by_field_name("index").is_some_and(|i| constant(&i)) {
+                    return false;
+                }
+                stack.extend(n.child_by_field_name("argument"));
+            }
+            "pointer_expression" => stack.extend(n.child_by_field_name("argument")),
+            "parenthesized_expression" | "cast_expression" | "field_expression" => {
+                stack.extend(n.child_nodes().filter(|c| {
+                    c.is_named() && !matches!(c.kind(), "type_descriptor" | "field_identifier")
+                }));
+            }
+            "binary_expression" => {
+                // A pointer sum: one side is the pointer, the other the offset.
+                let (Some(l), Some(r)) = (
+                    n.child_by_field_name("left"),
+                    n.child_by_field_name("right"),
+                ) else {
+                    return false;
+                };
+                if constant(&r) {
+                    stack.push(l);
+                } else if constant(&l) {
+                    stack.push(r);
+                } else {
+                    return false;
+                }
+            }
+            "identifier" => {}
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// Extract the upper bound from a for-loop condition like `i < N` or `i <= N`.
@@ -1193,7 +1244,7 @@ fn process_assignment_init(
     if left.kind() == "identifier" {
         apply_identifier_assignment_state(info, array_decay, node, source, config);
     } else {
-        apply_lvalue_assignment_state(info, &left, has_subscript_in_chain, node, source);
+        apply_lvalue_assignment_state(info, &left, has_subscript_in_chain, source);
     }
 }
 
@@ -1280,7 +1331,6 @@ fn apply_lvalue_assignment_state(
     info: &mut VarInfo,
     left: &Node,
     has_subscript_in_chain: bool,
-    node: &Node,
     source: &str,
 ) {
     match info.state {
@@ -1297,7 +1347,7 @@ fn apply_lvalue_assignment_state(
             // fraction of elements.
             let stays_partial = info
                 .allocation_count
-                .is_some_and(|alloc_count| is_partial_init_write(alloc_count, node, source));
+                .is_some_and(|alloc_count| is_partial_init_write(alloc_count, left, source));
             if !stays_partial {
                 info.state = InitState::MallocInitialized;
             }
