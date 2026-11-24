@@ -4112,6 +4112,89 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         }
     }
 
+    /// An `if` condition, which runs before either branch is taken. Its
+    /// calls are processed as `process_nested_calls` processes them
+    /// anywhere else, and an assignment in it binds what it stores just as
+    /// the statement would, so `if ((p = malloc(n)) == NULL) return -1;`
+    /// allocates into `p` exactly as `p = malloc(n); if (p == NULL) return
+    /// -1;` does. Only the statement arm of `visit` ever reached
+    /// `process_assignment`, so a block allocated inside the test was never
+    /// tracked, and leaked unreported on every later path.
+    ///
+    /// An assignment binds only where the statement arm would bind it: in
+    /// condition position, through parentheses, casts, `!`, comparisons,
+    /// `&&`/`||`, a comma and the arms of `?:`. One nested in a call's
+    /// arguments or in another assignment's value is not, since the
+    /// statement arm never binds those either: `p = q = malloc(n);` tracks
+    /// neither name, and `if ((p = q = malloc(n)) == NULL)` must not track
+    /// `q` alone as a block of its own. Their calls are still processed.
+    ///
+    /// The parts are taken in evaluation order -- the value an assignment
+    /// stores before the assignment, the arguments of a call before the call
+    /// -- because a later operand can be the one that disposes of the block:
+    /// `if ((p = make()) == NULL || !take(p))` hands `p` over after it is
+    /// bound. A condition with no assignment in it is processed as it always
+    /// was.
+    fn process_condition(&mut self, condition: &Node, source: &str) {
+        let assigns = !query::find_descendants(*condition, |n| n.kind() == "assignment_expression")
+            .is_empty();
+        if !assigns {
+            self.process_nested_calls(condition, source);
+            return;
+        }
+        enum Step {
+            /// Visit a node; `binds` says whether an assignment here is in
+            /// condition position.
+            Enter { binds: bool },
+            /// The value has been processed: bind the assignment.
+            Bind,
+            /// The arguments have been processed: process the call.
+            Call,
+        }
+        let mut pending = vec![(*condition, Step::Enter { binds: true })];
+        while let Some((node, step)) = pending.pop() {
+            match step {
+                Step::Bind => self.process_assignment(&node, source),
+                Step::Call => {
+                    let reallocates = node
+                        .child_by_field_name("function")
+                        .map(|f| self.callee_name(&f, source))
+                        .is_some_and(|name| self.reallocates(&name, site_of(&node, source)));
+                    if !reallocates {
+                        self.process_call(&node, source);
+                    }
+                }
+                Step::Enter { binds } => match node.kind() {
+                    "assignment_expression" => {
+                        // Same order as the statement arm of `visit`: the
+                        // value, then the binding. The left operand is a
+                        // place, not a value, and that arm reads no calls in
+                        // it either. Nothing in the value binds.
+                        if binds {
+                            pending.push((node, Step::Bind));
+                        }
+                        if let Some(right) = node.child_by_field_name("right") {
+                            pending.push((right, Step::Enter { binds: false }));
+                        }
+                    }
+                    kind => {
+                        let binds = binds && kind != "call_expression";
+                        if kind == "call_expression" {
+                            pending.push((node, Step::Call));
+                        }
+                        let mut children: Vec<Node> = node.child_nodes().collect();
+                        children.reverse();
+                        pending.extend(
+                            children
+                                .into_iter()
+                                .map(|child| (child, Step::Enter { binds })),
+                        );
+                    }
+                },
+            }
+        }
+    }
+
     /// Process every call inside `expr` that the enclosing construct does not
     /// already account for itself.
     ///
@@ -4143,63 +4226,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// Allocation calls in general are NOT skipped -- a function can
     /// allocate AND take ownership of an argument in one call, as curl's
     /// `hash_elem_create(key, len, p, dtor)` does.
-    /// An `if` condition, which runs before either branch is taken. Its
-    /// calls are `process_nested_calls`'s, as anywhere else; an assignment
-    /// in it binds what it stores just as the statement would, so
-    /// `if ((p = malloc(n)) == NULL) return -1;` allocates into `p` exactly
-    /// as `p = malloc(n); if (p == NULL) return -1;` does. Only the
-    /// condition-as-statement arm of `visit` ever reached `process_assignment`,
-    /// so a block allocated inside the test was never tracked, and leaked
-    /// unreported on every later path.
-    ///
-    /// The parts are taken in evaluation order -- the value an assignment
-    /// stores before the assignment, the arguments of a call before the call
-    /// -- because a later operand can be the one that disposes of the block:
-    /// `if ((p = make()) && !take(p))` hands `p` over after it is bound. A
-    /// condition with no assignment in it is processed as it always was.
-    fn process_condition(&mut self, condition: &Node, source: &str) {
-        let assigns = !query::find_descendants(*condition, |n| n.kind() == "assignment_expression")
-            .is_empty();
-        if !assigns {
-            self.process_nested_calls(condition, source);
-            return;
-        }
-        let mut pending = vec![(*condition, false)];
-        while let Some((node, children_done)) = pending.pop() {
-            match node.kind() {
-                "assignment_expression" if children_done => {
-                    self.process_assignment(&node, source);
-                }
-                "assignment_expression" => {
-                    // Same order as the statement arm of `visit`: the value,
-                    // then the binding. The left operand is a place, not a
-                    // value, and that arm reads no calls in it either.
-                    pending.push((node, true));
-                    if let Some(right) = node.child_by_field_name("right") {
-                        pending.push((right, false));
-                    }
-                }
-                "call_expression" if children_done => {
-                    let reallocates = node
-                        .child_by_field_name("function")
-                        .map(|f| self.callee_name(&f, source))
-                        .is_some_and(|name| self.reallocates(&name, site_of(&node, source)));
-                    if !reallocates {
-                        self.process_call(&node, source);
-                    }
-                }
-                _ => {
-                    if node.kind() == "call_expression" {
-                        pending.push((node, true));
-                    }
-                    let mut children: Vec<Node> = node.child_nodes().collect();
-                    children.reverse();
-                    pending.extend(children.into_iter().map(|child| (child, false)));
-                }
-            }
-        }
-    }
-
     fn process_nested_calls(&mut self, expr: &Node, source: &str) {
         let calls: Vec<Node> = query::find_descendants(*expr, |n| n.kind() == "call_expression")
             .into_iter()
@@ -4939,8 +4965,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             } else {
                 condition
             };
-            // `if ((p = malloc(n)))` tests `p`.
-            let cond = tested_operand(cond);
+            // `if ((p = malloc(n)))` tests `p`, as does `if (p = malloc(n), p)`.
+            let cond = tested_operand(last_operand(cond));
 
             // Plain identifier or field_expression as condition means truthiness check
             // if (ptr) { ... } else { /* ptr is NULL here */ }
@@ -5070,6 +5096,24 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         } else {
             *condition
         };
+        // `if ((p = malloc(n)), p == NULL)` tests its last operand.
+        if cond.kind() == "comma_expression" {
+            return self.null_check_variable_in(&last_operand(cond), source);
+        }
+        // `c ? A : 0` is true only when `c` and `A` are, so it proves what `A`
+        // proves; `c ? 0 : B` likewise proves what `B` does. Any other
+        // conditional proves nothing about either arm.
+        if cond.kind() == "conditional_expression" {
+            let consequence = cond.child_by_field_name("consequence")?;
+            let alternative = cond.child_by_field_name("alternative")?;
+            if is_false_constant(&alternative, source) {
+                return self.null_check_variable_in(&consequence, source);
+            }
+            if is_false_constant(&consequence, source) {
+                return self.null_check_variable_in(&alternative, source);
+            }
+            return None;
+        }
 
         // Look for binary_expression with == NULL or != NULL
         if cond.kind() == "binary_expression" {
@@ -5178,6 +5222,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         } else {
             *condition
         };
+        if cond.kind() == "comma_expression" {
+            return self.non_null_check_variable_in(&last_operand(cond), source);
+        }
 
         if cond.kind() == "unary_expression" {
             let op = cond.child_by_field_name("operator")?;
@@ -5201,6 +5248,20 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 .child_by_field_name("operator")
                 .map(|op| ast_utils::get_node_text_owned(&op, source))
                 .unwrap_or_default();
+
+            // The dual of the `||` reading in `null_check_variable_in`. `if ((p =
+            // malloc(a)) != NULL && (q = malloc(b)) != NULL)` is false when `p`
+            // failed, with `q` never assigned, or when `q` failed, with `p`
+            // holding a block. Only the last conjunct's variable is empty on
+            // every way into the else arm, and only when that conjunct is what
+            // gave it its value.
+            if op_text == "&&" {
+                let right = cond.child_by_field_name("right")?;
+                return self
+                    .non_null_check_variable_in(&right, source)
+                    .or_else(|| truthy_operand(&right, source))
+                    .filter(|tested| assigns_to(&right, tested, source));
+            }
 
             if let Some(tested) = self.negative_result_test(&cond, source, ResultTest::Success) {
                 return Some(tested);
@@ -6017,6 +6078,8 @@ fn is_tested_operand(node: &Node) -> bool {
 /// parentheses. Anything that is not an assignment is returned unchanged,
 /// parentheses included.
 fn tested_operand(node: Node) -> Node {
+    // `op.kind()` rather than `is_plain_assignment`: the anonymous operator
+    // node's kind is its own spelling, so no source text is needed here.
     let mut inner = node;
     while inner.kind() == "parenthesized_expression" {
         match inner.named_child(0) {
@@ -6036,6 +6099,12 @@ fn tested_operand(node: Node) -> Node {
 }
 
 /// Whether `expr` assigns to the object spelled `name` with a plain `=`.
+///
+/// This compares spellings, which ADR-0006 warns against for resolving what
+/// an occurrence refers to. It is sound here because both spellings come
+/// from one expression: `name` is what a test inside `expr` reads, and an
+/// assignment in the same expression cannot sit in a different scope, so the
+/// same spelling there is the same object.
 fn assigns_to(expr: &Node, name: &str, source: &str) -> bool {
     query::find_descendants(*expr, |n| n.kind() == "assignment_expression")
         .into_iter()
@@ -6045,4 +6114,44 @@ fn assigns_to(expr: &Node, name: &str, source: &str) -> bool {
                     .child_by_field_name("left")
                     .is_some_and(|left| ast_utils::get_node_text(&left, source) == name)
         })
+}
+
+/// The operand whose value `node` has: the last operand of a comma
+/// expression (`a, b, c` is `c`), through parentheses around it.
+fn last_operand(node: Node) -> Node {
+    let mut current = node;
+    loop {
+        match current.kind() {
+            "comma_expression" => match current.child_by_field_name("right") {
+                Some(right) => current = right,
+                None => return current,
+            },
+            "parenthesized_expression" if current.id() != node.id() => {
+                match current.named_child(0) {
+                    Some(inner) if inner.kind() == "comma_expression" => current = inner,
+                    _ => return current,
+                }
+            }
+            _ => return current,
+        }
+    }
+}
+
+/// A constant whose truth value is false: `0`, `false` or `NULL`, through
+/// parentheses.
+fn is_false_constant(node: &Node, source: &str) -> bool {
+    let inner = peel_casts_and_parens(*node);
+    inner.kind() == "null"
+        || inner.kind() == "false"
+        || matches!(
+            ast_utils::get_node_text(&inner, source),
+            "0" | "NULL" | "false"
+        )
+}
+
+/// The object a bare truth test of `node` reads: `p` of `(p = malloc(n))`
+/// or of `p`, when it is a variable, a field or an element.
+fn truthy_operand(node: &Node, source: &str) -> Option<String> {
+    let tested = tested_operand(peel_casts_and_parens(*node));
+    is_tested_operand(&tested).then(|| ast_utils::get_node_text_owned(&tested, source))
 }

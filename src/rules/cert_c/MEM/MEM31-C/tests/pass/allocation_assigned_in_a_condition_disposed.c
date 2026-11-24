@@ -9,7 +9,12 @@
  * returns with nothing acquired. Of `A || B`, the last disjunct's variable
  * was never filled in the branch, so a branch that frees only the first
  * leaks nothing. realloc's result tested in the condition leaves the old
- * block with the caller, who frees it on failure.
+ * block with the caller, who frees it on failure. Of `A && B`, only the last
+ * conjunct's variable is empty on the else path, so freeing the first there
+ * is enough. A comma condition tests its last operand, and `c ? A : 0` tests
+ * what `A` does. `p = q = malloc(n)` binds as the statement does. A block
+ * handed over by a later operand of the same condition stays handed over:
+ * the condition is read in evaluation order.
  */
 
 #include <stdlib.h>
@@ -111,5 +116,74 @@ int descriptor_closed(void)
     }
     close(state->fd);
     free(state);
+    return 0;
+}
+
+struct holder {
+    char *p;
+};
+
+int keep(struct holder *hd, char *p)
+{
+    hd->p = p;
+    return 1;
+}
+
+int conjunction_frees_the_first_on_the_else_path(void)
+{
+    char *p, *q;
+    if ((p = malloc(8)) != NULL && (q = malloc(8)) != NULL) {
+        free(p);
+        free(q);
+        return 0;
+    }
+    free(p);
+    return -1;
+}
+
+int conjunction_of_truth_tests(void)
+{
+    char *p, *q;
+    if ((p = malloc(8)) && (q = malloc(8))) {
+        free(p);
+        free(q);
+        return 0;
+    }
+    free(p);
+    return -1;
+}
+
+int comma_condition(void)
+{
+    char *p;
+    if ((p = malloc(8)), p == NULL)
+        return -1;
+    free(p);
+    return 0;
+}
+
+int conditional_with_a_false_arm(int c)
+{
+    char *p = NULL;
+    if (c ? (p = malloc(8)) == NULL : 0)
+        return -1;
+    free(p);
+    return 0;
+}
+
+int chained_assignment_binds_as_the_statement_does(void)
+{
+    char *p, *q;
+    if ((p = q = malloc(8)) == NULL)
+        return -1;
+    free(p);
+    return 0;
+}
+
+int handed_over_after_it_is_bound(struct holder *hd)
+{
+    char *p;
+    if ((p = malloc(8)) == NULL || !keep(hd, p))
+        return -1;
     return 0;
 }

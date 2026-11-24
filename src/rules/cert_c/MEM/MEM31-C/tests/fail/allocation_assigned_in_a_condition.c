@@ -9,8 +9,11 @@
  * it, as it does after `p = malloc(n); if (p == NULL) return -1;`. A member
  * target is tracked the same way, descriptors included. Of `A || B`, only
  * the last disjunct's variable is empty in the branch: `p` holds a block
- * there whenever `q` is what failed.
- * Expect: count=12
+ * there whenever `q` is what failed. Of `A && B`, likewise, only the last
+ * conjunct's variable is empty on the else path. A comma condition tests its
+ * last operand, and a disjunct that did not assign the variable it tests
+ * proves nothing about a block allocated before the `if`.
+ * Expect: count=19
  */
 
 #include <stdlib.h>
@@ -106,4 +109,47 @@ int ordered_against_minus_one(struct loop *loop)
     }
     free(state);
     return 0; /* Expect: here */
+}
+
+int conjunction_leaves_the_first_on_the_else_path(void)
+{
+    char *p, *q;
+    if ((p = malloc(8)) != NULL && (q = malloc(8)) != NULL) { /* Expect: here */
+        free(p);
+        free(q);
+        return 0;
+    }
+    return -1; /* Expect: here */
+}
+
+int comma_condition_tests_its_last_operand(void)
+{
+    char *p;
+    if ((p = malloc(8)), p == NULL) /* Expect: here */
+        return -1;
+    use(p);
+    return 0; /* Expect: here */
+}
+
+int earlier_disjunct_proves_nothing_about_an_earlier_block(int flag)
+{
+    char *p = malloc(8);
+    if (!p)
+        return -1;
+    if (flag || p == NULL)
+        return -1; /* Expect: here */
+    free(p);
+    return 0;
+}
+
+int earlier_conjunct_proves_nothing_about_an_earlier_block(int flag)
+{
+    char *p = malloc(8); /* Expect: here */
+    if (!p)
+        return -1;
+    if (flag && p != NULL) {
+        free(p);
+        return 0;
+    }
+    return -1; /* Expect: here */
 }
