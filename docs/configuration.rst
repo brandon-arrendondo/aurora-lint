@@ -106,6 +106,16 @@ always wins, and a freestanding target is never assumed to be LP64. The scan's
 summary, its SARIF settings and ``--check-config`` name the data model in force
 and where it came from.
 
+The floating point of the target is assumed the same way. The default preset
+assumes, for a hosted target, that ``double`` is IEC 60559 binary64 and
+``sqrt`` is correctly rounded (C11 Annex F), so a guard such as
+``abs((long)x) <= (long)sqrt((double)SHRT_MAX)`` bounds ``x`` to 181. The
+strict and pedantic presets credit it only when it is declared:
+``iec_60559_sqrt = true`` under ``[environment.overrides]``, ``--set
+iec_60559_sqrt=true``, or ``libc = "glibc"`` or ``"musl"``. Only ``sqrt`` of
+an integer constant converted to ``double`` is credited, never ``sqrt`` of a
+variable. See :doc:`options`.
+
 A preset may decline a rule rather than run a reading it cannot state in
 closed form (``not_enforced`` in :doc:`rule-presets`). A scan under that preset
 does not run the rule, whatever the manifest enables: its summary lists each declined

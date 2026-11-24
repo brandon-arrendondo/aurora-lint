@@ -2165,6 +2165,7 @@ pub(crate) fn build_file_analysis(
         &context.macro_constants,
         Some(context),
         context.settings.facts,
+        context.settings.flag("iec_60559_sqrt"),
         crate::files::is_c_header(file_path),
         Some(file_path),
     );
@@ -2192,6 +2193,7 @@ pub(crate) fn compute_vra_if_needed(
     project_macros: &const_eval::MacroConstantMap,
     project: Option<&context::ProjectContext>,
     data_model: crate::settings::IntFacts,
+    iec_60559_sqrt: bool,
     in_header: bool,
     file_path: Option<&std::path::Path>,
 ) -> HashMap<usize, value_range::RangeAnalysisResult> {
@@ -2314,7 +2316,13 @@ pub(crate) fn compute_vra_if_needed(
             results.insert(
                 start_byte,
                 value_range::analyze_value_ranges_with_replay(
-                    func_cfg, &func_node, source, &macros, &summaries, &replay,
+                    func_cfg,
+                    &func_node,
+                    source,
+                    &macros,
+                    &summaries,
+                    &replay,
+                    iec_60559_sqrt,
                 ),
             );
         }
@@ -2622,6 +2630,7 @@ mod tests {
             None,
             Default::default(),
             false,
+            false,
             None,
         );
         assert!(results.is_empty());
@@ -2642,6 +2651,7 @@ mod tests {
             &const_eval::MacroConstantMap::new(),
             None,
             Default::default(),
+            false,
             false,
             None,
         );

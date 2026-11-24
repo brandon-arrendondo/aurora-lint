@@ -26,6 +26,17 @@ The summary gains a ``Files scanned: N`` line above ``Total violations``, and th
 SARIF run's ``properties`` gain ``aurora-lint/filesScanned``. Neither replaces
 anything.
 
+A guard bounded through ``sqrt``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+INT31-C, INT08-C and the other rules that read value ranges now credit a
+guard such as ``abs((long)x) <= (long)sqrt((double)SHRT_MAX)``, and no longer
+report the arithmetic it bounds, where the new environment option
+``iec_60559_sqrt`` holds: under the default preset on a hosted target, or
+under strict and pedantic when it is declared, or when ``libc`` is ``glibc``
+or ``musl``. A manifest that sets the option is refused by 0.7.0, which does
+not know it.
+
 A second ``close()`` of a descriptor
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

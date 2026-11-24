@@ -442,6 +442,11 @@ pub enum Source {
     /// A fact about the scanned program that only its user can declare,
     /// under either preset: false unless overridden.
     Declared,
+    /// A fact about the target platform that most hosted targets share, as
+    /// the data model is: the default preset assumes it for a hosted
+    /// environment, as it assumes LP64; the stricter presets hold it only
+    /// when the declared libc model documents it.
+    Platform(&'static [Libc]),
 }
 
 /// One named option: a relaxation or a contract the analyzer may assume.
@@ -490,7 +495,12 @@ const HASHED_ONLY_WHEN_OVERRIDDEN: &[&str] = &[
     "flp00_exact_zero_comparison_exempt",
     "pre31_listed_library_calls_pure",
     "signal_handlers_persistent",
+    "iec_60559_sqrt",
 ];
+
+/// The libc models whose documentation makes `sqrt` correctly rounded in
+/// binary64 on every target they support.
+const IEC_60559_SQRT_LIBCS: &[Libc] = &[Libc::Glibc, Libc::Musl];
 
 /// The value `o` takes from its source before any override.
 fn derived_value(
@@ -513,6 +523,10 @@ fn derived_value(
         Source::Library(libcs) => libc.is_some_and(|l| libcs.contains(&l)),
         Source::Language => true,
         Source::Declared => false,
+        Source::Platform(libcs) => {
+            libc.is_some_and(|l| libcs.contains(&l))
+                || (policy == Policy::Default && environment == EnvironmentKind::Hosted)
+        }
     }
 }
 
@@ -893,6 +907,26 @@ pub static OPTIONS: &[OptionSpec] = &[
                 as a macro shall expand to code that evaluates each of its arguments \
                 exactly once\". The standard's own exceptions (the stream argument of \
                 getc, putc, getwc and putwc, and assert) stay unsafe.",
+    },
+    OptionSpec {
+        name: "iec_60559_sqrt",
+        axis: Axis::Environment,
+        scope: Scope::Contract,
+        source: Source::Platform(IEC_60559_SQRT_LIBCS),
+        oracle_tag: "contract:iec_60559_sqrt",
+        summary: "double is IEC 60559 binary64 and sqrt is correctly rounded. Then a \
+                  guard bound written as an integer cast of sqrt of an integer constant, \
+                  (long)sqrt((double)SHRT_MAX), has the value the scan computes, and the \
+                  guard bounds what it compares. sqrt of a variable is never credited. \
+                  Assumed by the default preset for a hosted target, as LP64 is; the \
+                  strict and pedantic presets hold it only when it is declared, or when \
+                  libc is glibc or musl.",
+        basis: "C11 Annex F: F.2 makes double binary64, and F.10.4.5 makes sqrt the \
+                IEC 60559 square root, which is correctly rounded. Without Annex F \
+                (__STDC_IEC_559__ undefined) the accuracy of sqrt is \
+                implementation-defined (C11 5.2.4.2.2p6), so the bound is not known. \
+                A double converted to an integer type is truncated toward zero (C11 \
+                6.3.1.4p1).",
     },
     OptionSpec {
         name: "main_argv_guarantees",
@@ -3631,6 +3665,47 @@ mod tests {
                 "{preset}"
             );
         }
+    }
+
+    #[test]
+    fn a_correctly_rounded_sqrt_is_assumed_as_the_data_model_is() {
+        let flag = |profile, set: &[&str]| {
+            AnalysisSettings::resolve(&config_with(profile, set))
+                .unwrap()
+                .flag("iec_60559_sqrt")
+        };
+        assert!(flag(Preset::Default, &[]));
+        assert!(!flag(Preset::Strict, &[]));
+        assert!(!flag(Preset::Pedantic, &[]));
+        for libc in ["libc=glibc", "libc=musl"] {
+            assert!(flag(Preset::Strict, &[libc]), "{libc}");
+            assert!(flag(Preset::Pedantic, &[libc]), "{libc}");
+        }
+        assert!(!flag(Preset::Strict, &["libc=newlib"]));
+        assert!(flag(Preset::Strict, &["iec_60559_sqrt=true"]));
+        assert!(!flag(Preset::Default, &["iec_60559_sqrt=false"]));
+        let freestanding = AnalysisSettings::resolve(&SettingsConfig {
+            environment: Some(EnvironmentConfig {
+                kind: Some(EnvironmentKind::Freestanding),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(!freestanding.flag("iec_60559_sqrt"));
+        // Taking the value its source derives leaves the settings hash as
+        // runs recorded before the option existed carry it.
+        assert_eq!(
+            AnalysisSettings::resolve(&config_with(Preset::Strict, &["libc=glibc"]))
+                .unwrap()
+                .settings_hash(),
+            AnalysisSettings::resolve(&config_with(
+                Preset::Strict,
+                &["libc=glibc", "iec_60559_sqrt=true"]
+            ))
+            .unwrap()
+            .settings_hash()
+        );
     }
 
     #[test]
