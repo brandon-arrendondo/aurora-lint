@@ -160,20 +160,67 @@ pub fn object_pointer_declarator<'a>(declarator: &Node<'a>) -> Option<Node<'a>> 
 /// one writable pointer. A function, or a typedef this file does not define
 /// (a header's), is not known to be const.
 pub fn declares_const_object(decl: &Node, declarator: &Node, source: &str) -> bool {
-    const_object_within(decl, declarator, source, 8)
+    qualified_object_within(decl, declarator, source, "const", 8)
 }
 
-fn const_object_within(decl: &Node, declarator: &Node, source: &str, depth: usize) -> bool {
+/// Whether the object `declarator` declares is itself `_Atomic`, read as
+/// [`declares_const_object`] reads `const`: `_Atomic int n`, `_Atomic(int) n`,
+/// `int *_Atomic p`, `static _Atomic struct s v`, a typedef in scope that
+/// names an atomic type, and a `<stdatomic.h>` name such as `atomic_int` when
+/// no typedef of that name is in scope. `_Atomic int *p` is a plain pointer
+/// to an atomic object ([`declares_pointer_to_atomic`]).
+pub fn declares_atomic_object(decl: &Node, declarator: &Node, source: &str) -> bool {
+    qualified_object_within(decl, declarator, source, "_Atomic", 8)
+}
+
+/// Whether `declarator` declares a plain pointer (`*p`, one level, no array
+/// or function between) to an `_Atomic` object, read from the specifiers as
+/// [`declares_atomic_object`] reads them: `_Atomic int *p`, `atomic_int *p`.
+pub fn declares_pointer_to_atomic(decl: &Node, declarator: &Node, source: &str) -> bool {
+    let mut d = *declarator;
+    while matches!(
+        d.kind(),
+        "parenthesized_declarator" | "attributed_declarator"
+    ) {
+        match inner_declarator(&d) {
+            Some(inner) if inner.id() != d.id() => d = inner,
+            _ => return false,
+        }
+    }
+    if d.kind() != "pointer_declarator" {
+        return false;
+    }
+    let mut name = d.child_by_field_name("declarator");
+    while let Some(n) = name.filter(|n| n.kind() == "parenthesized_declarator") {
+        name = inner_declarator(&n).filter(|inner| inner.id() != n.id());
+    }
+    name.is_some_and(|n| n.kind() == "identifier")
+        && specifiers_qualified(decl, source, "_Atomic", 8)
+}
+
+fn qualified_object_within(
+    decl: &Node,
+    declarator: &Node,
+    source: &str,
+    qualifier: &str,
+    depth: usize,
+) -> bool {
     if depth == 0 || declares_function(declarator) {
         return false;
     }
     match nearest_pointer_derivation(declarator) {
-        Some(Some(pointer)) => return typedef_has_const_qualifier(&pointer),
-        // A chain this does not read may hide a pointer: not known const
+        Some(Some(pointer)) => return has_type_qualifier(&pointer, qualifier),
+        // A chain this does not read may hide a pointer: not known qualified
         None => return false,
         Some(None) => {}
     }
-    if typedef_has_const_qualifier(decl) {
+    specifiers_qualified(decl, source, qualifier, depth)
+}
+
+/// Whether the type `decl`'s specifiers name carries `qualifier`: among the
+/// specifiers themselves, or through the typedef in scope they name.
+fn specifiers_qualified(decl: &Node, source: &str, qualifier: &str, depth: usize) -> bool {
+    if has_type_qualifier(decl, qualifier) {
         return true;
     }
     let Some(type_name) = decl
@@ -186,12 +233,60 @@ fn const_object_within(decl: &Node, declarator: &Node, source: &str, depth: usiz
     let Some(typedef) =
         crate::utility::cert_c::ast_utils::typedef_definition_in_scope(&type_name, name, source)
     else {
-        return false;
+        return qualifier == "_Atomic" && is_stdatomic_type_name(name);
     };
     typedef_declarators(&typedef)
         .into_iter()
         .find(|d| TypedefShape::of(d, source).name.as_deref() == Some(name))
-        .is_some_and(|d| const_object_within(&typedef, &d, source, depth - 1))
+        .is_some_and(|d| qualified_object_within(&typedef, &d, source, qualifier, depth - 1))
+}
+
+/// Whether `name` is one of the atomic integer type names `<stdatomic.h>`
+/// defines (C11 7.17.6, C23 adds `atomic_char8_t`). `atomic_flag` is not one:
+/// it is a structure with no arithmetic.
+fn is_stdatomic_type_name(name: &str) -> bool {
+    const NAMES: &[&str] = &[
+        "atomic_bool",
+        "atomic_char",
+        "atomic_schar",
+        "atomic_uchar",
+        "atomic_short",
+        "atomic_ushort",
+        "atomic_int",
+        "atomic_uint",
+        "atomic_long",
+        "atomic_ulong",
+        "atomic_llong",
+        "atomic_ullong",
+        "atomic_char8_t",
+        "atomic_char16_t",
+        "atomic_char32_t",
+        "atomic_wchar_t",
+        "atomic_intptr_t",
+        "atomic_uintptr_t",
+        "atomic_size_t",
+        "atomic_ptrdiff_t",
+        "atomic_intmax_t",
+        "atomic_uintmax_t",
+    ];
+    if NAMES.contains(&name) {
+        return true;
+    }
+    // atomic_int_least8_t .. atomic_uint_fast64_t
+    let Some(rest) = name
+        .strip_prefix("atomic_uint_")
+        .or_else(|| name.strip_prefix("atomic_int_"))
+    else {
+        return false;
+    };
+    let Some(width) = rest
+        .strip_prefix("least")
+        .or_else(|| rest.strip_prefix("fast"))
+        .and_then(|w| w.strip_suffix("_t"))
+    else {
+        return false;
+    };
+    matches!(width, "8" | "16" | "32" | "64")
 }
 
 /// [`object_pointer_declarator`] for a declarator chain ending in either an
@@ -291,12 +386,19 @@ pub fn typedef_declarators<'a>(n: &Node<'a>) -> Vec<Node<'a>> {
 /// Only direct children count: a `const` inside a struct body or a parameter
 /// list qualifies something else.
 pub fn typedef_has_const_qualifier(n: &Node) -> bool {
+    has_type_qualifier(n, "const")
+}
+
+/// Whether `n`'s own `type_qualifier` children include `qualifier` (`const`,
+/// `volatile`, `_Atomic`, ...), not one nested in a struct body or a
+/// parameter list.
+fn has_type_qualifier(n: &Node, qualifier: &str) -> bool {
     let mut cursor = n.walk();
     let found = n.named_children(&mut cursor).any(|c| {
         c.kind() == "type_qualifier" && {
             let mut inner = c.walk();
-            let is_const = c.children(&mut inner).any(|k| k.kind() == "const");
-            is_const
+            let has = c.children(&mut inner).any(|k| k.kind() == qualifier);
+            has
         }
     });
     found

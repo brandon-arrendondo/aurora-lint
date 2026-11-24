@@ -71,6 +71,20 @@
 //!   written, so no other thread's access can interleave with a change to
 //!   it: it is not one of the shared variables an operation is on, judged
 //!   per declarator by declaration (a `const char *s` is a writable pointer).
+//! - Shared objects are collected per declarator, with or without an
+//!   initializer (`static int a[4], *p;`), and each occurrence is matched by
+//!   declaration: a local, a parameter or a block-scope enumerator of the
+//!   same name hides the shared object.
+//! - A compound operation on part of a shared object (`g.n++`,
+//!   `g.flags |= 4`, `arr[j].x++`, `m[i][j] = m[i][j] + 1`) is one on that
+//!   object. Each subscript must be of an array the object is declared as
+//!   (through its typedef); subscripting a pointer reaches its pointee, which
+//!   the next bullet judges.
+//! - `x++` or `x += n` on a whole `_Atomic` object (`_Atomic int`,
+//!   `atomic_int`), or through a pointer to one (`(*p)++`), is a single
+//!   atomic read-modify-write and is not reported. `x = x + 1` is two
+//!   accesses, and a member of an atomic structure is not atomic on its own,
+//!   so both still are.
 //! - A compound operation through a pointer (`(*p)++`, `p[i] += n`,
 //!   `p->n++`) is judged by what the pointer points at, not by where the
 //!   pointer itself is stored: a thread-local pointer into a shared array
@@ -91,10 +105,14 @@ use crate::analyze::points_to::lvalue_of;
 use crate::manifest::Severity;
 use crate::settings::threads::ThreadOpKind;
 use crate::utility::cert_c::ast_utils::{
-    declaration_is_thread_local, find_containing_function, get_identifier_from_declarator,
-    get_node_text, resolve_identifier_binding, resolve_identifier_declarator, IdentifierBinding,
+    ancestors, declaration_is_thread_local, find_containing_function, get_node_text,
+    resolve_identifier_binding, resolve_identifier_declarator, typedef_definition_in_scope,
+    IdentifierBinding,
 };
-use crate::utility::cert_c::declarator_utils::declares_const_object;
+use crate::utility::cert_c::declarator_utils::{
+    declares_atomic_object, declares_const_object, declares_function, declares_pointer_to_atomic,
+    typedef_declarators, TypedefShape,
+};
 use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::thread_api::{self, ProjectFunctions};
 use lang_parsing_substrate::query;
@@ -115,6 +133,11 @@ use tree_sitter::Node;
 #[derive(Debug, Default)]
 struct StaticVars {
     decls: HashMap<String, Vec<usize>>,
+    /// Every enumerator declared inside a block, by name: its own start byte
+    /// and its block's byte range. A block-scope `enum { p = 3 }` hides a
+    /// shared `p` from there to the end of the block, which
+    /// [`resolve_identifier_binding`] does not see.
+    block_enumerators: HashMap<String, Vec<(usize, std::ops::Range<usize>)>>,
 }
 
 impl StaticVars {
@@ -128,17 +151,31 @@ impl StaticVars {
 
     /// True if `id_node` (an occurrence of `name`) actually resolves to one
     /// of the recorded declarations for that name, rather than a same-named
-    /// local variable or parameter shadowing it in this scope.
+    /// local variable, parameter or block-scope enumerator shadowing it in
+    /// this scope.
     fn resolves(&self, id_node: &Node, name: &str, source: &str) -> bool {
         let Some(starts) = self.decls.get(name) else {
             return false;
         };
-        match resolve_identifier_binding(id_node, name, source) {
+        let decl_start = match resolve_identifier_binding(id_node, name, source) {
             Some(IdentifierBinding::Local(decl)) | Some(IdentifierBinding::Global(decl)) => {
-                starts.contains(&decl.start_byte())
+                decl.start_byte()
             }
-            _ => false,
-        }
+            _ => return false,
+        };
+        starts.contains(&decl_start)
+            && !self.enumerator_hides(id_node.start_byte(), name, decl_start)
+    }
+
+    /// Whether an enumerator named `name`, declared before `at` in a block
+    /// that holds `at` and is nested inside the scope of the declaration at
+    /// `decl_start` (so opens after it), hides that declaration at `at`.
+    fn enumerator_hides(&self, at: usize, name: &str, decl_start: usize) -> bool {
+        self.block_enumerators.get(name).is_some_and(|found| {
+            found.iter().any(|(start, block)| {
+                *start < at && block.contains(&at) && block.start > decl_start
+            })
+        })
     }
 }
 
@@ -248,38 +285,50 @@ impl Con07C {
         static_vars
     }
 
+    /// Record each object a shared declaration declares, by declarator:
+    /// `static int a, b[4], *p = 0, (*cb)(void);` declares four, whether or
+    /// not each has an initializer. A function, and a `const` object, is
+    /// not shared state an operation can be on.
     fn find_static_variables(&self, node: &Node, source: &str, static_vars: &mut StaticVars) {
         for decl_node in query::find_descendants_of_kind(*node, "declaration") {
-            let mut var_names = Vec::new();
-
-            for i in 0..decl_node.child_count() {
-                if let Some(child) = decl_node.child(i) {
-                    match child.kind() {
-                        "init_declarator" => {
-                            // Case: static int a = 0;
-                            if let Some(declarator) = child.child_by_field_name("declarator") {
-                                let name = get_identifier_from_declarator(&declarator, source);
-                                if !name.is_empty()
-                                    && !declares_const_object(&decl_node, &declarator, source)
-                                {
-                                    var_names.push(name);
-                                }
-                            }
-                        }
-                        // Case: static int a;  (no initializer)
-                        "identifier" if !declares_const_object(&decl_node, &child, source) => {
-                            var_names.push(get_node_text(&child, source).to_string());
-                        }
-                        _ => {}
+            if !declaration_is_shared(&decl_node, source) {
+                continue;
+            }
+            let mut cursor = decl_node.walk();
+            for declarator in decl_node.children_by_field_name("declarator", &mut cursor) {
+                let declarator = if declarator.kind() == "init_declarator" {
+                    match declarator.child_by_field_name("declarator") {
+                        Some(inner) => inner,
+                        None => continue,
                     }
+                } else {
+                    declarator
+                };
+                if declares_function(&declarator)
+                    || declares_const_object(&decl_node, &declarator, source)
+                {
+                    continue;
+                }
+                if let Some(name) = declarator_name(&declarator) {
+                    static_vars.record(
+                        get_node_text(&name, source).to_string(),
+                        decl_node.start_byte(),
+                    );
                 }
             }
-
-            if declaration_is_shared(&decl_node, source) {
-                for name in var_names {
-                    static_vars.record(name, decl_node.start_byte());
-                }
-            }
+        }
+        for enumerator in query::find_descendants_of_kind(*node, "enumerator") {
+            let (Some(name), Some(block)) = (
+                enumerator.child_by_field_name("name"),
+                ancestors(&enumerator).find(|a| a.kind() == "compound_statement"),
+            ) else {
+                continue;
+            };
+            static_vars
+                .block_enumerators
+                .entry(get_node_text(&name, source).to_string())
+                .or_default()
+                .push((enumerator.start_byte(), block.byte_range()));
         }
     }
 
@@ -527,62 +576,44 @@ impl Con07C {
         static_vars: &StaticVars,
     ) -> bool {
         query::find_first_descendant(*node, |n| {
-            if n.kind() == "assignment_expression" {
-                let left = n.child_by_field_name("left");
-                let right = n.child_by_field_name("right");
-                if let Some(left_node) = left {
-                    let left_text = get_node_text(&left_node, source);
-                    if left_text == var_name
-                        && left_node.kind() == "identifier"
-                        && static_vars.resolves(&left_node, var_name, source)
-                    {
-                        // Compound assignment: x += 1, x -= 1, etc.
-                        if let Some(operator) = n.child_by_field_name("operator") {
-                            let op_text = get_node_text(&operator, source);
-                            if matches!(
-                                op_text,
-                                "+=" | "-="
-                                    | "*="
-                                    | "/="
-                                    | "%="
-                                    | "<<="
-                                    | ">>="
-                                    | "&="
-                                    | "^="
-                                    | "|="
-                            ) {
-                                return true;
-                            }
-                        }
-                        // Read-modify-write: x = x OP expr (var appears in RHS)
-                        if let Some(right_node) = right {
-                            if query::find_descendants_of_kind(right_node, "identifier")
-                                .into_iter()
-                                .any(|id| {
-                                    get_node_text(&id, source) == var_name
-                                        && static_vars.resolves(&id, var_name, source)
-                                })
-                            {
-                                return true;
-                            }
-                        }
-                    }
-                }
+            // `x++`, `x += n` and `x = x + n`, on `x` itself or on part of it
+            // (`x.f++`, `x[i] |= m`, `x[i].f = x[i].f + 1`)
+            let (target, operator) = match n.kind() {
+                "update_expression" => (n.child_by_field_name("argument"), None),
+                "assignment_expression" => (
+                    n.child_by_field_name("left"),
+                    n.child_by_field_name("operator")
+                        .map(|o| get_node_text(&o, source)),
+                ),
+                _ => return false,
+            };
+            let Some(target) = target else {
+                return false;
+            };
+            let Some((object, whole)) = shared_static_written(&target, source, static_vars) else {
+                return false;
+            };
+            if get_node_text(&object, source) != var_name {
+                return false;
             }
-
-            // Increment/decrement: x++, ++x, x--, --x
-            if matches!(n.kind(), "update_expression") {
-                if let Some(argument) = n.child_by_field_name("argument") {
-                    if get_node_text(&argument, source) == var_name
-                        && argument.kind() == "identifier"
-                        && static_vars.resolves(&argument, var_name, source)
-                    {
-                        return true;
-                    }
-                }
+            if operator != Some("=") {
+                // A compound assignment or `++`/`--` of a whole `_Atomic`
+                // object is one atomic read-modify-write (C11 6.5.2.4p2,
+                // 6.5.16.2p3); a member of an atomic structure is not
+                return !(whole && is_atomic_object(&object, var_name, source));
             }
-
-            false
+            if !whole {
+                return is_compound_assignment(&n, &target, source);
+            }
+            // `x = x OP expr`: two accesses, atomic object or not
+            n.child_by_field_name("right").is_some_and(|right| {
+                query::find_descendants_of_kind(right, "identifier")
+                    .into_iter()
+                    .any(|id| {
+                        get_node_text(&id, source) == var_name
+                            && static_vars.resolves(&id, var_name, source)
+                    })
+            })
         })
         .is_some()
     }
@@ -731,6 +762,23 @@ fn compound_writes_through_pointers(
         let Some(declared) = declarator_name(&declarator) else {
             continue;
         };
+        // `(*p)++` or `p[i] += n` on the `_Atomic` object `p` points at is
+        // one atomic read-modify-write; `p->f` reaches a member, which is not
+        let read_modify_write = op.kind() == "update_expression"
+            || op
+                .child_by_field_name("operator")
+                .is_some_and(|o| get_node_text(&o, source) != "=");
+        if read_modify_write
+            && target.is_some_and(|t| {
+                matches!(
+                    strip_parens_and_casts(t).kind(),
+                    "pointer_expression" | "subscript_expression"
+                )
+            })
+            && declares_pointer_to_atomic(&decl, &declarator, source)
+        {
+            continue;
+        }
         if facts.macros.is_none() && !facts.pointees.contains_key(&declared.start_byte()) {
             let mut root = *body;
             while let Some(parent) = root.parent() {
@@ -762,6 +810,91 @@ fn compound_writes_through_pointers(
         list.dedup();
     }
     found
+}
+
+/// The shared object `target` writes, whole or in part, and whether it is
+/// the whole object: `x`, or `x[i]`, `x.f`, `x[i].f`, `x[i][j]`, through
+/// parentheses, `x` resolving by declaration to one of `static_vars`. Each
+/// subscript must be of an array `x` is declared as, through its typedef:
+/// subscripting a pointer writes its pointee, which
+/// [`compound_writes_through_pointers`] judges, and a member's type is not
+/// read, so `x.f[i]` is not proven. `->` and `*` reach a pointee.
+fn shared_static_written<'a>(
+    target: &Node<'a>,
+    source: &str,
+    static_vars: &StaticVars,
+) -> Option<(Node<'a>, bool)> {
+    let mut object = strip_parens_and_casts(*target);
+    // Each step from `x` to the written location, outermost first
+    let mut steps = Vec::new();
+    loop {
+        match object.kind() {
+            "subscript_expression" => {}
+            "field_expression"
+                if object
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| get_node_text(&o, source) == ".") => {}
+            _ => break,
+        }
+        steps.push(object.kind());
+        object = strip_parens_and_casts(object.child_by_field_name("argument")?);
+    }
+    if object.kind() != "identifier" {
+        return None;
+    }
+    let name = get_node_text(&object, source);
+    if !static_vars.contains(name) || !static_vars.resolves(&object, name, source) {
+        return None;
+    }
+    if !steps.is_empty() {
+        let (decl, declarator) = resolve_identifier_declarator(&object, name, source)?;
+        let mut derivations = object_derivations(&decl, &declarator, source).into_iter();
+        let mut in_member = false;
+        for step in steps.iter().rev() {
+            if *step == "field_expression" {
+                in_member = true;
+            } else if in_member || derivations.next() != Some("array_declarator") {
+                return None;
+            }
+        }
+    }
+    Some((object, steps.is_empty()))
+}
+
+/// Whether the occurrence `object` of `name` names an `_Atomic` object, by
+/// its declaration.
+fn is_atomic_object(object: &Node, name: &str, source: &str) -> bool {
+    resolve_identifier_declarator(object, name, source)
+        .is_some_and(|(decl, declarator)| declares_atomic_object(&decl, &declarator, source))
+}
+
+/// [`pointer_derivations`] of `declarator`, then of the typedef in scope
+/// that `decl`'s type names, and so on: `typedef int Row[4]; static Row
+/// rows[3];` derives `rows` by two arrays.
+fn object_derivations(decl: &Node, declarator: &Node, source: &str) -> Vec<&'static str> {
+    let mut kinds = pointer_derivations(declarator);
+    let mut decl = *decl;
+    for _ in 0..8 {
+        let Some(type_name) = decl
+            .child_by_field_name("type")
+            .filter(|t| t.kind() == "type_identifier")
+        else {
+            break;
+        };
+        let name = get_node_text(&type_name, source);
+        let Some(typedef) = typedef_definition_in_scope(&type_name, name, source) else {
+            break;
+        };
+        let Some(named) = typedef_declarators(&typedef)
+            .into_iter()
+            .find(|d| TypedefShape::of(d, source).name.as_deref() == Some(name))
+        else {
+            break;
+        };
+        kinds.extend(pointer_derivations(&named));
+        decl = typedef;
+    }
+    kinds
 }
 
 /// Whether every occurrence of the shared variable `name` in `body` is a
@@ -1020,7 +1153,8 @@ fn is_macro_output_argument(
 fn pointer_derivations(declarator: &Node) -> Vec<&'static str> {
     let mut kinds = Vec::new();
     let mut node = *declarator;
-    while node.kind() != "identifier" {
+    // A typedef's chain ends in the name it defines
+    while !matches!(node.kind(), "identifier" | "type_identifier") {
         let inner = if node.kind() == "parenthesized_declarator" {
             node.named_child(0)
         } else {
