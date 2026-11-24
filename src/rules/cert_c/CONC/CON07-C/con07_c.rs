@@ -770,19 +770,27 @@ fn compound_writes_through_pointers(
             continue;
         };
         // `(*p)++` or `p[i] += n` on the `_Atomic` object `p` points at is
-        // one atomic read-modify-write; `p->f` reaches a member, which is not
+        // one atomic read-modify-write. `p->f` reaches a member, which is
+        // not when the pointee is an atomic structure (C11 6.5.2.3p5), and
+        // is when the structure's definition declares `f` atomic, as for
+        // `g.f`
         let read_modify_write = op.kind() == "update_expression"
             || op
                 .child_by_field_name("operator")
                 .is_some_and(|o| get_node_text(&o, source) != "=");
+        let written = target.map(strip_parens_and_casts);
         if read_modify_write
-            && target.is_some_and(|t| {
-                matches!(
-                    strip_parens_and_casts(t).kind(),
-                    "pointer_expression" | "subscript_expression"
-                )
-            })
+            && written
+                .is_some_and(|t| matches!(t.kind(), "pointer_expression" | "subscript_expression"))
             && declares_pointer_to_atomic(&decl, &declarator, source)
+        {
+            continue;
+        }
+        if read_modify_write
+            && written.is_some_and(|t| {
+                t.kind() == "field_expression"
+                    && writes_atomic_member_of_pointee(&t, &decl, &declarator, source)
+            })
         {
             continue;
         }
@@ -902,7 +910,25 @@ fn writes_atomic_part(object: &Node, steps: &[Node], name: &str, source: &str) -
     member_is_atomic(&decl, &fields, source)
 }
 
-/// Whether the member chain `fields` (innermost first, each a `.` access)
+/// Whether `p->f`, `member`, writes an `_Atomic` member of what the pointer
+/// `p` (declared by `declarator` in `decl`) points at: `p` is one plain
+/// pointer, in its own declarator and through no typedef, to a structure
+/// that is not itself atomic, and [`member_is_atomic`] holds of `f` in that
+/// structure's definition.
+fn writes_atomic_member_of_pointee(
+    member: &Node,
+    decl: &Node,
+    declarator: &Node,
+    source: &str,
+) -> bool {
+    pointer_derivations(declarator) == ["pointer_declarator"]
+        && object_derivations(decl, declarator, source).len() == 1
+        && !declares_pointer_to_atomic(decl, declarator, source)
+        && member_is_atomic(decl, &[member], source)
+}
+
+/// Whether the member chain `fields` (innermost first, each a `.` access,
+/// the first possibly `->` from a pointer whose `decl` is passed)
 /// of an object of the type `decl` names ends in an `_Atomic` member, no
 /// member before it atomic or derived, in every definition visible.
 fn member_is_atomic(decl: &Node, fields: &[&Node], source: &str) -> bool {

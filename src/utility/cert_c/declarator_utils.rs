@@ -254,8 +254,12 @@ pub fn record_definitions_of<'a>(decl: &Node<'a>, source: &str) -> Vec<Node<'a>>
 /// scope around that structure (C11 6.2.1p4). Several are returned when the
 /// file defines the tag more than once in that scope, as in the arms of an
 /// `#if`; a caller that removes a finding should require all of them to
-/// agree. A bodiless `struct S;` in an inner block that redeclares the tag
-/// is not read.
+/// agree. A definition in an `#if 0` arm, or in an arm other than the one
+/// `site` is in, is not visible. When a definition sits in a conditional
+/// before `site` whose arms that can be taken do not all define the tag (one
+/// leaves it to a header, or there is no `#else`), which definition applies
+/// is not known and nothing is returned. A bodiless `struct S;` in an inner
+/// block that redeclares the tag is not read.
 pub fn record_definitions_in_scope<'a>(
     site: &Node<'a>,
     kind: &str,
@@ -306,15 +310,135 @@ pub fn record_definitions_in_scope<'a>(
         .map(|(_, n)| n)
         .collect();
     found.sort_by_key(Node::start_byte);
-    found
+    // A definition in a preprocessor arm is in effect at `site` only in the
+    // arm `site` is in, or, for a conditional `site` follows, when every arm
+    // that can be taken defines the tag too: an arm that leaves it to a
+    // header, or no `#else`, gives it a meaning this file does not show
+    let mut kept = Vec::new();
+    for definition in &found {
+        match arms_admit(definition, site, source, &|arm| {
+            found.iter().any(|d| in_arm_body(d, arm))
+        }) {
+            Some(true) => kept.push(*definition),
+            Some(false) => {}
+            None => return Vec::new(),
+        }
+    }
+    kept
+}
+
+/// The preprocessor conditional kinds that open a conditional, and every
+/// kind of arm in one.
+const CONDITIONALS: &[&str] = &["preproc_if", "preproc_ifdef"];
+const CONDITIONAL_ARMS: &[&str] = &[
+    "preproc_if",
+    "preproc_ifdef",
+    "preproc_elif",
+    "preproc_elifdef",
+    "preproc_else",
+];
+
+/// The arms of the conditional that opens with `conditional`, in order, each
+/// with whether it can never be taken (`#if 0`), and whether the last arm is
+/// an `#else`.
+fn conditional_arms<'a>(conditional: &Node<'a>, source: &str) -> (Vec<(Node<'a>, bool)>, bool) {
+    let mut arms = Vec::new();
+    let mut has_else = false;
+    let mut arm = Some(*conditional);
+    while let Some(a) = arm {
+        let never = a
+            .child_by_field_name("condition")
+            .is_some_and(|c| source[c.byte_range()].trim() == "0");
+        has_else = a.kind() == "preproc_else";
+        arms.push((a, never));
+        arm = a.child_by_field_name("alternative");
+    }
+    (arms, has_else)
+}
+
+/// The nodes an arm holds: its children other than its condition (or
+/// `#ifdef` name) and the arm after it.
+fn arm_body<'a>(arm: &Node<'a>) -> Vec<Node<'a>> {
+    let skip: Vec<usize> = ["condition", "name", "alternative"]
+        .iter()
+        .filter_map(|f| arm.child_by_field_name(f))
+        .map(|n| n.id())
+        .collect();
+    let mut cursor = arm.walk();
+    let body: Vec<Node<'a>> = arm
+        .named_children(&mut cursor)
+        .filter(|c| !skip.contains(&c.id()))
+        .collect();
+    body
+}
+
+fn encloses(outer: &Node, inner: &Node) -> bool {
+    outer.start_byte() <= inner.start_byte() && inner.end_byte() <= outer.end_byte()
+}
+
+/// Whether `n` is in `arm` itself rather than in a later arm of the same
+/// conditional.
+fn in_arm_body(n: &Node, arm: &Node) -> bool {
+    encloses(arm, n)
+        && arm
+            .child_by_field_name("alternative")
+            .is_none_or(|alt| !encloses(&alt, n))
+}
+
+/// Whether the preprocessor arms around `n` leave it in effect at `site`.
+/// For each conditional arm `n` is in, out to the file: an `#if 0` arm is
+/// never in effect (`Some(false)`); an arm of a conditional that holds
+/// `site` is in effect only when it is `site`'s own arm (`Some(false)`
+/// otherwise); and for a conditional before `site`, `proves` must hold of
+/// every arm that can be taken, with an `#else` among them, or which arm is
+/// taken decides the answer and it is not known (`None`).
+fn arms_admit(n: &Node, site: &Node, source: &str, proves: &dyn Fn(&Node) -> bool) -> Option<bool> {
+    let mut child = *n;
+    while let Some(parent) = child.parent() {
+        let entered_arm = CONDITIONAL_ARMS.contains(&parent.kind())
+            && parent.child_by_field_name("alternative") != Some(child);
+        if entered_arm {
+            let arm = parent;
+            let mut conditional = arm;
+            while let Some(up) = conditional.parent() {
+                if CONDITIONAL_ARMS.contains(&up.kind())
+                    && up.child_by_field_name("alternative") == Some(conditional)
+                {
+                    conditional = up;
+                } else {
+                    break;
+                }
+            }
+            let (arms, has_else) = conditional_arms(&conditional, source);
+            if arms.iter().any(|(a, never)| *never && a.id() == arm.id()) {
+                return Some(false);
+            }
+            if encloses(&conditional, site) {
+                if !in_arm_body(site, &arm) {
+                    return Some(false);
+                }
+            } else {
+                let live: Vec<&Node> = arms
+                    .iter()
+                    .filter(|(_, never)| !never)
+                    .map(|(a, _)| a)
+                    .collect();
+                if !has_else || !live.iter().all(|a| proves(a)) {
+                    return None;
+                }
+            }
+        }
+        child = parent;
+    }
+    Some(true)
 }
 
 /// The declarations of the member `field` of the structure or union
 /// definition `record` (a `struct_specifier` or `union_specifier` with a
 /// body), each as its `field_declaration` and the declarator naming it,
 /// including one inside an `#if` arm and one reached through an anonymous
-/// structure or union member (C11 6.7.2.1p13). Several when the arms of an
-/// `#if` each declare it.
+/// structure or union member (C11 6.7.2.1p13), unless that member is
+/// `_Atomic`. Several when the arms of an `#if` each declare it.
 pub fn member_declarations<'a>(
     record: &Node<'a>,
     field: &str,
@@ -336,9 +460,13 @@ pub fn member_declarations<'a>(
                         .collect();
                     if declarators.is_empty() {
                         // An anonymous structure or union member
+                        // An `_Atomic` one is an atomic structure, whose
+                        // members are not atomic on their own (C11
+                        // 6.5.2.3p5), so they are not returned
                         if let Some(inner) = child.child_by_field_name("type").filter(|t| {
                             matches!(t.kind(), "struct_specifier" | "union_specifier")
                                 && t.child_by_field_name("name").is_none()
+                                && !has_type_qualifier(&child, "_Atomic")
                         }) {
                             found.extend(member_declarations(&inner, field, source));
                         }
@@ -427,7 +555,12 @@ fn specifiers_qualified(decl: &Node, source: &str, qualifier: &str, depth: usize
 }
 
 /// Whether the file includes the system header `header` (`#include
-/// <stdatomic.h>`) before `site`, in any preprocessor arm. The standard
+/// <stdatomic.h>`) before `site`, whichever preprocessor arms are taken: at
+/// file scope, in the arm of a conditional that `site` itself is in, or in
+/// every arm that can be taken of a conditional with an `#else` (an `#if 0`
+/// arm is never taken and needs no include). An include in only one arm of
+/// `#if defined(__STDC_NO_ATOMICS__) ... #else ... #endif`, or in an arm
+/// with no `#else`, is not in effect everywhere, so it does not count. The
 /// library's names mean what the standard says only where its header is in
 /// effect; a project's own compatibility header of the same names is not
 /// the library. A header the file reaches only through another header is
@@ -438,35 +571,50 @@ pub fn includes_system_header_before(site: &Node, header: &str, source: &str) ->
     while let Some(parent) = root.parent() {
         root = parent;
     }
-    // Directives at file scope and in preprocessor arms, in file order
-    fn walk(n: &Node, site: &Node, header: &str, source: &str) -> Option<bool> {
-        let mut cursor = n.walk();
-        let children: Vec<Node> = n.named_children(&mut cursor).collect();
-        for child in children {
-            if child.start_byte() >= site.start_byte() {
-                return Some(false);
+    let mut cursor = root.walk();
+    let top: Vec<Node> = root.named_children(&mut cursor).collect();
+    included_in(&top, site, header, source)
+}
+
+/// Whether the directives `nodes`, in file order, include `<header>` before
+/// `site` whichever arms are taken: [`includes_system_header_before`].
+fn included_in(nodes: &[Node], site: &Node, header: &str, source: &str) -> bool {
+    for node in nodes {
+        if node.start_byte() >= site.start_byte() {
+            break;
+        }
+        if node.kind() == "preproc_include" {
+            let names = node.child_by_field_name("path").is_some_and(|p| {
+                p.kind() == "system_lib_string"
+                    && source[p.byte_range()]
+                        .trim_start_matches('<')
+                        .trim_end_matches('>')
+                        .trim()
+                        == header
+            });
+            if names {
+                return true;
             }
-            if child.kind() == "preproc_include" {
-                let names = child.child_by_field_name("path").is_some_and(|p| {
-                    p.kind() == "system_lib_string"
-                        && source[p.byte_range()]
-                            .trim_start_matches('<')
-                            .trim_end_matches('>')
-                            .trim()
-                            == header
+        } else if CONDITIONALS.contains(&node.kind()) {
+            let (arms, has_else) = conditional_arms(node, source);
+            if encloses(node, site) {
+                // Only the arm `site` is in is taken where `site` is
+                return arms.iter().any(|(arm, never)| {
+                    !never
+                        && in_arm_body(site, arm)
+                        && included_in(&arm_body(arm), site, header, source)
                 });
-                if names {
-                    return Some(true);
-                }
-            } else if child.kind().starts_with("preproc_") {
-                if let Some(answer) = walk(&child, site, header, source) {
-                    return Some(answer);
-                }
+            }
+            let mut live = arms.iter().filter(|(_, never)| !never).peekable();
+            if has_else
+                && live.peek().is_some()
+                && live.all(|(arm, _)| included_in(&arm_body(arm), site, header, source))
+            {
+                return true;
             }
         }
-        None
     }
-    walk(&root, site, header, source).unwrap_or(false)
+    false
 }
 
 /// Whether `name` is one of the atomic integer type names `<stdatomic.h>`
