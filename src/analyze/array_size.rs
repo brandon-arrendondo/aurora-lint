@@ -92,6 +92,13 @@ impl FileScopeArrays {
     }
 
     /// Whether this index was built from `root` of `source`.
+    ///
+    /// The address and length are enough here, unlike in a per-thread memo
+    /// ([`crate::analyze::source_identity`]): the one holder builds the
+    /// index at the start of each `check` from that call's own tree and
+    /// text, and asks it only during that call, while both are borrowed and
+    /// so alive. No other live text can start at the same address with the
+    /// same length, and no other live tree has the same root.
     fn is_of(&self, root: &Node, source: &str) -> bool {
         self.of == (root.id(), source.as_ptr() as usize, source.len())
     }

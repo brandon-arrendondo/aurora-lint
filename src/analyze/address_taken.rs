@@ -29,6 +29,7 @@
 //! value-range analysis has always made for `f(&x)`: a callee that keeps the
 //! pointer and writes through it at a later call is not followed.
 
+use crate::analyze::source_identity::SourceIdentity;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -620,13 +621,13 @@ fn read_define_body_identifiers(source: &str) -> HashSet<String> {
     out
 }
 
-/// A source buffer's address and length, with the identifiers its
-/// `#define` bodies spell.
-type DefineBodyMemo = Option<((usize, usize), Rc<HashSet<String>>)>;
+/// A source text, with the identifiers its `#define` bodies spell.
+type DefineBodyMemo = Option<(SourceIdentity, Rc<HashSet<String>>)>;
 
 thread_local! {
     /// [`define_body_identifiers`] of the source last asked about on this
-    /// thread.
+    /// thread, kept with the text's [`SourceIdentity`]: a buffer's address
+    /// and length do not identify its text.
     static DEFINE_BODY_IDENTIFIERS: RefCell<DefineBodyMemo> = const { RefCell::new(None) };
 }
 
@@ -635,17 +636,17 @@ thread_local! {
 /// function's tree shows. Read once per file ([`forget_function_facts`]
 /// forgets it with the facts).
 pub fn define_body_identifiers(source: &str) -> Rc<HashSet<String>> {
-    let key = (source.as_ptr() as usize, source.len());
     if let Some(found) = DEFINE_BODY_IDENTIFIERS.with(|memo| {
         memo.borrow()
             .as_ref()
-            .filter(|(k, _)| *k == key)
+            .filter(|(of, _)| of.is(source))
             .map(|(_, ids)| Rc::clone(ids))
     }) {
         return found;
     }
     let ids = Rc::new(read_define_body_identifiers(source));
-    DEFINE_BODY_IDENTIFIERS.with(|memo| *memo.borrow_mut() = Some((key, Rc::clone(&ids))));
+    DEFINE_BODY_IDENTIFIERS
+        .with(|memo| *memo.borrow_mut() = Some((SourceIdentity::of(source), Rc::clone(&ids))));
     ids
 }
 
@@ -1103,6 +1104,22 @@ fn collect_declarations(node: &Node, source: &str, facts: &mut AddressTakenLocal
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Another text of the same length in the same buffer, as a freed
+    /// buffer reused on one thread gives, reads its own `#define` bodies.
+    #[test]
+    fn define_body_identifiers_answer_for_the_text_and_not_the_buffer() {
+        forget_function_facts();
+        let mut code = String::from("#define BUMP(n) (count += (n))\nint f(void);\n");
+        let buffer = code.as_ptr();
+        assert!(define_body_identifiers(&code).contains("count"));
+        let at = code.find("count").unwrap();
+        code.replace_range(at..at + 5, "total");
+        assert_eq!(code.as_ptr(), buffer);
+        let ids = define_body_identifiers(&code);
+        assert!(ids.contains("total"));
+        assert!(!ids.contains("count"));
+    }
 
     fn parse(code: &str) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();

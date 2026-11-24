@@ -82,6 +82,7 @@ pub mod shadowed_names;
 /// Per-function mod/ref summaries: what calling a function can write or
 /// read, closed over the call graph of the scanned set.
 pub mod side_effects;
+pub mod source_identity;
 pub mod storage_class_macro;
 /// Inline `AURORA-SUPPRESS` comment parsing and suppression-file matching.
 pub mod suppression;

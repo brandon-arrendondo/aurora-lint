@@ -9,6 +9,7 @@
 
 use crate::analyze::dead_regions::DeadRegions;
 use crate::analyze::macro_expand::{self, FunctionMacro};
+use crate::analyze::source_identity::SourceIdentity;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::data_model::{Fact, IntFacts, Rank};
 use crate::utility::cert_c::node_children::NodeChildren;
@@ -1650,10 +1651,13 @@ struct ArmConstantFacts {
 }
 
 thread_local! {
-    /// [`ArmConstantFacts`] per source buffer (address, length) asked about
-    /// on this thread: the file, and a few snippets parsed on their own.
-    static ARM_CONSTANTS: std::cell::RefCell<HashMap<(usize, usize), ArmConstantFacts>> =
-        std::cell::RefCell::new(HashMap::new());
+    /// [`ArmConstantFacts`] per source text asked about on this thread: the
+    /// file, and a few snippets parsed on their own. A snippet is freed
+    /// within the file and another of its length may be allocated where it
+    /// was, so each entry keeps the text's [`SourceIdentity`] and answers
+    /// only for that text.
+    static ARM_CONSTANTS: std::cell::RefCell<Vec<(SourceIdentity, ArmConstantFacts)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Buffers [`ARM_CONSTANTS`] keeps before it starts afresh.
@@ -1679,26 +1683,33 @@ fn arm_constant_names(root: &Node, source: &str) -> HashSet<String> {
 }
 
 /// Run `f` on the [`ArmConstantFacts`] of the file holding `ident`, reading
-/// them first if this buffer has not been asked about. Forgotten before
-/// each file is parsed ([`forget_arm_constants`]), since a buffer's address
-/// and length do not identify its text.
+/// them first if this text has not been asked about. Forgotten before each
+/// file is parsed ([`forget_arm_constants`]) as well.
 fn with_arm_constants<R>(
     ident: &Node,
     source: &str,
     f: impl FnOnce(&mut ArmConstantFacts) -> R,
 ) -> R {
-    let key = (source.as_ptr() as usize, source.len());
     ARM_CONSTANTS.with(|memo| {
         let mut memo = memo.borrow_mut();
-        if !memo.contains_key(&key) && memo.len() >= ARM_CONSTANT_BUFFERS {
-            memo.clear();
-        }
-        let facts = memo.entry(key).or_insert_with(|| ArmConstantFacts {
-            names: arm_constant_names(&ast_utils::tree_root(ident), source),
-            function_macros: None,
-            unwritten: HashMap::new(),
-        });
-        f(facts)
+        let at = match memo.iter().position(|(of, _)| of.is(source)) {
+            Some(at) => at,
+            None => {
+                if memo.len() >= ARM_CONSTANT_BUFFERS {
+                    memo.clear();
+                }
+                memo.push((
+                    SourceIdentity::of(source),
+                    ArmConstantFacts {
+                        names: arm_constant_names(&ast_utils::tree_root(ident), source),
+                        function_macros: None,
+                        unwritten: HashMap::new(),
+                    },
+                ));
+                memo.len() - 1
+            }
+        };
+        f(&mut memo[at].1)
     })
 }
 
@@ -4889,6 +4900,41 @@ fn parens_balanced(text: &str) -> bool {
 mod tests {
     use super::*;
     use crate::utility::cert_c::data_model::FactSource;
+
+    /// The value of the last identifier `name` in `code`, folded with no
+    /// macros: only an `#if` arm's constant gives it one.
+    fn arm_value_of_last(code: &str, name: &str) -> Option<i64> {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+        let ident =
+            lang_parsing_substrate::query::find_descendants_of_kind(tree.root_node(), "identifier")
+                .into_iter()
+                .filter(|n| ast_utils::get_node_text(n, code) == name)
+                .max_by_key(|n| n.start_byte())
+                .unwrap();
+        try_evaluate_expr(&ident, code, &MacroConstantMap::new())
+    }
+
+    /// Another text of the same length in the same buffer, as a freed
+    /// buffer reused on one thread gives, reads its own arm constants and
+    /// not the names the first text's arms declare.
+    #[test]
+    fn arm_constants_answer_for_the_text_and_not_the_buffer() {
+        forget_arm_constants();
+        let mut code = String::from(
+            "#ifdef WIDE\nstatic const int k = 3;\nint f(void) { return k; }\n#endif\n",
+        );
+        let buffer = code.as_ptr();
+        assert_eq!(arm_value_of_last(&code, "k"), Some(3));
+        // The same length at the same address, naming another constant.
+        for _ in 0..2 {
+            let at = code.find('k').unwrap();
+            code.replace_range(at..at + 1, "j");
+        }
+        assert_eq!(code.as_ptr(), buffer);
+        assert_eq!(arm_value_of_last(&code, "j"), Some(3));
+    }
 
     fn written_names(code: &str) -> std::collections::HashSet<String> {
         let mut parser = tree_sitter::Parser::new();

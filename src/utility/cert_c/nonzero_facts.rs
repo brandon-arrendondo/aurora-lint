@@ -25,6 +25,7 @@ use crate::analyze::address_taken::{
 use crate::analyze::init_state::addressed_object_root;
 use crate::analyze::macro_expand;
 use crate::analyze::side_effects;
+use crate::analyze::source_identity::SourceIdentity;
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -683,8 +684,8 @@ impl FileScopeFacts {
 }
 
 /// A file's identity for [`FILE_SCOPE_FACTS`]: its tree root's id and its
-/// source buffer's address and length.
-type FileKey = (usize, usize, usize);
+/// source text.
+type FileKey = (usize, SourceIdentity);
 
 /// What the calls, stores and steps under a node may write unseen
 /// ([`FileScopeFacts::writes_under`]).
@@ -773,7 +774,10 @@ fn addressed_under<'a>(node: Node<'a>) -> Vec<Node<'a>> {
 }
 
 thread_local! {
-    /// The [`FileScopeFacts`] of the file last asked about on this thread.
+    /// The [`FileScopeFacts`] of the file last asked about on this thread,
+    /// by its tree's root and its text's [`SourceIdentity`]: neither a
+    /// root's id nor a buffer's address and length identify a text once
+    /// the tree or buffer is freed.
     static FILE_SCOPE_FACTS: RefCell<Option<(FileKey, Arc<FileScopeFacts>)>> =
         const { RefCell::new(None) };
 }
@@ -782,17 +786,18 @@ thread_local! {
 /// ([`forget_function_facts`] forgets them with the function facts).
 pub fn file_scope_facts(node: &Node, source: &str) -> Arc<FileScopeFacts> {
     let root = ast_utils::tree_root(node);
-    let key: FileKey = (root.id(), source.as_ptr() as usize, source.len());
     if let Some(facts) = FILE_SCOPE_FACTS.with(|memo| {
         memo.borrow()
             .as_ref()
-            .filter(|(k, _)| *k == key)
+            .filter(|((id, of), _)| *id == root.id() && of.is(source))
             .map(|(_, f)| Arc::clone(f))
     }) {
         return facts;
     }
     let facts = Arc::new(FileScopeFacts::of_file(&root, source));
-    FILE_SCOPE_FACTS.with(|memo| *memo.borrow_mut() = Some((key, Arc::clone(&facts))));
+    FILE_SCOPE_FACTS.with(|memo| {
+        *memo.borrow_mut() = Some(((root.id(), SourceIdentity::of(source)), Arc::clone(&facts)))
+    });
     facts
 }
 
@@ -1334,6 +1339,31 @@ fn is_nonzero_integer_literal(node: &Node, source: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Another text of the same length in the same buffer, parsed after the
+    /// first tree is dropped, as a file or snippet freed and reallocated on
+    /// one thread is, reads its own file-scope facts. The root of the new
+    /// tree may be allocated where the old one was, so its id does not tell
+    /// the two apart.
+    #[test]
+    fn file_scope_facts_answer_for_the_text_and_not_the_buffer() {
+        forget_function_facts();
+        let mut code = String::from("const int limit = 8;\nint f(void) { return limit; }\n");
+        let buffer = code.as_ptr();
+        {
+            let tree = parse(&code);
+            let facts = file_scope_facts(&tree.root_node(), &code);
+            assert!(facts.constant.contains("limit"));
+        }
+        // `const int` becomes `int` padded to the same length: nothing in
+        // the new text is constant.
+        let at = code.find("const ").unwrap();
+        code.replace_range(at..at + 6, "      ");
+        assert_eq!(code.as_ptr(), buffer);
+        let tree = parse(&code);
+        let facts = file_scope_facts(&tree.root_node(), &code);
+        assert!(!facts.constant.contains("limit"));
+    }
 
     fn parse(code: &str) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();

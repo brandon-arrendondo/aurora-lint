@@ -967,6 +967,13 @@ impl FileLineIndex {
     }
 
     /// Whether this index was built from `source`.
+    ///
+    /// The address and length are enough here, unlike in a per-thread memo
+    /// ([`crate::analyze::source_identity`]): the one holder builds the
+    /// index at the start of each `check` from that call's own text and
+    /// asks it only during that call, while the text is borrowed and so
+    /// alive. No other live text can start at the same address with the
+    /// same length.
     pub fn is_of(&self, source: &str) -> bool {
         self.source_id == (source.as_ptr() as usize, source.len())
     }
