@@ -216,7 +216,7 @@
     "MSC09-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
     "MSC10-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
     "MSC11-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
-    "MSC12-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
+    "MSC12-C": {"default": "widened", "strict": "as_written", "pedantic": "as_written", "differs": true},
     "MSC13-C": {"default": "as_written", "strict": "as_written", "pedantic": "as_written", "differs": false},
     "MSC15-C": {"default": "not_enforced", "strict": "not_enforced", "pedantic": "not_enforced", "differs": false},
     "MSC17-C": {"default": "narrowed", "strict": "as_written", "pedantic": "stricter", "differs": true},

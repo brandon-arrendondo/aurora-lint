@@ -11817,7 +11817,7 @@ fn msc12_uncalled(args: &[&str]) -> Vec<(String, String)> {
         .iter()
         .filter_map(|v| {
             let message = v["message"].as_str()?.to_string();
-            (message.contains("never called") || message.contains("used only by")).then(|| {
+            (message.contains("never called") || message.contains("never runs")).then(|| {
                 let file = v["file"].as_str().unwrap_or("");
                 let name = std::path::Path::new(file)
                     .file_name()

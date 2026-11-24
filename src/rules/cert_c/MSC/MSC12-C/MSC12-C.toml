@@ -27,10 +27,11 @@ wiki = "https://wiki.sei.cmu.edu/confluence/display/c/MSC12-C.+Detect+and+remove
 cwe = ["CWE-398", "CWE-482", "CWE-561", "CWE-570"]
 
 [presets]
-default = "as_written"
+default = "widened"
 strict = "as_written"
 pedantic = "as_written"
-differs = false
+differs = true
+options = ["msc12_dead_callers"]
 overlap = "absorbs MSC07-C"
-basis = "no (P/coincide)."
-ruling = "P/coincide"
+basis = "yes, at default only: a static called only from code that never runs is reported (MSC12-C/2026-11-24/dead-callers). Every other form coincides (P/coincide)."
+ruling = "MSC12-C/2026-11-24/dead-callers, P/coincide"

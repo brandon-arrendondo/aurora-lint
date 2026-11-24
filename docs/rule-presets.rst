@@ -1314,11 +1314,11 @@ behind a departure.
      - 
      - P/coincide
    * - MSC12-C
+     - widened
      - as_written
      - as_written
-     - as_written
-     - 
-     - P/coincide
+     - ``msc12_dead_callers``
+     - MSC12-C/2026-11-24/dead-callers, P/coincide
    * - MSC13-C
      - as_written
      - as_written

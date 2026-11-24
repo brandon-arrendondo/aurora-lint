@@ -11,10 +11,12 @@
 //! file-scope prototypes, that resolves to the file-scope function by
 //! declaration (ADR-0006): a call, or the name as a value. An occurrence in
 //! an arm the file proves is never compiled does not count; one in any other
-//! arm does (ADR-0010). A use inside another `static` function's body counts
-//! only if that function is itself live, so a chain or a cycle of statics
-//! that nothing live reaches is reported, each function once. A call from a
-//! function's own body is no use of it.
+//! arm does (ADR-0010). A call from a function's own body is no use of it.
+//! A use inside another `static` function's body is a caller; under the
+//! default policy's `msc12_dead_callers` it counts only if that function is
+//! itself live, so a chain or a cycle of statics that nothing live reaches
+//! is reported, each function once, as called only from code that never
+//! runs (MSC12-C/2026-11-24/dead-callers).
 //!
 //! The function is also live when:
 //!
@@ -64,6 +66,8 @@ pub(super) struct ProjectTables {
     include_edges_beyond_search_path: Arc<HashMap<String, Vec<String>>>,
     known_functions: Arc<HashSet<String>>,
     macro_names: HashSet<String>,
+    /// `msc12_dead_callers`: a static only dead statics call is reported.
+    dead_callers: bool,
 }
 
 impl ProjectTables {
@@ -78,6 +82,7 @@ impl ProjectTables {
             include_edges_beyond_search_path: Arc::clone(&context.include_edges_beyond_search_path),
             known_functions: Arc::clone(&context.known_functions),
             macro_names,
+            dead_callers: context.settings.flag("msc12_dead_callers"),
         }
     }
 }
@@ -190,7 +195,13 @@ pub(super) fn check(
             }
         }
     }
-    // A static a live static uses is live.
+    // A static a live static uses is live. Without `msc12_dead_callers`, a
+    // static any other static uses is: the rule's text reads "no caller".
+    if !tables.dead_callers {
+        for callees in uses.callees.values() {
+            live.extend(callees.iter().copied());
+        }
+    }
     let mut work: Vec<&str> = live.iter().copied().collect();
     while let Some(caller) = work.pop() {
         if let Some(callees) = uses.callees.get(caller) {
@@ -223,7 +234,7 @@ pub(super) fn check(
             )
         } else {
             format!(
-                "Static function '{name}' is used only by functions that are never called ({}): it is code that is never executed.",
+                "Static function '{name}' is called only from code that never runs ({}): it is never executed.",
                 callers
                     .iter()
                     .map(|c| format!("'{c}'"))

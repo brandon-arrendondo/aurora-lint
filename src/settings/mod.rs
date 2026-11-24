@@ -581,6 +581,25 @@ pub static OPTIONS: &[OptionSpec] = &[
                 its own option msc37_attribute_noreturn.",
     },
     OptionSpec {
+        name: "msc12_dead_callers",
+        axis: Axis::Policy,
+        scope: Scope::RuleSpecific("MSC12-C"),
+        source: Source::Policy {
+            default: true,
+            strict: false,
+            pedantic: false,
+        },
+        oracle_tag: "dead-callers",
+        summary: "MSC12-C: a static function whose only callers are themselves never \
+                  executed (the leaf of a chain of uncalled statics, or a cycle of statics \
+                  nothing else calls) is reported as called only from code that never runs. \
+                  Withdrawn, only a static with no caller but itself is reported, as the \
+                  rule's text reads \"no caller\".",
+        basis: "MSC12-C asks for code that is never executed to be removed; a function only \
+                such code calls is never executed. The strict and pedantic policies keep \
+                the literal reading, a function with no caller (MSC12-C/2026-11-24/dead-callers).",
+    },
+    OptionSpec {
         name: "pre31_unknown_call_pure",
         axis: Axis::Policy,
         scope: Scope::RuleSpecific("PRE31-C"),
@@ -3074,15 +3093,15 @@ mod tests {
         // them, so exact include-name matching must not move them.
         assert_eq!(
             AnalysisSettings::preset(Preset::Default).settings_hash(),
-            "22c58791ff78f5e69f78f92a94d5c887ba90ed8b69c0b263a6bb8fc3cdcbdfc9"
+            "5e9c9d06217528d12cf31fb4ee5de460f9a13df02d009ee26fe296ce61252f6f"
         );
         assert_eq!(
             AnalysisSettings::preset(Preset::Strict).settings_hash(),
-            "7fcd86f7da966ea2e5795409feb089b83708c0f5fa86ac664db2686a3208e7bf"
+            "b1253cafedd43a455d16f3583c4256174859ddaf41b4e1a767224cd1632dcee1"
         );
         assert_eq!(
             AnalysisSettings::preset(Preset::Pedantic).settings_hash(),
-            "31c6c8ce626e8e1e65278b6086f37be1623089010c1770b7bc6ec841b38ea5b9"
+            "16721d0bb39f243fb60336e882419c8b85f7bd08206108a55293e25ec804461a"
         );
         assert_eq!(
             with_names(Preset::Default, Some(IncludeNames::Exact)).settings_hash(),
