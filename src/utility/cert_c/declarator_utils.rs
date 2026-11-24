@@ -339,21 +339,54 @@ const CONDITIONAL_ARMS: &[&str] = &[
 ];
 
 /// The arms of the conditional that opens with `conditional`, in order, each
-/// with whether it can never be taken (`#if 0`), and whether the last arm is
-/// an `#else`.
+/// with whether it can never be part of a translation unit that compiles,
+/// and whether one of them is taken whatever is defined.
+///
+/// An arm is never taken when its condition is the constant `0`, when an
+/// earlier arm's condition is the constant `1`, or when its body holds an
+/// `#error` directive, which stops any translation that takes it. One arm is
+/// always taken when the last is an `#else` or an arm's condition is `1`.
 fn conditional_arms<'a>(conditional: &Node<'a>, source: &str) -> (Vec<(Node<'a>, bool)>, bool) {
     let mut arms = Vec::new();
-    let mut has_else = false;
+    let mut covered = false;
     let mut arm = Some(*conditional);
     while let Some(a) = arm {
-        let never = a
+        let condition = a
             .child_by_field_name("condition")
-            .is_some_and(|c| source[c.byte_range()].trim() == "0");
-        has_else = a.kind() == "preproc_else";
+            .map(|c| constant_condition(&source[c.byte_range()]));
+        let never = covered || condition == Some(Some(false)) || arm_body_errors(&a, source);
+        covered = covered || a.kind() == "preproc_else" || condition == Some(Some(true));
         arms.push((a, never));
         arm = a.child_by_field_name("alternative");
     }
-    (arms, has_else)
+    (arms, covered)
+}
+
+/// The value of an `#if` condition that is the constant `0` or `1`, possibly
+/// parenthesized; `None` for any other condition.
+fn constant_condition(text: &str) -> Option<bool> {
+    let mut t = text.trim();
+    while let Some(inner) = t.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+        t = inner.trim();
+    }
+    match t {
+        "0" => Some(false),
+        "1" => Some(true),
+        _ => None,
+    }
+}
+
+/// Whether `arm` itself, outside any conditional nested in it, holds an
+/// `#error` directive.
+fn arm_body_errors(arm: &Node, source: &str) -> bool {
+    arm_body(arm).iter().any(|n| {
+        n.kind() == "preproc_call"
+            && n.child_by_field_name("directive").is_some_and(|d| {
+                let d = &source[d.byte_range()];
+                d.strip_prefix('#')
+                    .is_some_and(|r| r.trim_start() == "error")
+            })
+    })
 }
 
 /// The nodes an arm holds: its children other than its condition (or
@@ -386,12 +419,13 @@ fn in_arm_body(n: &Node, arm: &Node) -> bool {
 }
 
 /// Whether the preprocessor arms around `n` leave it in effect at `site`.
-/// For each conditional arm `n` is in, out to the file: an `#if 0` arm is
-/// never in effect (`Some(false)`); an arm of a conditional that holds
-/// `site` is in effect only when it is `site`'s own arm (`Some(false)`
-/// otherwise); and for a conditional before `site`, `proves` must hold of
-/// every arm that can be taken, with an `#else` among them, or which arm is
-/// taken decides the answer and it is not known (`None`).
+/// For each conditional arm `n` is in, out to the file: an arm that is never
+/// taken (`#if 0`, or one that stops at `#error`) is never in effect
+/// (`Some(false)`); an arm of a conditional that holds `site` is in effect
+/// only when it is `site`'s own arm (`Some(false)` otherwise); and for a
+/// conditional before `site`, `proves` must hold of every arm that can be
+/// taken, with one of them always taken (an `#else` or `#if 1`), or which arm
+/// is taken decides the answer and it is not known (`None`).
 fn arms_admit(n: &Node, site: &Node, source: &str, proves: &dyn Fn(&Node) -> bool) -> Option<bool> {
     let mut child = *n;
     while let Some(parent) = child.parent() {
@@ -409,7 +443,7 @@ fn arms_admit(n: &Node, site: &Node, source: &str, proves: &dyn Fn(&Node) -> boo
                     break;
                 }
             }
-            let (arms, has_else) = conditional_arms(&conditional, source);
+            let (arms, one_taken) = conditional_arms(&conditional, source);
             if arms.iter().any(|(a, never)| *never && a.id() == arm.id()) {
                 return Some(false);
             }
@@ -423,7 +457,7 @@ fn arms_admit(n: &Node, site: &Node, source: &str, proves: &dyn Fn(&Node) -> boo
                     .filter(|(_, never)| !never)
                     .map(|(a, _)| a)
                     .collect();
-                if !has_else || !live.iter().all(|a| proves(a)) {
+                if !one_taken || !live.iter().all(|a| proves(a)) {
                     return None;
                 }
             }
@@ -596,7 +630,7 @@ fn included_in(nodes: &[Node], site: &Node, header: &str, source: &str) -> bool 
                 return true;
             }
         } else if CONDITIONALS.contains(&node.kind()) {
-            let (arms, has_else) = conditional_arms(node, source);
+            let (arms, one_taken) = conditional_arms(node, source);
             if encloses(node, site) {
                 // Only the arm `site` is in is taken where `site` is
                 return arms.iter().any(|(arm, never)| {
@@ -606,7 +640,7 @@ fn included_in(nodes: &[Node], site: &Node, header: &str, source: &str) -> bool 
                 });
             }
             let mut live = arms.iter().filter(|(_, never)| !never).peekable();
-            if has_else
+            if one_taken
                 && live.peek().is_some()
                 && live.all(|(arm, _)| included_in(&arm_body(arm), site, header, source))
             {
