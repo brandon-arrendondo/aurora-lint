@@ -17,7 +17,9 @@ use crate::utility::cert_c::ast_utils::{
     self, get_node_text, get_sanitized_node_text, ScopeDeclarations,
 };
 use crate::utility::cert_c::data_model::{self, Rank};
-use crate::utility::cert_c::expr_type::{integer_literal_width, FileTypes, TypeEnv};
+use crate::utility::cert_c::expr_type::{
+    self, integer_literal_width, CType, FileTypes, Sign, TypeEnv,
+};
 use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
@@ -593,7 +595,7 @@ impl Int32C {
                     );
                 }
                 "call_expression" => {
-                    self.check_function_call(&candidate, source, violations, scoped_type_map);
+                    self.check_function_call(&candidate, source, violations, scoped_type_map, env);
                 }
                 _ => {}
             }
@@ -1715,6 +1717,7 @@ impl Int32C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &FileTypes,
+        env: &TypeEnv,
     ) {
         if let Some(function_node) = node.child_by_field_name("function") {
             let function_name = get_node_text(&function_node, source);
@@ -1740,7 +1743,7 @@ impl Int32C {
                     );
                 }
                 "abs" | "labs" | "llabs" => {
-                    self.check_abs_overflow(node, source, function_name, violations);
+                    self.check_abs_overflow(node, source, function_name, violations, env);
                 }
                 _ => {}
             }
@@ -2132,14 +2135,14 @@ impl Int32C {
         source: &str,
         function_name: &str,
         violations: &mut Vec<RuleViolation>,
+        env: &TypeEnv,
     ) {
         // abs(INT_MIN), labs(LONG_MIN), llabs(LLONG_MIN) all cause overflow
         // because the absolute value of the minimum signed integer cannot be represented
 
-        // Skip if the abs() argument is cast to a wider type (e.g., abs((long)data)).
-        // Widening cast means the minimum value of the original type is representable
-        // in the wider type's abs range, so overflow can't occur.
-        if self.abs_arg_has_widening_cast(node, source, function_name) {
+        // Skip when the argument's type keeps it off the parameter's most
+        // negative value, as `labs((long)int_value)` does on LP64.
+        if abs_argument_excludes_minimum(node, source, function_name, env) {
             return;
         }
 
@@ -2167,32 +2170,6 @@ impl Int32C {
             ..Default::default()
             });
         }
-    }
-
-    /// Check if the abs() argument contains a widening cast (e.g., `abs((long)data)`).
-    /// When abs() gets `int` but is called as `abs((long)data)`, the long range
-    /// means INT_MIN cast to long is representable and abs() won't overflow.
-    fn abs_arg_has_widening_cast(&self, node: &Node, source: &str, function_name: &str) -> bool {
-        if let Some(arguments) = node.child_by_field_name("arguments") {
-            for i in 0..arguments.child_count() {
-                if let Some(arg) = arguments.child(i) {
-                    if arg.kind() == "cast_expression" {
-                        let cast_text = get_node_text(&arg, source);
-                        // For abs(): widening to long or long long
-                        if function_name == "abs"
-                            && (cast_text.contains("(long)") || cast_text.contains("(long long)"))
-                        {
-                            return true;
-                        }
-                        // For labs(): widening to long long
-                        if function_name == "labs" && cast_text.contains("(long long)") {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-        false
     }
 
     /// Check if this node is inside a comparison that's part of a condition
@@ -4293,4 +4270,126 @@ fn is_simple_c_identifier(s: &str) -> bool {
             .next()
             .is_some_and(|c| c.is_alphabetic() || c == '_')
         && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// What the values an integer conversion receives are known to be: those of
+/// an integer type, by its signedness (`None` for plain `char`, which may
+/// be either) and the widths the data model allows it.
+#[derive(Clone, Copy)]
+struct IntegerValues {
+    signed: Option<bool>,
+    min: u32,
+    max: Option<u32>,
+}
+
+impl IntegerValues {
+    /// The values of the integer type `ty` under `facts`; `None` for an
+    /// enumeration (whose compatible type is the implementation's), a type
+    /// that is not an integer type, or one not known.
+    fn of(ty: &CType, facts: IntFacts) -> Option<Self> {
+        let signed = |sign: &Sign| match sign {
+            Sign::Signed => Some(true),
+            Sign::Unsigned => Some(false),
+            Sign::PlainChar => None,
+        };
+        match ty {
+            CType::Int { sign, rank } => {
+                let width = facts.width_of(*rank);
+                Some(Self {
+                    signed: signed(sign),
+                    min: width.min,
+                    max: width.max,
+                })
+            }
+            CType::IntOfWidth {
+                sign,
+                min_bits,
+                max_bits,
+            } => Some(Self {
+                signed: signed(sign),
+                min: *min_bits,
+                max: *max_bits,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Whether every one of these values is a value of `to` on every
+    /// implementation, so converting it to `to` keeps it (C11 6.3.1.3p1).
+    fn fit_in(self, to: Self) -> bool {
+        let Some(bits) = self.max else {
+            return false;
+        };
+        match (self.signed, to.signed) {
+            (Some(true), Some(true)) | (Some(false), Some(false)) => bits <= to.min,
+            (Some(false) | None, Some(true)) => bits < to.min,
+            _ => false,
+        }
+    }
+}
+
+/// Whether the argument of the call `call` of `abs`, `labs` or `llabs`
+/// (`function_name`) can never be the most negative value of the
+/// function's parameter type, `int`, `long` or `long long` (C11 7.22.6.1),
+/// whose absolute value is not representable. The argument converts to
+/// that type at the call whatever it was cast to, so `abs((long)x)` passes
+/// `x`'s value back to `int`, `INT_MIN` included: a cast helps only by what
+/// it lets through. The values are followed from the operand's type
+/// through each cast, innermost first: a cast that holds every value it
+/// receives keeps them, and one that does not may yield any value of its
+/// own type. They exclude the parameter's minimum when they all fit in a
+/// type narrower than the parameter on every implementation the data model
+/// allows. An operand of no known type that no cast narrows is not known
+/// to exclude it.
+fn abs_argument_excludes_minimum(
+    call: &Node,
+    source: &str,
+    function_name: &str,
+    env: &TypeEnv,
+) -> bool {
+    let parameter_rank = match function_name {
+        "abs" => Rank::Int,
+        "labs" => Rank::Long,
+        "llabs" => Rank::LongLong,
+        _ => return false,
+    };
+    let Some(arguments) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = arguments.walk();
+    let mut named = arguments.named_children(&mut cursor);
+    let (Some(mut arg), None) = (named.next(), named.next()) else {
+        return false;
+    };
+    let mut casts = Vec::new();
+    loop {
+        match arg.kind() {
+            "parenthesized_expression" => match arg.named_child(0) {
+                Some(inner) => arg = inner,
+                None => return false,
+            },
+            "cast_expression" => {
+                casts.push(arg);
+                match arg.child_by_field_name("value") {
+                    Some(value) => arg = value,
+                    None => return false,
+                }
+            }
+            _ => break,
+        }
+    }
+    let values_of = |node: &Node| {
+        expr_type::expr_type(node, source, env).and_then(|ty| IntegerValues::of(&ty, env.model))
+    };
+    let mut values = values_of(&arg);
+    for cast in casts.iter().rev() {
+        let Some(to) = values_of(cast) else {
+            return false;
+        };
+        if !values.is_some_and(|v| v.fit_in(to)) {
+            values = Some(to);
+        }
+    }
+    let parameter = env.model.width_of(parameter_rank);
+    values.is_some_and(|v| v.max.is_some_and(|bits| bits < parameter.min))
 }
