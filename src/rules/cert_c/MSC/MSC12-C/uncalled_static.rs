@@ -190,9 +190,9 @@ pub(super) fn check(
             .chain(closure.texts.iter().flat_map(|(_, d)| d.iter()))
             .collect();
         let pasting = pasting_macros(&all_defines);
-        let mut fragments = pasting_arguments(&blanked, &pasting);
+        let mut fragments = pasting_arguments(&blanked, &pasting, &all_defines);
         for (text, _) in &closure.texts {
-            fragments.extend(pasting_arguments(text, &pasting));
+            fragments.extend(pasting_arguments(text, &pasting, &all_defines));
         }
         for s in statics.iter().filter(|s| s.judged) {
             let Some(name) = s.name.as_deref() else {
@@ -747,13 +747,19 @@ fn definition_is_retained(
     // storage class, which leaves it outside the definition's node. An item
     // before it that does not end in `;` or `}` is part of the head: a
     // function-like macro there (`MY_CTOR_PRIO(101) static void f(void)`)
-    // parses as an expression statement whose `;` is missing.
+    // parses as an expression statement whose `;` is missing. Not when the
+    // item invokes a macro whose known expansion ends in one: that is an
+    // item of its own (`type_init(f)` expands to a whole constructor).
     let start = definition.prev_sibling().map_or(0, |p| {
         let text = raw
             .get(p.start_byte()..p.end_byte())
             .unwrap_or("")
             .trim_end();
-        if text.ends_with(';') || text.ends_with('}') || p.kind().starts_with("preproc") {
+        if text.ends_with(';')
+            || text.ends_with('}')
+            || p.kind().starts_with("preproc")
+            || expansion_ends_an_item(text, defines, 0)
+        {
             p.end_byte()
         } else {
             p.start_byte()
@@ -767,12 +773,75 @@ fn definition_is_retained(
                 .map(|b| b.start_byte())
         })
         .unwrap_or(definition.end_byte());
+    // A macro invocation the parse folds into the head, whose expansion is
+    // an item of its own, is no part of it either.
+    let mut start = start;
+    while let Some(head) = blanked.get(start..end) {
+        let lead = head.len() - head.trim_start().len();
+        match leading_invocation(&head[lead..]) {
+            Some(len) if expansion_ends_an_item(&head[lead..lead + len], defines, 0) => {
+                start += lead + len;
+            }
+            _ => break,
+        }
+    }
     let Some(head) = blanked.get(start..end) else {
         return false;
     };
     identifiers(head)
         .into_iter()
         .any(|word| KEEP_WORDS.contains(&word) || macro_keeps(word, defines, tables, 0))
+}
+
+/// The length of the invocation `NAME(...)` that `text` begins with, up to
+/// its matching `)`.
+fn leading_invocation(text: &str) -> Option<usize> {
+    let name = text
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(text.len());
+    if name == 0 || text.as_bytes()[0].is_ascii_digit() {
+        return None;
+    }
+    let open = name + (text[name..].len() - text[name..].trim_start().len());
+    if !text[open..].starts_with('(') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (k, b) in text.bytes().enumerate().skip(open) {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(k + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether `text`, an invocation `NAME(...)` of a macro `defines` give a
+/// body, expands to text that ends in `;` or `}`, followed through a body
+/// that is itself such an invocation.
+fn expansion_ends_an_item(text: &str, defines: &[&Define], depth: usize) -> bool {
+    let text = text.trim();
+    let Some(name) = identifiers(text).into_iter().next() else {
+        return false;
+    };
+    if depth > 4 || !text.starts_with(name) || !text.ends_with(')') {
+        return false;
+    }
+    if !text[name.len()..].trim_start().starts_with('(') {
+        return false;
+    }
+    defines.iter().filter(|d| d.name == name).any(|d| {
+        let body = d.body.trim();
+        body.ends_with(';')
+            || body.ends_with('}')
+            || (body != text && expansion_ends_an_item(body, defines, depth + 1))
+    })
 }
 
 /// Whether a keep-alive attribute applies to a prototype: written out, or
@@ -839,6 +908,8 @@ fn macro_keeps(name: &str, defines: &[&Define], tables: &ProjectTables, depth: u
 /// One `#define` of a file.
 struct Define {
     name: String,
+    /// Defined with a parameter list, even an empty one.
+    function_like: bool,
     params: Vec<String>,
     body: String,
 }
@@ -902,20 +973,30 @@ fn defines(blanked: &str) -> Vec<Define> {
             continue;
         }
         let after = &logical[name_end..];
+        let function_like = after.starts_with('(');
         let (params, body) = match after.strip_prefix('(') {
             Some(list) => match list.find(')') {
-                Some(close) => (
-                    identifiers(&list[..close])
+                Some(close) => {
+                    let mut params: Vec<String> = identifiers(&list[..close])
                         .into_iter()
                         .map(str::to_string)
-                        .collect(),
-                    list[close + 1..].to_string(),
-                ),
+                        .collect();
+                    // `...` names its arguments `__VA_ARGS__`.
+                    if list[..close].contains("...") {
+                        params.push("__VA_ARGS__".to_string());
+                    }
+                    (params, list[close + 1..].to_string())
+                }
                 None => continue,
             },
             None => (Vec::new(), after.to_string()),
         };
-        out.push(Define { name, params, body });
+        out.push(Define {
+            name,
+            function_like,
+            params,
+            body,
+        });
     }
     out
 }
@@ -1076,19 +1157,28 @@ fn bare_arguments(text: &str, open: usize) -> Vec<&str> {
     out
 }
 
-/// The function-like macros of `defines` that may paste an argument into a
-/// name: a body that pastes a parameter with `##` (`#define CAT(a, b)
-/// a##b`), or that hands a parameter to such a macro (`#define HANDLER(n)
-/// CAT(n, _handler)`), to a fixed point.
+/// The macros of `defines` that may paste an argument into a name: a body
+/// that pastes a parameter with `##` (`#define CAT(a, b) a##b`), or that
+/// hands a parameter to such a macro (`#define HANDLER(n) CAT(n,
+/// _handler)`), and an object-like alias of one (`#define PASTE CAT`), to a
+/// fixed point.
 fn pasting_macros<'d>(defines: &[&'d Define]) -> HashSet<&'d str> {
     let mut out: HashSet<&str> = HashSet::new();
     loop {
         let before = out.len();
-        for d in defines.iter().filter(|d| !d.params.is_empty()) {
+        for d in defines.iter() {
             if out.contains(d.name.as_str()) {
                 continue;
             }
             let words = identifiers(&d.body);
+            if !d.function_like {
+                if let [alias] = words.as_slice() {
+                    if d.body.trim() == *alias && out.contains(alias) {
+                        out.insert(d.name.as_str());
+                    }
+                }
+                continue;
+            }
             let has_param = words.iter().any(|w| d.params.iter().any(|p| p == w));
             if has_param && (pastes_a_parameter(d) || words.iter().any(|w| out.contains(w))) {
                 out.insert(d.name.as_str());
@@ -1131,28 +1221,67 @@ fn pastes_a_parameter(define: &Define) -> bool {
 }
 
 /// The bare-identifier arguments, in `text`, of every invocation of a
-/// macro in `pasting`: fragments its expansion may paste into a name.
-fn pasting_arguments<'t>(text: &'t str, pasting: &HashSet<&str>) -> Vec<&'t str> {
+/// macro in `pasting`: fragments its expansion may paste into a name. An
+/// invocation inside a `#define` body counts too, less the arguments that are
+/// that macro's own parameters, which its own invocations supply. An
+/// argument that names an object-like macro brings the identifiers its body
+/// spells (`XCAT(PREFIX, _init)` with `#define PREFIX mod`).
+fn pasting_arguments<'t>(
+    text: &'t str,
+    pasting: &HashSet<&str>,
+    defines: &[&'t Define],
+) -> Vec<&'t str> {
     if pasting.is_empty() {
         return Vec::new();
     }
-    // A `#define`'s own parameter list, and the invocations in a body, are
-    // no invocations: only an expansion is.
+    // Each `#define` in `text`: the end of its head (`#define NAME(params)`,
+    // no invocation), the end of its last continued line, and its
+    // parameters. In text order.
     let bytes = text.as_bytes();
-    let mut in_define = vec![false; bytes.len()];
+    let mut directives: Vec<(usize, usize, usize, Vec<&str>)> = Vec::new();
     let mut offset = 0;
     let mut continued = false;
     for line in text.split_inclusive('\n') {
-        let directive = line
-            .trim_start()
+        let trimmed = line.trim_start();
+        let directive = trimmed
             .strip_prefix('#')
             .is_some_and(|r| r.trim_start().starts_with("define"));
-        if continued || directive {
-            in_define[offset..offset + line.len()].fill(true);
+        if directive {
+            let after_hash = offset + (line.len() - trimmed.len()) + 1;
+            let rest = &text[after_hash..offset + line.len()];
+            let lead = rest.len() - rest.trim_start().len();
+            let rest = &rest[lead..];
+            let after = rest["define".len()..].trim_start();
+            let name_len = after
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(after.len());
+            let mut end = after_hash + lead + (rest.len() - after.len()) + name_len;
+            let mut list = Vec::new();
+            if text[end..].starts_with('(') {
+                if let Some(close) = text[end..].find(')') {
+                    list = identifiers(&text[end + 1..end + close]);
+                    if text[end..end + close].contains("...") {
+                        list.push("__VA_ARGS__");
+                    }
+                    end += close + 1;
+                }
+            }
+            directives.push((offset, end, offset + line.len(), list));
+        } else if continued {
+            if let Some(last) = directives.last_mut() {
+                last.2 = offset + line.len();
+            }
         }
         continued = (continued || directive) && line.trim_end().ends_with('\\');
         offset += line.len();
     }
+    // The `#define` the byte at `at` lies in, if any.
+    let directive_at = |at: usize| {
+        let k = directives.partition_point(|d| d.0 <= at);
+        k.checked_sub(1)
+            .map(|k| &directives[k])
+            .filter(|d| at < d.2)
+    };
     let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     let mut out = Vec::new();
     let mut i = 0;
@@ -1165,7 +1294,11 @@ fn pasting_arguments<'t>(text: &'t str, pasting: &HashSet<&str>) -> Vec<&'t str>
         while i < bytes.len() && ident(bytes[i]) {
             i += 1;
         }
-        if in_define[start] || !pasting.contains(&text[start..i]) {
+        if !pasting.contains(&text[start..i]) {
+            continue;
+        }
+        let directive = directive_at(start);
+        if directive.is_some_and(|d| start < d.1) {
             continue;
         }
         let mut j = i;
@@ -1173,7 +1306,32 @@ fn pasting_arguments<'t>(text: &'t str, pasting: &HashSet<&str>) -> Vec<&'t str>
             j += 1;
         }
         if j < bytes.len() && bytes[j] == b'(' {
-            out.extend(bare_arguments(text, j));
+            let own = directive.map_or(&[][..], |d| d.3.as_slice());
+            for arg in bare_arguments(text, j) {
+                if !own.contains(&arg) {
+                    out.push(arg);
+                    out.extend(object_expansion(arg, defines, 0));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The identifiers an object-like macro `name` expands to, followed through
+/// a body that is itself one such name.
+fn object_expansion<'d>(name: &str, defines: &[&'d Define], depth: usize) -> Vec<&'d str> {
+    let mut out = Vec::new();
+    if depth > 4 {
+        return out;
+    }
+    for d in defines
+        .iter()
+        .filter(|d| d.name == name && !d.function_like)
+    {
+        for word in identifiers(&d.body) {
+            out.push(word);
+            out.extend(object_expansion(word, defines, depth + 1));
         }
     }
     out

@@ -11900,3 +11900,17 @@ fn msc12_a_call_pasted_by_a_header_macro_is_a_call() {
     let found = msc12_uncalled(&[src.to_str().unwrap(), "-I", include.to_str().unwrap()]);
     assert!(found.is_empty(), "{found:?}");
 }
+
+/// A registration macro a header defines expands to a whole constructor, so
+/// it is an item of its own: its constructor attribute keeps the
+/// constructor, not the static after it.
+#[test]
+fn msc12_a_header_registration_macro_keeps_nothing_after_it() {
+    let root = fixtures().join("msc12_uncalled_after_header_registration_macro");
+    let src = root.join("src");
+    let include = root.join("include");
+    let found = msc12_uncalled(&[src.to_str().unwrap(), "-I", include.to_str().unwrap()]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, "dev.c", "{found:?}");
+    assert!(found[0].1.contains("'dev_unused_helper'"), "{found:?}");
+}
