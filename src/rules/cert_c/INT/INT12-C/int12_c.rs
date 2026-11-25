@@ -24,7 +24,8 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::Severity;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, typedef_definition_in_scope};
+use crate::utility::cert_c::declarator_utils::typedef_declarators;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -65,49 +66,50 @@ impl Int12C {
         }
     }
 
-    /// Check a single field declaration for plain int bit-field
+    /// Report a field declaration whose own bit-fields have the type plain
+    /// `int`: the `int` specifier alone, or a typedef in scope that names it
+    /// (C11 6.7.2p5 and its footnote: either way the signedness is
+    /// implementation-defined). Only the declaration's own declarators are
+    /// read, so a member that is a structure, union or enumeration with
+    /// bit-fields inside it is not reported for them; those are reported as
+    /// their own field declarations. An unnamed bit-field (`int : 3;`) names
+    /// nothing an expression can read and is not reported.
     fn check_field_declaration(
         &self,
         field: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        let field_text = get_node_text(field, source);
-
-        // Check if this is a bit-field (contains ':')
-        if !field_text.contains(':') {
+        let Some(ty) = field.child_by_field_name("type") else {
+            return;
+        };
+        if !designates_plain_int(&ty, source, 8) {
             return;
         }
-
-        // Check if it uses plain int (not signed/unsigned)
-        if !field_text.contains("int") {
+        // The first named bit-field: a declarator followed by its width
+        let mut cursor = field.walk();
+        let children: Vec<Node> = field.named_children(&mut cursor).collect();
+        let Some(name) = children.windows(2).find_map(|pair| {
+            (pair[1].kind() == "bitfield_clause"
+                && pair[0].kind() == "field_identifier"
+                // `int : 3;` parses with a missing, empty identifier
+                && !pair[0].is_missing()
+                && pair[0].start_byte() < pair[0].end_byte())
+            .then(|| get_node_text(&pair[0], source).to_string())
+        }) else {
             return;
-        }
-
-        if field_text.contains("signed") || field_text.contains("unsigned") {
-            return;
-        }
-
-        // Exclude typedefs like int8_t, uint32_t
-        if field_text.contains("_t") {
-            return;
-        }
-
-        // This is a plain int bit-field - report violation
-        let (field_name, line, column) = self.get_field_info(field, source).unwrap_or_else(|| {
-            (
-                "unknown".to_string(),
-                field.start_position().row + 1,
-                field.start_position().column + 1,
-            )
-        });
+        };
+        let (line, column) = (
+            field.start_position().row + 1,
+            field.start_position().column + 1,
+        );
 
         violations.push(RuleViolation {
             rule_id: self.rule_id().to_string(),
             message: format!(
                 "Bit-field '{}' uses plain 'int' with implementation-defined signedness. \
                  Use explicit 'signed int' or 'unsigned int' instead.",
-                field_name
+                name
             ),
             severity: self.severity(),
             line,
@@ -115,46 +117,32 @@ impl Int12C {
             file_path: String::new(),
             suggestion: Some(format!(
                 "Change 'int {}' to 'signed int {}' or 'unsigned int {}'",
-                field_name, field_name, field_name
+                name, name, name
             )),
             requires_manual_review: None,
         });
     }
+}
 
-    /// Get field name and location information
-    fn get_field_info(&self, field: &Node, source: &str) -> Option<(String, usize, usize)> {
-        // Find the field_declarator
-        for i in 0..field.child_count() {
-            if let Some(child) = field.child(i) {
-                if child.kind() == "field_declarator" {
-                    // Find the identifier within the declarator
-                    if let Some(identifier) = self.find_identifier(&child, source) {
-                        return Some((
-                            identifier,
-                            field.start_position().row + 1,
-                            field.start_position().column + 1,
-                        ));
-                    }
-                }
-            }
+/// Whether the type specifier `ty` is plain `int`: the `int` keyword alone
+/// (`signed int` and `unsigned int` are sized specifiers), or a typedef name
+/// in scope whose own definition is a plain `int` with no derivation, through
+/// up to `depth` typedefs.
+fn designates_plain_int(ty: &Node, source: &str, depth: usize) -> bool {
+    match ty.kind() {
+        "primitive_type" => get_node_text(ty, source) == "int",
+        "type_identifier" if depth > 0 => {
+            let name = get_node_text(ty, source);
+            let Some(typedef) = typedef_definition_in_scope(ty, name, source) else {
+                return false;
+            };
+            typedef_declarators(&typedef)
+                .iter()
+                .any(|d| d.kind() == "type_identifier" && get_node_text(d, source) == name)
+                && typedef
+                    .child_by_field_name("type")
+                    .is_some_and(|t| designates_plain_int(&t, source, depth - 1))
         }
-        None
-    }
-
-    /// Find identifier node within a tree
-    fn find_identifier(&self, node: &Node, source: &str) -> Option<String> {
-        if node.kind() == "field_identifier" || node.kind() == "identifier" {
-            return Some(get_node_text(node, source).to_string());
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(id) = self.find_identifier(&child, source) {
-                    return Some(id);
-                }
-            }
-        }
-
-        None
+        _ => false,
     }
 }
