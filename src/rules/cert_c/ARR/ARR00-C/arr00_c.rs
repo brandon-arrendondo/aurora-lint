@@ -21,14 +21,14 @@ use crate::analyze::const_eval::{collect_macro_constants, MacroConstantMap};
 use crate::manifest::Severity;
 use crate::settings::IntFacts;
 use crate::utility::cert_c::ast_utils::{
-    descendants_of_kinds_with, get_function_parameters, get_sanitized_node_text,
-    is_array_parameter_type, is_function_parameter, is_inside_loop, is_pointer_type,
-    is_write_context,
+    descendants_of_kinds_with, get_function_parameters, is_array_parameter_type,
+    is_function_parameter, is_inside_loop, is_pointer_type, is_write_context, tree_root,
 };
 use crate::utility::cert_c::overflow_helpers::collect_variable_types;
 use crate::utility::cert_c::size_analysis::{
     find_allocation_size, find_element_size, find_string_literal_length,
 };
+use crate::utility::cert_c::text_index::TextIndex;
 use crate::utility::cert_c::variable_analysis::{
     has_bounds_validation, has_validation_before_loop, is_uninitialized_variable,
     is_user_input_variable,
@@ -72,6 +72,11 @@ impl CertRule for Arr00C {
         // Macro/const-expr table for resolving array dimension expressions
         // (e.g. `arr[2*SPLINE_SEGMENT_DIVISIONS + 2]`). Built once per file.
         let macros = collect_macro_constants(node, source, self.data_model.get());
+        // The file's text with comments and literals blanked, once: every
+        // check below reads its function's (or loop body's) sanitized text
+        // as a slice of it, where sanitizing that text per candidate cost
+        // the function's length every time, the square of it per function.
+        let text = TextIndex::sanitized(&tree_root(node), source);
 
         // Iterative pre-order traversal: deeply nested ASTs (e.g. files with
         // thousands of chained `else if` branches) overflow the stack if each
@@ -120,7 +125,8 @@ impl CertRule for Arr00C {
                         violations.push(violation);
                     }
                     // Also check for pointer arithmetic that exceeds bounds
-                    if let Some(violation) = check_pointer_arithmetic(node, function, source) {
+                    if let Some(violation) = check_pointer_arithmetic(node, function, source, &text)
+                    {
                         violations.push(violation);
                     }
                     // Check for pointer subtraction between different arrays
@@ -130,7 +136,7 @@ impl CertRule for Arr00C {
                 }
                 "declaration" => {
                     // Check for VLA with zero or invalid size
-                    if let Some(violation) = check_vla_declaration(node, function, source) {
+                    if let Some(violation) = check_vla_declaration(node, function, source, &text) {
                         violations.push(violation);
                     }
                 }
@@ -140,37 +146,47 @@ impl CertRule for Arr00C {
                         violations.push(violation);
                     }
                     // Check for obviously wrong string operations (strcat/strcpy with literal too large)
-                    if let Some(violation) = check_obvious_string_overflow(node, function, source) {
+                    if let Some(violation) =
+                        check_obvious_string_overflow(node, function, source, &text)
+                    {
                         violations.push(violation);
                     }
                     // Check for memcpy/memmove with wrong size
-                    if let Some(violation) = check_memcpy_size_mismatch(node, function, source) {
+                    if let Some(violation) =
+                        check_memcpy_size_mismatch(node, function, source, &text)
+                    {
                         violations.push(violation);
                     }
                     // Check for memory operations with size exceeding buffer
-                    if let Some(violation) = check_memory_operation_overflow(node, function, source)
+                    if let Some(violation) =
+                        check_memory_operation_overflow(node, function, source, &text)
                     {
                         violations.push(violation);
                     }
                 }
                 "for_statement" => {
                     // Check for loops exceeding malloc/realloc allocation size
-                    if let Some(violation) = check_loop_exceeds_allocation(node, function, source) {
+                    if let Some(violation) =
+                        check_loop_exceeds_allocation(node, function, source, &text)
+                    {
                         violations.push(violation);
                     }
                     // Check for loops with bounds that exceed array size
-                    if let Some(violation) = check_loop_bound_exceeds_array(node, function, source)
+                    if let Some(violation) =
+                        check_loop_bound_exceeds_array(node, function, source, &text)
                     {
                         violations.push(violation);
                     }
                     // Check for loops with unvalidated bounds accessing arrays
-                    if let Some(violation) = check_loop_array_access(node, function, source) {
+                    if let Some(violation) = check_loop_array_access(node, function, source, &text)
+                    {
                         violations.push(violation);
                     }
                 }
                 "return_statement" => {
                     // Check for returning pointer to local array
-                    if let Some(violation) = check_return_local_array(node, function, source) {
+                    if let Some(violation) = check_return_local_array(node, function, source, &text)
+                    {
                         violations.push(violation);
                     }
                 }
@@ -181,12 +197,12 @@ impl CertRule for Arr00C {
                     }
                     // Check for reading from uninitialized array
                     if let Some(violation) =
-                        check_uninitialized_array_read(node, function, &arrays, source)
+                        check_uninitialized_array_read(node, function, &arrays, source, &text)
                     {
                         violations.push(violation);
                     }
                     // Check for array access after free
-                    if let Some(violation) = check_use_after_free(node, function, source) {
+                    if let Some(violation) = check_use_after_free(node, function, source, &text) {
                         violations.push(violation);
                     }
                     // Check for array access with constant out-of-bounds index
@@ -196,12 +212,15 @@ impl CertRule for Arr00C {
                         violations.push(violation);
                     }
                     // Check for array access with unvalidated index
-                    if let Some(violation) = check_subscript_bounds(node, function, &arrays, source)
+                    if let Some(violation) =
+                        check_subscript_bounds(node, function, &arrays, source, &text)
                     {
                         violations.push(violation);
                     }
                     // Check for array access with boundary value index
-                    if let Some(violation) = check_boundary_value_index(node, function, source) {
+                    if let Some(violation) =
+                        check_boundary_value_index(node, function, source, &text)
+                    {
                         violations.push(violation);
                     }
                 }
@@ -327,6 +346,7 @@ fn check_vla_declaration(
     node: &Node,
     function: Option<Node>,
     source: &str,
+    text: &TextIndex,
 ) -> Option<RuleViolation> {
     // Look for array_declarator in the declaration
     let mut declarator = None;
@@ -408,7 +428,7 @@ fn check_vla_declaration(
         // Check if this appears to be an unvalidated parameter or variable
         // Look for assignment of 0 or validation checks in the surrounding context
         if let Some(violation) =
-            check_vla_size_validation(node, function, size_var_name, source, &declarator)
+            check_vla_size_validation(node, function, size_var_name, source, text, &declarator)
         {
             return Some(violation);
         }
@@ -422,6 +442,7 @@ fn check_vla_size_validation(
     function: Option<Node>,
     size_var: &str,
     source: &str,
+    text: &TextIndex,
     declarator: &Node,
 ) -> Option<RuleViolation> {
     // Look backwards in the source to find if size_var was assigned 0 or is unvalidated
@@ -436,7 +457,7 @@ fn check_vla_size_validation(
     // spoof "size_var = 0" or a validation pattern (the latter would silently
     // suppress a genuine unvalidated-VLA-size violation).
     let function_start = function_node.start_byte();
-    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let sanitized_function_text = text.text(&function_node);
     let preceding_text = &sanitized_function_text
         [..(vla_position - function_start).min(sanitized_function_text.len())];
 
@@ -675,6 +696,7 @@ fn check_obvious_string_overflow(
     node: &Node,
     enclosing: Option<Node>,
     source: &str,
+    text: &TextIndex,
 ) -> Option<RuleViolation> {
     // Check for obviously wrong strcat/strcpy calls where the source is clearly too large
     // This indicates fundamental misunderstanding of arrays
@@ -755,7 +777,7 @@ fn check_obvious_string_overflow(
     let function_node = enclosing?;
     let function_start = function_node.start_byte();
     let call_position = node.start_byte();
-    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let sanitized_function_text = text.text(&function_node);
     let preceding_text = &sanitized_function_text
         [..(call_position - function_start).min(sanitized_function_text.len())];
 
@@ -804,6 +826,7 @@ fn check_memcpy_size_mismatch(
     node: &Node,
     enclosing: Option<Node>,
     source: &str,
+    text: &TextIndex,
 ) -> Option<RuleViolation> {
     // Check for memcpy/memmove where size argument uses wrong array
     // Pattern: memcpy(dest, source, sizeof(source)) where dest is smaller than source
@@ -858,7 +881,7 @@ fn check_memcpy_size_mismatch(
     let function_node = enclosing?;
     let function_start = function_node.start_byte();
     let call_position = node.start_byte();
-    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let sanitized_function_text = text.text(&function_node);
     let preceding_text = &sanitized_function_text
         [..(call_position - function_start).min(sanitized_function_text.len())];
 
@@ -908,6 +931,7 @@ fn check_memory_operation_overflow(
     node: &Node,
     enclosing: Option<Node>,
     source: &str,
+    text: &TextIndex,
 ) -> Option<RuleViolation> {
     // Check for memory operations (memset, memcpy, memmove) where the size argument
     // exceeds the actual buffer size
@@ -967,7 +991,7 @@ fn check_memory_operation_overflow(
     let function_node = enclosing?;
     let function_start = function_node.start_byte();
     let call_position = node.start_byte();
-    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let sanitized_function_text = text.text(&function_node);
     let preceding_text = &sanitized_function_text
         [..(call_position - function_start).min(sanitized_function_text.len())];
 
@@ -1021,6 +1045,7 @@ fn check_loop_exceeds_allocation(
     node: &Node,
     function: Option<Node>,
     source: &str,
+    text: &TextIndex,
 ) -> Option<RuleViolation> {
     // Check for loops that exceed dynamically allocated memory size
     // Pattern: arr = malloc(5 * sizeof(int)); for (i = 0; i < 10; i++) { arr[i] = ...; }
@@ -1058,7 +1083,7 @@ fn check_loop_exceeds_allocation(
     // Sanitized so a comment/string literal inside the loop body can't spoof
     // the "[loop_var]" subscript pattern or the array-name extraction.
     let body = node.child_by_field_name("body")?;
-    let body_text = get_sanitized_node_text(&body, source);
+    let body_text = text.text(&body);
 
     // Check if loop variable is used as array index
     let subscript_pattern = format!("[{}]", loop_var_name);
@@ -1075,7 +1100,7 @@ fn check_loop_exceeds_allocation(
     let function_node = function?;
     let function_start = function_node.start_byte();
     let loop_position = node.start_byte();
-    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let sanitized_function_text = text.text(&function_node);
     let preceding_text = &sanitized_function_text
         [..(loop_position - function_start).min(sanitized_function_text.len())];
 
@@ -1122,6 +1147,7 @@ fn check_loop_bound_exceeds_array(
     node: &Node,
     function: Option<Node>,
     source: &str,
+    text: &TextIndex,
 ) -> Option<RuleViolation> {
     // Check for loops where the bound allows accessing out-of-bounds indices
     // Pattern: for (int i = 0; i <= 10; i++) { arr[i] = ...; } where arr[10]
@@ -1171,7 +1197,7 @@ fn check_loop_bound_exceeds_array(
     // Look for array access using the loop variable: arr[loop_var]
     // Sanitized so a comment/string literal inside the loop body can't spoof
     // the "[loop_var]" subscript pattern or the array-name extraction.
-    let body_text = get_sanitized_node_text(&body, source);
+    let body_text = text.text(&body);
     let subscript_pattern = format!("[{}]", loop_var_name);
 
     if !body_text.contains(&subscript_pattern) {
@@ -1185,7 +1211,7 @@ fn check_loop_bound_exceeds_array(
     let function_node = function?;
     let function_start = function_node.start_byte();
     let loop_position = node.start_byte();
-    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let sanitized_function_text = text.text(&function_node);
     let preceding_text = &sanitized_function_text
         [..(loop_position - function_start).min(sanitized_function_text.len())];
 
@@ -1260,6 +1286,7 @@ fn check_loop_array_access(
     node: &Node,
     function: Option<Node>,
     source: &str,
+    text: &TextIndex,
 ) -> Option<RuleViolation> {
     // Check for loops that use unvalidated/uninitialized variables as bounds when accessing arrays
     // Patterns:
@@ -1285,7 +1312,7 @@ fn check_loop_array_access(
     let function_node = function?;
     let loop_position = node.start_byte();
     let function_start = function_node.start_byte();
-    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let sanitized_function_text = text.text(&function_node);
     let preceding_text = &sanitized_function_text
         [..(loop_position - function_start).min(sanitized_function_text.len())];
 
@@ -1395,6 +1422,7 @@ fn check_subscript_bounds(
     function: Option<Node>,
     arrays: &ArrayNames,
     source: &str,
+    text: &TextIndex,
 ) -> Option<RuleViolation> {
     // Check for array subscript with unvalidated index
     // Pattern: arr[index] where index comes from scanf or is a function parameter without validation
@@ -1429,7 +1457,7 @@ fn check_subscript_bounds(
     // unvalidated-index violation.
     let function_start = function_node.start_byte();
     let subscript_position = node.start_byte();
-    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let sanitized_function_text = text.text(&function_node);
     let preceding_text = &sanitized_function_text
         [..(subscript_position - function_start).min(sanitized_function_text.len())];
 
@@ -1494,6 +1522,7 @@ fn check_uninitialized_array_read(
     function: Option<Node>,
     arrays: &ArrayNames,
     source: &str,
+    text: &TextIndex,
 ) -> Option<RuleViolation> {
     // Check for reading from an uninitialized array
     // Pattern: int arr[10]; ... printf("%d", arr[i]);
@@ -1526,7 +1555,7 @@ fn check_uninitialized_array_read(
     let function_node = function?;
     let function_start = function_node.start_byte();
     let subscript_position = node.start_byte();
-    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let sanitized_function_text = text.text(&function_node);
     let preceding_text = &sanitized_function_text
         [..(subscript_position - function_start).min(sanitized_function_text.len())];
 
@@ -1646,6 +1675,7 @@ fn check_use_after_free(
     node: &Node,
     function: Option<Node>,
     source: &str,
+    text: &TextIndex,
 ) -> Option<RuleViolation> {
     // Check for array/pointer access after free()
     // Pattern: free(ptr); ... ptr[i] = value;
@@ -1664,7 +1694,7 @@ fn check_use_after_free(
     let function_node = function?;
     let function_start = function_node.start_byte();
     let subscript_position = node.start_byte();
-    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let sanitized_function_text = text.text(&function_node);
     let preceding_text = &sanitized_function_text
         [..(subscript_position - function_start).min(sanitized_function_text.len())];
 
@@ -1867,6 +1897,7 @@ fn check_boundary_value_index(
     node: &Node,
     function: Option<Node>,
     source: &str,
+    text: &TextIndex,
 ) -> Option<RuleViolation> {
     // Check for array subscript using a variable initialized to boundary values
     // Pattern: unsigned int idx = UINT_MAX; ... arr[idx]
@@ -1888,7 +1919,7 @@ fn check_boundary_value_index(
     let function_node = function?;
     let function_start = function_node.start_byte();
     let subscript_position = node.start_byte();
-    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let sanitized_function_text = text.text(&function_node);
     let preceding_text = &sanitized_function_text
         [..(subscript_position - function_start).min(sanitized_function_text.len())];
 
@@ -1963,6 +1994,7 @@ fn check_return_local_array(
     node: &Node,
     function: Option<Node>,
     source: &str,
+    text: &TextIndex,
 ) -> Option<RuleViolation> {
     // Check for returning pointer to local stack array
     // Pattern: return local_array; where local_array is declared in function
@@ -1999,7 +2031,7 @@ fn check_return_local_array(
     // Sanitized so a comment/string literal containing "name[" text can't
     // spoof the declaration scan below (either suppressing a real
     // return-of-local-array violation or spuriously triggering one).
-    let function_text = get_sanitized_node_text(&function_node, source);
+    let function_text = text.text(&function_node);
 
     // Look for pattern: type name[size] where name matches return_var
     // Need to check for word boundaries to avoid false positives like "size" matching "s<i>ze"
@@ -2073,6 +2105,7 @@ fn check_pointer_arithmetic(
     node: &Node,
     function: Option<Node>,
     source: &str,
+    text: &TextIndex,
 ) -> Option<RuleViolation> {
     // Check for pointer arithmetic that obviously exceeds array bounds
     // Pattern: ptr = arr + offset  where offset > array_size
@@ -2131,17 +2164,17 @@ fn check_pointer_arithmetic(
 
     // Sanitized so a comment/string literal in the function body can't spoof
     // the array-size scan and hide real out-of-bounds pointer arithmetic.
-    let preceding_text: String = if let Some(body) = body_node {
-        let sanitized_body = get_sanitized_node_text(&body, source);
+    let preceding_text: &str = if let Some(body) = body_node {
+        let sanitized_body = text.text(&body);
         let rel_start = (body_start - body.start_byte()).min(sanitized_body.len());
         let rel_end = (ptr_position - body.start_byte()).min(sanitized_body.len());
-        sanitized_body[rel_start..rel_end].to_string()
+        &sanitized_body[rel_start..rel_end]
     } else {
-        source[body_start..ptr_position].to_string()
+        &source[body_start..ptr_position]
     };
 
     // Look for array declaration: type array_name[SIZE]
-    if let Some(array_size) = find_array_size(array_name, &preceding_text) {
+    if let Some(array_size) = find_array_size(array_name, preceding_text) {
         // Check if offset exceeds the array size
         // Note: arr + size (one past the end) is technically allowed but shouldn't be dereferenced
         if offset > array_size {
