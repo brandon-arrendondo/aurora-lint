@@ -4,21 +4,35 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::{ProjectContext, VisibleTypes};
 use crate::manifest::Severity;
+use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::ast_utils::{self, get_identifier_from_declarator};
 use crate::utility::cert_c::declarator_utils::{is_array_declarator, is_pointer_declarator};
-use crate::utility::cert_c::float_typing::StructFieldTypes;
+use crate::utility::cert_c::expr_type::{self, CType, TypeEnv};
+use crate::utility::cert_c::overflow_helpers;
 use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
 use lang_parsing_substrate::query;
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tree_sitter::Node;
 
-/// The visible structure member types, for reading whether a member
-/// operand is a pointer.
+/// What the project and the file's headers say about types, for reading
+/// whether an operand is a pointer.
 #[derive(Default)]
 pub struct Arr39C {
-    struct_field_types: RefCell<Arc<StructFieldTypes>>,
+    /// The types the file sees: its headers' typedefs, struct members and
+    /// member declarator shapes.
+    visible: RefCell<VisibleTypes>,
+    /// `ProjectContext::project_array_objects`: file-scope arrays a header
+    /// declares.
+    project_arrays: RefCell<Arc<HashSet<String>>>,
+    /// `ProjectContext::pointer_typedef_names`, for a pointer typedef only a
+    /// header defines.
+    pointer_typedefs: RefCell<Arc<HashSet<String>>>,
+    /// `ProjectContext::function_pointer_typedef_names`, likewise.
+    function_pointer_typedefs: RefCell<Arc<HashSet<String>>>,
+    /// The settings' data model.
+    data_model: Cell<IntFacts>,
 }
 
 impl CertRule for Arr39C {
@@ -38,39 +52,136 @@ impl CertRule for Arr39C {
         "ARR39-C"
     }
 
+    fn reads_header_facts(&self) -> bool {
+        true
+    }
+
+    fn set_analysis_settings(&self, settings: &Arc<AnalysisSettings>) {
+        self.data_model.set(settings.facts);
+    }
+
     fn set_project_context(&self, context: &ProjectContext) {
-        *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
+        self.visible.borrow_mut().struct_field_types = context.struct_field_types.clone();
+        *self.project_arrays.borrow_mut() = Arc::new(context.project_array_objects());
+        *self.pointer_typedefs.borrow_mut() = context.pointer_typedef_names.clone();
+        *self.function_pointer_typedefs.borrow_mut() =
+            context.function_pointer_typedef_names.clone();
     }
 
     fn set_visible_types(&self, types: &VisibleTypes) {
-        *self.struct_field_types.borrow_mut() = types.struct_field_types.clone();
+        *self.visible.borrow_mut() = types.clone();
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        let facts = PointerFacts::collect(&ast_utils::tree_root(node), source);
-        self.check_node(node, source, &facts, violations);
+        let visible = self.visible.borrow().clone();
+        let pointer_typedefs = self.pointer_typedefs.borrow().clone();
+        let function_pointer_typedefs = self.function_pointer_typedefs.borrow().clone();
+        let typedefs = OnceCell::new();
+        let types = OperandTypes {
+            root: ast_utils::tree_root(node),
+            source,
+            visible: &visible,
+            project_arrays: self.project_arrays.borrow().clone(),
+            pointer_typedefs: &pointer_typedefs,
+            function_pointer_typedefs: &function_pointer_typedefs,
+            model: self.data_model.get(),
+            typedefs: &typedefs,
+            facts: OnceCell::new(),
+            env: OnceCell::new(),
+            variable_types: RefCell::new(HashMap::new()),
+        };
+        self.check_node(node, source, &types, violations);
+    }
+}
+
+/// What one file types an operand against, each part built on the first
+/// operand that needs it.
+struct OperandTypes<'a> {
+    root: Node<'a>,
+    source: &'a str,
+    visible: &'a VisibleTypes,
+    project_arrays: Arc<HashSet<String>>,
+    pointer_typedefs: &'a HashSet<String>,
+    function_pointer_typedefs: &'a HashSet<String>,
+    model: IntFacts,
+    typedefs: &'a OnceCell<HashMap<String, String>>,
+    facts: OnceCell<PointerFacts>,
+    env: OnceCell<TypeEnv<'a>>,
+    /// Each function's `{name -> declared type}` map, by the function's
+    /// node id.
+    variable_types: RefCell<HashMap<usize, Arc<HashMap<String, String>>>>,
+}
+
+impl<'a> OperandTypes<'a> {
+    /// Whether `operand`'s value has pointer or array type by the
+    /// declarations it resolves to (ADR-0006): positive only, so an operand
+    /// whose type does not resolve is not a pointer and no finding is made
+    /// on it. The pointer-typing facts answer first; the expression typer
+    /// answers what they leave, such as `*pp + i`, `arr[k]` or a variable
+    /// of a pointer typedef.
+    fn is_pointer(&self, operand: &Node) -> bool {
+        let facts = self.facts.get_or_init(|| {
+            PointerFacts::collect(&self.root, self.source).with_project(
+                self.project_arrays.clone(),
+                self.visible.struct_field_shapes.clone(),
+            )
+        });
+        let variable_types = overflow_helpers::enclosing_function_definition(operand)
+            .map(|function| {
+                self.variable_types
+                    .borrow_mut()
+                    .entry(function.id())
+                    .or_insert_with(|| {
+                        Arc::new(overflow_helpers::collect_variable_types(
+                            &function,
+                            self.source,
+                        ))
+                    })
+                    .clone()
+            })
+            .unwrap_or_default();
+        if pointer_typing::expr_is_pointer(
+            operand,
+            self.source,
+            &variable_types,
+            &self.visible.struct_field_types,
+            facts,
+        ) {
+            return true;
+        }
+        let env = self.env.get_or_init(|| {
+            let typedefs = self.typedefs.get_or_init(|| {
+                expr_type::typedefs_with_derivations(
+                    &self.visible.typedef_types,
+                    &self.root,
+                    self.source,
+                    self.pointer_typedefs,
+                    self.function_pointer_typedefs,
+                )
+            });
+            TypeEnv::new(
+                typedefs,
+                &self.visible.struct_field_types,
+                &self.visible.struct_field_shapes,
+                &self.visible.struct_typedef_aliases,
+                self.model,
+            )
+            .under_edition(self.visible.c_standard)
+            .in_tree(self.root)
+        });
+        matches!(
+            expr_type::expr_type(operand, self.source, env),
+            Some(CType::Pointer(_) | CType::Array(_))
+        )
     }
 }
 
 impl Arr39C {
-    /// Whether `operand`'s value has pointer type by the declarations it
-    /// resolves to (ADR-0006): positive only, so an operand whose type does
-    /// not resolve is not a pointer and no finding is made on it.
-    fn has_pointer_type(&self, operand: &Node, source: &str, facts: &PointerFacts) -> bool {
-        pointer_typing::expr_is_pointer(
-            operand,
-            source,
-            &HashMap::new(),
-            &self.struct_field_types.borrow(),
-            facts,
-        )
-    }
-
     fn check_node(
         &self,
         node: &Node,
         source: &str,
-        facts: &PointerFacts,
+        types: &OperandTypes,
         violations: &mut Vec<RuleViolation>,
     ) {
         let matches = query::find_descendants_of_kinds(
@@ -88,10 +199,10 @@ impl Arr39C {
         for matched in matches {
             match matched.kind() {
                 "binary_expression" => {
-                    self.check_pointer_arithmetic(&matched, source, facts, violations);
+                    self.check_pointer_arithmetic(&matched, source, types, violations);
                 }
                 "assignment_expression" => {
-                    self.check_assignment_arithmetic(&matched, source, facts, violations);
+                    self.check_assignment_arithmetic(&matched, source, types, violations);
                 }
                 "call_expression" => {
                     self.check_function_call_scaling(&matched, source, violations);
@@ -101,7 +212,7 @@ impl Arr39C {
                 }
                 "subscript_expression" => {
                     // Check for violations in array subscript like ptr[scaled_value]
-                    self.check_subscript_scaling(&matched, source, facts, violations);
+                    self.check_subscript_scaling(&matched, source, types, violations);
                 }
                 _ => {}
             }
@@ -112,7 +223,7 @@ impl Arr39C {
         &self,
         node: &Node,
         source: &str,
-        facts: &PointerFacts,
+        types: &OperandTypes,
         violations: &mut Vec<RuleViolation>,
     ) {
         if let Some(operator) = self.get_operator(node, source) {
@@ -122,8 +233,8 @@ impl Arr39C {
                     node.child_by_field_name("right"),
                 ) {
                     // Check if this is pointer + scaled_integer or pointer - scaled_integer
-                    if self.has_pointer_type(&left, source, facts)
-                        && self.is_pointer_scaled_arithmetic(&left, &right, source)
+                    if self.is_pointer_scaled_arithmetic(&left, &right, source)
+                        && types.is_pointer(&left)
                     {
                         let start_point = node.start_position();
                         let expr_text = &source[node.start_byte()..node.end_byte()];
@@ -151,7 +262,7 @@ impl Arr39C {
         &self,
         node: &Node,
         source: &str,
-        facts: &PointerFacts,
+        types: &OperandTypes,
         violations: &mut Vec<RuleViolation>,
     ) {
         if let Some(operator) = self.get_assignment_operator(node, source) {
@@ -164,11 +275,10 @@ impl Arr39C {
 
                     // Check if this is pointer += scaled_integer
                     if self.is_scaled_integer_expression(&right, source)
-                        && self.has_pointer_type(&left, source, facts)
                         && self.looks_like_pointer(&left, source)
                         && !self.is_char_pointer(&left, source)  // Char pointers are allowed
-                        && !left_text.to_lowercase().contains("byte")
-                    // Byte pointers are allowed
+                        && !left_text.to_lowercase().contains("byte") // Byte pointers are allowed
+                        && types.is_pointer(&left)
                     {
                         let start_point = node.start_position();
                         let expr_text = &source[node.start_byte()..node.end_byte()];
@@ -196,7 +306,7 @@ impl Arr39C {
         &self,
         node: &Node,
         source: &str,
-        facts: &PointerFacts,
+        types: &OperandTypes,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Check for ptr[sizeof_value] pattern
@@ -208,11 +318,10 @@ impl Arr39C {
 
             // Check if index is a scaled value (from sizeof or byte-related variable)
             if self.is_scaled_integer_expression(&index, source)
-                && self.has_pointer_type(&argument, source, facts)
                 && self.looks_like_pointer_node(&argument, source)
                 && !self.is_char_pointer(&argument, source)
-                && !arg_text.to_lowercase().contains("byte")
-            // Byte pointers are allowed
+                && !arg_text.to_lowercase().contains("byte") // Byte pointers are allowed
+                && types.is_pointer(&argument)
             {
                 let start_point = node.start_position();
                 let expr_text = &source[node.start_byte()..node.end_byte()];

@@ -4,7 +4,6 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval;
 use crate::analyze::context::{self, ProjectContext, ScopedTable, VisibleTypes};
-use crate::analyze::dead_regions::DeadRegions;
 use crate::analyze::deallocator_candidates;
 use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::init_state;
@@ -6261,103 +6260,19 @@ struct OperandTypes<'a> {
 }
 
 impl OperandTypes<'_> {
-    /// The visible typedef table with the pointer typedefs it leaves out,
-    /// since it records only a typedef with no declarator derivation. This
-    /// file's are read from their declarators, so a pointer to const counts,
-    /// and they win over a table entry of another file's. A block's typedef
-    /// is keyed here like a file-scope one, for an operand only it can type.
-    /// One only a header declares is known by name alone, as a pointer to
-    /// nothing, so the operand itself reads as a pointer but what it leads to
-    /// does not: an element of a pointer to pointer or of an array of pointers,
-    /// and a field through a pointer to struct. A pointer to const is not even
-    /// named, since no project table records it, and stays unresolved.
+    /// [`expr_type::typedefs_with_derivations`] over the visible table and the
+    /// project's pointer typedef names.
     fn typedefs(&self, root: &Node, source: &str) -> &HashMap<String, String> {
         self.typedefs.get_or_init(|| {
-            let mut typedefs = HashMap::clone(&self.visible.typedef_types);
-            let dead = DeadRegions::of(source);
-            let definitions = query::find_descendants_of_kind(*root, "type_definition");
-            let (in_blocks, at_file_scope): (Vec<_>, Vec<_>) = definitions
-                .into_iter()
-                // A typedef whose head the parse swallowed names no type.
-                .filter(|d| {
-                    !dead.contains_node(d)
-                        && !crate::utility::cert_c::declarator_utils::typedef_head_was_swallowed(d)
-                })
-                .partition(|d| overflow_helpers::enclosing_function_definition(d).is_some());
-            for (name, spelling) in at_file_scope
-                .iter()
-                .flat_map(|d| pointer_typedefs_of(d, source))
-            {
-                typedefs.insert(name, spelling);
-            }
-            for (name, spelling) in in_blocks
-                .iter()
-                .flat_map(|d| pointer_typedefs_of(d, source))
-            {
-                typedefs.entry(name).or_insert(spelling);
-            }
-            for name in self
-                .pointer_typedefs
-                .iter()
-                .chain(self.function_pointer_typedefs)
-            {
-                typedefs
-                    .entry(name.clone())
-                    .or_insert_with(|| "void *".to_string());
-            }
-            typedefs
+            expr_type::typedefs_with_derivations(
+                &self.visible.typedef_types,
+                root,
+                source,
+                self.pointer_typedefs,
+                self.function_pointer_typedefs,
+            )
         })
     }
-}
-
-/// `(name, spelling)` for each name `definition` (a `type_definition`) binds
-/// to a pointer, an array or a function pointer. Each level of pointer or
-/// array is one `*`: only what an element or a dereference leaves matters
-/// here, and an array decays. The spelling keeps the struct a pointer names,
-/// so a field through it still resolves. A struct with no tag goes by the plain
-/// name the same definition gives it, as `S` in `typedef struct {...} S, *SP`.
-/// With neither, as in `typedef struct {...} *SP`, its fields are filed under
-/// no name, so the pointer resolves and a field through it does not.
-fn pointer_typedefs_of(definition: &Node, source: &str) -> Vec<(String, String)> {
-    let specifier = definition.child_by_field_name("type");
-    let declarators = declarator_utils::typedef_declarators(definition);
-    let plain_name = || {
-        declarators
-            .iter()
-            .filter(|d| !d.has_error() && expr_type::declarator_shape(d).is_empty())
-            .find_map(|d| declarator_utils::TypedefShape::of(d, source).name)
-    };
-    let pointee = match specifier.as_ref().map(|t| (t.kind(), t)) {
-        Some(("primitive_type" | "sized_type_specifier" | "type_identifier", t)) => {
-            ast_utils::get_node_text_owned(t, source)
-        }
-        Some(("struct_specifier" | "union_specifier", t)) => t
-            .child_by_field_name("name")
-            .map(|tag| {
-                let keyword = t.kind().trim_end_matches("_specifier");
-                format!("{keyword} {}", ast_utils::get_node_text(&tag, source))
-            })
-            .or_else(plain_name)
-            .unwrap_or_else(|| "void".to_string()),
-        _ => "void".to_string(),
-    };
-    declarators
-        .iter()
-        .filter(|d| !d.has_error())
-        .filter_map(|d| {
-            let name = declarator_utils::TypedefShape::of(d, source).name?;
-            let shape = expr_type::declarator_shape(d);
-            // The levels outside any function: none is a plain alias, or a
-            // function type, which no object has.
-            let levels = shape.rsplit('(').next().filter(|l| !l.is_empty())?;
-            let base = if shape.contains('(') {
-                "void"
-            } else {
-                pointee.as_str()
-            };
-            Some((name, format!("{base} {}", "*".repeat(levels.len()))))
-        })
-        .collect()
 }
 
 /// An operand [`MemoryLeakAnalyzer::negative_result_test`] can name: a variable, a field, or an
