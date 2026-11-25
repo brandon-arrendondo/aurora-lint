@@ -145,6 +145,14 @@ a rule outright.</p></li>
 <li><p>Basis: C11 6.7.4p8, 7.23; C23 6.7.13.7. CERT MSC37-C-EX2 exempts a path that calls a function marked _Noreturn. A GNU noreturn attribute, [[gnu::noreturn]] included, is not proof under this option; only MSC37-C credits it, through its own option msc37_attribute_noreturn.</p></li>
 </ul>
 </dd>
+<dt><code class="docutils literal notranslate"><span class="pre">msc12_dead_callers</span></code></dt><dd><p>MSC12-C: a static function whose only callers are themselves never executed (the leaf of a chain of uncalled statics, or a cycle of statics nothing else calls) is reported as called only from code that never runs. Withdrawn, only a static with no caller but itself is reported, as the rule’s text reads “no caller”.</p>
+<ul class="simple">
+<li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code>; pedantic preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>
+<li><p>Scope: MSC12-C</p></li>
+<li><p>Oracle tag: <code class="docutils literal notranslate"><span class="pre">dead-callers</span></code></p></li>
+<li><p>Basis: MSC12-C asks for code that is never executed to be removed; a function only such code calls is never executed. The strict and pedantic policies keep the literal reading, a function with no caller (MSC12-C/2026-11-24/dead-callers).</p></li>
+</ul>
+</dd>
 <dt><code class="docutils literal notranslate"><span class="pre">pre31_unknown_call_pure</span></code></dt><dd><p>PRE31-C: an unproven call, in an argument an unsafe macro may evaluate other than once, is not treated as a side effect: a call to a function with no definition in the scanned files and no library contract, a call through a pointer, strerror, inet_ntoa, strsignal, gai_strerror, getenv, gmtime and asctime (whose only effect is the static buffer they return), or a call to a scanned function that reaches one of these and nothing shown to have a side effect. A callee shown to have a side effect, in whichever scanned file it is defined, is reported either way.</p>
 <ul class="simple">
 <li><p>Default preset: <code class="docutils literal notranslate"><span class="pre">true</span></code>; strict preset: <code class="docutils literal notranslate"><span class="pre">false</span></code>; pedantic preset: <code class="docutils literal notranslate"><span class="pre">false</span></code></p></li>

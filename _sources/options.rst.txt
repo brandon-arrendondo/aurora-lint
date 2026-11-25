@@ -49,6 +49,14 @@ Policy options
    - Oracle tag: ``noreturn-trusted``
    - Basis: C11 6.7.4p8, 7.23; C23 6.7.13.7. CERT MSC37-C-EX2 exempts a path that calls a function marked _Noreturn. A GNU noreturn attribute, [[gnu::noreturn]] included, is not proof under this option; only MSC37-C credits it, through its own option msc37_attribute_noreturn.
 
+``msc12_dead_callers``
+   MSC12-C: a static function whose only callers are themselves never executed (the leaf of a chain of uncalled statics, or a cycle of statics nothing else calls) is reported as called only from code that never runs. Withdrawn, only a static with no caller but itself is reported, as the rule's text reads "no caller".
+
+   - Default preset: ``true``; strict preset: ``false``; pedantic preset: ``false``
+   - Scope: MSC12-C
+   - Oracle tag: ``dead-callers``
+   - Basis: MSC12-C asks for code that is never executed to be removed; a function only such code calls is never executed. The strict and pedantic policies keep the literal reading, a function with no caller (MSC12-C/2026-11-24/dead-callers).
+
 ``pre31_unknown_call_pure``
    PRE31-C: an unproven call, in an argument an unsafe macro may evaluate other than once, is not treated as a side effect: a call to a function with no definition in the scanned files and no library contract, a call through a pointer, strerror, inet_ntoa, strsignal, gai_strerror, getenv, gmtime and asctime (whose only effect is the static buffer they return), or a call to a scanned function that reaches one of these and nothing shown to have a side effect. A callee shown to have a side effect, in whichever scanned file it is defined, is reported either way.
 
