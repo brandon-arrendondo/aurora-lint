@@ -62,7 +62,8 @@ Kinds:
   header measured is 620 levels (the Windows SDK's `d3d9helper.h`); the
   deepest fixture, a stack-safety test of 2000 nested `if`s, is 4009.
 - **Refusals the scan does not report.** Two outputs leave refused files
-  out, for every cause (too large, not source text, too deep). The
+  out, for every cause (too large, not source text, too deep, parse
+  budget). The
   interactive TUI skips a file its parse refuses without saying so; only
   the command line reports refusals. The JSON export (`-e FILE.json`) carries no
   refusals, where the text output and SARIF do. Both are known gaps.
@@ -106,6 +107,7 @@ Kinds:
 | `analyze::WORKER_STACK_BYTES` | 16 MiB per analysis thread | a/b | a stack overflow aborts the process and cannot be contained |
 | `input_guard::admit` | `--max-file-size` (64 MiB); the substrate's `classify_file` on the first 8 KiB | d | reported (stage `input`); the file is skipped, a header read only for its facts included, as is a source include resolution reads for the includes it names (a refused one adds no include edges) |
 | `input_guard::admit_tree` (in `CParser::parse_file`) | `--max-nesting-depth` (5000 tree levels), measured after parsing | d | reported (stage `input`, cause `too deep`), a header read only for its facts or a source read for its includes included; the file is skipped by every parse caller, so no recursive walk sees it |
+| `input_guard::parse_budget` (in `parse_with_recovery` and the C++ header check) | `--max-parse-steps-per-kib` (2,000 + 256/KiB steps) | d | reported (stage `input`, cause `parse-budget`), a header read only for its facts included; a header the C++ check cannot decide in budget is refused, not guessed |
 | `input_guard::large_file_permit` | files over 8 MiB analysed one at a time | d | none needed: it orders the work, it does not drop any |
 
 ## CFG and dataflow
@@ -165,7 +167,7 @@ Kinds:
 | `compile_commands` response files | depth 8 | b | silent: the file is dropped | lost `-D`/`-I`, either direction |
 | `resolve_includes`, `IncludeClosure`, `concurrency_roots` | explicit queue and visited set | a | – | terminate |
 | `prescan::walk_beyond_search_path` (DCL31-C's stand-down decision only) | explicit queue and visited set; each file read once; suffix matches memoized per spelling | a | – | terminate |
-| tree-sitter parse | no timeout set | – | – | relies on tree-sitter's own linear-time parse |
+| tree-sitter parse | `--max-parse-steps-per-kib` (2,000 + 256/KiB parser progress steps), each parse | d | the first parse: reported (stage `input`, cause `parse-budget`), the file is skipped. A repair's re-parse: silent, the repair is dropped and the first tree stands | error recovery is quadratic on some malformed input (a comment followed by 4,000 stray ` */` lines takes seconds, the repair loop re-parsing it several times); no file of the twelve corpora needs more than 0.023 steps per byte, against the default's 0.25 (measured in the substrate with tree-sitter 0.25, -c 0.24, -cpp 0.23; re-measure after a grammar bump) |
 
 ## Utility helpers
 

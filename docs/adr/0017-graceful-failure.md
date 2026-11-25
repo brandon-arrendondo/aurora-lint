@@ -160,6 +160,20 @@ Before this decision, a failure anywhere ended the scan.
    the process before containment can see it. The inventory records the
    calibration.
 
+   **Amendment (2026-11-25, Brandon): the parse itself is bounded.**
+   tree-sitter's error recovery is quadratic on some malformed input, so
+   one file could stall a scan in the parser, where no checkpoint reaches.
+   Every parse of a scanned or prescanned file, and the C++ check a header
+   gets, is held to a work budget: 2,000 parser progress steps plus
+   `--max-parse-steps-per-kib` per KiB (default 256; `0` removes the
+   budget). Steps depend only on the input and the grammar, so a refusal
+   reproduces on any machine. A file whose first parse reaches the budget,
+   or a header the C++ check cannot decide within it, is refused as above,
+   with cause `parse-budget`; no partial tree is analysed. A repair's
+   re-parse that reaches it only drops that repair: the tree before it is
+   complete and stands, and the file is not refused for it. The re-parses
+   rules make of their own snippets are not bounded this way.
+
    A refused file is skipped and reported like any other failure: stage
    `input`, exit 3, a SARIF notification. That holds for a header read only
    for its declarations and macros as well, since leaving it out changes

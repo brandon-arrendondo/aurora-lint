@@ -297,8 +297,16 @@ than this many levels, which the analyses cannot walk without risking a
 stack overflow. A header read only for its declarations and macros is
 reported the same way. Default 5000; \fB0\fR removes the limit, at the
 risk of a stack overflow on deeper input.
+.TP
+\fB\-\-max\-parse\-steps\-per\-kib\fR \fISTEPS\fR
+Skip, and report (exit 3), any input file whose parse takes more than 2000
+parser steps plus this many per KiB, as the parser's error recovery can on
+some malformed input. The bound holds for each parse: a repair that would
+take longer is dropped, and the file is analysed as first parsed. A header
+read only for its declarations and macros is reported the same way.
+Default 256; \fB0\fR removes the budget.
 .B \-\-load\-prescan
-refuses a cache built under a different limit or
+refuses a cache built under a different nesting limit, parse budget or
 .BR \-\-max\-file\-size .
 .SS "Performance & Parallelism"
 .TP
