@@ -219,6 +219,10 @@ impl<'a> TypeIndex<'a> {
         for n in nodes {
             let scope = scope_of(&n);
             if n.kind() == "type_definition" {
+                // A typedef whose head the parse swallowed names no type.
+                if crate::utility::cert_c::declarator_utils::typedef_head_was_swallowed(&n) {
+                    continue;
+                }
                 for d in n.children_by_field_name("declarator", &mut n.walk()) {
                     if let Some(name) = typedef_name(&d, source) {
                         typedefs.entry(name.to_string()).or_default().push((

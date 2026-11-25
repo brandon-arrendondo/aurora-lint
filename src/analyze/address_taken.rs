@@ -658,7 +658,10 @@ fn typedef_is_volatile(node: &Node, name: &str, source: &str) -> bool {
     let mut stack = vec![root];
     while let Some(n) = stack.pop() {
         if n.kind() == "type_definition" {
-            definitions.push(n);
+            // A typedef whose head the parse swallowed names no type.
+            if !crate::utility::cert_c::declarator_utils::typedef_head_was_swallowed(&n) {
+                definitions.push(n);
+            }
             continue;
         }
         stack.extend((0..n.named_child_count()).filter_map(|i| n.named_child(i)));

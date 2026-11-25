@@ -168,7 +168,10 @@ impl<'s> Reach<'s> {
             }
             let holds_use = item.end_byte() > self.at;
             match item.kind() {
-                "type_definition" if !holds_use => {
+                // A typedef whose head the parse swallowed names no type.
+                "type_definition"
+                    if !holds_use && !declarator_utils::typedef_head_was_swallowed(item) =>
+                {
                     if let Some(meaning) = self.definition(item) {
                         *seen = vec![meaning];
                     }

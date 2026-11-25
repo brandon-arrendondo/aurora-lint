@@ -76,6 +76,7 @@ use crate::utility::cert_c::ast_utils::{
     declaration_has_storage_class, get_identifier_from_declarator, get_node_text,
     resolve_identifier_declarator,
 };
+use crate::utility::cert_c::declarator_utils;
 use crate::utility::cert_c::expr_type::{expr_type, CType, IntFacts, TypeEnv};
 use lang_parsing_substrate::query;
 use std::sync::Arc;
@@ -668,7 +669,9 @@ fn last_typedef_before<'a>(
             break;
         }
         if child.kind() == "type_definition" {
+            // A typedef whose head the parse swallowed names no type.
             if child.end_byte() <= before
+                && !declarator_utils::typedef_head_was_swallowed(&child)
                 && child
                     .child_by_field_name("declarator")
                     .is_some_and(|d| member_name(&d, source) == name)

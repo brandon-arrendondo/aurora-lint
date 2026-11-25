@@ -37,6 +37,7 @@ use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::clearing_extent::cleared_extent;
+use crate::utility::cert_c::declarator_utils;
 use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::pp_tokens::{lex_replacement_list, PpKind, PpToken, KEYWORDS};
 use lang_parsing_substrate::query;
@@ -1583,6 +1584,8 @@ fn in_operand_position(ident: &Node) -> bool {
 fn unconditional_typedef_names(root: Node, source: &str) -> HashSet<String> {
     ast_utils::top_level_items(root)
         .filter(|item| item.kind() == "type_definition")
+        // A typedef whose head the parse swallowed names no type.
+        .filter(|item| !declarator_utils::typedef_head_was_swallowed(item))
         .filter(|item| enclosing_arms(item, source).is_empty())
         .flat_map(|item| {
             item.children_by_field_name("declarator", &mut item.walk())

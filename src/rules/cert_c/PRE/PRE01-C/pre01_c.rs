@@ -57,6 +57,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::check_macros::{collect_macro_definitions, MacroDefinition};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
+use crate::utility::cert_c::declarator_utils;
 use crate::utility::cert_c::expr_type::is_standard_typedef_name;
 use crate::utility::cert_c::pp_tokens::{
     define_at, lex_replacement_list, matching_close, LineIndex, PpKind, PpToken,
@@ -385,6 +386,10 @@ impl Pre01C {
     fn file_typedef_names(root: &Node, source: &str) -> HashSet<String> {
         let mut names = HashSet::new();
         for def in query::find_descendants_of_kind(*root, "type_definition") {
+            // A typedef whose head the parse swallowed names no type.
+            if declarator_utils::typedef_head_was_swallowed(&def) {
+                continue;
+            }
             let mut cursor = def.walk();
             for declarator in def.children_by_field_name("declarator", &mut cursor) {
                 if let Some(name) = std::iter::once(declarator)

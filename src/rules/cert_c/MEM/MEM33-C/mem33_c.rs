@@ -162,7 +162,10 @@ impl FlexibleArrayAnalyzer {
             }
 
             // Look for typedef declarations of flexible array structures
-            if current.kind() == "type_definition" {
+            // A typedef whose head the parse swallowed names no type.
+            if current.kind() == "type_definition"
+                && !crate::utility::cert_c::declarator_utils::typedef_head_was_swallowed(&current)
+            {
                 self.collect_typedef_flexible_array(&current, source);
             }
 

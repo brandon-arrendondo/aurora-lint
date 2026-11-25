@@ -42,6 +42,7 @@ use crate::utility::cert_c::ast_utils::{
     extract_struct_name_from_type, find_containing_function, get_node_text,
     resolve_identifier_declarator,
 };
+use crate::utility::cert_c::declarator_utils;
 use crate::utility::cert_c::node_children::NodeChildren;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
@@ -653,7 +654,10 @@ impl FlexibleArrayMembers {
             // `typedef struct [tag] { ... } alias;` -- the aliases are the
             // type_identifier children of the enclosing type_definition.
             if let Some(parent) = spec.parent() {
-                if parent.kind() == "type_definition" {
+                // A typedef whose head the parse swallowed names no type.
+                if parent.kind() == "type_definition"
+                    && !declarator_utils::typedef_head_was_swallowed(&parent)
+                {
                     names.extend(
                         parent
                             .named_child_nodes()

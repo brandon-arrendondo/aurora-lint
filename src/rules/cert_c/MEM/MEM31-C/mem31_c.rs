@@ -6115,7 +6115,11 @@ impl OperandTypes<'_> {
             let definitions = query::find_descendants_of_kind(*root, "type_definition");
             let (in_blocks, at_file_scope): (Vec<_>, Vec<_>) = definitions
                 .into_iter()
-                .filter(|d| !dead.contains_node(d))
+                // A typedef whose head the parse swallowed names no type.
+                .filter(|d| {
+                    !dead.contains_node(d)
+                        && !crate::utility::cert_c::declarator_utils::typedef_head_was_swallowed(d)
+                })
                 .partition(|d| overflow_helpers::enclosing_function_definition(d).is_some());
             for (name, spelling) in at_file_scope
                 .iter()

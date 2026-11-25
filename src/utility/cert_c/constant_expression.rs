@@ -1076,6 +1076,11 @@ impl<'a, 'p> ConstantExpressions<'a, 'p> {
         self.file.get_or_init(|| {
             let mut typedefs = HashMap::new();
             for definition in query::find_descendants_of_kind(self.root, "type_definition") {
+                // A typedef whose head the parse swallowed names no type.
+                if crate::utility::cert_c::declarator_utils::typedef_head_was_swallowed(&definition)
+                {
+                    continue;
+                }
                 let in_block = std::iter::successors(definition.parent(), Node::parent)
                     .any(|a| a.kind() == "compound_statement");
                 for declarator in typedef_declarators(&definition) {

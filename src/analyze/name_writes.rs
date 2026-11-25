@@ -164,6 +164,11 @@ impl<'a> NameScope<'a> {
                     }
                     continue;
                 }
+                // A typedef whose head the parse swallowed names no type.
+                "type_definition"
+                    if crate::utility::cert_c::declarator_utils::typedef_head_was_swallowed(
+                        &child,
+                    ) => {}
                 "type_definition" => {
                     let mut declarators = child
                         .children_by_field_name("declarator", &mut child.walk())

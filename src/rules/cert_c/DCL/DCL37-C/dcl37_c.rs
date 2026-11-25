@@ -553,6 +553,11 @@ impl Dcl37C {
                 // A typedef name and an enumeration constant are ordinary
                 // identifiers, and a tag is in the tag name space; C 7.1.3
                 // reserves a leading-underscore name in both at file scope.
+                // A typedef whose head the parse swallowed declares none of
+                // the names after it: they are a parameter list's.
+                "type_definition"
+                    if crate::utility::cert_c::declarator_utils::typedef_head_was_swallowed(&n) => {
+                }
                 "type_definition" => {
                     for declarator in declarators(&n) {
                         if let Some(name) = declared_name(declarator) {

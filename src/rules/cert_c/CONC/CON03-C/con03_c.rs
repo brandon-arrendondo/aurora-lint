@@ -87,7 +87,7 @@ use crate::utility::cert_c::ast_utils::{
     declaration_has_storage_class, get_node_text, IdentifierBinding, ScopeDeclarations,
 };
 use crate::utility::cert_c::declarator_utils::{
-    declares_function, inner_declarator, is_declared_name, object_pointer_declarator,
+    self, declares_function, inner_declarator, is_declared_name, object_pointer_declarator,
     typedef_declarators, TypedefShape,
 };
 use lang_parsing_substrate::query;
@@ -494,6 +494,10 @@ impl Con03C {
     fn own_typedef_kinds(root: &Node, source: &str) -> HashMap<String, bool> {
         let mut kinds: HashMap<String, bool> = HashMap::new();
         for def in query::find_descendants_of_kind(*root, "type_definition") {
+            // A typedef whose head the parse swallowed names no type.
+            if declarator_utils::typedef_head_was_swallowed(&def) {
+                continue;
+            }
             for declarator in typedef_declarators(&def) {
                 if let Some(name) = TypedefShape::of(&declarator, source).name {
                     *kinds.entry(name).or_default() |= declares_function(&declarator);

@@ -266,6 +266,10 @@ impl CertRule for Mem30C {
 /// union-typed variable declarations without full type resolution.
 fn collect_union_typedef_names(node: &Node, source: &str, out: &mut HashSet<String>) {
     for td in query::find_descendants_of_kind(*node, "type_definition") {
+        // A typedef whose head the parse swallowed names no type.
+        if crate::utility::cert_c::declarator_utils::typedef_head_was_swallowed(&td) {
+            continue;
+        }
         if let Some(ty) = td.child_by_field_name("type") {
             if ty.kind() == "union_specifier" {
                 let mut cursor = td.walk();

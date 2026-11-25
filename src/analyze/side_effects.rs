@@ -1006,8 +1006,13 @@ impl<'t> Collector<'_, 't> {
                 CalleeDeclaration::Typedef
             }
             Some(IdentifierBinding::Global(_)) if block.is_some() => CalleeDeclaration::Typedef,
+            // A typedef whose head the parse swallowed declares none of the
+            // names after it, so it does not make the callee a type.
             Some(IdentifierBinding::Local(decl) | IdentifierBinding::Global(decl))
-                if decl.kind() == "type_definition" =>
+                if decl.kind() == "type_definition"
+                    && !crate::utility::cert_c::declarator_utils::typedef_head_was_swallowed(
+                        &decl,
+                    ) =>
             {
                 CalleeDeclaration::Typedef
             }
@@ -1974,6 +1979,8 @@ pub fn typedef_is_volatile(read: &str, names: &ProjectNames) -> bool {
 pub fn volatile_typedefs(root: &Node, source: &str) -> std::collections::HashSet<String> {
     lang_parsing_substrate::query::find_descendants(*root, |n| n.kind() == "type_definition")
         .into_iter()
+        // A typedef whose head the parse swallowed names no type.
+        .filter(|def| !crate::utility::cert_c::declarator_utils::typedef_head_was_swallowed(def))
         .filter(|def| {
             let mut cursor = def.walk();
             let qualified = def

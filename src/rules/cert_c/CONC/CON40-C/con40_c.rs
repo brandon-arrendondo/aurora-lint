@@ -555,6 +555,10 @@ impl<'a, 's> FileCx<'a, 's> {
         }
         let mut typedefs: HashMap<String, Option<Node<'a>>> = HashMap::new();
         for td in query::find_descendants_of_kind(*root, "type_definition") {
+            // A typedef whose head the parse swallowed names no type.
+            if crate::utility::cert_c::declarator_utils::typedef_head_was_swallowed(&td) {
+                continue;
+            }
             let Some(body) = td
                 .child_by_field_name("type")
                 .filter(|t| matches!(t.kind(), "struct_specifier" | "union_specifier"))
@@ -990,7 +994,10 @@ impl Con40C {
             ],
         );
         // Typedefs first, so a declaration through one sees it.
-        for td in nodes.iter().filter(|n| n.kind() == "type_definition") {
+        for td in nodes.iter().filter(|n| {
+            n.kind() == "type_definition"
+                && !crate::utility::cert_c::declarator_utils::typedef_head_was_swallowed(n)
+        }) {
             if cx.specifiers_atomic(td) {
                 let mut cursor = td.walk();
                 for declarator in td.children_by_field_name("declarator", &mut cursor) {

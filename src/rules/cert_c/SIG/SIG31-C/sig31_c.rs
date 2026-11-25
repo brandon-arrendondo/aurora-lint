@@ -223,6 +223,12 @@ impl<'a> FileTypes<'a> {
     /// their qualifiers can be read as well as the name they alias.
     fn collect_typedefs(node: &Node<'a>, source: &str, typedefs: &mut HashMap<String, Node<'a>>) {
         for child in node.child_nodes() {
+            // A typedef whose head the parse swallowed names no type.
+            if child.kind() == "type_definition"
+                && crate::utility::cert_c::declarator_utils::typedef_head_was_swallowed(&child)
+            {
+                continue;
+            }
             if child.kind() == "type_definition" {
                 let mut cursor = child.walk();
                 for declarator in child.children_by_field_name("declarator", &mut cursor) {

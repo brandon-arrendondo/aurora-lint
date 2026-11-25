@@ -90,6 +90,10 @@ impl Int15C {
     fn collect_typedef_names(&self, node: &Node, source: &str) -> HashSet<String> {
         let mut typedef_names = HashSet::new();
         for n in query::find_descendants_of_kind(*node, "type_definition") {
+            // A typedef whose head the parse swallowed names no type.
+            if crate::utility::cert_c::declarator_utils::typedef_head_was_swallowed(&n) {
+                continue;
+            }
             for i in 0..n.child_count() {
                 if let Some(child) = n.child(i) {
                     if child.kind() == "type_identifier" {

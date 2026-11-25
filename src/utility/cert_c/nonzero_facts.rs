@@ -532,6 +532,8 @@ impl FileScopeFacts {
         }
         let typedefs: HashSet<String> = query::find_descendants_of_kind(*root, "type_definition")
             .into_iter()
+            // A typedef whose head the parse swallowed names no type.
+            .filter(|t| !crate::utility::cert_c::declarator_utils::typedef_head_was_swallowed(t))
             .flat_map(|t| {
                 let mut cursor = t.walk();
                 t.children_by_field_name("declarator", &mut cursor)
