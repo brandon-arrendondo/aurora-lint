@@ -1,8 +1,8 @@
 /*
  * Rule: MEM31-C
  * Source: testcases
- * Status: EXPECTED FAIL - Known limitation: the double free is real, and
- * MEM31-C does not report it.
+ * Status: EXPECTED FAIL - Known limitation: the double free (MEM30-C's
+ * concern) is real, and MEM31-C does not report it.
  *
  * `destroy_container` frees `container->buffer` only under a test, so the
  * summary records the field's release as one that MAY happen, and a MAY

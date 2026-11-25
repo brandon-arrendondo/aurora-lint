@@ -94,6 +94,13 @@ fn names_one_object(name: &str) -> bool {
     })
 }
 
+/// Whether `decl` carries the `static` storage class.
+fn declares_static(decl: &Node, source: &str) -> bool {
+    decl.child_nodes().any(|c| {
+        c.kind() == "storage_class_specifier" && ast_utils::get_node_text(&c, source) == "static"
+    })
+}
+
 /// The variable a tracked spelling is reached through: `s` of `s->a[0].b`.
 fn spelled_root(name: &str) -> Option<&str> {
     let start = name.find(|c: char| c.is_alphabetic() || c == '_')?;
@@ -642,6 +649,11 @@ struct AllocInfo {
     line: usize,
     column: usize,
     alloc_type: String,
+    /// Whether the object the allocation was stored into is a local of
+    /// static storage duration, as its declaration says; `None` when the
+    /// store's target did not resolve, and the spelling decides instead
+    /// (see `held_by_static`).
+    static_holder: Option<bool>,
 }
 
 /// The subset of `MemoryLeakAnalyzer`'s fields that are forked/reset/merged
@@ -1501,7 +1513,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             if self.escaped_memory.contains(var_name)
                                 || self.freed_memory.contains_key(var_name)
                                 || self.null_variables.contains(var_name)
-                                || self.held_by_static(var_name)
+                                || self.held_by_static(var_name, alloc_info)
                                 || var_name.contains('@')
                             {
                                 continue;
@@ -1534,29 +1546,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// function body -- their storage persists for the program's lifetime,
     /// so not freeing them before the function returns isn't a leak
     /// (MEM31-C-EX2).
-    /// Is the block `var_name` tracks held by an object of static storage
-    /// duration, which outlives every return? A field or element counts with
-    /// its object: pureftpd-style `static struct passwd pwret;` keeps
-    /// `pwret.pw_dir` reachable after the function returns, as `static char
-    /// *p` keeps `p`.
-    fn held_by_static(&self, var_name: &str) -> bool {
-        let root = var_name
-            .split(['.', '[', '-'])
-            .next()
-            .unwrap_or(var_name)
-            .trim();
-        self.static_variables.contains(root)
-    }
-
     fn collect_static_variable_names(body: &Node, source: &str) -> HashSet<String> {
         let mut names = HashSet::new();
         for decl in query::find_descendants_of_kind(*body, "declaration") {
-            let mut cursor = decl.walk();
-            let is_static = decl.children(&mut cursor).any(|c| {
-                c.kind() == "storage_class_specifier"
-                    && ast_utils::get_node_text(&c, source) == "static"
-            });
-            if !is_static {
+            if !declares_static(&decl, source) {
                 continue;
             }
             let mut cursor = decl.walk();
@@ -1581,6 +1574,43 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
         }
         names
+    }
+
+    /// Is the block `var_name` tracks held by a local of static storage
+    /// duration, which outlives every return? A field or element counts with
+    /// its object: pureftpd-style `static struct passwd pwret;` keeps
+    /// `pwret.pw_dir` reachable after the function returns, as `static char
+    /// *p` keeps `p`. So does `sp->a` through `static struct s *sp`, the
+    /// init-once cache, although the struct is a heap block: `sp` still
+    /// reaches it, and reassigning `sp` re-files the old block as lost.
+    ///
+    /// The declaration the allocation's store resolved to decides
+    /// (`AllocInfo::static_holder`), so a `static` object in one block does
+    /// not exempt an automatic one of the same name in another. Only a store
+    /// that did not resolve falls back to the name.
+    ///
+    /// A `name@line:column` record is the block a reassignment took from
+    /// `name` (`rebind_name`), which nothing holds any more, static or not.
+    fn held_by_static(&self, var_name: &str, info: &AllocInfo) -> bool {
+        if var_name.contains('@') {
+            return false;
+        }
+        info.static_holder.unwrap_or_else(|| {
+            spelled_root(var_name).is_some_and(|root| self.static_variables.contains(root))
+        })
+    }
+
+    /// [`AllocInfo::static_holder`] for the allocation `alloc_call` stored
+    /// into `var_name`: whether the object `var_name` is reached through is
+    /// declared `static` inside this function. A file-scope object, or a
+    /// parameter, is not. `None` when the store's target does not resolve.
+    fn static_holder_of(var_name: &str, alloc_call: &Node, source: &str) -> Option<bool> {
+        let root = spelled_root(var_name)?;
+        let function = query::find_ancestor(*alloc_call, |a| a.kind() == "function_definition")?;
+        let target = allocation_target(&function, alloc_call.start_position(), root, source)?;
+        let (decl, _) = ast_utils::resolve_identifier_declarator(&target, root, source)?;
+        let local = query::find_ancestor(decl, |a| a.id() == function.id()).is_some();
+        Some(local && decl.kind() == "declaration" && declares_static(&decl, source))
     }
 
     /// Collect the locals that provably cannot hold heap memory: declared
@@ -3311,6 +3341,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             line: pos.row + 1,
                             column: pos.column + 1,
                             alloc_type: alloc_type.clone(),
+                            static_holder: Self::static_holder_of(&var_name, &value, source),
                         },
                     );
                     // If signal handler has been registered, warn about potential leak
@@ -3362,7 +3393,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             if self.escaped_memory.contains(var_name)
                 || self.freed_memory.contains_key(var_name)
                 || self.null_variables.contains(var_name)
-                || self.held_by_static(var_name)
+                || self.held_by_static(var_name, alloc_info)
                 || var_name.contains('@')
             {
                 continue;
@@ -3430,7 +3461,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // Skip variables that shouldn't be checked
             if self.escaped_memory.contains(var_name)
                 || saved_null.contains(var_name)
-                || self.held_by_static(var_name)
+                || self.held_by_static(var_name, alloc_info)
                 || var_name.contains('@')
             {
                 continue;
@@ -3700,6 +3731,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     let pos = right.start_position();
                     let alloc_type = self.get_allocation_type(&right, source);
                     self.clear_success_test_mark(&var_name);
+                    let static_holder = Self::static_holder_of(&var_name, &right, source);
                     self.track_allocation_guarded(
                         var_name,
                         guard_name,
@@ -3707,6 +3739,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             line: pos.row + 1,
                             column: pos.column + 1,
                             alloc_type,
+                            static_holder,
                         },
                     );
                 } else {
@@ -3778,6 +3811,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         line: pos.row + 1,
                         column: pos.column + 1,
                         alloc_type,
+                        static_holder: Self::static_holder_of(&var_name, &right, source),
                     },
                 );
             } else if aliased_identifier.kind() == "identifier" {
@@ -3797,6 +3831,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 if self.allocated_memory.contains_key(&right_var) {
                     // Transfer ownership
                     if let Some(alloc_info) = self.allocated_memory.get(&right_var).cloned() {
+                        // The record's `static_holder` speaks for `right_var`.
+                        let alloc_info = AllocInfo {
+                            static_holder: None,
+                            ..alloc_info
+                        };
                         self.allocated_memory.insert(var_name, alloc_info);
                         // The original variable still holds the allocation until freed
                     }
@@ -4452,7 +4491,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             if self.escaped_memory.contains(var_name)
                 || self.freed_memory.contains_key(var_name)
                 || self.null_variables.contains(var_name)
-                || self.held_by_static(var_name)
+                || self.held_by_static(var_name, alloc_info)
                 || var_name.contains('@')
             {
                 continue;
@@ -4977,7 +5016,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             if self.escaped_memory.contains(var_name)
                 || self.freed_memory.contains_key(var_name)
                 || self.null_variables.contains(var_name)
-                || self.held_by_static(var_name)
+                || self.held_by_static(var_name, alloc_info)
                 || var_name.contains('@')
             {
                 continue;
@@ -5553,7 +5592,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         for (var_name, alloc_info) in &self.allocated_memory {
             if !self.freed_memory.contains_key(var_name)
                 && !self.escaped_memory.contains(var_name)
-                && !self.held_by_static(var_name)
+                && !self.held_by_static(var_name, alloc_info)
             {
                 violations.push(RuleViolation {
                     rule_id: "MEM31-C".to_string(),
