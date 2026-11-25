@@ -1501,7 +1501,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             if self.escaped_memory.contains(var_name)
                                 || self.freed_memory.contains_key(var_name)
                                 || self.null_variables.contains(var_name)
-                                || self.static_variables.contains(var_name)
+                                || self.held_by_static(var_name)
                                 || var_name.contains('@')
                             {
                                 continue;
@@ -1534,6 +1534,20 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// function body -- their storage persists for the program's lifetime,
     /// so not freeing them before the function returns isn't a leak
     /// (MEM31-C-EX2).
+    /// Is the block `var_name` tracks held by an object of static storage
+    /// duration, which outlives every return? A field or element counts with
+    /// its object: pureftpd-style `static struct passwd pwret;` keeps
+    /// `pwret.pw_dir` reachable after the function returns, as `static char
+    /// *p` keeps `p`.
+    fn held_by_static(&self, var_name: &str) -> bool {
+        let root = var_name
+            .split(['.', '[', '-'])
+            .next()
+            .unwrap_or(var_name)
+            .trim();
+        self.static_variables.contains(root)
+    }
+
     fn collect_static_variable_names(body: &Node, source: &str) -> HashSet<String> {
         let mut names = HashSet::new();
         for decl in query::find_descendants_of_kind(*body, "declaration") {
@@ -1983,6 +1997,25 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         freed_vars.insert(name);
                     }
                     continue;
+                }
+                // A helper that frees only FIELDS off what it is handed
+                // releases them at the label as it does in the walk
+                // (`credit_callee_freed_fields`): pureftpd-style
+                // `error: freefields(&pw);`.
+                if declared.is_none() {
+                    for (param_idx, arg) in Self::call_args(call).enumerate() {
+                        if let Some((name, through_address_of)) =
+                            released_argument_name(arg, source)
+                        {
+                            freed_vars.extend(self.callee_freed_field_keys(
+                                &func_name,
+                                param_idx,
+                                &name,
+                                through_address_of,
+                                site,
+                            ));
+                        }
+                    }
                 }
                 if declared.is_some() || self.summary_frees_some_param(&func_name, site) {
                     if let Some(arguments) = call.child_by_field_name("arguments") {
@@ -3329,7 +3362,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             if self.escaped_memory.contains(var_name)
                 || self.freed_memory.contains_key(var_name)
                 || self.null_variables.contains(var_name)
-                || self.static_variables.contains(var_name)
+                || self.held_by_static(var_name)
                 || var_name.contains('@')
             {
                 continue;
@@ -3397,7 +3430,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // Skip variables that shouldn't be checked
             if self.escaped_memory.contains(var_name)
                 || saved_null.contains(var_name)
-                || self.static_variables.contains(var_name)
+                || self.held_by_static(var_name)
                 || var_name.contains('@')
             {
                 continue;
@@ -4419,7 +4452,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             if self.escaped_memory.contains(var_name)
                 || self.freed_memory.contains_key(var_name)
                 || self.null_variables.contains(var_name)
-                || self.static_variables.contains(var_name)
+                || self.held_by_static(var_name)
                 || var_name.contains('@')
             {
                 continue;
@@ -4482,6 +4515,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     func_name,
                     this_param_idx,
                     &var_name,
+                    through_address_of,
                     free_pos,
                     site,
                 );
@@ -4538,7 +4572,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 self.unaccusable_frees.insert(var_name.clone());
             }
 
-            self.credit_callee_freed_fields(func_name, this_param_idx, &var_name, free_pos, site);
+            self.credit_callee_freed_fields(
+                func_name,
+                this_param_idx,
+                &var_name,
+                through_address_of,
+                free_pos,
+                site,
+            );
         }
     }
 
@@ -4549,29 +4590,68 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// ownership was transferred to the deallocator (an earlier fix: MEM31-C
     /// ownership model). `field` may itself be an arrow-joined chain (e.g.
     /// "will->topic") for nested structs.
+    ///
+    /// Handed `&var`, the callee's `param->f` is the caller's `var.f`, a
+    /// struct object's own field: pureftpd-style `freefields(&pwret)` frees
+    /// `pwret.pw_dir`. Its `(*param)->f` is `var->f`, as for
+    /// `destroy_person(&p)`. The summary does not say which it read, and C's
+    /// types allow only one of them for a given `var`, so both spellings are
+    /// credited: the one that does not fit `var` names nothing the walk
+    /// tracks.
     fn credit_callee_freed_fields(
         &mut self,
         func_name: &str,
         param_idx: usize,
         var_name: &str,
+        through_address_of: bool,
         free_pos: tree_sitter::Point,
         site: Site,
     ) {
-        if let Some(summary) = self.summary_at(func_name, site) {
-            if let Some(fields) = summary.frees_param_fields.get(&param_idx) {
-                for field in fields {
-                    let field_key = format!("{}->{}", var_name, field);
-                    self.freed_memory
-                        .insert(field_key.clone(), (free_pos.row + 1, free_pos.column + 1));
-                    // `frees_param_fields` is a MAY fact, and says nothing of
-                    // the NULL the callee often writes back: hostap's
-                    // `wpas_dpp_deinit(wpa_s)` frees and clears
-                    // `wpa_s->dpp_config_obj_override`, so the caller's own
-                    // os_free() of it that follows releases NULL.
-                    self.unaccusable_frees.insert(field_key);
-                }
-            }
+        for field_key in
+            self.callee_freed_field_keys(func_name, param_idx, var_name, through_address_of, site)
+        {
+            self.freed_memory
+                .insert(field_key.clone(), (free_pos.row + 1, free_pos.column + 1));
+            // `frees_param_fields` is a MAY fact, and says nothing of
+            // the NULL the callee often writes back: hostap's
+            // `wpas_dpp_deinit(wpa_s)` frees and clears
+            // `wpa_s->dpp_config_obj_override`, so the caller's own
+            // os_free() of it that follows releases NULL.
+            self.unaccusable_frees.insert(field_key);
         }
+    }
+
+    /// The caller's names for the fields `func_name`'s summary frees off
+    /// its parameter `param_idx`, handed `var_name` (`&var_name` when
+    /// `through_address_of`). See [`Self::credit_callee_freed_fields`] for
+    /// why `&var` yields both `var.f` and `var->f`.
+    fn callee_freed_field_keys(
+        &self,
+        func_name: &str,
+        param_idx: usize,
+        var_name: &str,
+        through_address_of: bool,
+        site: Site,
+    ) -> Vec<String> {
+        let Some(summary) = self.summary_at(func_name, site) else {
+            return Vec::new();
+        };
+        let Some(fields) = summary.frees_param_fields.get(&param_idx) else {
+            return Vec::new();
+        };
+        let separators: &[&str] = if through_address_of {
+            &["->", "."]
+        } else {
+            &["->"]
+        };
+        fields
+            .iter()
+            .flat_map(|field| {
+                separators
+                    .iter()
+                    .map(move |separator| format!("{var_name}{separator}{field}"))
+            })
+            .collect()
     }
 
     /// Handle a `free()` call: record double-frees and mark the argument plus any
@@ -4897,7 +4977,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             if self.escaped_memory.contains(var_name)
                 || self.freed_memory.contains_key(var_name)
                 || self.null_variables.contains(var_name)
-                || self.static_variables.contains(var_name)
+                || self.held_by_static(var_name)
                 || var_name.contains('@')
             {
                 continue;
@@ -5473,7 +5553,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         for (var_name, alloc_info) in &self.allocated_memory {
             if !self.freed_memory.contains_key(var_name)
                 && !self.escaped_memory.contains(var_name)
-                && !self.static_variables.contains(var_name)
+                && !self.held_by_static(var_name)
             {
                 violations.push(RuleViolation {
                     rule_id: "MEM31-C".to_string(),
