@@ -123,6 +123,10 @@ pub enum Cause {
     /// The file's syntax tree nests deeper than the scan can walk.
     #[serde(rename = "too-deep")]
     TooDeep,
+    /// The file's parse reached its work budget: the parser's error recovery
+    /// is quadratic on some malformed input.
+    #[serde(rename = "parse-budget")]
+    OverBudget,
 }
 
 impl Cause {
@@ -137,6 +141,7 @@ impl Cause {
             Cause::TooLarge => "too-large",
             Cause::NotText => "not-source-text",
             Cause::TooDeep => "too-deep",
+            Cause::OverBudget => "parse-budget",
         }
     }
 
@@ -151,6 +156,7 @@ impl Cause {
             Cause::TooLarge => "too large",
             Cause::NotText => "not source text",
             Cause::TooDeep => "too deep",
+            Cause::OverBudget => "over parse budget",
         }
     }
 }
@@ -225,6 +231,7 @@ impl ScanFailure {
                 Refusal::TooLarge(_) => Cause::TooLarge,
                 Refusal::NotText(_) => Cause::NotText,
                 Refusal::TooDeep(_) => Cause::TooDeep,
+                Refusal::OverBudget(_) => Cause::OverBudget,
             },
             message: refusal.detail().to_string(),
             location: None,
@@ -750,6 +757,7 @@ mod tests {
             Cause::TooLarge,
             Cause::NotText,
             Cause::TooDeep,
+            Cause::OverBudget,
         ] {
             assert_eq!(
                 serde_json::to_value(cause).unwrap(),

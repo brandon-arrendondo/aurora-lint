@@ -539,6 +539,18 @@ fn run() -> Result<i32> {
                 .value_parser(clap::value_parser!(usize)),
         )
         .arg(
+            Arg::new("max_parse_steps_per_kib")
+                .long("max-parse-steps-per-kib")
+                .help(
+                    "Skip, and report (exit 3), any input file whose parse takes more than \
+                     2000 steps plus this many per KiB, which the parser's error recovery \
+                     can on some malformed input (0 = no limit). See docs/error-handling.rst",
+                )
+                .value_name("STEPS")
+                .default_value(analyze::input_guard::DEFAULT_PARSE_STEPS_PER_KIB_ARG)
+                .value_parser(clap::value_parser!(u64)),
+        )
+        .arg(
             Arg::new("jobs")
                 .long("jobs")
                 .short('j')
@@ -814,6 +826,9 @@ fn run() -> Result<i32> {
     analyze::input_guard::set_max_nesting_depth(
         Some(*matches.get_one::<usize>("max_nesting_depth").unwrap()).filter(|&d| d > 0),
     );
+    analyze::input_guard::set_parse_steps_per_kib(nonzero(
+        *matches.get_one::<u64>("max_parse_steps_per_kib").unwrap(),
+    ));
     analyze::containment::set_limits(analyze::containment::Limits {
         steps: nonzero(*matches.get_one::<u64>("rule_step_limit").unwrap()),
         time: nonzero(*matches.get_one::<u64>("rule_time_limit").unwrap())
@@ -1413,6 +1428,13 @@ fn run() -> Result<i32> {
                 "  note: a file nested deeper than the analyses can walk was skipped; \
                  --max-nesting-depth raises the limit, at the risk of a stack overflow \
                  that ends the scan. See docs/error-handling.rst."
+            );
+        }
+        if failures.iter().any(|f| f.cause == Cause::OverBudget) {
+            eprintln!(
+                "  note: a file whose parse ran past its work budget was skipped; the parser's \
+                 error recovery is quadratic on some malformed input; --max-parse-steps-per-kib \
+                 raises the budget (0 = no limit). See docs/error-handling.rst."
             );
         }
         if failures.iter().any(|f| f.cause == Cause::NotText) {

@@ -64,6 +64,9 @@ pub enum Refusal {
     NotText(String),
     /// Parsed, but nested deeper than `--max-nesting-depth`.
     TooDeep(String),
+    /// Its parse reached the work budget ([`parse_budget`]) and was stopped:
+    /// no tree, partial or guessed, is analysed.
+    OverBudget(String),
 }
 
 impl Refusal {
@@ -73,13 +76,17 @@ impl Refusal {
             Refusal::TooLarge(_) => "too large",
             Refusal::NotText(_) => "not source text",
             Refusal::TooDeep(_) => "too deep",
+            Refusal::OverBudget(_) => "over parse budget",
         }
     }
 
     /// The detail.
     pub fn detail(&self) -> &str {
         match self {
-            Refusal::TooLarge(s) | Refusal::NotText(s) | Refusal::TooDeep(s) => s,
+            Refusal::TooLarge(s)
+            | Refusal::NotText(s)
+            | Refusal::TooDeep(s)
+            | Refusal::OverBudget(s) => s,
         }
     }
 }
@@ -170,6 +177,61 @@ pub fn tree_depth(tree: &tree_sitter::Tree) -> usize {
     }
 }
 
+/// The work a parse of one file may do before it is stopped and the file
+/// refused (ADR-0017). tree-sitter's error recovery is quadratic on some
+/// malformed input -- a comment followed by thousands of stray ` */` lines
+/// takes seconds, and a 100 KB file of that shape minutes -- so an unbounded
+/// parse lets one file stall a scan. The budget counts the parser's progress
+/// steps, which depend only on the input and the grammar, so a refusal
+/// reproduces on any machine. The substrate's default allows 2,000 steps plus
+/// a quarter of a step per byte; no file of the benchmark corpora needs a
+/// tenth of that. `--max-parse-steps-per-kib` sets the per-KiB part, and
+/// `0` removes the budget.
+pub fn parse_budget() -> lang_parsing_substrate::ParseBudget {
+    use lang_parsing_substrate::ParseBudget;
+    match *parse_steps_cell().lock().unwrap_or_else(|e| e.into_inner()) {
+        Some(steps_per_kib) => ParseBudget {
+            steps_per_kib,
+            ..ParseBudget::DEFAULT
+        },
+        None => ParseBudget::UNLIMITED,
+    }
+}
+
+/// The default of `--max-parse-steps-per-kib`: the substrate's own.
+pub const DEFAULT_PARSE_STEPS_PER_KIB: u64 =
+    lang_parsing_substrate::ParseBudget::DEFAULT.steps_per_kib;
+
+/// [`DEFAULT_PARSE_STEPS_PER_KIB`] as the command line's default text.
+pub const DEFAULT_PARSE_STEPS_PER_KIB_ARG: &str = "256";
+
+static PARSE_STEPS: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
+
+fn parse_steps_cell() -> &'static Mutex<Option<u64>> {
+    PARSE_STEPS.get_or_init(|| Mutex::new(Some(DEFAULT_PARSE_STEPS_PER_KIB)))
+}
+
+/// Set the parse budget's steps per KiB (`--max-parse-steps-per-kib`;
+/// `None` = no budget).
+pub fn set_parse_steps_per_kib(steps: Option<u64>) {
+    *parse_steps_cell().lock().unwrap_or_else(|e| e.into_inner()) = steps;
+}
+
+/// [`parse_budget`] as a prescan cache records it, like
+/// [`max_file_size_key`]: a refused file contributes no facts.
+pub fn parse_budget_key() -> String {
+    let budget = parse_budget();
+    if budget == lang_parsing_substrate::ParseBudget::UNLIMITED {
+        return "none".to_string();
+    }
+    format!("{}+{}/KiB", budget.base_steps, budget.steps_per_kib)
+}
+
+/// The refusal for a parse stopped at [`parse_budget`].
+pub fn over_budget(exceeded: lang_parsing_substrate::BudgetExceeded) -> Refusal {
+    Refusal::OverBudget(exceeded.to_string())
+}
+
 /// Whether `path` may be parsed as C source. The one gate every scanned and
 /// prescanned file passes (see the module doc). The decision is the shared
 /// parsing substrate's heuristic classifier
@@ -189,9 +251,11 @@ pub fn admit(path: &Path) -> Result<(), Refusal> {
         ..ClassifyLimits::default()
     };
     match classify_file(path, &limits) {
+        // The exact size, and MiB to two places: rounding the size up to
+        // whole MiB said "3 MiB" for a file of 2.16.
         Ok(FileClass::Oversize { size, limit }) => Err(Refusal::TooLarge(format!(
-            "{} MiB is over --max-file-size {} MiB",
-            size.div_ceil(1024 * 1024),
+            "{size} bytes ({:.2} MiB) is over --max-file-size {} MiB",
+            size as f64 / (1024.0 * 1024.0),
             limit / (1024 * 1024)
         ))),
         Ok(FileClass::Binary { kind, mime }) => Err(Refusal::NotText(match mime {
@@ -229,6 +293,10 @@ mod tests {
         assert_eq!(
             DEFAULT_MAX_NESTING_DEPTH_ARG.parse::<usize>().unwrap(),
             DEFAULT_MAX_NESTING_DEPTH
+        );
+        assert_eq!(
+            DEFAULT_PARSE_STEPS_PER_KIB_ARG.parse::<u64>().unwrap(),
+            DEFAULT_PARSE_STEPS_PER_KIB
         );
     }
 

@@ -8870,7 +8870,7 @@ fn a_header_refused_on_the_way_to_a_macro_is_reported_not_dropped() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("big.h: 2 MiB is over --max-file-size 1 MiB"),
+        stderr.contains("big.h: ") && stderr.contains(" MiB) is over --max-file-size 1 MiB"),
         "{stderr}"
     );
     let report: serde_json::Value =
@@ -8931,7 +8931,7 @@ fn a_refused_source_names_no_includes_for_the_include_closure() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("big.h: 2 MiB is over --max-file-size 1 MiB"),
+        stderr.contains("big.h: ") && stderr.contains(" MiB) is over --max-file-size 1 MiB"),
         "{stderr}"
     );
     let report: serde_json::Value =
@@ -11701,4 +11701,104 @@ fn int31_environment_headers_do_not_outrank_the_vocabulary() {
         &["-I", "{env}"],
     );
     assert_eq!(keys, ["use.c:3", "use.c:4", "use.c:5"]);
+}
+
+/// A comment followed by `lines` stray ` */` lines: tree-sitter's error
+/// recovery is quadratic on it, so its parse runs past the work budget.
+fn stray_comment_closers(lines: usize) -> String {
+    let mut src = format!("/* {}\n", "x".repeat(40));
+    for _ in 0..lines {
+        src.push_str(" */\n");
+    }
+    src
+}
+
+#[test]
+fn a_file_whose_parse_runs_past_its_budget_is_refused_out_loud() {
+    // A scanned file and an included header of the shape. Neither is
+    // analysed or read for facts, and both are refused, not dropped: the
+    // header's `MYFREE` is lost, so the scan is incomplete.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("inc")).unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("inc/stray.h"),
+        format!("#define MYFREE(p) free(p)\n{}", stray_comment_closers(4000)),
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("src/broken.c"), stray_comment_closers(4000)).unwrap();
+    std::fs::write(
+        dir.path().join("src/main.c"),
+        "#include <stdlib.h>\n#include \"stray.h\"\n\
+         void g(void) { char *p = malloc(4); if (!p) return; MYFREE(p); }\n",
+    )
+    .unwrap();
+    let inc = dir.path().join("inc");
+    let sarif = dir.path().join("out.sarif");
+    let headers = dir.path().join("headers.json");
+    let started = std::time::Instant::now();
+    let (code, _, stderr) = run_aurora_lint(&[
+        dir.path().join("src").to_str().unwrap(),
+        "-I",
+        inc.to_str().unwrap(),
+        "-e",
+        sarif.to_str().unwrap(),
+        "--report-headers",
+        headers.to_str().unwrap(),
+    ]);
+    // Unbounded, each of the two parses takes several seconds.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(code, 3, "{stderr}");
+    for file in ["broken.c", "stray.h"] {
+        assert!(
+            stderr
+                .lines()
+                .any(|l| l.contains("input skipped (over parse budget): ")
+                    && l.contains(file)
+                    && l.contains("parse stopped at its budget of ")),
+            "{file}: {stderr}"
+        );
+    }
+    assert!(
+        stderr.contains("past its work budget was skipped"),
+        "{stderr}"
+    );
+    let sarif = std::fs::read_to_string(&sarif).unwrap();
+    assert!(sarif.contains("parse-budget"), "{sarif}");
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&headers).unwrap()).unwrap();
+    let refused = report["refused"].as_array().unwrap();
+    assert!(
+        refused
+            .iter()
+            .any(|r| r["path"].as_str().unwrap().ends_with("stray.h")
+                && r["cause"] == "over parse budget"),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_parse_budget_of_zero_reads_what_the_default_refuses() {
+    // 500 lines of the shape are over the default budget, yet short enough
+    // to parse unbounded in a moment. (At 4,000 the unbounded scan takes
+    // minutes: the repair loop re-parses the file several times.)
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("broken.c"), stray_comment_closers(500)).unwrap();
+    let (code, _, stderr) = run_aurora_lint(&[dir.path().to_str().unwrap()]);
+    assert_eq!(code, 3, "{stderr}");
+    assert!(
+        stderr.contains("input skipped (over parse budget): "),
+        "{stderr}"
+    );
+    let (code, _, stderr) = run_aurora_lint(&[
+        dir.path().to_str().unwrap(),
+        "--max-parse-steps-per-kib",
+        "0",
+    ]);
+    assert!(!stderr.contains("over parse budget"), "{stderr}");
+    assert_ne!(code, 3, "{stderr}");
 }

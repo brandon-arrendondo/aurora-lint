@@ -235,11 +235,14 @@ impl CParser {
         // find), iteratively blank single-token unknown-identifier ERROR
         // nodes and re-parse. Length-preserving and bounded; a no-op reparse
         // when the first parse already has no error.
+        // A parse that reaches its budget is refused, like a tree too deep
+        // below: no tree, partial or guessed, is analysed (ADR-0017).
         let (tree, source) = crate::analyze::unknown_identifier_recovery::parse_with_recovery(
             &mut self.parser,
             source,
             &self.repair_macros,
         )
+        .map_err(crate::analyze::input_guard::over_budget)?
         .with_context(|| format!("Failed to parse file: {}", file_path))?;
         // Too deep to walk: refused here, so no analysis recurses into it.
         crate::analyze::input_guard::admit_tree(&tree)?;
@@ -292,6 +295,7 @@ impl CParser {
             source,
             &self.repair_macros,
         )
+        .map_err(crate::analyze::input_guard::over_budget)?
         .context("Failed to parse source code")?;
         Ok((tree, source))
     }

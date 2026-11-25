@@ -1025,6 +1025,7 @@ fn load_project_context(
             "max_nesting_depth".to_string(),
             input_guard::max_nesting_depth_key(),
         ),
+        ("parse_budget".to_string(), input_guard::parse_budget_key()),
         // A selected thread-API profile brings its kernel's heap
         // (`thread_api::profile_deallocator`), which the summaries' frees
         // are proved with, as the memory declarations below are.
@@ -1509,10 +1510,17 @@ fn sort_for_deterministic_output(
 /// written in C++, which [`analyze_one_file`] skips as not being C. A file
 /// that cannot be read as source is not skipped: it is a selected file, and
 /// the scan refuses it (ADR-0017 decision 9).
+///
+/// A header whose C++ parse reaches its budget is not skipped either: it is
+/// undecided, and [`analyze_one_file`] refuses it.
 fn skipped_as_not_c(file_path: &str) -> bool {
     crate::files::is_c_header(file_path)
-        && crate::parser::read_source_or_transcode(file_path)
-            .is_ok_and(|source| lang_parsing_substrate::looks_like_cpp(source.as_bytes()))
+        && crate::parser::read_source_or_transcode(file_path).is_ok_and(|source| {
+            lang_parsing_substrate::sniff_header_with_budget(
+                source.as_bytes(),
+                input_guard::parse_budget(),
+            ) == lang_parsing_substrate::HeaderSniff::Cpp
+        })
 }
 
 /// Parse and run all enabled rules over a single file, partitioning findings
@@ -1590,11 +1598,26 @@ fn analyze_one_file(
         // skip such files entirely rather than analyzing nonsense --
         // aurora-lint is CERT-C only, so a file that can only be C++ is out
         // of scope, not a source of findings.
-        if crate::files::is_c_header(file_path)
-            && lang_parsing_substrate::looks_like_cpp(source.as_bytes())
-        {
-            containment::note_skipped(file_path);
-            return (file_violations, file_suppressed, file_failures);
+        if crate::files::is_c_header(file_path) {
+            match lang_parsing_substrate::sniff_header_with_budget(
+                source.as_bytes(),
+                input_guard::parse_budget(),
+            ) {
+                lang_parsing_substrate::HeaderSniff::C => {}
+                // The C++ parse reached its budget, so whether the header is
+                // C was not decided: refused, never guessed (ADR-0017).
+                lang_parsing_substrate::HeaderSniff::Undecided(exceeded) => {
+                    file_failures.push(containment::ScanFailure::refused(
+                        file_path,
+                        &input_guard::over_budget(exceeded),
+                    ));
+                    return (file_violations, file_suppressed, file_failures);
+                }
+                _ => {
+                    containment::note_skipped(file_path);
+                    return (file_violations, file_suppressed, file_failures);
+                }
+            }
         }
 
         let root_node = tree.root_node();

@@ -314,8 +314,19 @@ fn process_file(
         // C API surface and must not pollute cross-file summaries any more
         // than they should generate direct C-rule findings (the same check
         // in analyze_one_file).
-        if is_header && lang_parsing_substrate::looks_like_cpp(source.as_bytes()) {
-            return Ok(result);
+        if is_header {
+            match lang_parsing_substrate::sniff_header_with_budget(
+                source.as_bytes(),
+                super::input_guard::parse_budget(),
+            ) {
+                lang_parsing_substrate::HeaderSniff::C => {}
+                // The C++ parse reached its budget, so the header was not
+                // read: refused, not taken for C (ADR-0017).
+                lang_parsing_substrate::HeaderSniff::Undecided(exceeded) => {
+                    return Err(super::input_guard::over_budget(exceeded));
+                }
+                _ => return Ok(result),
+            }
         }
 
         let root = tree.root_node();

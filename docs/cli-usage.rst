@@ -286,8 +286,9 @@ scan's input, not an incomplete scan, so the run stays successful and the exit
 status is unaffected. ``--report-headers FILE`` writes everything as JSON,
 including each header read from outside the project with its SHA-256 and
 each input the scan refused with its cause (``refused``: a header too large,
-not text or nested too deep is not read either), so the reports of two hosts
-diff to the header that explains a difference in their findings::
+not text, nested too deep or over the parse budget is not read either), so the
+reports of two hosts diff to the header that explains a difference in their
+findings::
 
     aurora-lint src/ -d src/ -I include/ -I /usr/include --report-headers headers.json
 
@@ -711,6 +712,7 @@ Exit Codes
 ----------
 
 The exit codes, what a failure costs, how it is reported (stderr and SARIF), the
-``--rule-step-limit`` / ``--rule-time-limit`` budgets, the ``--max-file-size``
-and ``--max-nesting-depth`` input guards, ``--allow-empty`` for a scan that
+``--rule-step-limit`` / ``--rule-time-limit`` budgets, the ``--max-file-size``,
+``--max-nesting-depth`` and ``--max-parse-steps-per-kib`` input guards,
+``--allow-empty`` for a scan that
 selects no files, and what CI should do with ``3``: :doc:`error-handling`.

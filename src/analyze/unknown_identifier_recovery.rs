@@ -832,17 +832,32 @@ fn lone_brace_guard_ranges(node: &Node, source: &str) -> Option<((usize, usize),
 /// unknown-identifier `ERROR` node found, up to `MAX_ITERATIONS` times.
 /// Returns the final tree and the (possibly blanked) source text paired with
 /// it -- callers should use the returned text as "source" everywhere
-/// downstream, exactly as with `empty_macro_blank`. `None` only if
+/// downstream, exactly as with `empty_macro_blank`. `Ok(None)` only if
 /// tree-sitter itself fails to produce a tree at all (e.g. parser
 /// misconfiguration), matching `Parser::parse`'s own `Option` contract --
 /// this never panics.
+///
+/// Every parse is held to [`input_guard::parse_budget`]. The first one
+/// reaching it is `Err`: the file has no tree to analyse and is refused. A
+/// repair's re-parse reaching it only means that repair did not help: the
+/// tree before it is complete and stands, as for any repair that does not
+/// help.
+///
+/// [`input_guard::parse_budget`]: crate::analyze::input_guard::parse_budget
 pub fn parse_with_recovery(
     parser: &mut Parser,
     source: String,
     macros: &RepairMacros,
-) -> Option<(Tree, String)> {
+) -> Result<Option<(Tree, String)>, lang_parsing_substrate::BudgetExceeded> {
     let mut text = source;
-    let mut tree = parser.parse(&text, None)?;
+    let Some(mut tree) = lang_parsing_substrate::parse_within_budget(
+        parser,
+        text.as_bytes(),
+        crate::analyze::input_guard::parse_budget(),
+    )?
+    else {
+        return Ok(None);
+    };
 
     for _ in 0..MAX_ITERATIONS {
         crate::analyze::containment::checkpoint();
@@ -852,6 +867,7 @@ pub fn parse_with_recovery(
         // First, and all at once: each is certain on its own, and blanking
         // one per pass would spend the iteration budget on a header that
         // annotates every prototype.
+        let before = text.clone();
         let invocations = find_keyword_argument_macro_invocations(&tree.root_node(), &text);
         if !invocations.is_empty() {
             for (start, end) in invocations {
@@ -872,7 +888,10 @@ pub fn parse_with_recovery(
             continue;
         } else if let Some((start, end)) = find_blankable_identifier_error(&tree.root_node(), &text)
         {
-            let (repaired, repaired_tree) = choose_repair(parser, &text, start, end, macros)?;
+            let Some((repaired, repaired_tree)) = choose_repair(parser, &text, start, end, macros)
+            else {
+                break;
+            };
             text = repaired;
             tree = repaired_tree;
             continue;
@@ -884,10 +903,29 @@ pub fn parse_with_recovery(
         } else {
             break;
         }
-        tree = parser.parse(&text, None)?;
+        let Some(reparsed) = reparse(parser, &text) else {
+            text = before;
+            break;
+        };
+        tree = reparsed;
     }
 
-    Some((tree, text))
+    Ok(Some((tree, text)))
+}
+
+/// A repair's re-parse of `text`, within [`input_guard::parse_budget`].
+/// `None` when it reaches the budget (or tree-sitter gives no tree): the
+/// caller keeps the tree it had, so the repair is dropped, never the file.
+///
+/// [`input_guard::parse_budget`]: crate::analyze::input_guard::parse_budget
+fn reparse(parser: &mut Parser, text: &str) -> Option<Tree> {
+    lang_parsing_substrate::parse_within_budget(
+        parser,
+        text.as_bytes(),
+        crate::analyze::input_guard::parse_budget(),
+    )
+    .ok()
+    .flatten()
 }
 
 /// Whether a definition the file writes for an annotation candidate leaves
@@ -948,7 +986,7 @@ fn blank_if_fewer_errors(
     for &(start, end) in sites {
         text = blank_range(&text, start, end);
     }
-    let repaired = parser.parse(&text, None)?;
+    let repaired = reparse(parser, &text)?;
     let fewer_errors =
         error_node_count(&repaired.root_node()) < error_node_count(&tree.root_node());
     let after = settled_function_declarators(&repaired.root_node(), &text);
@@ -1017,13 +1055,13 @@ fn choose_repair(
     macros: &RepairMacros,
 ) -> Option<(String, Tree)> {
     let stranded_text = blank_or_mark(source, start, end, macros);
-    let stranded_tree = parser.parse(&stranded_text, None)?;
+    let stranded_tree = reparse(parser, &stranded_text)?;
 
     if !macros.object_macros.contains(&source[start..end]) {
         let stranded_errors = error_node_count(&stranded_tree.root_node());
         for (macro_start, macro_end) in preceding_macro_tokens(source, start, macros) {
             let macro_text = blank_or_mark(source, macro_start, macro_end, macros);
-            if let Some(macro_tree) = parser.parse(&macro_text, None) {
+            if let Some(macro_tree) = reparse(parser, &macro_text) {
                 if error_node_count(&macro_tree.root_node()) <= stranded_errors {
                     return Some((macro_text, macro_tree));
                 }
@@ -1039,6 +1077,48 @@ mod tests {
     use super::*;
     use crate::parser::c_language;
 
+    /// A comment followed by `lines` stray ` */` lines: the shape whose
+    /// error recovery is quadratic in tree-sitter.
+    fn stray_comment_closers(lines: usize) -> String {
+        let mut src = format!("/* {}\n", "x".repeat(40));
+        for _ in 0..lines {
+            src.push_str(" */\n");
+        }
+        src
+    }
+
+    #[test]
+    fn a_parse_past_its_budget_is_refused_and_stops_early() {
+        let mut parser = Parser::new();
+        parser.set_language(&c_language()).unwrap();
+        let src = stray_comment_closers(4000);
+        let started = std::time::Instant::now();
+        let exceeded = parse_with_recovery(&mut parser, src.clone(), &RepairMacros::default())
+            .expect_err("the parse is stopped at its budget");
+        // Unbounded, this parse takes several seconds.
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(exceeded.source_len, src.len());
+        assert!(exceeded.byte_offset < src.len(), "{exceeded}");
+        // The parser is left fit for the next file.
+        let (tree, _) =
+            parse_with_recovery(&mut parser, "int x;\n".into(), &RepairMacros::default())
+                .unwrap()
+                .unwrap();
+        assert!(!tree.root_node().has_error());
+    }
+
+    #[test]
+    fn the_same_shape_short_enough_parses_within_the_budget() {
+        let mut parser = Parser::new();
+        parser.set_language(&c_language()).unwrap();
+        let parsed = parse_with_recovery(
+            &mut parser,
+            stray_comment_closers(20),
+            &RepairMacros::default(),
+        );
+        assert!(matches!(parsed, Ok(Some(_))), "{parsed:?}");
+    }
+
     fn recover(src: &str) -> (bool, String) {
         recover_with(src, &RepairMacros::default())
     }
@@ -1047,7 +1127,9 @@ mod tests {
     fn recover_with(src: &str, macros: &RepairMacros) -> (bool, String) {
         let mut parser = Parser::new();
         parser.set_language(&c_language()).unwrap();
-        let (tree, text) = parse_with_recovery(&mut parser, src.to_string(), macros).unwrap();
+        let (tree, text) = parse_with_recovery(&mut parser, src.to_string(), macros)
+            .unwrap()
+            .unwrap();
         (tree.root_node().has_error(), text)
     }
 
@@ -1652,8 +1734,9 @@ mod tests {
         }
         let mut parser = Parser::new();
         parser.set_language(&c_language()).unwrap();
-        let (_, text) =
-            parse_with_recovery(&mut parser, src.clone(), &RepairMacros::default()).unwrap();
+        let (_, text) = parse_with_recovery(&mut parser, src.clone(), &RepairMacros::default())
+            .unwrap()
+            .unwrap();
         assert_eq!(text.len(), src.len());
     }
 }
