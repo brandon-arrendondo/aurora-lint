@@ -10760,8 +10760,10 @@ typedef LONG    (WINAPI * MA_PFN_RegOpenKeyExA)(HKEY hKey, const char* lpSubKey,
             assert!(!ctx.struct_typedef_aliases.contains_key(name), "{name}");
             assert!(!ctx.packed_structs.contains(name), "{name}");
             assert!(!ctx.pointer_typedef_names.contains(name), "{name}");
+            assert!(!ctx.any_header_typedef_names.contains(name), "{name}");
         }
         assert!(ctx.struct_field_types.contains_key("tagKey"));
+        assert!(ctx.any_header_typedef_names.contains("DWORD64"));
         // A typedef read whole, or repaired only after its name, still
         // names its type.
         assert_eq!(

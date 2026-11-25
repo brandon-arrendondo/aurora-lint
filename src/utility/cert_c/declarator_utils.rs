@@ -905,8 +905,13 @@ pub fn pointer_typedef_names_in(type_definition: &Node, source: &str) -> Vec<Str
 }
 
 /// Every name a `type_definition` declares, whatever its shape:
-/// `typedef struct tagPOINT { ... } POINT, *LPPOINT;` yields both.
+/// `typedef struct tagPOINT { ... } POINT, *LPPOINT;` yields both. One whose
+/// head the parse swallowed declares none ([`typedef_head_was_swallowed`]):
+/// the names after it are a parameter list's.
 pub fn typedef_names_in(type_definition: &Node, source: &str) -> Vec<String> {
+    if typedef_head_was_swallowed(type_definition) {
+        return Vec::new();
+    }
     typedef_declarators(type_definition)
         .into_iter()
         .filter_map(|d| TypedefShape::of(&d, source).name)
@@ -970,6 +975,29 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn a_typedef_whose_head_the_parse_swallowed_declares_no_name() {
+        // Cut down from miniaudio: recovery takes the head into an ERROR and
+        // leaves `typedef const char *lpSubKey, ulOptions, samDesired`.
+        let code = "void g(void)\n\
+                    {\n\
+                    typedef LONG (WINAPI * PFN)(HKEY hKey, const char* lpSubKey, DWORD ulOptions, DWORD samDesired, HKEY* phkResult);\n\
+                    typedef unsigned short WORD;\n\
+                    }\n";
+        let tree = parse_c_code(code);
+        let typedefs = lang_parsing_substrate::query::find_descendants_of_kind(
+            tree.root_node(),
+            "type_definition",
+        );
+        let [swallowed, whole] = typedefs.as_slice() else {
+            panic!("{typedefs:?}");
+        };
+        assert!(typedef_head_was_swallowed(swallowed));
+        assert!(typedef_names_in(swallowed, code).is_empty());
+        assert!(!typedef_head_was_swallowed(whole));
+        assert_eq!(typedef_names_in(whole, code), vec!["WORD".to_string()]);
     }
 
     #[test]
