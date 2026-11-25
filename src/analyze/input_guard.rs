@@ -186,7 +186,9 @@ pub fn tree_depth(tree: &tree_sitter::Tree) -> usize {
 /// reproduces on any machine. The substrate's default allows 2,000 steps plus
 /// a quarter of a step per byte; no file of the benchmark corpora needs a
 /// tenth of that. `--max-parse-steps-per-kib` sets the per-KiB part, and
-/// `0` removes the budget.
+/// `0` removes the budget. The bound is per parse: each repair re-parse of a
+/// file gets a budget of its own, and the repair loop's iteration cap bounds
+/// how many there are.
 pub fn parse_budget() -> lang_parsing_substrate::ParseBudget {
     use lang_parsing_substrate::ParseBudget;
     match *parse_steps_cell().lock().unwrap_or_else(|e| e.into_inner()) {

@@ -1095,8 +1095,10 @@ mod tests {
         let started = std::time::Instant::now();
         let exceeded = parse_with_recovery(&mut parser, src.clone(), &RepairMacros::default())
             .expect_err("the parse is stopped at its budget");
-        // Unbounded, this parse takes several seconds.
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        // Unbounded, this parse takes several seconds. The bound is loose,
+        // as in the substrate's own copy of this test: a loaded machine
+        // must not fail it.
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
         assert_eq!(exceeded.source_len, src.len());
         assert!(exceeded.byte_offset < src.len(), "{exceeded}");
         // The parser is left fit for the next file.

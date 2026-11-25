@@ -543,8 +543,8 @@ fn run() -> Result<i32> {
                 .long("max-parse-steps-per-kib")
                 .help(
                     "Skip, and report (exit 3), any input file whose parse takes more than \
-                     2000 steps plus this many per KiB, which the parser's error recovery \
-                     can on some malformed input (0 = no limit). See docs/error-handling.rst",
+                     2000 steps plus this many per KiB, as the parser's error recovery can on \
+                     some malformed input (0 = no limit). See docs/error-handling.rst",
                 )
                 .value_name("STEPS")
                 .default_value(analyze::input_guard::DEFAULT_PARSE_STEPS_PER_KIB_ARG)
