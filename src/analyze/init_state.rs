@@ -1059,12 +1059,14 @@ fn find_operator_text<'a>(node: &Node, source: &'a str) -> &'a str {
 /// Check if a subscript write should keep MallocUninitialized (partial init).
 /// Returns true if the write `left` sits inside a for-loop whose bound is less
 /// than the variable's allocation count, unless every element offset it names
-/// is a compile-time constant. A constant offset (`data[0] = '\0'`, `*data`)
-/// writes the same element however many times the loop runs, so it is read as
-/// one write, the same as outside a loop: that write marks the buffer
-/// initialized, which drops a report on a buffer filled only at that element.
-/// Any other offset (`data[i]`, `data[m++]`, `*(data + i)`) is read as a
-/// partial fill, whatever variable it names.
+/// is a compile-time constant and the loop leaves the pointer it is taken
+/// from where it is. Such a write (`data[0] = '\0'`, `*data`) writes the same
+/// element however many times the loop runs, so it is read as one write, the
+/// same as outside a loop: that write marks the buffer initialized, which
+/// drops a report on a buffer filled only at that element. Any other offset
+/// (`data[i]`, `data[m++]`), or a constant one from a pointer the loop
+/// advances (`*data = 0; data++;`), writes a different element on each pass
+/// and is read as a partial fill, whatever variable it names.
 fn is_partial_init_write(alloc_count: usize, left: &Node, source: &str) -> bool {
     // Walk up AST to find enclosing for_statement
     let mut current = left.parent();
@@ -1076,7 +1078,8 @@ fn is_partial_init_write(alloc_count: usize, left: &Node, source: &str) -> bool 
             let Some(bound) = extract_for_upper_bound(&condition, source) else {
                 return false;
             };
-            return bound < alloc_count && !offsets_are_constant(left, source);
+            return bound < alloc_count
+                && (!offsets_are_constant(left, source) || loop_moves_base(&n, left, source));
         }
         // Don't walk past function boundaries
         if n.kind() == "function_definition" {
@@ -1090,7 +1093,9 @@ fn is_partial_init_write(alloc_count: usize, left: &Node, source: &str) -> bool 
 /// Whether every element offset the lvalue `left` names evaluates to a
 /// compile-time constant: each subscript index, and the offset of a
 /// dereferenced pointer sum (`*(p + 1)`). A dereference of a bare pointer
-/// (`*p`) has offset zero.
+/// (`*p`) has offset zero. A store through a pointer sum does not update a
+/// buffer's state today, so that case decides nothing yet; it is read here
+/// so that the reading stays the same when it does.
 fn offsets_are_constant(left: &Node, source: &str) -> bool {
     let empty = HashMap::new();
     let constant = |n: &Node| const_eval::try_evaluate_expr(n, source, &empty).is_some();
@@ -1130,6 +1135,75 @@ fn offsets_are_constant(left: &Node, source: &str) -> bool {
         }
     }
     true
+}
+
+/// Whether the for-loop `for_statement` advances, in its update or its body,
+/// the pointer variable the lvalue `left` writes through (`data++`, `data +=
+/// 2`, `data = data + 1`), matched by declaration. Setting it from anything
+/// else (`data = buf` on every pass) moves it nowhere new.
+fn loop_moves_base(for_statement: &Node, left: &Node, source: &str) -> bool {
+    use crate::utility::cert_c::ast_utils::resolve_identifier_declarator;
+    let mut base = *left;
+    loop {
+        base = match base.kind() {
+            "subscript_expression" | "pointer_expression" | "field_expression" => {
+                match base.child_by_field_name("argument") {
+                    Some(a) => a,
+                    None => return false,
+                }
+            }
+            "parenthesized_expression" => match base.named_child(0) {
+                Some(a) => a,
+                None => return false,
+            },
+            "cast_expression" => match base.child_by_field_name("value") {
+                Some(a) => a,
+                None => return false,
+            },
+            "identifier" => break,
+            _ => return false,
+        };
+    }
+    let name = base.utf8_text(source.as_bytes()).unwrap_or("");
+    let decl = resolve_identifier_declarator(&base, name, source).map(|(_, d)| d.id());
+    let names_base = |n: Option<Node>| {
+        n.is_some_and(|n| {
+            n.kind() == "identifier"
+                && n.utf8_text(source.as_bytes()).unwrap_or("") == name
+                && resolve_identifier_declarator(&n, name, source).map(|(_, d)| d.id()) == decl
+        })
+    };
+    let mut stack: Vec<Node> = ["update", "body"]
+        .iter()
+        .filter_map(|f| for_statement.child_by_field_name(f))
+        .collect();
+    while let Some(n) = stack.pop() {
+        let moves = match n.kind() {
+            "update_expression" => names_base(n.child_by_field_name("argument")),
+            "assignment_expression" => {
+                names_base(n.child_by_field_name("left"))
+                    && (n
+                        .child_by_field_name("operator")
+                        .is_some_and(|o| o.kind() != "=")
+                        || n.child_by_field_name("right").is_some_and(|r| {
+                            let mut inner = vec![r];
+                            while let Some(m) = inner.pop() {
+                                if names_base(Some(m)) {
+                                    return true;
+                                }
+                                inner.extend(m.child_nodes());
+                            }
+                            false
+                        }))
+            }
+            _ => false,
+        };
+        if moves {
+            return true;
+        }
+        stack.extend(n.child_nodes());
+    }
+    false
 }
 
 /// Extract the upper bound from a for-loop condition like `i < N` or `i <= N`.
