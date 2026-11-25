@@ -886,7 +886,8 @@ fn prototype_is_retained(
 /// `defines` give it, followed through the macros a body names. A macro with
 /// no body there (its header unread) is judged by its name; one with a body
 /// by that body only, so `#define PG_USED_FOR_ASSERTS_ONLY
-/// __attribute__((unused))` keeps nothing.
+/// __attribute__((unused))` keeps nothing. An arm whose expansion is an item
+/// of its own (a whole constructor) is no attribute of what follows it.
 fn macro_keeps(name: &str, defines: &[&Define], tables: &ProjectTables) -> bool {
     // Breadth first, each name once, four macros deep: a body may name the
     // macro itself or a macro that names it back.
@@ -903,6 +904,15 @@ fn macro_keeps(name: &str, defines: &[&Define], tables: &ProjectTables) -> bool 
                 continue;
             }
             for d in bodies {
+                // An arm that expands to an item of its own (a whole
+                // constructor) is no attribute of what follows it.
+                let body = d.body.trim();
+                if body.ends_with(';')
+                    || body.ends_with('}')
+                    || expansion_ends_an_item(body, defines, 0)
+                {
+                    continue;
+                }
                 if KEEP_WORDS.iter().any(|w| text_occurrences(&d.body, w) > 0) {
                     return true;
                 }
@@ -1311,8 +1321,10 @@ fn pasting_arguments<'t>(
     };
     let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     let mut out = Vec::new();
-    // Each fragment once, however many invocations hand it on.
-    let mut seen: HashSet<&str> = HashSet::new();
+    // Each argument expanded once, however many invocations hand it on. An
+    // argument an earlier expansion reached is still expanded from itself,
+    // with the full depth: the caller drops repeated fragments.
+    let mut expanded: HashSet<&str> = HashSet::new();
     let mut i = 0;
     while i < bytes.len() {
         if !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') || (i > 0 && ident(bytes[i - 1])) {
@@ -1337,13 +1349,9 @@ fn pasting_arguments<'t>(
         if j < bytes.len() && bytes[j] == b'(' {
             let own = directive.map_or(&[][..], |d| d.3.as_slice());
             for arg in bare_arguments(text, j) {
-                if !own.contains(&arg) && seen.insert(arg) {
+                if !own.contains(&arg) && expanded.insert(arg) {
                     out.push(arg);
-                    for word in object_expansion(arg, defines) {
-                        if seen.insert(word) {
-                            out.push(word);
-                        }
-                    }
+                    out.extend(object_expansion(arg, defines));
                 }
             }
         }
