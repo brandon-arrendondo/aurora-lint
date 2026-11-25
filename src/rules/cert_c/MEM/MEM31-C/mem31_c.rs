@@ -960,6 +960,44 @@ fn next_statement_sibling<'n>(node: &Node<'n>) -> Option<Node<'n>> {
     }
 }
 
+/// The statement control reaches when it falls off the end of the block
+/// holding `last`, which has no statement after it in that block.
+///
+/// A cleanup label kept inside `if (0) { fail: ...; }` runs its block and
+/// then whatever follows the `if`, which is where such code puts the shared
+/// release. Falling off the consequence or the `else` arm of an `if`, or a
+/// bare nested block, continues after that statement, climbing as long as
+/// the statement is itself the last one in its block. A loop body falls
+/// back to its condition and a `switch` body out of the `switch`; neither is
+/// followed, and nor is anything past the function's own body, so the walk
+/// stops there and credits nothing it cannot see executed.
+fn statement_after_block_end<'n>(last: &Node<'n>) -> Option<Node<'n>> {
+    let mut statement = *last;
+    loop {
+        let block = query::find_ancestor(statement, |a| a.kind() == "compound_statement")?;
+        let holder = block.parent()?;
+        let mut outer = match holder.kind() {
+            "if_statement" => holder,
+            "else_clause" => holder.parent().filter(|p| p.kind() == "if_statement")?,
+            "compound_statement" => block,
+            _ => return None,
+        };
+        // `else if (0) { ... }` ends the whole chain.
+        while let Some(chain) = outer
+            .parent()
+            .filter(|p| p.kind() == "else_clause")
+            .and_then(|clause| clause.parent())
+            .filter(|p| p.kind() == "if_statement")
+        {
+            outer = chain;
+        }
+        if let Some(next) = next_statement_sibling(&outer) {
+            return Some(next);
+        }
+        statement = outer;
+    }
+}
+
 /// The label a `goto_statement` jumps to.
 fn goto_target(goto: &Node, source: &str) -> Option<String> {
     goto.child_nodes()
@@ -1896,7 +1934,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         .filter(|inner| inner.kind() != "statement_identifier");
                     if self.labeled_body_falls_through(&label, source) {
                         let mut next = next_statement_sibling(&label);
-                        while let Some(sibling) = next {
+                        let mut previous = label;
+                        while let Some(sibling) =
+                            next.or_else(|| statement_after_block_end(&previous))
+                        {
+                            previous = sibling;
                             if sibling.kind() != "comment" {
                                 self.collect_frees_in_label(&sibling, source, &mut freed_vars);
                                 last = Some(sibling);
