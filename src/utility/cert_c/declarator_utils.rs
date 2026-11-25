@@ -263,7 +263,13 @@ pub fn record_definitions_of<'a>(decl: &Node<'a>, source: &str) -> Vec<Node<'a>>
 /// in a conditional before `site` whose arms that can be taken do not all
 /// define the tag (one leaves it to a header, or no arm is always taken: no
 /// `#else` and no `#if 1`), which definition applies is not known and
-/// nothing is returned. A bodiless `struct S;` in an inner
+/// nothing is returned. A nested conditional in an arm that stops at `#error` in every arm that can
+/// be taken, one of them always taken, makes that arm never taken too. A
+/// later `#ifdef X` or `#ifndef X` block is read as taken together with an
+/// earlier block of the same test when no `#define X`, `#undef X` or
+/// `#include` lies between them; complementary blocks (`#ifdef X`, then
+/// `#ifndef X`) are not seen as exclusive, and other conditions are not
+/// evaluated. A bodiless `struct S;` in an inner
 /// block that redeclares the tag is not read.
 pub fn record_definitions_in_scope<'a>(
     site: &Node<'a>,
@@ -441,7 +447,13 @@ fn in_arm_body(n: &Node, arm: &Node) -> bool {
 /// only when it is `site`'s own arm (`Some(false)` otherwise); and for a
 /// conditional before `site`, `proves` must hold of every arm that can be
 /// taken, with one of them always taken (an `#else` or `#if 1`), or which arm
-/// is taken decides the answer and it is not known (`None`).
+/// is taken decides the answer and it is not known (`None`). An arm whose
+/// body holds a nested conditional that stops at `#error` in every arm that
+/// can be taken, one of them always taken, is never taken either. A
+/// conditional before `site` that is an `#ifdef X` or `#ifndef X` with the
+/// same test as a later block holding `site`, and no `#define X`, `#undef X`
+/// or `#include` between, is taken together with it: its first arm is then
+/// in effect and its other arms are not.
 fn arms_admit(n: &Node, site: &Node, source: &str, proves: &dyn Fn(&Node) -> bool) -> Option<bool> {
     let mut child = *n;
     while let Some(parent) = child.parent() {
@@ -491,8 +503,10 @@ fn arms_admit(n: &Node, site: &Node, source: &str, proves: &dyn Fn(&Node) -> boo
 
 /// Whether the first arm of `conditional`, an `#ifdef X` or `#ifndef X`
 /// before `site`, is taken wherever `site` is: `site` is in the first arm
-/// of a later conditional with the same directive and name, and no
-/// `#define X` or `#undef X` lies between the two. Other conditions are not
+/// of a later conditional with the same directive and name, no `#define X`
+/// or `#undef X` lies between the two, and no `#include` does, since the
+/// header may define or undefine `X`. An `#include` inside the earlier
+/// block itself is not read as changing `X`. Other conditions are not
 /// compared.
 fn taken_with(conditional: &Node, site: &Node, source: &str) -> bool {
     let Some(tested) = ifdef_test(conditional, source) else {
@@ -509,7 +523,29 @@ fn taken_with(conditional: &Node, site: &Node, source: &str) -> bool {
                 outer.start_byte(),
                 source,
             )
+            && !include_between(
+                &tree_root_of(site),
+                conditional.end_byte(),
+                outer.start_byte(),
+            )
     })
+}
+
+/// Whether an `#include` starts between `from` and `to` in the tree under
+/// `root`.
+fn include_between(root: &Node, from: usize, to: usize) -> bool {
+    let mut stack = vec![*root];
+    while let Some(n) = stack.pop() {
+        if n.end_byte() <= from || n.start_byte() >= to {
+            continue;
+        }
+        if n.kind() == "preproc_include" && n.start_byte() >= from {
+            return true;
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.named_children(&mut cursor));
+    }
+    false
 }
 
 /// The test an `#ifdef X` (`(true, "X")`) or `#ifndef X` (`(false, "X")`)
@@ -700,8 +736,13 @@ fn specifiers_qualified(decl: &Node, source: &str, qualifier: &str, depth: usize
 /// <stdatomic.h>` guard counts. An include in only one arm of
 /// `#if defined(__STDC_NO_ATOMICS__) ... #else ... #endif`, or in an arm
 /// with no arm always taken, is not in effect everywhere, so it does not
-/// count. Conditions are otherwise not evaluated: two blocks with the same
-/// condition are not seen as taken together. The
+/// count. A nested conditional that stops at `#error` in every arm that can
+/// be taken, one of them always taken, stops its arm too. An include in the
+/// first arm of an `#ifdef X` or `#ifndef X` block counts for a `site` in
+/// the first arm of a later block of the same test when no `#define X`,
+/// `#undef X` or `#include` lies between them. Conditions are otherwise not
+/// evaluated: other blocks with the same condition, and complementary
+/// `#ifdef X` / `#ifndef X` blocks, are not related. The
 /// library's names mean what the standard says only where its header is in
 /// effect; a project's own compatibility header of the same names is not
 /// the library. A header the file reaches only through another header is

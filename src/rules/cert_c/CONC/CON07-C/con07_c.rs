@@ -894,11 +894,14 @@ fn writes_atomic_member_of_pointee(
 }
 
 /// Whether `p->f`, `member`, writes an `_Atomic` member of every object the
-/// pointer `p` is proven to point at ([`pointer_origins`]), by each object's
-/// own declaration: the object, or an element of its arrays, is a structure
-/// that is not itself atomic, and [`member_is_atomic`] holds of `f` in its
-/// definition. A pointer whose type says the member is atomic may be made to
-/// point at an object whose type does not.
+/// pointer `p` is proven to point at ([`pointer_origins`]). A value given
+/// to `p` without a cast has `p`'s pointee type (C11 6.5.16.1p1), so the
+/// pointer's type is trusted for it, whatever member or element of an
+/// object it addresses. A value with a cast may make `p` point at an object
+/// whose type does not say the member is atomic, so it is read by the
+/// object's own declaration: the object, or an element of its arrays, is a
+/// structure that is not itself atomic, and [`member_is_atomic`] holds of
+/// `f` in its definition.
 fn pointees_hold_atomic_member(
     member: &Node,
     decl: &Node,
@@ -920,13 +923,17 @@ fn pointees_hold_atomic_member(
         return false;
     };
     origins.iter().all(|origin| {
-        addressed_shared_object(origin, source).is_some_and(|object| {
-            object.steps.iter().all(|s| *s == "subscript_expression")
-                && object_derivations(&object.decl, &object.declarator, source).len()
-                    == object.steps.len()
-                && !declares_atomic_object(&object.decl, &object.declarator, source)
-                && member_is_atomic(&object.decl, &[member], source)
-        })
+        let cast = query::find_first_descendant(*origin, |n| n.kind() == "cast_expression")
+            .is_some()
+            || origin.kind() == "cast_expression";
+        !cast
+            || addressed_shared_object(origin, source).is_some_and(|object| {
+                object.steps.iter().all(|s| *s == "subscript_expression")
+                    && object_derivations(&object.decl, &object.declarator, source).len()
+                        == object.steps.len()
+                    && !declares_atomic_object(&object.decl, &object.declarator, source)
+                    && member_is_atomic(&object.decl, &[member], source)
+            })
     })
 }
 

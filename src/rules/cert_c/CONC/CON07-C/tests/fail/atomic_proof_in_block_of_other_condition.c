@@ -2,11 +2,12 @@
  * Rule: CON07-C
  * Source: synthetic
  * Status: FAIL - Should trigger CON07-C violation
- * Expect: count=2
+ * Expect: count=3
  *
  * An earlier block's include is not in effect at a use whose block tests
  * the opposite (`#ifndef X` after `#ifdef X`), or the same name after a
- * `#define` of it between the two.
+ * `#define` of it between the two, or after an `#include` between them,
+ * since the header may define or undefine the name.
  */
 
 #ifdef HAVE_ATOMICS
@@ -29,4 +30,16 @@ void on_bytes(int n) { bytes += n; }
 static atomic_int hits;
 
 void on_hit(void) { hits += 1; }
+#endif
+
+#ifdef WITH_ATOMIC_COUNTERS
+#include <stdatomic.h>
+#endif
+
+#include "config.h"
+
+#ifdef WITH_ATOMIC_COUNTERS
+static atomic_int misses;
+
+void on_miss(void) { misses += 1; }
 #endif
