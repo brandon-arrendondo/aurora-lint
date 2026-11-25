@@ -630,12 +630,13 @@ impl Int32C {
             let loop_ranges = const_eval::extract_loop_var_ranges(node, source, &macros);
             let mut var_ranges = loop_ranges.clone();
             // Only resolve RHS identifiers — LHS is the mutation target
-            const_eval::resolve_identifiers_in_expr(
+            const_eval::resolve_identifiers_in_expr_memo(
                 &right,
                 source,
                 &macros,
                 &loop_ranges,
                 &mut var_ranges,
+                self.memo.constant(),
             );
             // LHS: only use loop ranges and macros (not local assignments)
             let lr = const_eval::try_evaluate_range(&left, source, &macros, &loop_ranges);

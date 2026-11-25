@@ -706,6 +706,7 @@ impl Int30C {
                 &loop_ranges,
                 None,
                 0,
+                Some(&self.constant),
             )
         };
         let mut later = loop_ranges.clone();
@@ -944,12 +945,13 @@ impl Int30C {
             let loop_ranges = const_eval::extract_loop_var_ranges(node, source, &macros);
             let mut var_ranges = loop_ranges.clone();
             // Only resolve RHS identifiers — LHS is the mutation target
-            const_eval::resolve_identifiers_in_expr(
+            const_eval::resolve_identifiers_in_expr_memo(
                 &right,
                 source,
                 &macros,
                 &loop_ranges,
                 &mut var_ranges,
+                Some(&self.constant),
             );
             // LHS: only use loop ranges and macros (not local assignments)
             let lr = const_eval::try_evaluate_range_with(
@@ -2604,12 +2606,13 @@ impl Int30C {
         }
         let loop_ranges = const_eval::extract_loop_var_ranges(node, source, &macros);
         let mut var_ranges = loop_ranges.clone();
-        const_eval::resolve_identifiers_in_expr(
+        const_eval::resolve_identifiers_in_expr_memo(
             node,
             source,
             &macros,
             &loop_ranges,
             &mut var_ranges,
+            Some(&self.constant),
         );
         const_eval::try_evaluate_range_with(node, source, &macros, &var_ranges, &self.constant)
     }

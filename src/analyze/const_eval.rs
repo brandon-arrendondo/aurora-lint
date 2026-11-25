@@ -15,6 +15,7 @@ use crate::utility::cert_c::data_model::{Fact, IntFacts, Rank};
 use crate::utility::cert_c::node_children::NodeChildren;
 use crate::utility::cert_c::nonzero_facts;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::{LazyLock, Mutex};
 use tree_sitter::Node;
 
@@ -2429,6 +2430,10 @@ pub fn try_evaluate_expr(node: &Node, source: &str, macros: &dyn ConstantLookup)
 /// A variable-range table's contents, sorted by name: what names it.
 type RangeTableContents = Vec<(String, i64, i64)>;
 
+/// For the first children of one block, in order, whether each may write
+/// one name ([`ConstMemo::write_sites`]).
+type WriteSites = Rc<std::cell::RefCell<Vec<bool>>>;
+
 /// The most table entries a [`ConstMemo`] keeps copies of, about 16 MB.
 const RANGE_TABLE_ENTRY_BUDGET: usize = 1 << 18;
 
@@ -2466,6 +2471,10 @@ pub struct ConstMemo {
     current_table: std::cell::Cell<Option<(usize, usize)>>,
     /// Tables a caller keeps alive until [`ConstMemo::clear`], by address.
     pinned_tables: std::cell::RefCell<HashMap<usize, usize>>,
+    /// `(block node id, name)` -> for the first children of the block, in
+    /// order, whether each may write the name ([`stmt_may_write_var`]):
+    /// as many as a scan has read.
+    write_sites: std::cell::RefCell<HashMap<(usize, String), WriteSites>>,
 }
 
 impl ConstMemo {
@@ -2480,6 +2489,7 @@ impl ConstMemo {
         self.next_table.set(0);
         self.current_table.set(None);
         self.pinned_tables.borrow_mut().clear();
+        self.write_sites.borrow_mut().clear();
     }
 
     /// Name `var_ranges` once for every evaluation over it, rather than by
@@ -2569,6 +2579,16 @@ impl ConstMemo {
             node.kind() == "identifier" || node.child_nodes().any(|c| self.has_identifier(&c));
         self.has_identifier.borrow_mut().insert(node.id(), known);
         known
+    }
+
+    /// Whether each child of `block` may write `var_name`, in order
+    /// ([`stmt_may_write_var`]), filled as far as a scan reads: each
+    /// statement is read once per block and name, where the scan of
+    /// [`resolve_local_var_range_among`] would read every statement before
+    /// each use again.
+    fn write_sites(&self, block: &Node, var_name: &str) -> WriteSites {
+        let key = (block.id(), var_name.to_string());
+        Rc::clone(self.write_sites.borrow_mut().entry(key).or_default())
     }
 }
 
@@ -3692,7 +3712,7 @@ pub fn resolve_local_var_range(
     macros: &MacroConstantMap,
     loop_ranges: &VarRangeMap,
 ) -> Option<ValueRange> {
-    resolve_local_var_range_depth(var_name, node, source, macros, loop_ranges, None, 0)
+    resolve_local_var_range_depth(var_name, node, source, macros, loop_ranges, None, 0, None)
 }
 
 /// [`resolve_local_var_range`], evaluating each candidate RHS with
@@ -3715,9 +3735,11 @@ pub fn resolve_local_var_range_expanding(
         loop_ranges,
         Some(function_macros),
         0,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_local_var_range_depth(
     var_name: &str,
     node: &Node,
@@ -3726,6 +3748,7 @@ fn resolve_local_var_range_depth(
     loop_ranges: &VarRangeMap,
     fmacros: Option<&HashMap<String, FunctionMacro>>,
     depth: u32,
+    memo: Option<&ConstMemo>,
 ) -> Option<ValueRange> {
     // The ancestors come from one descent from the root: a `Node::parent`
     // climb costs O(depth) a step, so O(depth²) out of a deep expression.
@@ -3738,6 +3761,7 @@ fn resolve_local_var_range_depth(
         loop_ranges,
         fmacros,
         depth,
+        memo,
     )
 }
 
@@ -3745,6 +3769,12 @@ fn resolve_local_var_range_depth(
 /// whose ancestors, innermost first, the caller has in hand: `ancestors`
 /// may leave out any ancestor that is an expression, since only blocks,
 /// loops and the function are read.
+///
+/// With `memo`, a statement of a block that cannot write `var_name`
+/// ([`stmt_may_write_var`]) is passed over without being read, which it
+/// leaves the scan as it found it. The same answer: a function of `N`
+/// loops each reading a parameter otherwise read `N` statements per use.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_local_var_range_among<'a>(
     var_name: &str,
     node_start: usize,
@@ -3754,6 +3784,7 @@ pub fn resolve_local_var_range_among<'a>(
     loop_ranges: &VarRangeMap,
     fmacros: Option<&HashMap<String, FunctionMacro>>,
     depth: u32,
+    memo: Option<&ConstMemo>,
 ) -> Option<ValueRange> {
     #[cfg(test)]
     LOCAL_RANGE_RESOLUTIONS.with(|n| n.set(n.get() + 1));
@@ -3768,10 +3799,25 @@ pub fn resolve_local_var_range_among<'a>(
             // use a stale range from an earlier assignment.
             let mut last: Option<(ValueRange, (usize, usize))> = None;
             let mut invalidated = false;
-            for stmt in parent.child_nodes() {
+            let sites = memo.map(|m| m.write_sites(parent, var_name));
+            for (index, stmt) in parent.child_nodes().enumerate() {
                 if stmt.start_byte() >= node_start {
                     break;
                 }
+                // The statement holding the use is read as it is, once per
+                // use; only the ones wholly before it are remembered.
+                if let Some(sites) = sites.as_ref().filter(|_| stmt.end_byte() <= node_start) {
+                    let mut sites = sites.borrow_mut();
+                    if index == sites.len() {
+                        sites.push(stmt_may_write_var(&stmt, var_name, source));
+                    }
+                    // A statement not yet remembered is read.
+                    if sites.get(index) == Some(&false) {
+                        continue;
+                    }
+                }
+                #[cfg(test)]
+                SCANNED_STATEMENTS.with(|n| n.set(n.get() + 1));
                 // Check for evaluable assignment (data = CONST or data = expr)
                 if let Some(range) = check_stmt_for_var_assignment(
                     &stmt,
@@ -3940,6 +3986,7 @@ fn resolve_var_rhs(
             loop_ranges,
             fmacros,
             depth + 1,
+            None,
         );
     }
     None
@@ -4150,6 +4197,25 @@ fn stmt_modifies_var(stmt: &Node, var_name: &str, source: &str) -> bool {
         _ => {}
     }
     false
+}
+
+/// Whether `stmt` may write `var_name` as [`check_stmt_for_var_assignment`]
+/// or [`stmt_modifies_var`] reads a write: somewhere in it, an assignment
+/// to the identifier, a declarator of the name with an initializer, or a
+/// call handed `&var_name`. Both read only these, so a statement without
+/// one is one neither answers for: no range from it and no modification.
+fn stmt_may_write_var(stmt: &Node, var_name: &str, source: &str) -> bool {
+    let writes = |n: &Node| match n.kind() {
+        "assignment_expression" => n.child_by_field_name("left").is_some_and(|left| {
+            left.kind() == "identifier" && left.utf8_text(source.as_bytes()) == Ok(var_name)
+        }),
+        "init_declarator" => n
+            .child_by_field_name("declarator")
+            .is_some_and(|d| extract_leaf_identifier(&d, source) == var_name),
+        "call_expression" => call_takes_address_of(n, var_name, source),
+        _ => false,
+    };
+    lang_parsing_substrate::query::find_first_descendant(*stmt, |n| writes(&n)).is_some()
 }
 
 /// Returns true if the compound_statement has a direct-child declaration of `var_name`,
@@ -4575,6 +4641,21 @@ pub fn resolve_identifiers_in_expr(
     resolve_identifiers_in_expr_with(node, source, macros, loop_ranges, var_ranges, None)
 }
 
+/// [`resolve_identifiers_in_expr`] through `memo`, which must be for the
+/// tree `node` is in: the statements of a block that may write each name
+/// are read once per block and name rather than at every use. The same
+/// answer.
+pub fn resolve_identifiers_in_expr_memo(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    loop_ranges: &VarRangeMap,
+    var_ranges: &mut VarRangeMap,
+    memo: Option<&ConstMemo>,
+) {
+    resolve_identifiers_in_expr_with(node, source, macros, loop_ranges, var_ranges, memo)
+}
+
 /// [`resolve_identifiers_in_expr`], skipping a subtree `memo` knows holds no
 /// identifier. The same answer.
 ///
@@ -4631,7 +4712,16 @@ fn resolve_identifiers_in_expr_walk(
         {
             #[cfg(test)]
             LOCAL_RANGE_LOOKUPS.with(|n| n.set(n.get() + 1));
-            match resolve_local_var_range(name, node, source, macros, loop_ranges) {
+            match resolve_local_var_range_depth(
+                name,
+                node,
+                source,
+                macros,
+                loop_ranges,
+                None,
+                0,
+                memo,
+            ) {
                 Some(range) => {
                     var_ranges.insert(name.to_string(), range);
                 }
@@ -4676,6 +4766,15 @@ thread_local! {
     /// How many nodes [`resolve_identifiers_in_expr_with`] walked on this
     /// thread looking for names to resolve.
     static IDENTIFIER_WALK_NODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many statements [`resolve_local_var_range_among`]'s backward
+    /// scan read on this thread for an assignment.
+    static SCANNED_STATEMENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Statements the backward scan read on this thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_scanned_statements() -> usize {
+    SCANNED_STATEMENTS.with(|n| n.replace(0))
 }
 
 /// Nodes walked for names to resolve on this thread since the last call.
@@ -4934,6 +5033,166 @@ mod tests {
         }
         assert_eq!(code.as_ptr(), buffer);
         assert_eq!(arm_value_of_last(&code, "j"), Some(3));
+    }
+
+    /// Each identifier of `code`'s function `f` resolved by the backward
+    /// scan, once through no memo and once through one memo shared by every
+    /// occurrence, read in source order and then backward, so the memo's
+    /// sites are both filled and reused. Returns the pairs of answers.
+    #[allow(clippy::type_complexity)]
+    fn local_ranges_with_and_without_memo(
+        code: &str,
+    ) -> Vec<(String, usize, Option<ValueRange>, Option<ValueRange>)> {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+        let macros = MacroConstantMap::new();
+        let mut idents =
+            lang_parsing_substrate::query::find_descendants_of_kind(tree.root_node(), "identifier");
+        idents.retain(|n| ast_utils::ancestors(n).any(|a| a.kind() == "compound_statement"));
+        let memo = ConstMemo::default();
+        let mut out = Vec::new();
+        for pass in [false, true] {
+            let order: Vec<&Node> = if pass {
+                idents.iter().rev().collect()
+            } else {
+                idents.iter().collect()
+            };
+            for ident in order {
+                let name = ast_utils::get_node_text(ident, code).to_string();
+                let loops = extract_loop_var_ranges(ident, code, &macros);
+                let plain = resolve_local_var_range_depth(
+                    &name, ident, code, &macros, &loops, None, 0, None,
+                );
+                let memoized = resolve_local_var_range_depth(
+                    &name,
+                    ident,
+                    code,
+                    &macros,
+                    &loops,
+                    None,
+                    0,
+                    Some(&memo),
+                );
+                out.push((name, ident.start_byte(), plain, memoized));
+            }
+        }
+        out
+    }
+
+    /// The memo passes over a statement only where the scan would have
+    /// read it to no effect, on every shape a value reaches a use by or is
+    /// lost by: declarations with and without a value, plain and compound
+    /// assignments, writes in an `if`, a loop body, a `for` header, a
+    /// `switch` and a `do`, a shadowing block, `&x` handed to a call, a
+    /// store through a pointer, a label a `goto` comes back to, and uses
+    /// inside the statement that writes.
+    #[test]
+    fn memoized_local_ranges_are_the_scan_s_on_every_shape() {
+        let code = "void sink(int);\n\
+            int scanf(const char *, ...);\n\
+            int f(int p, int q) {\n\
+              int a = 3, b, c = 7;\n\
+              int *ptr = &c;\n\
+              b = 4;\n\
+              sink(a + b + c);\n\
+              for (int i = 0; i < 4; i++) { a = 5; sink(a + i); }\n\
+              sink(a + b + c);\n\
+              if (p) { b = 9; } else { scanf(\"%d\", &q); }\n\
+              sink(b + q);\n\
+              int e = 5;\n\
+              scanf(\"%d\", &e);\n\
+              sink(e);\n\
+              int h = 2;\n\
+              if (p) { scanf(\"%d\", &h); }\n\
+              sink(h);\n\
+              if (q) { b = 10; }\n\
+              sink(b);\n\
+              while (p--) { int a = 1; a = 2; sink(a); }\n\
+              sink(a);\n\
+              switch (p) { case 1: b = 2; break; default: b = 3; }\n\
+              sink(b);\n\
+              do { c = 11; } while (0);\n\
+              sink(c);\n\
+              *ptr = p;\n\
+              sink(c);\n\
+              for (b = 0; b < 3; b++) sink(b);\n\
+              sink(b + a);\n\
+              { int d = 8; sink(d); d = q; sink(d); }\n\
+              a = q; sink(a);\n\
+              a = 6; sink(a);\n\
+              a += 1; sink(a);\n\
+              b = a = 12; sink(b + a);\n\
+              c = 13;\n\
+            lbl:\n\
+              sink(c);\n\
+              c = q;\n\
+              if (q) goto lbl;\n\
+              return a + b + c;\n\
+            }\n";
+        let pairs = local_ranges_with_and_without_memo(code);
+        for (name, at, plain, memoized) in &pairs {
+            assert_eq!(plain, memoized, "`{name}` at byte {at}");
+        }
+        // Not vacuous: values reach some uses and are lost before others.
+        let resolved = pairs.iter().filter(|p| p.2.is_some()).count();
+        assert!(resolved >= 20, "{resolved} resolved");
+        assert!(pairs.len() - resolved >= 20);
+    }
+
+    /// N loops in a row, each reading a parameter: `s += a[i] + k;`.
+    fn loops_reading_a_parameter(n: usize) -> String {
+        let mut code = String::from("int f(int *a, int k) {\n  int i, s = 0;\n");
+        for _ in 0..n {
+            code.push_str("  for (i = 0; i < 10; i++) { s += a[i] + k; }\n");
+        }
+        code.push_str("  return s;\n}\n");
+        code
+    }
+
+    /// The backward scan through a memo reads each statement of a block
+    /// once per name, so a function of N loops that each read a parameter
+    /// costs reads linear in N, where without one every use reads every
+    /// loop before it again. The answers are the same as without it.
+    #[test]
+    fn memoized_scan_reads_each_statement_once_per_name() {
+        let reads = |n: usize, memoized: bool| {
+            let code = loops_reading_a_parameter(n);
+            let mut parser = tree_sitter::Parser::new();
+            parser.set_language(&crate::parser::c_language()).unwrap();
+            let tree = parser.parse(&code, None).unwrap();
+            let macros = MacroConstantMap::new();
+            let memo = ConstMemo::default();
+            take_scanned_statements();
+            for rhs in lang_parsing_substrate::query::find_descendants_of_kind(
+                tree.root_node(),
+                "assignment_expression",
+            )
+            .iter()
+            .filter_map(|a| a.child_by_field_name("right"))
+            {
+                let loops = extract_loop_var_ranges(&rhs, &code, &macros);
+                let mut ranges = loops.clone();
+                resolve_identifiers_in_expr_memo(
+                    &rhs,
+                    &code,
+                    &macros,
+                    &loops,
+                    &mut ranges,
+                    memoized.then_some(&memo),
+                );
+            }
+            take_scanned_statements()
+        };
+        let (small, large) = (reads(100, true), reads(200, true));
+        assert!(large <= 2 * small + 16, "{small} -> {large}");
+        // Without the memo the same scans grow with the square.
+        let (small, large) = (reads(100, false), reads(200, false));
+        assert!(large > 3 * small, "{small} -> {large}");
+        let pairs = local_ranges_with_and_without_memo(&loops_reading_a_parameter(12));
+        assert!(pairs
+            .iter()
+            .all(|(_, _, plain, memoized)| plain == memoized));
     }
 
     fn written_names(code: &str) -> std::collections::HashSet<String> {
