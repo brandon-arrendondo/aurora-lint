@@ -241,7 +241,7 @@ not a flag.
      amendment). For example, where a
      standard permits `goto` under conditions, a reading that bans every
      `goto` is pedantic; so is holding a rule to the items its list names
-     where that yields more findings (Decision 3).
+     where that yields more findings (Decision 4).
    - **cut, too strict:** a stricter reading the maintainer rejects (a ban
      on `if` would be one), or one the tool cannot reason about from the
      code.
@@ -258,15 +258,16 @@ not a flag.
    Pedantic may decline a rule rather than run a weaker
    form of it.
 4. **A list in a rule's text is authoritative as written,** even when the
-   text calls it open ("such as", "for example"). (Restated 2026-10-31 for
-   lists that call themselves open; see that amendment, ruling 1.)
+   text calls it open ("such as", "for example").
    `--strict` may extend it
    only with other authoritative material that bounds it better (for
    example, POSIX's list of async-signal-safe functions read with a CERT
    rule that names some of them). Which way a preset moves depends on what
    the list does: for a list of what is allowed, holding to the listed items
    alone is stricter; for a list of what is forbidden, it yields fewer
-   findings, so it belongs to the relaxed side.
+   findings, so it belongs to the relaxed side. (Restated 2026-10-31: a
+   list that calls itself open is read by its general term, and `--strict`
+   enforces a growing enumeration of it; see that amendment, ruling 1.)
 5. **The oracle stays at `--strict`.** A CERT C oracle labels each rule as
    written, by definition (ADR-0014). `--default` and `--pedantic` are
    scored as differences from it: where either disagrees with the oracle,
@@ -768,7 +769,7 @@ critics:
    statute's purposes "so long as such interpretations do not impose on
    words a meaning they will not bear" (p. 532). `--default`'s narrowings
    stay inside that bound. `--pedantic`'s closed-form readings go past it
-   on purpose, and that is the reason pedantic is opt-in, labelled as a
+   on purpose, and that is the reason pedantic is opt-in, labeled as a
    reading beyond the text, scored as a difference from the oracle
    (Decision 5 of the 2026-10-07 amendment), and declines a rule rather
    than invent a reading where none is closed.
@@ -894,7 +895,7 @@ critics:
    checker enforces an enumeration of it that grows.** A checker needs a
    closed list to be deterministic, so `--strict` enforces a closed list.
    That list starts with the items the rule names and gains items that the
-   general term covers as rulings recognise them, including items CERT's
+   general term covers as rulings recognize them, including items CERT's
    list does not name. Brandon: "if a sign says 'no animals allowed (e.g.
    dogs, cats, etc)' and on our reading we realize we need to detect birds
    and on further reading that means chickens too, and cows as well,
@@ -903,7 +904,7 @@ critics:
    dated ruling. A run is reproduced at its pins (ADR-0018): the
    aurora-lint commit fixes the enumeration it enforced, and each oracle
    label records the rulings version it was judged under (ADR-0018's
-   2026-10-09 amendment, Decision 4). The oracle labels the general term,
+   2026-10-09 rule-text amendment, Decision 4). The oracle labels the general term,
    so an item the enumeration does not yet hold is scored as a missed
    finding, not dropped from the count. This restates Decision 4 of the
    2026-10-07 amendment for lists that call themselves open. A list the
@@ -915,14 +916,14 @@ critics:
    named options (Decision 7): it "allows for what a reasonable C developer
    would expect" (Brandon).
 3. **A settled ruling is reopened only when the rule's text changes.** That
-   is, when the rule's pinned text moves (ADR-0018's 2026-10-09 amendment,
-   Decision 5), not when a related standard gets a new edition. A changed
+   is, when the rule's pinned text moves (ADR-0018's 2026-10-09 rule-text
+   amendment, Decision 5), not when a related standard gets a new edition. A changed
    text is re-judged by a new, dated ruling. Which CERT C text this project
    holds itself to is the rule-text pin, per rule, at a merged commit of
    CERT's own repository. That matters all the more because this project
    contributes changes to that text, and a pin never anticipates an
-   unmerged proposal, this project's own included (same amendment, Decision
-   7).
+   unmerged proposal, this project's own included (the same rule-text amendment,
+   Decision 7).
 4. **Rule records name the deciding canon.** Each ruling records the canon
    or named option that decided it and those that pointed the other way
    (point 6).
@@ -935,7 +936,7 @@ critics:
 - Documentation that glosses `--strict` says "the rule's fair meaning" or
   "the rule as written". It does not say "strict construction".
 - Ruling 1 changes how lists that call themselves open are implemented and
-  labelled: each one's enumeration and its additions become rulings, and
+  labeled: each one's enumeration and its additions become rulings, and
   rule records say which enumeration a release enforces.
 - Ruling 4 adds a field to rule records.
 - Neither is implemented yet.
