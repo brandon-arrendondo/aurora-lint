@@ -23,13 +23,22 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::Severity;
 use crate::utility::cert_c::ast_utils::{get_node_text, typedef_definition_in_scope};
-use crate::utility::cert_c::declarator_utils::typedef_declarators;
+use crate::utility::cert_c::declarator_utils::{typedef_declarators, TypedefShape};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::Node;
 
-pub struct Int12C;
+/// The project's typedef definitions, for a typedef name this file uses
+/// but does not define (one from a header).
+#[derive(Default)]
+pub struct Int12C {
+    typedef_arms: RefCell<Arc<HashMap<String, Vec<String>>>>,
+}
 
 impl CertRule for Int12C {
     fn rule_id(&self) -> &'static str {
@@ -46,6 +55,10 @@ impl CertRule for Int12C {
 
     fn cert_id(&self) -> &'static str {
         "INT12-C"
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.typedef_arms.borrow_mut() = context.typedef_arms.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -83,66 +96,117 @@ impl Int12C {
         let Some(ty) = field.child_by_field_name("type") else {
             return;
         };
-        if !designates_plain_int(&ty, source, 8) {
+        if !self.designates_plain_int(&ty, source, 8) {
             return;
         }
-        // The first named bit-field: a declarator followed by its width
+        // Every named bit-field: a declarator followed by its width
         let mut cursor = field.walk();
         let children: Vec<Node> = field.named_children(&mut cursor).collect();
-        let Some(name) = children.windows(2).find_map(|pair| {
-            (pair[1].kind() == "bitfield_clause"
-                && pair[0].kind() == "field_identifier"
-                // `int : 3;` parses with a missing, empty identifier
-                && !pair[0].is_missing()
-                && pair[0].start_byte() < pair[0].end_byte())
-            .then(|| get_node_text(&pair[0], source).to_string())
-        }) else {
+        let names: Vec<String> = children
+            .windows(2)
+            .filter(|pair| {
+                pair[1].kind() == "bitfield_clause"
+                    && pair[0].kind() == "field_identifier"
+                    // `int : 3;` parses with a missing, empty identifier
+                    && !pair[0].is_missing()
+                    && pair[0].start_byte() < pair[0].end_byte()
+            })
+            .map(|pair| get_node_text(&pair[0], source).to_string())
+            .collect();
+        if names.is_empty() {
             return;
+        }
+        let quoted: Vec<String> = names.iter().map(|n| format!("'{n}'")).collect();
+        let (subject, verb) = if names.len() == 1 {
+            ("Bit-field", "uses")
+        } else {
+            ("Bit-fields", "use")
         };
-        let (line, column) = (
-            field.start_position().row + 1,
-            field.start_position().column + 1,
-        );
+        let spelled = get_node_text(&ty, source);
+        let suggestion = if ty.kind() == "primitive_type" {
+            format!(
+                "Declare {} as 'signed int' or 'unsigned int' instead of 'int'",
+                quoted.join(", ")
+            )
+        } else {
+            format!(
+                "'{spelled}' is a typedef of plain 'int'; declare {} with a type that is \
+                 explicitly 'signed int' or 'unsigned int'",
+                quoted.join(", ")
+            )
+        };
 
         violations.push(RuleViolation {
             rule_id: self.rule_id().to_string(),
             message: format!(
-                "Bit-field '{}' uses plain 'int' with implementation-defined signedness. \
+                "{subject} {} {verb} plain 'int' with implementation-defined signedness. \
                  Use explicit 'signed int' or 'unsigned int' instead.",
-                name
+                quoted.join(", ")
             ),
             severity: self.severity(),
-            line,
-            column,
+            line: field.start_position().row + 1,
+            column: field.start_position().column + 1,
             file_path: String::new(),
-            suggestion: Some(format!(
-                "Change 'int {}' to 'signed int {}' or 'unsigned int {}'",
-                name, name, name
-            )),
+            suggestion: Some(suggestion),
             requires_manual_review: None,
         });
     }
+
+    /// Whether the type specifier `ty` is plain `int`: the `int` keyword
+    /// alone (`signed int` and `unsigned int` are sized specifiers), or a
+    /// typedef name whose definition is a plain `int` with no derivation,
+    /// through up to `depth` typedefs. The typedef in scope in this file
+    /// answers; a name this file never defines as a typedef is read from
+    /// the project's definitions of it, all of which must be plain `int`.
+    fn designates_plain_int(&self, ty: &Node, source: &str, depth: usize) -> bool {
+        match ty.kind() {
+            "primitive_type" => get_node_text(ty, source) == "int",
+            "type_identifier" if depth > 0 => {
+                let name = get_node_text(ty, source);
+                if let Some(typedef) = typedef_definition_in_scope(ty, name, source) {
+                    return typedef_declarators(&typedef).iter().any(|d| {
+                        d.kind() == "type_identifier" && get_node_text(d, source) == name
+                    }) && typedef
+                        .child_by_field_name("type")
+                        .is_some_and(|t| self.designates_plain_int(&t, source, depth - 1));
+                }
+                !file_defines_typedef(ty, name, source)
+                    && self.project_typedef_is_plain_int(name, depth)
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether every project definition of the typedef `name` is a plain
+    /// `int`, directly or through other typedefs, up to `depth` of them.
+    fn project_typedef_is_plain_int(&self, name: &str, depth: usize) -> bool {
+        let arms = self.typedef_arms.borrow();
+        let Some(texts) = arms.get(name).filter(|t| !t.is_empty()) else {
+            return false;
+        };
+        texts.iter().all(|text| {
+            let text = text.trim();
+            text == "int"
+                || (depth > 1
+                    && text != name
+                    && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && !text.is_empty()
+                    && self.project_typedef_is_plain_int(text, depth - 1))
+        })
+    }
 }
 
-/// Whether the type specifier `ty` is plain `int`: the `int` keyword alone
-/// (`signed int` and `unsigned int` are sized specifiers), or a typedef name
-/// in scope whose own definition is a plain `int` with no derivation, through
-/// up to `depth` typedefs.
-fn designates_plain_int(ty: &Node, source: &str, depth: usize) -> bool {
-    match ty.kind() {
-        "primitive_type" => get_node_text(ty, source) == "int",
-        "type_identifier" if depth > 0 => {
-            let name = get_node_text(ty, source);
-            let Some(typedef) = typedef_definition_in_scope(ty, name, source) else {
-                return false;
-            };
-            typedef_declarators(&typedef)
-                .iter()
-                .any(|d| d.kind() == "type_identifier" && get_node_text(d, source) == name)
-                && typedef
-                    .child_by_field_name("type")
-                    .is_some_and(|t| designates_plain_int(&t, source, depth - 1))
-        }
-        _ => false,
+/// Whether the file holding `node` declares `name` as a typedef anywhere.
+fn file_defines_typedef(node: &Node, name: &str, source: &str) -> bool {
+    let mut root = *node;
+    while let Some(parent) = root.parent() {
+        root = parent;
     }
+    query::find_descendants_of_kind(root, "type_definition")
+        .iter()
+        .any(|typedef| {
+            typedef_declarators(typedef)
+                .iter()
+                .any(|d| TypedefShape::of(d, source).name.as_deref() == Some(name))
+        })
 }

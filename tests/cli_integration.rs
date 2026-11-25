@@ -11929,3 +11929,26 @@ fn msc12_a_header_registration_macro_keeps_nothing_after_it() {
     assert_eq!(found[0].0, "dev.c", "{found:?}");
     assert!(found[0].1.contains("'dev_unused_helper'"), "{found:?}");
 }
+
+/// A bit-field whose type is a typedef of plain `int` defined in a header
+/// the file includes is a plain int bit-field (C11 6.7.2p5), and one whose
+/// typedef there is `unsigned int` is not.
+#[test]
+fn int12_follows_a_plain_int_typedef_from_an_included_header() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("types.h"),
+        "typedef int word;\ntypedef unsigned int uword;\n",
+    )
+    .unwrap();
+    let main = dir.path().join("flags.c");
+    std::fs::write(
+        &main,
+        "#include \"types.h\"\nstruct flags { word mode : 3; uword level : 4; };\n",
+    )
+    .unwrap();
+    let (_, stdout, stderr) = run_aurora_lint(&["--rules", "INT12-C", main.to_str().unwrap()]);
+    let findings: Vec<&str> = stdout.lines().filter(|l| l.contains("INT12-C:")).collect();
+    assert_eq!(findings.len(), 1, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(findings[0].contains("Bit-field 'mode'"), "{stdout}");
+}

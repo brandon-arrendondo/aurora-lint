@@ -2,11 +2,12 @@
  * Rule: INT12-C
  * Source: synthetic
  * Status: FAIL - Should trigger INT12-C violation
- * Expect: count=3
+ * Expect: count=4
  *
  * A plain int bit-field inside a nested structure or union is reported
  * once, by its own name, and not again for the member that holds it; a
- * typedef of plain `int` is plain int too (C11 6.7.2p5).
+ * typedef of plain `int` is plain int too (C11 6.7.2p5). Several plain int
+ * bit-fields in one declaration are one finding naming each of them.
  */
 
 typedef int word;
@@ -21,4 +22,5 @@ struct packet {
     unsigned char byte;
   } body;
   word tag : 6;
+  int lo : 2, hi : 2;
 };

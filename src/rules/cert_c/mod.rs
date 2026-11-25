@@ -1049,7 +1049,7 @@ impl RuleRegistry {
         registry.register(Box::new(int08_c::Int08C::default()));
         registry.register(Box::new(int09_c::Int09C::default()));
         registry.register(Box::new(int10_c::Int10C::new()));
-        registry.register(Box::new(int12_c::Int12C));
+        registry.register(Box::new(int12_c::Int12C::default()));
         registry.register(Box::new(int13_c::Int13C));
         registry.register(Box::new(int15_c::Int15C));
         registry.register(Box::new(int16_c::Int16C::default()));
