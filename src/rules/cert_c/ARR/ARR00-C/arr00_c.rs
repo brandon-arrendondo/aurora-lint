@@ -458,8 +458,7 @@ fn check_vla_size_validation(
     // suppress a genuine unvalidated-VLA-size violation).
     let function_start = function_node.start_byte();
     let sanitized_function_text = text.text(&function_node);
-    let preceding_text = &sanitized_function_text
-        [..(vla_position - function_start).min(sanitized_function_text.len())];
+    let preceding_text = &sanitized_function_text[..vla_position - function_start];
 
     // Check for direct assignment of 0
     if preceding_text.contains(&format!("{} = 0", size_var))
@@ -778,8 +777,7 @@ fn check_obvious_string_overflow(
     let function_start = function_node.start_byte();
     let call_position = node.start_byte();
     let sanitized_function_text = text.text(&function_node);
-    let preceding_text = &sanitized_function_text
-        [..(call_position - function_start).min(sanitized_function_text.len())];
+    let preceding_text = &sanitized_function_text[..call_position - function_start];
 
     // Look for array declaration
     if let Some(dest_size) = find_array_size(dest_name, preceding_text) {
@@ -882,8 +880,7 @@ fn check_memcpy_size_mismatch(
     let function_start = function_node.start_byte();
     let call_position = node.start_byte();
     let sanitized_function_text = text.text(&function_node);
-    let preceding_text = &sanitized_function_text
-        [..(call_position - function_start).min(sanitized_function_text.len())];
+    let preceding_text = &sanitized_function_text[..call_position - function_start];
 
     // Check if sizeof is applied to the source when it should be dest
     // Pattern: memcpy(dest, src, sizeof(src)) where sizeof(dest) < sizeof(src)
@@ -992,8 +989,7 @@ fn check_memory_operation_overflow(
     let function_start = function_node.start_byte();
     let call_position = node.start_byte();
     let sanitized_function_text = text.text(&function_node);
-    let preceding_text = &sanitized_function_text
-        [..(call_position - function_start).min(sanitized_function_text.len())];
+    let preceding_text = &sanitized_function_text[..call_position - function_start];
 
     // Try to find the array size
     let array_size = find_array_size(buffer_name, preceding_text)?;
@@ -1101,8 +1097,7 @@ fn check_loop_exceeds_allocation(
     let function_start = function_node.start_byte();
     let loop_position = node.start_byte();
     let sanitized_function_text = text.text(&function_node);
-    let preceding_text = &sanitized_function_text
-        [..(loop_position - function_start).min(sanitized_function_text.len())];
+    let preceding_text = &sanitized_function_text[..loop_position - function_start];
 
     // Find the most recent malloc/realloc for this pointer
     if let Some(alloc_size) = find_allocation_size(&array_name, preceding_text) {
@@ -1212,8 +1207,7 @@ fn check_loop_bound_exceeds_array(
     let function_start = function_node.start_byte();
     let loop_position = node.start_byte();
     let sanitized_function_text = text.text(&function_node);
-    let preceding_text = &sanitized_function_text
-        [..(loop_position - function_start).min(sanitized_function_text.len())];
+    let preceding_text = &sanitized_function_text[..loop_position - function_start];
 
     // Try to find array declarations and check if bound exceeds array size
     // Parse body_text to find identifiers before [loop_var]
@@ -1313,8 +1307,7 @@ fn check_loop_array_access(
     let loop_position = node.start_byte();
     let function_start = function_node.start_byte();
     let sanitized_function_text = text.text(&function_node);
-    let preceding_text = &sanitized_function_text
-        [..(loop_position - function_start).min(sanitized_function_text.len())];
+    let preceding_text = &sanitized_function_text[..loop_position - function_start];
 
     // A parameter is not assumed valid: what its callers pass is a proof only
     // over a closed caller set, and this check does not ask for one
@@ -1458,8 +1451,7 @@ fn check_subscript_bounds(
     let function_start = function_node.start_byte();
     let subscript_position = node.start_byte();
     let sanitized_function_text = text.text(&function_node);
-    let preceding_text = &sanitized_function_text
-        [..(subscript_position - function_start).min(sanitized_function_text.len())];
+    let preceding_text = &sanitized_function_text[..subscript_position - function_start];
 
     // Check if index_var is a loop variable (defined in a for loop)
     // Pattern: for (...; index_var ...; ...) or for (... index_var = ...
@@ -1556,8 +1548,7 @@ fn check_uninitialized_array_read(
     let function_start = function_node.start_byte();
     let subscript_position = node.start_byte();
     let sanitized_function_text = text.text(&function_node);
-    let preceding_text = &sanitized_function_text
-        [..(subscript_position - function_start).min(sanitized_function_text.len())];
+    let preceding_text = &sanitized_function_text[..subscript_position - function_start];
 
     // Only flag true array declarations (type name[SIZE]), not pointers
     if !arrays.declares(&function_node, array_name, source) {
@@ -1695,8 +1686,7 @@ fn check_use_after_free(
     let function_start = function_node.start_byte();
     let subscript_position = node.start_byte();
     let sanitized_function_text = text.text(&function_node);
-    let preceding_text = &sanitized_function_text
-        [..(subscript_position - function_start).min(sanitized_function_text.len())];
+    let preceding_text = &sanitized_function_text[..subscript_position - function_start];
 
     // Check if free(array_name) appears before this access
     let free_pattern = format!("free({})", array_name);
@@ -1920,8 +1910,7 @@ fn check_boundary_value_index(
     let function_start = function_node.start_byte();
     let subscript_position = node.start_byte();
     let sanitized_function_text = text.text(&function_node);
-    let preceding_text = &sanitized_function_text
-        [..(subscript_position - function_start).min(sanitized_function_text.len())];
+    let preceding_text = &sanitized_function_text[..subscript_position - function_start];
 
     // Check if this variable was initialized to a boundary value
     if let Some(boundary_value) = is_initialized_to_boundary_value(index_var, preceding_text) {
@@ -2166,9 +2155,7 @@ fn check_pointer_arithmetic(
     // the array-size scan and hide real out-of-bounds pointer arithmetic.
     let preceding_text: &str = if let Some(body) = body_node {
         let sanitized_body = text.text(&body);
-        let rel_start = (body_start - body.start_byte()).min(sanitized_body.len());
-        let rel_end = (ptr_position - body.start_byte()).min(sanitized_body.len());
-        &sanitized_body[rel_start..rel_end]
+        &sanitized_body[body_start - body.start_byte()..ptr_position - body.start_byte()]
     } else {
         &source[body_start..ptr_position]
     };

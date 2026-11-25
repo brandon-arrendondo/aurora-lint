@@ -195,8 +195,9 @@ fn compute_gen_kill(
 ///
 /// The solver sweeps every block in reverse postorder until a sweep
 /// changes nothing. Reaching definitions is a gen/kill framework, so in
-/// that order it settles within a few sweeps more than the loop nesting
-/// (Kam and Ullman), and each block is visited a small number of times.
+/// that order it settles within two sweeps more than the most back edges
+/// on any acyclic path of the graph (Kam and Ullman), and each block is
+/// visited a small number of times.
 /// A first-in-first-out worklist visits a block once per loop above it
 /// that feeds it, so on a function of N loops in a row it costs N^2
 /// visits, each one over sets that grow with N.
@@ -1412,9 +1413,11 @@ mod tests {
     /// The solver's sets are the equations' least fixpoint, block for block,
     /// on graphs whose back edges reach far: loops in a row whose bodies
     /// never dominate their exits, loops nested inside loops, `break` and
-    /// `continue`, a `do` loop, a `switch` in a loop, and a backward `goto`
-    /// into a loop (an irreducible graph). A change to how the solver
-    /// visits blocks may change its cost, never these sets.
+    /// `continue`, a `do` loop, a `switch` in a loop, a backward `goto`
+    /// into a loop (an irreducible graph), and a labelled region after the
+    /// `return` that only its own `goto` enters, which the entry does not
+    /// reach but whose stores still reach its own blocks. A change to how
+    /// the solver visits blocks may change its cost, never these sets.
     #[test]
     fn reaching_sets_are_the_least_fixpoint_on_loop_heavy_graphs() {
         let code = r#"
@@ -1446,12 +1449,35 @@ mod tests {
         inside:
             if (j < n) { j = j + 1; goto again; }
             return s + t + j;
+        dead:
+            s = 9;
+            while (t) { t = s - 1; if (t > 4) goto dead; }
+            return t;
         }
         "#;
         let (tree, source) = parse_function(code);
         let func_node = get_func_node(&tree).unwrap();
         let cfg = build_function_cfg(&func_node, &source).unwrap();
         let defs = extract_definitions(&cfg, &func_node, &source);
+        let mut reached = HashSet::from([cfg.entry]);
+        let mut pending = vec![cfg.entry];
+        while let Some(block) = pending.pop() {
+            for (next, _) in cfg.successors(block) {
+                if reached.insert(next) {
+                    pending.push(next);
+                }
+            }
+        }
+        let unreachable_with_stores = cfg
+            .blocks
+            .iter()
+            .filter(|b| !reached.contains(&b.id))
+            .filter(|b| defs.iter().any(|d| d.block_id == b.id))
+            .count();
+        assert!(
+            unreachable_with_stores > 0,
+            "the region after the return must stay unreachable and hold stores"
+        );
         assert!(
             cfg.blocks.len() > 30 && defs.len() > 15,
             "the graph must stay loop-heavy for the comparison to mean anything: {} blocks, {} definitions",
