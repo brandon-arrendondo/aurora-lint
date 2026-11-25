@@ -218,8 +218,20 @@ the same way, since reading it could block.
 Files with a UTF-16 byte-order mark are text and are read normally, and
 empty files are fine.</p></li>
 </ul>
-<p>After parsing, one more check:</p>
+<p>While parsing, and after it:</p>
 <ul class="simple">
+<li><p><strong>over parse budget</strong>: the parse ran past its work budget and was
+stopped. tree-sitter’s error recovery is quadratic on some malformed
+input (a comment followed by thousands of stray <code class="docutils literal notranslate"><span class="pre">*/</span></code> lines takes
+seconds, and a 100 KB file of that shape minutes), so
+one such file could stall a scan. The budget counts the parser’s progress
+steps, which depend only on the file and the grammar, so the refusal is
+the same on every machine: 2,000 steps plus
+<code class="docutils literal notranslate"><span class="pre">--max-parse-steps-per-kib</span></code> per KiB (default 256, a quarter of a step
+per byte; <code class="docutils literal notranslate"><span class="pre">0</span></code> removes the budget). No file of the benchmark corpora
+needs a tenth of that. The C++ check a
+<code class="docutils literal notranslate"><span class="pre">.h</span></code> file gets is held to the same budget, and a header it could not
+decide is refused rather than taken for C or C++.</p></li>
 <li><p><strong>too deep</strong>: the file’s syntax tree nests more than
 <code class="docutils literal notranslate"><span class="pre">--max-nesting-depth</span></code> levels (default 5000; <code class="docutils literal notranslate"><span class="pre">0</span></code> removes the limit).
 Many analyses walk the tree recursively, one level at a time, and a stack
@@ -257,8 +269,9 @@ paths or passes reached it.</p>
 <p>A refused file is <strong>skipped and reported</strong>, never analysed, and the scan
 exits <code class="docutils literal notranslate"><span class="pre">3</span></code>:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Error: input skipped (not source text): build/blob.c: looks like binary data (Elf, application/x-executable)
-Error: input skipped (too large): gen/table.c: 80 MiB is over --max-file-size 64 MiB
+Error: input skipped (too large): gen/table.c: 83886080 bytes (80.00 MiB) is over --max-file-size 64 MiB
 Error: input skipped (too deep): gen/parser.c: its syntax tree nests 12004 levels deep, over --max-nesting-depth 5000
+Error: input skipped (over parse budget): gen/broken.c: parse stopped at its budget of 6011 steps for 16044 bytes, at byte 3134
 </pre></div>
 </div>
 <p>If the file belongs in the tree but is not source, leave it out of the scan
