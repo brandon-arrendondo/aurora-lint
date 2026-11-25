@@ -194,6 +194,8 @@ pub(super) fn check(
         for (text, _) in &closure.texts {
             fragments.extend(pasting_arguments(text, &pasting, &all_defines));
         }
+        fragments.sort_unstable();
+        fragments.dedup();
         for s in statics.iter().filter(|s| s.judged) {
             let Some(name) = s.name.as_deref() else {
                 continue;
@@ -790,7 +792,7 @@ fn definition_is_retained(
     };
     identifiers(head)
         .into_iter()
-        .any(|word| KEEP_WORDS.contains(&word) || macro_keeps(word, defines, tables, 0))
+        .any(|word| KEEP_WORDS.contains(&word) || macro_keeps(word, defines, tables))
 }
 
 /// The length of the invocation `NAME(...)` that `text` begins with, up to
@@ -824,7 +826,9 @@ fn leading_invocation(text: &str) -> Option<usize> {
 
 /// Whether `text`, an invocation `NAME(...)` of a macro `defines` give a
 /// body, expands to text that ends in `;` or `}`, followed through a body
-/// that is itself such an invocation.
+/// that is itself such an invocation. Every definition of the macro must (one
+/// per `#if` arm): an arm whose expansion is an attribute
+/// (`__attribute__((used))`) leaves the invocation part of the head.
 fn expansion_ends_an_item(text: &str, defines: &[&Define], depth: usize) -> bool {
     let text = text.trim();
     let Some(name) = identifiers(text).into_iter().next() else {
@@ -836,12 +840,14 @@ fn expansion_ends_an_item(text: &str, defines: &[&Define], depth: usize) -> bool
     if !text[name.len()..].trim_start().starts_with('(') {
         return false;
     }
-    defines.iter().filter(|d| d.name == name).any(|d| {
-        let body = d.body.trim();
-        body.ends_with(';')
-            || body.ends_with('}')
-            || (body != text && expansion_ends_an_item(body, defines, depth + 1))
-    })
+    let mut arms = defines.iter().filter(|d| d.name == name).peekable();
+    arms.peek().is_some()
+        && arms.all(|d| {
+            let body = d.body.trim();
+            body.ends_with(';')
+                || body.ends_with('}')
+                || (body != text && expansion_ends_an_item(body, defines, depth + 1))
+        })
 }
 
 /// Whether a keep-alive attribute applies to a prototype: written out, or
@@ -873,7 +879,7 @@ fn prototype_is_retained(
     }
     identifiers(&text)
         .into_iter()
-        .any(|word| KEEP_WORDS.contains(&word) || macro_keeps(word, defines, tables, 0))
+        .any(|word| KEEP_WORDS.contains(&word) || macro_keeps(word, defines, tables))
 }
 
 /// Whether the macro `name` expands to a keep-alive attribute, by the bodies
@@ -881,28 +887,49 @@ fn prototype_is_retained(
 /// no body there (its header unread) is judged by its name; one with a body
 /// by that body only, so `#define PG_USED_FOR_ASSERTS_ONLY
 /// __attribute__((unused))` keeps nothing.
-fn macro_keeps(name: &str, defines: &[&Define], tables: &ProjectTables, depth: usize) -> bool {
-    let bodies: Vec<&&Define> = defines.iter().filter(|d| d.name == name).collect();
-    if bodies.is_empty() {
-        if tables.macro_names.contains(name) {
-            // Defined in another file: read its spelling as below.
-        } else if !name.chars().any(|c| c.is_ascii_uppercase()) && !name.starts_with("__") {
-            // An ordinary type or object name, not a macro.
-            return false;
+fn macro_keeps(name: &str, defines: &[&Define], tables: &ProjectTables) -> bool {
+    // Breadth first, each name once, four macros deep: a body may name the
+    // macro itself or a macro that names it back.
+    let mut seen: HashSet<&str> = HashSet::from([name]);
+    let mut level: Vec<&str> = vec![name];
+    for depth in 0..=4 {
+        let mut next = Vec::new();
+        for &word in &level {
+            let bodies: Vec<&&Define> = defines.iter().filter(|d| d.name == word).collect();
+            if bodies.is_empty() {
+                if spelling_keeps(word, tables) {
+                    return true;
+                }
+                continue;
+            }
+            for d in bodies {
+                if KEEP_WORDS.iter().any(|w| text_occurrences(&d.body, w) > 0) {
+                    return true;
+                }
+                if depth < 4 {
+                    next.extend(identifiers(&d.body).into_iter().filter(|i| seen.insert(i)));
+                }
+            }
         }
-        let lower = name.to_ascii_lowercase();
-        return (lower.contains("used") && !lower.contains("unused"))
-            || lower.contains("constructor")
-            || lower.contains("destructor")
-            || lower.contains("retain");
+        level = next;
     }
-    bodies.iter().any(|d| {
-        KEEP_WORDS.iter().any(|w| text_occurrences(&d.body, w) > 0)
-            || (depth < 4
-                && identifiers(&d.body)
-                    .into_iter()
-                    .any(|i| i != name && macro_keeps(i, defines, tables, depth + 1)))
-    })
+    false
+}
+
+/// Whether the name of a macro no read file defines spells a keep-alive
+/// attribute (`ATTRIBUTE_USED`, `DECLARE_CONSTRUCTOR_FOR`).
+fn spelling_keeps(name: &str, tables: &ProjectTables) -> bool {
+    if tables.macro_names.contains(name) {
+        // Defined in another file: read its spelling as below.
+    } else if !name.chars().any(|c| c.is_ascii_uppercase()) && !name.starts_with("__") {
+        // An ordinary type or object name, not a macro.
+        return false;
+    }
+    let lower = name.to_ascii_lowercase();
+    (lower.contains("used") && !lower.contains("unused"))
+        || lower.contains("constructor")
+        || lower.contains("destructor")
+        || lower.contains("retain")
 }
 
 /// One `#define` of a file.
@@ -1284,6 +1311,8 @@ fn pasting_arguments<'t>(
     };
     let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     let mut out = Vec::new();
+    // Each fragment once, however many invocations hand it on.
+    let mut seen: HashSet<&str> = HashSet::new();
     let mut i = 0;
     while i < bytes.len() {
         if !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') || (i > 0 && ident(bytes[i - 1])) {
@@ -1308,9 +1337,13 @@ fn pasting_arguments<'t>(
         if j < bytes.len() && bytes[j] == b'(' {
             let own = directive.map_or(&[][..], |d| d.3.as_slice());
             for arg in bare_arguments(text, j) {
-                if !own.contains(&arg) {
+                if !own.contains(&arg) && seen.insert(arg) {
                     out.push(arg);
-                    out.extend(object_expansion(arg, defines, 0));
+                    for word in object_expansion(arg, defines) {
+                        if seen.insert(word) {
+                            out.push(word);
+                        }
+                    }
                 }
             }
         }
@@ -1319,20 +1352,32 @@ fn pasting_arguments<'t>(
 }
 
 /// The identifiers an object-like macro `name` expands to, followed through
-/// a body that is itself one such name.
-fn object_expansion<'d>(name: &str, defines: &[&'d Define], depth: usize) -> Vec<&'d str> {
+/// the object-like macros those name, each once and four macros deep:
+/// macros that name each other expand to the names they reach, not to a
+/// copy per path.
+fn object_expansion<'d>(name: &str, defines: &[&'d Define]) -> Vec<&'d str> {
     let mut out = Vec::new();
-    if depth > 4 {
-        return out;
-    }
-    for d in defines
-        .iter()
-        .filter(|d| d.name == name && !d.function_like)
-    {
-        for word in identifiers(&d.body) {
-            out.push(word);
-            out.extend(object_expansion(word, defines, depth + 1));
+    let mut seen: HashSet<&str> = HashSet::from([name]);
+    let mut level: Vec<&str> = vec![name];
+    for _ in 0..=4 {
+        let mut next = Vec::new();
+        for &word in &level {
+            for d in defines
+                .iter()
+                .filter(|d| d.name == word && !d.function_like)
+            {
+                for found in identifiers(&d.body) {
+                    if seen.insert(found) {
+                        out.push(found);
+                        next.push(found);
+                    }
+                }
+            }
         }
+        if next.is_empty() {
+            break;
+        }
+        level = next;
     }
     out
 }

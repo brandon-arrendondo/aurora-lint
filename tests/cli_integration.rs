@@ -11901,6 +11901,21 @@ fn msc12_a_call_pasted_by_a_header_macro_is_a_call() {
     assert!(found.is_empty(), "{found:?}");
 }
 
+/// Object-like macros that name one another are expanded to the names they
+/// reach, each once: the scan finishes quickly, in bounded memory, and still
+/// reports the static nothing calls.
+#[test]
+fn msc12_a_web_of_object_macros_is_expanded_once_per_name() {
+    let started = std::time::Instant::now();
+    let found = msc12_uncalled(&[fixtures()
+        .join("msc12_uncalled_object_macro_web")
+        .to_str()
+        .unwrap()]);
+    assert!(started.elapsed().as_secs() < 30, "{:?}", started.elapsed());
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].1.contains("'dead_web'"), "{found:?}");
+}
+
 /// A registration macro a header defines expands to a whole constructor, so
 /// it is an item of its own: its constructor attribute keeps the
 /// constructor, not the static after it.
