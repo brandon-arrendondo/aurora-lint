@@ -55,6 +55,8 @@ pub mod library_effects;
 /// recognized structurally so an overflow rule stops reading a loop-bounded
 /// subtraction as an unguarded one.
 pub mod loop_consumption;
+/// A `for` loop counter that only its header writes.
+pub mod loop_counter;
 /// When a mutex is destroyed while it may still be in use: held by the
 /// destroying function, used after the destroy, or locked by a thread that
 /// may still run (the analysis CON31-C and POS48-C share).

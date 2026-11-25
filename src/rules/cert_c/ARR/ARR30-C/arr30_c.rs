@@ -55,7 +55,7 @@ use crate::analyze::macro_expand::{
     self as macro_expand, collect_function_macro_arms, collect_function_macros, FunctionMacro,
     MacroArm, ProjectMacroArm,
 };
-use crate::analyze::name_writes::{NameScope, ProjectNameTables};
+use crate::analyze::name_writes::{NameScope, ProjectNameTables, Scan};
 use crate::analyze::noreturn;
 use crate::analyze::preproc_arms;
 use crate::analyze::side_effects;
@@ -72,12 +72,13 @@ use tree_sitter::Node;
 
 // Import shared utility functions
 use crate::utility::cert_c::ast_utils::{
-    declaration_declarator_for, declares_static, file_scope_declaration_where,
-    file_scope_declarations, find_containing_for_loop, find_containing_function,
-    find_containing_if_statement, find_enclosing_declaration_for_identifier,
-    find_enclosing_declaration_where, find_identifier_in_declarator, find_parameter_declaration,
-    get_identifier_from_declarator, get_node_text, is_address_of_expression, is_declaration_scope,
-    resolve_identifier_declarator, static_macro_names_in_scope, tree_root,
+    declaration_declarator_for, declaration_has_storage_class, declares_static,
+    file_scope_declaration_where, file_scope_declarations, find_containing_for_loop,
+    find_containing_function, find_containing_if_statement,
+    find_enclosing_declaration_for_identifier, find_enclosing_declaration_where,
+    find_identifier_in_declarator, find_parameter_declaration, get_identifier_from_declarator,
+    get_node_text, is_address_of_expression, is_declaration_scope, resolve_identifier_binding,
+    resolve_identifier_declarator, static_macro_names_in_scope, tree_root, IdentifierBinding,
 };
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::data_model::{Fact, Rank};
@@ -386,6 +387,11 @@ pub struct Arr30C {
     /// when no prescan ran (a single-file scan, a unit test), which is why both
     /// summaries are kept rather than the file-local one being retired.
     project_validated_params: RefCell<HashMap<String, HashSet<usize>>>,
+    /// The project's functions whose summary says they return a fresh
+    /// allocation (`FunctionSummary::returns_allocation`): a wrapper such as
+    /// `zero_alloc(&rc, bytes)` counts as an allocator where the size of
+    /// what it returns is read. Empty when no prescan ran.
+    project_allocating: RefCell<HashSet<String>>,
     /// File-scope-only buffer bindings (globals, struct/union member
     /// arrays, typedef-array members) — see `analyze_global_scope_buffers`.
     /// Computed once per file at the root `check()` call and used as the
@@ -561,6 +567,12 @@ impl CertRule for Arr30C {
             .filter(|(_, s)| !s.callsite_param_validated.is_empty())
             .map(|(name, s)| (name.clone(), s.callsite_param_validated.clone()))
             .collect();
+        *self.project_allocating.borrow_mut() = context
+            .function_summaries
+            .iter()
+            .filter(|(_, s)| s.returns_allocation)
+            .map(|(name, _)| name.clone())
+            .collect();
     }
 
     fn needs_vra(&self) -> bool {
@@ -697,6 +709,7 @@ impl Arr30C {
             helper_overread_summary: RefCell::new(None),
             caller_validated_params: RefCell::new(None),
             project_validated_params: RefCell::new(HashMap::new()),
+            project_allocating: RefCell::new(HashSet::new()),
             global_scope_buffers: RefCell::new(HashMap::new()),
             null_sentinel_macros: RefCell::new(HashSet::new()),
             cached_typedefs: RefCell::new(HashMap::new()),
@@ -5599,6 +5612,663 @@ impl Arr30C {
             .any(|operand| below(&strip_parens_and_casts(operand)))
     }
 
+    /// Whether the write to `var` at byte `at` of `func` copies the counter
+    /// of a `for` loop it runs in, `k = i;`, where the loop's condition
+    /// bounds the counter by a count the buffer the access `node` subscripts
+    /// holds at least as many elements as:
+    ///
+    /// ```c
+    /// for (i = 0; i < n; i++)
+    ///     if (a[i] < a[k]) k = i;
+    /// a[k] = 0;
+    /// ```
+    ///
+    /// The counter is proved by `loop_counter::counting_loop` (nothing but
+    /// the loop's header writes it, from a constant of zero or more), and is
+    /// copied as it is: a cast on the copy may truncate it. The count is a
+    /// constant the counter's type reaches and the buffer, a fixed array
+    /// wherever it is read, holds; or an object that stays put
+    /// ([`Self::count_stays_put`]), of the counter's signedness and no wider,
+    /// that the buffer is sized by ([`Self::buffer_holds_count`]).
+    #[allow(clippy::too_many_arguments)]
+    fn write_copies_bounded_counter(
+        &self,
+        func: &Node,
+        node: &Node,
+        at: usize,
+        var: &str,
+        buffer_info: &BufferInfo,
+        effective_size: usize,
+        macro_constants: &HashMap<String, i64>,
+        source: &str,
+    ) -> bool {
+        use crate::utility::cert_c::loop_counter;
+        let Some(write) = func
+            .descendant_for_byte_range(at, at + var.len())
+            .and_then(|target| target.parent())
+        else {
+            return false;
+        };
+        let value = match write.kind() {
+            "init_declarator" => write.child_by_field_name("value"),
+            "assignment_expression"
+                if write
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "=") =>
+            {
+                write.child_by_field_name("right")
+            }
+            _ => None,
+        };
+        let Some(copied) = value
+            .map(crate::analyze::name_writes::strip_parens)
+            .filter(|v| v.kind() == "identifier")
+        else {
+            return false;
+        };
+        let counter = get_node_text(&copied, source);
+        let Some(counter_decl) = loop_counter::local_declaration_id(&copied, counter, source)
+        else {
+            return false;
+        };
+        let loops: Vec<Node> = std::iter::successors(write.parent(), |n| n.parent())
+            .take_while(|n| n.kind() != "function_definition")
+            .filter(|n| {
+                n.kind() == "for_statement"
+                    && n.child_by_field_name("body")
+                        .is_some_and(|b| spans(&b, &write))
+            })
+            .collect();
+        if loops.is_empty() {
+            return false;
+        }
+        let mut root = *node;
+        while let Some(parent) = root.parent() {
+            root = parent;
+        }
+        let tables = self.project_names.borrow();
+        let scope = NameScope::of_file(&root, source, tables.as_ref());
+        let bound_int = |n: &Node| const_eval::try_evaluate_expr(n, source, macro_constants);
+        let elem_bytes = Self::access_element_bytes(node, &buffer_info.name, source);
+        for loop_node in loops {
+            let Some(proof) =
+                loop_counter::counting_loop(&loop_node, counter, func, &scope, source, &bound_int)
+            else {
+                continue;
+            };
+            if proof.decl.id() != counter_decl || proof.low < 0 {
+                return false;
+            }
+            if let Some(limit) = self.guard_bound_value(
+                &proof.limit,
+                source,
+                &buffer_info.name,
+                effective_size,
+                elem_bytes,
+                macro_constants,
+            ) {
+                let high = if proof.inclusive { limit } else { limit - 1 };
+                let held = crate::analyze::value_range::declaration_guaranteed_range(
+                    &proof.decl,
+                    source,
+                    macro_constants,
+                )
+                .is_some_and(|range| {
+                    proof.low >= range.min
+                        && high
+                            .checked_add(proof.step)
+                            .is_some_and(|top| top <= range.max)
+                });
+                return held
+                    && high < effective_size as i64
+                    && self.buffer_is_the_array(func, node, buffer_info, source);
+            }
+            return !proof.inclusive
+                && Self::count_stays_put(func, &proof.limit, &scope, source)
+                && self.counter_reaches_count(&copied, &proof.limit, source)
+                && self.buffer_holds_count(
+                    func,
+                    node,
+                    &proof.limit,
+                    buffer_info,
+                    effective_size,
+                    elem_bytes,
+                    macro_constants,
+                    source,
+                );
+        }
+        false
+    }
+
+    /// Whether the counter `counter` reaches the count `count` without
+    /// wrapping and compares with it as it is: both are integers of one
+    /// signedness and the counter's type is no narrower. An unsigned counter
+    /// against a signed count meets `-1` as `UINT_MAX`.
+    fn counter_reaches_count(&self, counter: &Node, count: &Node, source: &str) -> bool {
+        use crate::utility::cert_c::expr_type;
+        let types = self.visible_types.borrow();
+        let model = self.data_model.get();
+        let env = expr_type::TypeEnv::visible(&types, model);
+        let (Some(counter_type), Some(count_type)) = (
+            expr_type::declared_type(counter, source, &env),
+            expr_type::expr_type(count, source, &env),
+        ) else {
+            return false;
+        };
+        let (Some(counter_unsigned), Some(count_unsigned)) =
+            (counter_type.is_unsigned(), count_type.is_unsigned())
+        else {
+            return false;
+        };
+        counter_unsigned == count_unsigned
+            && Self::integer_width(&counter_type, model)
+                .zip(Self::integer_width(&count_type, model))
+                .is_some_and(|(c, n)| !c.may_be_narrower_than(n))
+    }
+
+    /// Whether the count `count` holds one value through the function: it
+    /// is a parameter or a non-`static` automatic local, or a member reached
+    /// from one (`p->n`, `*pn`), that nothing in the function writes, takes
+    /// the address of, or copies into another name, and no macro names
+    /// (`scope`'s [`Scan::Writes`] over the function). Reached through a
+    /// pointer, any call could write it through an alias, so the function
+    /// may call nothing but an allocator, and the pointer may reach no other
+    /// name by any route ([`Self::pointer_root_escapes`]).
+    fn count_stays_put(func: &Node, count: &Node, scope: &NameScope, source: &str) -> bool {
+        use crate::utility::cert_c::result_checks::same_lvalue;
+        let count = guard_dominance::strip_arg_wrappers(count);
+        let mut root = count;
+        let mut through_pointer = false;
+        loop {
+            let base = match root.kind() {
+                "field_expression" => {
+                    through_pointer |= root
+                        .child_by_field_name("operator")
+                        .is_some_and(|o| o.kind() == "->");
+                    root.child_by_field_name("argument")
+                }
+                "pointer_expression" => {
+                    through_pointer = true;
+                    root.child_by_field_name("argument")
+                }
+                "subscript_expression" => {
+                    through_pointer = true;
+                    root.child_by_field_name("argument")
+                }
+                _ => break,
+            };
+            match base {
+                Some(b) => root = guard_dominance::strip_arg_wrappers(&b),
+                None => return false,
+            }
+        }
+        if root.kind() != "identifier" {
+            return false;
+        }
+        let name = get_node_text(&root, source);
+        let held_here = match resolve_identifier_binding(&root, name, source) {
+            Some(IdentifierBinding::Parameter(_)) => true,
+            Some(IdentifierBinding::Local(decl)) => {
+                !declaration_has_storage_class(&decl, "static", source)
+                    && !declaration_has_storage_class(&decl, "extern", source)
+            }
+            _ => false,
+        };
+        let is_root = |n: &Node| n.kind() == "identifier" && same_lvalue(n, &root, source);
+        if !held_here
+            || Self::object_written_in(func, &count, source)
+            || Self::object_written_in(func, &root, source)
+            || func.child_by_field_name("body").is_none_or(|body| {
+                scope.may_write(
+                    &body,
+                    source,
+                    name,
+                    &is_root,
+                    Scan::Writes {
+                        entered_from_outside: false,
+                    },
+                )
+            })
+        {
+            return false;
+        }
+        let copied = query::find_descendants(*func, |n| {
+            let value = match n.kind() {
+                "init_declarator" => n.child_by_field_name("value"),
+                "assignment_expression" => n.child_by_field_name("right"),
+                _ => None,
+            };
+            value.is_some_and(|v| same_lvalue(&strip_parens_and_casts(v), &root, source))
+        });
+        if !copied.is_empty() || (through_pointer && Self::pointer_root_escapes(func, &is_root)) {
+            return false;
+        }
+        !through_pointer
+            || query::find_descendants_of_kind(*func, "call_expression")
+                .iter()
+                .all(|call| {
+                    call.child_by_field_name("function")
+                        .filter(|f| f.kind() == "identifier")
+                        .is_some_and(|f| call_roles::is_allocator_call(get_node_text(&f, source)))
+                })
+    }
+
+    /// Whether the pointer an occurrence of which `is_root` recognizes
+    /// reaches another name by a route a plain copy does not cover: an
+    /// address derived from it (`p + 0`, `&p[0]`, `&p->n`, `&*p`, through
+    /// parentheses and casts) that is stored, combined, or handed on.
+    /// Reading through it (`p->n`, `*p` as a value) is the only use left.
+    fn pointer_root_escapes(func: &Node, is_root: &dyn Fn(&Node) -> bool) -> bool {
+        fn climb(mut e: Node<'_>) -> Node<'_> {
+            while let Some(p) = e.parent() {
+                if matches!(p.kind(), "parenthesized_expression" | "cast_expression") {
+                    e = p;
+                } else {
+                    break;
+                }
+            }
+            e
+        }
+        !query::find_descendants(*func, |occ| {
+            if !is_root(&occ) {
+                return false;
+            }
+            // The pointer itself, then each object read through it.
+            let mut e = climb(occ);
+            loop {
+                let Some(p) = e.parent() else { return false };
+                let is_base = p
+                    .child_by_field_name("argument")
+                    .is_some_and(|a| a.id() == e.id());
+                let pointer = e.id() == climb(occ).id();
+                match p.kind() {
+                    "binary_expression"
+                        if pointer
+                            && p.child_by_field_name("operator")
+                                .is_some_and(|o| matches!(o.kind(), "+" | "-")) =>
+                    {
+                        return true;
+                    }
+                    "conditional_expression"
+                        if pointer
+                            && p.child_by_field_name("condition")
+                                .is_none_or(|c| c.id() != e.id()) =>
+                    {
+                        return true;
+                    }
+                    "comma_expression" if pointer => return true,
+                    "field_expression" | "subscript_expression" if is_base => e = climb(p),
+                    "pointer_expression" if is_base => {
+                        if p.child(0).is_some_and(|op| op.kind() == "&") {
+                            return true;
+                        }
+                        e = climb(p);
+                    }
+                    _ => return false,
+                }
+            }
+        })
+        .is_empty()
+    }
+
+    /// Whether the access `node` reads the fixed array `buffer_info` names
+    /// wherever it runs: it subscripts that array, or a pointer every write
+    /// of which that may reach the access stores the array.
+    fn buffer_is_the_array(
+        &self,
+        func: &Node,
+        node: &Node,
+        buffer_info: &BufferInfo,
+        source: &str,
+    ) -> bool {
+        let Some(array) = node.child(0).filter(|a| a.kind() == "identifier") else {
+            return false;
+        };
+        if Self::names_the_array(&array, buffer_info, source) {
+            return true;
+        }
+        let name = get_node_text(&array, source);
+        self.reaching_writes(func, &array, name, source)
+            .is_some_and(|reached| {
+                !reached.writes.is_empty()
+                    && reached.writes.iter().all(|&at| {
+                        Self::pointer_store(func, at, name)
+                            .is_some_and(|(_, v)| Self::names_the_array(&v, buffer_info, source))
+                    })
+            })
+    }
+
+    /// Whether `value` is an occurrence of the fixed array `buffer_info`
+    /// names, resolved by its declaration: one on the line the buffer was
+    /// declared on.
+    fn names_the_array(value: &Node, buffer_info: &BufferInfo, source: &str) -> bool {
+        value.kind() == "identifier"
+            && get_node_text(value, source) == buffer_info.name
+            && matches!(buffer_info.size, BufferSize::Static(_))
+            && resolve_identifier_declarator(value, &buffer_info.name, source).is_some_and(
+                |(decl, _)| decl.start_position().row + 1 == buffer_info.allocation_line,
+            )
+    }
+
+    /// The write that stores to the pointer `name` at byte `at` of `func`,
+    /// and the value it stores, parentheses and casts dropped: an
+    /// initializer (`T *a = v`, under its pointer declarator) or a plain
+    /// assignment.
+    fn pointer_store<'t>(func: &Node<'t>, at: usize, name: &str) -> Option<(Node<'t>, Node<'t>)> {
+        let mut write = func
+            .descendant_for_byte_range(at, at + name.len())
+            .and_then(|t| t.parent())?;
+        while write.kind() == "pointer_declarator" {
+            write = write.parent()?;
+        }
+        let value = match write.kind() {
+            "init_declarator" => write.child_by_field_name("value"),
+            "assignment_expression"
+                if write
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "=") =>
+            {
+                write.child_by_field_name("right")
+            }
+            _ => None,
+        }?;
+        Some((write, strip_parens_and_casts(value)))
+    }
+
+    /// Whether `n` writes the object `object` denotes, or the variable at
+    /// its root (`p` of `p->n`): an assignment to it, `++`/`--` on it, or
+    /// its address taken.
+    fn writes_object(n: &Node, object: &Node, source: &str) -> bool {
+        use crate::utility::cert_c::result_checks::same_lvalue;
+        let mut root = guard_dominance::strip_arg_wrappers(object);
+        while matches!(
+            root.kind(),
+            "field_expression" | "subscript_expression" | "pointer_expression"
+        ) {
+            match root.child_by_field_name("argument") {
+                Some(base) => root = guard_dominance::strip_arg_wrappers(&base),
+                None => break,
+            }
+        }
+        let hits = |target: Option<Node>| {
+            target.is_some_and(|t| {
+                same_lvalue(&t, object, source)
+                    || (root.id() != object.id() && same_lvalue(&t, &root, source))
+            })
+        };
+        match n.kind() {
+            "assignment_expression" => hits(n.child_by_field_name("left")),
+            "update_expression" => hits(n.child_by_field_name("argument")),
+            "pointer_expression" => {
+                n.child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "&")
+                    && hits(n.child_by_field_name("argument"))
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether anything in `func` writes `object` ([`Self::writes_object`]).
+    fn object_written_in(func: &Node, object: &Node, source: &str) -> bool {
+        !query::find_descendants(*func, |n| Self::writes_object(&n, object, source)).is_empty()
+    }
+
+    /// Whether the buffer the access `node` subscripts holds at least `count`
+    /// elements wherever it is read: every write of the pointer that may
+    /// reach the access stores an allocation of `count` elements of the
+    /// pointer's own type ([`Self::allocates_count`]), or the fixed array
+    /// `buffer_info` names where an `if (count > S)` that runs before the
+    /// access, S at most the array's size, replaces it with such an
+    /// allocation, so the array is kept only when the count fits:
+    ///
+    /// ```c
+    /// T aStatic[4], *a = aStatic;
+    /// if (n > ArraySize(aStatic)) a = malloc(sizeof(T) * n);
+    /// ```
+    #[allow(clippy::too_many_arguments)]
+    fn buffer_holds_count(
+        &self,
+        func: &Node,
+        node: &Node,
+        count: &Node,
+        buffer_info: &BufferInfo,
+        effective_size: usize,
+        elem_bytes: Option<usize>,
+        macro_constants: &HashMap<String, i64>,
+        source: &str,
+    ) -> bool {
+        use crate::utility::cert_c::result_checks::same_lvalue;
+        let Some(array) = node.child(0).filter(|a| a.kind() == "identifier") else {
+            return false;
+        };
+        if Self::names_the_array(&array, buffer_info, source) {
+            return false;
+        }
+        let name = get_node_text(&array, source);
+        let Some(reached) = self.reaching_writes(func, &array, name, source) else {
+            return false;
+        };
+        let allocates_count =
+            |value: &Node| self.allocates_count(func, node, &array, value, count, source);
+        let eval = |n: &Node| {
+            self.guard_bound_value(
+                n,
+                source,
+                &buffer_info.name,
+                effective_size,
+                elem_bytes,
+                macro_constants,
+            )
+        };
+        let is_count = |n: &Node| same_lvalue(n, count, source);
+        !reached.writes.is_empty()
+            && reached.writes.iter().all(|&at| {
+                let Some((write, value)) = Self::pointer_store(func, at, name) else {
+                    return false;
+                };
+                if allocates_count(&value) {
+                    return true;
+                }
+                if !Self::names_the_array(&value, buffer_info, source) {
+                    return false;
+                }
+                // The fixed array: an `if` after this store, in a block
+                // the access runs in, keeps it only where the count fits
+                // and otherwise stores an allocation of the count.
+                query::find_descendants_of_kind(*func, "if_statement")
+                    .into_iter()
+                    .any(|guard| {
+                        guard.start_byte() >= write.end_byte()
+                            && guard.end_byte() <= node.start_byte()
+                            && guard.parent().is_some_and(|block| {
+                                block.kind() == "compound_statement" && spans(&block, node)
+                            })
+                            && guard
+                                .child_by_field_name("alternative")
+                                .is_none_or(|alt| !Self::object_written_in(&alt, &array, source))
+                            && guard
+                                .child_by_field_name("condition")
+                                .and_then(|cond| {
+                                    guard_dominance::condition_upper_bound(
+                                        &cond, &is_count, false, source, &eval,
+                                    )
+                                })
+                                .is_some_and(|b| b >= 0 && b as usize <= effective_size + 1)
+                            && guard
+                                .child_by_field_name("consequence")
+                                .is_some_and(|then| {
+                                    Self::top_level_statements(then).iter().any(|stmt| {
+                                        stmt.kind() == "expression_statement"
+                                            && stmt.named_child(0).is_some_and(|e| {
+                                                e.kind() == "assignment_expression"
+                                                    && e.child_by_field_name("left").is_some_and(
+                                                        |l| same_lvalue(&l, &array, source),
+                                                    )
+                                                    && e.child_by_field_name("right").is_some_and(
+                                                        |r| {
+                                                            allocates_count(
+                                                                &strip_parens_and_casts(r),
+                                                            )
+                                                        },
+                                                    )
+                                            })
+                                    })
+                                })
+                    })
+            })
+    }
+
+    /// The statements of `stmt` that run whenever it does: its own children
+    /// for a block, else `stmt` itself.
+    fn top_level_statements<'t>(stmt: Node<'t>) -> Vec<Node<'t>> {
+        if stmt.kind() == "compound_statement" {
+            stmt.named_children(&mut stmt.walk()).collect()
+        } else {
+            vec![stmt]
+        }
+    }
+
+    /// Whether `value` is a call to an allocator that allocates `count`
+    /// elements of the type the pointer `pointer` (subscripted by `node`)
+    /// points to. The callee is a standard or declared allocator
+    /// (`call_roles::is_allocator_call`) or a project function whose summary
+    /// returns an allocation; the size is `sizeof(T) * count` bytes, spelled
+    /// in the call or in the initializer of a local nothing else writes, or
+    /// `calloc`'s `(count, sizeof(T))`. `T` is the pointer's element type:
+    /// `sizeof` of that type's spelling (a typedef name the parse reads as
+    /// a parenthesized name and that names no object), of `*pointer` or
+    /// `pointer[0]`, or of a type of the same width.
+    fn allocates_count(
+        &self,
+        func: &Node,
+        node: &Node,
+        pointer: &Node,
+        value: &Node,
+        count: &Node,
+        source: &str,
+    ) -> bool {
+        use crate::utility::cert_c::result_checks::same_lvalue;
+        if value.kind() != "call_expression" {
+            return false;
+        }
+        let Some(callee) = value
+            .child_by_field_name("function")
+            .filter(|f| f.kind() == "identifier")
+            .map(|f| get_node_text(&f, source))
+        else {
+            return false;
+        };
+        if !call_roles::is_allocator_call(callee)
+            && !self.project_allocating.borrow().contains(callee)
+        {
+            return false;
+        }
+        let pointer_name = get_node_text(pointer, source);
+        let element_type = resolve_identifier_declarator(pointer, pointer_name, source)
+            .filter(|(_, declarator)| {
+                Self::declarator_levels(*declarator).is_some_and(|l| l == ["pointer"])
+            })
+            .and_then(|(decl, _)| decl.child_by_field_name("type"))
+            .map(|t| {
+                get_node_text(&t, source)
+                    .split_whitespace()
+                    .collect::<String>()
+            });
+        let element_bytes = Self::access_element_bytes(node, pointer_name, source);
+        let of_element = |n: &Node| {
+            let n = guard_dominance::strip_arg_wrappers(n);
+            if n.kind() != "sizeof_expression" {
+                return false;
+            }
+            if let Some(ty) = n.child_by_field_name("type") {
+                let spelled: String = get_node_text(&ty, source).split_whitespace().collect();
+                return element_type.as_deref() == Some(spelled.as_str())
+                    || element_bytes.is_some_and(|bytes| {
+                        buffer_size::sizeof_type_bytes(&spelled) == Some(bytes)
+                    });
+            }
+            n.child_by_field_name("value").is_some_and(|operand| {
+                let operand = guard_dominance::strip_arg_wrappers(&operand);
+                match operand.kind() {
+                    // `sizeof(T)` of a typedef name the parse could not
+                    // tell from a variable.
+                    "identifier" => {
+                        element_type.as_deref() == Some(get_node_text(&operand, source))
+                            && resolve_identifier_declarator(
+                                &operand,
+                                get_node_text(&operand, source),
+                                source,
+                            )
+                            .is_none()
+                    }
+                    "pointer_expression" => operand
+                        .child_by_field_name("argument")
+                        .is_some_and(|a| same_lvalue(&a, pointer, source)),
+                    "subscript_expression" => {
+                        operand
+                            .child_by_field_name("argument")
+                            .is_some_and(|a| same_lvalue(&a, pointer, source))
+                            && operand.child_by_field_name("index").is_some_and(|i| {
+                                const_eval::try_evaluate_expr(&i, source, &HashMap::new())
+                                    == Some(0)
+                            })
+                    }
+                    _ => false,
+                }
+            })
+        };
+        let is_count =
+            |n: &Node| same_lvalue(&guard_dominance::strip_arg_wrappers(n), count, source);
+        let product = |n: &Node| {
+            let n = guard_dominance::strip_arg_wrappers(n);
+            n.kind() == "binary_expression"
+                && n.child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "*")
+                && match (
+                    n.child_by_field_name("left"),
+                    n.child_by_field_name("right"),
+                ) {
+                    (Some(l), Some(r)) => {
+                        (of_element(&l) && is_count(&r)) || (is_count(&l) && of_element(&r))
+                    }
+                    _ => false,
+                }
+        };
+        let args: Vec<Node> = value
+            .child_by_field_name("arguments")
+            .map(|a| {
+                a.named_children(&mut a.walk())
+                    .filter(|n| n.kind() != "comment")
+                    .collect()
+            })
+            .unwrap_or_default();
+        if callee == "calloc" {
+            return args.len() == 2 && is_count(&args[0]) && of_element(&args[1]);
+        }
+        args.iter().any(|arg| {
+            if product(arg) {
+                return true;
+            }
+            let arg = guard_dominance::strip_arg_wrappers(arg);
+            if arg.kind() != "identifier" {
+                return false;
+            }
+            let name = get_node_text(&arg, source);
+            resolve_identifier_declarator(&arg, name, source).is_some_and(|(_, declarator)| {
+                let init = if declarator.kind() == "init_declarator" {
+                    Some(declarator)
+                } else {
+                    declarator
+                        .parent()
+                        .filter(|p| p.kind() == "init_declarator")
+                };
+                init.and_then(|d| d.child_by_field_name("value"))
+                    .is_some_and(|v| product(&v))
+                    && !Self::object_written_in(func, &arg, source)
+            })
+        })
+    }
+
     /// Whether the pointer an access subscripts may hold anything but the
     /// allocation its size comes from: its address is taken anywhere in the
     /// function (`skip(&p)`, `char **pp = &p`), or a write that reaches the
@@ -5857,6 +6527,16 @@ impl Arr30C {
                 && !Self::address_taken_by_name(func, var, source)
                 && reached.writes.iter().all(|&at| {
                     Self::write_stores_below(func, at, var, effective_size, macro_constants, source)
+                        || self.write_copies_bounded_counter(
+                            func,
+                            node,
+                            at,
+                            var,
+                            buffer_info,
+                            effective_size,
+                            macro_constants,
+                            source,
+                        )
                 })
         }) {
             return false;
@@ -6654,10 +7334,23 @@ impl Arr30C {
     }
 
     /// The `X` of an expansion `sizeof(X) / sizeof((X)[0])`, white space
-    /// and the parentheses around each part dropped; `None` for any other
-    /// shape.
+    /// and the parentheses around each part dropped, and a cast of the
+    /// quotient to a standard integer type (`(int)(sizeof(X)/sizeof(X[0]))`,
+    /// sqlite's `ArraySize`) looked through, as no count of array elements
+    /// is too large for one; `None` for any other shape.
     fn element_count_operand(expansion: &str) -> Option<String> {
-        let text = Self::bare_text(expansion);
+        let mut text = Self::bare_text(expansion);
+        const COUNT_CASTS: &[&str] = &[
+            "(int)",
+            "(unsigned)",
+            "(unsignedint)",
+            "(long)",
+            "(unsignedlong)",
+            "(size_t)",
+        ];
+        if let Some(rest) = COUNT_CASTS.iter().find_map(|c| text.strip_prefix(c)) {
+            text = Self::bare_text(rest);
+        }
         let mut depth = 0i32;
         let mut slash = None;
         for (i, c) in text.char_indices() {

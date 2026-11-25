@@ -16,6 +16,7 @@ use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::declarator_utils;
 use crate::utility::cert_c::expr_type;
 use crate::utility::cert_c::guard_dominance;
+use crate::utility::cert_c::loop_counter::{self, local_declaration_id};
 use crate::utility::cert_c::node_children::NodeChildren;
 
 use anyhow::Result;
@@ -4684,134 +4685,31 @@ impl<'t> IntCallWalk<'_, 't> {
     /// never runs proves nothing.
     fn prove_loop_counter(&self, for_node: &Node<'t>, name: &str) -> Option<ProvedCounter> {
         let source = self.source;
-        let (decl, low) = self.counter_initializer(for_node, name)?;
-        if ast_utils::declaration_has_storage_class(&decl, "static", source) {
+        let counter = loop_counter::counting_loop(
+            for_node,
+            name,
+            &self.function,
+            self.scope,
+            source,
+            &|n| self.bound_int(n),
+        )?;
+        let bound = self.bound_int(&counter.limit)?;
+        let high = if counter.inclusive {
+            bound
+        } else {
+            bound.checked_sub(1)?
+        };
+        if counter.low > high {
             return None;
         }
-        let decl_id = decl.id();
-        let names_counter = |n: &Node| {
-            n.kind() == "identifier"
-                && get_node_text(n, source) == name
-                && local_declaration_id(n, name, source) == Some(decl_id)
-        };
-
-        let condition = name_writes::strip_parens(for_node.child_by_field_name("condition")?);
-        if condition.kind() != "binary_expression" {
-            return None;
-        }
-        let (left, right) = (
-            condition.child_by_field_name("left")?,
-            condition.child_by_field_name("right")?,
-        );
-        let op = condition.child_by_field_name("operator")?;
-        let high = match get_node_text(&op, source) {
-            "<" if names_counter(&left) => self.bound_int(&right)?.checked_sub(1)?,
-            "<=" if names_counter(&left) => self.bound_int(&right)?,
-            ">" if names_counter(&right) => self.bound_int(&left)?.checked_sub(1)?,
-            ">=" if names_counter(&right) => self.bound_int(&left)?,
-            _ => return None,
-        };
-        if low > high {
-            return None;
-        }
-
-        let update = name_writes::strip_parens(for_node.child_by_field_name("update")?);
-        let operator = update
-            .child_by_field_name("operator")
-            .map(|o| get_node_text(&o, source));
-        let step = match update.kind() {
-            "update_expression"
-                if operator == Some("++")
-                    && update
-                        .child_by_field_name("argument")
-                        .is_some_and(|a| names_counter(&a)) =>
-            {
-                1
-            }
-            "assignment_expression"
-                if operator == Some("+=")
-                    && update
-                        .child_by_field_name("left")
-                        .is_some_and(|l| names_counter(&l)) =>
-            {
-                self.bound_int(&update.child_by_field_name("right")?)
-                    .filter(|&c| c > 0)?
-            }
-            _ => return None,
-        };
         // The counter's type must hold every value it takes, the one that ends
         // the loop included: `char i; i < 300` wraps and never ends.
         let counter_type =
-            super::value_range::declaration_guaranteed_range(&decl, source, self.macros)?;
-        if low < counter_type.min || high.checked_add(step)? > counter_type.max {
+            super::value_range::declaration_guaranteed_range(&counter.decl, source, self.macros)?;
+        if counter.low < counter_type.min || high.checked_add(counter.step)? > counter_type.max {
             return None;
         }
-
-        let body = for_node.child_by_field_name("body")?;
-        // The body is scanned for every write; the rest of the function for
-        // what a name could expand to and for `&v`, through which the body
-        // could write (`SAVE()` stashing `&i` before the loop, `*p = 300;`
-        // inside it).
-        let function_body = self.function.child_by_field_name("body")?;
-        if self.scope.may_write(
-            &body,
-            source,
-            name,
-            &names_counter,
-            name_writes::Scan::Writes {
-                entered_from_outside: true,
-            },
-        ) || self.scope.may_write(
-            &function_body,
-            source,
-            name,
-            &names_counter,
-            name_writes::Scan::Expansions,
-        ) {
-            return None;
-        }
-        Some(((low, high), decl_id))
-    }
-
-    /// The declaration a `for` initializer binds `name` with, and the constant
-    /// it starts from: `T v = A` declares it there, `v = A` assigns the local
-    /// it resolves to.
-    fn counter_initializer(&self, for_node: &Node<'t>, name: &str) -> Option<(Node<'t>, i64)> {
-        let source = self.source;
-        let init = for_node.child_by_field_name("initializer")?;
-        match init.kind() {
-            "declaration" => {
-                let mut declarators = init
-                    .named_child_nodes()
-                    .filter(|c| c.kind() == "init_declarator");
-                let only = declarators.next()?;
-                if declarators.next().is_some() {
-                    return None;
-                }
-                let var = only.child_by_field_name("declarator")?;
-                if var.kind() != "identifier" || get_node_text(&var, source) != name {
-                    return None;
-                }
-                let value = self.bound_int(&only.child_by_field_name("value")?)?;
-                Some((init, value))
-            }
-            "assignment_expression" => {
-                let op = init.child_by_field_name("operator")?;
-                let left = init.child_by_field_name("left")?;
-                if get_node_text(&op, source) != "="
-                    || left.kind() != "identifier"
-                    || get_node_text(&left, source) != name
-                {
-                    return None;
-                }
-                let value = self.bound_int(&init.child_by_field_name("right")?)?;
-                match ast_utils::resolve_identifier_binding(&left, name, source)? {
-                    ast_utils::IdentifierBinding::Local(decl) => Some((decl, value)),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
+        Some(((counter.low, high), counter.decl.id()))
     }
 }
 
@@ -4822,14 +4720,6 @@ fn collect_identifier_texts<'s>(node: &Node, source: &'s str, out: &mut Vec<&'s 
     }
     for child in node.child_nodes() {
         collect_identifier_texts(&child, source, out);
-    }
-}
-
-/// The id of the block-scope declaration an occurrence of `name` refers to.
-fn local_declaration_id(ident: &Node, name: &str, source: &str) -> Option<usize> {
-    match ast_utils::resolve_identifier_binding(ident, name, source)? {
-        ast_utils::IdentifierBinding::Local(decl) => Some(decl.id()),
-        _ => None,
     }
 }
 
