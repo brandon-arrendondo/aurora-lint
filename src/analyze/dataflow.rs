@@ -7,7 +7,7 @@
 
 use super::cfg::{BlockId, FunctionCfg};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use tree_sitter::Node;
 
@@ -189,14 +189,23 @@ fn compute_gen_kill(
 
 /// Run reaching definitions analysis on a function CFG.
 ///
-/// Standard iterative worklist algorithm:
+/// The standard equations, solved to their least fixpoint:
 /// - reaching_out\[B\] = gen\[B\] | (reaching_in\[B\] - kill\[B\])
 /// - reaching_in\[B\] = union(reaching_out\[P\]) for predecessors P
+///
+/// The solver sweeps every block in reverse postorder until a sweep
+/// changes nothing. Reaching definitions is a gen/kill framework, so in
+/// that order it settles within a few sweeps more than the loop nesting
+/// (Kam and Ullman), and each block is visited a small number of times.
+/// A first-in-first-out worklist visits a block once per loop above it
+/// that feeds it, so on a function of N loops in a row it costs N^2
+/// visits, each one over sets that grow with N.
 pub fn compute_reaching_definitions(
     cfg: &FunctionCfg,
     definitions: Vec<Definition>,
 ) -> ReachingDefs {
     let (gen, kill) = compute_gen_kill(cfg, &definitions);
+    let none = HashSet::new();
 
     let mut reaching_in: HashMap<BlockId, HashSet<usize>> = HashMap::new();
     let mut reaching_out: HashMap<BlockId, HashSet<usize>> = HashMap::new();
@@ -207,31 +216,8 @@ pub fn compute_reaching_definitions(
         reaching_out.insert(block.id, gen.get(&block.id).cloned().unwrap_or_default());
     }
 
-    // Worklist algorithm.
-    //
-    // The safety bound is derived, not tuned. This is a monotone framework:
-    // a block's out-set only ever grows, so it can change at most
-    // `definitions.len()` times, and a block is only re-enqueued when a
-    // predecessor's out-set changed — making `blocks * (defs + 1)` a true
-    // termination bound. Reaching it means a bug in the transfer function,
-    // never an ordinary large function.
-    //
-    // It used to be a flat 1000, which ordinary code reaches and which then
-    // broke the analysis SILENTLY and in the false-positive direction: the
-    // worklist is seeded with every block, so in a function with more than
-    // 1000 blocks every later block was left at its initial `reaching_in =
-    // {}`. MSC13-C reads that as "no definition reaches this read" and
-    // reports live stores as dead — 283 such false positives in sqlite's
-    // `src/vdbe.c` alone, whose `sqlite3VdbeExec` has 2401 blocks and 784
-    // definitions and needs ~43k iterations to converge.
-    let max_iterations = cfg
-        .blocks
-        .len()
-        .saturating_mul(definitions.len().saturating_add(1))
-        .saturating_add(cfg.blocks.len());
-
     // The edges by block, once: `FunctionCfg::predecessors` and
-    // `successors` scan every edge per call, which over the worklist is
+    // `successors` scan every edge per call, which over the sweeps is
     // quadratic in the graph's size.
     let mut predecessors: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
     let mut successors: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
@@ -239,52 +225,60 @@ pub fn compute_reaching_definitions(
         predecessors.entry(to).or_default().push(from);
         successors.entry(from).or_default().push(to);
     }
+    let order = sweep_order(cfg, &successors);
 
-    let mut worklist: VecDeque<BlockId> = cfg.blocks.iter().map(|b| b.id).collect();
-    // Mirrors `worklist`'s membership. A linear `worklist.contains()` per
-    // successor push is quadratic in block count, which the old cap hid by
-    // never letting the loop run long enough to notice.
-    let mut queued: HashSet<BlockId> = worklist.iter().copied().collect();
-    let mut iterations = 0;
+    // The safety bound is derived, not tuned. This is a monotone framework:
+    // out-sets only ever grow, and a sweep that changes nothing ends the
+    // solve, so every sweep but the last adds at least one definition to
+    // some block's out-set, and there are `blocks * defs` such additions to
+    // make. Reaching it means a bug in the transfer function, never an
+    // ordinary large function.
+    //
+    // A flat cap once stood here, which ordinary code reaches and which then
+    // broke the analysis SILENTLY and in the false-positive direction:
+    // blocks the solve never reached kept their initial `reaching_in = {}`.
+    // MSC13-C reads that as "no definition reaches this read" and reports
+    // live stores as dead — 283 such false positives in sqlite's
+    // `src/vdbe.c` alone, whose `sqlite3VdbeExec` has 2401 blocks and 784
+    // definitions.
+    let max_sweeps = cfg
+        .blocks
+        .len()
+        .saturating_mul(definitions.len())
+        .saturating_add(1);
 
-    while let Some(block_id) = worklist.pop_front() {
-        queued.remove(&block_id);
-        iterations += 1;
-        crate::analyze::containment::checkpoint();
-        if iterations > max_iterations {
+    let mut sweeps = 0;
+    loop {
+        sweeps += 1;
+        if sweeps > max_sweeps {
             crate::analyze::containment::cap_reached("reaching definitions");
             break; // Safety limit
         }
+        let mut changed = false;
+        for &block_id in &order {
+            crate::analyze::containment::checkpoint();
 
-        // reaching_in[B] = union of reaching_out[P] for all predecessors P
-        let mut new_in = HashSet::new();
-        for pred_id in predecessors.get(&block_id).into_iter().flatten() {
-            if let Some(pred_out) = reaching_out.get(pred_id) {
-                new_in.extend(pred_out.iter());
-            }
-        }
-
-        // reaching_out[B] = gen[B] | (reaching_in[B] - kill[B])
-        let block_gen = gen.get(&block_id).cloned().unwrap_or_default();
-        let block_kill = kill.get(&block_id).cloned().unwrap_or_default();
-
-        let mut new_out: HashSet<usize> = new_in.difference(&block_kill).copied().collect();
-        new_out.extend(block_gen.iter());
-
-        // Check if out changed
-        let old_out = reaching_out.get(&block_id).cloned().unwrap_or_default();
-        if new_out != old_out {
-            reaching_out.insert(block_id, new_out);
-            reaching_in.insert(block_id, new_in);
-
-            // Add successors to worklist
-            for &succ_id in successors.get(&block_id).into_iter().flatten() {
-                if queued.insert(succ_id) {
-                    worklist.push_back(succ_id);
+            // reaching_in[B] = union of reaching_out[P] for all predecessors P
+            let mut new_in = HashSet::new();
+            for pred_id in predecessors.get(&block_id).into_iter().flatten() {
+                if let Some(pred_out) = reaching_out.get(pred_id) {
+                    new_in.extend(pred_out.iter());
                 }
             }
-        } else {
+
+            // reaching_out[B] = gen[B] | (reaching_in[B] - kill[B])
+            let block_kill = kill.get(&block_id).unwrap_or(&none);
+            let mut new_out: HashSet<usize> = new_in.difference(block_kill).copied().collect();
+            new_out.extend(gen.get(&block_id).unwrap_or(&none));
+
+            if reaching_out.get(&block_id) != Some(&new_out) {
+                reaching_out.insert(block_id, new_out);
+                changed = true;
+            }
             reaching_in.insert(block_id, new_in);
+        }
+        if !changed {
+            break;
         }
     }
 
@@ -293,6 +287,41 @@ pub fn compute_reaching_definitions(
         reaching_in,
         reaching_out,
     }
+}
+
+/// Every block of `cfg`, those the entry reaches in reverse postorder, then
+/// the rest in block order. In reverse postorder a block comes after every
+/// block that reaches it along a path with no back edge, so a forward
+/// analysis sees most of a block's inputs before the block.
+fn sweep_order(cfg: &FunctionCfg, successors: &HashMap<BlockId, Vec<BlockId>>) -> Vec<BlockId> {
+    let mut postorder = Vec::with_capacity(cfg.blocks.len());
+    let mut seen: HashSet<BlockId> = HashSet::new();
+    // (block, index of its next successor to visit); iterative, since a
+    // long function's CFG is deeper than the stack.
+    let mut stack: Vec<(BlockId, usize)> = Vec::new();
+    if cfg.blocks.iter().any(|b| b.id == cfg.entry) {
+        seen.insert(cfg.entry);
+        stack.push((cfg.entry, 0));
+    }
+    while let Some((block, next)) = stack.pop() {
+        let succ = successors.get(&block).map(Vec::as_slice).unwrap_or(&[]);
+        if let Some(&s) = succ.get(next) {
+            stack.push((block, next + 1));
+            if seen.insert(s) {
+                stack.push((s, 0));
+            }
+        } else {
+            postorder.push(block);
+        }
+    }
+    postorder.reverse();
+    postorder.extend(
+        cfg.blocks
+            .iter()
+            .map(|b| b.id)
+            .filter(|b| !seen.contains(b)),
+    );
+    postorder
 }
 
 /// Extract definitions from a function body using the CFG.
@@ -1338,5 +1367,147 @@ mod tests {
             !reaching.defs_reaching_block(last.id, "x").is_empty(),
             "the initial definition of `x` must reach the final block"
         );
+    }
+
+    /// The equations solved the plainest way: every block, in block order,
+    /// until nothing changes. Slow, and obviously the least fixpoint.
+    fn reaching_by_plain_iteration(
+        cfg: &FunctionCfg,
+        definitions: &[Definition],
+    ) -> (
+        HashMap<BlockId, HashSet<usize>>,
+        HashMap<BlockId, HashSet<usize>>,
+    ) {
+        let (gen, kill) = compute_gen_kill(cfg, definitions);
+        let mut reaching_in: HashMap<BlockId, HashSet<usize>> = HashMap::new();
+        let mut reaching_out: HashMap<BlockId, HashSet<usize>> = cfg
+            .blocks
+            .iter()
+            .map(|b| (b.id, gen.get(&b.id).cloned().unwrap_or_default()))
+            .collect();
+        loop {
+            let mut changed = false;
+            for block in &cfg.blocks {
+                let mut new_in = HashSet::new();
+                for (pred, _) in cfg.predecessors(block.id) {
+                    new_in.extend(reaching_out[&pred].iter().copied());
+                }
+                let mut new_out: HashSet<usize> = new_in
+                    .difference(&kill.get(&block.id).cloned().unwrap_or_default())
+                    .copied()
+                    .collect();
+                new_out.extend(gen.get(&block.id).cloned().unwrap_or_default());
+                if reaching_out[&block.id] != new_out {
+                    reaching_out.insert(block.id, new_out);
+                    changed = true;
+                }
+                reaching_in.insert(block.id, new_in);
+            }
+            if !changed {
+                return (reaching_in, reaching_out);
+            }
+        }
+    }
+
+    /// The solver's sets are the equations' least fixpoint, block for block,
+    /// on graphs whose back edges reach far: loops in a row whose bodies
+    /// never dominate their exits, loops nested inside loops, `break` and
+    /// `continue`, a `do` loop, a `switch` in a loop, and a backward `goto`
+    /// into a loop (an irreducible graph). A change to how the solver
+    /// visits blocks may change its cost, never these sets.
+    #[test]
+    fn reaching_sets_are_the_least_fixpoint_on_loop_heavy_graphs() {
+        let code = r#"
+        int sink(int);
+        int foo(int *a, int n) {
+            int i, j, s = 0, t = 1;
+            for (i = 0; i < 10; i++) { s += a[i]; }
+            for (i = 0; i < 10; i++) { s += a[i] + 1; }
+            for (i = 0; i < n; i++) {
+                t = s;
+                for (j = 0; j < n; j++) {
+                    if (a[j]) { s = j; continue; }
+                    if (a[j] > 3) { t = j; break; }
+                    s += t;
+                }
+            }
+            do { t = t - 1; } while (t > 0);
+        again:
+            while (s < n) {
+                switch (a[s]) {
+                case 0: t = 2; break;
+                case 1: s = t; continue;
+                default: s++;
+                }
+                if (t == 7) { j = s; goto inside; }
+            }
+            if (s > 100) { s = 0; goto again; }
+            j = 0;
+        inside:
+            if (j < n) { j = j + 1; goto again; }
+            return s + t + j;
+        }
+        "#;
+        let (tree, source) = parse_function(code);
+        let func_node = get_func_node(&tree).unwrap();
+        let cfg = build_function_cfg(&func_node, &source).unwrap();
+        let defs = extract_definitions(&cfg, &func_node, &source);
+        assert!(
+            cfg.blocks.len() > 30 && defs.len() > 15,
+            "the graph must stay loop-heavy for the comparison to mean anything: {} blocks, {} definitions",
+            cfg.blocks.len(),
+            defs.len()
+        );
+        let (expected_in, expected_out) = reaching_by_plain_iteration(&cfg, &defs);
+        let reaching = compute_reaching_definitions(&cfg, defs);
+        for block in &cfg.blocks {
+            assert_eq!(
+                reaching.reaching_in[&block.id], expected_in[&block.id],
+                "reaching_in of block {}",
+                block.id
+            );
+            assert_eq!(
+                reaching.reaching_out[&block.id], expected_out[&block.id],
+                "reaching_out of block {}",
+                block.id
+            );
+        }
+    }
+
+    /// After loops in a row whose bodies assign `s`, every one of those
+    /// assignments reaches the `return`, and so does the initializer: any
+    /// loop may run no times. Each loop's `i = 0` kills the one before it.
+    #[test]
+    fn every_loop_body_store_reaches_past_the_loops_that_follow() {
+        let loops = 12;
+        let mut code = String::from("int foo(int *a) {\n    int i, s = 0;\n");
+        for k in 0..loops {
+            code.push_str(&format!(
+                "    for (i = 0; i < 10; i++) {{ s += a[i] + {k}; }}\n"
+            ));
+        }
+        code.push_str("    return s;\n}\n");
+        let (tree, source) = parse_function(&code);
+        let func_node = get_func_node(&tree).unwrap();
+        let cfg = build_function_cfg(&func_node, &source).unwrap();
+        let defs = extract_definitions(&cfg, &func_node, &source);
+        let reaching = compute_reaching_definitions(&cfg, defs);
+        let return_block = cfg
+            .blocks
+            .iter()
+            .find(|b| {
+                b.statements
+                    .iter()
+                    .any(|&(start, _)| source[start..].starts_with("return"))
+            })
+            .expect("a block holds the return");
+        let reaching_s = reaching.defs_reaching_block(return_block.id, "s");
+        assert_eq!(
+            reaching_s.len(),
+            loops + 1,
+            "the initializer and every loop's store"
+        );
+        let reaching_i = reaching.defs_reaching_block(return_block.id, "i");
+        assert_eq!(reaching_i.len(), 1, "only the last loop's `i = 0`");
     }
 }
