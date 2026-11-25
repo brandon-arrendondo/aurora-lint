@@ -5491,6 +5491,25 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         })
     }
 
+    /// True when every value `func_name`'s body may return comes from a
+    /// stream opener (`call_roles::is_stream_opener`) or from a wrapper
+    /// that does, and none of it from an allocator. A callee with no body
+    /// in the scan, or one whose returns the summary could not read,
+    /// answers false, and so does a cycle of wrappers.
+    fn returns_only_streams(&self, func_name: &str, seen: &mut HashSet<String>) -> bool {
+        if !seen.insert(func_name.to_string()) {
+            return false;
+        }
+        let Some(summary) = self.function_summaries.get(func_name) else {
+            return false;
+        };
+        !summary.returns_allocation
+            && !summary.returned_callees.is_empty()
+            && summary.returned_callees.iter().all(|callee| {
+                call_roles::is_stream_opener(callee) || self.returns_only_streams(callee, seen)
+            })
+    }
+
     fn is_allocation_call(&self, node: &Node, source: &str) -> bool {
         // Handle cast expressions like (char *)malloc(...)
         if node.kind() == "cast_expression" {
@@ -5523,6 +5542,15 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // Standard allocation functions
                 if call_roles::is_allocator_call(&func_name) {
                     return true;
+                }
+
+                // A wrapper whose body hands back only what a stream opener
+                // returned holds a `FILE *`, not a heap block, whatever its
+                // name: pureftpd's `create_newpasswd` returns `fdopen`'s
+                // stream, and its caller's `fclose` on every path is not a
+                // leak. The body outranks the name shape below.
+                if self.returns_only_streams(&func_name, &mut HashSet::new()) {
+                    return false;
                 }
 
                 // Heuristic: function names that suggest allocation

@@ -119,6 +119,24 @@ pub fn is_descriptor_acquirer(name: &str) -> bool {
     matches!(name, "epoll_create" | "timerfd_create" | "memfd_create")
 }
 
+/// A library call whose result is a `FILE *` stream, released by `fclose`
+/// (`pclose` for `popen`) rather than `free`: the ISO C openers plus the
+/// POSIX ones. The stream's close obligation is FIO42-C's, not a heap
+/// lifetime rule's.
+pub fn is_stream_opener(name: &str) -> bool {
+    matches!(
+        name,
+        "fopen"
+            | "freopen"
+            | "tmpfile"
+            | "fdopen"
+            | "popen"
+            | "fmemopen"
+            | "open_memstream"
+            | "open_wmemstream"
+    )
+}
+
 /// The standard allocator contract a call to `name` follows: a standard
 /// allocator's own, or the one a project declaration names. A consumer
 /// that reads size arguments or treats `realloc`'s release of its first
