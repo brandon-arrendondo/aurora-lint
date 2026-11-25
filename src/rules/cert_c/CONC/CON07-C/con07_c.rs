@@ -408,19 +408,6 @@ impl Con07C {
         static_var_accesses.sort();
         static_var_accesses.dedup();
 
-        // A single atomic operation spanning ALL the shared state involved
-        // (e.g. one atomic_load/atomic_store on an _Atomic struct, or a
-        // single atomic RMW on one variable) is compliant — that's exactly
-        // why it collapses to a single tracked variable name here. But
-        // wrapping each variable's access in its own SEPARATE atomic_*
-        // call does NOT make combining them atomic (CERT's own "Addition
-        // of Atomic Integers" noncompliant example) — so, unlike a lone
-        // atomic variable, this blanket exemption must not apply once
-        // multiple distinct shared variables are involved.
-        if static_var_accesses.len() == 1 && self.uses_atomic_operations(function_node, source) {
-            return;
-        }
-
         // If function performs a compound write on multiple static variables, flag it.
         // Pure reads of multiple statics are not a compound-operation violation.
         if static_var_accesses.len() > 1 {
@@ -514,30 +501,6 @@ impl Con07C {
                     | "irq_lock"
                     | "irq_unlock"
             )
-        })
-        .is_some()
-    }
-
-    fn uses_atomic_operations(&self, node: &Node, source: &str) -> bool {
-        query::find_first_descendant(*node, |n| {
-            if n.kind() == "call_expression" {
-                if let Some(func) = n.child_by_field_name("function") {
-                    let func_name = get_node_text(&func, source);
-                    if func_name.starts_with("atomic_") {
-                        return true;
-                    }
-                }
-            }
-
-            // Check for _Atomic type qualifier
-            if n.kind() == "type_qualifier" {
-                let text = get_node_text(&n, source);
-                if text == "_Atomic" {
-                    return true;
-                }
-            }
-
-            false
         })
         .is_some()
     }
@@ -782,15 +745,8 @@ fn compound_writes_through_pointers(
         if read_modify_write
             && written
                 .is_some_and(|t| matches!(t.kind(), "pointer_expression" | "subscript_expression"))
-            && declares_pointer_to_atomic(&decl, &declarator, source)
-        {
-            continue;
-        }
-        if read_modify_write
-            && written.is_some_and(|t| {
-                t.kind() == "field_expression"
-                    && writes_atomic_member_of_pointee(&t, &decl, &declarator, source)
-            })
+            && pointer_spelling(&decl, &declarator, source)
+                .is_some_and(|(d, dd)| declares_pointer_to_atomic(&d, &dd, source))
         {
             continue;
         }
@@ -815,10 +771,20 @@ fn compound_writes_through_pointers(
                     facts.macros.as_ref().unwrap_or(&HashMap::new()),
                 )
             });
-        if let Some(objects) = pointees {
-            found.pointees.extend(objects.iter().cloned());
-            found.pointers.push(name.to_string());
+        let Some(objects) = pointees.clone() else {
+            continue;
+        };
+        if read_modify_write
+            && written.is_some_and(|t| {
+                t.kind() == "field_expression"
+                    && writes_atomic_member_of_pointee(&t, &decl, &declarator, source)
+                    && pointees_hold_atomic_member(&t, &decl, &declarator, name, source, facts)
+            })
+        {
+            continue;
         }
+        found.pointees.extend(objects);
+        found.pointers.push(name.to_string());
     }
     for list in [&mut found.pointees, &mut found.pointers] {
         list.sort();
@@ -910,21 +876,87 @@ fn writes_atomic_part(object: &Node, steps: &[Node], name: &str, source: &str) -
     member_is_atomic(&decl, &fields, source)
 }
 
-/// Whether `p->f`, `member`, writes an `_Atomic` member of what the pointer
-/// `p` (declared by `declarator` in `decl`) points at: `p` is one plain
-/// pointer, in its own declarator and through no typedef, to a structure
-/// that is not itself atomic, and [`member_is_atomic`] holds of `f` in that
-/// structure's definition.
+/// Whether `p->f`, `member`, writes an `_Atomic` member by the type of the
+/// pointer `p` (declared by `declarator` in `decl`): `p` is one plain
+/// pointer, in its own declarator or a typedef's ([`pointer_spelling`]), to
+/// a structure that is not itself atomic, and [`member_is_atomic`] holds of
+/// `f` in that structure's definition.
 fn writes_atomic_member_of_pointee(
     member: &Node,
     decl: &Node,
     declarator: &Node,
     source: &str,
 ) -> bool {
-    pointer_derivations(declarator) == ["pointer_declarator"]
-        && object_derivations(decl, declarator, source).len() == 1
-        && !declares_pointer_to_atomic(decl, declarator, source)
+    object_derivations(decl, declarator, source) == ["pointer_declarator"]
+        && pointer_spelling(decl, declarator, source)
+            .is_some_and(|(d, dd)| !declares_pointer_to_atomic(&d, &dd, source))
         && member_is_atomic(decl, &[member], source)
+}
+
+/// Whether `p->f`, `member`, writes an `_Atomic` member of every object the
+/// pointer `p` is proven to point at ([`pointer_origins`]), by each object's
+/// own declaration: the object, or an element of its arrays, is a structure
+/// that is not itself atomic, and [`member_is_atomic`] holds of `f` in its
+/// definition. A pointer whose type says the member is atomic may be made to
+/// point at an object whose type does not.
+fn pointees_hold_atomic_member(
+    member: &Node,
+    decl: &Node,
+    declarator: &Node,
+    name: &str,
+    source: &str,
+    facts: &PointerFacts,
+) -> bool {
+    let no_macros = HashMap::new();
+    let Some(origins) = pointer_origins(
+        decl,
+        declarator,
+        name,
+        source,
+        &facts.macro_tokens,
+        &facts.identifiers,
+        facts.macros.as_ref().unwrap_or(&no_macros),
+    ) else {
+        return false;
+    };
+    origins.iter().all(|origin| {
+        addressed_shared_object(origin, source).is_some_and(|object| {
+            object.steps.iter().all(|s| *s == "subscript_expression")
+                && object_derivations(&object.decl, &object.declarator, source).len()
+                    == object.steps.len()
+                && !declares_atomic_object(&object.decl, &object.declarator, source)
+                && member_is_atomic(&object.decl, &[member], source)
+        })
+    })
+}
+
+/// The declaration and declarator that spell the one `*` of the pointer
+/// `declarator` declares in `decl`: the pointer's own when it is `*p`, or,
+/// for a plain name whose type is a typedef in scope, that typedef's, and
+/// so on through a chain of them. `None` for anything else.
+fn pointer_spelling<'a>(
+    decl: &Node<'a>,
+    declarator: &Node<'a>,
+    source: &str,
+) -> Option<(Node<'a>, Node<'a>)> {
+    let (mut decl, mut declarator) = (*decl, *declarator);
+    for _ in 0..8 {
+        match pointer_derivations(&declarator).as_slice() {
+            ["pointer_declarator"] => return Some((decl, declarator)),
+            [] => {}
+            _ => return None,
+        }
+        let type_name = decl
+            .child_by_field_name("type")
+            .filter(|t| t.kind() == "type_identifier")?;
+        let name = get_node_text(&type_name, source);
+        let typedef = typedef_definition_in_scope(&type_name, name, source)?;
+        declarator = typedef_declarators(&typedef)
+            .into_iter()
+            .find(|d| TypedefShape::of(d, source).name.as_deref() == Some(name))?;
+        decl = typedef;
+    }
+    None
 }
 
 /// Whether the member chain `fields` (innermost first, each a `.` access,
@@ -1116,7 +1148,8 @@ fn pointer_through<'a>(target: &Node<'a>, source: &str) -> Option<Node<'a>> {
 /// it), is named in a macro body or passed where a function-like macro
 /// assigns its argument, has its address taken, has no origin, or any
 /// origin is something else (a thread-local object, another pointer, a
-/// call).
+/// call). A pointer declared through a typedef (`typedef struct S *SP;
+/// SP p = &g;`) is read through it.
 fn proven_pointees(
     decl: &Node,
     declarator: &Node,
@@ -1126,8 +1159,37 @@ fn proven_pointees(
     identifiers: &HashMap<String, Vec<usize>>,
     macros: &HashMap<String, FunctionMacro>,
 ) -> Option<Vec<String>> {
+    let mut objects = Vec::new();
+    for origin in pointer_origins(
+        decl,
+        declarator,
+        name,
+        source,
+        macro_tokens,
+        identifiers,
+        macros,
+    )? {
+        objects.push(shared_object_addressed(&origin, source)?);
+    }
+    objects.sort();
+    objects.dedup();
+    Some(objects)
+}
+
+/// Every value the pointer [`proven_pointees`] judges is ever given: its
+/// initializer and each plain assignment's value. `None` where
+/// [`proven_pointees`] is.
+fn pointer_origins<'a>(
+    decl: &Node<'a>,
+    declarator: &Node<'a>,
+    name: &str,
+    source: &str,
+    macro_tokens: &HashSet<String>,
+    identifiers: &HashMap<String, Vec<usize>>,
+    macros: &HashMap<String, FunctionMacro>,
+) -> Option<Vec<Node<'a>>> {
     if decl.kind() != "declaration"
-        || pointer_derivations(declarator).first() != Some(&"pointer_declarator")
+        || object_derivations(decl, declarator, source).first() != Some(&"pointer_declarator")
         || macro_tokens.contains(name)
     {
         return None;
@@ -1202,13 +1264,7 @@ fn proven_pointees(
     if origins.is_empty() {
         return None;
     }
-    let mut objects = Vec::new();
-    for origin in origins {
-        objects.push(shared_object_addressed(&origin, source)?);
-    }
-    objects.sort();
-    objects.dedup();
-    Some(objects)
+    Some(origins)
 }
 
 /// Whether `argument` is an argument a function-like macro assigns
@@ -1291,12 +1347,27 @@ fn declarator_name<'a>(declarator: &Node<'a>) -> Option<Node<'a>> {
 /// pointer reaches its pointee, not `x`, and a member's type is not known,
 /// so `&x.f[i]` is not proven.
 fn shared_object_addressed(value: &Node, source: &str) -> Option<String> {
+    addressed_shared_object(value, source).map(|a| a.name)
+}
+
+/// The shared object [`shared_object_addressed`] finds, with its
+/// declaration and the steps from it to the addressed part, outermost
+/// first: none for `&x`, a subscript for `&x[i]` and for a decaying `x`.
+struct AddressedObject<'a> {
+    name: String,
+    decl: Node<'a>,
+    declarator: Node<'a>,
+    steps: Vec<&'static str>,
+}
+
+/// [`shared_object_addressed`], keeping the object's declaration and steps.
+fn addressed_shared_object<'a>(value: &Node<'a>, source: &str) -> Option<AddressedObject<'a>> {
     let value = strip_parens_and_casts(*value);
     // Each step from `x` to the addressed object, outermost first
     let mut steps = Vec::new();
     let object = match value.kind() {
         "binary_expression" => {
-            return shared_object_addressed(&value.child_by_field_name("left")?, source)
+            return addressed_shared_object(&value.child_by_field_name("left")?, source)
         }
         "pointer_expression"
             if value
@@ -1336,14 +1407,19 @@ fn shared_object_addressed(value: &Node, source: &str) -> Option<String> {
     }
     let mut derivations = pointer_derivations(&declarator).into_iter();
     let mut in_member = false;
-    for step in steps.into_iter().rev() {
-        if step == "field_expression" {
+    for step in steps.iter().rev() {
+        if *step == "field_expression" {
             in_member = true;
         } else if in_member || derivations.next() != Some("array_declarator") {
             return None;
         }
     }
-    Some(name.to_string())
+    Some(AddressedObject {
+        name: name.to_string(),
+        decl,
+        declarator,
+        steps,
+    })
 }
 
 /// `node` with any enclosing parentheses and casts removed.

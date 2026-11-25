@@ -180,6 +180,8 @@ pub fn declares_atomic_object(decl: &Node, declarator: &Node, source: &str) -> b
 /// Whether `declarator` declares a plain pointer (`*p`, one level, no array
 /// or function between) to an `_Atomic` object, read from the specifiers as
 /// [`declares_atomic_object`] reads them: `_Atomic int *p`, `atomic_int *p`.
+/// In a `type_definition`, whether the typedef it names is such a pointer
+/// type: `typedef _Atomic int *AP;`.
 pub fn declares_pointer_to_atomic(decl: &Node, declarator: &Node, source: &str) -> bool {
     let mut d = *declarator;
     while matches!(
@@ -198,7 +200,7 @@ pub fn declares_pointer_to_atomic(decl: &Node, declarator: &Node, source: &str) 
     while let Some(n) = name.filter(|n| n.kind() == "parenthesized_declarator") {
         name = inner_declarator(&n).filter(|inner| inner.id() != n.id());
     }
-    name.is_some_and(|n| n.kind() == "identifier")
+    name.is_some_and(|n| matches!(n.kind(), "identifier" | "type_identifier"))
         && specifiers_qualified(decl, source, "_Atomic", 8)
 }
 
@@ -255,11 +257,13 @@ pub fn record_definitions_of<'a>(decl: &Node<'a>, source: &str) -> Vec<Node<'a>>
 /// scope around that structure (C11 6.2.1p4). Several are returned when the
 /// file defines the tag more than once in that scope, as in the arms of an
 /// `#if`; a caller that removes a finding should require all of them to
-/// agree. A definition in an `#if 0` arm, or in an arm other than the one
-/// `site` is in, is not visible. When a definition sits in a conditional
-/// before `site` whose arms that can be taken do not all define the tag (one
-/// leaves it to a header, or there is no `#else`), which definition applies
-/// is not known and nothing is returned. A bodiless `struct S;` in an inner
+/// agree. A definition in an arm that is never taken (`#if 0`, `#if (0)`,
+/// an arm after `#if 1`, or one whose body holds `#error`), or in an arm
+/// other than the one `site` is in, is not visible. When a definition sits
+/// in a conditional before `site` whose arms that can be taken do not all
+/// define the tag (one leaves it to a header, or no arm is always taken: no
+/// `#else` and no `#if 1`), which definition applies is not known and
+/// nothing is returned. A bodiless `struct S;` in an inner
 /// block that redeclares the tag is not read.
 pub fn record_definitions_in_scope<'a>(
     site: &Node<'a>,
@@ -313,8 +317,10 @@ pub fn record_definitions_in_scope<'a>(
     found.sort_by_key(Node::start_byte);
     // A definition in a preprocessor arm is in effect at `site` only in the
     // arm `site` is in, or, for a conditional `site` follows, when every arm
-    // that can be taken defines the tag too: an arm that leaves it to a
-    // header, or no `#else`, gives it a meaning this file does not show
+    // that can be taken defines the tag too and one arm is always taken (an
+    // `#else` or `#if 1`): an arm that leaves it to a header, or no arm
+    // always taken, gives it a meaning this file does not show. An arm that
+    // is never taken (`#if 0`, or one that stops at `#error`) is skipped
     let mut kept = Vec::new();
     for definition in &found {
         match arms_admit(definition, site, source, &|arm| {
@@ -377,15 +383,24 @@ fn constant_condition(text: &str) -> Option<bool> {
     }
 }
 
-/// Whether `arm` itself, outside any conditional nested in it, holds an
-/// `#error` directive.
+/// Whether every translation that takes `arm` stops at an `#error`: the
+/// arm's own body holds one, or holds a conditional that stops in every arm
+/// that can be taken, one of them always taken (`#if 1` / `#error` /
+/// `#endif`, `#ifdef X` / `#error` / `#else` / `#error` / `#endif`).
 fn arm_body_errors(arm: &Node, source: &str) -> bool {
     arm_body(arm).iter().any(|n| {
-        n.kind() == "preproc_call"
+        let error = n.kind() == "preproc_call"
             && n.child_by_field_name("directive").is_some_and(|d| {
                 let d = &source[d.byte_range()];
                 d.strip_prefix('#')
                     .is_some_and(|r| r.trim_start() == "error")
+            });
+        // A nested conditional one of whose arms is always taken, and none
+        // of whose arms can be taken without stopping, stops this arm too
+        error
+            || (CONDITIONALS.contains(&n.kind()) && {
+                let (arms, one_taken) = conditional_arms(n, source);
+                one_taken && arms.iter().all(|(_, never)| *never)
             })
     })
 }
@@ -452,6 +467,12 @@ fn arms_admit(n: &Node, site: &Node, source: &str, proves: &dyn Fn(&Node) -> boo
                 if !in_arm_body(site, &arm) {
                     return Some(false);
                 }
+            } else if taken_with(&conditional, site, source) {
+                // The conditional's first arm is taken wherever `site` is,
+                // so it alone is in effect there
+                if arm.id() != conditional.id() {
+                    return Some(false);
+                }
             } else {
                 let live: Vec<&Node> = arms
                     .iter()
@@ -466,6 +487,85 @@ fn arms_admit(n: &Node, site: &Node, source: &str, proves: &dyn Fn(&Node) -> boo
         child = parent;
     }
     Some(true)
+}
+
+/// Whether the first arm of `conditional`, an `#ifdef X` or `#ifndef X`
+/// before `site`, is taken wherever `site` is: `site` is in the first arm
+/// of a later conditional with the same directive and name, and no
+/// `#define X` or `#undef X` lies between the two. Other conditions are not
+/// compared.
+fn taken_with(conditional: &Node, site: &Node, source: &str) -> bool {
+    let Some(tested) = ifdef_test(conditional, source) else {
+        return false;
+    };
+    ancestors_of(site).any(|outer| {
+        outer.start_byte() >= conditional.end_byte()
+            && in_arm_body(site, &outer)
+            && ifdef_test(&outer, source) == Some(tested)
+            && !directive_names_between(
+                &tree_root_of(site),
+                tested.1,
+                conditional.start_byte(),
+                outer.start_byte(),
+                source,
+            )
+    })
+}
+
+/// The test an `#ifdef X` (`(true, "X")`) or `#ifndef X` (`(false, "X")`)
+/// conditional makes; `None` for any other node.
+fn ifdef_test<'a>(node: &Node, source: &'a str) -> Option<(bool, &'a str)> {
+    if node.kind() != "preproc_ifdef" {
+        return None;
+    }
+    let directive = node.child(0)?;
+    let defined = !source[directive.byte_range()].contains("ifndef");
+    let name = node.child_by_field_name("name")?;
+    Some((defined, source[name.byte_range()].trim()))
+}
+
+/// Whether a `#define` or `#undef` of `name` starts between `from` and
+/// `to` in the tree under `root`.
+fn directive_names_between(root: &Node, name: &str, from: usize, to: usize, source: &str) -> bool {
+    let mut stack = vec![*root];
+    while let Some(n) = stack.pop() {
+        if n.end_byte() <= from || n.start_byte() >= to {
+            continue;
+        }
+        let names = match n.kind() {
+            "preproc_def" | "preproc_function_def" => n
+                .child_by_field_name("name")
+                .is_some_and(|m| source[m.byte_range()].trim() == name),
+            "preproc_call" => {
+                n.child_by_field_name("directive").is_some_and(|d| {
+                    source[d.byte_range()]
+                        .strip_prefix('#')
+                        .is_some_and(|r| r.trim_start() == "undef")
+                }) && n
+                    .child_by_field_name("argument")
+                    .is_some_and(|a| source[a.byte_range()].trim() == name)
+            }
+            _ => false,
+        };
+        if names && n.start_byte() >= from {
+            return true;
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.named_children(&mut cursor));
+    }
+    false
+}
+
+fn ancestors_of<'a>(node: &Node<'a>) -> impl Iterator<Item = Node<'a>> {
+    std::iter::successors(node.parent(), Node::parent)
+}
+
+fn tree_root_of<'a>(node: &Node<'a>) -> Node<'a> {
+    let mut root = *node;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    root
 }
 
 /// The declarations of the member `field` of the structure or union
@@ -592,10 +692,16 @@ fn specifiers_qualified(decl: &Node, source: &str, qualifier: &str, depth: usize
 /// Whether the file includes the system header `header` (`#include
 /// <stdatomic.h>`) before `site`, whichever preprocessor arms are taken: at
 /// file scope, in the arm of a conditional that `site` itself is in, or in
-/// every arm that can be taken of a conditional with an `#else` (an `#if 0`
-/// arm is never taken and needs no include). An include in only one arm of
+/// every arm that can be taken of a conditional one of whose arms is always
+/// taken (an `#else`, or `#if 1`). An arm is never taken, and needs no
+/// include, when its condition is `0` (parenthesized or not), when it
+/// follows `#if 1`, or when its body holds `#error`, so the usual
+/// `#ifdef __STDC_NO_ATOMICS__` / `#error` / `#else` / `#include
+/// <stdatomic.h>` guard counts. An include in only one arm of
 /// `#if defined(__STDC_NO_ATOMICS__) ... #else ... #endif`, or in an arm
-/// with no `#else`, is not in effect everywhere, so it does not count. The
+/// with no arm always taken, is not in effect everywhere, so it does not
+/// count. Conditions are otherwise not evaluated: two blocks with the same
+/// condition are not seen as taken together. The
 /// library's names mean what the standard says only where its header is in
 /// effect; a project's own compatibility header of the same names is not
 /// the library. A header the file reaches only through another header is
@@ -644,6 +750,13 @@ fn included_in(nodes: &[Node], site: &Node, header: &str, source: &str) -> bool 
             if one_taken
                 && live.peek().is_some()
                 && live.all(|(arm, _)| included_in(&arm_body(arm), site, header, source))
+            {
+                return true;
+            }
+            // A first arm taken wherever `site` is includes it there
+            if taken_with(node, site, source)
+                && arms.first().is_some_and(|(_, never)| !never)
+                && included_in(&arm_body(node), site, header, source)
             {
                 return true;
             }
