@@ -10,7 +10,7 @@ use super::dataflow::{find_node_at_range, StatementLookup};
 use super::macro_expand::FunctionMacro;
 use crate::utility::cert_c::node_children::NodeChildren;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tree_sitter::Node;
 
@@ -134,6 +134,16 @@ pub struct VarInfo {
     /// Element count from `malloc(N * sizeof(T))` / `ALLOCA(N * sizeof(T))`.
     /// Used to detect partial initialization loops.
     pub allocation_count: Option<usize>,
+    /// The elements of an allocated buffer that the writes to its content
+    /// covered, by constant offset, while those writes are all it has had:
+    /// `data[0] = '\0'` covers element 0. `Some` only with
+    /// [`InitState::MallocInitialized`], which such a write still sets, so a
+    /// read of the whole buffer (a string read needing the terminator at
+    /// element 0) is judged as before, and only a read of one element asks
+    /// whether it was covered ([`VarInfo::element_written`]). `None` there
+    /// means the content was written whole, or by a write no offset
+    /// describes.
+    pub elements_written: Option<BTreeSet<i64>>,
 }
 
 impl VarInfo {
@@ -147,7 +157,36 @@ impl VarInfo {
             is_static: false,
             is_char_type: false,
             allocation_count: None,
+            elements_written: None,
         }
+    }
+
+    /// Whether the element at `offset` of the buffer this variable points to
+    /// holds a written value as far as its writes show: every element of a
+    /// buffer written whole, and only the covered ones of a buffer written
+    /// only at constant offsets.
+    pub fn element_written(&self, offset: i64) -> bool {
+        self.elements_written
+            .as_ref()
+            .is_none_or(|written| written.contains(&offset))
+    }
+}
+
+/// The elements written to a buffer after paths with `a` and `b` join into
+/// `state`. The join counts content as written when either path wrote it
+/// ([`InitState::join`]), so the elements are those either path wrote, and
+/// all of them once either path wrote the whole buffer.
+fn join_elements(a: &VarInfo, b: &VarInfo, state: InitState) -> Option<BTreeSet<i64>> {
+    if state != InitState::MallocInitialized {
+        return None;
+    }
+    fn written(info: &VarInfo) -> Option<Option<&BTreeSet<i64>>> {
+        (info.state == InitState::MallocInitialized).then_some(info.elements_written.as_ref())
+    }
+    match (written(a), written(b)) {
+        (Some(None), _) | (_, Some(None)) | (None, None) => None,
+        (Some(Some(x)), Some(Some(y))) => Some(x.union(y).copied().collect()),
+        (Some(Some(x)), None) | (None, Some(Some(x))) => Some(x.clone()),
     }
 }
 
@@ -162,9 +201,9 @@ fn join_states(a: &InitStateMap, b: &InitStateMap) -> InitStateMap {
     let mut result = a.clone();
     for (var, info_b) in b {
         let entry = result.entry(var.clone()).or_insert_with(|| info_b.clone());
-        if entry.state != info_b.state {
-            entry.state = entry.state.join(info_b.state);
-        }
+        let state = entry.state.join(info_b.state);
+        entry.elements_written = join_elements(entry, info_b, state);
+        entry.state = state;
     }
     result
 }
@@ -173,8 +212,10 @@ fn join_states(a: &InitStateMap, b: &InitStateMap) -> InitStateMap {
 /// type flags OR'd (a name two declarations give different types keeps
 /// every reading), and an allocation count kept only when both agree.
 fn join_var_info(a: &VarInfo, b: &VarInfo) -> VarInfo {
+    let state = a.state.join(b.state);
     VarInfo {
-        state: a.state.join(b.state),
+        state,
+        elements_written: join_elements(a, b, state),
         is_unsigned_char: a.is_unsigned_char || b.is_unsigned_char,
         is_array: a.is_array || b.is_array,
         is_static: a.is_static || b.is_static,
@@ -1137,6 +1178,98 @@ fn offsets_are_constant(left: &Node, source: &str) -> bool {
     true
 }
 
+/// The element of the buffer a variable points to that the lvalue `left`
+/// writes, when the variable is its whole base and the offset is a
+/// compile-time constant: `p[3]` and `*(p + 3)` write element 3, `*p`
+/// element 0, and `p[3].f` a member of element 3. `None` for any other
+/// lvalue, such as `p[i]`, `p->items[0]` or `*(q + 1)` through a cast. A
+/// store through a pointer sum does not update a buffer's state today
+/// (`extract_assignment_target` resolves only `*p`), so that reading
+/// decides nothing for a write yet, as in [`offsets_are_constant`].
+pub fn constant_element_offset(left: &Node, source: &str) -> Option<i64> {
+    element_offset(left, source).flatten()
+}
+
+/// Whether the read `access`, a subscript or dereference of the buffer
+/// `info` describes, may read an element its writes did not cover: one at
+/// a constant offset outside them, or at any offset that is not constant
+/// (`p[i]`, `*(p + i)`), when the buffer has been written only at constant
+/// offsets ([`VarInfo::elements_written`]). False for every other buffer,
+/// and for an access whose base is not the variable itself.
+pub fn reads_unwritten_element(access: &Node, source: &str, info: &VarInfo) -> bool {
+    if info.state != InitState::MallocInitialized || info.elements_written.is_none() {
+        return false;
+    }
+    match element_offset(access, source) {
+        Some(Some(offset)) => !info.element_written(offset),
+        Some(None) => true,
+        None => false,
+    }
+}
+
+/// [`constant_element_offset`], telling an lvalue whose base is the
+/// variable at an offset that is not constant (`Some(None)`) from one whose
+/// base is something else (`None`).
+fn element_offset(left: &Node, source: &str) -> Option<Option<i64>> {
+    let empty = HashMap::new();
+    let constant = |n: &Node| const_eval::try_evaluate_expr(n, source, &empty);
+    fn bare(mut n: Node) -> Option<Node> {
+        while n.kind() == "parenthesized_expression" {
+            n = n.named_child(0)?;
+        }
+        Some(n)
+    }
+    let mut node = bare(*left)?;
+    while node.kind() == "field_expression" {
+        let argument = node.child_by_field_name("argument")?;
+        if node
+            .child_by_field_name("operator")
+            .is_some_and(|op| op.kind() == "->")
+        {
+            return None;
+        }
+        node = bare(argument)?;
+    }
+    let (base, offset) = match node.kind() {
+        "subscript_expression" => (
+            node.child_by_field_name("argument")?,
+            constant(&node.child_by_field_name("index")?),
+        ),
+        "pointer_expression" => {
+            if node
+                .child_by_field_name("operator")
+                .is_none_or(|op| op.kind() != "*")
+            {
+                return None;
+            }
+            let target = bare(node.child_by_field_name("argument")?)?;
+            if target.kind() == "binary_expression" {
+                let op = target.child_by_field_name("operator")?;
+                if op.kind() != "+" {
+                    return None;
+                }
+                let (l, r) = (
+                    target.child_by_field_name("left")?,
+                    target.child_by_field_name("right")?,
+                );
+                match (constant(&l), constant(&r)) {
+                    (None, k @ Some(_)) => (l, k),
+                    (k @ Some(_), None) => (r, k),
+                    // Neither side constant: whichever is the variable
+                    // is read at an offset that is not.
+                    (None, None) if bare(l)?.kind() == "identifier" => (l, None),
+                    (None, None) => (r, None),
+                    _ => return None,
+                }
+            } else {
+                (target, Some(0))
+            }
+        }
+        _ => return None,
+    };
+    (bare(base)?.kind() == "identifier").then_some(offset)
+}
+
 /// Whether the for-loop `for_statement` advances, in its update or its body,
 /// the pointer variable the lvalue `left` writes through (`data++`, `data +=
 /// 2`, `data = data + 1`), matched by declaration. Setting it from anything
@@ -1378,6 +1511,7 @@ fn apply_identifier_assignment_state(
     source: &str,
     config: &InitAnalysisConfig,
 ) {
+    info.elements_written = None;
     if let Some(array_alloc) = array_decay {
         // Array-to-pointer decay: ptr = uninit_array
         // The pointer now points to uninitialized content.
@@ -1424,8 +1558,26 @@ fn apply_lvalue_assignment_state(
                 .is_some_and(|alloc_count| is_partial_init_write(alloc_count, left, source));
             if !stays_partial {
                 info.state = InitState::MallocInitialized;
+                info.elements_written =
+                    constant_element_offset(left, source).map(|offset| BTreeSet::from([offset]));
             }
             // else: keep MallocUninitialized — partial init
+        }
+        // A buffer written so far only at constant offsets: one more such
+        // write covers its element too, and any other write the whole buffer,
+        // as the first write would have.
+        InitState::MallocInitialized
+            if info.elements_written.is_some()
+                && (left.kind() != "field_expression" || has_subscript_in_chain) =>
+        {
+            match constant_element_offset(left, source) {
+                Some(offset) => {
+                    if let Some(written) = info.elements_written.as_mut() {
+                        written.insert(offset);
+                    }
+                }
+                None => info.elements_written = None,
+            }
         }
         InitState::Uninitialized => {
             if left.kind() == "field_expression" && !has_subscript_in_chain {
@@ -1917,6 +2069,7 @@ fn try_process_known_initializing_function(
                             )
                         {
                             info.state = InitState::MallocInitialized;
+                            info.elements_written = None;
                         } else {
                             info.state = InitState::Initialized;
                         }
@@ -1992,7 +2145,9 @@ fn process_unknown_function_call(
             if let Some(info) = state.get_mut(&var_name) {
                 if info.is_array {
                     info.state = InitState::Initialized;
-                } else if info.state == InitState::MallocUninitialized {
+                } else if info.state == InitState::MallocUninitialized
+                    || info.elements_written.is_some()
+                {
                     // A pointer passed by name is the same argument an array
                     // name decays to, so the callee may fill what it points
                     // at in exactly the same way. valkey-cli.c reads a byte
@@ -2002,6 +2157,7 @@ fn process_unknown_function_call(
                     // as a write. The pointer itself was already set; only
                     // its pointee's state changes.
                     info.state = InitState::MallocInitialized;
+                    info.elements_written = None;
                 }
             }
         }
@@ -3895,5 +4051,63 @@ cleanup:
         );
         assert!(info.is_some());
         assert!(!info.unwrap().state.is_unsafe());
+    }
+
+    /// The element the first assignment in `statement` writes.
+    fn first_lvalue_offset(statement: &str) -> Option<i64> {
+        let code = format!("void f(int *p, int i) {{ {statement} }}");
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(&code, None).unwrap();
+        let assignment = lang_parsing_substrate::query::find_descendants_of_kind(
+            tree.root_node(),
+            "assignment_expression",
+        )
+        .into_iter()
+        .next()
+        .unwrap();
+        constant_element_offset(&assignment.child_by_field_name("left").unwrap(), &code)
+    }
+
+    #[test]
+    fn a_constant_element_is_read_from_the_lvalue_that_writes_it() {
+        assert_eq!(first_lvalue_offset("p[3] = 0;"), Some(3));
+        assert_eq!(first_lvalue_offset("*p = 0;"), Some(0));
+        assert_eq!(first_lvalue_offset("(p)[2 + 1] = 0;"), Some(3));
+        assert_eq!(first_lvalue_offset("*(p + 2) = 0;"), Some(2));
+        assert_eq!(first_lvalue_offset("*(1 + p) = 0;"), Some(1));
+        assert_eq!(first_lvalue_offset("p[i] = 0;"), None);
+        assert_eq!(first_lvalue_offset("*(p + i) = 0;"), None);
+        assert_eq!(first_lvalue_offset("*(p - 1) = 0;"), None);
+    }
+
+    fn written(state: InitState, elements: Option<&[i64]>) -> VarInfo {
+        VarInfo {
+            elements_written: elements.map(|e| e.iter().copied().collect()),
+            ..VarInfo::new(state)
+        }
+    }
+
+    #[test]
+    fn joined_paths_cover_the_elements_either_wrote() {
+        use InitState::*;
+        let only = |e: &[i64]| Some(e.iter().copied().collect::<BTreeSet<i64>>());
+        let zero = written(MallocInitialized, Some(&[0]));
+        let one = written(MallocInitialized, Some(&[1]));
+        let whole = written(MallocInitialized, None);
+        let unwritten = written(MallocUninitialized, None);
+        let joined = |a: &VarInfo, b: &VarInfo| join_var_info(a, b).elements_written;
+        assert_eq!(joined(&zero, &one), only(&[0, 1]));
+        assert_eq!(joined(&zero, &unwritten), only(&[0]));
+        assert_eq!(joined(&unwritten, &zero), only(&[0]));
+        assert_eq!(joined(&zero, &whole), None);
+        assert_eq!(joined(&zero, &written(Initialized, None)), None);
+        let mut a = InitStateMap::new();
+        a.insert("p".into(), zero.clone());
+        let mut b = InitStateMap::new();
+        b.insert("p".into(), one.clone());
+        assert_eq!(join_states(&a, &b)["p"].elements_written, only(&[0, 1]));
+        assert!(zero.element_written(0) && !zero.element_written(1));
+        assert!(whole.element_written(7));
     }
 }

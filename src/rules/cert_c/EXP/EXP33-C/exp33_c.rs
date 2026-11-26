@@ -1526,8 +1526,11 @@ fn check_deref_read<'t>(
             )),
             ..Default::default()
         });
-    } else if info.state.is_content_unsafe() {
-        // Pointer is set but content is uninitialized (malloc without memset)
+    } else if info.state.is_content_unsafe()
+        || init_state::reads_unwritten_element(node, source, &info)
+    {
+        // Pointer is set but content is uninitialized (malloc without
+        // memset), or written only at elements this read does not take.
         reported.insert(var_name.clone());
         violations.push(RuleViolation {
             rule_id: "EXP33-C".to_string(),
@@ -1624,7 +1627,7 @@ fn check_subscript_read<'t>(
     let content_unsafe = matches!(
         info.state,
         InitState::Uninitialized | InitState::MallocUninitialized
-    );
+    ) || init_state::reads_unwritten_element(node, source, &info);
 
     if content_unsafe {
         reported.insert(var_name.clone());
