@@ -30,6 +30,13 @@ static FILE *create_log(const char *name)
     return create_new(name);
 }
 
+static FILE *create_either_log(const char *name, int append)
+{
+    if (append)
+        return create_log(name);
+    return create_new(name);
+}
+
 int step(FILE *f);
 
 int add(const char *name)
@@ -50,6 +57,17 @@ bye:
 int add_log(const char *name)
 {
     FILE *log = create_log(name);
+
+    if (log == NULL)
+        return -1;
+    step(log);
+    fclose(log);
+    return 0;
+}
+
+int add_either(const char *name, int append)
+{
+    FILE *log = create_either_log(name, append);
 
     if (log == NULL)
         return -1;

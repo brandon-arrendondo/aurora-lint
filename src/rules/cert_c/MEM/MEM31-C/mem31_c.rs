@@ -5493,21 +5493,56 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
     /// True when every value `func_name`'s body may return comes from a
     /// stream opener (`call_roles::is_stream_opener`) or from a wrapper
-    /// that does, and none of it from an allocator. A callee with no body
-    /// in the scan, or one whose returns the summary could not read,
-    /// answers false, and so does a cycle of wrappers.
-    fn returns_only_streams(&self, func_name: &str, seen: &mut HashSet<String>) -> bool {
-        if !seen.insert(func_name.to_string()) {
-            return false;
-        }
-        let Some(summary) = self.function_summaries.get(func_name) else {
+    /// that does, and none of it from an allocator. `NULL`, a parameter or a
+    /// global such as `stdout` may be returned too.
+    ///
+    /// Answers false, on purpose, for: a callee with no body in the scan; a
+    /// body whose returns the summary could not read; a return carrying a
+    /// value of unread origin (`FunctionSummary::returns_unresolved_value`:
+    /// a call through a function pointer, or an assignment such as
+    /// `return (f = fopen(...));`); a function-like macro wrapper, which has
+    /// no summary; and a wrapper that reaches itself again, recursion
+    /// included. Each of those leaves the call to the name shape below.
+    ///
+    /// `site` picks the definitions the call sees, as for
+    /// `returned_value_escapes`; a wrapper's own callees are read whole.
+    fn returns_only_streams(&self, func_name: &str, site: Site) -> bool {
+        let Some(summary) = self.summary_at(func_name, site) else {
             return false;
         };
-        !summary.returns_allocation
-            && !summary.returned_callees.is_empty()
-            && summary.returned_callees.iter().all(|callee| {
-                call_roles::is_stream_opener(callee) || self.returns_only_streams(callee, seen)
-            })
+        let mut path = vec![func_name.to_string()];
+        self.summary_returns_only_streams(&summary, &mut path)
+    }
+
+    /// [`Self::returns_only_streams`] for one summary, `path` holding the
+    /// wrappers on the way here: a name on it again is a cycle, while the
+    /// same wrapper reached down two sibling branches is not.
+    fn summary_returns_only_streams(
+        &self,
+        summary: &FunctionSummary,
+        path: &mut Vec<String>,
+    ) -> bool {
+        if summary.returns_allocation
+            || summary.returns_unresolved_value
+            || summary.returned_callees.is_empty()
+        {
+            return false;
+        }
+        summary.returned_callees.iter().all(|callee| {
+            if call_roles::is_stream_opener(callee) {
+                return true;
+            }
+            if path.iter().any(|seen| seen == callee) {
+                return false;
+            }
+            let Some(inner) = self.function_summaries.get(callee) else {
+                return false;
+            };
+            path.push(callee.clone());
+            let streams = self.summary_returns_only_streams(&inner, path);
+            path.pop();
+            streams
+        })
     }
 
     fn is_allocation_call(&self, node: &Node, source: &str) -> bool {
@@ -5549,7 +5584,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // name: pureftpd's `create_newpasswd` returns `fdopen`'s
                 // stream, and its caller's `fclose` on every path is not a
                 // leak. The body outranks the name shape below.
-                if self.returns_only_streams(&func_name, &mut HashSet::new()) {
+                if self.returns_only_streams(&func_name, site_of(node, source)) {
                     return false;
                 }
 

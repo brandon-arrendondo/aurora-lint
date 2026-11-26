@@ -481,6 +481,15 @@ pub struct FunctionSummary {
     /// itself.
     #[serde(default)]
     pub returned_callees: HashSet<String>,
+    /// Some `return` may carry a value `returned_callees` does not account
+    /// for: a call it cannot name (through a function pointer,
+    /// `return (FILE *)g.alloc(64);`), an assignment or a comma expression
+    /// (`return (f = fopen(...));`), or a name assigned from one. A consumer
+    /// asking whether EVERY returned value comes from a known kind of callee
+    /// must answer no when this is set. `NULL`, a literal, a parameter or a
+    /// global such as `stdout` is not such a value.
+    #[serde(default)]
+    pub returns_unresolved_value: bool,
     /// MAY: the object this function returns was, before the return, put
     /// somewhere that outlives the call -- stored into a destination rooted
     /// in a parameter or a file-scope variable (`list->head = obj`), or
@@ -1626,9 +1635,10 @@ fn analyze_function(
         summary.returns_pointer = is_pointer_return;
         if is_pointer_return {
             match body_returned_callees(&body, source, text_end) {
-                Some(callees) => {
+                Some((callees, unresolved)) => {
                     summary.returns_allocation = callees.iter().any(|c| is_allocator_name(c));
                     summary.returned_callees = callees;
+                    summary.returns_unresolved_value = unresolved;
                 }
                 None => {
                     summary.returns_allocation =
@@ -2077,7 +2087,15 @@ fn is_allocator_name(name: &str) -> bool {
             .contains_key(name)
 }
 
-fn body_returned_callees(body: &Node, source: &str, text_end: usize) -> Option<HashSet<String>> {
+/// The callees whose results may reach a `return` of `body`, and whether
+/// some returned value has an origin that set does not name
+/// (`FunctionSummary::returns_unresolved_value`). `None` when the parse
+/// recovered no `return`.
+fn body_returned_callees(
+    body: &Node,
+    source: &str,
+    text_end: usize,
+) -> Option<(HashSet<String>, bool)> {
     fn lvalue_name(node: &Node, source: &str) -> Option<String> {
         // A declarator's `*` prefixes name nothing; peel to the identifier.
         let mut n = *node;
@@ -2202,16 +2220,76 @@ fn body_returned_callees(body: &Node, source: &str, text_end: usize) -> Option<H
         }
     }
 
-    let returned: HashSet<String> = returns
+    /// Whether `expr` may carry a value [`expr_sources`] cannot name: a call
+    /// whose callee is not an identifier, an assignment or comma expression,
+    /// a name assigned from such a value, or any other expression holding a
+    /// call. `NULL`, literals and names nothing here assigns are not.
+    fn expr_unresolved(expr: &Node, unresolved_names: &HashSet<String>, source: &str) -> bool {
+        let e = init_state::strip_arg_casts(expr);
+        match e.kind() {
+            "call_expression" => e
+                .child_by_field_name("function")
+                .is_none_or(|f| f.kind() != "identifier"),
+            "identifier" | "field_expression" => {
+                unresolved_names.contains(e.utf8_text(source.as_bytes()).unwrap_or("").trim())
+            }
+            "conditional_expression" => ["consequence", "alternative"]
+                .iter()
+                .filter_map(|f| e.child_by_field_name(f))
+                .any(|a| expr_unresolved(&a, unresolved_names, source)),
+            "binary_expression" => {
+                let op = e
+                    .child_by_field_name("operator")
+                    .map(|o| o.kind())
+                    .unwrap_or("");
+                matches!(op, "+" | "-")
+                    && e.child_by_field_name("left")
+                        .is_some_and(|l| expr_unresolved(&l, unresolved_names, source))
+            }
+            "assignment_expression" | "comma_expression" => true,
+            _ => {
+                let mut stack = vec![e];
+                while let Some(n) = stack.pop() {
+                    if n.kind() == "call_expression" {
+                        return true;
+                    }
+                    let mut cursor = n.walk();
+                    stack.extend(n.named_children(&mut cursor));
+                }
+                false
+            }
+        }
+    }
+    let mut unresolved_names: HashSet<String> = HashSet::new();
+    loop {
+        let mut grew = false;
+        for (name, rhs) in &pairs {
+            if !unresolved_names.contains(name) && expr_unresolved(rhs, &unresolved_names, source) {
+                unresolved_names.insert(name.clone());
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+
+    let returned_exprs: Vec<Node> = returns
         .iter()
         .flat_map(|ret| {
             ret.child_nodes()
                 .filter(|c| c.is_named())
-                .flat_map(|expr| expr_sources(&expr, source, &sources))
                 .collect::<Vec<_>>()
         })
         .collect();
-    Some(returned)
+    let returned: HashSet<String> = returned_exprs
+        .iter()
+        .flat_map(|expr| expr_sources(expr, source, &sources))
+        .collect();
+    let unresolved = returned_exprs
+        .iter()
+        .any(|expr| expr_unresolved(expr, &unresolved_names, source));
+    Some((returned, unresolved))
 }
 
 /// Whether `body` never returns to its caller, read from the AST the way
@@ -4979,6 +5057,7 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, mut summary: Functi
     existing.returns_allocation |= summary.returns_allocation;
     existing.returns_pointer |= summary.returns_pointer;
     existing.returned_callees.extend(summary.returned_callees);
+    existing.returns_unresolved_value |= summary.returns_unresolved_value;
     // MAY, like `stores_params` and for the same reason: if any definition
     // under this name links its result somewhere, a caller reporting the
     // dropped result as leaked is wrong on that build.
@@ -9664,6 +9743,42 @@ mod tests {
     }
 
     /// The block reaches the return through a copy and a `?:`.
+    /// A return whose value no callee name accounts for is flagged, so a
+    /// reader asking whether every returned value came from a known kind of
+    /// callee does not pass over it. `NULL`, a parameter and a global are
+    /// not such values.
+    #[test]
+    fn test_returns_unresolved_value() {
+        let code = r#"
+        struct allocator { void *(*alloc)(unsigned long); };
+        struct allocator g;
+        FILE *through_pointer(const char *n) {
+            if (n) return fopen(n, "r");
+            return (FILE *)g.alloc(64);
+        }
+        FILE *assigned(const char *n) {
+            FILE *f;
+            return (f = fopen(n, "r"));
+        }
+        FILE *copied(void) {
+            void *b = g.alloc(64);
+            return b;
+        }
+        FILE *named(const char *n, FILE *dflt) {
+            if (!n) return NULL;
+            if (n[0] == '-') return stdout;
+            if (n[0] == '=') return dflt;
+            return fopen(n, "r");
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        let unresolved = |f: &str| summaries.get(f).unwrap().returns_unresolved_value;
+        assert!(unresolved("through_pointer"));
+        assert!(unresolved("assigned"));
+        assert!(unresolved("copied"));
+        assert!(!unresolved("named"));
+    }
+
     #[test]
     fn test_returns_allocation_through_copy_and_ternary() {
         let code = r#"
