@@ -26,6 +26,9 @@ pub struct Arr39C {
     /// `ProjectContext::project_array_objects`: file-scope arrays a header
     /// declares.
     project_arrays: RefCell<Arc<HashSet<String>>>,
+    /// `ProjectContext::project_pointer_objects`: file-scope pointers a
+    /// header or another file declares, with their type spelling.
+    project_pointers: RefCell<Arc<HashMap<String, String>>>,
     /// `ProjectContext::pointer_typedef_names`, for a pointer typedef only a
     /// header defines.
     pointer_typedefs: RefCell<Arc<HashSet<String>>>,
@@ -63,6 +66,7 @@ impl CertRule for Arr39C {
     fn set_project_context(&self, context: &ProjectContext) {
         self.visible.borrow_mut().struct_field_types = context.struct_field_types.clone();
         *self.project_arrays.borrow_mut() = Arc::new(context.project_array_objects());
+        *self.project_pointers.borrow_mut() = Arc::new(context.project_pointer_objects());
         *self.pointer_typedefs.borrow_mut() = context.pointer_typedef_names.clone();
         *self.function_pointer_typedefs.borrow_mut() =
             context.function_pointer_typedef_names.clone();
@@ -82,6 +86,7 @@ impl CertRule for Arr39C {
             source,
             visible: &visible,
             project_arrays: self.project_arrays.borrow().clone(),
+            project_pointers: self.project_pointers.borrow().clone(),
             pointer_typedefs: &pointer_typedefs,
             function_pointer_typedefs: &function_pointer_typedefs,
             model: self.data_model.get(),
@@ -101,6 +106,7 @@ struct OperandTypes<'a> {
     source: &'a str,
     visible: &'a VisibleTypes,
     project_arrays: Arc<HashSet<String>>,
+    project_pointers: Arc<HashMap<String, String>>,
     pointer_typedefs: &'a HashSet<String>,
     function_pointer_typedefs: &'a HashSet<String>,
     model: IntFacts,
@@ -151,9 +157,28 @@ impl<'a> OperandTypes<'a> {
         }
         let env = self.env();
         matches!(
-            expr_type::expr_type(operand, self.source, env),
+            expr_type::expr_type(operand, self.source, env)
+                .or_else(|| self.project_object_type(operand)),
             Some(CType::Pointer(_) | CType::Array(_))
         )
+    }
+
+    /// The type a project pointer object has when `operand` names one: an
+    /// identifier no declaration in this file binds, which some header or
+    /// other file declares as a pointer (`extern int *g;`). ADR-0006: a name
+    /// the file declares is answered by that declaration only.
+    fn project_object_type(&self, operand: &Node) -> Option<CType> {
+        if operand.kind() != "identifier" {
+            return None;
+        }
+        let name = ast_utils::get_node_text(operand, self.source);
+        let spelling = self.project_pointers.get(name)?;
+        if ast_utils::resolve_identifier_declarator_in(&self.root, operand, name, self.source)
+            .is_some()
+        {
+            return None;
+        }
+        expr_type::classify_spelling(spelling, self.env())
     }
 
     /// Whether `operand` is a pointer to, or an array of, a character type
@@ -163,7 +188,9 @@ impl<'a> OperandTypes<'a> {
     /// sizeof(x)` where the data model leaves `size_t`'s rank open), has its
     /// pointer operand's type.
     fn points_to_bytes(&self, operand: &Node) -> bool {
-        let element = match expr_type::expr_type(operand, self.source, self.env()) {
+        let typed = expr_type::expr_type(operand, self.source, self.env())
+            .or_else(|| self.project_object_type(operand));
+        let element = match typed {
             Some(CType::Pointer(Some(element)) | CType::Array(Some(element))) => element,
             None => {
                 return match operand.kind() {

@@ -11948,3 +11948,31 @@ fn int12_follows_a_plain_int_typedef_from_an_included_header() {
     assert_eq!(findings.len(), 1, "stdout: {stdout}\nstderr: {stderr}");
     assert!(findings[0].contains("Bit-field 'mode'"), "{stdout}");
 }
+
+/// ARR39-C: a pointer object only an included header declares
+/// (`extern int *g;`) is a pointer to the file that names it, so a scaled
+/// integer added to it is reported. One the header declares as a byte
+/// pointer takes a byte count, and a local of the same spelling is typed by
+/// its own declaration (ADR-0006).
+#[test]
+fn arr39_types_a_pointer_object_from_an_included_header() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("globals.h"),
+        "extern int *g_ptr_table;\nextern unsigned char *g_byte_buf;\n",
+    )
+    .unwrap();
+    let main = dir.path().join("use.c");
+    std::fs::write(
+        &main,
+        "#include <stddef.h>\n#include \"globals.h\"\n\
+         int entry(size_t n) { return *(g_ptr_table + n * sizeof(int)); }\n\
+         unsigned char *skip(size_t n) { return g_byte_buf + n * sizeof(int); }\n\
+         long shadow(size_t n) { long g_ptr_table = 0; return g_ptr_table + n * sizeof(int); }\n",
+    )
+    .unwrap();
+    let (_, stdout, stderr) = run_aurora_lint(&["--rules", "ARR39-C", main.to_str().unwrap()]);
+    let findings: Vec<&str> = stdout.lines().filter(|l| l.contains("ARR39-C:")).collect();
+    assert_eq!(findings.len(), 1, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(findings[0].contains("use.c:3:"), "{stdout}");
+}

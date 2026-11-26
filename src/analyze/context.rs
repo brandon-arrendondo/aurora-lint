@@ -1432,6 +1432,17 @@ pub struct ProjectContext {
     /// (two unrelated objects share the spelling).
     #[serde(default)]
     pub non_array_globals: Arc<HashSet<String>>,
+    /// The file-scope objects some scanned file or header declares with
+    /// only pointer derivations (`extern int *g;`), with the type that
+    /// declaration spells (`int *`): a body in another file naming one reads
+    /// a pointer. A source file's own `static` objects are not here.
+    #[serde(default)]
+    pub pointer_globals: Arc<HashMap<String, String>>,
+    /// The file-scope objects some scanned file or header declares any
+    /// other way, or with two pointer spellings: a name here is not known to
+    /// be a pointer.
+    #[serde(default)]
+    pub non_pointer_globals: Arc<HashSet<String>>,
     /// Typedef names some scanned file or header defines with `volatile`
     /// (`typedef volatile uint32_t reg_t;`).
     #[serde(default)]
@@ -1473,6 +1484,17 @@ impl ProjectContext {
             .iter()
             .filter(|n| !self.non_array_globals.contains(*n))
             .cloned()
+            .collect()
+    }
+
+    /// The file-scope objects declared as pointers somewhere in the project,
+    /// each with its type spelling, less any name some scanned file or header
+    /// also declares another way or spells differently.
+    pub fn project_pointer_objects(&self) -> HashMap<String, String> {
+        self.pointer_globals
+            .iter()
+            .filter(|(n, _)| !self.non_pointer_globals.contains(*n))
+            .map(|(n, t)| (n.clone(), t.clone()))
             .collect()
     }
 
@@ -1777,7 +1799,7 @@ pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
 /// to a serialized field of [`ProjectContext`] (or of a type it holds), or to
 /// what such a field means: the cache header carries it, so an old cache is
 /// refused instead of misread.
-const PRESCAN_CACHE_FORMAT: u32 = 90;
+const PRESCAN_CACHE_FORMAT: u32 = 89;
 
 /// The header a prescan cache file starts with: a magic, the layout version
 /// and the aurora-lint version that wrote it.

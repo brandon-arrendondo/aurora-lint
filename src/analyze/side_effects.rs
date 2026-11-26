@@ -310,6 +310,64 @@ pub struct FileScopeObjects {
     /// without an array declarator. A name in both sets is not known to be an
     /// array.
     pub non_array: std::collections::HashSet<String>,
+    /// The objects another file can read that some declaration here gives
+    /// only pointer derivations (`extern int *g;`, `char **argv_copy;`),
+    /// each with its type spelled as [`crate::utility::cert_c::expr_type::classify_spelling`]
+    /// reads it (`int *`, `char **`).
+    pub pointer: HashMap<String, String>,
+    /// The objects another file can read that some declaration here gives
+    /// anything but only pointer derivations. A name here, or given two
+    /// spellings, is not known to be a pointer ([`merge_pointer_globals`]).
+    pub non_pointer: std::collections::HashSet<String>,
+}
+
+/// Merge the pointer objects `from` into `into`: a name two declarations
+/// spell differently is two unrelated objects, or one this cannot type, so
+/// it moves to `non_pointer`.
+pub fn merge_pointer_globals(
+    into: &mut HashMap<String, String>,
+    non_pointer: &mut std::collections::HashSet<String>,
+    from: HashMap<String, String>,
+) {
+    for (name, spelling) in from {
+        match into.get(&name) {
+            Some(known) if *known != spelling => {
+                non_pointer.insert(name);
+            }
+            _ => {
+                into.insert(name, spelling);
+            }
+        }
+    }
+}
+
+/// `int *` for `int *g` in `decl`: the specifier with one `*` a pointer
+/// level, when `declarator`'s derivations are all pointers. `None` for an
+/// array, a function or a plain object, and for a specifier with no plain
+/// spelling (an untagged struct).
+fn pointer_spelling(decl: &Node, declarator: &Node, source: &str) -> Option<String> {
+    let shape = crate::utility::cert_c::expr_type::declarator_shape(declarator);
+    if shape.is_empty() || shape.chars().any(|c| c != '*') {
+        return None;
+    }
+    let specifier = decl.child_by_field_name("type")?;
+    let base = match specifier.kind() {
+        "primitive_type" | "sized_type_specifier" | "type_identifier" => {
+            get_node_text(&specifier, source).to_string()
+        }
+        "struct_specifier" | "union_specifier" => {
+            let tag = specifier.child_by_field_name("name")?;
+            let keyword = specifier.kind().trim_end_matches("_specifier");
+            format!("{keyword} {}", get_node_text(&tag, source))
+        }
+        _ => return None,
+    };
+    let qualifiers = ["const", "volatile"]
+        .iter()
+        .filter(|q| ast_utils::declaration_has_qualifier(decl, q, source))
+        .map(|q| format!("{q} "))
+        .collect::<String>();
+    Some(format!("{qualifiers}{base} {shape}"))
 }
 
 /// What the declarations `root` makes at file scope add to `out`.
@@ -331,6 +389,16 @@ fn record_file_scope_objects(root: &Node, source: &str, shared: bool, out: &mut 
                 out.array.insert(name.clone());
             } else {
                 out.non_array.insert(name.clone());
+            }
+            match pointer_spelling(&decl, &declarator, source) {
+                Some(spelling) => merge_pointer_globals(
+                    &mut out.pointer,
+                    &mut out.non_pointer,
+                    HashMap::from([(name.clone(), spelling)]),
+                ),
+                None => {
+                    out.non_pointer.insert(name.clone());
+                }
             }
         }
         out.names.insert(name);
