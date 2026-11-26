@@ -93,6 +93,7 @@ impl CertRule for Arr39C {
             typedefs: &typedefs,
             facts: OnceCell::new(),
             env: OnceCell::new(),
+            macros: OnceCell::new(),
             variable_types: RefCell::new(HashMap::new()),
         };
         self.check_node(node, source, &types, violations);
@@ -113,6 +114,8 @@ struct OperandTypes<'a> {
     typedefs: &'a OnceCell<HashMap<String, String>>,
     facts: OnceCell<PointerFacts>,
     env: OnceCell<TypeEnv<'a>>,
+    /// The file's object-like macros, with the offset of each `#define`.
+    macros: OnceCell<HashMap<String, Vec<usize>>>,
     /// Each function's `{name -> declared type}` map, by the function's
     /// node id.
     variable_types: RefCell<HashMap<usize, Arc<HashMap<String, String>>>>,
@@ -178,9 +181,9 @@ impl<'a> OperandTypes<'a> {
     /// identifier no declaration in this file binds, which some header or
     /// other file declares as a pointer (`extern int *g;`). ADR-0006: a name
     /// the file declares is answered by that declaration only, and one an
-    /// enumerator in scope or a `#define` here gives is no object at all.
-    /// The project table already drops a name any scanned file makes an
-    /// enumerator or a macro.
+    /// enumerator in scope or an object-like `#define` earlier in the file
+    /// gives is no object at all. The project table already drops a name a
+    /// header makes a file-scope enumerator or an object-like macro.
     fn project_object_type(&self, operand: &Node) -> Option<CType> {
         if operand.kind() != "identifier" {
             return None;
@@ -190,11 +193,20 @@ impl<'a> OperandTypes<'a> {
         if ast_utils::resolve_identifier_declarator_in(&self.root, operand, name, self.source)
             .is_some()
             || ast_utils::enumerator_in_scope(operand, name, self.source)
-            || ast_utils::is_defined_macro_name(name, self.source)
+            || self.macro_defined_before(operand, name)
         {
             return None;
         }
         expr_type::classify_spelling(spelling, self.env())
+    }
+
+    /// Whether the file defines `name` as an object-like macro before
+    /// `operand`, which then replaces it there.
+    fn macro_defined_before(&self, operand: &Node, name: &str) -> bool {
+        self.macros
+            .get_or_init(|| ast_utils::object_like_macro_definitions(self.source))
+            .get(name)
+            .is_some_and(|at| at.iter().any(|&offset| offset < operand.start_byte()))
     }
 
     /// Whether `operand` is a pointer to, or an array of, a character type

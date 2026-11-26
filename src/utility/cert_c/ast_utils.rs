@@ -4373,6 +4373,28 @@ pub fn is_defined_macro_name(name: &str, source: &str) -> bool {
     re.is_match(source)
 }
 
+/// Each object-like macro `source` defines, with the byte offset of every
+/// `#define` of it. A function-like `#define NAME(x)` is left out: it
+/// replaces `NAME` only where a `(` follows, so a plain occurrence of the
+/// name is not an invocation of it.
+pub fn object_like_macro_definitions(source: &str) -> HashMap<String, Vec<usize>> {
+    static DEFINE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?m)^[ \t]*#[ \t]*define[ \t]+(\w+)(\()?").expect("valid regex")
+    });
+    let mut out: HashMap<String, Vec<usize>> = HashMap::new();
+    for c in DEFINE.captures_iter(source) {
+        if c.get(2).is_some() {
+            continue;
+        }
+        if let (Some(all), Some(name)) = (c.get(0), c.get(1)) {
+            out.entry(name.as_str().to_string())
+                .or_default()
+                .push(all.start());
+        }
+    }
+    out
+}
+
 /// Every name [`is_defined_macro_name`] answers true for in one `source`,
 /// collected in a single pass. Asking that function about each function of a
 /// file rescans the whole file per question, which is quadratic in file size;

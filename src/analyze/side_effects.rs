@@ -316,9 +316,10 @@ pub struct FileScopeObjects {
     /// reads it (`int *`, `char **`).
     pub pointer: HashMap<String, String>,
     /// The objects another file can read that some declaration here gives
-    /// anything but only pointer derivations, and every enumeration constant,
-    /// in any block. A name here, or given two spellings, is not known to be
-    /// a pointer ([`merge_pointer_globals`]).
+    /// anything but only pointer derivations, and, in a header, every
+    /// file-scope enumeration constant and object-like macro. A name here, or
+    /// given two spellings, is not known to be a pointer
+    /// ([`merge_pointer_globals`]).
     pub non_pointer: std::collections::HashSet<String>,
 }
 
@@ -450,15 +451,25 @@ pub fn file_scope_objects(
     }
     // Enumeration constants are declared names too, whatever block their
     // Enumeration constants are declared names too, whatever block their
-    // `enum` is in, and whether or not a value is written. One is a constant,
-    // not a pointer: a pointer object another file declares by that name is
-    // not known to be what an occurrence of it names.
+    // `enum` is in, and whether or not a value is written. A header's
+    // file-scope one is a constant in every file that includes it, so a
+    // pointer object another file declares by that name is not known to be
+    // what an occurrence of it names there. A source file's, or one in a
+    // block, reaches no other file, and the file's own scope answers it.
     for e in lang_parsing_substrate::query::find_descendants_of_kind(*root, "enumerator") {
         if let Some(n) = e.child_by_field_name("name") {
             let name = get_node_text(&n, source).to_string();
-            out.non_pointer.insert(name.clone());
+            if shared && !ast_utils::ancestors(&e).any(|a| a.kind() == "compound_statement") {
+                out.non_pointer.insert(name.clone());
+            }
             out.names.insert(name);
         }
+    }
+    // Likewise a header's object-like macro, which replaces the name in
+    // every file that includes it.
+    if shared {
+        out.non_pointer
+            .extend(ast_utils::object_like_macro_definitions(source).into_keys());
     }
     out
 }
