@@ -944,6 +944,10 @@ impl Arr30C {
 
                 // For multidimensional arrays, extract inner dimensions
                 self.extract_multidimensional_buffers(node, &buffer.name, source, buffers, macros);
+            } else {
+                // A pointer to an array is no buffer, but the arrays it
+                // points to have dimensions.
+                self.extract_multidimensional_buffers(node, "", source, buffers, macros);
             }
 
             // Also check for VLA declarations using typedef
@@ -4572,8 +4576,9 @@ impl Arr30C {
             let (buffer_size, alloc_bytes) =
                 self.extract_malloc_size_and_bytes_from_call(&right, source)?;
 
-            // Create a wildcard buffer name: base_array[*]
-            let buffer_name = format!("{}[*]", base_array);
+            // `m[i] = malloc(...)` sizes every `m[i]`; `m[i][j] = malloc(...)`
+            // every `m[i][j]`.
+            let buffer_name = Self::dimension_key(&base_array, Self::subscript_depth(&left));
 
             let buffer_info = BufferInfo {
                 name: buffer_name.clone(),
@@ -4616,8 +4621,13 @@ impl Arr30C {
     }
 
     /// Get base array name from subscript expression (e.g., "matrix" from "matrix[i]")
+    /// `(*p)[k]` reads `p`'s first row as `p[0][k]` does, so the base of
+    /// both is "p".
     fn get_base_array_from_subscript(&self, node: &Node, source: &str) -> Option<String> {
-        let array_node = node.child(0)?;
+        let mut array_node = node.child(0)?;
+        if let Some(pointer) = Self::dereferenced_operand(&array_node) {
+            array_node = pointer;
+        }
         if array_node.kind() == "identifier" {
             let text = &source[array_node.start_byte()..array_node.end_byte()];
             return Some(text.to_string());
@@ -4627,6 +4637,21 @@ impl Arr30C {
             return self.get_base_array_from_subscript(&array_node, source);
         }
         None
+    }
+
+    /// The operand of a parenthesized dereference used as an array, `p` in
+    /// `(*p)[k]`: the subscript's first level, as the `0` is in `p[0][k]`.
+    fn dereferenced_operand<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+        if node.kind() != "parenthesized_expression" {
+            return None;
+        }
+        let inner = node.named_child(0)?;
+        if inner.kind() != "pointer_expression"
+            || inner.child_by_field_name("operator")?.kind() != "*"
+        {
+            return None;
+        }
+        inner.child_by_field_name("argument")
     }
 
     /// Get index text from subscript expression
@@ -4671,15 +4696,20 @@ impl Arr30C {
         None
     }
 
-    /// Get buffer name from a subscript expression for lookup
-    /// For matrix[0], tries both "matrix[0]" and "matrix[*]"
-    /// Returns the wildcard pattern for now
+    /// The buffers key of the array a subscript expression yields: "m[*]"
+    /// for `m[0]` and for `(*m)`, "cube[*][*]" for `cube[1][2]`.
     fn get_subscript_buffer_name(&self, node: &Node, source: &str) -> Option<String> {
-        // Extract base array name
-        let base_name = self.get_base_array_from_subscript(node, source)?;
-
-        // Return wildcard pattern for lookup
-        Some(format!("{}[*]", base_name))
+        let base_name = match Self::dereferenced_operand(node) {
+            Some(pointer) if pointer.kind() == "identifier" => {
+                get_node_text(&pointer, source).to_string()
+            }
+            Some(pointer) if pointer.kind() == "subscript_expression" => {
+                self.get_base_array_from_subscript(&pointer, source)?
+            }
+            Some(_) => return None,
+            None => self.get_base_array_from_subscript(node, source)?,
+        };
+        Some(Self::dimension_key(&base_name, Self::subscript_depth(node)))
     }
 
     /// Check nested subscript expressions (multi-dimensional array access)
@@ -4691,24 +4721,18 @@ impl Arr30C {
         node: &Node,
         source: &str,
         buffers: &HashMap<String, BufferInfo>,
-        aliases: &HashMap<String, PointerAlias>,
         macro_constants: &HashMap<String, i64>,
     ) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Get the inner subscript node (matrix[i])
+        // Get the inner subscript node (matrix[i]). Its own bound is checked
+        // when the walk reaches it, as every subscript expression is; checking
+        // it here as well reported it once more per enclosing subscript.
         if let Some(inner_node) = node.child(0) {
-            if inner_node.kind() == "subscript_expression" {
-                // Step 1: Check the inner subscript bounds (matrix[i])
-                violations.extend(self.check_array_subscript(
-                    &inner_node,
-                    source,
-                    buffers,
-                    aliases,
-                    macro_constants,
-                ));
-
-                // Step 2: Get the buffer name for the inner subscript result
+            if inner_node.kind() == "subscript_expression"
+                || Self::dereferenced_operand(&inner_node).is_some()
+            {
+                // Get the buffer name for the inner subscript result
                 // For matrix[0], this should look up "matrix[*]" in buffers
                 if let Some(inner_buffer_name) = self.get_subscript_buffer_name(&inner_node, source)
                 {
@@ -4846,15 +4870,15 @@ impl Arr30C {
 
         // Check if this is a nested subscript expression (e.g., matrix[0][5])
         if let Some(child) = node.child(0) {
-            if child.kind() == "subscript_expression" {
+            // `(*p)[k]` through a pointer to an array is `p[0][k]`, when
+            // the declaration recorded the dimension it indexes.
+            let row_of_pointer = Self::dereferenced_operand(&child).is_some()
+                && self
+                    .get_subscript_buffer_name(&child, source)
+                    .is_some_and(|key| buffers.contains_key(&key));
+            if child.kind() == "subscript_expression" || row_of_pointer {
                 // Delegate to nested subscript handler
-                return self.check_nested_subscript(
-                    node,
-                    source,
-                    buffers,
-                    aliases,
-                    macro_constants,
-                );
+                return self.check_nested_subscript(node, source, buffers, macro_constants);
             }
         }
 
@@ -10744,11 +10768,19 @@ impl Arr30C {
                             }
                         }
                     }
-                    // Handle complex declarators (function pointers, nested pointers, etc.)
-                    "function_declarator" | "pointer_declarator" | "parenthesized_declarator"
-                        if var_name.is_none() =>
-                    {
-                        var_name = find_identifier_in_declarator(&child, source);
+                    // `T (a)[4]` is an array of four; `T (*p)[4]` declares a
+                    // pointer to one, which is no buffer of four elements:
+                    // `p[5]` steps over five arrays, and nothing here knows
+                    // how many there are.
+                    "parenthesized_declarator" if var_name.is_none() && i == 0 => {
+                        let mut inner = child;
+                        while inner.kind() == "parenthesized_declarator" {
+                            inner = inner.named_child(0)?;
+                        }
+                        if inner.kind() != "identifier" {
+                            return None;
+                        }
+                        var_name = Some(get_node_text(&inner, source).to_string());
                     }
                     _ => {}
                 }
@@ -10778,9 +10810,11 @@ impl Arr30C {
     }
 
     /// Extract multidimensional array buffers
-    /// For int matrix[3][4], creates:
-    /// - "matrix" with size 3 (already created by extract_buffer_from_array_declarator)
-    /// - "matrix[*]" with size 4 (created here for inner dimension checking)
+    /// For `int cube[2][3][4]`, where "cube" (size 2) was already created by
+    /// extract_buffer_from_array_declarator, creates one entry per inner
+    /// dimension, keyed by how many subscripts reach it:
+    /// - "cube[*]" with size 3, the bound of the index in `cube[i][j]`
+    /// - "cube[*][*]" with size 4, the bound of the index in `cube[i][j][k]`
     fn extract_multidimensional_buffers(
         &self,
         decl_node: &Node,
@@ -10799,9 +10833,11 @@ impl Arr30C {
         }
     }
 
-    /// Recursively extract inner dimensions from array_declarator nodes
-    /// For int matrix[3][4], when called on the outer array_declarator:
-    /// - Creates "matrix[*]" with size 4
+    /// Create the per-dimension entries of a multidimensional array from its
+    /// declarator. `T a[2][3][4]` nests as `((a[2])[3])[4]`: the outermost
+    /// array_declarator is the last dimension, so the chain is read from the
+    /// outside in and reversed. The first dimension is the base buffer
+    /// itself; dimension `d` is keyed `a` followed by `d` copies of `[*]`.
     fn extract_inner_dimensions(
         &self,
         node: &Node,
@@ -10810,53 +10846,93 @@ impl Arr30C {
         buffers: &mut HashMap<String, BufferInfo>,
         macros: &HashMap<String, i64>,
     ) {
-        if node.kind() == "init_declarator" {
-            // Skip to the declarator child
-            if let Some(declarator) = node.child(0) {
-                self.extract_inner_dimensions(&declarator, base_name, source, buffers, macros);
+        let mut declarator = *node;
+        if declarator.kind() == "init_declarator" {
+            match declarator.child_by_field_name("declarator") {
+                Some(inner) => declarator = inner,
+                None => return,
             }
-            return;
         }
-
-        if node.kind() != "array_declarator" {
-            return;
+        let mut dimensions = Vec::new();
+        while declarator.kind() == "array_declarator" {
+            dimensions.push(declarator);
+            match declarator.child_by_field_name("declarator") {
+                Some(inner) => declarator = inner,
+                None => return,
+            }
         }
-
-        // Check if first child is a nested array_declarator
-        if let Some(first_child) = node.child(0) {
-            if first_child.kind() == "array_declarator" {
-                // This node represents an outer dimension (e.g., [COLS] in matrix[ROWS][COLS])
-                // Extract the size from THIS node (the outer/rightmost dimension)
-                // For matrix[ROWS][COLS], the AST is: array_declarator[COLS] -> array_declarator[ROWS]
-                // We want the COLS dimension (rightmost), which is in the current node
-                if let Some(mut size) = self.extract_array_size(node, source) {
-                    // Resolve macro constants in buffer size
-                    if let BufferSize::Symbolic(ref sym) = size {
-                        if let Some(&value) = macros.get(sym) {
-                            size = BufferSize::Static(value as usize);
-                        }
-                    }
-
-                    // Create wildcard entry
-                    let wildcard_name = format!("{}[*]", base_name);
-                    let line = node.start_position().row + 1;
-
-                    buffers.insert(
-                        wildcard_name,
-                        BufferInfo {
-                            name: base_name.to_string(),
-                            size,
-                            element_type: "array_element".to_string(),
-                            allocation_line: line,
-                            alloc_bytes: None,
-                        },
-                    );
+        dimensions.reverse();
+        // `T (*p)[4]` points to arrays of four: `p` itself is no buffer
+        // (extract_buffer_from_array_declarator makes none), and each
+        // declared dimension sits one subscript further in, `p[*]` = 4.
+        while declarator.kind() == "parenthesized_declarator" {
+            match declarator.named_child(0) {
+                Some(inner) => declarator = inner,
+                None => return,
+            }
+        }
+        let (base_name, first) = match declarator.kind() {
+            "identifier" if !base_name.is_empty() => (base_name.to_string(), 1),
+            "pointer_declarator" => match declarator.child_by_field_name("declarator") {
+                Some(name) if name.kind() == "identifier" => {
+                    (get_node_text(&name, source).to_string(), 0)
                 }
+                _ => return,
+            },
+            _ => return,
+        };
+        let base_name = base_name.as_str();
+        for (index, dimension) in dimensions.iter().enumerate().skip(first) {
+            let depth = index + 1 - first;
+            let Some(mut size) = self.extract_array_size(dimension, source) else {
+                continue;
+            };
+            // Resolve macro constants in buffer size
+            if let BufferSize::Symbolic(ref sym) = size {
+                if let Some(&value) = macros.get(sym) {
+                    size = BufferSize::Static(value as usize);
+                }
+            }
+            buffers.insert(
+                Self::dimension_key(base_name, depth),
+                BufferInfo {
+                    name: base_name.to_string(),
+                    size,
+                    element_type: "array_element".to_string(),
+                    allocation_line: dimension.start_position().row + 1,
+                    alloc_bytes: None,
+                },
+            );
+        }
+    }
 
-                // Continue recursing for deeper dimensions (e.g., int arr[2][3][4])
-                self.extract_inner_dimensions(&first_child, base_name, source, buffers, macros);
+    /// The buffers key of the dimension `depth` subscripts into `base`:
+    /// `base` followed by `depth` copies of `[*]`.
+    fn dimension_key(base: &str, depth: usize) -> String {
+        format!("{}{}", base, "[*]".repeat(depth))
+    }
+
+    /// How many subscripts a subscript expression applies to its base
+    /// array: 1 for `a[i]` and for `(*a)`, 3 for `a[i][j][k]` and for
+    /// `(*a)[j][k]`.
+    fn subscript_depth(node: &Node) -> usize {
+        let mut depth = 0;
+        let mut current = *node;
+        loop {
+            let next = if current.kind() == "subscript_expression" {
+                current.child(0)
+            } else {
+                Self::dereferenced_operand(&current)
+            };
+            match next {
+                Some(array) => {
+                    depth += 1;
+                    current = array;
+                }
+                None => break,
             }
         }
+        depth
     }
 
     /// Extract the size from an array_declarator node
