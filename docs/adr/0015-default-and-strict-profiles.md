@@ -709,7 +709,9 @@ pedantic preset in `src/settings/mod.rs`.
 ## Amendment (2026-10-31): the interpretive basis of the presets
 
 **Status:** the rationale is proposed; the four points at the end are
-ruled (Brandon, 2026-10-31) and not yet implemented. It gives the reading
+ruled (Brandon, 2026-10-31) and not yet implemented. Its citations were
+checked against the sources on 2026-11-25; the two taken at second hand
+say so. It gives the reading
 axis of the 2026-10-22 amendment its basis in the literature on reading
 legal texts. It also corrects the 2026-10-07 Rationale bullet on lists,
 which described the canons from a secondary source. The first ruling
@@ -717,7 +719,7 @@ restates Decision 4 of the 2026-10-07 amendment.
 
 ### Context
 
-The 2026-10-22 amendment settled that a preset chooses a reading of the
+The 2026-10-22 amendment set out that a preset chooses a reading of the
 rule, and that soundness describes the report. It did not say what kind of
 reading each preset is, or why a reading is legitimate. Interpreting legal
 texts has a long literature on exactly this, with names for the positions
@@ -739,8 +741,9 @@ critics:
 ### Rationale
 
 1. **`--strict` is the rule's fair meaning, not strict construction.**
-   Scalia and Garner define textualism as reading that "begins and ends
-   with what the text says and fairly implies" (p. 16). They reject strict
+   Scalia and Garner call exclusive reliance on the text *textualism*, and
+   say that in its purest form it "begins and ends with what the text says
+   and fairly implies" (p. 16). They reject strict
    construction outright: "Adhering to the *fair meaning* of the text (the
    textualist's touchstone) does not limit one to the hyperliteral meaning
    of each word in the text", and "Strict constructionism, as opposed to
@@ -758,7 +761,8 @@ critics:
    Maxeiner distinguishes the book's "basic" textualism (the words are
    paramount, read fairly, plain meaning followed unless absurd) from its
    "pure" textualism, which excludes purposive argument even when the text
-   is ambiguous (pp. 13-14). `--strict` is the basic kind. Where a rule's
+   is ambiguous (pp. 13-14); the "begins and ends" phrase is that purest
+   form (p. 14). `--strict` is the basic kind. Where a rule's
    text is ambiguous, `--strict` takes the reading a recorded ruling
    settles; it does not treat its silence as an answer.
 2. **The text bounds the reading, and pedantic crosses that bound openly.**
@@ -781,12 +785,20 @@ critics:
    (p. 20). A `--default` narrowing justified by what the rule's own text
    shows it is for is a fair reading. One justified by "security" or
    "safety" in general is a climb up the ladder, and has to stand as a
-   named relaxation (Decision 7) on its own merits. The same pages warn
+   named relaxation (Decision 7 above) on its own merits. The same pages warn
    that "no statute, and no private instrument for that matter, pursues its
    'broad purpose' at all costs" (p. 21): many rules are prophylactic, as a
    stop sign binds at 3 a.m. with no traffic about. That a finding is
    harmless at one site is therefore not, by itself, a ground for a
    narrowing.
+   Eskridge is the critic here. He agrees that enacted purposes "are usually
+   multiple (and potentially conflicting) and are set at a high level of
+   generality", which makes them "less than determinate aids" (p. 560), but
+   argues that almost all of the book's valid canons are themselves
+   "dependent on norms that require an assessment of a statute's purpose to
+   determine its application" (p. 531). So purpose returns through the
+   canons. That is a further reason for a narrowing to name the purpose it
+   relies on, and to rest it on the rule's own text.
 4. **Lists: what the canons say, and how Decision 4 departs from them.**
    The book confines the three list canons as follows. This corrects the
    2026-10-07 bullet.
@@ -803,18 +815,19 @@ critics:
      said. A general term followed by examples is read at its broadest
      (p. 205).
 
-   On the drafting side, Eskridge reports a survey of congressional
-   drafters: they treat a list of exemptions as exhaustive, and write
-   "including" when they mean examples (p. 572). So the canons and drafting
-   practice agree that a list which calls itself open is open, and that its
-   general term governs. As first written, Decision 4 read such a list as
-   closed at the items it names, which no canon supports. Ruling 1 below
-   keeps the general term as the reading and makes the closed list the
-   checker's current enumeration of it. That keeps both the fair meaning
-   and the reproducibility the 2026-10-07 bullet asked for. The critics
-   are a caution on the enumeration, not a reason to drop it: Eskridge
-   finds negative implication "highly manipulable in practice", and
-   *ejusdem generis* likewise (n. 258).
+   On the drafting side, Eskridge reports Gluck and Bressman's survey of
+   congressional drafting staff: they assume a list of exemptions is
+   exhaustive, and use express language when they want to negate that
+   inference. His own example of such language is "including" (p. 572). So
+   the canons and drafting practice agree that a list which calls itself
+   open is open, and that its general term governs. As first written,
+   Decision 4 read such a list as closed at the items it names, which no
+   canon supports. Ruling 1 below keeps the general term as the reading and
+   makes the closed list the checker's current enumeration of it. That
+   keeps both the fair meaning and the reproducibility the 2026-10-07
+   bullet asked for. The critics are a caution on the enumeration, not a
+   reason to drop it: Eskridge finds negative implication "highly
+   manipulable in practice", and *ejusdem generis* likewise (n. 258).
 5. **Reading CERT with ISO C and POSIX.** The related-statutes canon reads
    texts on the same subject together (*in pari materia*, § 39). Its basis
    is not that the drafters knew the related texts. It rests on two
@@ -834,10 +847,12 @@ critics:
 6. **The presets are a declared choice among canons.** The canons cut
    across one another. The book says so: "No canon of interpretation is
    absolute. Each may be overcome by the strength of differing principles
-   that point in other directions" (§ 3, p. 59). It grants that textualism,
-   "with its cross-cutting canons and competing principles, does not always
-   provide a clear answer" (p. 22). Eskridge finds a dozen or more approved
-   canons applicable to any hard case, "leaving considerable room for
+   that point in other directions" (§ 3, p. 59, as quoted by Eskridge,
+   p. 540). It grants that the text "sometimes provides no clear answer"
+   (p. 22), in answer to critics who say textualism, "with its
+   cross-cutting canons and competing principles, does not always provide a
+   clear answer" (p. 22). Eskridge finds as many as twelve to fifteen valid
+   canons applicable to a hard case, "leaving considerable room for
    judicial cherry-picking" (p. 531); Posner says their variety gives "all
    the room needed to generate the outcome" a reader wants (2012). Hirsch,
    assessing Posner's charges at Garner's request, grants this much: using
@@ -885,9 +900,9 @@ critics:
    is "simply not bound" by the authority's standards) (pp. 32-33). The
    maintainer's rulings are discretion only in the weak senses: final for
    the project and needing judgment, but bound by the rule's text and their
-   recorded basis. Hart's own phrase fits the second sense: a scorer's
-   rulings "are, though final, not infallible" (p. 140), which is why a
-   ruling can be re-judged.
+   recorded basis. Hart's own phrase fits the second weak sense, finality:
+   a scorer's rulings "are, though final, not infallible" (p. 140), which
+   is why a ruling can be re-judged.
 
 ### Ruled (2026-10-31, Brandon)
 
@@ -904,26 +919,26 @@ critics:
    dated ruling. A run is reproduced at its pins (ADR-0018): the
    aurora-lint commit fixes the enumeration it enforced, and each oracle
    label records the rulings version it was judged under (ADR-0018's
-   2026-10-09 rule-text amendment, Decision 4). The oracle labels the general term,
-   so an item the enumeration does not yet hold is scored as a missed
-   finding, not dropped from the count. This restates Decision 4 of the
-   2026-10-07 amendment for lists that call themselves open. A list the
+   2026-10-09 rule-text amendment, Decision 4). The oracle labels the
+   general term, so an item the enumeration does not yet hold is scored as
+   a missed finding, not dropped from the count. This restates Decision 4
+   of the 2026-10-07 amendment for lists that call themselves open. A list the
    text gives as complete stays as written. Extension by other
    authoritative material (POSIX's async-signal-safe list) stays as it was.
 2. **`--strict` does not apply the absurdity doctrine.** It reports what
    the text, fairly read, forbids, including results no reasonable C
    developer would call a violation. Relief for those is `--default`'s, as
-   named options (Decision 7): it "allows for what a reasonable C developer
-   would expect" (Brandon).
+   named options (Decision 7 above): it "allows for what a reasonable C
+   developer would expect" (Brandon).
 3. **A settled ruling is reopened only when the rule's text changes.** That
    is, when the rule's pinned text moves (ADR-0018's 2026-10-09 rule-text
-   amendment, Decision 5), not when a related standard gets a new edition. A changed
-   text is re-judged by a new, dated ruling. Which CERT C text this project
-   holds itself to is the rule-text pin, per rule, at a merged commit of
-   CERT's own repository. That matters all the more because this project
-   contributes changes to that text, and a pin never anticipates an
-   unmerged proposal, this project's own included (the same rule-text amendment,
-   Decision 7).
+   amendment, Decision 5), not when a related standard gets a new edition.
+   A changed text is re-judged by a new, dated ruling. Which CERT C text
+   this project holds itself to is the rule-text pin, per rule, at a merged
+   commit of CERT's own repository. That matters all the more because this
+   project contributes changes to that text, and a pin never anticipates an
+   unmerged proposal, this project's own included (the same rule-text
+   amendment, Decision 7).
 4. **Rule records name the deciding canon.** Each ruling records the canon
    or named option that decided it and those that pointed the other way
    (point 6).
@@ -939,4 +954,4 @@ critics:
   labeled: each one's enumeration and its additions become rulings, and
   rule records say which enumeration a release enforces.
 - Ruling 4 adds a field to rule records.
-- Neither is implemented yet.
+- Neither ruling 1 nor ruling 4 is implemented yet.
