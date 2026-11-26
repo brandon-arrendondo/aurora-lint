@@ -2158,6 +2158,19 @@ impl Arr30C {
         var_name: &str,
         source: &str,
     ) -> Option<Reached> {
+        self.reaching_writes_at(func_node, ident, var_name, source, ident.start_byte())
+    }
+
+    /// [`Self::reaching_writes`] as of byte `at`, where the read `ident` is
+    /// evaluated: before a store it feeds, whose own byte comes earlier.
+    fn reaching_writes_at(
+        &self,
+        func_node: &Node,
+        ident: &Node,
+        var_name: &str,
+        source: &str,
+        at: usize,
+    ) -> Option<Reached> {
         if ident.kind() != "identifier" {
             return None;
         }
@@ -2166,7 +2179,39 @@ impl Arr30C {
         let key = (var_name.to_string(), Self::declaring_scope(&used));
         let entry = Self::entry_value(&body, &decl, &used, source);
         let reach = self.function_reach(func_node, source)?;
-        reach.reaching_at(&key, &entry, ident.start_byte())
+        reach.reaching_at(&key, &entry, at)
+    }
+
+    /// The byte the read `ident` is evaluated at, for its reaching writes:
+    /// its own, or, inside the value an assignment or initializer stores to
+    /// the same object (`d = -d;`), that store's start, since the value is
+    /// read before the store and the store's byte, its target, comes first.
+    fn read_point(ident: &Node, source: &str) -> usize {
+        use crate::utility::cert_c::result_checks::same_lvalue;
+        let mut child = *ident;
+        while let Some(parent) = child.parent() {
+            let (target, value) = match parent.kind() {
+                "assignment_expression" => (
+                    parent.child_by_field_name("left"),
+                    parent.child_by_field_name("right"),
+                ),
+                "init_declarator" => (
+                    parent
+                        .child_by_field_name("declarator")
+                        .and_then(declared_name),
+                    parent.child_by_field_name("value"),
+                ),
+                _ if parent.kind().ends_with("statement") => break,
+                _ => (None, None),
+            };
+            if value.is_some_and(|v| v.id() == child.id())
+                && target.is_some_and(|t| same_lvalue(&t, ident, source))
+            {
+                return parent.start_byte();
+            }
+            child = parent;
+        }
+        ident.start_byte()
     }
 
     /// What the object declared by `used` (in `decl`) holds when the
@@ -2376,8 +2421,9 @@ impl Arr30C {
                 .flat_map(|s| query::find_descendants_of_kind(*s, "identifier"))
                 .map(|id| get_node_text(&id, source))
                 .collect();
-        // And the names copied into one (`int data = dataCopy;`), whose own
-        // writes are where the index's value comes from.
+        // And the names copied into one (`int data = dataCopy;`), or negated
+        // into one (`int d = -n;`), whose own writes are where the index's
+        // value comes from.
         let copies: Vec<(&str, &str)> = query::find_descendants(body, |n| {
             matches!(n.kind(), "assignment_expression" | "init_declarator")
         })
@@ -2394,7 +2440,14 @@ impl Arr30C {
                     n.child_by_field_name("right")?,
                 ),
             };
-            let value = strip_parens_and_casts(value);
+            let mut value = strip_parens_and_casts(value);
+            if value.kind() == "unary_expression"
+                && value
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "-")
+            {
+                value = strip_parens_and_casts(value.child_by_field_name("argument")?);
+            }
             (target.kind() == "identifier" && value.kind() == "identifier").then(|| {
                 (
                     get_node_text(&target, source),
@@ -6854,11 +6907,32 @@ impl Arr30C {
         macro_constants: &HashMap<String, i64>,
         depth: usize,
     ) -> bool {
+        self.some_reaching_store(func_node, ident, source, &|v| {
+            self.value_may_be_negative(Some(func_node), v, source, macro_constants, depth)
+        })
+    }
+
+    /// Whether some write that may reach the read `ident` of an automatic
+    /// local of `func_node` is a scanf-family call's store, or a plain store
+    /// of a value `stored` accepts.
+    fn some_reaching_store(
+        &self,
+        func_node: &Node,
+        ident: &Node,
+        source: &str,
+        stored: &dyn Fn(&Node) -> bool,
+    ) -> bool {
         let name = get_node_text(ident, source);
         if !Self::names_automatic_local(func_node, ident, name, source) {
             return false;
         }
-        let Some(reached) = self.reaching_writes(func_node, ident, name, source) else {
+        let Some(reached) = self.reaching_writes_at(
+            func_node,
+            ident,
+            name,
+            source,
+            Self::read_point(ident, source),
+        ) else {
             return false;
         };
         reached.writes.iter().any(|&at| {
@@ -6882,17 +6956,124 @@ impl Arr30C {
                 }
                 _ => None,
             };
-            value.is_some_and(|v| {
-                self.value_may_be_negative(Some(func_node), &v, source, macro_constants, depth)
-            })
+            value.is_some_and(|v| stored(&v))
         })
+    }
+
+    /// Whether the read `ident` of an automatic local may hold a value of
+    /// either sign: a write that may reach it stores what `scanf` reads, or
+    /// a value that is not a constant and may be negative
+    /// ([`Self::value_may_be_negative`]), such as `atoi`'s result, which may
+    /// as well be positive. A constant stored (`n = -1`) has one sign, and
+    /// its negation is not what makes the read negative.
+    fn read_may_take_either_sign(
+        &self,
+        func_node: &Node,
+        ident: &Node,
+        source: &str,
+        macro_constants: &HashMap<String, i64>,
+        depth: usize,
+    ) -> bool {
+        depth <= Self::NEGATIVE_ORIGIN_DEPTH
+            && self.some_reaching_store(func_node, ident, source, &|v| {
+                const_eval::try_evaluate_expr(v, source, macro_constants).is_none()
+                    && self.value_may_be_negative(
+                        Some(func_node),
+                        v,
+                        source,
+                        macro_constants,
+                        depth,
+                    )
+            })
+    }
+
+    /// Whether a condition that governs the read `ident` proves it is not
+    /// positive there (`if (w < 0)`, `w <= 0 ? -w : 0`, the false arm of
+    /// `if (w > 0)`), with every write of it that may reach the read made
+    /// before that condition, so the value tested is the value read.
+    fn proved_non_positive(
+        &self,
+        func_node: &Node,
+        ident: &Node,
+        source: &str,
+        macro_constants: &HashMap<String, i64>,
+    ) -> bool {
+        let name = get_node_text(ident, source);
+        let var = guard_dominance::binds_as(ident, source);
+        let eval = |n: &Node| const_eval::try_evaluate_expr(n, source, macro_constants);
+        let writes = self
+            .reaching_writes_at(
+                func_node,
+                ident,
+                name,
+                source,
+                Self::read_point(ident, source),
+            )
+            .map(|reached| reached.writes)
+            .unwrap_or_default();
+        guard_dominance::dominating_conditions_with_branches(ident)
+            .iter()
+            .any(|(cond, branch)| {
+                branch.is_some_and(|known_true| {
+                    guard_dominance::condition_upper_bound(cond, &var, known_true, source, &eval)
+                        .is_some_and(|bound| bound <= 1)
+                        && writes.iter().all(|&at| at < cond.start_byte())
+                })
+            })
+    }
+
+    /// The lower bound a condition that governs the read `ident` proves for
+    /// it there (`if (w < 0) return;`, the false arm of `w < 0 ? 0 : w`, the
+    /// true arm of `w > 3 ? w - 3 : w`), the highest one when several do,
+    /// with every write of it that may reach the read made before that
+    /// condition, so the value tested is the value read.
+    fn proved_lower_bound(
+        &self,
+        func_node: &Node,
+        ident: &Node,
+        source: &str,
+        macro_constants: &HashMap<String, i64>,
+    ) -> Option<i64> {
+        let name = get_node_text(ident, source);
+        let var = guard_dominance::binds_as(ident, source);
+        let eval = |n: &Node| const_eval::try_evaluate_expr(n, source, macro_constants);
+        let writes = self
+            .reaching_writes_at(
+                func_node,
+                ident,
+                name,
+                source,
+                Self::read_point(ident, source),
+            )
+            .map(|reached| reached.writes)
+            .unwrap_or_default();
+        guard_dominance::dominating_conditions_with_branches(ident)
+            .iter()
+            .filter_map(|(cond, branch)| {
+                let known_true = (*branch)?;
+                if !writes.iter().all(|&at| at < cond.start_byte()) {
+                    return None;
+                }
+                guard_dominance::condition_lower_bound(
+                    cond,
+                    &var,
+                    known_true,
+                    source,
+                    &eval,
+                    &|_| false,
+                )
+            })
+            .max()
     }
 
     /// Whether the stored value `value` may be negative by what it says: a
     /// negative constant; the negation of a call's result, or a difference
     /// whose left operand may be negative (`-rnd() - 1`), where nothing
-    /// tested the result's sign first (a negated variable is left alone:
-    /// `if (w < 0) w = -w;` is the usual reason to write one);
+    /// tested the result's sign first; the negation of an automatic local
+    /// that may hold either sign ([`Self::read_may_take_either_sign`]:
+    /// `n = atoi(s); d = -n;`), unless a condition proves it is not positive
+    /// where it is negated ([`Self::proved_non_positive`]: `if (w < 0) w =
+    /// -w;`, the usual reason to write one);
     /// a standard call that may return a negative value
     /// (`std_functions::may_return_negative`: `atoi`, `strtol`, `getchar`);
     /// a `?:` or comma expression one of whose results may be; a copy of an
@@ -6945,20 +7126,64 @@ impl Arr30C {
                 .child_by_field_name("right")
                 .is_some_and(|r| again(&r, depth)),
             "unary_expression" => {
-                v.child_by_field_name("operator")
-                    .is_some_and(|o| o.kind() == "-")
-                    && v.child_by_field_name("argument").is_some_and(|operand| {
-                        strip_parens_and_casts(operand).kind() == "call_expression"
-                    })
+                if v.child_by_field_name("operator")
+                    .is_none_or(|o| o.kind() != "-")
+                {
+                    return false;
+                }
+                let Some(operand) = v
+                    .child_by_field_name("argument")
+                    .map(strip_parens_and_casts)
+                else {
+                    return false;
+                };
+                match operand.kind() {
+                    "call_expression" => true,
+                    "identifier" => func_node.is_some_and(|func| {
+                        !self.proved_non_positive(func, &operand, source, macro_constants)
+                            && self.read_may_take_either_sign(
+                                func,
+                                &operand,
+                                source,
+                                macro_constants,
+                                depth + 1,
+                            )
+                    }),
+                    _ => false,
+                }
             }
             "binary_expression" => {
-                v.child_by_field_name("operator")
-                    .is_some_and(|o| o.kind() == "-")
-                    && v.child_by_field_name("left")
-                        .is_some_and(|left| again(&left, depth))
+                if v.child_by_field_name("operator")
+                    .is_none_or(|o| o.kind() != "-")
+                {
+                    return false;
+                }
+                let Some(left) = v.child_by_field_name("left") else {
+                    return false;
+                };
+                // `if (d < 0) return; d = d - 1;` may be negative, and
+                // `d > 3 ? d - 3 : d` may not: a left operand proved at
+                // least `low` stays non-negative less a constant up to it.
+                let proved = func_node
+                    .zip(
+                        Some(crate::analyze::name_writes::strip_parens(left))
+                            .filter(|l| l.kind() == "identifier"),
+                    )
+                    .and_then(|(func, l)| {
+                        self.proved_lower_bound(func, &l, source, macro_constants)
+                    });
+                let subtrahend = v
+                    .child_by_field_name("right")
+                    .and_then(|r| const_eval::try_evaluate_expr(&r, source, macro_constants));
+                match (proved, subtrahend) {
+                    (Some(low), Some(c)) if low >= 0 => low < c,
+                    _ => again(&left, depth),
+                }
             }
             "identifier" => func_node.is_some_and(|func| {
-                self.read_may_be_negative(func, &v, source, macro_constants, depth + 1)
+                self.proved_lower_bound(func, &v, source, macro_constants)
+                    .is_none_or(|low| low < 0)
+                    && self.read_may_be_negative(func, &v, source, macro_constants, depth + 1)
             }),
             "call_expression" => {
                 let Some(callee) = v
