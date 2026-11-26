@@ -3822,8 +3822,20 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             let was_allocated = self.allocated_memory.contains_key(&var_name);
 
             // The name a plain pointer-to-pointer assignment copies from, with
-            // casts and parentheses peeled off.
-            let aliased_identifier = init_state::strip_arg_casts(&right);
+            // casts and parentheses peeled off. A chained assignment's value
+            // is what its inner assignment stored: `first = last = key`
+            // binds `last` to `key`'s block first, then copies from `last`,
+            // so every name in the chain aliases the block. Only a chain
+            // that ends in a name is bound this way; one that ends in an
+            // allocation binds no name, as before.
+            // Any other inner assignment (`a = b = NULL`) is read as before.
+            let value = init_state::strip_arg_casts(&right);
+            let aliased_identifier = if Self::chain_ends_in_name(&value, source) {
+                self.process_assignment(&value, source);
+                init_state::strip_arg_casts(&tested_operand(value))
+            } else {
+                value
+            };
 
             // Check if assigning result of allocation
             if self.is_allocation_call(&right, source) {
@@ -3943,6 +3955,33 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // `local->field = alloc()` through it is not this
                 // function's leak to report.
                 self.borrowed_locals.insert(var_name);
+            }
+        }
+    }
+
+    /// Whether `node` is a plain assignment to a name whose value, through
+    /// any further plain assignments, casts and parentheses, is a name:
+    /// `last = key` and `mid = last = key`, but not `last = malloc(n)`.
+    fn chain_ends_in_name(node: &Node, source: &str) -> bool {
+        let mut current = *node;
+        loop {
+            if current.kind() != "assignment_expression" || !is_plain_assignment(&current, source) {
+                return false;
+            }
+            if current
+                .child_by_field_name("left")
+                .is_none_or(|left| left.kind() != "identifier")
+            {
+                return false;
+            }
+            let Some(right) = current.child_by_field_name("right") else {
+                return false;
+            };
+            let right = init_state::strip_arg_casts(&right);
+            match right.kind() {
+                "identifier" => return true,
+                "assignment_expression" => current = right,
+                _ => return false,
             }
         }
     }
