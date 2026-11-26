@@ -7,7 +7,7 @@ use crate::manifest::Severity;
 use crate::settings::{AnalysisSettings, IntFacts};
 use crate::utility::cert_c::ast_utils::{self, get_identifier_from_declarator};
 use crate::utility::cert_c::declarator_utils::{is_array_declarator, is_pointer_declarator};
-use crate::utility::cert_c::expr_type::{self, CType, TypeEnv};
+use crate::utility::cert_c::expr_type::{self, CType, Rank, TypeEnv};
 use crate::utility::cert_c::overflow_helpers;
 use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
 use lang_parsing_substrate::query;
@@ -149,7 +149,59 @@ impl<'a> OperandTypes<'a> {
         ) {
             return true;
         }
-        let env = self.env.get_or_init(|| {
+        let env = self.env();
+        matches!(
+            expr_type::expr_type(operand, self.source, env),
+            Some(CType::Pointer(_) | CType::Array(_))
+        )
+    }
+
+    /// Whether `operand` is a pointer to, or an array of, a character type
+    /// or an exactly 8-bit integer by its declared type: adding a byte count
+    /// to it is byte arithmetic, scaled once. A sum or difference the typer
+    /// cannot type, because an integer operand's type is not fixed (`p + n *
+    /// sizeof(x)` where the data model leaves `size_t`'s rank open), has its
+    /// pointer operand's type.
+    fn points_to_bytes(&self, operand: &Node) -> bool {
+        let element = match expr_type::expr_type(operand, self.source, self.env()) {
+            Some(CType::Pointer(Some(element)) | CType::Array(Some(element))) => element,
+            None => {
+                return match operand.kind() {
+                    "parenthesized_expression" => operand
+                        .named_child(0)
+                        .is_some_and(|inner| self.points_to_bytes(&inner)),
+                    "binary_expression" => {
+                        let operator = operand
+                            .child_by_field_name("operator")
+                            .map(|o| ast_utils::get_node_text(&o, self.source));
+                        matches!(operator, Some("+" | "-"))
+                            && ["left", "right"].iter().any(|side| {
+                                operand
+                                    .child_by_field_name(side)
+                                    .is_some_and(|o| self.points_to_bytes(&o))
+                            })
+                    }
+                    _ => false,
+                };
+            }
+            _ => return false,
+        };
+        matches!(
+            *element,
+            CType::Int {
+                rank: Rank::Char,
+                ..
+            } | CType::IntOfWidth {
+                max_bits: Some(8),
+                ..
+            }
+        )
+    }
+
+    /// The expression typer's environment over the file's visible types and
+    /// its pointer typedefs, built on first use.
+    fn env(&self) -> &TypeEnv<'a> {
+        self.env.get_or_init(|| {
             let typedefs = self.typedefs.get_or_init(|| {
                 expr_type::typedefs_with_derivations(
                     &self.visible.typedef_types,
@@ -168,11 +220,7 @@ impl<'a> OperandTypes<'a> {
             )
             .under_edition(self.visible.c_standard)
             .in_tree(self.root)
-        });
-        matches!(
-            expr_type::expr_type(operand, self.source, env),
-            Some(CType::Pointer(_) | CType::Array(_))
-        )
+        })
     }
 }
 
@@ -235,6 +283,8 @@ impl Arr39C {
                     // Check if this is pointer + scaled_integer or pointer - scaled_integer
                     if self.is_pointer_scaled_arithmetic(&left, &right, source)
                         && types.is_pointer(&left)
+                        && (Self::scaled_by_char_size(&right, source)
+                            || !types.points_to_bytes(&left))
                     {
                         let start_point = node.start_position();
                         let expr_text = &source[node.start_byte()..node.end_byte()];
@@ -279,6 +329,7 @@ impl Arr39C {
                         && !self.is_char_pointer(&left, source)  // Char pointers are allowed
                         && !left_text.to_lowercase().contains("byte") // Byte pointers are allowed
                         && types.is_pointer(&left)
+                        && !types.points_to_bytes(&left)
                     {
                         let start_point = node.start_position();
                         let expr_text = &source[node.start_byte()..node.end_byte()];
@@ -322,6 +373,7 @@ impl Arr39C {
                 && !self.is_char_pointer(&argument, source)
                 && !arg_text.to_lowercase().contains("byte") // Byte pointers are allowed
                 && types.is_pointer(&argument)
+                && !types.points_to_bytes(&argument)
             {
                 let start_point = node.start_position();
                 let expr_text = &source[node.start_byte()..node.end_byte()];
@@ -625,9 +677,7 @@ impl Arr39C {
         // no-op (sizeof(char) == 1) regardless of the pointer's type, so it's
         // its own anti-pattern rather than the double-scaling this exemption
         // is meant to allow.
-        let scaled_by_char_size = right_text.contains("sizeof(char)")
-            || right_text.contains("sizeof(unsigned char)")
-            || right_text.contains("sizeof(signed char)");
+        let scaled_by_char_size = Self::scaled_by_char_size(right, source);
         if left_is_pointer
             && !scaled_by_char_size
             && (self.is_char_pointer(left, source) || left_text.to_lowercase().contains("byte"))
@@ -642,6 +692,15 @@ impl Arr39C {
         }
 
         left_is_pointer && right_is_scaled
+    }
+
+    /// Whether `right` scales by `sizeof` a character type, always 1: its
+    /// own anti-pattern whatever the pointer's type.
+    fn scaled_by_char_size(right: &Node, source: &str) -> bool {
+        let right_text = ast_utils::get_node_text(right, source);
+        right_text.contains("sizeof(char)")
+            || right_text.contains("sizeof(unsigned char)")
+            || right_text.contains("sizeof(signed char)")
     }
 
     fn is_scaled_integer_expression(&self, node: &Node, source: &str) -> bool {
