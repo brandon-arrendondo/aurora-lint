@@ -1709,6 +1709,10 @@ fn process_call_expression(
     let func_name = func.utf8_text(source.as_bytes()).unwrap_or("").to_string();
     let func_name_lower = func_name.to_lowercase();
 
+    if !is_non_initializing_function(&func_name) {
+        forget_elements_reached_by_arguments(node, source, state);
+    }
+
     if try_process_misparsed_asm_output_operand(&func, &func_name, node, source, state) {
         return;
     }
@@ -1761,6 +1765,74 @@ fn process_call_expression(
     }
 
     process_unknown_function_call(&func_name, node, source, state, config);
+}
+
+/// A call that may write through its arguments, handed the buffer or a
+/// pointer into it (`p`, `p + n`, `n + p`, `p - n`, `&p[n]`, under any casts
+/// and parentheses), may write any element of it, so a buffer written only
+/// at constant offsets ([`VarInfo::elements_written`]) is no longer known
+/// element by element. `fgets(data + len, ...)` after `data[0] = '\0'`
+/// fills the buffer from `data[len]`; the call handlers below credit only an
+/// argument that names the variable, so without this the element set from
+/// the terminator alone survived the call.
+fn forget_elements_reached_by_arguments(node: &Node, source: &str, state: &mut InitStateMap) {
+    let Some(args) = node.child_by_field_name("arguments") else {
+        return;
+    };
+    let mut names = Vec::new();
+    for arg in args.child_nodes().filter(|a| a.is_named()) {
+        buffers_reached_by_argument(arg, source, &mut names);
+    }
+    for name in names {
+        if let Some(info) = state.get_mut(&name) {
+            info.elements_written = None;
+        }
+    }
+}
+
+/// The variables whose buffer the argument `arg` may point into, per
+/// [`forget_elements_reached_by_arguments`]: both operands of a `+`, since
+/// either may be the pointer, and the left of a `-`. A name that is not a
+/// buffer has no element set to forget.
+fn buffers_reached_by_argument(arg: Node, source: &str, names: &mut Vec<String>) {
+    let node = strip_arg_casts(&arg);
+    match node.kind() {
+        "identifier" => {
+            if let Ok(name) = node.utf8_text(source.as_bytes()) {
+                names.push(name.to_string());
+            }
+        }
+        "binary_expression" => {
+            let Some(operator) = node.child_by_field_name("operator") else {
+                return;
+            };
+            let operands: &[&str] = match operator.kind() {
+                "+" => &["left", "right"],
+                "-" => &["left"],
+                _ => &[],
+            };
+            for field in operands {
+                if let Some(operand) = node.child_by_field_name(field) {
+                    buffers_reached_by_argument(operand, source, names);
+                }
+            }
+        }
+        "pointer_expression" => {
+            let is_address = node
+                .child_by_field_name("operator")
+                .is_some_and(|op| op.kind() == "&");
+            let inner = node
+                .child_by_field_name("argument")
+                .map(|inner| strip_arg_casts(&inner))
+                .filter(|inner| inner.kind() == "subscript_expression");
+            if let (true, Some(inner)) = (is_address, inner) {
+                if let Some(base) = inner.child_by_field_name("argument") {
+                    buffers_reached_by_argument(base, source, names);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Misparsed asm output operand: `"=r"(var)` or `"+r"(var)`. tree-sitter-c

@@ -2,16 +2,18 @@
  * Rule: EXP33-C
  * Source: aurora-lint
  * Status: FAIL - reads an element of a malloc'd buffer no write covered
- * Expect: count=5
+ * Expect: count=6
  *
  * A write at a constant index covers that element and no other. Reading
  * one it did not cover reads indeterminate memory, whether the write is in
  * straight-line code or repeated by a loop, through a subscript or a
  * dereference, and whether the read names the element or a variable index
- * that runs past it.
+ * that runs past it. A call that only reads through a pointer into the
+ * buffer writes none of it.
  */
 
 #include <stdlib.h>
+#include <string.h>
 
 void printIntLine(int);
 
@@ -72,4 +74,14 @@ int one_branch_wrote_it(int c) {
         d[1] = 2;
     }
     return d[2]; /* Expect: here */
+}
+
+int read_only_callee_past_the_start(void) {
+    int *d = malloc(10 * sizeof *d);
+    if (d == NULL) {
+        return 0;
+    }
+    d[0] = 1;
+    (void)strlen((const char *)(d + 1));
+    return d[5]; /* Expect: here */
 }

@@ -5,14 +5,17 @@
  *
  * A terminator written at element 0 is all a string read of the buffer
  * needs. A read of an element that was written is defined. And a write
- * the offset does not describe -- memset, a callee handed the buffer, a
- * fill by a variable index -- covers the whole buffer as before.
+ * the offset does not describe -- memset, a callee handed the buffer or a
+ * pointer into it, a fill by a variable index -- covers the whole buffer
+ * as before.
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 void fill(int *p);
+void fill_bytes(unsigned char *p);
 
 void append_after_the_terminator(const char *src) {
     char *data = malloc(100 * sizeof(char));
@@ -78,4 +81,64 @@ int each_branch_wrote_it(int c) {
         memset(d, 0, 4 * sizeof *d);
     }
     return d[2];
+}
+
+void read_after_a_terminator(void) {
+    char *data = malloc(100 * sizeof(char));
+    if (data == NULL) {
+        exit(-1);
+    }
+    data[0] = '\0';
+    {
+        size_t dataLen = strlen(data);
+        if (100 - dataLen > 1) {
+            if (fgets(data + dataLen, (int)(100 - dataLen), stdin) != NULL) {
+                dataLen = strlen(data);
+                if (dataLen > 0 && data[dataLen - 1] == '\n') {
+                    data[dataLen - 1] = '\0';
+                }
+            }
+        }
+    }
+    free(data);
+}
+
+int written_by_a_callee_past_the_start(void) {
+    int *d = malloc(10 * sizeof *d);
+    if (d == NULL) {
+        return 0;
+    }
+    d[0] = 1;
+    fill(d + 1);
+    return d[5];
+}
+
+int written_by_a_callee_from_an_offset_first(void) {
+    int *d = malloc(10 * sizeof *d);
+    if (d == NULL) {
+        return 0;
+    }
+    d[0] = 1;
+    fill(1 + d);
+    return d[5];
+}
+
+int written_by_a_callee_at_an_element_address(void) {
+    int *d = malloc(10 * sizeof *d);
+    if (d == NULL) {
+        return 0;
+    }
+    d[0] = 1;
+    fill(&d[2]);
+    return d[5];
+}
+
+int written_by_a_callee_through_a_cast(void) {
+    int *d = malloc(10 * sizeof *d);
+    if (d == NULL) {
+        return 0;
+    }
+    d[0] = 1;
+    fill_bytes((unsigned char *)(d + 1));
+    return d[5];
 }
