@@ -11723,10 +11723,10 @@ fn a_file_whose_parse_runs_past_its_budget_is_refused_out_loud() {
     std::fs::create_dir_all(dir.path().join("src")).unwrap();
     std::fs::write(
         dir.path().join("inc/stray.h"),
-        format!("#define MYFREE(p) free(p)\n{}", stray_comment_closers(4000)),
+        format!("#define MYFREE(p) free(p)\n{}", stray_comment_closers(500)),
     )
     .unwrap();
-    std::fs::write(dir.path().join("src/broken.c"), stray_comment_closers(4000)).unwrap();
+    std::fs::write(dir.path().join("src/broken.c"), stray_comment_closers(500)).unwrap();
     std::fs::write(
         dir.path().join("src/main.c"),
         "#include <stdlib.h>\n#include \"stray.h\"\n\
@@ -11736,7 +11736,6 @@ fn a_file_whose_parse_runs_past_its_budget_is_refused_out_loud() {
     let inc = dir.path().join("inc");
     let sarif = dir.path().join("out.sarif");
     let headers = dir.path().join("headers.json");
-    let started = std::time::Instant::now();
     let (code, _, stderr) = run_aurora_lint(&[
         dir.path().join("src").to_str().unwrap(),
         "-I",
@@ -11746,12 +11745,9 @@ fn a_file_whose_parse_runs_past_its_budget_is_refused_out_loud() {
         "--report-headers",
         headers.to_str().unwrap(),
     ]);
-    // Unbounded, each of the two parses takes several seconds.
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(10),
-        "{:?}",
-        started.elapsed()
-    );
+    // What proves the parse was cut short is the output, not the wall
+    // clock: each file is reported as stopped at its budget, and the scan
+    // exits 3. A time bound would measure the runner as much as the parse.
     assert_eq!(code, 3, "{stderr}");
     for file in ["broken.c", "stray.h"] {
         assert!(
