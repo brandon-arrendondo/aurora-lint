@@ -3839,7 +3839,21 @@ impl Arr30C {
     /// a missing one, and no *other* evidence of validation (a dominating
     /// comparison, a call site that range-checks the argument) may override
     /// that verdict.
-    fn has_off_by_one_bound_check(func_node: &Node, param_name: &str, source: &str) -> bool {
+    ///
+    /// Given the occurrence `index` the access reads, the guard must test
+    /// the object `index` resolves to: a shadowing declaration of the same
+    /// name is another variable.
+    fn has_off_by_one_bound_check(
+        func_node: &Node,
+        param_name: &str,
+        index: Option<&Node>,
+        source: &str,
+    ) -> bool {
+        if let Some(index) = index {
+            return Self::occurrences_of(func_node, index, source)
+                .iter()
+                .any(|occ| Self::is_off_by_one_guard(occ, source));
+        }
         let func_text = Self::text_sans_comments_and_strings(*func_node, source);
         let pattern = format!(
             r"\bif\s*\(\s*\w+\s*<\s*\b{}\b\s*\)",
@@ -3848,11 +3862,122 @@ impl Arr30C {
         regex::Regex::new(&pattern).is_ok_and(|re| re.is_match(&func_text))
     }
 
-    /// Check if function has ANY bounds validation for a parameter
+    /// Every identifier in `func_node` that names the object `index` does:
+    /// the same spelling, resolved to the same declaration.
+    fn occurrences_of<'t>(func_node: &Node<'t>, index: &Node, source: &str) -> Vec<Node<'t>> {
+        use crate::utility::cert_c::result_checks::same_lvalue;
+        let name = get_node_text(index, source);
+        query::find_descendants(*func_node, |n| {
+            n.kind() == "identifier"
+                && get_node_text(&n, source) == name
+                && same_lvalue(&n, index, source)
+        })
+    }
+
+    /// Whether the occurrence `occ` is the right operand of a whole `if`
+    /// condition `if (w < occ)`, `w` an identifier or a number: the
+    /// off-by-one guard [`Self::has_off_by_one_bound_check`] spells.
+    fn is_off_by_one_guard(occ: &Node, source: &str) -> bool {
+        let Some(cmp) = occ.parent().filter(|p| p.kind() == "binary_expression") else {
+            return false;
+        };
+        cmp.child_by_field_name("right")
+            .is_some_and(|r| r.id() == occ.id())
+            && cmp
+                .child_by_field_name("operator")
+                .is_some_and(|o| get_node_text(&o, source) == "<")
+            && cmp
+                .child_by_field_name("left")
+                .is_some_and(|l| matches!(l.kind(), "identifier" | "number_literal"))
+            && cmp
+                .parent()
+                .filter(|p| p.kind() == "parenthesized_expression")
+                .and_then(|p| p.parent().filter(|i| i.kind() == "if_statement"))
+                .is_some()
+    }
+
+    /// Whether the occurrence `occ` is read as a bound check is spelled by
+    /// [`Self::has_function_parameter_bounds_check`]: `occ < w`, `w > occ`,
+    /// `occ >= w` or `w <= occ` with `w` beginning (or, on the left, ending)
+    /// in a word character, or a name in an `if` condition before its first
+    /// `)`. A cast or parenthesis around the occurrence is part of it:
+    /// `(unsigned)d < 10` checks `d`.
+    fn is_bound_check_operand(occ: &Node, source: &str) -> bool {
+        let starts_word = |n: &Node| {
+            get_node_text(n, source)
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        };
+        let ends_word = |n: &Node| {
+            get_node_text(n, source)
+                .chars()
+                .last()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        };
+        // `(unsigned)d < 10` and `(d) < 10` compare the occurrence too: the
+        // operand is the outermost cast or parenthesis around it.
+        let mut operand = *occ;
+        while let Some(p) = operand.parent().filter(|p| {
+            p.kind() == "parenthesized_expression"
+                && p.parent().is_none_or(|g| g.kind() != "if_statement")
+                || p.kind() == "cast_expression"
+                    && p.child_by_field_name("value")
+                        .is_some_and(|v| v.id() == operand.id())
+        }) {
+            operand = p;
+        }
+        if let Some(cmp) = operand.parent().filter(|p| p.kind() == "binary_expression") {
+            let is = |field: &str| {
+                cmp.child_by_field_name(field)
+                    .is_some_and(|n| n.id() == operand.id())
+            };
+            let other = |field: &str, test: &dyn Fn(&Node) -> bool| {
+                cmp.child_by_field_name(field).is_some_and(|n| test(&n))
+            };
+            let op = cmp
+                .child_by_field_name("operator")
+                .map(|o| get_node_text(&o, source));
+            let guarded = match op {
+                Some("<") | Some(">=") => is("left") && other("right", &starts_word),
+                Some(">") | Some("<=") => is("right") && other("left", &ends_word),
+                _ => false,
+            };
+            if guarded {
+                return true;
+            }
+        }
+        let mut current = Some(operand);
+        while let Some(n) = current {
+            if let Some(cond) = n
+                .parent()
+                .filter(|p| p.kind() == "if_statement")
+                .and_then(|p| p.child_by_field_name("condition"))
+                .filter(|c| c.id() == n.id())
+            {
+                return source
+                    .get(cond.start_byte() + 1..operand.start_byte())
+                    .is_some_and(|before| !before.contains(')'));
+            }
+            if n.kind().ends_with("statement") || n.kind() == "function_definition" {
+                return false;
+            }
+            current = n.parent();
+        }
+        false
+    }
+
+    /// Check if function has ANY bounds validation for a parameter.
+    ///
+    /// Given the occurrence `index` the access reads, the spellings are read
+    /// over the syntax tree, on occurrences that resolve to the object
+    /// `index` does: `if (d < 10)` on a block-scope `d` that shadows the
+    /// parameter bounds that `d`, not the parameter.
     fn has_function_parameter_bounds_check(
         &self,
         func_node: &Node,
         param_name: &str,
+        index: Option<&Node>,
         source: &str,
     ) -> bool {
         let func_text = Self::text_sans_comments_and_strings(*func_node, source);
@@ -3866,8 +3991,13 @@ impl Arr30C {
         // 3. Presence of size/length/count parameter
 
         // IMPORTANT: Check for OFF-BY-ONE errors first!
-        if Self::has_off_by_one_bound_check(func_node, param_name, source) {
+        if Self::has_off_by_one_bound_check(func_node, param_name, index, source) {
             return false;
+        }
+        if let Some(index) = index {
+            return Self::occurrences_of(func_node, index, source)
+                .iter()
+                .any(|occ| Self::is_bound_check_operand(occ, source));
         }
 
         let bounds_patterns = [
@@ -4012,14 +4142,41 @@ impl Arr30C {
             }
         }
 
-        // Check conditional bounds checking
+        // Check conditional bounds checking. A condition that names the
+        // index's spelling as another declaration tests that one: an outer
+        // `if (d < 10)` does not bound an inner `int d` that shadows it.
         if let Some(if_node) = find_containing_if_statement(node) {
-            if self.check_if_bounds_against_size(&if_node, source, buffer_size, macro_constants) {
+            if Self::condition_may_test_index(&if_node, node, source)
+                && self.check_if_bounds_against_size(&if_node, source, buffer_size, macro_constants)
+            {
                 return true;
             }
         }
 
         false
+    }
+
+    /// Whether the condition of `if_node` may be read as testing the index
+    /// of the subscript `node`: it does not name the index's spelling only
+    /// as another declaration. An outer `if (d < 10)` names the outer `d`,
+    /// and an inner `int d` that shadows it is not what it tests.
+    fn condition_may_test_index(if_node: &Node, node: &Node, source: &str) -> bool {
+        use crate::utility::cert_c::result_checks::same_lvalue;
+        let Some(index) = node
+            .child_by_field_name("index")
+            .map(crate::analyze::name_writes::strip_parens)
+            .filter(|i| i.kind() == "identifier")
+        else {
+            return true;
+        };
+        let Some(condition) = if_node.child_by_field_name("condition") else {
+            return true;
+        };
+        let name = get_node_text(&index, source);
+        let spelled = query::find_descendants(condition, |n| {
+            n.kind() == "identifier" && get_node_text(&n, source) == name
+        });
+        spelled.is_empty() || spelled.iter().any(|n| same_lvalue(n, &index, source))
     }
 
     /// Check if there's any form of dynamic bounds checking
@@ -4811,6 +4968,25 @@ impl Arr30C {
             .any(|w| w == var_name)
     }
 
+    /// The index of the subscript `node`, parentheses dropped, where it is
+    /// the identifier `var`.
+    fn index_identifier<'t>(node: &Node<'t>, var: &str, source: &str) -> Option<Node<'t>> {
+        let index = crate::analyze::name_writes::strip_parens(node.child_by_field_name("index")?);
+        (index.kind() == "identifier" && get_node_text(&index, source) == var).then_some(index)
+    }
+
+    /// Whether the index occurrence `index` resolves to a parameter of its
+    /// function, not to a block-scope declaration that shadows one. An index
+    /// that is not a plain identifier is left to the spelling, as before.
+    fn names_a_parameter(index: Option<&Node>, source: &str) -> bool {
+        index.is_none_or(|i| {
+            matches!(
+                resolve_identifier_binding(i, get_node_text(i, source), source),
+                Some(IdentifierBinding::Parameter(_))
+            )
+        })
+    }
+
     fn check_unvalidated_param_index(
         &self,
         node: &Node,
@@ -4822,17 +4998,20 @@ impl Arr30C {
             return None;
         };
         let func_node = find_containing_function(node)?;
-        if !self.is_function_parameter_any_return(&func_node, var, source) {
+        let index_occ = Self::index_identifier(node, var, source);
+        if !self.is_function_parameter_any_return(&func_node, var, source)
+            || !Self::names_a_parameter(index_occ.as_ref(), source)
+        {
             return None;
         }
-        if self.has_function_parameter_bounds_check(&func_node, var, source) {
+        if self.has_function_parameter_bounds_check(&func_node, var, index_occ.as_ref(), source) {
             return None;
         }
         // A `false` from `has_function_parameter_bounds_check` can mean it found
         // an off-by-one guard rather than no guard at all, and the two
         // structural paths below must not talk over that verdict -- the guard
         // they would find is the broken one.
-        if !Self::has_off_by_one_bound_check(&func_node, var, source) {
+        if !Self::has_off_by_one_bound_check(&func_node, var, index_occ.as_ref(), source) {
             // The guard may be structural rather than one of the spellings
             // `has_function_parameter_bounds_check`'s regexes recognise.
             // pureftpd's `while (len != 0) { len--; ... msg[len] ... }` bounds
@@ -6600,11 +6779,18 @@ impl Arr30C {
             return true;
         }
         if let Some(func_node) = find_containing_function(node) {
+            let index_occ = Self::index_identifier(node, var, source);
             if self.is_function_parameter_any_return(&func_node, var, source)
+                && Self::names_a_parameter(index_occ.as_ref(), source)
                 && !(declares_static(&func_node, source, &self.static_macros.borrow())
                     && Self::param_has_user_defined_type(&func_node, var, source))
             {
-                return !self.has_function_parameter_bounds_check(&func_node, var, source);
+                return !self.has_function_parameter_bounds_check(
+                    &func_node,
+                    var,
+                    index_occ.as_ref(),
+                    source,
+                );
             }
         }
         !(self.has_proper_bounds_check(node, source, effective_size, macro_constants)
