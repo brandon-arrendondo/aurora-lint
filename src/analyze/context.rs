@@ -1489,11 +1489,17 @@ impl ProjectContext {
 
     /// The file-scope objects declared as pointers somewhere in the project,
     /// each with its type spelling, less any name some scanned file or header
-    /// also declares another way or spells differently.
+    /// also declares another way or spells differently, makes an enumeration
+    /// constant, or defines as a macro: an occurrence of such a name may be
+    /// any of them.
     pub fn project_pointer_objects(&self) -> HashMap<String, String> {
         self.pointer_globals
             .iter()
-            .filter(|(n, _)| !self.non_pointer_globals.contains(*n))
+            .filter(|(n, _)| {
+                !self.non_pointer_globals.contains(*n)
+                    && !self.defined_macro_names.contains(*n)
+                    && !self.function_macro_names.contains(*n)
+            })
             .map(|(n, t)| (n.clone(), t.clone()))
             .collect()
     }

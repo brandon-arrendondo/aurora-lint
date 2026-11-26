@@ -124,8 +124,19 @@ impl<'a> OperandTypes<'a> {
     /// whose type does not resolve is not a pointer and no finding is made
     /// on it. The pointer-typing facts answer first; the expression typer
     /// answers what they leave, such as `*pp + i`, `arr[k]` or a variable
-    /// of a pointer typedef.
+    /// of a pointer typedef. A name an enumerator in scope makes a constant
+    /// is none, whatever object outside that scope it would otherwise name.
     fn is_pointer(&self, operand: &Node) -> bool {
+        if operand.kind() == "identifier"
+            && ast_utils::names_enumerator_in_scope(
+                &self.root,
+                operand,
+                ast_utils::get_node_text(operand, self.source),
+                self.source,
+            )
+        {
+            return false;
+        }
         let facts = self.facts.get_or_init(|| {
             PointerFacts::collect(&self.root, self.source).with_project(
                 self.project_arrays.clone(),
@@ -166,7 +177,10 @@ impl<'a> OperandTypes<'a> {
     /// The type a project pointer object has when `operand` names one: an
     /// identifier no declaration in this file binds, which some header or
     /// other file declares as a pointer (`extern int *g;`). ADR-0006: a name
-    /// the file declares is answered by that declaration only.
+    /// the file declares is answered by that declaration only, and one an
+    /// enumerator in scope or a `#define` here gives is no object at all.
+    /// The project table already drops a name any scanned file makes an
+    /// enumerator or a macro.
     fn project_object_type(&self, operand: &Node) -> Option<CType> {
         if operand.kind() != "identifier" {
             return None;
@@ -175,6 +189,8 @@ impl<'a> OperandTypes<'a> {
         let spelling = self.project_pointers.get(name)?;
         if ast_utils::resolve_identifier_declarator_in(&self.root, operand, name, self.source)
             .is_some()
+            || ast_utils::enumerator_in_scope(operand, name, self.source)
+            || ast_utils::is_defined_macro_name(name, self.source)
         {
             return None;
         }

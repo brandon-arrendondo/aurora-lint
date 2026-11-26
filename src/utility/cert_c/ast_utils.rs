@@ -1782,11 +1782,18 @@ fn macro_definitions_named<'s>(
 /// Whether an enumerator named `name` is declared before `node` in a scope
 /// enclosing it: `enum { NTAPI = 3 };` makes `NTAPI` a constant there.
 pub fn enumerator_in_scope(node: &Node, name: &str, source: &str) -> bool {
+    enumerator_scope(node, name, source).is_some()
+}
+
+/// The innermost scope (a block or the translation unit) enclosing `node`
+/// in which an enumerator named `name` is declared before `node`.
+fn enumerator_scope<'a>(node: &Node<'a>, name: &str, source: &str) -> Option<Node<'a>> {
     let mut root = *node;
     while let Some(parent) = root.parent() {
         root = parent;
     }
     let before = node.start_byte();
+    let mut innermost: Option<Node<'a>> = None;
     let mut cursor = root.walk();
     let mut descending = true;
     loop {
@@ -1798,8 +1805,11 @@ pub fn enumerator_in_scope(node: &Node, name: &str, source: &str) -> bool {
             {
                 let scope = ancestors(&n)
                     .find(|a| matches!(a.kind(), "compound_statement" | "translation_unit"));
-                if scope.is_some_and(|s| s.start_byte() <= before && before < s.end_byte()) {
-                    return true;
+                if let Some(s) = scope.filter(|s| s.start_byte() <= before && before < s.end_byte())
+                {
+                    if innermost.is_none_or(|i| s.start_byte() >= i.start_byte()) {
+                        innermost = Some(s);
+                    }
                 }
             }
             if cursor.goto_first_child() {
@@ -1811,9 +1821,35 @@ pub fn enumerator_in_scope(node: &Node, name: &str, source: &str) -> bool {
         } else if cursor.goto_parent() {
             descending = false;
         } else {
-            return false;
+            return innermost;
         }
     }
+}
+
+/// Whether the occurrence `ident` of `name` names an enumeration constant:
+/// an enumerator declared before it in a scope at least as deep as the
+/// declaration or parameter [`resolve_identifier_binding_in`] binds it to.
+/// `extern int *g;` at file scope and `enum { g = 4 };` in a block make `g`
+/// in that block the constant 4. The binding resolvers see declarations
+/// only, so they answer with the pointer.
+pub fn names_enumerator_in_scope<'a>(
+    root: &Node<'a>,
+    ident: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> bool {
+    let Some(enum_scope) = enumerator_scope(ident, name, source) else {
+        return false;
+    };
+    let binding_scope = match resolve_identifier_binding_in(root, ident, name, source) {
+        None => return true,
+        Some(IdentifierBinding::Global(_)) => return true,
+        Some(IdentifierBinding::Parameter(_)) => find_containing_function(ident),
+        Some(IdentifierBinding::Local(decl)) => {
+            ancestors(&decl).find(|a| matches!(a.kind(), "compound_statement" | "for_statement"))
+        }
+    };
+    binding_scope.is_none_or(|b| enum_scope.start_byte() >= b.start_byte())
 }
 
 /// Whether `stmt` is an item of the translation unit itself, directly or

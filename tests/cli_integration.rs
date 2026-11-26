@@ -11976,3 +11976,35 @@ fn arr39_types_a_pointer_object_from_an_included_header() {
     assert_eq!(findings.len(), 1, "stdout: {stdout}\nstderr: {stderr}");
     assert!(findings[0].contains("use.c:3:"), "{stdout}");
 }
+
+/// A name some scanned file makes an enumeration constant or a macro is not
+/// known to be the pointer object a header declares by that name, so adding
+/// a scaled integer to it is not reported; a name nothing else gives still
+/// is.
+#[test]
+fn arr39_does_not_type_a_header_pointer_name_another_file_makes_a_constant() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("globals.h"),
+        "extern int *cur_buf;\nextern int *tab_buf;\nextern int *ok_buf;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("other.c"),
+        "enum { cur_buf = 8 };\n#define tab_buf 16\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("use.c"),
+        "#include <stddef.h>\n#include \"globals.h\"\n\
+         long cur(size_t n) { return cur_buf + n * sizeof(int); }\n\
+         long tab(size_t n) { return tab_buf + n * sizeof(int); }\n\
+         int *ok(size_t n) { return ok_buf + n * sizeof(int); }\n",
+    )
+    .unwrap();
+    let (_, stdout, stderr) =
+        run_aurora_lint(&["--rules", "ARR39-C", dir.path().to_str().unwrap()]);
+    let findings: Vec<&str> = stdout.lines().filter(|l| l.contains("ARR39-C:")).collect();
+    assert_eq!(findings.len(), 1, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(findings[0].contains("use.c:5:"), "{stdout}");
+}
