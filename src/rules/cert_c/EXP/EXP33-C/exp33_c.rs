@@ -15,6 +15,8 @@ use crate::analyze::context::SummaryLookup;
 use crate::analyze::dataflow::StatementLookup;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::init_state::{self, InitAnalysisResult, InitState, InitStateMap};
+use crate::analyze::value_range::RangeAnalysisResult;
+use crate::analyze::{const_eval, vra_access};
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
 use crate::utility::cert_c::ast_utils::{self, get_identifier_from_declarator, get_node_text};
@@ -32,6 +34,9 @@ type ReadOnlyDerefFns = HashMap<String, HashSet<usize>>;
 
 pub struct Exp33C {
     function_cfgs: RefCell<Arc<HashMap<usize, FunctionCfg>>>,
+    /// Value-range results per function, which bound a variable index
+    /// into a buffer written only at constant offsets.
+    vra_results: RefCell<Arc<HashMap<usize, RangeAnalysisResult>>>,
     /// File-scope static variable init states (collected at translation_unit level).
     file_scope_statics: RefCell<InitStateMap>,
     /// Functions with pointer params that are only conditionally initialized.
@@ -105,6 +110,7 @@ impl Exp33C {
     pub fn new() -> Self {
         Self {
             function_cfgs: RefCell::new(Arc::default()),
+            vra_results: RefCell::new(Arc::default()),
             file_scope_statics: RefCell::new(InitStateMap::new()),
             conditionally_init_fns: RefCell::new(HashMap::new()),
             cross_file_summaries: RefCell::default(),
@@ -402,6 +408,14 @@ impl CertRule for Exp33C {
         *self.function_cfgs.borrow_mut() = Arc::clone(cfgs);
     }
 
+    fn set_vra_results(&self, results: &Arc<HashMap<usize, RangeAnalysisResult>>) {
+        *self.vra_results.borrow_mut() = Arc::clone(results);
+    }
+
+    fn needs_vra(&self) -> bool {
+        true
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
         let cfgs = self.function_cfgs.borrow();
@@ -530,7 +544,15 @@ impl CertRule for Exp33C {
                     let mut reported: HashSet<String> = HashSet::new();
                     let file_index =
                         file_index.get_or_insert_with(|| Rc::new(ast_utils::ScopeIndex::new(root)));
-                    let lookups = FunctionLookups::new(&body, file_index);
+                    let lookups = FunctionLookups::new(
+                        &body,
+                        file_index,
+                        IndexRanges {
+                            cfgs: Arc::clone(&cfgs),
+                            vra: Arc::clone(&self.vra_results.borrow()),
+                            macros: Arc::clone(&self.file_scope_constants.borrow().macros),
+                        },
+                    );
                     check_reads(
                         &root,
                         &body,
@@ -586,8 +608,29 @@ impl CertRule for Exp33C {
 /// function: its statements by byte range and each block's declarations.
 /// Built again at each read, each was a pass over the body, so checking
 /// the reads of a long function cost the square of its length.
+/// What a variable index into a buffer is bounded by where it is read:
+/// the value ranges of the function it is in.
+struct IndexRanges {
+    cfgs: Arc<HashMap<usize, FunctionCfg>>,
+    vra: Arc<HashMap<usize, RangeAnalysisResult>>,
+    macros: Arc<HashMap<String, i64>>,
+}
+
+impl IndexRanges {
+    /// The inclusive range of the offset expression `index` where it
+    /// stands, when value-range analysis bounds it.
+    fn of(&self, index: &Node, source: &str) -> Option<(i64, i64)> {
+        let ranges =
+            vra_access::var_ranges_replay_at(&self.cfgs, &self.vra, index, source, &self.macros)?;
+        const_eval::try_evaluate_range(index, source, &self.macros, &ranges)
+            .map(|range| (range.min, range.max))
+    }
+}
+
 struct FunctionLookups<'t> {
     statements: StatementLookup<'t>,
+    /// Bounds on a variable index, for [`init_state::reads_unwritten_element`].
+    index_ranges: IndexRanges,
     declarations: ast_utils::ScopeDeclarations<'t>,
     /// The file's index, which resolves each read's identifier and gives
     /// the parents the read predicates step through.
@@ -595,9 +638,14 @@ struct FunctionLookups<'t> {
 }
 
 impl<'t> FunctionLookups<'t> {
-    fn new(body: &Node<'t>, file: &Rc<ast_utils::ScopeIndex<'t>>) -> Self {
+    fn new(
+        body: &Node<'t>,
+        file: &Rc<ast_utils::ScopeIndex<'t>>,
+        index_ranges: IndexRanges,
+    ) -> Self {
         Self {
             statements: StatementLookup::new(body),
+            index_ranges,
             declarations: ast_utils::ScopeDeclarations::over(file.clone()),
             file: file.clone(),
         }
@@ -1458,18 +1506,17 @@ fn check_deref_read<'t>(
     reported: &mut HashSet<String>,
     config: &init_state::InitAnalysisConfig,
 ) {
-    // Extract the pointer variable being dereferenced
-    let var_name = if let Some(arg) = node.child_by_field_name("argument") {
-        if arg.kind() == "identifier" {
-            get_node_text(&arg, source).to_string()
-        } else {
-            return;
-        }
-    } else {
+    // Extract the pointer variable being dereferenced: `*p`, or the
+    // pointer of a sum, `*(p + 1)` or `*(1 + p)`, whose element offsets
+    // the writes are counted in as well.
+    let Some(var_name) = node
+        .child_by_field_name("argument")
+        .and_then(|arg| dereferenced_variable(&arg, source, analysis))
+    else {
         return;
     };
 
-    if !analysis.tracked_vars.contains(&var_name) || reported.contains(&var_name) {
+    if reported.contains(&var_name) {
         return;
     }
 
@@ -1527,7 +1574,9 @@ fn check_deref_read<'t>(
             ..Default::default()
         });
     } else if info.state.is_content_unsafe()
-        || init_state::reads_unwritten_element(node, source, &info)
+        || init_state::reads_unwritten_element(node, source, &info, &|index| {
+            lookups.index_ranges.of(index, source)
+        })
     {
         // Pointer is set but content is uninitialized (malloc without
         // memset), or written only at elements this read does not take.
@@ -1548,6 +1597,36 @@ fn check_deref_read<'t>(
             ..Default::default()
         });
     }
+}
+
+/// The tracked variable a dereference's operand `arg` points through: the
+/// operand itself when it names one, or for a pointer sum (`p + n`,
+/// `n + p`, `p - n`, in parentheses) the operand that names one.
+fn dereferenced_variable(
+    arg: &Node,
+    source: &str,
+    analysis: &InitAnalysisResult,
+) -> Option<String> {
+    let tracked = |n: &Node| {
+        let name = get_node_text(n, source);
+        (n.kind() == "identifier" && analysis.tracked_vars.contains(name)).then(|| name.to_string())
+    };
+    let mut node = *arg;
+    while node.kind() == "parenthesized_expression" {
+        node = node.named_child(0)?;
+    }
+    if node.kind() != "binary_expression" {
+        return tracked(&node);
+    }
+    let operands: &[&str] = match get_node_text(&node.child_by_field_name("operator")?, source) {
+        "+" => &["left", "right"],
+        "-" => &["left"],
+        _ => return None,
+    };
+    operands
+        .iter()
+        .filter_map(|field| node.child_by_field_name(field))
+        .find_map(|operand| tracked(&operand))
 }
 
 /// Check if a subscript access (arr[i]) reads uninitialized content.
@@ -1627,7 +1706,9 @@ fn check_subscript_read<'t>(
     let content_unsafe = matches!(
         info.state,
         InitState::Uninitialized | InitState::MallocUninitialized
-    ) || init_state::reads_unwritten_element(node, source, &info);
+    ) || init_state::reads_unwritten_element(node, source, &info, &|index| {
+        lookups.index_ranges.of(index, source)
+    });
 
     if content_unsafe {
         reported.insert(var_name.clone());

@@ -170,12 +170,24 @@ impl VarInfo {
             .as_ref()
             .is_none_or(|written| written.contains(&offset))
     }
+
+    /// Whether the constant-offset writes cover every element the
+    /// allocation holds (`allocation_count`), which is the whole buffer.
+    fn elements_cover_allocation(&self) -> bool {
+        let (Some(written), Some(count)) = (self.elements_written.as_ref(), self.allocation_count)
+        else {
+            return false;
+        };
+        i64::try_from(count).is_ok_and(|count| (0..count).all(|k| written.contains(&k)))
+    }
 }
 
 /// The elements written to a buffer after paths with `a` and `b` join into
 /// `state`. The join counts content as written when either path wrote it
 /// ([`InitState::join`]), so the elements are those either path wrote, and
-/// all of them once either path wrote the whole buffer.
+/// all of them once either path wrote the whole buffer. This is that
+/// may-join, as optimistic as the state it refines: an element in the set
+/// was written on some path, not proved written on every one.
 fn join_elements(a: &VarInfo, b: &VarInfo, state: InitState) -> Option<BTreeSet<i64>> {
     if state != InitState::MallocInitialized {
         return None;
@@ -736,6 +748,7 @@ fn process_declaration(
                     // write recognition that already existed for
                     // assignment-statement form.
                     process_expression(&value, source, state, tracked_vars, config);
+                    forget_elements_reached_by(&value, source, state);
                     let allocation = classify_allocation(&value, source, config);
                     let is_array = is_array_declarator(&child);
                     let mut info = VarInfo::new(allocation.state);
@@ -1191,26 +1204,63 @@ pub fn constant_element_offset(left: &Node, source: &str) -> Option<i64> {
 }
 
 /// Whether the read `access`, a subscript or dereference of the buffer
-/// `info` describes, may read an element its writes did not cover: one at
-/// a constant offset outside them, or at any offset that is not constant
-/// (`p[i]`, `*(p + i)`), when the buffer has been written only at constant
-/// offsets ([`VarInfo::elements_written`]). False for every other buffer,
-/// and for an access whose base is not the variable itself.
-pub fn reads_unwritten_element(access: &Node, source: &str, info: &VarInfo) -> bool {
-    if info.state != InitState::MallocInitialized || info.elements_written.is_none() {
+/// `info` describes, may read an element its writes did not cover, when
+/// the buffer has been written only at constant offsets
+/// ([`VarInfo::elements_written`]) that do not cover its whole allocation:
+/// one at a constant offset outside them, or at an offset that is not
+/// constant (`p[i]`, `*(p + i)`) whose values `index_range` does not keep
+/// inside them. `index_range` gives the inclusive range of an offset
+/// expression where the read is, or `None` when none is known, which may
+/// take any element. False for every other buffer, and for an access whose
+/// base is not the variable itself.
+pub fn reads_unwritten_element(
+    access: &Node,
+    source: &str,
+    info: &VarInfo,
+    index_range: &dyn Fn(&Node) -> Option<(i64, i64)>,
+) -> bool {
+    /// The most elements a range is read element by element for.
+    const SPAN: i64 = 4096;
+    if info.state != InitState::MallocInitialized
+        || info.elements_written.is_none()
+        || info.elements_cover_allocation()
+    {
         return false;
     }
-    match element_offset(access, source) {
-        Some(Some(offset)) => !info.element_written(offset),
-        Some(None) => true,
+    match element_index(access, source) {
+        Some(ElementIndex::Constant(offset)) => !info.element_written(offset),
+        Some(ElementIndex::Variable(index)) => match index_range(&index) {
+            Some((lo, hi)) if lo <= hi && hi.saturating_sub(lo) < SPAN => {
+                (lo..=hi).any(|offset| !info.element_written(offset))
+            }
+            _ => true,
+        },
         None => false,
     }
+}
+
+/// The offset an element access takes from its base variable.
+enum ElementIndex<'t> {
+    /// A compile-time constant.
+    Constant(i64),
+    /// An expression that is not one, such as `i` in `p[i]` or `*(p + i)`.
+    Variable(Node<'t>),
 }
 
 /// [`constant_element_offset`], telling an lvalue whose base is the
 /// variable at an offset that is not constant (`Some(None)`) from one whose
 /// base is something else (`None`).
 fn element_offset(left: &Node, source: &str) -> Option<Option<i64>> {
+    element_index(left, source).map(|index| match index {
+        ElementIndex::Constant(offset) => Some(offset),
+        ElementIndex::Variable(_) => None,
+    })
+}
+
+/// The offset `left` takes from its base when the base is a variable
+/// itself, as [`element_offset`] reads it, with the offset expression when
+/// it is not constant.
+fn element_index<'t>(left: &Node<'t>, source: &str) -> Option<ElementIndex<'t>> {
     let empty = HashMap::new();
     let constant = |n: &Node| const_eval::try_evaluate_expr(n, source, &empty);
     fn bare(mut n: Node) -> Option<Node> {
@@ -1219,6 +1269,10 @@ fn element_offset(left: &Node, source: &str) -> Option<Option<i64>> {
         }
         Some(n)
     }
+    let index = |n: Node<'t>| match constant(&n) {
+        Some(offset) => ElementIndex::Constant(offset),
+        None => ElementIndex::Variable(n),
+    };
     let mut node = bare(*left)?;
     while node.kind() == "field_expression" {
         let argument = node.child_by_field_name("argument")?;
@@ -1233,7 +1287,7 @@ fn element_offset(left: &Node, source: &str) -> Option<Option<i64>> {
     let (base, offset) = match node.kind() {
         "subscript_expression" => (
             node.child_by_field_name("argument")?,
-            constant(&node.child_by_field_name("index")?),
+            index(node.child_by_field_name("index")?),
         ),
         "pointer_expression" => {
             if node
@@ -1253,16 +1307,18 @@ fn element_offset(left: &Node, source: &str) -> Option<Option<i64>> {
                     target.child_by_field_name("right")?,
                 );
                 match (constant(&l), constant(&r)) {
-                    (None, k @ Some(_)) => (l, k),
-                    (k @ Some(_), None) => (r, k),
+                    (None, Some(k)) => (l, ElementIndex::Constant(k)),
+                    (Some(k), None) => (r, ElementIndex::Constant(k)),
                     // Neither side constant: whichever is the variable
                     // is read at an offset that is not.
-                    (None, None) if bare(l)?.kind() == "identifier" => (l, None),
-                    (None, None) => (r, None),
+                    (None, None) if bare(l)?.kind() == "identifier" => {
+                        (l, ElementIndex::Variable(r))
+                    }
+                    (None, None) => (r, ElementIndex::Variable(l)),
                     _ => return None,
                 }
             } else {
-                (target, Some(0))
+                (target, ElementIndex::Constant(0))
             }
         }
         _ => return None,
@@ -1381,8 +1437,12 @@ fn process_expression(
             process_assignment_init(node, source, state, tracked_vars, config)
         }
         "update_expression" => {
-            // i++ or ++i — the variable is being read AND written
-            // If already tracked and initialized, no change needed
+            // i++ or ++i — the variable is being read AND written. A
+            // pointer stepped through a buffer no longer starts where the
+            // buffer's element offsets were counted from.
+            if let Some(argument) = node.child_by_field_name("argument") {
+                forget_elements_reached_by(&argument, source, state);
+            }
         }
         "call_expression" => {
             process_call_expression(node, source, state, tracked_vars, config);
@@ -1429,13 +1489,17 @@ fn process_assignment_init(
     // that initialize other variables via &output_param)
     if let Some(right) = node.child_by_field_name("right") {
         find_and_process_init_expressions(&right, source, state, tracked_vars, config);
+        forget_elements_reached_by(&right, source, state);
     }
 
     // Then process the LHS assignment
     let Some(left) = node.child_by_field_name("left") else {
         return;
     };
-    let (var_name, has_subscript_in_chain) = extract_assignment_target(&left, source);
+    let (mut var_name, has_subscript_in_chain) = extract_assignment_target(&left, source);
+    if var_name.is_empty() {
+        var_name = pointer_sum_store_target(&left, source, state).unwrap_or_default();
+    }
     if var_name.is_empty() {
         return;
     }
@@ -1765,6 +1829,64 @@ fn process_call_expression(
     }
 
     process_unknown_function_call(&func_name, node, source, state, config);
+}
+
+/// A value that points into a buffer (`p`, `p + n`, `&p[n]`, as
+/// [`buffers_reached_by_argument`] reads it) stored in another object, or a
+/// pointer stepped (`p++`), leaves the buffer's element offsets behind:
+/// writes through the copy (`q = p; q[3] = 7`) or through the stepped
+/// pointer are not counted from the same start. Such a buffer is no longer
+/// known element by element.
+fn forget_elements_reached_by(value: &Node, source: &str, state: &mut InitStateMap) {
+    let mut names = Vec::new();
+    buffers_reached_by_argument(*value, source, &mut names);
+    for name in names {
+        if let Some(info) = state.get_mut(&name) {
+            info.elements_written = None;
+        }
+    }
+}
+
+/// The buffer a store through a pointer sum writes (`*(p + 2) = v`,
+/// `*(2 + p) = v`, `*(p - 1) = v`): the operand the state tracks as a
+/// malloc'd buffer, so that the store's element is counted
+/// ([`constant_element_offset`]) or, at an offset that is not constant,
+/// the buffer is written whole. `None` for any other lvalue.
+fn pointer_sum_store_target(left: &Node, source: &str, state: &InitStateMap) -> Option<String> {
+    let mut node = *left;
+    while node.kind() == "parenthesized_expression" {
+        node = node.named_child(0)?;
+    }
+    if node.kind() != "pointer_expression" || node.child_by_field_name("operator")?.kind() != "*" {
+        return None;
+    }
+    let mut sum = node.child_by_field_name("argument")?;
+    while sum.kind() == "parenthesized_expression" {
+        sum = sum.named_child(0)?;
+    }
+    if sum.kind() != "binary_expression" {
+        return None;
+    }
+    let operands: &[&str] = match sum.child_by_field_name("operator")?.kind() {
+        "+" => &["left", "right"],
+        "-" => &["left"],
+        _ => return None,
+    };
+    operands
+        .iter()
+        .filter_map(|field| sum.child_by_field_name(field))
+        .map(|operand| strip_arg_casts(&operand))
+        .filter(|operand| operand.kind() == "identifier")
+        .filter_map(|operand| operand.utf8_text(source.as_bytes()).ok())
+        .find(|name| {
+            state.get(*name).is_some_and(|info| {
+                matches!(
+                    info.state,
+                    InitState::MallocUninitialized | InitState::MallocInitialized
+                )
+            })
+        })
+        .map(str::to_string)
 }
 
 /// A call that may write through its arguments, handed the buffer or a
