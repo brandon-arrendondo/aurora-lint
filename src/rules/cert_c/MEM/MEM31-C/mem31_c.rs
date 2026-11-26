@@ -965,16 +965,35 @@ fn next_statement_sibling<'n>(node: &Node<'n>) -> Option<Node<'n>> {
 ///
 /// A cleanup label kept inside `if (0) { fail: ...; }` runs its block and
 /// then whatever follows the `if`, which is where such code puts the shared
-/// release. Falling off the consequence or the `else` arm of an `if`, or a
-/// bare nested block, continues after that statement, climbing as long as
-/// the statement is itself the last one in its block. A loop body falls
-/// back to its condition and a `switch` body out of the `switch`; neither is
-/// followed, and nor is anything past the function's own body, so the walk
-/// stops there and credits nothing it cannot see executed.
+/// release. Falling off the braced consequence or `else` arm of an `if`, or
+/// a bare nested block, continues after that statement, climbing as long as
+/// the statement is itself the last one in its block.
+///
+/// Only a statement that sits directly in a block, or in a preprocessor arm
+/// inside one, falls off that block's end. One that is the unbraced body of
+/// a loop or an `if` does not: that construct decides where control goes
+/// next, and the rest of the enclosing block, a `return` included, still
+/// runs. A loop body falls back to its condition and a `switch` body out of
+/// the `switch`; neither is followed, and nor is anything past the
+/// function's own body, so the walk stops there and credits nothing it
+/// cannot see executed.
 fn statement_after_block_end<'n>(last: &Node<'n>) -> Option<Node<'n>> {
     let mut statement = *last;
     loop {
-        let block = query::find_ancestor(statement, |a| a.kind() == "compound_statement")?;
+        // Only a statement that sits directly in the block (or in a
+        // preprocessor arm inside it) falls off that block's end; a braceless
+        // loop or `if` body in between owns where control goes next.
+        let mut up = statement.parent()?;
+        while matches!(
+            up.kind(),
+            "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef" | "preproc_else"
+        ) {
+            up = up.parent()?;
+        }
+        if up.kind() != "compound_statement" {
+            return None;
+        }
+        let block = up;
         let holder = block.parent()?;
         let mut outer = match holder.kind() {
             "if_statement" => holder,
