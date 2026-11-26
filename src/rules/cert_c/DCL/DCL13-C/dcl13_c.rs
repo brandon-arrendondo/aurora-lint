@@ -63,34 +63,47 @@ impl CertRule for Dcl13C {
         *self.function_macros.borrow_mut() = context.function_macros.clone();
     }
 
+    /// Function definitions only. A prototype says nothing about what the
+    /// function does with a pointee: `select(int, fd_set *readfds, ...)`
+    /// writes through `readfds` whatever the parameter is called, and a
+    /// definition elsewhere in the file may be another build's stub (an
+    /// empty `static inline` in an `#else` arm). The finding is made where
+    /// the body shows the pointee is left unchanged, and making that
+    /// parameter `const` there makes every prototype follow.
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
         let macros = self.function_macros.borrow();
-
-        // Check all function definitions and declarations
-        for found in
-            query::find_descendants_of_kinds(*node, &["function_definition", "declaration"])
-        {
-            match found.kind() {
-                "function_definition" => {
-                    check_function_definition(
-                        &found,
-                        source,
-                        &macros,
-                        &mut violations,
-                        self.rule_id(),
-                    );
-                }
-                "declaration" => {
-                    // Check for function declarations (prototypes)
-                    check_function_declaration(&found, source, &mut violations, self.rule_id());
-                }
-                _ => {}
+        let mut violations = Vec::new();
+        for func in query::find_descendants_of_kinds(*node, &["function_definition"]) {
+            for param in unmodified_pointer_params(&func, source, &macros) {
+                violations.push(RuleViolation {
+                    rule_id: self.rule_id().to_string(),
+                    severity: Severity::Low,
+                    message: format!(
+                        "Pointer parameter '{}' is not modified and should be declared const",
+                        param.name
+                    ),
+                    file_path: String::new(),
+                    line: param.line,
+                    column: param.column,
+                    suggestion: Some(format!(
+                        "Declare parameter as 'const <type> *{}'",
+                        param.name
+                    )),
+                    ..Default::default()
+                });
             }
         }
-
         violations
     }
+}
+
+/// One named parameter of a function definition.
+struct Param {
+    name: String,
+    is_const: bool,
+    is_pointer: bool,
+    line: usize,
+    column: usize,
 }
 
 /// Get the name of the function being defined
@@ -131,177 +144,48 @@ fn find_name_in_declarator(node: &Node, source: &str) -> Option<String> {
     None
 }
 
-/// Check a function definition for const-correctness of pointer parameters
-fn check_function_definition(
+/// The non-`const` pointer parameters of a function definition whose body
+/// never changes what they point to, directly or through a local alias.
+fn unmodified_pointer_params(
     func_node: &Node,
     source: &str,
     macros: &HashMap<String, FunctionMacro>,
-    violations: &mut Vec<RuleViolation>,
-    rule_id: &str,
-) {
+) -> Vec<Param> {
     // Skip main() — its signature (int argc, char *argv[]) is mandated by the C standard;
     // requiring const on argv is incorrect and generates FPs on every Juliet test file.
     if get_function_name(func_node, source).as_deref() == Some("main") {
-        return;
+        return Vec::new();
     }
-
-    // Extract function parameters with their const-qualification status
-    let params = extract_function_parameters(func_node, source);
-
-    // Find the function body
     let body = find_compound_statement(func_node);
-
-    // For each pointer parameter, check if it's modified in the function body
-    for (param_name, is_const, is_pointer, line, col) in params {
-        if !is_pointer {
-            continue; // Only check pointer parameters
-        }
-
-        // DCL13-C: "Declare function parameters that are pointers to values
-        // not changed by the function as const"
-        // If already const-qualified, there's nothing for DCL13-C to flag.
-        if is_const {
-            continue;
-        }
-
-        // Check if this parameter is modified in the function body
-        // Also check through local pointer aliases (e.g., `T *cur = param;`)
-        let is_modified = if let Some(body_node) = body {
-            if is_pointer_param_modified(&body_node, &param_name, source, macros) {
-                true
-            } else {
-                let aliases = collect_pointer_aliases(&body_node, &param_name, source);
-                aliases
-                    .iter()
-                    .any(|alias| is_pointer_param_modified(&body_node, alias, source, macros))
+    extract_function_parameters(func_node, source)
+        .into_iter()
+        .filter(|p| p.is_pointer && !p.is_const)
+        .filter(|p| match body {
+            Some(body_node) => {
+                !is_pointer_param_modified(&body_node, &p.name, source, macros)
+                    && !collect_pointer_aliases(&body_node, &p.name, source)
+                        .iter()
+                        .any(|alias| is_pointer_param_modified(&body_node, alias, source, macros))
             }
-        } else {
-            false // No body, assume not modified
-        };
-
-        if !is_modified {
-            // Non-const pointer parameter that is never modified — should be const.
-            violations.push(RuleViolation {
-                rule_id: rule_id.to_string(),
-                severity: Severity::Low,
-                message: format!(
-                    "Pointer parameter '{}' is not modified and should be declared const",
-                    param_name
-                ),
-                file_path: String::new(),
-                line,
-                column: col,
-                suggestion: Some(format!(
-                    "Declare parameter as 'const <type> *{}'",
-                    param_name
-                )),
-                ..Default::default()
-            });
-        }
-    }
+            None => true,
+        })
+        .collect()
 }
 
-/// Check a function declaration for const-correctness of pointer parameters
-fn check_function_declaration(
-    decl_node: &Node,
-    source: &str,
-    violations: &mut Vec<RuleViolation>,
-    rule_id: &str,
-) {
-    // Look for function declarators in the declaration
-    for i in 0..decl_node.child_count() {
-        if let Some(child) = decl_node.child(i) {
-            if child.kind() == "function_declarator" || is_function_declarator(&child) {
-                // For function declarations (no body), we can only check basic patterns
-                // We'll flag non-const pointer parameters as potential issues
-                let params = extract_params_from_declarator(&child, source);
-
-                for (param_name, is_const, is_pointer, line, col) in params {
-                    if is_pointer && !is_const && !param_name.is_empty() {
-                        // Only flag if it's a clear case where const would be appropriate
-                        // (e.g., second parameter of strcat-like functions)
-                        // For declarations without bodies, we can't analyze usage,
-                        // so we'll be conservative and only flag obvious cases
-
-                        // Check if this looks like a read-only parameter by naming convention
-                        // (src, source, input, etc.) or position (second param in string functions)
-                        if is_likely_readonly_param(&param_name) {
-                            violations.push(RuleViolation {
-                                rule_id: rule_id.to_string(),
-                                severity: Severity::Low,
-                                message: format!(
-                                    "Pointer parameter '{}' should likely be declared const",
-                                    param_name
-                                ),
-                                file_path: String::new(),
-                                line,
-                                column: col,
-                                suggestion: Some(format!(
-                                    "Consider declaring parameter as 'const <type> *{}'",
-                                    param_name
-                                )),
-                                ..Default::default()
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Check if a parameter name suggests it should be read-only
-fn is_likely_readonly_param(name: &str) -> bool {
-    let lowercase = name.to_lowercase();
-    lowercase.starts_with("src")
-        || lowercase.starts_with("source")
-        || lowercase.starts_with("input")
-        || lowercase.starts_with("in_")
-        || lowercase.contains("read")
-        || lowercase == "s2" // Conventional second string parameter name (e.g., s2 in strcat/strcmp)
-}
-
-/// Check if a node is a function declarator (recursively checking pointer/array decorators)
-fn is_function_declarator(node: &Node) -> bool {
-    if node.kind() == "function_declarator" {
-        return true;
-    }
-
-    // Check children for nested declarators
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if is_function_declarator(&child) {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-/// Extract parameters from a function declarator
-fn extract_params_from_declarator(
-    declarator: &Node,
-    source: &str,
-) -> Vec<(String, bool, bool, usize, usize)> {
-    let mut params = Vec::new();
-
-    // Find parameter_list
-    if let Some(param_list) = find_parameter_list(declarator) {
-        for i in 0..param_list.child_count() {
-            if let Some(param) = param_list.child(i) {
-                if param.kind() == "parameter_declaration" {
-                    if let Some((name, is_const, is_pointer, line, col)) =
-                        analyze_parameter(&param, source)
-                    {
-                        params.push((name, is_const, is_pointer, line, col));
-                    }
-                }
-            }
-        }
-    }
-
-    params
+/// The named parameters of `param_list`.
+fn params_of_list(param_list: &Node, source: &str) -> Vec<Param> {
+    (0..param_list.child_count())
+        .filter_map(|i| param_list.child(i))
+        .filter(|param| param.kind() == "parameter_declaration")
+        .filter_map(|param| analyze_parameter(&param, source))
+        .map(|(name, is_const, is_pointer, line, column)| Param {
+            name,
+            is_const,
+            is_pointer,
+            line,
+            column,
+        })
+        .collect()
 }
 
 /// Find parameter_list in a function declarator
@@ -821,40 +705,21 @@ fn is_param_passed_to_modifying_call(call_node: &Node, param_name: &str, source:
     true
 }
 
-/// Extract function parameters with const-qualification and pointer status
-///
-/// Returns: Vec<(parameter_name, is_const, is_pointer, line_number, column_number)>
-fn extract_function_parameters(
-    func_node: &Node,
-    source: &str,
-) -> Vec<(String, bool, bool, usize, usize)> {
-    let mut parameters = Vec::new();
-
-    // Find the function_declarator
+/// A function definition's named parameters, with const-qualification and
+/// pointer status.
+fn extract_function_parameters(func_node: &Node, source: &str) -> Vec<Param> {
     for i in 0..func_node.child_count() {
         if let Some(child) = func_node.child(i) {
             if child.kind() == "function_declarator"
                 || is_pointer_or_array_with_func_declarator(&child)
             {
                 if let Some(param_list) = find_parameter_list(&child) {
-                    // Extract each parameter
-                    for j in 0..param_list.child_count() {
-                        if let Some(param) = param_list.child(j) {
-                            if param.kind() == "parameter_declaration" {
-                                if let Some((name, is_const, is_pointer, line, col)) =
-                                    analyze_parameter(&param, source)
-                                {
-                                    parameters.push((name, is_const, is_pointer, line, col));
-                                }
-                            }
-                        }
-                    }
+                    return params_of_list(&param_list, source);
                 }
             }
         }
     }
-
-    parameters
+    Vec::new()
 }
 
 /// Check if node is a pointer/array declarator that contains a function declarator

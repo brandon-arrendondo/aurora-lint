@@ -1,11 +1,23 @@
 /*
  * Rule: DCL13-C
  * Source: testcases
- * Status: FAIL - Function declarations with non-const readonly-looking params
+ * Status: FAIL - A definition that leaves the pointee unchanged
+ * Expect: count=2
+ *
+ * The definition never writes through `src` or `input`, so each is
+ * reported there. The prototypes before it are not: a prototype shows
+ * nothing of what the function does with the pointee.
  */
 
-/* Parameter named "src" suggests read-only intent */
 void process(char *dest, char *src);
 
-/* Parameter named "input" suggests read-only intent */
 int validate(char *input);
+
+void process(char *dest, char *src) {
+  while (*src) {
+    *dest++ = *src++;
+  }
+  *dest = '\0';
+}
+
+int validate(char *input) { return input[0] != '\0'; }

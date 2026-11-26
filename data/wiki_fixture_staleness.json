@@ -1671,7 +1671,13 @@
     "any_stale": false,
     "fixtures": [
       {
-        "file": "src/rules/cert_c/DCL/DCL13-C/tests/fail/wiki_noncompliant_3.c",
+        "file": "src/rules/cert_c/DCL/DCL13-C/tests/fail/wiki_noncompliant_3_with_definition.c",
+        "best_match": "noncompliant_3",
+        "containment": 1.0,
+        "stale": false
+      },
+      {
+        "file": "src/rules/cert_c/DCL/DCL13-C/tests/pass/wiki_noncompliant_3_prototype_without_body.c",
         "best_match": "noncompliant_3",
         "containment": 1.0,
         "stale": false
