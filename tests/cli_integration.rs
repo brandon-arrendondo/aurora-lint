@@ -12113,6 +12113,8 @@ fn con03_reads_a_type_name_by_its_definition_and_stays_silent_without_one() {
     // object. Both come from a header outside the scanned tree, reached
     // through -I. Without -I neither name has a definition the scan read:
     // the type is unknown, and the rule does not guess it from the spelling.
+    // Another file's `#define counter_t port_counter_t` is one more reading
+    // of the name, not a replacement for the typedef.
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("inc")).unwrap();
     std::fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -12128,6 +12130,11 @@ fn con03_reads_a_type_name_by_its_definition_and_stays_silent_without_one() {
          void *worker(void *arg) {\n    hits++;\n    on_read();\n    return arg;\n}\n\n\
          int main(void) {\n    pthread_t t;\n    pthread_create(&t, 0, worker, 0);\n\
          \x20   pthread_join(t, 0);\n    return hits;\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("src/port.c"),
+        "#define counter_t port_counter_t\n",
     )
     .unwrap();
     let src = dir.path().join("src");

@@ -540,6 +540,10 @@ impl Con03C {
             for declarator in typedef_declarators(&def) {
                 let mut d = declarator;
                 while d.kind() != "type_identifier" {
+                    if let Some(name) = Self::parenthesized_name_read_as_parameter(&d) {
+                        d = name;
+                        break;
+                    }
                     match d.child_by_field_name("declarator").or_else(|| {
                         d.named_child(0)
                             .filter(|_| d.kind() == "parenthesized_declarator")
@@ -554,6 +558,29 @@ impl Con03C {
             }
         }
         names
+    }
+
+    /// The name of `typedef unsigned char (digest_t)[32];`, which the parser
+    /// reads as a function named `char` taking one parameter of type
+    /// `digest_t`. A keyword cannot be a declarator's name, so the lone
+    /// parameter type is the name the typedef declares.
+    fn parenthesized_name_read_as_parameter<'t>(d: &Node<'t>) -> Option<Node<'t>> {
+        if d.kind() != "function_declarator"
+            || d.child_by_field_name("declarator")?.kind() != "primitive_type"
+        {
+            return None;
+        }
+        let params = d.child_by_field_name("parameters")?;
+        let mut cursor = params.walk();
+        let named: Vec<Node<'t>> = params.named_children(&mut cursor).collect();
+        let [param] = named[..] else {
+            return None;
+        };
+        let ty = param.child_by_field_name("type")?;
+        (param.kind() == "parameter_declaration"
+            && param.named_child_count() == 1
+            && ty.kind() == "type_identifier")
+            .then_some(ty)
     }
 
     /// Whether `declarator` declares a function because the declaration's
@@ -642,35 +669,44 @@ impl Con03C {
             return BaseType::Unknown;
         }
         *budget -= 1;
-        let definitions: Vec<String> = {
-            let macros = self.macro_definitions.borrow();
-            match macros.get(name) {
-                Some(defs) => {
-                    let mut bodies = Vec::new();
-                    for def in defs {
-                        match def {
-                            MacroDefinition::Object { body } => bodies.push(body.clone()),
-                            _ => return BaseType::Other,
-                        }
-                    }
-                    bodies
+        let mut definitions: Vec<String> = Vec::new();
+        if let Some(defs) = self.macro_definitions.borrow().get(name) {
+            for def in defs {
+                match def {
+                    MacroDefinition::Object { body } => definitions.push(body.clone()),
+                    _ => return BaseType::Other,
                 }
-                None => match self.typedef_types.borrow().get(name) {
-                    Some(aliased) => vec![aliased.clone()],
-                    None => match self.header_typedef(name) {
-                        Some(aliased) if !aliased.is_empty() => aliased,
-                        // A typedef of a pointer, array, function, struct,
-                        // union or enum: read as written, as before.
-                        Some(_) => return classify_spelling(name),
-                        None => return classify_unresolved_name(name),
-                    },
-                },
             }
+        }
+        // The macro table spans every file, so a name one file renames
+        // (`#define Font X11Font`) and another defines as a typedef has both
+        // as arms; neither is known to be the one this file sees.
+        let typedef_arm = match self.typedef_types.borrow().get(name) {
+            Some(aliased) => Some(Ok(vec![aliased.clone()])),
+            None => self.header_typedef(name).map(|aliased| {
+                if aliased.is_empty() {
+                    // A typedef of a pointer, array, function, struct, union
+                    // or enum: read as written, as before.
+                    Err(classify_spelling(name))
+                } else {
+                    Ok(aliased)
+                }
+            }),
+        };
+        let typedef_kind = match typedef_arm {
+            Some(Ok(aliased)) => {
+                definitions.extend(aliased);
+                None
+            }
+            Some(Err(kind)) => Some(kind),
+            None if definitions.is_empty() => return classify_unresolved_name(name),
+            None => None,
         };
         stack.push(name.to_string());
         let resolved = definitions
             .iter()
             .map(|d| self.resolve_spelling(d, stack, budget))
+            .chain(typedef_kind)
             .reduce(BaseType::join)
             .unwrap_or(BaseType::Other);
         stack.pop();
@@ -824,14 +860,10 @@ fn is_posix_type_name(name: &str) -> bool {
             | "in_port_t"
             | "nfds_t"
             | "sigset_t"
-            | "pthread_t"
-            | "pthread_key_t"
-            | "pthread_once_t"
-            | "pthread_attr_t"
             | "timer_t"
             | "clockid_t"
             | "DIR"
-    )
+    ) || (name.starts_with("pthread_") && name.ends_with("_t"))
 }
 
 /// What a type spelling names, matched by whole token so a name that merely
