@@ -2,6 +2,10 @@
  * Rule: ARR39-C
  * Source: testcases
  * Status: FAIL - Should trigger ARR39-C violation
+ * Settings: data_model=lp64, wchar_t_bits=32
+ *
+ * A wchar_t is as wide as the data model says: declared 4 bytes here, so
+ * the pointer steps by 4 and a count scaled by sizeof(wchar_t) scales twice.
  */
 
 /*

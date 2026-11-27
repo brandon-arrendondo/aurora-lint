@@ -5,8 +5,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::{ProjectContext, VisibleTypes};
 use crate::manifest::Severity;
 use crate::settings::{AnalysisSettings, IntFacts};
-use crate::utility::cert_c::ast_utils::{self, get_identifier_from_declarator};
-use crate::utility::cert_c::declarator_utils::{is_array_declarator, is_pointer_declarator};
+use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::expr_type::{self, CType, Rank, TypeEnv};
 use crate::utility::cert_c::overflow_helpers;
 use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
@@ -209,49 +208,87 @@ impl<'a> OperandTypes<'a> {
             .is_some_and(|at| at.iter().any(|&offset| offset < operand.start_byte()))
     }
 
-    /// Whether `operand` is a pointer to, or an array of, a character type
-    /// or an exactly 8-bit integer by its declared type, or a pointer to
-    /// `void`, which GNU C moves by bytes: adding a byte count to it is byte
-    /// arithmetic, scaled once. A sum or difference the typer
-    /// cannot type, because an integer operand's type is not fixed (`p + n *
-    /// sizeof(x)` where the data model leaves `size_t`'s rank open), has its
-    /// pointer operand's type.
-    fn points_to_bytes(&self, operand: &Node) -> bool {
+    /// The element type a pointer or array `operand` steps over, when its
+    /// declarations say: through the expression typer, or the project's
+    /// pointer objects for a name no declaration in the file binds. A sum or
+    /// difference the typer cannot type, because an integer operand's type
+    /// is not fixed (`p + n * sizeof(x)` where the data model leaves
+    /// `size_t`'s rank open), has its pointer operand's element.
+    fn element_type(&self, operand: &Node) -> Option<CType> {
         let typed = expr_type::expr_type(operand, self.source, self.env())
             .or_else(|| self.project_object_type(operand));
-        let element = match typed {
-            Some(CType::Pointer(Some(element)) | CType::Array(Some(element))) => element,
-            None => {
-                return match operand.kind() {
-                    "parenthesized_expression" => operand
-                        .named_child(0)
-                        .is_some_and(|inner| self.points_to_bytes(&inner)),
-                    "binary_expression" => {
-                        let operator = operand
-                            .child_by_field_name("operator")
-                            .map(|o| ast_utils::get_node_text(&o, self.source));
-                        matches!(operator, Some("+" | "-"))
-                            && ["left", "right"].iter().any(|side| {
-                                operand
-                                    .child_by_field_name(side)
-                                    .is_some_and(|o| self.points_to_bytes(&o))
-                            })
+        match typed {
+            Some(CType::Pointer(element) | CType::Array(element)) => element.map(|e| *e),
+            Some(_) => None,
+            None => match operand.kind() {
+                "parenthesized_expression" => operand
+                    .named_child(0)
+                    .and_then(|inner| self.element_type(&inner)),
+                "binary_expression" => {
+                    let operator = operand
+                        .child_by_field_name("operator")
+                        .map(|o| ast_utils::get_node_text(&o, self.source));
+                    if !matches!(operator, Some("+" | "-")) {
+                        return None;
                     }
-                    _ => false,
-                };
-            }
-            _ => return false,
-        };
-        matches!(
-            *element,
-            CType::Int {
-                rank: Rank::Char,
+                    ["left", "right"].iter().find_map(|side| {
+                        operand
+                            .child_by_field_name(side)
+                            .and_then(|o| self.element_type(&o))
+                    })
+                }
+                _ => None,
+            },
+        }
+    }
+
+    /// Whether `operand` is a pointer or array whose element type is known
+    /// and wider than a byte, so that adding a byte count to it scales the
+    /// count a second time. A character type, an exactly 8-bit integer and
+    /// `void` (which GNU C moves by bytes) step by one byte. An element the
+    /// declarations leave unknown, or an integer type that may be a single
+    /// byte, gives no finding: like [`Self::is_pointer`], this answers only
+    /// what the declarations show. A `wchar_t` element steps by
+    /// `sizeof(wchar_t)`, which only a declared `wchar_t_bits` fixes.
+    fn steps_by_elements(&self, operand: &Node) -> bool {
+        if !self.is_pointer(operand) {
+            return false;
+        }
+        match self.element_type(operand) {
+            None => self.declares_wide_char_elements(operand),
+            Some(
+                CType::Int {
+                    rank: Rank::Char, ..
+                }
+                | CType::IntOfWidth {
+                    max_bits: Some(8), ..
+                }
+                | CType::Void
+                | CType::Function(_),
+            ) => false,
+            Some(CType::IntOfWidth {
+                min_bits,
+                max_bits: None,
                 ..
-            } | CType::IntOfWidth {
-                max_bits: Some(8),
-                ..
-            } | CType::Void
-        )
+            }) => min_bits > 8,
+            Some(_) => true,
+        }
+    }
+
+    /// Whether `operand` names an object its declaration gives `wchar_t`
+    /// elements (`wchar_t *p`, `wchar_t buf[N]`) and the data model makes a
+    /// `wchar_t` wider than a byte. The typer leaves `wchar_t` untyped, since
+    /// its width is a platform fact the integer widths do not carry.
+    fn declares_wide_char_elements(&self, operand: &Node) -> bool {
+        let operand = Arr39C::unparenthesized(*operand);
+        operand.kind() == "identifier"
+            && self.model.wchar_bytes().is_some_and(|bytes| bytes > 1)
+            && ast_utils::resolve_identifier_declared_type(
+                &operand,
+                ast_utils::get_node_text(&operand, self.source),
+                self.source,
+            )
+            .is_some_and(|spelled| spelled == "wchar_t *")
     }
 
     /// The expression typer's environment over the file's visible types and
@@ -312,7 +349,7 @@ impl Arr39C {
                     self.check_function_call_scaling(&matched, source, violations);
                 }
                 "while_statement" | "for_statement" => {
-                    self.check_loop_pointer_arithmetic(&matched, source, violations);
+                    self.check_loop_pointer_arithmetic(&matched, source, types, violations);
                 }
                 "subscript_expression" => {
                     // Check for violations in array subscript like ptr[scaled_value]
@@ -321,6 +358,23 @@ impl Arr39C {
                 _ => {}
             }
         }
+    }
+
+    /// Whether adding `offset` to `pointer` scales twice: `offset` is a
+    /// byte count by its structure ([`Self::is_byte_count`]) and `pointer`
+    /// steps by elements wider than a byte. A count scaled by
+    /// `sizeof(char)` is its own anti-pattern on any pointer, since that
+    /// multiplication is always by 1.
+    fn adds_byte_count(
+        &self,
+        pointer: &Node,
+        offset: &Node,
+        source: &str,
+        types: &OperandTypes,
+    ) -> bool {
+        self.is_byte_count(offset, source, 0)
+            && (types.steps_by_elements(pointer)
+                || (Self::scaled_by_char_size(offset, source) && types.is_pointer(pointer)))
     }
 
     fn check_pointer_arithmetic(
@@ -336,12 +390,7 @@ impl Arr39C {
                     node.child_by_field_name("left"),
                     node.child_by_field_name("right"),
                 ) {
-                    // Check if this is pointer + scaled_integer or pointer - scaled_integer
-                    if self.is_pointer_scaled_arithmetic(&left, &right, source)
-                        && types.is_pointer(&left)
-                        && (Self::scaled_by_char_size(&right, source)
-                            || !types.points_to_bytes(&left))
-                    {
+                    if self.adds_byte_count(&left, &right, source, types) {
                         let start_point = node.start_position();
                         let expr_text = &source[node.start_byte()..node.end_byte()];
 
@@ -377,16 +426,7 @@ impl Arr39C {
                     node.child_by_field_name("left"),
                     node.child_by_field_name("right"),
                 ) {
-                    let left_text = &source[left.start_byte()..left.end_byte()];
-
-                    // Check if this is pointer += scaled_integer
-                    if self.is_scaled_integer_expression(&right, source)
-                        && self.looks_like_pointer(&left, source)
-                        && !self.is_char_pointer(&left, source)  // Char pointers are allowed
-                        && !left_text.to_lowercase().contains("byte") // Byte pointers are allowed
-                        && types.is_pointer(&left)
-                        && !types.points_to_bytes(&left)
-                    {
+                    if self.adds_byte_count(&left, &right, source, types) {
                         let start_point = node.start_position();
                         let expr_text = &source[node.start_byte()..node.end_byte()];
 
@@ -416,21 +456,12 @@ impl Arr39C {
         types: &OperandTypes,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Check for ptr[sizeof_value] pattern
+        // `ptr[byte_count]`: the subscript scales the index as `ptr + index` does.
         if let (Some(argument), Some(index)) = (
             node.child_by_field_name("argument"),
             node.child_by_field_name("index"),
         ) {
-            let arg_text = &source[argument.start_byte()..argument.end_byte()];
-
-            // Check if index is a scaled value (from sizeof or byte-related variable)
-            if self.is_scaled_integer_expression(&index, source)
-                && self.looks_like_pointer_node(&argument, source)
-                && !self.is_char_pointer(&argument, source)
-                && !arg_text.to_lowercase().contains("byte") // Byte pointers are allowed
-                && types.is_pointer(&argument)
-                && !types.points_to_bytes(&argument)
-            {
+            if self.adds_byte_count(&argument, &index, source, types) {
                 let start_point = node.start_position();
                 let expr_text = &source[node.start_byte()..node.end_byte()];
 
@@ -484,59 +515,49 @@ impl Arr39C {
         &self,
         node: &Node,
         source: &str,
+        types: &OperandTypes,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Check if loop condition uses sizeof(array) as upper bound
-        // Pattern: for (i = 0; i < sizeof(data); i++) { ptr[i] or *(ptr+i) }
-        if let Some(condition) = self.find_loop_condition(node) {
-            let condition_text = &source[condition.start_byte()..condition.end_byte()];
-
-            // Check if sizeof is used as loop bound
-            if condition_text.contains("sizeof(") {
-                // Find the loop body
-                if let Some(body) = self.find_loop_body(node) {
-                    // Check if body uses pointer arithmetic or subscripting
-                    if self.has_pointer_operations_in_loop(&body, source) {
-                        let start_point = condition.start_position();
-
-                        violations.push(RuleViolation {
-                            rule_id: self.rule_id().to_string(),
-                            severity: Severity::High,
-                            message: "Loop uses sizeof() as bound (byte count) but performs pointer arithmetic (element-based), causing double scaling".to_string(),
-                            file_path: String::new(),
-                            line: start_point.row + 1,
-                            column: start_point.column + 1,
-                            suggestion: Some("Use array element count (sizeof(array)/sizeof(array[0])) instead of sizeof(array) in loop bound".to_string()),
-                            ..Default::default()
-                        });
-                        return; // Only report once per loop
-                    }
-                }
-            }
-        }
-
-        // Original check: Look for patterns like: while (ptr < (buf + sizeof(buf)))
-        let node_text = &source[node.start_byte()..node.end_byte()];
-
-        if node_text.contains("sizeof(") && (node_text.contains(" + ") || node_text.contains(" - "))
-        {
-            // Look for pointer comparison with sizeof scaling
-            if let Some(condition) = self.find_loop_condition(node) {
-                if self.has_scaled_pointer_comparison(&condition, source) {
+        let Some(condition) = self.find_loop_condition(node) else {
+            return;
+        };
+        // `for (i = 0; i < sizeof(data); i++) { ptr[i] ... }`: the counter
+        // runs to a byte count and steps a pointer by elements.
+        if let Some(counter) = self.counter_bounded_by_byte_count(&condition, source) {
+            if let Some(body) = self.find_loop_body(node) {
+                if self.steps_by_counter(&body, &counter, source, types) {
                     let start_point = condition.start_position();
 
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
                         severity: Severity::High,
-                        message: "Loop condition uses scaled pointer arithmetic with sizeof(), causing double scaling".to_string(),
+                        message: "Loop uses sizeof() as bound (byte count) but performs pointer arithmetic (element-based), causing double scaling".to_string(),
                         file_path: String::new(),
                         line: start_point.row + 1,
                         column: start_point.column + 1,
-                        suggestion: Some("Use array element count instead of sizeof() in pointer arithmetic".to_string()),
-                    ..Default::default()
+                        suggestion: Some("Use array element count (sizeof(array)/sizeof(array[0])) instead of sizeof(array) in loop bound".to_string()),
+                        ..Default::default()
                     });
+                    return; // Only report once per loop
                 }
             }
+        }
+
+        // `while (ptr < buf + sizeof(buf))`: the bound itself adds a byte
+        // count to a pointer that steps by elements.
+        if self.compares_against_scaled_pointer(&condition, source, types) {
+            let start_point = condition.start_position();
+
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                severity: Severity::High,
+                message: "Loop condition uses scaled pointer arithmetic with sizeof(), causing double scaling".to_string(),
+                file_path: String::new(),
+                line: start_point.row + 1,
+                column: start_point.column + 1,
+                suggestion: Some("Use array element count instead of sizeof() in pointer arithmetic".to_string()),
+                ..Default::default()
+            });
         }
     }
 
@@ -549,60 +570,77 @@ impl Arr39C {
         }
     }
 
-    fn has_pointer_operations_in_loop(&self, body: &Node, source: &str) -> bool {
-        // Check for pointer arithmetic (ptr + i, ptr - i) or subscripting (ptr[i])
-        query::find_first_descendant(*body, |node| self.node_is_pointer_op(&node, source)).is_some()
+    /// The counter a loop condition compares with a byte count (`i <
+    /// sizeof(data)`, `sizeof(data) > i`), when one side is a plain name and
+    /// the other a byte count by its structure.
+    fn counter_bounded_by_byte_count<'t>(
+        &self,
+        condition: &Node<'t>,
+        source: &str,
+    ) -> Option<Node<'t>> {
+        let condition = Self::unparenthesized(*condition);
+        if condition.kind() != "binary_expression" {
+            return None;
+        }
+        let operator = condition
+            .child_by_field_name("operator")
+            .map(|o| ast_utils::get_node_text(&o, source))?;
+        let (left, right) = (
+            condition.child_by_field_name("left")?,
+            condition.child_by_field_name("right")?,
+        );
+        let (counter, bound) = match operator {
+            "<" | "<=" | "!=" => (left, right),
+            ">" | ">=" => (right, left),
+            _ => return None,
+        };
+        (counter.kind() == "identifier" && self.is_byte_count(&bound, source, 0)).then_some(counter)
     }
 
-    fn node_is_pointer_op(&self, node: &Node, source: &str) -> bool {
-        match node.kind() {
+    /// Whether `body` steps a pointer of elements wider than a byte by the
+    /// loop's `counter`: `ptr[i]`, `ptr + i` or `*(ptr + i)`, with `i` the
+    /// counter's own declaration (ADR-0006).
+    fn steps_by_counter(
+        &self,
+        body: &Node,
+        counter: &Node,
+        source: &str,
+        types: &OperandTypes,
+    ) -> bool {
+        let name = ast_utils::get_node_text(counter, source);
+        let binding = ast_utils::resolve_identifier_declarator(counter, name, source)
+            .map(|(_, declarator)| declarator.id());
+        let is_counter = |node: &Node| {
+            let node = Self::unparenthesized(*node);
+            node.kind() == "identifier"
+                && ast_utils::get_node_text(&node, source) == name
+                && ast_utils::resolve_identifier_declarator(&node, name, source)
+                    .map(|(_, declarator)| declarator.id())
+                    == binding
+        };
+        query::find_first_descendant(*body, |node| match node.kind() {
             "subscript_expression" => {
-                // Found ptr[i] pattern
-                if let Some(argument) = node.child_by_field_name("argument") {
-                    // Check if the argument looks like a pointer (not char*)
-                    if self.looks_like_pointer_node(&argument, source)
-                        && !self.is_char_pointer(&argument, source)
-                    {
-                        return true;
-                    }
-                }
+                node.child_by_field_name("index")
+                    .is_some_and(|i| is_counter(&i))
+                    && node
+                        .child_by_field_name("argument")
+                        .is_some_and(|a| types.steps_by_elements(&a))
             }
             "binary_expression" => {
-                // Check for pointer +/- operations
-                if let Some(operator_node) = node.child_by_field_name("operator") {
-                    let op = &source[operator_node.start_byte()..operator_node.end_byte()];
-                    if op == "+" || op == "-" {
-                        if let Some(left) = node.child_by_field_name("left") {
-                            if self.looks_like_pointer_node(&left, source)
-                                && !self.is_char_pointer(&left, source)
-                            {
-                                return true;
-                            }
-                        }
-                    }
-                }
+                matches!(
+                    node.child_by_field_name("operator")
+                        .map(|o| ast_utils::get_node_text(&o, source)),
+                    Some("+" | "-")
+                ) && node
+                    .child_by_field_name("right")
+                    .is_some_and(|r| is_counter(&r))
+                    && node
+                        .child_by_field_name("left")
+                        .is_some_and(|l| types.steps_by_elements(&l))
             }
-            "pointer_expression" => {
-                // Check for *(ptr + i) pattern
-                if let Some(argument) = node.child_by_field_name("argument") {
-                    if argument.kind() == "binary_expression" {
-                        if let Some(operator_node) = argument.child_by_field_name("operator") {
-                            let op = &source[operator_node.start_byte()..operator_node.end_byte()];
-                            if op == "+" || op == "-" {
-                                if let Some(left) = argument.child_by_field_name("left") {
-                                    if self.looks_like_pointer_node(&left, source) {
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        false
+            _ => false,
+        })
+        .is_some()
     }
 
     fn check_wide_string_function_scaling(
@@ -672,84 +710,6 @@ impl Arr39C {
         }
     }
 
-    /// Check if a text is an ALL_CAPS identifier (macro/enum constant)
-    fn is_all_caps_identifier(text: &str) -> bool {
-        !text.is_empty()
-            && text
-                .chars()
-                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-    }
-
-    /// Recursively check if an expression consists entirely of ALL_CAPS
-    /// identifiers and arithmetic operators (macro/enum constant arithmetic).
-    /// Handles nested binary_expressions like `A + B + C` parsed as `(A + B) + C`.
-    fn is_all_caps_arithmetic(node: &Node, source: &str) -> bool {
-        match node.kind() {
-            "identifier" => {
-                let text = &source[node.start_byte()..node.end_byte()];
-                Self::is_all_caps_identifier(text)
-            }
-            "number_literal" => true,
-            "binary_expression" => {
-                // Both operands must be ALL_CAPS arithmetic
-                node.child_by_field_name("left")
-                    .is_some_and(|l| Self::is_all_caps_arithmetic(&l, source))
-                    && node
-                        .child_by_field_name("right")
-                        .is_some_and(|r| Self::is_all_caps_arithmetic(&r, source))
-            }
-            "parenthesized_expression" => {
-                // Unwrap parentheses
-                node.child(1)
-                    .is_some_and(|inner| Self::is_all_caps_arithmetic(&inner, source))
-            }
-            _ => false,
-        }
-    }
-
-    fn is_pointer_scaled_arithmetic(&self, left: &Node, right: &Node, source: &str) -> bool {
-        let left_text = &source[left.start_byte()..left.end_byte()];
-        let right_text = &source[right.start_byte()..right.end_byte()];
-
-        // Both operands are ALL_CAPS identifiers → macro/enum constants, not pointers
-        if Self::is_all_caps_identifier(left_text) && Self::is_all_caps_identifier(right_text) {
-            return false;
-        }
-
-        // Entire expression tree consists of ALL_CAPS identifiers and numeric literals
-        // (handles nested expressions like `A + B + C` parsed as `(A + B) + C`)
-        if Self::is_all_caps_arithmetic(left, source) && Self::is_all_caps_arithmetic(right, source)
-        {
-            return false;
-        }
-
-        // Check if left is likely a pointer and right contains scaling
-        let left_is_pointer = self.looks_like_pointer_node(left, source);
-        let right_is_scaled = self.is_scaled_integer_expression(&right, source);
-
-        // If it's a char pointer (by naming or cast), byte arithmetic is correct
-        // (not a violation) — UNLESS the offset is itself scaled by sizeof(char)
-        // (or a signed/unsigned char variant). That multiplication is always a
-        // no-op (sizeof(char) == 1) regardless of the pointer's type, so it's
-        // its own anti-pattern rather than the double-scaling this exemption
-        // is meant to allow.
-        let scaled_by_char_size = Self::scaled_by_char_size(right, source);
-        if left_is_pointer
-            && !scaled_by_char_size
-            && (self.is_char_pointer(left, source) || left_text.to_lowercase().contains("byte"))
-        {
-            return false;
-        }
-
-        // Special case: generic pointer name with offset/skip variable suggests intentional byte arithmetic
-        // This is a heuristic to avoid false positives when char* pointers are used
-        if left_text == "ptr" && (right_text == "skip" || right_text == "offset") {
-            return false; // Likely intentional byte-level arithmetic
-        }
-
-        left_is_pointer && right_is_scaled
-    }
-
     /// Whether `right` scales by `sizeof` a character type, always 1, however
     /// it is spaced (`sizeof (char)`): its own anti-pattern whatever the
     /// pointer's type.
@@ -766,25 +726,25 @@ impl Arr39C {
             || right_text.contains("sizeof(signed char)")
     }
 
-    /// Whether `node` is a byte count: a `sizeof` or `offsetof`, a product
-    /// or sum with one in it, or a name that holds one. A quotient is one
-    /// when its dividend is one and its divisor is not, since dividing a
-    /// byte count by a size gives an element count (`len / sizeof(long)`,
-    /// `sizeof(buf) / sizeof(buf[0])`). A remainder is one when its dividend
-    /// is, or when it is taken by a `sizeof` or `offsetof`: `len %
-    /// sizeof(int)` is the bytes left over, while `h % new_size` is an
-    /// index whatever the divisor is named.
-    fn is_scaled_integer_expression(&self, node: &Node, source: &str) -> bool {
-        Self::is_byte_count(node, source, true)
+    /// `node` with any parentheses around it taken off.
+    fn unparenthesized(node: Node) -> Node {
+        let mut node = node;
+        while node.kind() == "parenthesized_expression" {
+            match node.named_child(0) {
+                Some(inner) => node = inner,
+                None => break,
+            }
+        }
+        node
     }
 
     /// Whether `node`, parentheses aside, is a `sizeof` or an `offsetof`.
     fn is_size_operator(node: &Node, source: &str) -> bool {
+        let node = Self::unparenthesized(*node);
         match node.kind() {
-            "parenthesized_expression" => node
-                .named_child(0)
-                .is_some_and(|inner| Self::is_size_operator(&inner, source)),
-            "sizeof_expression" => true,
+            "sizeof_expression" | "offsetof_expression" => true,
+            // `offsetof` the parser reads as a call: spelled through a macro
+            // of the same name, or with arguments it cannot take as a type.
             "call_expression" => node
                 .child_by_field_name("function")
                 .is_some_and(|f| ast_utils::get_node_text(&f, source) == "offsetof"),
@@ -792,202 +752,93 @@ impl Arr39C {
         }
     }
 
-    /// [`Self::is_scaled_integer_expression`], with `whole` saying whether
-    /// `node` is the whole offset: a bare `skip` or `offset` counts only
-    /// then, and not as one term of a sum or product.
-    fn is_byte_count(node: &Node, source: &str, whole: bool) -> bool {
+    /// Whether `node` is a byte count by its structure, never by a name
+    /// (ADR-0006): a `sizeof` or `offsetof`, a product, sum or difference
+    /// with one in it, a cast or a conditional of one, or a local assigned
+    /// only by its initializer, which is one (`size_t skip = offsetof(...)`).
+    /// A quotient is one when its dividend is one and its divisor is not,
+    /// since dividing a byte count by a size gives an element count (`len /
+    /// sizeof(long)`, `sizeof(buf) / sizeof(buf[0])`). A remainder is one
+    /// when its dividend is, or when it is taken by a `sizeof` or
+    /// `offsetof`: `len % sizeof(int)` is the bytes left over. `depth`
+    /// bounds the walk through locals' initializers.
+    fn is_byte_count(&self, node: &Node, source: &str, depth: usize) -> bool {
+        let node = Self::unparenthesized(*node);
         match node.kind() {
-            "parenthesized_expression" => {
-                return node
-                    .named_child(0)
-                    .is_some_and(|inner| Self::is_byte_count(&inner, source, whole));
-            }
-            "sizeof_expression" => return true,
+            "sizeof_expression" | "offsetof_expression" => true,
+            "call_expression" => Self::is_size_operator(&node, source),
+            "cast_expression" => node
+                .child_by_field_name("value")
+                .is_some_and(|v| self.is_byte_count(&v, source, depth)),
+            "conditional_expression" => ["consequence", "alternative"].iter().any(|field| {
+                node.child_by_field_name(field)
+                    .is_some_and(|o| self.is_byte_count(&o, source, depth))
+            }),
             "binary_expression" => {
                 let operator = node
                     .child_by_field_name("operator")
                     .map(|o| ast_utils::get_node_text(&o, source));
                 let side = |field| {
                     node.child_by_field_name(field)
-                        .is_some_and(|o| Self::is_byte_count(&o, source, false))
+                        .is_some_and(|o| self.is_byte_count(&o, source, depth))
                 };
                 match operator {
-                    Some("/") => return side("left") && !side("right"),
+                    Some("/") => side("left") && !side("right"),
                     Some("%") => {
-                        return side("left")
+                        side("left")
                             || node
                                 .child_by_field_name("right")
-                                .is_some_and(|o| Self::is_size_operator(&o, source));
+                                .is_some_and(|o| Self::is_size_operator(&o, source))
                     }
-                    Some("*" | "+" | "-") => return side("left") || side("right"),
-                    _ => {}
+                    Some("*" | "+" | "-") => side("left") || side("right"),
+                    _ => false,
                 }
             }
-            _ => {}
-        }
-        let text = &source[node.start_byte()..node.end_byte()];
-
-        // Common scaled integer patterns - direct sizeof/offsetof
-        if text.contains("sizeof(")
-            || text.contains("offsetof(")
-            || (text.contains("*") && (text.contains("sizeof") || text.contains("wcslen")))
-            || text.contains("wcslen(") && text.contains("sizeof(wchar_t)")
-        {
-            return true;
-        }
-
-        // Check for variables that likely hold byte counts/sizes
-        // These are common patterns where byte values are incorrectly used for pointer arithmetic
-        let lower = text.to_lowercase();
-        lower.contains("_size")
-            || lower.contains("alloc_size")
-            || lower.contains("byte_offset")
-            || (whole && lower == "skip") // offsetof result variable name from wiki example
-            || (whole && lower == "offset") // Common offset variable
-            || lower.contains("_bytes")
-            || lower.contains("offset_bytes")
-    }
-
-    fn looks_like_pointer(&self, node: &Node, source: &str) -> bool {
-        let text = &source[node.start_byte()..node.end_byte()];
-        let lower = text.to_lowercase();
-
-        // Simple heuristics for pointer identification (case-insensitive)
-        lower.ends_with("_ptr")
-            || text.ends_with("*")
-            || lower.contains("pointer")
-            || lower.contains("buf")
-            || lower.contains("array")
-            || lower.contains("ptr")
-            || lower.contains("start")
-            || lower.contains("end")
-            || text == "s"
-            || text == "p"
-            || lower.contains("data")
-            || lower.contains("dest")
-            || lower.contains("src")
-            || lower.contains("message")
-            || lower.contains("record")
-            || lower.contains("append")
-    }
-
-    fn is_char_pointer(&self, node: &Node, source: &str) -> bool {
-        // Check if this is a char-type pointer (which is allowed to use byte arithmetic)
-
-        // For an identifier, we need to look at its declaration or most recent cast
-        // This is a simplified heuristic - we look for cast expressions in the parent chain
-        // Walk up the tree to find casts, up to 5 levels: the ancestors come
-        // from one descent ([`ast_utils::ancestors`]), since a `parent()`
-        // step costs the node's depth.
-        for parent in ast_utils::ancestors(node).take(5) {
-            // Check for char* / u8* / uint8_t* casts
-            if parent.kind() == "cast_expression" {
-                if let Some(type_node) = parent.child_by_field_name("type") {
-                    let type_text = ast_utils::get_node_text(&type_node, source);
-                    if Self::is_byte_type(type_text) {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        // No cast in the ancestor chain (e.g. `charPointer` used bare, several
-        // statements after `char *charPointer = (char *)intArray;`). Fall back
-        // to the variable's actual declared type instead of relying on a cast
-        // to be present at every use site. Uses the same scope/shadowing-aware
-        // lookup as the rest of the codebase (ast_utils), not a flat whole-file
-        // scan -- two different functions with same-named locals of different
-        // types must not be conflated.
-        if node.kind() == "identifier" {
-            let name = &source[node.start_byte()..node.end_byte()];
-
-            if let Some(decl) = ast_utils::find_enclosing_declaration_for_identifier_in(
-                &ast_utils::tree_root(node),
-                node,
-                name,
-                source,
-            ) {
-                if let Some((type_text, is_pointer)) =
-                    Self::declaration_type_for_name(&decl, name, source)
-                {
-                    if is_pointer && Self::is_byte_type(&type_text) {
-                        return true;
-                    }
-                }
-            } else if let Some(func) = ast_utils::find_containing_function(node) {
-                // Not a local declaration -- check whether it's a parameter.
-                if let Some(params) = ast_utils::get_function_parameters(&func, source) {
-                    if let Some((_, param_type)) = params.iter().find(|(n, _)| n == name) {
-                        if ast_utils::is_pointer_type(param_type) && Self::is_byte_type(param_type)
-                        {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-
-        false
-    }
-
-    /// Given a `declaration` node known to bind `name` (per
-    /// `ast_utils::find_enclosing_declaration_for_identifier`), return its
-    /// type text and whether that specific declarator is a pointer/array.
-    /// Handles comma-separated multi-declarator declarations (`char *a, b;`)
-    /// where declarators can differ in pointer-ness.
-    fn declaration_type_for_name(decl: &Node, name: &str, source: &str) -> Option<(String, bool)> {
-        let type_text = ast_utils::declaration_type_text(decl, source);
-
-        for i in 0..decl.child_count() {
-            let Some(child) = decl.child(i) else { continue };
-            let declarator = match child.kind() {
-                "init_declarator" => child.child_by_field_name("declarator").unwrap_or(child),
-                "identifier"
-                | "pointer_declarator"
-                | "array_declarator"
-                | "function_declarator" => child,
-                _ => continue,
-            };
-            if get_identifier_from_declarator(&declarator, source) == name {
-                let is_pointer =
-                    is_pointer_declarator(&declarator) || is_array_declarator(&declarator);
-                return Some((type_text, is_pointer));
-            }
-        }
-        None
-    }
-
-    /// Returns true for single-byte pointer types: char*, unsigned char*, u8*, uint8_t*, etc.
-    fn is_byte_type(type_text: &str) -> bool {
-        let t = type_text.trim();
-        // Standard char types
-        if (t.contains("char") && !t.contains("wchar"))
-            || t.contains("unsigned char")
-            || t.contains("signed char")
-        {
-            return true;
-        }
-        // Embedded/vendor byte aliases
-        matches!(t, "u8" | "uint8_t" | "UINT8" | "uint8_T" | "byte" | "BYTE")
-    }
-
-    fn looks_like_pointer_node(&self, node: &Node, source: &str) -> bool {
-        match node.kind() {
-            "identifier" => {
-                let _text = &source[node.start_byte()..node.end_byte()];
-                self.looks_like_pointer(node, source)
-            }
-            "binary_expression" => {
-                // Could be pointer arithmetic
-                true
-            }
-            "cast_expression" => {
-                // Cast expressions are often pointers
-                let text = &source[node.start_byte()..node.end_byte()];
-                text.contains("*") // Has pointer in cast
-            }
+            "identifier" if depth < 4 => Self::sole_initializer(&node, source)
+                .is_some_and(|value| self.is_byte_count(&value, source, depth + 1)),
             _ => false,
         }
+    }
+
+    /// The initializer of the local `ident` names, when nothing else in its
+    /// function assigns it, steps it or takes its address: then its value
+    /// wherever it is read is that initializer's.
+    fn sole_initializer<'t>(ident: &Node<'t>, source: &str) -> Option<Node<'t>> {
+        let name = ast_utils::get_node_text(ident, source);
+        let (declaration, declarator) =
+            ast_utils::resolve_identifier_declarator(ident, name, source)?;
+        if declaration.kind() != "declaration"
+            || !ast_utils::ancestors(&declaration).any(|a| a.kind() == "compound_statement")
+        {
+            return None;
+        }
+        let init = if declarator.kind() == "init_declarator" {
+            declarator
+        } else {
+            declarator
+                .parent()
+                .filter(|p| p.kind() == "init_declarator")?
+        };
+        let value = init.child_by_field_name("value")?;
+        let function = ast_utils::find_containing_function(&declaration)?;
+        let written = query::find_first_descendant(function, |node| {
+            let target = match node.kind() {
+                "assignment_expression" => node.child_by_field_name("left"),
+                "update_expression" => node.child_by_field_name("argument"),
+                "pointer_expression" => node
+                    .child_by_field_name("operator")
+                    .filter(|o| ast_utils::get_node_text(o, source) == "&")
+                    .and_then(|_| node.child_by_field_name("argument")),
+                _ => None,
+            };
+            target.map(Self::unparenthesized).is_some_and(|t| {
+                t.kind() == "identifier"
+                    && ast_utils::get_node_text(&t, source) == name
+                    && ast_utils::resolve_identifier_declarator(&t, name, source)
+                        .is_some_and(|(_, d)| d.id() == declarator.id())
+            })
+        });
+        written.is_none().then_some(value)
     }
 
     fn is_scaled_offset_pattern(&self, text: &str) -> bool {
@@ -995,16 +846,41 @@ impl Arr39C {
             || (text.contains("offsetof(") && text.contains("sizeof("))
     }
 
-    fn has_scaled_pointer_comparison(&self, node: &Node, source: &str) -> bool {
-        let text = &source[node.start_byte()..node.end_byte()];
-
-        // Look for patterns like: ptr < (buf + sizeof(buf))
-        text.contains("sizeof(")
-            && (text.contains(" < ")
-                || text.contains(" <= ")
-                || text.contains(" > ")
-                || text.contains(" >= "))
-            && (text.contains(" + ") || text.contains(" - "))
+    /// Whether a loop `condition` compares against a pointer to which a byte
+    /// count is added (`ptr < buf + sizeof(buf)`).
+    fn compares_against_scaled_pointer(
+        &self,
+        condition: &Node,
+        source: &str,
+        types: &OperandTypes,
+    ) -> bool {
+        query::find_first_descendant(*condition, |node| {
+            node.kind() == "binary_expression"
+                && matches!(
+                    node.child_by_field_name("operator")
+                        .map(|o| ast_utils::get_node_text(&o, source)),
+                    Some("<" | "<=" | ">" | ">=")
+                )
+                && ["left", "right"].iter().any(|field| {
+                    node.child_by_field_name(field).is_some_and(|side| {
+                        let side = Self::unparenthesized(side);
+                        side.kind() == "binary_expression"
+                            && matches!(
+                                side.child_by_field_name("operator")
+                                    .map(|o| ast_utils::get_node_text(&o, source)),
+                                Some("+" | "-")
+                            )
+                            && match (
+                                side.child_by_field_name("left"),
+                                side.child_by_field_name("right"),
+                            ) {
+                                (Some(l), Some(r)) => self.adds_byte_count(&l, &r, source, types),
+                                _ => false,
+                            }
+                    })
+                })
+        })
+        .is_some()
     }
 
     fn find_loop_condition<'a>(&self, node: &'a Node<'a>) -> Option<Node<'a>> {
