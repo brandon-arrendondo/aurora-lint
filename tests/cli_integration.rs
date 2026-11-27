@@ -12155,6 +12155,59 @@ fn con03_reads_a_typedef_a_macro_in_an_included_header_declares() {
 }
 
 #[test]
+fn con03_reads_a_typedef_a_pasting_or_nested_macro_in_an_included_header_declares() {
+    // A header reached through -I declares `HWND` with DECLARE_HANDLE's
+    // STRICT form, whose `##` pastes the struct's tag, `conn` through a
+    // macro pasting `_s` onto its argument, and `level_t` through a macro
+    // that invokes another. With -I each name is a defined type and the
+    // objects declared with them are shared; without -I none has a
+    // definition the scan read.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("inc")).unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("inc/handles.h"),
+        "#define DECLARE_HANDLE(name) struct name##__ { int unused; }; \\\n\
+         \x20   typedef struct name##__ *name\n\
+         DECLARE_HANDLE(HWND);\n\
+         #define DECL(n) typedef struct n##_s *n\n\
+         DECL(conn);\n\
+         #define INNER(n) typedef int n\n\
+         #define OUTER(n) INNER(n)\n\
+         OUTER(level_t);\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("src/main.c"),
+        "#include <pthread.h>\n#include \"handles.h\"\n\n\
+         static HWND window;\nstatic conn current;\nstatic level_t level;\n\n\
+         void *worker(void *arg) {\n    window = arg;\n    current = arg;\n    level++;\n\
+         \x20   return arg;\n}\n\n\
+         int main(void) {\n    pthread_t t;\n    pthread_create(&t, 0, worker, 0);\n\
+         \x20   pthread_join(t, 0);\n    return level;\n}\n",
+    )
+    .unwrap();
+    let src = dir.path().join("src");
+    let inc = dir.path().join("inc");
+    let reported = |extra: &[&str]| -> Vec<String> {
+        let mut args = vec!["--rules", "CON03-C", src.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        let (_, stdout, stderr) = run_aurora_lint(&args);
+        stdout
+            .lines()
+            .chain(stderr.lines())
+            .filter(|l| l.contains("CON03-C:"))
+            .filter_map(|l| l.split('\'').nth(1).map(str::to_string))
+            .collect()
+    };
+    assert_eq!(
+        reported(&["-I", inc.to_str().unwrap()]),
+        ["window", "current", "level"]
+    );
+    assert!(reported(&[]).is_empty());
+}
+
+#[test]
 fn con03_reads_a_type_name_by_its_definition_and_stays_silent_without_one() {
     // `handler_fn` names a function type, so `static handler_fn on_read;`
     // declares a function; `counter_t` names `int`, so `hits` is a shared

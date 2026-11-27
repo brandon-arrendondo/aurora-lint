@@ -180,6 +180,12 @@ pub fn declare_macro_objects(context: &mut ProjectContext) {
     let mut declared: HashMap<String, Vec<MacroDeclaredObject>> = HashMap::new();
     let mut typedefs: HashMap<String, HashSet<String>> = HashMap::new();
     for item in context.file_scope_macro_items.iter() {
+        for text in typedef_expansions(context, &item.name, item.args.as_deref()) {
+            let names = typedef_names_in(&text);
+            if !names.is_empty() {
+                typedefs.entry(item.file.clone()).or_default().extend(names);
+            }
+        }
         let Some(definitions) = context.macro_definitions.get(&item.name) else {
             continue;
         };
@@ -187,10 +193,6 @@ pub fn declare_macro_objects(context: &mut ProjectContext) {
             let Some(text) = expansion(definition, item.args.as_deref()) else {
                 continue;
             };
-            let names = typedef_names_in(&text);
-            if !names.is_empty() {
-                typedefs.entry(item.file.clone()).or_default().extend(names);
-            }
             for (name, linkage) in declarations_in(&text) {
                 let slot = declared.entry(name).or_default();
                 let object = MacroDeclaredObject {
@@ -208,17 +210,141 @@ pub fn declare_macro_objects(context: &mut ProjectContext) {
     context.macro_declared_typedef_names = Arc::new(typedefs);
 }
 
+/// How many invocations nested in an expansion [`typedef_expansions`]
+/// expands in turn before it stops: a macro whose expansion invokes itself
+/// stops here, and its text then parses as no typedef.
+const MAX_NESTED_EXPANSIONS: usize = 8;
+
+/// How many texts one invocation may expand to, each nested invocation
+/// with several definitions multiplying them.
+const MAX_EXPANSION_TEXTS: usize = 16;
+
+/// Every text the invocation `name(args)` expands to, through each
+/// definition of `name` and of every function-like macro its expansion
+/// invokes in turn (`OUTER(n)` as `INNER(n)` as `typedef int n`), `##`
+/// pastes joined, the pasting definitions
+/// ([`ProjectContext::pasting_macro_definitions`]) included. Only the
+/// typedef names an expansion declares are read from these: the objects
+/// [`declare_macro_objects`] files come from the definitions it read
+/// before, so what other rules see of a macro's declarations is unchanged.
+fn typedef_expansions(
+    context: &ProjectContext,
+    name: &str,
+    args: Option<&[String]>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for definition in definitions_of(context, name) {
+        if let Some(text) = expansion(definition, args) {
+            rescan(context, text, 0, &mut out);
+        }
+    }
+    out
+}
+
+/// Every definition of `name`, those that paste tokens included.
+fn definitions_of<'a>(
+    context: &'a ProjectContext,
+    name: &str,
+) -> impl Iterator<Item = &'a MacroDefinition> {
+    context
+        .macro_definitions
+        .get(name)
+        .into_iter()
+        .flatten()
+        .chain(
+            context
+                .pasting_macro_definitions
+                .get(name)
+                .into_iter()
+                .flatten(),
+        )
+}
+
+/// File `text` in `out` once the first function-like invocation in it is
+/// expanded, through each of that macro's definitions and again for the
+/// invocations each expansion leaves; `text` as it is when it invokes none,
+/// or once [`MAX_NESTED_EXPANSIONS`] are spent.
+fn rescan(context: &ProjectContext, text: String, depth: usize, out: &mut Vec<String>) {
+    if out.len() >= MAX_EXPANSION_TEXTS {
+        return;
+    }
+    let invocation = (depth < MAX_NESTED_EXPANSIONS)
+        .then(|| nested_invocation(context, &text))
+        .flatten();
+    let Some((start, end, name, args)) = invocation else {
+        out.push(text);
+        return;
+    };
+    for definition in definitions_of(context, &name) {
+        if !matches!(definition, MacroDefinition::Function { .. }) {
+            continue;
+        }
+        if let Some(inner) = expansion(definition, Some(&args)) {
+            let spliced = format!("{} {inner} {}", &text[..start], &text[end..]);
+            rescan(context, spliced, depth + 1, out);
+        }
+    }
+}
+
+/// The first invocation in `text` of a name some function-like definition
+/// gives: its byte span, the name, and its arguments as written, split at
+/// the commas no bracket encloses.
+fn nested_invocation(
+    context: &ProjectContext,
+    text: &str,
+) -> Option<(usize, usize, String, Vec<String>)> {
+    let tokens = lex_replacement_list(text, false);
+    for (i, token) in tokens.iter().enumerate() {
+        if token.kind != PpKind::Identifier
+            || !tokens.get(i + 1).is_some_and(|t| t.is("("))
+            || !definitions_of(context, &token.text)
+                .any(|d| matches!(d, MacroDefinition::Function { .. }))
+        {
+            continue;
+        }
+        let mut args = vec![Vec::new()];
+        let mut depth = 0usize;
+        for t in &tokens[i + 2..] {
+            if t.is("(") || t.is("[") || t.is("{") {
+                depth += 1;
+            } else if t.is(")") || t.is("]") || t.is("}") {
+                if depth == 0 {
+                    let args = args.into_iter().map(|a: Vec<&str>| a.join(" ")).collect();
+                    return Some((token.start, t.end, token.text.to_string(), args));
+                }
+                depth -= 1;
+            } else if t.is(",") && depth == 0 {
+                args.push(Vec::new());
+                continue;
+            }
+            if let Some(arg) = args.last_mut() {
+                arg.push(&t.text);
+            }
+        }
+        return None;
+    }
+    None
+}
+
 /// The replacement `definition` gives an invocation with `args` (none for an
-/// object-like macro), its parameters replaced token by token. `None` for a
+/// object-like macro), its parameters replaced token by token and each
+/// `A ## B` joined into one token (C11 6.10.3.3; only a pasting definition,
+/// [`ProjectContext::pasting_macro_definitions`], has one). `None` for a
 /// definition that cannot be read, or an argument count that does not match.
 fn expansion(definition: &MacroDefinition, args: Option<&[String]>) -> Option<String> {
     match definition {
-        MacroDefinition::Object { body } => Some(body.clone()),
+        MacroDefinition::Object { body } if !body.contains("##") => Some(body.clone()),
+        MacroDefinition::Object { body } => Some(joined(
+            lex_replacement_list(body, false)
+                .iter()
+                .map(|t| (t.text.to_string(), t.is("##")))
+                .collect(),
+        )),
         MacroDefinition::Function { params, body } => {
             let args =
                 args.filter(|a| a.len() == params.len() || (params.is_empty() && a.len() <= 1))?;
             let tokens = lex_replacement_list(body, true);
-            Some(
+            Some(joined(
                 tokens
                     .iter()
                     .map(|t| {
@@ -226,21 +352,44 @@ fn expansion(definition: &MacroDefinition, args: Option<&[String]>) -> Option<St
                             .then(|| params.iter().position(|p| *p == t.text))
                             .flatten()
                             .and_then(|i| args.get(i));
-                        replaced.map_or_else(|| t.text.to_string(), Clone::clone)
+                        match replaced {
+                            Some(arg) => (arg.clone(), false),
+                            None => (t.text.to_string(), t.is("##")),
+                        }
                     })
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            )
+                    .collect(),
+            ))
         }
         MacroDefinition::Opaque => None,
     }
+}
+
+/// `pieces` spaced apart, each one marked as a `##` joining the piece
+/// before it to the piece after it (an argument's last token to the next
+/// one's first, as the pieces are written).
+fn joined(pieces: Vec<(String, bool)>) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut paste_next = false;
+    for (piece, is_paste) in pieces {
+        if is_paste {
+            paste_next = !out.is_empty();
+            continue;
+        }
+        match out.last_mut() {
+            Some(last) if paste_next => last.push_str(&piece),
+            _ => out.push(piece),
+        }
+        paste_next = false;
+    }
+    out.join(" ")
 }
 
 /// The names the typedefs `text` stands for declare, when it parses as
 /// declarations and nothing else. The invocation's own `;` follows it in
 /// the file, outside the expansion (`DECLARE_HANDLE(HWND);` with
 /// `typedef HANDLE name` as the body), so a replacement without one is
-/// read with it.
+/// read with it. A tag declared first (`struct name##__ { int unused; };`,
+/// DECLARE_HANDLE's STRICT form) is part of such a text.
 fn typedef_names_in(text: &str) -> Vec<String> {
     let trimmed = text.trim_end();
     if !trimmed
@@ -265,9 +414,16 @@ fn typedef_names_in(text: &str) -> Vec<String> {
     let items: Vec<Node> = root.named_children(&mut root.walk()).collect();
     if root.has_error()
         || items.is_empty()
-        || items
-            .iter()
-            .any(|d| !matches!(d.kind(), "declaration" | "type_definition"))
+        || items.iter().any(|d| {
+            !matches!(
+                d.kind(),
+                "declaration"
+                    | "type_definition"
+                    | "struct_specifier"
+                    | "union_specifier"
+                    | "enum_specifier"
+            )
+        })
     {
         return Vec::new();
     }

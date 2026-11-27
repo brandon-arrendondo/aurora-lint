@@ -1006,6 +1006,14 @@ pub struct ProjectContext {
     /// alternative, not the one `function_macros` keeps.
     #[serde(default)]
     pub macro_definitions: Arc<HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>>>,
+    /// The `#define`s [`Self::macro_definitions`] reads as opaque because
+    /// they paste tokens (`##`), each `##` kept in the body, across the same
+    /// files and arms. Read only to learn what declaration a file-scope
+    /// invocation stands for ([`Self::macro_declared_typedef_names`]). See
+    /// [`crate::analyze::check_macros::collect_pasting_macro_definitions`].
+    #[serde(default)]
+    pub pasting_macro_definitions:
+        Arc<HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>>>,
     /// Names `#define`d in a header resolved from outside every project root
     /// (a system header: glibc's `#define signal __sysv_signal`) and in no
     /// scanned file or project header. The project roots are the scanned

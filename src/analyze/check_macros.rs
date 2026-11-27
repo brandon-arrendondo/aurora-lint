@@ -71,6 +71,31 @@ pub enum MacroDefinition {
 /// Every `#define` in `source`, in every preprocessor arm except those the
 /// file itself proves dead, keyed by name, each distinct definition once.
 pub fn collect_macro_definitions(source: &str) -> HashMap<String, Vec<MacroDefinition>> {
+    collect_definitions(source, false)
+}
+
+/// Every `#define` in `source` whose replacement list pastes tokens (`##`),
+/// read in the arms [`collect_macro_definitions`] reads, with each `##` kept
+/// in the body as a token of its own. [`collect_macro_definitions`] files
+/// these as [`MacroDefinition::Opaque`]; this table is for the one question
+/// a paste does not hide, what declaration an invocation stands for
+/// (`DECLARE_HANDLE(n)` as `struct n##__ { int unused; }; typedef struct
+/// n##__ *n`).
+pub fn collect_pasting_macro_definitions(source: &str) -> HashMap<String, Vec<MacroDefinition>> {
+    let mut out = collect_definitions(source, true);
+    out.retain(|_, defs| {
+        defs.retain(|d| match d {
+            MacroDefinition::Function { body, .. } | MacroDefinition::Object { body } => {
+                body.contains("##")
+            }
+            MacroDefinition::Opaque => false,
+        });
+        !defs.is_empty()
+    });
+    out
+}
+
+fn collect_definitions(source: &str, keep_paste: bool) -> HashMap<String, Vec<MacroDefinition>> {
     let dead: Vec<(usize, usize)> = lang_parsing_substrate::dead_code_ranges(source)
         .into_iter()
         .map(|r| (r.start_line, r.end_line))
@@ -98,7 +123,7 @@ pub fn collect_macro_definitions(source: &str) -> HashMap<String, Vec<MacroDefin
         {
             continue;
         }
-        if let Some((name, def)) = parse_define(&logical) {
+        if let Some((name, def)) = parse_define_with(&logical, keep_paste) {
             let defs = out.entry(name).or_default();
             if !defs.contains(&def) {
                 defs.push(def);
@@ -1095,6 +1120,12 @@ impl Cx<'_> {
 // ---------------------------------------------------------------------------
 
 fn parse_define(line: &str) -> Option<(String, MacroDefinition)> {
+    parse_define_with(line, false)
+}
+
+/// [`parse_define`], keeping a `##` in the body when `keep_paste` is set
+/// rather than reading the definition as [`MacroDefinition::Opaque`].
+fn parse_define_with(line: &str, keep_paste: bool) -> Option<(String, MacroDefinition)> {
     let s = line.trim_start().strip_prefix('#')?.trim_start();
     let s = s.strip_prefix("define")?;
     if !s.starts_with(|c: char| c.is_whitespace()) {
@@ -1111,7 +1142,7 @@ fn parse_define(line: &str) -> Option<(String, MacroDefinition)> {
     let name = s[..name_len].to_string();
     let after = &s[name_len..];
     if !after.starts_with('(') {
-        return Some(match normalize_body(after, &[]) {
+        return Some(match normalize_body(after, &[], keep_paste) {
             Some(body) => (name, MacroDefinition::Object { body }),
             None => (name, MacroDefinition::Opaque),
         });
@@ -1130,7 +1161,7 @@ fn parse_define(line: &str) -> Option<(String, MacroDefinition)> {
         }
         params.push(p.to_string());
     }
-    match normalize_body(&after[close + 1..], &params) {
+    match normalize_body(&after[close + 1..], &params, keep_paste) {
         Some(body) => Some((name, MacroDefinition::Function { params, body })),
         None => Some((name, MacroDefinition::Opaque)),
     }
@@ -1139,8 +1170,9 @@ fn parse_define(line: &str) -> Option<(String, MacroDefinition)> {
 /// The replacement list with comments removed, every string or character
 /// literal replaced by `""`/`0` (so no delimiter inside one is ever read as
 /// syntax), and each `#param` stringize replaced by `""`. `None` for token
-/// paste (`##`) or a `#` that is not a stringize of a parameter.
-fn normalize_body(raw: &str, params: &[String]) -> Option<String> {
+/// paste (`##`) unless `keep_paste`, which keeps it as ` ## `, or for a
+/// `#` that is not a stringize of a parameter.
+fn normalize_body(raw: &str, params: &[String], keep_paste: bool) -> Option<String> {
     let chars: Vec<char> = raw.chars().collect();
     let mut out = String::with_capacity(raw.len());
     let mut i = 0;
@@ -1169,7 +1201,12 @@ fn normalize_body(raw: &str, params: &[String]) -> Option<String> {
             }
             '#' => {
                 if chars.get(i + 1) == Some(&'#') {
-                    return None;
+                    if !keep_paste {
+                        return None;
+                    }
+                    out.push_str(" ## ");
+                    i += 2;
+                    continue;
                 }
                 let mut j = i + 1;
                 while j < chars.len() && chars[j].is_whitespace() {

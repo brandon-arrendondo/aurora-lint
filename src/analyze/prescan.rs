@@ -52,6 +52,9 @@ struct FilePrescanResult {
     /// Every `#define` in this file, all arms (see
     /// `ProjectContext::macro_definitions`).
     macro_definitions: HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>>,
+    /// This file's `#define`s that paste tokens (see
+    /// `ProjectContext::pasting_macro_definitions`).
+    pasting_macro_definitions: HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>>,
     /// Names this file `#define`s inside a live conditional arm (see
     /// `ProjectContext::conditional_macro_names`).
     conditional_macro_names: HashSet<String>,
@@ -222,6 +225,7 @@ impl FilePrescanResult {
             call_arities: HashMap::new(),
             function_macros: HashMap::new(),
             macro_definitions: HashMap::new(),
+            pasting_macro_definitions: HashMap::new(),
             conditional_macro_names: HashSet::new(),
             storage_classes: HashMap::new(),
             config_dependent_constants: HashSet::new(),
@@ -408,6 +412,8 @@ fn process_file(
         result.function_macros =
             crate::analyze::macro_expand::collect_function_macros(&root, &source);
         result.macro_definitions = crate::analyze::check_macros::collect_macro_definitions(&source);
+        result.pasting_macro_definitions =
+            crate::analyze::check_macros::collect_pasting_macro_definitions(&source);
         result.conditional_macro_names =
             crate::analyze::check_macros::collect_conditional_macro_names(&source);
         result.storage_classes = crate::analyze::storage_class_macro::file_storage_classes(
@@ -919,6 +925,10 @@ fn prescan_file_list(
         HashMap::new();
     let mut macro_definitions: HashMap<String, Vec<crate::analyze::check_macros::MacroDefinition>> =
         HashMap::new();
+    let mut pasting_macro_definitions: HashMap<
+        String,
+        Vec<crate::analyze::check_macros::MacroDefinition>,
+    > = HashMap::new();
     let mut conditional_macro_names: HashSet<String> = HashSet::new();
     let mut config_dependent_constants: HashSet<String> = HashSet::new();
     // Which file's definition `function_macros` holds per name, so a later
@@ -1265,6 +1275,10 @@ fn prescan_file_list(
         crate::analyze::check_macros::merge_macro_definitions(
             &mut macro_definitions,
             r.macro_definitions,
+        );
+        crate::analyze::check_macros::merge_macro_definitions(
+            &mut pasting_macro_definitions,
+            r.pasting_macro_definitions,
         );
         conditional_macro_names.extend(r.conditional_macro_names);
         config_dependent_constants.extend(r.config_dependent_constants);
@@ -1901,6 +1915,7 @@ fn prescan_file_list(
         outside_macro_origins: Arc::new(Default::default()),
         function_macros: Arc::new(function_macros),
         macro_definitions: Arc::new(macro_definitions),
+        pasting_macro_definitions: Arc::new(pasting_macro_definitions),
         // Filled by `resolve_includes`: every file scanned here is the project's.
         macros_defined_outside_project: Arc::default(),
         conditional_macro_names: Arc::new(conditional_macro_names),
@@ -9001,6 +9016,10 @@ fn harvest_header_macros(
         Arc::make_mut(&mut context.macro_definitions),
         header_definitions,
     );
+    crate::analyze::check_macros::merge_macro_definitions(
+        Arc::make_mut(&mut context.pasting_macro_definitions),
+        crate::analyze::check_macros::collect_pasting_macro_definitions(hsource),
+    );
     Arc::make_mut(&mut context.conditional_macro_names).extend(header_conditional);
     Arc::make_mut(&mut context.config_dependent_constants)
         .extend(const_eval::config_dependent_constant_names(root, hsource));
@@ -14195,9 +14214,17 @@ void caller(char *other) {
                     #define DECLARE_HANDLE(name) typedef HANDLE name\n\
                     #define DECLARE_T(n) typedef int n;\n\
                     #define DECLARE_PASTED(n) struct n##__; typedef struct n##__ *n\n\
+                    #define DECLARE_STRICT(name) struct name##__ { int unused; }; \\\n\
+                        typedef struct name##__ *name\n\
+                    #define INNER(n) typedef int n\n\
+                    #define OUTER(n) INNER(n)\n\
+                    #define DECLARE_COUNTER(n) int n##_count\n\
                     DECLARE_HANDLE(WINDOW);\n\
                     DECLARE_T(count_t)\n\
                     DECLARE_PASTED(PASTED);\n\
+                    DECLARE_STRICT(STRICT);\n\
+                    OUTER(nested_t);\n\
+                    DECLARE_COUNTER(hits);\n\
                     void use(void) {\n\
                       DECLARE_T(local_t)\n\
                     }\n";
@@ -14208,7 +14235,8 @@ void caller(char *other) {
             .flatten()
             .collect();
         names.sort();
-        assert_eq!(names, ["WINDOW", "count_t"]);
+        assert_eq!(names, ["PASTED", "STRICT", "WINDOW", "count_t", "nested_t"]);
+        // The objects a pasting macro declares stay unread, as before.
         assert!(ctx.macro_declared_objects.is_empty());
     }
 
