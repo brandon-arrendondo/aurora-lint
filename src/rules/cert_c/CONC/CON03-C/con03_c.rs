@@ -184,6 +184,10 @@ pub struct Con03C {
     /// The typedef names the file being checked declares itself, for a run
     /// with no project context.
     own_typedef_names: RefCell<HashSet<String>>,
+    /// Every definition the file being checked gives each typedef name it
+    /// declares, one per live `#if` arm (`prescan::collect_typedef_arms`):
+    /// the one-definition table keeps only one of them.
+    own_typedef_arms: RefCell<HashMap<String, Vec<String>>>,
     /// Each read file's typedef definitions (`ProjectContext::
     /// typedef_arms_by_file`): what a name from a header outside the scan
     /// aliases, when it is a simple one.
@@ -233,6 +237,9 @@ impl CertRule for Con03C {
 
         let own_typedefs = Self::own_typedef_kinds(node, source);
         *self.own_typedef_names.borrow_mut() = Self::own_typedef_names(node, source);
+        let mut own_arms = HashMap::new();
+        crate::analyze::prescan::collect_typedef_arms(node, source, &mut own_arms);
+        *self.own_typedef_arms.borrow_mut() = own_arms;
         let shared_vars = self.collect_shared_variables(node, source, &own_typedefs);
         let uses = Self::identifier_uses_by_function(node, source);
         // One index of the file for every use resolved below: a fresh one
@@ -681,17 +688,32 @@ impl Con03C {
         // The macro table spans every file, so a name one file renames
         // (`#define Font X11Font`) and another defines as a typedef has both
         // as arms; neither is known to be the one this file sees.
-        let typedef_arm = match self.typedef_types.borrow().get(name) {
-            Some(aliased) => Some(Ok(vec![aliased.clone()])),
-            None => self.header_typedef(name).map(|aliased| {
-                if aliased.is_empty() {
-                    // A typedef of a pointer, array, function, struct, union
-                    // or enum: read as written, as before.
-                    Err(classify_spelling(name))
-                } else {
-                    Ok(aliased)
-                }
-            }),
+        // This file's own definitions win, every arm of them
+        // (`typedef SOCKET mosq_sock_t;` under `#ifdef WIN32`, `typedef int
+        // mosq_sock_t;` otherwise). For a name only other files define,
+        // every arm they give comes first. Either way the one-definition
+        // table keeps only one of them, and is read only when no arm is a
+        // simple type.
+        let header = self.header_typedef(name);
+        let visible = self.typedef_types.borrow().get(name).cloned();
+        let own = self.own_typedef_names.borrow().contains(name);
+        let own_arms: Vec<String> = self
+            .own_typedef_arms
+            .borrow()
+            .get(name)
+            .into_iter()
+            .flatten()
+            .filter(|arm| !arm.is_empty())
+            .cloned()
+            .collect();
+        let typedef_arm = match (header, visible) {
+            _ if own && !own_arms.is_empty() => Some(Ok(own_arms)),
+            (_, Some(aliased)) if own => Some(Ok(vec![aliased])),
+            (Some(aliased), _) if !aliased.is_empty() => Some(Ok(aliased)),
+            (_, Some(aliased)) => Some(Ok(vec![aliased])),
+            // A typedef of a pointer, array, function, struct, union or
+            // enum: read as written, as before.
+            (header, None) => header.map(|_| Err(classify_spelling(name))),
         };
         let typedef_kind = match typedef_arm {
             Some(Ok(aliased)) => {
