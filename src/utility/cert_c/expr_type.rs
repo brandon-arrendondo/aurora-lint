@@ -227,11 +227,14 @@ pub fn is_standard_typedef_name(name: &str) -> bool {
 /// `<sys/types.h>` table, and each header that adds names of its own. The
 /// ISO C headers POSIX also carries are here only for the names
 /// [`is_standard_typedef_name`] does not hold (`memory_order`,
-/// `imaxdiv_t`). The `pthread_*_t` types are matched by their reserved
-/// prefix instead (2.2.2), and `atomic_*` types by theirs.
+/// `imaxdiv_t`), as are C23's `char8_t` and `nullptr_t` and Annex K's
+/// `constraint_handler_t`. The `pthread_*_t` types are matched by their
+/// reserved prefix instead (2.2.2). No `atomic_*` name is here: a caller
+/// that reads those does so by their spelling.
 const POSIX_HEADER_TYPES: &[(&str, &[&str])] = &[
     ("arpa/inet.h", &["in_port_t", "in_addr_t"]),
     ("dirent.h", &["DIR", "ino_t", "reclen_t"]),
+    ("dlfcn.h", &["Dl_info_t"]),
     ("glob.h", &["glob_t"]),
     ("iconv.h", &["iconv_t"]),
     ("inttypes.h", &["imaxdiv_t"]),
@@ -260,6 +263,8 @@ const POSIX_HEADER_TYPES: &[(&str, &[&str])] = &[
         &["posix_spawnattr_t", "posix_spawn_file_actions_t"],
     ),
     ("stdatomic.h", &["memory_order"]),
+    ("stddef.h", &["nullptr_t"]),
+    ("stdlib.h", &["constraint_handler_t"]),
     ("stropts.h", &["t_scalar_t", "t_uscalar_t"]),
     ("sys/ipc.h", &["key_t"]),
     ("sys/msg.h", &["msgqnum_t", "msglen_t"]),
@@ -299,6 +304,7 @@ const POSIX_HEADER_TYPES: &[(&str, &[&str])] = &[
     ("termios.h", &["cc_t", "speed_t", "tcflag_t"]),
     ("threads.h", &["thrd_start_t", "tss_dtor_t"]),
     ("time.h", &["locale_t"]),
+    ("uchar.h", &["char8_t"]),
     ("ucontext.h", &["mcontext_t", "ucontext_t"]),
     ("unistd.h", &["useconds_t"]),
     ("wordexp.h", &["wordexp_t"]),
@@ -1614,6 +1620,10 @@ mod tests {
             "siginfo_t",
             "posix_spawnattr_t",
             "memory_order",
+            "Dl_info_t",
+            "char8_t",
+            "nullptr_t",
+            "constraint_handler_t",
             "pthread_condattr_t",
             "u_int32_t",
             "caddr_t",
