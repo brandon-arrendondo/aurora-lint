@@ -40,3 +40,7 @@ int *past_the_end(void) {
 int *slots_in(int *ptr, size_t buf_size) {
   return ptr + buf_size / sizeof(int);
 }
+
+int *bucket_of(int *buf, size_t hash, size_t table_size) {
+  return buf + hash % table_size;
+}

@@ -770,10 +770,26 @@ impl Arr39C {
     /// or sum with one in it, or a name that holds one. A quotient is one
     /// when its dividend is one and its divisor is not, since dividing a
     /// byte count by a size gives an element count (`len / sizeof(long)`,
-    /// `sizeof(buf) / sizeof(buf[0])`). A remainder is one when either side
-    /// is: `len % sizeof(int)` is the bytes left over.
+    /// `sizeof(buf) / sizeof(buf[0])`). A remainder is one when its dividend
+    /// is, or when it is taken by a `sizeof` or `offsetof`: `len %
+    /// sizeof(int)` is the bytes left over, while `h % new_size` is an
+    /// index whatever the divisor is named.
     fn is_scaled_integer_expression(&self, node: &Node, source: &str) -> bool {
         Self::is_byte_count(node, source, true)
+    }
+
+    /// Whether `node`, parentheses aside, is a `sizeof` or an `offsetof`.
+    fn is_size_operator(node: &Node, source: &str) -> bool {
+        match node.kind() {
+            "parenthesized_expression" => node
+                .named_child(0)
+                .is_some_and(|inner| Self::is_size_operator(&inner, source)),
+            "sizeof_expression" => true,
+            "call_expression" => node
+                .child_by_field_name("function")
+                .is_some_and(|f| ast_utils::get_node_text(&f, source) == "offsetof"),
+            _ => false,
+        }
     }
 
     /// [`Self::is_scaled_integer_expression`], with `whole` saying whether
@@ -797,7 +813,12 @@ impl Arr39C {
                 };
                 match operator {
                     Some("/") => return side("left") && !side("right"),
-                    Some("%") => return side("left") || side("right"),
+                    Some("%") => {
+                        return side("left")
+                            || node
+                                .child_by_field_name("right")
+                                .is_some_and(|o| Self::is_size_operator(&o, source));
+                    }
                     Some("*" | "+" | "-") => return side("left") || side("right"),
                     _ => {}
                 }
