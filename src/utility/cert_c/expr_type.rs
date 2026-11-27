@@ -222,6 +222,122 @@ pub fn is_standard_typedef_name(name: &str) -> bool {
     ) || exact_least_or_fast()
 }
 
+/// The typedef names each POSIX.1-2024 header declares, by header, as the
+/// standard's header tables list them (Base Definitions, chapter 13): the
+/// `<sys/types.h>` table, and each header that adds names of its own. The
+/// ISO C headers POSIX also carries are here only for the names
+/// [`is_standard_typedef_name`] does not hold (`memory_order`,
+/// `imaxdiv_t`). The `pthread_*_t` types are matched by their reserved
+/// prefix instead (2.2.2), and `atomic_*` types by theirs.
+const POSIX_HEADER_TYPES: &[(&str, &[&str])] = &[
+    ("arpa/inet.h", &["in_port_t", "in_addr_t"]),
+    ("dirent.h", &["DIR", "ino_t", "reclen_t"]),
+    ("glob.h", &["glob_t"]),
+    ("iconv.h", &["iconv_t"]),
+    ("inttypes.h", &["imaxdiv_t"]),
+    ("langinfo.h", &["nl_item", "locale_t"]),
+    ("mqueue.h", &["mqd_t"]),
+    ("ndbm.h", &["datum", "DBM"]),
+    ("netinet/in.h", &["in_port_t", "in_addr_t", "sa_family_t"]),
+    ("nl_types.h", &["nl_catd", "nl_item"]),
+    ("poll.h", &["nfds_t"]),
+    ("regex.h", &["regex_t", "regoff_t", "regmatch_t"]),
+    ("search.h", &["ENTRY", "ACTION", "VISIT", "posix_tnode"]),
+    ("semaphore.h", &["sem_t"]),
+    ("setjmp.h", &["sigjmp_buf"]),
+    (
+        "signal.h",
+        &[
+            "sigset_t",
+            "siginfo_t",
+            "stack_t",
+            "mcontext_t",
+            "ucontext_t",
+        ],
+    ),
+    (
+        "spawn.h",
+        &["posix_spawnattr_t", "posix_spawn_file_actions_t"],
+    ),
+    ("stdatomic.h", &["memory_order"]),
+    ("stropts.h", &["t_scalar_t", "t_uscalar_t"]),
+    ("sys/ipc.h", &["key_t"]),
+    ("sys/msg.h", &["msgqnum_t", "msglen_t"]),
+    ("sys/resource.h", &["rlim_t", "id_t"]),
+    ("sys/select.h", &["fd_set", "suseconds_t"]),
+    ("sys/shm.h", &["shmatt_t"]),
+    ("sys/socket.h", &["socklen_t", "sa_family_t"]),
+    ("sys/statvfs.h", &["fsblkcnt_t", "fsfilcnt_t"]),
+    (
+        "sys/types.h",
+        &[
+            "blkcnt_t",
+            "blksize_t",
+            "clockid_t",
+            "dev_t",
+            "fsblkcnt_t",
+            "fsfilcnt_t",
+            "gid_t",
+            "id_t",
+            "ino_t",
+            "key_t",
+            "mode_t",
+            "nlink_t",
+            "off_t",
+            "pid_t",
+            "reclen_t",
+            "suseconds_t",
+            "timer_t",
+            "trace_attr_t",
+            "trace_event_id_t",
+            "trace_event_set_t",
+            "trace_id_t",
+            "uid_t",
+        ],
+    ),
+    ("sys/wait.h", &["idtype_t"]),
+    ("termios.h", &["cc_t", "speed_t", "tcflag_t"]),
+    ("threads.h", &["thrd_start_t", "tss_dtor_t"]),
+    ("time.h", &["locale_t"]),
+    ("ucontext.h", &["mcontext_t", "ucontext_t"]),
+    ("unistd.h", &["useconds_t"]),
+    ("wordexp.h", &["wordexp_t"]),
+];
+
+/// The typedef names the BSD `<sys/types.h>` declares, which glibc, musl and
+/// every BSD carry too: no standard lists them, but a project that uses
+/// them (`u_char`, `caddr_t`) reads them from the C library, not its own
+/// headers.
+const BSD_TYPES_H_NAMES: &[&str] = &[
+    "u_char",
+    "u_short",
+    "u_int",
+    "u_long",
+    "u_int8_t",
+    "u_int16_t",
+    "u_int32_t",
+    "u_int64_t",
+    "u_quad_t",
+    "quad_t",
+    "caddr_t",
+    "daddr_t",
+    "fsid_t",
+    "register_t",
+];
+
+/// Whether `name` is a typedef name a POSIX header declares
+/// ([`POSIX_HEADER_TYPES`], any `pthread_*_t`), or one the BSD
+/// `<sys/types.h>` adds. Like [`is_standard_typedef_name`], which this does
+/// not repeat, it answers only whether the name is a type, for a file whose
+/// system headers the scan did not read.
+pub fn is_posix_type_name(name: &str) -> bool {
+    (name.starts_with("pthread_") && name.ends_with("_t"))
+        || BSD_TYPES_H_NAMES.contains(&name)
+        || POSIX_HEADER_TYPES
+            .iter()
+            .any(|(_, names)| names.contains(&name))
+}
+
 /// The type a standard library alias names on `model`, or `None` for a name
 /// that is not one, or one whose type the model leaves open (`wchar_t`'s sign
 /// under [`IntFacts::ISO`]). Only the aliases whose definition the data
@@ -1485,6 +1601,36 @@ pub(crate) fn take_typings() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A name from a POSIX header's table, a `pthread_*_t`, or a BSD
+    /// `<sys/types.h>` name is a POSIX type; a project's own `_t` name, a
+    /// name `is_standard_typedef_name` holds, and a near miss are not.
+    #[test]
+    fn posix_type_names_come_from_the_header_tables() {
+        for name in [
+            "fd_set",
+            "sigjmp_buf",
+            "locale_t",
+            "siginfo_t",
+            "posix_spawnattr_t",
+            "memory_order",
+            "pthread_condattr_t",
+            "u_int32_t",
+            "caddr_t",
+            "DIR",
+        ] {
+            assert!(is_posix_type_name(name), "{name}");
+        }
+        for name in [
+            "conn_pool_t",
+            "size_t",
+            "pthread_",
+            "pthread_mutex",
+            "fd_sets",
+        ] {
+            assert!(!is_posix_type_name(name), "{name}");
+        }
+    }
 
     /// Typed at every operator of a long sum, through an environment with a
     /// root, each node is typed once and the answers are the ones an

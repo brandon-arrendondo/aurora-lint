@@ -868,42 +868,12 @@ fn classify_unresolved_name(name: &str) -> BaseType {
         BaseType::Other
             if !KEYWORD_TYPES.contains(&name)
                 && !crate::utility::cert_c::expr_type::is_standard_typedef_name(name)
-                && !is_posix_type_name(name) =>
+                && !crate::utility::cert_c::expr_type::is_posix_type_name(name) =>
         {
             BaseType::Unknown
         }
         base => base,
     }
-}
-
-/// A `<sys/types.h>` or `<pthread.h>` object type: POSIX reserves the `_t`
-/// suffix for these, and a project's header seldom carries them.
-fn is_posix_type_name(name: &str) -> bool {
-    matches!(
-        name,
-        "pid_t"
-            | "uid_t"
-            | "gid_t"
-            | "off_t"
-            | "mode_t"
-            | "dev_t"
-            | "ino_t"
-            | "nlink_t"
-            | "blksize_t"
-            | "blkcnt_t"
-            | "id_t"
-            | "key_t"
-            | "useconds_t"
-            | "suseconds_t"
-            | "socklen_t"
-            | "in_addr_t"
-            | "in_port_t"
-            | "nfds_t"
-            | "sigset_t"
-            | "timer_t"
-            | "clockid_t"
-            | "DIR"
-    ) || (name.starts_with("pthread_") && name.ends_with("_t"))
 }
 
 /// What a type spelling names, matched by whole token so a name that merely
