@@ -4376,7 +4376,9 @@ pub fn is_defined_macro_name(name: &str, source: &str) -> bool {
 /// Each object-like macro `source` defines, with the byte offset of every
 /// `#define` of it. A function-like `#define NAME(x)` is left out: it
 /// replaces `NAME` only where a `(` follows, so a plain occurrence of the
-/// name is not an invocation of it.
+/// name is not an invocation of it. So is a rename, `#define NAME other` or
+/// `#define NAME (other)`, whose replacement is one identifier: `NAME`
+/// then names whatever `other` names, declared object or not.
 pub fn object_like_macro_definitions(source: &str) -> HashMap<String, Vec<usize>> {
     static DEFINE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r"(?m)^[ \t]*#[ \t]*define[ \t]+(\w+)(\()?").expect("valid regex")
@@ -4387,12 +4389,54 @@ pub fn object_like_macro_definitions(source: &str) -> HashMap<String, Vec<usize>
             continue;
         }
         if let (Some(all), Some(name)) = (c.get(0), c.get(1)) {
+            if replacement_is_one_identifier(&source[all.end()..]) {
+                continue;
+            }
             out.entry(name.as_str().to_string())
                 .or_default()
                 .push(all.start());
         }
     }
     out
+}
+
+/// Whether the replacement list that starts `rest`, up to the end of its
+/// logical line, is a single identifier, optionally parenthesized.
+fn replacement_is_one_identifier(rest: &str) -> bool {
+    let mut line = String::new();
+    for l in rest.split('\n') {
+        let l = l.strip_suffix('\r').unwrap_or(l);
+        match l.strip_suffix('\\') {
+            Some(cont) => line.push_str(cont),
+            None => {
+                line.push_str(l);
+                break;
+            }
+        }
+        line.push(' ');
+    }
+    let mut text = line.as_str();
+    if let Some(at) = text.find("//") {
+        text = &text[..at];
+    }
+    let mut stripped = String::new();
+    while let Some(open) = text.find("/*") {
+        stripped.push_str(&text[..open]);
+        stripped.push(' ');
+        text = text[open + 2..]
+            .find("*/")
+            .map_or("", |close| &text[open + 2 + close + 2..]);
+    }
+    stripped.push_str(text);
+    let mut body = stripped.trim();
+    while let Some(inner) = body.strip_prefix('(').and_then(|b| b.strip_suffix(')')) {
+        body = inner.trim();
+    }
+    let mut chars = body.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Every name [`is_defined_macro_name`] answers true for in one `source`,

@@ -12014,6 +12014,61 @@ fn arr39_types_a_header_pointer_name_another_source_file_makes_a_constant() {
     }
 }
 
+/// A header macro that renames a pointer object, `#define rbuf pfx_rbuf`
+/// before `extern int *rbuf;`, is no constant: `rbuf` still names the
+/// pointer object, so adding a scaled integer to it is reported. A macro
+/// whose replacement is a number does hide it.
+#[test]
+fn arr39_types_a_header_pointer_name_a_rename_macro_gives() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("g.h"),
+        "#define rbuf pfx_rbuf\n#define pbuf (pfx_pbuf) /* renamed */\n#define nbuf 16\n\
+         extern int *rbuf;\nextern int *pbuf;\nextern int *nbuf;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("use.c"),
+        "#include <stddef.h>\n#include \"g.h\"\n\
+         int *r(size_t n) { return rbuf + n * sizeof(int); }\n\
+         int *p(size_t n) { return pbuf + n * sizeof(int); }\n\
+         long c(size_t n) { return nbuf + n * sizeof(int); }\n",
+    )
+    .unwrap();
+    let (_, stdout, stderr) =
+        run_aurora_lint(&["--rules", "ARR39-C", dir.path().to_str().unwrap()]);
+    let findings: Vec<&str> = stdout.lines().filter(|l| l.contains("ARR39-C:")).collect();
+    assert_eq!(findings.len(), 2, "stdout: {stdout}\nstderr: {stderr}");
+    for line in ["use.c:3:", "use.c:4:"] {
+        assert!(
+            findings.iter().any(|f| f.contains(line)),
+            "{line}: {stdout}"
+        );
+    }
+}
+
+/// An enumerator declared in one function's block reaches no other
+/// function, so a header's pointer object of that name is still what a
+/// sibling function's occurrence names, and adding a scaled integer to it
+/// there is reported.
+#[test]
+fn arr39_types_a_header_pointer_name_a_sibling_block_enum_does_not_reach() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("g.h"), "extern int *g_buf;\n").unwrap();
+    std::fs::write(
+        dir.path().join("use.c"),
+        "#include <stddef.h>\n#include \"g.h\"\n\
+         int *use(size_t n) { return g_buf + n * sizeof(int); }\n\
+         long other(size_t n) { enum { g_buf = 1 }; return g_buf + n * sizeof(int); }\n",
+    )
+    .unwrap();
+    let (_, stdout, stderr) =
+        run_aurora_lint(&["--rules", "ARR39-C", dir.path().to_str().unwrap()]);
+    let findings: Vec<&str> = stdout.lines().filter(|l| l.contains("ARR39-C:")).collect();
+    assert_eq!(findings.len(), 1, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(findings[0].contains("use.c:3:"), "{stdout}");
+}
+
 /// A header's file-scope enumerator or object-like macro is a constant in
 /// every file that includes it, so the pointer object another header
 /// declares by that name is not known to be what an occurrence names.
