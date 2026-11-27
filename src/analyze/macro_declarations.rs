@@ -219,6 +219,14 @@ const MAX_NESTED_EXPANSIONS: usize = 8;
 /// with several definitions multiplying them.
 const MAX_EXPANSION_TEXTS: usize = 16;
 
+/// How many texts [`rescan`] may look at for one invocation, those that
+/// expand to nothing included. [`MAX_EXPANSION_TEXTS`] bounds only what is
+/// filed: a chain of macros with several definitions each whose last
+/// invocation has the wrong argument count files nothing, and without this
+/// bound the work would grow with the product of the definition counts.
+/// Once it is spent the invocation keeps the texts filed so far.
+const MAX_RESCAN_CALLS: usize = 256;
+
 /// Every text the invocation `name(args)` expands to, through each
 /// definition of `name` and of every function-like macro its expansion
 /// invokes in turn (`OUTER(n)` as `INNER(n)` as `typedef int n`), `##`
@@ -232,10 +240,21 @@ fn typedef_expansions(
     name: &str,
     args: Option<&[String]>,
 ) -> Vec<String> {
+    typedef_expansions_within(context, name, args, &mut { MAX_RESCAN_CALLS })
+}
+
+/// [`typedef_expansions`], spending one of `calls_left` on each text it
+/// looks at.
+fn typedef_expansions_within(
+    context: &ProjectContext,
+    name: &str,
+    args: Option<&[String]>,
+    calls_left: &mut usize,
+) -> Vec<String> {
     let mut out = Vec::new();
     for definition in definitions_of(context, name) {
         if let Some(text) = expansion(definition, args) {
-            rescan(context, text, 0, &mut out);
+            rescan(context, text, 0, calls_left, &mut out);
         }
     }
     out
@@ -263,11 +282,19 @@ fn definitions_of<'a>(
 /// File `text` in `out` once the first function-like invocation in it is
 /// expanded, through each of that macro's definitions and again for the
 /// invocations each expansion leaves; `text` as it is when it invokes none,
-/// or once [`MAX_NESTED_EXPANSIONS`] are spent.
-fn rescan(context: &ProjectContext, text: String, depth: usize, out: &mut Vec<String>) {
-    if out.len() >= MAX_EXPANSION_TEXTS {
+/// or once [`MAX_NESTED_EXPANSIONS`] are spent. Nothing once `calls_left`
+/// is spent ([`MAX_RESCAN_CALLS`]).
+fn rescan(
+    context: &ProjectContext,
+    text: String,
+    depth: usize,
+    calls_left: &mut usize,
+    out: &mut Vec<String>,
+) {
+    if out.len() >= MAX_EXPANSION_TEXTS || *calls_left == 0 {
         return;
     }
+    *calls_left -= 1;
     let invocation = (depth < MAX_NESTED_EXPANSIONS)
         .then(|| nested_invocation(context, &text))
         .flatten();
@@ -281,7 +308,7 @@ fn rescan(context: &ProjectContext, text: String, depth: usize, out: &mut Vec<St
         }
         if let Some(inner) = expansion(definition, Some(&args)) {
             let spliced = format!("{} {inner} {}", &text[..start], &text[end..]);
-            rescan(context, spliced, depth + 1, out);
+            rescan(context, spliced, depth + 1, calls_left, out);
         }
     }
 }
@@ -483,4 +510,73 @@ fn declarations_in(text: &str) -> Vec<(String, Linkage)> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `M1(n)` through `M7(n)`, each with six definitions in `#if` arms,
+    /// each invoking the next, and every `M7` invoking the one-parameter
+    /// `M8(n)` with two arguments: no branch expands to a typedef.
+    fn chain_ending_at_a_wrong_argument_count() -> String {
+        let mut source = String::new();
+        for k in 1..=7 {
+            for arm in 0..6 {
+                let call = if k == 7 {
+                    "M8(n, n)".to_string()
+                } else {
+                    format!("M{}(n)", k + 1)
+                };
+                let directive = if arm == 0 { "#if" } else { "#elif" };
+                source.push_str(&format!(
+                    "{directive} ARM_{k}_{arm}\n#define M{k}(n) {call} ATTR_{arm}\n"
+                ));
+            }
+            source.push_str("#endif\n");
+        }
+        source.push_str("#define M8(n) typedef int n\n");
+        source
+    }
+
+    #[test]
+    fn a_chain_whose_branches_all_fail_stops_at_the_rescan_budget() {
+        let context = ProjectContext {
+            macro_definitions: Arc::new(crate::analyze::check_macros::collect_macro_definitions(
+                &chain_ending_at_a_wrong_argument_count(),
+            )),
+            ..ProjectContext::default()
+        };
+        assert_eq!(context.macro_definitions["M1"].len(), 6);
+        let mut calls_left = MAX_RESCAN_CALLS;
+        let texts = typedef_expansions_within(
+            &context,
+            "M1",
+            Some(&["count_t".to_string()]),
+            &mut calls_left,
+        );
+        assert!(texts.is_empty(), "{texts:?}");
+        // 6^6 texts reach M7 without the budget; with it the walk stops.
+        assert_eq!(calls_left, 0);
+    }
+
+    #[test]
+    fn a_nested_invocation_spends_one_call_per_text() {
+        let context = ProjectContext {
+            macro_definitions: Arc::new(crate::analyze::check_macros::collect_macro_definitions(
+                "#define INNER(n) typedef int n\n#define OUTER(n) INNER(n)\n",
+            )),
+            ..ProjectContext::default()
+        };
+        let mut calls_left = MAX_RESCAN_CALLS;
+        let texts = typedef_expansions_within(
+            &context,
+            "OUTER",
+            Some(&["count_t".to_string()]),
+            &mut calls_left,
+        );
+        assert_eq!(texts.len(), 1);
+        assert_eq!(typedef_names_in(&texts[0]), ["count_t"]);
+        assert_eq!(MAX_RESCAN_CALLS - calls_left, 2);
+    }
 }

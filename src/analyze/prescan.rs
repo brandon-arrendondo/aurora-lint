@@ -14240,6 +14240,46 @@ void caller(char *other) {
         assert!(ctx.macro_declared_objects.is_empty());
     }
 
+    #[test]
+    fn a_macro_chain_whose_expansions_all_fail_is_read_in_bounded_time() {
+        // M1..M7 with six `#if` arms each, chained Mk(n) -> Mk+1(n), and M7
+        // calling the one-parameter M8(n) with two arguments: every branch
+        // fails, and the walk of the 6^6 of them reaching M7 stops at the
+        // rescan budget instead.
+        let mut code = String::new();
+        for k in 1..=7 {
+            for arm in 0..6 {
+                let call = if k == 7 {
+                    "M8(n, n)".to_string()
+                } else {
+                    format!("M{}(n)", k + 1)
+                };
+                let directive = if arm == 0 { "#if" } else { "#elif" };
+                code.push_str(&format!(
+                    "{directive} ARM_{k}_{arm}\n#define M{k}(n) {call} ATTR_{arm}\n"
+                ));
+            }
+            code.push_str("#endif\n");
+        }
+        code.push_str("#define M8(n) typedef int n\n");
+        for i in 0..10 {
+            code.push_str(&format!("M1(t{i});\n"));
+        }
+        let started = std::time::Instant::now();
+        let ctx = prescan_one("aurora-lint-prescan-macro-chain-budget-test", &code);
+        let elapsed = started.elapsed();
+        assert!(
+            ctx.macro_declared_typedef_names
+                .values()
+                .all(HashSet::is_empty),
+            "{:?}",
+            ctx.macro_declared_typedef_names
+        );
+        // Unbounded, this took 17 s in a release build; bounded, it is the
+        // cost of an ordinary one-file prescan.
+        assert!(elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
+    }
+
     // -- caller argument ranges: loop counters and stepped locals --
 
     /// The argument ranges recorded for `sink` (the callee every snippet
