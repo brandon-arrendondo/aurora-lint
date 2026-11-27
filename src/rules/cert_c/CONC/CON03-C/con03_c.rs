@@ -107,7 +107,8 @@ enum BaseType {
     /// Anything else.
     Other,
     /// The spelling could not be resolved: a macro or typedef cycle
-    /// (`#define A B` / `#define B A`), or a chain past the resolution cap.
+    /// (`#define A B` / `#define B A`), a chain past the resolution cap, or
+    /// a project type name nothing the scan read defines.
     Unknown,
 }
 
@@ -129,6 +130,10 @@ impl BaseType {
 /// How many names one type spelling may expand through before it is
 /// `BaseType::Unknown`.
 const TYPE_RESOLUTION_CAP: usize = 32;
+
+/// `file -> typedef name -> each definition's aliased type`
+/// (`ProjectContext::typedef_arms_by_file`).
+type TypedefArmsByFile = HashMap<String, HashMap<String, Vec<String>>>;
 
 /// One object CON03-C may report, with the declaration it is reported at.
 struct SharedVar<'a> {
@@ -170,6 +175,19 @@ pub struct Con03C {
     /// Typedef names that name a function type (`typedef int (cb_t)(void);`):
     /// `static cb_t handler;` declares a function, not a variable.
     function_typedef_names: RefCell<Arc<HashSet<String>>>,
+    /// Every typedef name each file the scan read declares, headers reached
+    /// through `-I` outside the scan included (`ProjectContext::
+    /// typedef_names_by_file`). `typedef_types` holds only the scanned
+    /// files' simple typedefs, so a name here and not there is still the
+    /// project's type, not an unresolved one.
+    typedef_names_by_file: RefCell<Arc<HashMap<String, HashSet<String>>>>,
+    /// The typedef names the file being checked declares itself, for a run
+    /// with no project context.
+    own_typedef_names: RefCell<HashSet<String>>,
+    /// Each read file's typedef definitions (`ProjectContext::
+    /// typedef_arms_by_file`): what a name from a header outside the scan
+    /// aliases, when it is a simple one.
+    typedef_arms_by_file: RefCell<Arc<TypedefArmsByFile>>,
 }
 
 impl CertRule for Con03C {
@@ -196,6 +214,8 @@ impl CertRule for Con03C {
         *self.macro_definitions.borrow_mut() = Arc::clone(&context.macro_definitions);
         *self.typedef_types.borrow_mut() = Arc::clone(&context.typedef_types);
         *self.function_typedef_names.borrow_mut() = Arc::clone(&context.function_typedef_names);
+        *self.typedef_names_by_file.borrow_mut() = Arc::clone(&context.typedef_names_by_file);
+        *self.typedef_arms_by_file.borrow_mut() = Arc::clone(&context.typedef_arms_by_file);
     }
 
     fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
@@ -212,6 +232,7 @@ impl CertRule for Con03C {
             .extend(concurrency_roots::reachable_within_file(node, source));
 
         let own_typedefs = Self::own_typedef_kinds(node, source);
+        *self.own_typedef_names.borrow_mut() = Self::own_typedef_names(node, source);
         let shared_vars = self.collect_shared_variables(node, source, &own_typedefs);
         let uses = Self::identifier_uses_by_function(node, source);
         // One index of the file for every use resolved below: a fresh one
@@ -507,6 +528,34 @@ impl Con03C {
         kinds
     }
 
+    /// Every name this file's typedefs declare, whatever the shape: a
+    /// function type's (`typedef void (event_fn)(int);`) too, which
+    /// [`TypedefShape`] leaves unnamed.
+    fn own_typedef_names(root: &Node, source: &str) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for def in query::find_descendants_of_kind(*root, "type_definition") {
+            if declarator_utils::typedef_head_was_swallowed(&def) {
+                continue;
+            }
+            for declarator in typedef_declarators(&def) {
+                let mut d = declarator;
+                while d.kind() != "type_identifier" {
+                    match d.child_by_field_name("declarator").or_else(|| {
+                        d.named_child(0)
+                            .filter(|_| d.kind() == "parenthesized_declarator")
+                    }) {
+                        Some(inner) => d = inner,
+                        None => break,
+                    }
+                }
+                if d.kind() == "type_identifier" {
+                    names.insert(get_node_text(&d, source).to_string());
+                }
+            }
+        }
+        names
+    }
+
     /// Whether `declarator` declares a function because the declaration's
     /// type is a typedef for a function type and the name is bare:
     /// `static handler_fn on_read;` declares a function, while
@@ -608,7 +657,13 @@ impl Con03C {
                 }
                 None => match self.typedef_types.borrow().get(name) {
                     Some(aliased) => vec![aliased.clone()],
-                    None => return classify_spelling(name),
+                    None => match self.header_typedef(name) {
+                        Some(aliased) if !aliased.is_empty() => aliased,
+                        // A typedef of a pointer, array, function, struct,
+                        // union or enum: read as written, as before.
+                        Some(_) => return classify_spelling(name),
+                        None => return classify_unresolved_name(name),
+                    },
                 },
             }
         };
@@ -620,6 +675,31 @@ impl Con03C {
             .unwrap_or(BaseType::Other);
         stack.pop();
         resolved
+    }
+
+    /// The simple types a file the scan read aliases `name` to, each
+    /// distinct one once (empty when every definition is of another kind),
+    /// or `None` when nothing the scan read declares `name` a typedef.
+    fn header_typedef(&self, name: &str) -> Option<Vec<String>> {
+        if !self.own_typedef_names.borrow().contains(name)
+            && !self
+                .typedef_names_by_file
+                .borrow()
+                .values()
+                .any(|names| names.contains(name))
+        {
+            return None;
+        }
+        let mut aliased: Vec<String> = Vec::new();
+        for arms in self.typedef_arms_by_file.borrow().values() {
+            for arm in arms.get(name).into_iter().flatten() {
+                if !arm.is_empty() && !aliased.contains(arm) {
+                    aliased.push(arm.clone());
+                }
+            }
+        }
+        aliased.sort();
+        Some(aliased)
     }
 
     fn has_storage_class(&self, node: &Node, source: &str, class: &str) -> bool {
@@ -693,6 +773,65 @@ impl Con03C {
 fn type_tokens(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
         .filter(|t| !t.is_empty())
+}
+
+/// What a single type name with no macro or typedef definition in sight
+/// names. A keyword type is an ordinary object type, and a name the standard
+/// library declares (`pthread_mutex_t`, `atomic_int`, `size_t`) is read by
+/// its spelling, since its header is seldom scanned. Any other name is the
+/// project's own type, whose definition the scan did not see (its header is
+/// missing): it may name a function type (`static handler_fn on_read;`
+/// declares a function) or a lock, so it resolves to nothing rather than to
+/// a guess from the spelling (ADR-0006).
+fn classify_unresolved_name(name: &str) -> BaseType {
+    const KEYWORD_TYPES: [&str; 11] = [
+        "char", "short", "int", "long", "float", "double", "signed", "unsigned", "_Bool",
+        "_Complex", "void",
+    ];
+    match classify_spelling(name) {
+        BaseType::Other
+            if !KEYWORD_TYPES.contains(&name)
+                && !crate::utility::cert_c::expr_type::is_standard_typedef_name(name)
+                && !is_posix_type_name(name) =>
+        {
+            BaseType::Unknown
+        }
+        base => base,
+    }
+}
+
+/// A `<sys/types.h>` or `<pthread.h>` object type: POSIX reserves the `_t`
+/// suffix for these, and a project's header seldom carries them.
+fn is_posix_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "pid_t"
+            | "uid_t"
+            | "gid_t"
+            | "off_t"
+            | "mode_t"
+            | "dev_t"
+            | "ino_t"
+            | "nlink_t"
+            | "blksize_t"
+            | "blkcnt_t"
+            | "id_t"
+            | "key_t"
+            | "useconds_t"
+            | "suseconds_t"
+            | "socklen_t"
+            | "in_addr_t"
+            | "in_port_t"
+            | "nfds_t"
+            | "sigset_t"
+            | "pthread_t"
+            | "pthread_key_t"
+            | "pthread_once_t"
+            | "pthread_attr_t"
+            | "timer_t"
+            | "clockid_t"
+            | "DIR"
+    )
 }
 
 /// What a type spelling names, matched by whole token so a name that merely

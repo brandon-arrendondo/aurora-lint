@@ -12105,3 +12105,44 @@ fn arr39_does_not_type_a_header_pointer_name_a_header_makes_a_constant() {
         );
     }
 }
+
+#[test]
+fn con03_reads_a_type_name_by_its_definition_and_stays_silent_without_one() {
+    // `handler_fn` names a function type, so `static handler_fn on_read;`
+    // declares a function; `counter_t` names `int`, so `hits` is a shared
+    // object. Both come from a header outside the scanned tree, reached
+    // through -I. Without -I neither name has a definition the scan read:
+    // the type is unknown, and the rule does not guess it from the spelling.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("inc")).unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("inc/kinds.h"),
+        "typedef void (handler_fn)(void);\ntypedef int counter_t;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("src/main.c"),
+        "#include <pthread.h>\n#include \"kinds.h\"\n\n\
+         static handler_fn on_read;\nstatic counter_t hits;\n\n\
+         void *worker(void *arg) {\n    hits++;\n    on_read();\n    return arg;\n}\n\n\
+         int main(void) {\n    pthread_t t;\n    pthread_create(&t, 0, worker, 0);\n\
+         \x20   pthread_join(t, 0);\n    return hits;\n}\n",
+    )
+    .unwrap();
+    let src = dir.path().join("src");
+    let inc = dir.path().join("inc");
+    let reported = |extra: &[&str]| -> Vec<String> {
+        let mut args = vec!["--rules", "CON03-C", src.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        let (_, stdout, stderr) = run_aurora_lint(&args);
+        stdout
+            .lines()
+            .chain(stderr.lines())
+            .filter(|l| l.contains("CON03-C:"))
+            .filter_map(|l| l.split('\'').nth(1).map(str::to_string))
+            .collect()
+    };
+    assert_eq!(reported(&["-I", inc.to_str().unwrap()]), ["hits"]);
+    assert!(reported(&[]).is_empty(), "{:?}", reported(&[]));
+}
