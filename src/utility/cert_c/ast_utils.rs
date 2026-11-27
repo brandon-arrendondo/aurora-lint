@@ -3640,26 +3640,30 @@ fn extract_parameter_info(param_node: &Node, source: &str) -> Option<(String, St
     None
 }
 
-/// Check if a variable name appears in the function's parameter list
+/// Check if a variable name appears in the function's parameter list. The
+/// list is the one applied to the function's own name, so a function whose
+/// return type is a pointer (`char *f(int n)`) or a function pointer
+/// (`int (*f(int n))(double)`) has its parameters found.
 pub fn is_function_parameter(function_node: &Node, var_name: &str, source: &str) -> bool {
-    // Find parameter list in function
-    for child in function_node.child_nodes() {
-        if child.kind() == "function_declarator" {
-            for param_list in child.child_nodes() {
-                if param_list.kind() == "parameter_list" {
-                    let param_text = get_node_text(&param_list, source);
-                    // Check for word boundaries to avoid substring matches
-                    let words: Vec<&str> = param_text
-                        .split(|c: char| !c.is_alphanumeric() && c != '_')
-                        .collect();
-                    if words.contains(&var_name) {
-                        return true;
-                    }
-                }
-            }
+    let Some(declarator) = function_node
+        .child_by_field_name("declarator")
+        .and_then(|d| crate::utility::cert_c::declarator_utils::name_function_declarator(&d))
+    else {
+        return false;
+    };
+    let Some(param_list) = declarator.child_by_field_name("parameters") else {
+        return false;
+    };
+    // A parameter's own declarator names it, so a size or type in the list
+    // (`char buf[PATH_MAX]`) is not a parameter. An old-style list names
+    // its parameters as bare identifiers: `int f(a, b) int a, b; {...}`.
+    param_list.child_nodes().any(|param| match param.kind() {
+        "parameter_declaration" => {
+            extract_parameter_info(&param, source).is_some_and(|(name, _)| name == var_name)
         }
-    }
-    false
+        "identifier" => get_node_text(&param, source) == var_name,
+        _ => false,
+    })
 }
 
 // ============================================================================

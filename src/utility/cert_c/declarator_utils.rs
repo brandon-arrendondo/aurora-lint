@@ -125,6 +125,48 @@ pub fn declares_function(declarator: &Node) -> bool {
     }
 }
 
+/// The `function_declarator` applied to the declared name itself, whose
+/// parameters are the function's own, or `None` when the name does not
+/// declare a function. The derivation nearest the name decides, as in
+/// [`declares_function`], so a return type's derivations are seen through:
+/// `int f(int n)`, `char *f(int n)` and `char **f(int n)` give `(int n)`,
+/// and `int (*f(int n))(double)`, a function returning a function pointer,
+/// gives `(int n)` rather than the pointer's `(double)`. C has no function
+/// returning a function, so a name applied directly to two lists is a macro
+/// that names the function, `SUFFIX (put_section) (Elf_Shdr *s, int i)`,
+/// and the outer list is the function's own.
+pub fn name_function_declarator<'a>(declarator: &Node<'a>) -> Option<Node<'a>> {
+    let mut d = *declarator;
+    let mut nearest: Option<Node<'a>> = None;
+    loop {
+        match d.kind() {
+            "identifier" => {
+                let mut function = nearest.filter(|n| n.kind() == "function_declarator")?;
+                while function.id() != declarator.id() {
+                    match function.parent() {
+                        Some(outer)
+                            if outer.kind() == "function_declarator"
+                                && outer.child_by_field_name("declarator").map(|i| i.id())
+                                    == Some(function.id()) =>
+                        {
+                            function = outer
+                        }
+                        _ => break,
+                    }
+                }
+                return Some(function);
+            }
+            "pointer_declarator" | "function_declarator" | "array_declarator" => nearest = Some(d),
+            "parenthesized_declarator" | "attributed_declarator" => {}
+            _ => return None,
+        }
+        match inner_declarator(&d) {
+            Some(inner) if inner.id() != d.id() => d = inner,
+            _ => return None,
+        }
+    }
+}
+
 /// The `pointer_declarator` that makes the declared object a pointer, or
 /// `None` when the object's own type comes from the declaration's specifiers.
 /// The derivation nearest the name decides, as in [`declares_function`]; an
