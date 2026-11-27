@@ -144,6 +144,13 @@ pub struct VarInfo {
     /// means the content was written whole, or by a write no offset
     /// describes.
     pub elements_written: Option<BTreeSet<i64>>,
+    /// Whether a pointer into the buffer this variable points to has been
+    /// stored elsewhere or handed to a call, or the variable stepped, since
+    /// the buffer was allocated ([`forget_elements_reached_by`]). Writes
+    /// through that copy are not counted from the buffer's start, so once
+    /// it is set, no later constant-offset write starts an element set:
+    /// `q = p; p[0] = 1; q[3] = 7` writes element 3 too.
+    pub elements_escaped: bool,
 }
 
 impl VarInfo {
@@ -158,6 +165,7 @@ impl VarInfo {
             is_char_type: false,
             allocation_count: None,
             elements_written: None,
+            elements_escaped: false,
         }
     }
 
@@ -215,6 +223,7 @@ fn join_states(a: &InitStateMap, b: &InitStateMap) -> InitStateMap {
         let entry = result.entry(var.clone()).or_insert_with(|| info_b.clone());
         let state = entry.state.join(info_b.state);
         entry.elements_written = join_elements(entry, info_b, state);
+        entry.elements_escaped |= info_b.elements_escaped;
         entry.state = state;
     }
     result
@@ -228,6 +237,7 @@ fn join_var_info(a: &VarInfo, b: &VarInfo) -> VarInfo {
     VarInfo {
         state,
         elements_written: join_elements(a, b, state),
+        elements_escaped: a.elements_escaped || b.elements_escaped,
         is_unsigned_char: a.is_unsigned_char || b.is_unsigned_char,
         is_array: a.is_array || b.is_array,
         is_static: a.is_static || b.is_static,
@@ -1575,7 +1585,10 @@ fn apply_identifier_assignment_state(
     source: &str,
     config: &InitAnalysisConfig,
 ) {
+    // A new value: whatever pointed into the old buffer does not point
+    // into the one the variable now points to.
     info.elements_written = None;
+    info.elements_escaped = false;
     if let Some(array_alloc) = array_decay {
         // Array-to-pointer decay: ptr = uninit_array
         // The pointer now points to uninitialized content.
@@ -1622,8 +1635,9 @@ fn apply_lvalue_assignment_state(
                 .is_some_and(|alloc_count| is_partial_init_write(alloc_count, left, source));
             if !stays_partial {
                 info.state = InitState::MallocInitialized;
-                info.elements_written =
-                    constant_element_offset(left, source).map(|offset| BTreeSet::from([offset]));
+                info.elements_written = constant_element_offset(left, source)
+                    .filter(|_| !info.elements_escaped)
+                    .map(|offset| BTreeSet::from([offset]));
             }
             // else: keep MallocUninitialized — partial init
         }
@@ -1843,6 +1857,7 @@ fn forget_elements_reached_by(value: &Node, source: &str, state: &mut InitStateM
     for name in names {
         if let Some(info) = state.get_mut(&name) {
             info.elements_written = None;
+            info.elements_escaped = true;
         }
     }
 }
@@ -1908,14 +1923,17 @@ fn forget_elements_reached_by_arguments(node: &Node, source: &str, state: &mut I
     for name in names {
         if let Some(info) = state.get_mut(&name) {
             info.elements_written = None;
+            info.elements_escaped = true;
         }
     }
 }
 
 /// The variables whose buffer the argument `arg` may point into, per
 /// [`forget_elements_reached_by_arguments`]: both operands of a `+`, since
-/// either may be the pointer, and the left of a `-`. A name that is not a
-/// buffer has no element set to forget.
+/// either may be the pointer, and the left of a `-`, wherever the value
+/// holds one: in an initializer list or a compound literal, in either arm
+/// of `?:`, or as the value of a comma or an assignment. A name that is not
+/// a buffer has no element set to forget.
 fn buffers_reached_by_argument(arg: Node, source: &str, names: &mut Vec<String>) {
     let node = strip_arg_casts(&arg);
     match node.kind() {
@@ -1937,6 +1955,31 @@ fn buffers_reached_by_argument(arg: Node, source: &str, names: &mut Vec<String>)
                 if let Some(operand) = node.child_by_field_name(field) {
                     buffers_reached_by_argument(operand, source, names);
                 }
+            }
+        }
+        // A value that holds the pointer among others: an initializer list
+        // (`{ d + 1, 7 }`, `{ .buf = d }`) or a compound literal of one, an
+        // arm of `?:`, or the last operand of a comma or an assignment.
+        "initializer_list" => {
+            for element in node.named_children(&mut node.walk()) {
+                buffers_reached_by_argument(element, source, names);
+            }
+        }
+        "initializer_pair" | "compound_literal_expression" => {
+            if let Some(value) = node.child_by_field_name("value") {
+                buffers_reached_by_argument(value, source, names);
+            }
+        }
+        "conditional_expression" => {
+            for field in ["consequence", "alternative"] {
+                if let Some(arm) = node.child_by_field_name(field) {
+                    buffers_reached_by_argument(arm, source, names);
+                }
+            }
+        }
+        "comma_expression" | "assignment_expression" => {
+            if let Some(value) = node.child_by_field_name("right") {
+                buffers_reached_by_argument(value, source, names);
             }
         }
         "pointer_expression" => {
@@ -4278,6 +4321,7 @@ cleanup:
     fn written(state: InitState, elements: Option<&[i64]>) -> VarInfo {
         VarInfo {
             elements_written: elements.map(|e| e.iter().copied().collect()),
+            elements_escaped: false,
             ..VarInfo::new(state)
         }
     }

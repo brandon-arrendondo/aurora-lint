@@ -8,7 +8,10 @@
  * the offset does not describe -- memset, a callee handed the buffer or a
  * pointer into it, a fill by a variable index -- covers the whole buffer
  * as before. So does a pointer to it stored elsewhere or stepped, since
- * writes through it are not counted from the buffer's start. A store
+ * writes through it are not counted from the buffer's start, even when it
+ * was stored before the first write, and wherever the stored value holds
+ * it: an initializer list, a compound literal, an arm of `?:` or the value
+ * of a comma. A store
  * through a pointer sum covers its element, writes at constant offsets
  * that cover the whole allocation cover the buffer, and a variable index
  * whose values stay among the elements written reads only those.
@@ -18,12 +21,21 @@ struct holder {
     int *buf;
 };
 
+struct span {
+    int *base;
+    int len;
+};
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 void fill(int *p);
 void fill_bytes(unsigned char *p);
+void fill_holder(struct holder *h);
+void fill_span(struct span *s);
+void fill_spans(struct span *s, int n);
+void fill_all(int **p, int n);
 
 void append_after_the_terminator(const char *src) {
     char *data = malloc(100 * sizeof(char));
@@ -281,4 +293,97 @@ int every_element_written_unknown_index(int n) {
     d[2] = 0;
     d[3] = 0;
     return d[n];
+}
+
+int copied_before_the_first_write(void) {
+    int *d = malloc(4 * sizeof *d);
+    int *q;
+    if (d == NULL) {
+        return 0;
+    }
+    q = d;
+    d[0] = 1;
+    q[3] = 7;
+    return d[3];
+}
+
+int stored_in_a_struct_before_the_first_write(void) {
+    struct holder h;
+    int *d = malloc(4 * sizeof *d);
+    if (d == NULL) {
+        return 0;
+    }
+    h.buf = d;
+    d[0] = 1;
+    fill_holder(&h);
+    return d[3];
+}
+
+int in_an_initializer_list(void) {
+    int *d = malloc(8 * sizeof *d);
+    if (d == NULL) {
+        return 0;
+    }
+    d[0] = 1;
+    struct span s = { d + 1, 7 };
+    fill_spans(&s, 1);
+    return d[3];
+}
+
+int in_a_designated_initializer(void) {
+    int *d = malloc(4 * sizeof *d);
+    if (d == NULL) {
+        return 0;
+    }
+    d[0] = 1;
+    struct holder h = { .buf = d };
+    fill_holder(&h);
+    return d[3];
+}
+
+int in_an_array_initializer(void) {
+    int *d = malloc(4 * sizeof *d);
+    if (d == NULL) {
+        return 0;
+    }
+    d[0] = 1;
+    int *all[] = { d };
+    fill_all(all, 1);
+    return d[3];
+}
+
+int in_a_compound_literal(void) {
+    struct span s;
+    int *d = malloc(4 * sizeof *d);
+    if (d == NULL) {
+        return 0;
+    }
+    d[0] = 1;
+    s = (struct span){ d, 4 };
+    fill_span(&s);
+    return d[3];
+}
+
+int in_an_arm_of_a_conditional(int c) {
+    int *d = malloc(4 * sizeof *d);
+    int *q;
+    if (d == NULL) {
+        return 0;
+    }
+    d[0] = 1;
+    q = c ? d : d + 1;
+    q[2] = 7;
+    return d[3];
+}
+
+int the_value_of_a_comma(void) {
+    int *d = malloc(4 * sizeof *d);
+    int *q;
+    if (d == NULL) {
+        return 0;
+    }
+    d[0] = 1;
+    q = (0, d);
+    q[3] = 7;
+    return d[3];
 }
