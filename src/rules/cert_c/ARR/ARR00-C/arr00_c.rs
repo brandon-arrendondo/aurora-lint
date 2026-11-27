@@ -1341,8 +1341,13 @@ fn check_loop_array_access(
             });
         }
     }
-    // Check if the variable is uninitialized
-    else if !is_parameter && is_uninitialized_variable(&bound_var, preceding_text) {
+    // Check if the variable is uninitialized. The text read above ends where
+    // the loop starts, so a store in the loop's own initializer
+    // (`for (h = 0; h < 1; h++)`) is read from the tree instead.
+    else if !is_parameter
+        && !initializer_stores(node, &bound_var, source)
+        && is_uninitialized_variable(&bound_var, preceding_text)
+    {
         let start_point = node.start_position();
         return Some(RuleViolation {
             rule_id: "ARR00-C".to_string(),
@@ -1363,6 +1368,36 @@ fn check_loop_array_access(
     }
 
     None
+}
+
+/// Whether a `for` statement's initializer stores a value in `name`: an
+/// assignment to it (`h = 0`, also inside a comma expression) or a
+/// declarator of it with a value (`int h = 0`). Any other loop stores nothing.
+fn initializer_stores(loop_node: &Node, name: &str, source: &str) -> bool {
+    fn stores(node: &Node, name: &str, source: &str) -> bool {
+        match node.kind() {
+            "assignment_expression" => node.child_by_field_name("left").is_some_and(|left| {
+                left.kind() == "identifier" && &source[left.byte_range()] == name
+            }),
+            "init_declarator" => node
+                .child_by_field_name("declarator")
+                .is_some_and(|declarator| {
+                    declarator.kind() == "identifier" && &source[declarator.byte_range()] == name
+                }),
+            "comma_expression" | "declaration" | "parenthesized_expression" => {
+                let mut cursor = node.walk();
+                let found = node
+                    .named_children(&mut cursor)
+                    .any(|child| stores(&child, name, source));
+                found
+            }
+            _ => false,
+        }
+    }
+    loop_node.kind() == "for_statement"
+        && loop_node
+            .child_by_field_name("initializer")
+            .is_some_and(|initializer| stores(&initializer, name, source))
 }
 
 fn extract_loop_bound_variable(condition: &Node, source: &str) -> Option<String> {
