@@ -1092,13 +1092,15 @@ mod tests {
         let mut parser = Parser::new();
         parser.set_language(&c_language()).unwrap();
         let src = stray_comment_closers(4000);
-        let started = std::time::Instant::now();
         let exceeded = parse_with_recovery(&mut parser, src.clone(), &RepairMacros::default())
             .expect_err("the parse is stopped at its budget");
-        // Unbounded, this parse takes several seconds. The bound is loose,
-        // as in the substrate's own copy of this test: a loaded machine
-        // must not fail it.
-        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        // Unbounded, this parse takes several seconds. The budget counts
+        // parser steps, not time, so it is the step count that shows the
+        // parse stopped early: a time bound fails on a loaded machine.
+        assert_eq!(
+            exceeded.budget_steps,
+            lang_parsing_substrate::ParseBudget::DEFAULT.steps_for(src.len())
+        );
         assert_eq!(exceeded.source_len, src.len());
         assert!(exceeded.byte_offset < src.len(), "{exceeded}");
         // The parser is left fit for the next file.
