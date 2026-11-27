@@ -42,6 +42,13 @@ fn peel_casts_and_parens(mut n: Node) -> Node {
         let inner = match n.kind() {
             "parenthesized_expression" => n.named_child(0),
             "cast_expression" => n.child_by_field_name("value"),
+            // `*&x` is `x`.
+            "pointer_expression"
+                if n.child_by_field_name("operator").map(|o| o.kind()) == Some("*") =>
+            {
+                n.child_by_field_name("argument")
+                    .and_then(|a| address_of_operand(peel_casts_and_parens(a)))
+            }
             _ => None,
         };
         match inner {
@@ -72,13 +79,15 @@ fn released_object(arg: Node) -> Option<Node> {
 
 /// The name of the object a call argument hands over for release, as the
 /// walk keys it, and whether it is handed over by address: the
-/// [`released_object`] by value, or `&var`. `None` for anything else.
+/// [`released_object`] by value, or the address of one, `&var`, `&p->f` or
+/// `&arr[0]`, as a `safe_free(void **)` helper is handed it. `None` for
+/// anything else.
 fn released_argument_name(arg: Node, source: &str) -> Option<(String, bool)> {
     match released_object(arg) {
         Some(node) => Some((ast_utils::get_node_text_owned(&node, source), false)),
-        None => strip_call_argument(arg)
-            .filter(|(_, by_address)| *by_address)
-            .map(|(target, _)| (ast_utils::get_node_text_owned(&target, source), true)),
+        None => address_of_operand(peel_casts_and_parens(arg))
+            .and_then(released_object)
+            .map(|target| (ast_utils::get_node_text_owned(&target, source), true)),
     }
 }
 
@@ -97,6 +106,13 @@ fn names_one_object(name: &str) -> bool {
 fn declares_static(decl: &Node, source: &str) -> bool {
     decl.child_nodes().any(|c| {
         c.kind() == "storage_class_specifier" && ast_utils::get_node_text(&c, source) == "static"
+    })
+}
+
+/// Whether `decl` carries the `extern` storage class.
+fn declares_extern(decl: &Node, source: &str) -> bool {
+    decl.child_nodes().any(|c| {
+        c.kind() == "storage_class_specifier" && ast_utils::get_node_text(&c, source) == "extern"
     })
 }
 
@@ -648,10 +664,11 @@ struct AllocInfo {
     line: usize,
     column: usize,
     alloc_type: String,
-    /// Whether the object the allocation was stored into is a local of
-    /// static storage duration, as its declaration says; `None` when the
-    /// store's target did not resolve, and the spelling decides instead
-    /// (see `held_by_static`).
+    /// Whether the object the allocation was stored into outlives the
+    /// function, as its declaration says (`static_holder_of`); `None` when
+    /// the store's target did not resolve, and the spelling decides instead
+    /// (see `held_by_static`). A copy made by `q = p` resolves `q`'s own
+    /// declaration, so it is `None` only when that store does not resolve.
     static_holder: Option<bool>,
 }
 
@@ -1014,6 +1031,26 @@ fn statement_after_block_end<'n>(last: &Node<'n>) -> Option<Node<'n>> {
         }
         statement = outer;
     }
+}
+
+/// Every spelling of a summarized field path. The summary joins a path's
+/// segments with `->` whatever the callee wrote, so `free(p->b.c)` is
+/// recorded as `b->c`; the caller tracks the member by its own spelling,
+/// `a.b.c`, and either operator may stand between two inner segments. A
+/// path longer than four segments keeps only the recorded spelling.
+fn inner_field_spellings(path: &str) -> Vec<String> {
+    let segments: Vec<&str> = path.split("->").collect();
+    if segments.len() > 4 {
+        return vec![path.to_string()];
+    }
+    let mut spellings = vec![segments[0].to_string()];
+    for segment in &segments[1..] {
+        spellings = spellings
+            .into_iter()
+            .flat_map(|head| [format!("{head}->{segment}"), format!("{head}.{segment}")])
+            .collect();
+    }
+    spellings
 }
 
 /// The label a `goto_statement` jumps to.
@@ -1657,16 +1694,27 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     }
 
     /// [`AllocInfo::static_holder`] for the allocation `alloc_call` stored
-    /// into `var_name`: whether the object `var_name` is reached through is
-    /// declared `static` inside this function. A file-scope object, or a
-    /// parameter, is not. `None` when the store's target does not resolve.
+    /// into `var_name`: whether the object `var_name` is reached through
+    /// lives past the return. A local declared `static` does. So does a
+    /// file-scope object, whatever its storage class, or one a local
+    /// `extern` declaration names, when the block is stored into a member or
+    /// element of it (`file_static.x`,
+    /// `table[0]`). A block stored straight into a file-scope pointer keeps
+    /// the reports a global pointer always had, for the block its next
+    /// store overwrites. An automatic local or a parameter does not hold the
+    /// block past the return. `None` when the store's target does not
+    /// resolve.
     fn static_holder_of(var_name: &str, alloc_call: &Node, source: &str) -> Option<bool> {
         let root = spelled_root(var_name)?;
         let function = query::find_ancestor(*alloc_call, |a| a.kind() == "function_definition")?;
         let target = allocation_target(&function, alloc_call.start_position(), root, source)?;
         let (decl, _) = ast_utils::resolve_identifier_declarator(&target, root, source)?;
         let local = query::find_ancestor(decl, |a| a.id() == function.id()).is_some();
-        Some(local && decl.kind() == "declaration" && declares_static(&decl, source))
+        // A local `extern` declaration names a file-scope object.
+        if !local || (decl.kind() == "declaration" && declares_extern(&decl, source)) {
+            return Some(var_name != root);
+        }
+        Some(decl.kind() == "declaration" && declares_static(&decl, source))
     }
 
     /// Collect the locals that provably cannot hold heap memory: declared
@@ -1933,6 +1981,13 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// frees on every entry, so a jump to `fail:` reaches them too. The
     /// jumps are resolved after every label has been scanned, since the
     /// target may sit below the block that jumps to it.
+    ///
+    /// A block that ends in `return x;` hands `x` to the caller, which
+    /// counts here as releasing it: the set only ever withholds a goto leak
+    /// report, and a returned object is not leaked by the jump.
+    ///
+    /// A release of a member is not a release of the object holding it: a
+    /// label that frees only `p->f` leaves the jump's leak of `p` reported.
     fn collect_label_frees(&mut self, node: &Node, source: &str) {
         // (label, its offset, label it ends by jumping to)
         let mut jumps: Vec<(String, usize, String)> = Vec::new();
@@ -1966,6 +2021,16 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             }
                             next = next_statement_sibling(&sibling);
                         }
+                    }
+                    // A block that ends by returning an object hands it to
+                    // the caller: hostap's `not_compatible: ... return auth;`
+                    // does not leak the `auth` a jump to it carries.
+                    if let Some(returned) = last
+                        .filter(|stmt| stmt.kind() == "return_statement")
+                        .and_then(|stmt| stmt.named_child(0))
+                        .and_then(released_object)
+                    {
+                        freed_vars.insert(ast_utils::get_node_text_owned(&returned, source));
                     }
                     if let Some(target) = last
                         .filter(|stmt| stmt.kind() == "goto_statement")
@@ -2107,7 +2172,20 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         }
                     }
                 }
-                if declared.is_some() || self.summary_frees_some_param(&func_name, site) {
+                // One definition that releases the argument itself is
+                // enough here: hostap's `crypto_ec_key_deinit` frees its
+                // key in the wolfSSL build and hands it to `EVP_PKEY_free`,
+                // which no scanned body defines, in the OpenSSL one. This set
+                // only ever withholds a goto leak report, and a MAY release
+                // is the polarity that licenses that.
+                let some_definition_frees =
+                    self.summary_at_any(&func_name, site).is_some_and(|s| {
+                        !s.frees_params.is_empty() || !s.frees_param_pointees.is_empty()
+                    });
+                if declared.is_some()
+                    || self.summary_frees_some_param(&func_name, site)
+                    || some_definition_frees
+                {
                     if let Some(arguments) = call.child_by_field_name("arguments") {
                         let mut param_idx = 0usize;
                         for arg in arguments.child_nodes() {
@@ -2137,6 +2215,13 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                                     through_address_of,
                                     site,
                                 )
+                                && !self.summary_at_any(&func_name, site).is_some_and(|s| {
+                                    Self::summary_releases_arg(
+                                        &s,
+                                        this_param_idx,
+                                        through_address_of,
+                                    )
+                                })
                             {
                                 continue;
                             }
@@ -3468,9 +3553,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             let is_freed_at_label = label_freed_vars.as_ref().is_some_and(|freed| {
                 freed.contains(var_name)
                     || aliases.iter().any(|a| freed.contains(a))
-                    || freed
-                        .iter()
-                        .any(|f| f.starts_with(&format!("{}->", var_name)))
                     || freed.iter().any(|f| {
                         // Check if var_name is a field and its container is freed
                         if let Some(base) = var_name.split("->").next() {
@@ -3903,9 +3985,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 if self.allocated_memory.contains_key(&right_var) {
                     // Transfer ownership
                     if let Some(alloc_info) = self.allocated_memory.get(&right_var).cloned() {
-                        // The record's `static_holder` speaks for `right_var`.
+                        // The record's `static_holder` speaks for
+                        // `right_var`; the copy's is the declaration this
+                        // store into `var_name` resolves to.
                         let alloc_info = AllocInfo {
-                            static_holder: None,
+                            static_holder: Self::static_holder_of(&var_name, &right, source),
                             ..alloc_info
                         };
                         self.allocated_memory.insert(var_name, alloc_info);
@@ -4785,9 +4869,13 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         fields
             .iter()
             .flat_map(|field| {
-                separators
-                    .iter()
-                    .map(move |separator| format!("{var_name}{separator}{field}"))
+                let inner = inner_field_spellings(field);
+                separators.iter().flat_map(move |separator| {
+                    inner
+                        .iter()
+                        .map(move |path| format!("{var_name}{separator}{path}"))
+                        .collect::<Vec<_>>()
+                })
             })
             .collect()
     }
