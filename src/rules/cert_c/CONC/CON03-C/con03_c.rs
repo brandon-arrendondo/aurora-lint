@@ -181,6 +181,10 @@ pub struct Con03C {
     /// files' simple typedefs, so a name here and not there is still the
     /// project's type, not an unresolved one.
     typedef_names_by_file: RefCell<Arc<HashMap<String, HashSet<String>>>>,
+    /// The typedef names a macro's expansion declares in each read file
+    /// (`DECLARE_HANDLE(HWND);`, `ProjectContext::
+    /// macro_declared_typedef_names`): a definition no file spells out.
+    macro_declared_typedef_names: RefCell<Arc<HashMap<String, HashSet<String>>>>,
     /// The typedef names the file being checked declares itself, for a run
     /// with no project context.
     own_typedef_names: RefCell<HashSet<String>>,
@@ -220,6 +224,8 @@ impl CertRule for Con03C {
         *self.function_typedef_names.borrow_mut() = Arc::clone(&context.function_typedef_names);
         *self.typedef_names_by_file.borrow_mut() = Arc::clone(&context.typedef_names_by_file);
         *self.typedef_arms_by_file.borrow_mut() = Arc::clone(&context.typedef_arms_by_file);
+        *self.macro_declared_typedef_names.borrow_mut() =
+            Arc::clone(&context.macro_declared_typedef_names);
     }
 
     fn set_visible_types(&self, types: &crate::analyze::context::VisibleTypes) {
@@ -748,14 +754,15 @@ impl Con03C {
 
     /// The simple types a file the scan read aliases `name` to, each
     /// distinct one once (empty when every definition is of another kind),
-    /// or `None` when nothing the scan read declares `name` a typedef.
+    /// or `None` when nothing the scan read declares `name` a typedef, in
+    /// its own text or through a macro.
     fn header_typedef(&self, name: &str) -> Option<Vec<String>> {
+        let declared_in = |table: &RefCell<Arc<HashMap<String, HashSet<String>>>>| {
+            table.borrow().values().any(|names| names.contains(name))
+        };
         if !self.own_typedef_names.borrow().contains(name)
-            && !self
-                .typedef_names_by_file
-                .borrow()
-                .values()
-                .any(|names| names.contains(name))
+            && !declared_in(&self.typedef_names_by_file)
+            && !declared_in(&self.macro_declared_typedef_names)
         {
             return None;
         }

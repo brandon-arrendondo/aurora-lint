@@ -1411,6 +1411,12 @@ pub struct ProjectContext {
     #[serde(default)]
     pub macro_declared_objects:
         Arc<HashMap<String, Vec<crate::analyze::macro_declarations::MacroDeclaredObject>>>,
+    /// `real path -> the names typedefs a macro's expansion declares there`
+    /// (`DECLARE_HANDLE(HWND);` in a Windows SDK header, whose body is
+    /// `typedef HANDLE name`): type names no file spells as a typedef, kept
+    /// apart from [`Self::typedef_names_by_file`].
+    #[serde(default)]
+    pub macro_declared_typedef_names: Arc<HashMap<String, HashSet<String>>>,
     /// The file-scope objects some scanned file or header declares
     /// `volatile` (`extern volatile int g_ready;`), so a body in another
     /// file reading one reads a volatile object.
@@ -1801,7 +1807,7 @@ pub const BUILT_UNDER_IMPLICIT: &[(&str, &str)] = &[
 /// to a serialized field of [`ProjectContext`] (or of a type it holds), or to
 /// what such a field means: the cache header carries it, so an old cache is
 /// refused instead of misread.
-const PRESCAN_CACHE_FORMAT: u32 = 92;
+const PRESCAN_CACHE_FORMAT: u32 = 94;
 
 /// The header a prescan cache file starts with: a magic, the layout version
 /// and the aurora-lint version that wrote it.

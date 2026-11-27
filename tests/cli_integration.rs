@@ -12107,6 +12107,54 @@ fn arr39_does_not_type_a_header_pointer_name_a_header_makes_a_constant() {
 }
 
 #[test]
+fn con03_reads_a_typedef_a_macro_in_an_included_header_declares() {
+    // `DECLARE_T(x_t)` and `DECLARE_HANDLE(WINDOW);` in a header reached
+    // through -I declare their names only once expanded, as a Windows SDK's
+    // `DECLARE_HANDLE(HWND);` does: with -I each is a defined type, and
+    // `count` and `window` are shared objects. Without -I neither name has a
+    // definition the scan read.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("inc")).unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("inc/decl.h"),
+        "typedef void *HANDLE;\n\
+         #define DECLARE_HANDLE(name) typedef HANDLE name\n\
+         DECLARE_HANDLE(WINDOW);\n\
+         #define DECLARE_T(n) typedef int n;\n\
+         DECLARE_T(x_t)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("src/main.c"),
+        "#include <pthread.h>\n#include \"decl.h\"\n\n\
+         static x_t count;\nstatic WINDOW window;\n\n\
+         void *worker(void *arg) {\n    count++;\n    window = arg;\n    return arg;\n}\n\n\
+         int main(void) {\n    pthread_t t;\n    pthread_create(&t, 0, worker, 0);\n\
+         \x20   pthread_join(t, 0);\n    return count;\n}\n",
+    )
+    .unwrap();
+    let src = dir.path().join("src");
+    let inc = dir.path().join("inc");
+    let reported = |extra: &[&str]| -> Vec<String> {
+        let mut args = vec!["--rules", "CON03-C", src.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        let (_, stdout, stderr) = run_aurora_lint(&args);
+        stdout
+            .lines()
+            .chain(stderr.lines())
+            .filter(|l| l.contains("CON03-C:"))
+            .filter_map(|l| l.split('\'').nth(1).map(str::to_string))
+            .collect()
+    };
+    assert_eq!(
+        reported(&["-I", inc.to_str().unwrap()]),
+        ["count", "window"]
+    );
+    assert!(reported(&[]).is_empty());
+}
+
+#[test]
 fn con03_reads_a_type_name_by_its_definition_and_stays_silent_without_one() {
     // `handler_fn` names a function type, so `static handler_fn on_read;`
     // declares a function; `counter_t` names `int`, so `hits` is a shared

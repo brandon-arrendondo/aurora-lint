@@ -1951,6 +1951,7 @@ fn prescan_file_list(
         value_only_globals: Arc::new(value_only_globals),
         file_scope_macro_items: Arc::new(file_scope_macro_items),
         macro_declared_objects: Default::default(),
+        macro_declared_typedef_names: Default::default(),
     };
     crate::analyze::macro_declarations::declare_macro_objects(&mut context);
     Ok(context)
@@ -14183,6 +14184,32 @@ void caller(char *other) {
             assert!(ctx.global_object_names.contains(name), "{name}");
         }
         assert_eq!(ctx.macro_declared_objects.len(), 4);
+    }
+
+    /// A file-scope invocation whose expansion is a typedef declares the
+    /// typedef's name, with or without its own `;`, and no object; one in a
+    /// function body, or of a body that pastes tokens, declares nothing.
+    #[test]
+    fn a_macro_expansion_declares_file_scope_typedef_names() {
+        let code = "typedef void *HANDLE;\n\
+                    #define DECLARE_HANDLE(name) typedef HANDLE name\n\
+                    #define DECLARE_T(n) typedef int n;\n\
+                    #define DECLARE_PASTED(n) struct n##__; typedef struct n##__ *n\n\
+                    DECLARE_HANDLE(WINDOW);\n\
+                    DECLARE_T(count_t)\n\
+                    DECLARE_PASTED(PASTED);\n\
+                    void use(void) {\n\
+                      DECLARE_T(local_t)\n\
+                    }\n";
+        let ctx = prescan_one("aurora-lint-prescan-macro-declared-typedefs-test", code);
+        let mut names: Vec<&String> = ctx
+            .macro_declared_typedef_names
+            .values()
+            .flatten()
+            .collect();
+        names.sort();
+        assert_eq!(names, ["WINDOW", "count_t"]);
+        assert!(ctx.macro_declared_objects.is_empty());
     }
 
     // -- caller argument ranges: loop counters and stepped locals --

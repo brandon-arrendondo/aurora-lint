@@ -8,8 +8,10 @@
 //! `#define`s are known, [`declare_macro_objects`] expands each item that
 //! names a macro and parses the expansion. An expansion that parses to
 //! nothing but declarations declares their objects, with the file and the
-//! linkage each has ([`MacroDeclaredObject`]); what does not parse as
-//! declarations declares nothing (ADR-0006).
+//! linkage each has ([`MacroDeclaredObject`]), and a typedef among them
+//! declares its name in the file of the invocation
+//! (`DECLARE_HANDLE(HWND);`); what does not parse as declarations declares
+//! nothing (ADR-0006).
 
 use crate::analyze::check_macros::MacroDefinition;
 use crate::analyze::context::ProjectContext;
@@ -176,6 +178,7 @@ fn item_at(at: usize, source: &str, file: &str) -> Option<FileScopeMacroItem> {
 /// items, so a second run adds what new definitions declare.
 pub fn declare_macro_objects(context: &mut ProjectContext) {
     let mut declared: HashMap<String, Vec<MacroDeclaredObject>> = HashMap::new();
+    let mut typedefs: HashMap<String, HashSet<String>> = HashMap::new();
     for item in context.file_scope_macro_items.iter() {
         let Some(definitions) = context.macro_definitions.get(&item.name) else {
             continue;
@@ -184,6 +187,10 @@ pub fn declare_macro_objects(context: &mut ProjectContext) {
             let Some(text) = expansion(definition, item.args.as_deref()) else {
                 continue;
             };
+            let names = typedef_names_in(&text);
+            if !names.is_empty() {
+                typedefs.entry(item.file.clone()).or_default().extend(names);
+            }
             for (name, linkage) in declarations_in(&text) {
                 let slot = declared.entry(name).or_default();
                 let object = MacroDeclaredObject {
@@ -198,6 +205,7 @@ pub fn declare_macro_objects(context: &mut ProjectContext) {
     }
     Arc::make_mut(&mut context.global_object_names).extend(declared.keys().cloned());
     context.macro_declared_objects = Arc::new(declared);
+    context.macro_declared_typedef_names = Arc::new(typedefs);
 }
 
 /// The replacement `definition` gives an invocation with `args` (none for an
@@ -226,6 +234,46 @@ fn expansion(definition: &MacroDefinition, args: Option<&[String]>) -> Option<St
         }
         MacroDefinition::Opaque => None,
     }
+}
+
+/// The names the typedefs `text` stands for declare, when it parses as
+/// declarations and nothing else. The invocation's own `;` follows it in
+/// the file, outside the expansion (`DECLARE_HANDLE(HWND);` with
+/// `typedef HANDLE name` as the body), so a replacement without one is
+/// read with it.
+fn typedef_names_in(text: &str) -> Vec<String> {
+    let trimmed = text.trim_end();
+    if !trimmed
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|t| t == "typedef")
+    {
+        return Vec::new();
+    }
+    let text = if trimmed.ends_with(';') {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed};")
+    };
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&crate::parser::c_language()).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(&text, None) else {
+        return Vec::new();
+    };
+    let root = tree.root_node();
+    let items: Vec<Node> = root.named_children(&mut root.walk()).collect();
+    if root.has_error()
+        || items.is_empty()
+        || items
+            .iter()
+            .any(|d| !matches!(d.kind(), "declaration" | "type_definition"))
+    {
+        return Vec::new();
+    }
+    crate::utility::cert_c::declarator_utils::typedef_names_declared(&root, &text)
+        .into_iter()
+        .collect()
 }
 
 /// The objects `text` declares, when it parses as declarations and nothing
