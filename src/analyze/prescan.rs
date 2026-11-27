@@ -14241,7 +14241,7 @@ void caller(char *other) {
     }
 
     #[test]
-    fn a_macro_chain_whose_expansions_all_fail_is_read_in_bounded_time() {
+    fn a_macro_chain_whose_expansions_all_fail_declares_no_typedef() {
         // M1..M7 with six `#if` arms each, chained Mk(n) -> Mk+1(n), and M7
         // calling the one-parameter M8(n) with two arguments: every branch
         // fails, and the walk of the 6^6 of them reaching M7 stops at the
@@ -14265,9 +14265,10 @@ void caller(char *other) {
         for i in 0..10 {
             code.push_str(&format!("M1(t{i});\n"));
         }
-        let started = std::time::Instant::now();
+        // The budget's own tests in `macro_declarations` assert how much
+        // work the walk does; a wall-clock bound here would trip under load.
+        // This one checks that the whole prescan files nothing.
         let ctx = prescan_one("aurora-lint-prescan-macro-chain-budget-test", &code);
-        let elapsed = started.elapsed();
         assert!(
             ctx.macro_declared_typedef_names
                 .values()
@@ -14275,9 +14276,6 @@ void caller(char *other) {
             "{:?}",
             ctx.macro_declared_typedef_names
         );
-        // Unbounded, this took 17 s in a release build; bounded, it is the
-        // cost of an ordinary one-file prescan.
-        assert!(elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
     }
 
     // -- caller argument ranges: loop counters and stepped locals --
