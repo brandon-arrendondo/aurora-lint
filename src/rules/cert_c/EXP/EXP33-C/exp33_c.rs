@@ -15,7 +15,7 @@ use crate::analyze::context::SummaryLookup;
 use crate::analyze::dataflow::StatementLookup;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::init_state::{self, InitAnalysisResult, InitState, InitStateMap};
-use crate::analyze::value_range::RangeAnalysisResult;
+use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::analyze::{const_eval, vra_access};
 use crate::manifest::Severity;
 use crate::settings::AnalysisSettings;
@@ -412,10 +412,6 @@ impl CertRule for Exp33C {
         *self.vra_results.borrow_mut() = Arc::clone(results);
     }
 
-    fn needs_vra(&self) -> bool {
-        true
-    }
-
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
         let cfgs = self.function_cfgs.borrow();
@@ -551,6 +547,8 @@ impl CertRule for Exp33C {
                             cfgs: Arc::clone(&cfgs),
                             vra: Arc::clone(&self.vra_results.borrow()),
                             macros: Arc::clone(&self.file_scope_constants.borrow().macros),
+                            summaries: self.cross_file_summaries.borrow().clone(),
+                            computed: RefCell::default(),
                         },
                     );
                     check_reads(
@@ -609,19 +607,59 @@ impl CertRule for Exp33C {
 /// Built again at each read, each was a pass over the body, so checking
 /// the reads of a long function cost the square of its length.
 /// What a variable index into a buffer is bounded by where it is read:
-/// the value ranges of the function it is in.
+/// the value ranges of the function it is in. The scan's own results are
+/// read when another enabled rule had it compute them; otherwise only a
+/// function holding such a read is analyzed, once, when the read is met.
+/// Asking the scan for value ranges instead ran the analysis over every
+/// function of every file, which on a 9 MB amalgamation outlasts the time
+/// a file's analysis is given, for the few reads that need it.
 struct IndexRanges {
     cfgs: Arc<HashMap<usize, FunctionCfg>>,
     vra: Arc<HashMap<usize, RangeAnalysisResult>>,
     macros: Arc<HashMap<String, i64>>,
+    summaries: ScopedTable<FunctionSummary>,
+    /// The functions analyzed here, by start byte, when the scan computed
+    /// none.
+    computed: RefCell<HashMap<usize, Option<RangeAnalysisResult>>>,
 }
 
 impl IndexRanges {
     /// The inclusive range of the offset expression `index` where it
     /// stands, when value-range analysis bounds it.
     fn of(&self, index: &Node, source: &str) -> Option<(i64, i64)> {
-        let ranges =
-            vra_access::var_ranges_replay_at(&self.cfgs, &self.vra, index, source, &self.macros)?;
+        let func = ast_utils::find_containing_function(index)?;
+        let ranges = if self.vra.is_empty() {
+            let start = func.start_byte();
+            let cfg = self.cfgs.get(&start)?;
+            let mut computed = self.computed.borrow_mut();
+            let result = computed.entry(start).or_insert_with(|| {
+                Some(value_range::analyze_value_ranges(
+                    cfg,
+                    &func,
+                    source,
+                    &self.macros,
+                    &self.summaries,
+                ))
+            });
+            let body = func.child_by_field_name("body")?;
+            value_range::get_all_var_ranges_at(
+                result.as_ref()?,
+                cfg,
+                &body,
+                source,
+                &self.macros,
+                index.start_byte(),
+            )?
+        } else {
+            vra_access::var_ranges_replay_in(
+                &self.cfgs,
+                &self.vra,
+                &func,
+                index,
+                source,
+                &self.macros,
+            )?
+        };
         const_eval::try_evaluate_range(index, source, &self.macros, &ranges)
             .map(|range| (range.min, range.max))
     }
