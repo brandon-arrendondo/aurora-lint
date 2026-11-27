@@ -750,10 +750,17 @@ impl Arr39C {
         left_is_pointer && right_is_scaled
     }
 
-    /// Whether `right` scales by `sizeof` a character type, always 1: its
-    /// own anti-pattern whatever the pointer's type.
+    /// Whether `right` scales by `sizeof` a character type, always 1, however
+    /// it is spaced (`sizeof (char)`): its own anti-pattern whatever the
+    /// pointer's type.
     fn scaled_by_char_size(right: &Node, source: &str) -> bool {
-        let right_text = ast_utils::get_node_text(right, source);
+        let right_text: String = ast_utils::get_node_text(right, source)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .replace("sizeof (", "sizeof(")
+            .replace("( ", "(")
+            .replace(" )", ")");
         right_text.contains("sizeof(char)")
             || right_text.contains("sizeof(unsigned char)")
             || right_text.contains("sizeof(signed char)")
@@ -761,8 +768,10 @@ impl Arr39C {
 
     /// Whether `node` is a byte count: a `sizeof` or `offsetof`, a product
     /// or sum with one in it, or a name that holds one. A quotient is one
-    /// only when its dividend is, since a `sizeof` that divides turns a
-    /// byte count into an element count (`len / sizeof(long)`).
+    /// when its dividend is one and its divisor is not, since dividing a
+    /// byte count by a size gives an element count (`len / sizeof(long)`,
+    /// `sizeof(buf) / sizeof(buf[0])`). A remainder is one when either side
+    /// is: `len % sizeof(int)` is the bytes left over.
     fn is_scaled_integer_expression(&self, node: &Node, source: &str) -> bool {
         Self::is_byte_count(node, source, true)
     }
@@ -777,6 +786,7 @@ impl Arr39C {
                     .named_child(0)
                     .is_some_and(|inner| Self::is_byte_count(&inner, source, whole));
             }
+            "sizeof_expression" => return true,
             "binary_expression" => {
                 let operator = node
                     .child_by_field_name("operator")
@@ -786,7 +796,8 @@ impl Arr39C {
                         .is_some_and(|o| Self::is_byte_count(&o, source, false))
                 };
                 match operator {
-                    Some("/" | "%") => return side("left"),
+                    Some("/") => return side("left") && !side("right"),
+                    Some("%") => return side("left") || side("right"),
                     Some("*" | "+" | "-") => return side("left") || side("right"),
                     _ => {}
                 }

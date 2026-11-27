@@ -2,11 +2,12 @@
  * Rule: ARR39-C
  * Source: synthetic
  * Status: FAIL - Should trigger ARR39-C violation
- * Expect: count=3
+ * Expect: count=9
  *
- * A scaled byte count stays one when it is the dividend, or when a
- * dividing sizeof sits beside a multiplying one, so adding it to an int
- * pointer scales twice.
+ * A scaled byte count stays one when it is the dividend, when a dividing
+ * sizeof sits beside a multiplying one, or when it is what is left over
+ * from a remainder, so adding it to an int pointer scales twice. How the
+ * sizeof is spaced does not matter.
  */
 
 #include <stddef.h>
@@ -22,4 +23,29 @@ int *past_header(int *ptr, size_t len) {
 int *advance(int *ptr, size_t n) {
   ptr += (n * sizeof(int)) / 2;
   return ptr;
+}
+
+int *spaced_product(int *ptr, size_t n) {
+  return ptr + n * sizeof (int);
+}
+
+int *spaced_step(int *ptr, size_t n) {
+  ptr += n * sizeof (int);
+  return ptr;
+}
+
+int *spaced_parenthesized(int *ptr, size_t n) {
+  return ptr + (n * sizeof (int));
+}
+
+int *spaced_constant(int *ptr) {
+  return ptr + 2 * sizeof (long);
+}
+
+int *leftover_bytes(int *ptr, size_t len) {
+  return ptr + len % sizeof(int);
+}
+
+char *char_size_spaced(char *buf, size_t n) {
+  return buf + n * sizeof (char);
 }
